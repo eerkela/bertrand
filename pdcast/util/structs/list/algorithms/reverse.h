@@ -13,7 +13,7 @@
 
 namespace Ops {
 
-    /* Reverse a singly-linked list in-place. */
+    /* Reverse a linked list in-place. */
     template <
         template <typename, template <typename> class> class ViewType,
         typename NodeType,

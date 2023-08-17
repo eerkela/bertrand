@@ -4,6 +4,7 @@
 
 #include <cstddef>  // size_t
 #include <Python.h>  // CPython API
+#include "../core/bounds.h"  // walk()
 #include "../core/node.h"  // is_doubly_linked<>
 #include "../core/view.h"  // views
 
@@ -47,75 +48,38 @@ namespace Ops {
         }
     }
 
-    /* Insert elements into a set or dictionary immediately after the given sentinel
-    value. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    inline void extendafter(
-        ViewType<NodeType, Allocator>* view,
-        PyObject* sentinel,
-        PyObject* items
-    ) {
-        using Node = typename ViewType<NodeType, Allocator>::Node;
-
-        // search for sentinel
-        Node* left = view->search(sentinel);
-        if (left == nullptr) {  // sentinel not found
-            PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
-            return;
-        }
-
-        // insert items after sentinel
-        _extend_left_to_right(view, left, static_cast<Node*>(left->next), items);
-    }
-
-    /* Insert elements into a linked set or dictionary immediately before a given
+    /* Insert elements into a linked set or dictionary relative to the given
     sentinel value. */
     template <
         template <typename, template <typename> class> class ViewType,
         typename NodeType,
         template <typename> class Allocator
     >
-    void extendbefore(
+    void extend_relative(
         ViewType<NodeType, Allocator>* view,
+        PyObject* items,
         PyObject* sentinel,
-        PyObject* items
+        Py_ssize_t offset,
+        bool reverse
     ) {
         using Node = typename ViewType<NodeType, Allocator>::Node;
 
         // search for sentinel
-        Node* right = view->search(sentinel);
-        if (right == nullptr) {  // sentinel not found
-            PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
+        Node* node = view->search(sentinel);
+        if (node == nullptr) {  // sentinel not found
+            PyErr_Format(PyExc_KeyError, "%R is not contained in the set", sentinel);
             return;
         }
 
-        // NOTE: if the list is doubly-linked, then we can just use the node's
-        // `prev` pointer to find the left bound.
-        if constexpr (is_doubly_linked<Node>::value) {
-            _extend_right_to_left(view, static_cast<Node*>(right->prev), right, items);
-            return;
-        }
+        // get neighbors for insertion
+        std::pair<Node*, Node*> bounds = walk(view, node, offset, true);
 
-        // NOTE: otherwise, we have to iterate from the head of the list.
-        Node* left;
-        Node* next;
-        if (right == view->head) {
-            left = nullptr;
+        // insert items between left and right bounds
+        if (reverse) {
+            _extend_right_to_left(view, bounds.first, bounds.second, items);
         } else {
-            left = view->head;
-            next = static_cast<Node*>(left->next);
-            while (next != right) {
-                left = next;
-                next = static_cast<Node*>(next->next);
-            }
+            _extend_left_to_right(view, bounds.first, bounds.second, items);
         }
-
-        // insert items between the left and right bounds
-        _extend_right_to_left(view, left, right, items);
     }
 
 }

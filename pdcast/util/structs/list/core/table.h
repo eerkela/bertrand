@@ -137,12 +137,10 @@ private:
 
 public:
 
-    /* Disabled copy/move constructors.  These are dangerous because we're
-    managing memory manually. */
+    /* Copy constructors. These are disabled for the sake of efficiency,
+    preventing us from unintentionally copying data. */
     HashTable(const HashTable& other) = delete;         // copy constructor
     HashTable& operator=(const HashTable&) = delete;    // copy assignment
-    HashTable(HashTable&&) = delete;                    // move constructor
-    HashTable& operator=(HashTable&&) = delete;         // move assignment
 
     /* Construct an empty HashTable. */
     HashTable() :
@@ -165,6 +163,57 @@ public:
             free(table);  // clean up staged table
             throw std::bad_alloc();
         }
+    }
+
+    /* Move ownership from one HashTable to another (move constructor). */
+    HashTable(HashTable&& other) :
+        table(other.table), tombstone(other.tombstone), capacity(other.capacity),
+        occupied(other.occupied), tombstones(other.tombstones),
+        exponent(other.exponent), prime(other.prime)
+    {
+        // reset other table
+        other.table = nullptr;
+        other.tombstone = nullptr;
+        other.capacity = 0;
+        other.occupied = 0;
+        other.tombstones = 0;
+        other.exponent = 0;
+        other.prime = PRIMES[0];
+    }
+
+    /* Move ownership from one HashTable to another (move assignment). */
+    HashTable& operator=(HashTable&& other) {
+        // check for self-assignment
+        if (this == &other) {
+            return *this;
+        }
+
+        // free old table/tombstone
+        if constexpr (DEBUG) {
+            printf("    -> free: HashTable(%lu)\n", capacity);
+        }
+        free(table);
+        free(tombstone);
+
+        // transfer ownership of table/tombstone
+        table = other.table;
+        tombstone = other.tombstone;
+        capacity = other.capacity;
+        occupied = other.occupied;
+        tombstones = other.tombstones;
+        exponent = other.exponent;
+        prime = other.prime;
+
+        // reset other table
+        other.table = nullptr;
+        other.tombstone = nullptr;
+        other.capacity = 0;
+        other.occupied = 0;
+        other.tombstones = 0;
+        other.exponent = 0;
+        other.prime = PRIMES[0];
+
+        return *this;
     }
 
     /* Destructor.*/

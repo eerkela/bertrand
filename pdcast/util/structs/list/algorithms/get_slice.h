@@ -23,7 +23,7 @@
 
 namespace Ops {
 
-    /* Get the value at a particular index of a singly-linked list. */
+    /* Get the value at a particular index of a linked list, set, or dictionary. */
     template <
         template <typename, template <typename> class> class ViewType,
         typename NodeType,
@@ -56,7 +56,7 @@ namespace Ops {
         return curr->value;
     }
 
-    /* Extract a slice from a singly-linked list. */
+    /* Extract a slice from a linked list, set, or dictionary. */
     template <
         template <typename, template <typename> class> class ViewType,
         typename NodeType,

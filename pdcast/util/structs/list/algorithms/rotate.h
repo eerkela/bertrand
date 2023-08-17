@@ -17,7 +17,7 @@
 
 namespace Ops {
 
-    /* Rotate a singly-linked list to the right by the specified number of steps. */
+    /* Rotate a linked list to the right by the specified number of steps. */
     template <
         template <typename, template <typename> class> class ViewType,
         typename NodeType,

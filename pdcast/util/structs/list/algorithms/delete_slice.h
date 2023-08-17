@@ -17,7 +17,7 @@
 
 namespace Ops {
 
-    /* Delete a single item from a linked list, set, or dictionary. */
+    /* Delete the value at a particular index of a linked list, set, or dictionary. */
     template <
         template <typename, template <typename> class> class ViewType,
         typename NodeType,
@@ -102,7 +102,6 @@ namespace Ops {
     }
 
 }
-
 
 
 ///////////////////////

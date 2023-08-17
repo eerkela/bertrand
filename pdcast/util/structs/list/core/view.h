@@ -4,32 +4,11 @@
 
 #include <cstddef>  // size_t
 #include <queue>  // std::queue
-#include <limits>  // std::numeric_limits
-#include <optional>  // std::optional
-#include <type_traits>  // std::integer_constant, std::is_base_of
+#include <type_traits>  // std::integral_constant, std::is_base_of_v
 #include <Python.h>  // CPython API
 #include "node.h"  // Hashed<T>, Mapped<T>
 #include "allocate.h"  // Allocator
-#include "bounds.h"  // MAX_SIZE_T, closed_interval, etc.
 #include "table.h"  // HashTable
-
-
-// TODO: SetView could inherit from DictView and only override the methods that
-// interact with the table.  These include:
-// - constructors/destructors/move operators (can call parent versions in init list)
-// - link()/unlink()
-// - copy()
-// - nbytes()
-
-// Basically I would avoid having to reimplement create, copy, recycle, and
-// type specialization in SetView and DictView, and then avoid having to deal
-// with search(), link(), unlink() etc. in DictView
-
-
-// SetView would inherit like this:
-
-// template <typename NodeType, template <typename> class Allocator>
-// class SetView : public ListView<Hashed<NodeType>, Allocator> {}
 
 
 ////////////////////////
@@ -43,9 +22,6 @@
 // When slicing a fixed-size list, the resulting list should also have a fixed
 // size equal to the length of the slice.  This is not currently the case.
 
-// Also, we can potentially stack-allocate the extra views and then just return
-// a reference to them with the & operator.
-
 
 template <typename NodeType, template <typename> class Allocator>
 class ListView {
@@ -56,7 +32,7 @@ public:
     size_t size;
 
     /* Copy constructors. These are disabled for the sake of efficiency,
-    forcing us not to copy data unnecessarily. */
+    preventing us from unintentionally copying data. */
     ListView(const ListView& other) = delete;           // copy constructor
     ListView& operator=(const ListView&) = delete;      // copy assignment
 
@@ -75,46 +51,11 @@ public:
     ) : head(nullptr), tail(nullptr), size(0), specialization(spec),
         allocator(max_size)
     {
-        // C API equivalent of iter(iterable)
-        PyObject* iterator = PyObject_GetIter(iterable);
-        if (iterator == nullptr) {  // TypeError()
-            throw std::invalid_argument("Value is not iterable");
-        }
-
-        // hold reference to specialization, if given
+        // unpack iterator into ListView (can throw std::invalid_argument)
+        unpack_iterable(iterable, reverse);
         if (spec != nullptr) {
-            Py_INCREF(spec);
+            Py_INCREF(spec);  // hold reference to specialization if given
         }
-
-        // unpack iterator into ListView
-        PyObject* item;
-        while (true) {
-            // C API equivalent of next(iterator)
-            item = PyIter_Next(iterator);
-            if (item == nullptr) { // end of iterator or error
-                if (PyErr_Occurred()) {
-                    Py_DECREF(iterator);
-                    self_destruct();
-                    throw std::runtime_error("could not get item from iterator");
-                }
-                break;
-            }
-
-            // allocate a new node and link it to the list
-            stage(item, reverse);
-            if (PyErr_Occurred()) {
-                Py_DECREF(iterator);
-                Py_DECREF(item);
-                self_destruct();
-                throw std::runtime_error("could not stage item");
-            }
-
-            // advance to next item
-            Py_DECREF(item);
-        }
-
-        // release reference on iterator
-        Py_DECREF(iterator);
     }
 
     /* Move ownership from one ListView to another (move constructor). */
@@ -185,30 +126,16 @@ public:
     }
 
     /* Make a shallow copy of the entire list. */
-    ListView<NodeType, Allocator>* copy() const {
-        ListView<NodeType, Allocator>* copied = new ListView<NodeType, Allocator>();
-        Node* old_node = head;
-        Node* new_node = nullptr;
-        Node* new_prev = nullptr;
+    ListView<NodeType, Allocator>* copy() {
+        ListView<NodeType, Allocator>* result = new ListView<NodeType, Allocator>();
 
-        // copy each node in list
-        while (old_node != nullptr) {
-            new_node = copy(old_node);  // copy node
-            if (new_node == nullptr) {  // error during copy(node)
-                delete copied;  // clean up copied list
-                return nullptr;
-            }
-
-            // link to tail of copied list
-            copied->link(new_prev, new_node, nullptr);  // cannot fail
-
-            // advance to next node
-            new_prev = new_node;
-            old_node = static_cast<Node*>(old_node->next);
+        // copy nodes into new list
+        copy_to(result);
+        if (PyErr_Occurred()) {
+            delete result;  // clean up staged list
+            return nullptr;
         }
-
-        // return copied list
-        return copied;
+        return result;
     }
 
     /* Clear the list. */
@@ -292,28 +219,7 @@ public:
         return allocator.nbytes() + sizeof(*this);
     }
 
-private:
-    PyObject* specialization;  // specialized type for elements of this list
-    mutable Allocator<Node> allocator;
-
-    /* Allocate a new node for the item and append it to the list, discarding
-    it in the event of an error. */
-    inline void stage(PyObject* item, bool reverse) {
-        // allocate a new node
-        Node* curr = node(item);
-        if (curr == nullptr) {  // error during node initialization
-            return;
-        }
-
-        // link the node to the staged list
-        // NOTE: since ListViews do not maintain a hash table, this can never
-        // cause an error
-        if (reverse) {
-            link(nullptr, curr, head);
-        } else {
-            link(tail, curr, nullptr);
-        }
-    }
+protected:
 
     /* Release the resources being managed by the ListView. */
     inline void self_destruct() {
@@ -326,55 +232,41 @@ private:
         }
     }
 
-};
+    /* Allocate a new node for the item and append it to the list, discarding
+    it in the event of an error. */
+    inline void stage(PyObject* item, bool reverse) {
+        // allocate a new node
+        Node* curr = node(item);
+        if (curr == nullptr) {  // error during node initialization
+            if constexpr (DEBUG) {
+                // QoL - nothing has been allocated, so we don't actually free
+                printf("    -> free: %s\n", repr(item));
+            }
+            return;
+        }
 
+        // link the node to the staged list
+        if (reverse) {
+            link(nullptr, curr, head);
+        } else {
+            link(tail, curr, nullptr);
+        }
+        if (PyErr_Occurred()) {
+            recycle(curr);  // clean up allocated node
+            return;
+        }
+    }
 
-///////////////////////
-////    SETVIEW    ////
-///////////////////////
-
-
-template <typename NodeType, template <typename> class Allocator>
-class SetView {
-public:
-    using Node = Hashed<NodeType>;
-    Node* head;
-    Node* tail;
-    size_t size;
-
-    /* Disabled copy/move constructors.  These are dangerous because we're
-    manually managing memory for each node. */
-    SetView(const SetView& other) = delete;       // copy constructor
-    SetView& operator=(const SetView&) = delete;  // copy assignment
-    SetView(SetView&&) = delete;                  // move constructor
-    SetView& operator=(SetView&&) = delete;       // move assignment
-
-    /* Construct an empty SetView. */
-    SetView(ssize_t max_size = -1) :
-        head(nullptr), tail(nullptr), size(0), specialization(nullptr),
-        table(), allocator(max_size) {}
-
-    /* Construct a SetView from an input iterable. */
-    SetView(
-        PyObject* iterable,
-        bool reverse = false,
-        PyObject* spec = nullptr,
-        ssize_t max_size = -1
-    ) : head(nullptr), tail(nullptr), size(0), specialization(spec),
-        allocator(max_size)
-    {
+    /* Unpack a Python sequence into a ListView (or one of its subclasses)
+    during construction. */
+    void unpack_iterable(PyObject* iterable, bool reverse) {
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
         if (iterator == nullptr) {  // TypeError()
             throw std::invalid_argument("Value is not iterable");
         }
 
-        // hold reference to specialization, if given
-        if (spec != nullptr) {
-            Py_INCREF(spec);
-        }
-
-        // unpack iterator into SetView
+        // unpack iterator into ListView
         PyObject* item;
         while (true) {
             // C API equivalent of next(iterator)
@@ -383,7 +275,7 @@ public:
                 if (PyErr_Occurred()) {
                     Py_DECREF(iterator);
                     self_destruct();
-                    throw std::runtime_error("could not get item from iterator");
+                    throw std::invalid_argument("could not get item from iterator");
                 }
                 break;
             }
@@ -394,7 +286,7 @@ public:
                 Py_DECREF(iterator);
                 Py_DECREF(item);
                 self_destruct();
-                throw std::runtime_error("could not stage item");
+                throw std::invalid_argument("could not stage item");
             }
 
             // advance to next item
@@ -405,70 +297,110 @@ public:
         Py_DECREF(iterator);
     }
 
-    /* Destroy a SetView and free all its resources. */
-    ~SetView() {
-        self_destruct();
-    }
+    /* Copy all the nodes from this list into a newly-allocated view. */
+    void copy_to(ListView<NodeType, Allocator>* other) const {
+        Node* curr = head;
+        Node* copied = nullptr;
+        Node* copied_tail = nullptr;
 
-    /* Construct a new node for the list. */
-    template <typename... Args>
-    inline Node* node(Args... args) const {
-        // variadic dispatch to Node::init()
-        Node* result = allocator.create(args...);
-        if (specialization != nullptr && result != nullptr) {
-            if (!Node::typecheck(result, specialization)) {
-                recycle(result);  // clean up allocated node
-                return nullptr;  // propagate TypeError()
+        // copy each node in list
+        while (curr != nullptr) {
+            copied = copy(curr);  // copy node
+            if (copied == nullptr) {  // error during copy(node)
+                return;  // propagate error
             }
+
+            // link to tail of copied list
+            other->link(copied_tail, copied, nullptr);
+            if (PyErr_Occurred()) {  // error during link()
+                return;  // propagate error
+            }
+
+            // advance to next node
+            copied_tail = copied;
+            curr = static_cast<Node*>(curr->next);
         }
 
-        return result;
+        // return copied list
+        return;
     }
 
-    /* Release a node, returning it to the allocator. */
-    inline void recycle(Node* node) const {
-        allocator.recycle(node);
+private:
+    PyObject* specialization;  // specialized type for elements of this list
+    mutable Allocator<Node> allocator;
+
+};
+
+
+///////////////////////
+////    SETVIEW    ////
+///////////////////////
+
+
+template <typename NodeType, template <typename> class Allocator>
+class SetView : public ListView<Hashed<NodeType>, Allocator> {
+public:
+    using Node = Hashed<NodeType>;
+    using Base = ListView<Hashed<NodeType>, Allocator>;
+
+    /* Construct an empty SetView. */
+    SetView(ssize_t max_size = -1) : Base(max_size), table() {}
+
+    /* Construct a SetView from an input iterable. */
+    SetView(
+        PyObject* iterable,
+        bool reverse = false,
+        PyObject* spec = nullptr,
+        ssize_t max_size = -1
+    ) : Base(max_size), table()
+    {
+        // unpack iterator into SetView  (can throw std::invalid_argument)
+        Base::unpack_iterable(iterable, reverse);
+        if (spec != nullptr) {
+            Py_INCREF(spec);  // hold reference to specialization if given
+            this->specialization = spec;
+        }
+    }
+
+    /* Move ownership from one SetView to another (move constructor). */
+    SetView(SetView&& other) : Base(std::move(other)), table(std::move(other.table)) {}
+
+    /* Move ownership from one SetView to another (move assignment). */
+    SetView& operator=(SetView&& other) {
+        // check for self-assignment
+        if (this == &other) {
+            return *this;
+        }
+
+        // call parent move assignment operator
+        Base::operator=(std::move(other));
+
+        // transfer ownership of hash table
+        table = std::move(other.table);
+        return *this;
     }
 
     /* Copy a node in the list. */
     inline Node* copy(Node* node) const {
-        return allocator.copy(node);
+        return Base::copy(node);
     }
 
     /* Make a shallow copy of the entire list. */
-    SetView<NodeType, Allocator>* copy() const {
-        SetView<NodeType, Allocator>* copied = new SetView<NodeType, Allocator>();
-        Node* old_node = head;
-        Node* new_node = nullptr;
-        Node* new_prev = nullptr;
+    SetView<NodeType, Allocator>* copy() {
+        SetView<NodeType, Allocator>* result = new SetView<NodeType, Allocator>();
 
-        // copy each node in list
-        while (old_node != nullptr) {
-            new_node = copy(old_node);  // copy node
-            if (new_node == nullptr) {  // error during copy()
-                delete copied;  // discard staged list
-                return nullptr;
-            }
-
-            // link to tail of copied list
-            copied->link(new_prev, new_node, nullptr);
-            if (PyErr_Occurred()) {  // error during link()
-                delete copied;  // discard staged list
-                return nullptr;
-            }
-
-            // advance to next node
-            new_prev = new_node;
-            old_node = static_cast<Node*>(old_node->next);
+        // copy nodes into new set
+        Base::copy_to(result);
+        if (PyErr_Occurred()) {
+            delete result;
+            return nullptr;
         }
-
-        // return copied view
-        return copied;
+        return result;
     }
 
     /* Clear the list and reset the associated hash table. */
     inline void clear() {
-        purge_list();  // free all nodes
+        Base::clear();  // free all nodes
         table.reset();  // reset hash table
     }
 
@@ -480,17 +412,8 @@ public:
             return;
         }
 
-        // delegate to node-specific link() helper
-        Node::link(prev, curr, next);
-
-        // update list parameters
-        size++;
-        if (prev == nullptr) {
-            head = curr;
-        }
-        if (next == nullptr) {
-            tail = curr;
-        }
+        // delegate to ListView
+        Base::link(prev, curr, next);
     }
 
     /* Unlink a node from its neighbors. */
@@ -501,46 +424,8 @@ public:
             return;
         }
 
-        // delegate to node-specific unlink() helper
-        Node::unlink(prev, curr, next);
-
-        // update list parameters
-        size--;
-        if (prev == nullptr) {
-            head = next;
-        }
-        if (next == nullptr) {
-            tail = prev;
-        }
-    }
-
-    /* Enforce strict type checking for elements of this list. */
-    void specialize(PyObject* spec) {
-        // check the contents of the list
-        if (spec != nullptr) {
-            Node* curr = head;
-            for (size_t i = 0; i < size; i++) {
-                if (!Node::typecheck(curr, spec)) {
-                    return;  // propagate TypeError()
-                }
-                curr = static_cast<Node*>(curr->next);
-            }
-            Py_INCREF(spec);
-        }
-
-        // replace old specialization
-        if (specialization != nullptr) {
-            Py_DECREF(specialization);
-        }
-        specialization = spec;
-    }
-
-    /* Get the type specialization for elements of this list. */
-    inline PyObject* get_specialization() const {
-        if (specialization != nullptr) {
-            Py_INCREF(specialization);
-        }
-        return specialization;  // return a new reference or NULL
+        // delegate to ListView
+        Base::unlink(prev, curr, next);
     }
 
     /* Search for a node by its value. */
@@ -560,69 +445,11 @@ public:
 
     /* Get the total amount of memory consumed by the set (in bytes).  */
     inline size_t nbytes() const {
-        return allocator.nbytes() + table.nbytes() + sizeof(*this);
+        return Base::nbytes() + table.nbytes();
     }
 
 private:
-    PyObject* specialization;  // specialized type for elements of this list
-    mutable Allocator<Node> allocator;  // stack allocated
     HashTable<Node> table;  // stack allocated
-
-    /* Allocate a new node for the item and append it to the list, discarding
-    it in the event of an error. */
-    void stage(PyObject* item, bool reverse) {
-        // allocate a new node
-        Node* curr = node(item);
-        if (curr == nullptr) {  // error during node initialization
-            if constexpr (DEBUG) {
-                // QoL - nothing has been allocated, so we don't actually free anything
-                printf("    -> free: %s\n", repr(item));
-            }
-            return;  // propagate error
-        }
-
-        // link the node to the staged list
-        if (reverse) {
-            link(nullptr, curr, head);
-        } else {
-            link(tail, curr, nullptr);
-        }
-        if (PyErr_Occurred()) {  // node already exists
-            recycle(curr);
-            return;
-        }
-    }
-
-    /* Clear all nodes in the list. */
-    void purge_list() {
-        // NOTE: this does not reset the hash table, and is therefore unsafe.
-        // It should only be used to destroy a DictView or clear its contents.
-        Node* curr = head;  // store temporary reference to head
-
-        // reset list parameters
-        head = nullptr;
-        tail = nullptr;
-        size = 0;
-
-        // recycle all nodes
-        while (curr != nullptr) {
-            Node* next = static_cast<Node*>(curr->next);
-            recycle(curr);
-            curr = next;
-        }
-    }
-
-    /* Release the resources being managed by the SetView. */
-    inline void self_destruct() {
-        // NOTE: allocator and table are stack allocated, so they don't need to
-        // be freed here.  Their destructors will be called automatically when
-        // the SetView is destroyed.
-        purge_list();
-        if (specialization != nullptr) {
-            Py_DECREF(specialization);
-        }
-    }
-
 };
 
 
@@ -637,6 +464,11 @@ private:
 // in a Cython class.  We could export this as a Cython alias for use in type
 // inference.  Maybe the instance factories have one of these as a C-level
 // member.
+
+
+
+// TODO: If we inherit from SetView<Mapped<NodeType>, Allocator>, then we need
+// to remove the hashing-related code from Mapped<>.
 
 
 template <typename NodeType, template <typename> class Allocator>
@@ -966,80 +798,6 @@ struct is_setlike : std::integral_constant<
     std::is_base_of_v<SetView<NodeType, Allocator>, ViewType<NodeType, Allocator>> ||
     std::is_base_of_v<DictView<NodeType, Allocator>, ViewType<NodeType, Allocator>>
 > {};
-
-
-////////////////////////////////
-////    HELPER FUNCTIONS    ////
-////////////////////////////////
-
-
-/* Get the direction in which to traverse a slice according to the structure of
-the list. */
-template <
-    template <typename, template <typename> class> class ViewType,
-    typename NodeType,
-    template <typename> class Allocator
->
-std::pair<size_t, size_t> normalize_slice(
-    ViewType<NodeType, Allocator>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step
-) {
-    // NOTE: the input to this function is assumed to be the output of
-    // slice.indices(), which handles negative indices and 0 step size step
-    // size.  Its behavior is undefined if these conditions are not met.
-    using Node = typename ViewType<NodeType, Allocator>::Node;
-
-    // convert from half-open to closed interval
-    stop = closed_interval(start, stop, step);
-
-    // check if slice is not a valid interval
-    if ((step > 0 && start > stop) || (step < 0 && start < stop)) {
-        // NOTE: even though the inputs are never negative, the result of
-        // closed_interval() may cause `stop` to run off the end of the list.
-        // This branch catches that case, in addition to unbounded slices.
-        PyErr_SetString(PyExc_ValueError, "invalid slice");
-        return std::make_pair(MAX_SIZE_T, MAX_SIZE_T);
-    }
-
-    // convert to size_t
-    size_t norm_start = (size_t)start;
-    size_t norm_stop = (size_t)stop;
-    size_t begin, end;
-
-    // get begin and end indices
-    if constexpr (is_doubly_linked<Node>::value) {
-        // NOTE: if the list is doubly-linked, then we can iterate from either
-        // direction.  We therefore choose the direction that's closest to its
-        // respective slice boundary.
-        if (
-            (step > 0 && norm_start <= view->size - norm_stop) ||
-            (step < 0 && view->size - norm_start <= norm_stop)
-        ) {  // iterate normally
-            begin = norm_start;
-            end = norm_stop;
-        } else {  // reverse
-            begin = norm_stop;
-            end = norm_start;
-        }
-    } else {
-        // NOTE: if the list is singly-linked, then we can only iterate in one
-        // direction, even when the step size is negative.
-        if (step > 0) {  // iterate normally
-            begin = norm_start;
-            end = norm_stop;
-        } else {  // reverse
-            begin = norm_stop;
-            end = norm_start;
-        }
-    }
-
-    // NOTE: comparing the begin and end indices reveals the direction of
-    // traversal for the slice.  If begin < end, then we iterate from the head
-    // of the list.  If begin > end, then we iterate from the tail.
-    return std::make_pair(begin, end);
-}
 
 
 ///////////////////////////////

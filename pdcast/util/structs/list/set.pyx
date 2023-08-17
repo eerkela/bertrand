@@ -596,6 +596,338 @@ cdef class LinkedSet:
         else:
             self.view.delete_index(<PyObject*>key)
 
+    ###################################
+    ####    RELATIVE OPERATIONS    ####
+    ###################################
+
+    # NOTE: one thing linked sets are especially good at is inserting, removing
+    # and reordering items relative to one another.  Since the set has O(1)
+    # access to each node, these operations can be done in constant time
+    # anywhere in the set, which is not possible with LinkedLists or unordered
+    # Python sets.
+
+    def swap(self, item1: object, item2: object) -> None:
+        """Swap the positions of two items in the set.
+
+        Parameters
+        ----------
+        item1 : Any
+            The first item to swap.
+        item2 : Any
+            The second item to swap.
+
+        Raises
+        ------
+        KeyError
+            If either item is not contained in the set.
+
+        Notes
+        -----
+        Swaps are O(1).
+        """
+        raise NotImplementedError()
+
+    def move(self, item: object, steps: int = 1) -> None:
+        """Move an item to the right by the specified number of steps.
+
+        Parameters
+        ----------
+        item : Any
+            The item to move.
+        steps : int, optional
+            The number of steps to move the item.  If this is positive, the
+            item will be moved to the right.  If it is negative, the item will
+            be moved to the left.  The default is to move 1 index to the right.
+
+        Raises
+        ------
+        KeyError
+            If the item is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.move :
+            Move an item to a specific index in the set.
+        LinkedSet.moveleft :
+            Move an item to the left by the specified number of steps.
+        LinkedSet.moveafter :
+            Move an item relative to a given sentinel value.
+        LinkedSet.movebefore :
+            Move an item relative to a given sentinel value.
+
+        Notes
+        -----
+        Moves are O(steps).
+
+        Calling this method with negative steps is equivalent to calling
+        :meth:`moveleft() <LinkedSet.moveleft>` with ``steps=-steps``.
+        """
+        raise NotImplementedError()
+
+    def move_to_index(self, item: object, index: int = 0) -> None:
+        """Move an item to a specific index in the set.
+
+        Parameters
+        ----------
+        item : Any
+            The item to move.
+        index : int, optional
+            The index to move the item to.  If this is negative, it will be
+            translated to a positive index by counting backwards from the end
+            of the set.  The default is ``0``, which moves the item to the
+            beginning of the set.
+
+        Raises
+        ------
+        KeyError
+            If the item is not contained in the set.
+        IndexError
+            If the index is out of bounds.
+
+        Notes
+        -----
+        Moves are O(1) for either end of the set, and scale up to O(n)
+        towards the middle of the list.
+        """
+        raise NotImplementedError()
+
+    def move_relative(self, item: object, sentinel: object, offset: int = 1) -> None:
+        """Move an item to the right of a given sentinel value.
+
+        Parameters
+        ----------
+        item : Any
+            The item to move.
+        sentinel : Any
+            The value to move the item after.
+        steps : int, optional
+            The number of steps to move the item.  If this is positive, the
+            item will be moved to the right.  If it is negative, the item will
+            be moved to the left.  The default is to move 1 index to the right
+            of the sentinel.
+
+        Raises
+        ------
+        KeyError
+            If either the item or the sentinel is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.move :
+            Move an item to a specific index in the set.
+        LinkedSet.moveleft :
+            Move an item to the left by the specified number of steps.
+        LinkedSet.moveright :
+            Move an item to the right by the specified number of steps.
+        LinkedSet.movebefore :
+            Move an item relative to a given sentinel value.
+
+        Notes
+        -----
+        Moves are O(steps).
+
+        Calling this method with negative steps is equivalent to calling
+        :meth:`movebefore() <LinkedSet.movebefore>` with ``steps=-steps``.
+        """
+        raise NotImplementedError()
+
+    def insert_relative(self, item: object, sentinel: object, offset: int = 1) -> None:
+        """Insert an item relative to a given sentinel value.
+
+        Parameters
+        ----------
+        sentinel : Any
+            The value to begin counting from.
+        item : Any
+            The item to add to the set.
+        offset : int, optional
+            An offset from the sentinel value.  If this is positive, this
+            method will count to the right the specified number of spaces from
+            the sentinel and insert the item at that index.  Negative values
+            count to the left.  0 is invalid.  The default is ``1``.
+
+        Raises
+        ------
+        KeyError
+            If the sentinel is not contained in the set.
+        TypeError
+            If the value is not hashable.
+        ValueError
+            If the value is already contained in the set or if the offset is
+            zero.
+
+        See Also
+        --------
+        LinkedSet.insert :
+            Insert an item at the specified index.
+
+        Notes
+        -----
+        Relative inserts are O(offset) thanks to the internal hash map.
+
+        This method is significantly faster than an :meth:`index() <LinkedSet.index>`
+        lookup followed by an :meth:`insert() <LinkedSet.insert>` call, which
+        would be O(2n) on average.
+        """
+        # dispatch to insert.h
+        self.view.insert_relative(
+            <PyObject*>sentinel,
+            <PyObject*>item,
+            <ssize_t>offset
+        )
+
+    def extend_relative(
+        self,
+        items: Iterable[object],
+        sentinel: object,
+        offset: int = 1
+        reverse: bool = False
+    ) -> None:
+        """Insert a sequence of items relative to a given sentinel value.
+
+        Parameters
+        ----------
+        sentinel : PyObject*
+            The value after which to insert the new values.
+        other : Iterable[Hashable]
+            The values to insert into the set.
+
+        Raises
+        ------
+        KeyError
+            If the sentinel is not contained in the set.
+        TypeError
+            If any values are not hashable.
+        ValueError
+            If any values are already contained in the set.
+
+        See Also
+        --------
+        LinkedSet.extend :
+            Add a sequence of items to the end of the set.
+
+        Notes
+        -----
+        Thanks to the internal hash map, relative extends are O(offset + m),
+        where `m` is the length of ``other``.
+
+        This method is significantly faster than an :meth:`index() <LinkedSet.index>`
+        lookup followed by a slice assignment, which would be O(2n + m) on
+        average.
+        """
+        # dispatch to extend.h
+        self.view.extend_relative(
+            <PyObject*>sentinel,
+            <PyObject*>items,
+            <Py_ssize_t>offset,
+            <bint>reverse
+        )
+
+    def remove_relative(self, sentinel: object, offset: int = 1) -> None:
+        raise NotImplementedError()
+
+    def discard_relative(self, sentinel: object, offset: int = 1) -> None:
+        """Remove an item from the set, relative to a given sentinel value.
+
+        Parameters
+        ----------
+        sentinel : Any
+            The value to remove the item after.
+        steps : int, optional
+            An offset from the sentinel value.  If this is positive, this
+            method will count to the right the specified number of spaces from
+            the sentinel and remove the item at that index.  Negative values
+            count to the left.  The default is ``1``.
+
+        Raises
+        ------
+        ValueError
+            If either the item or the sentinel is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.remove :
+            Remove an item from the set.
+        LinkedSet.removebefore :
+            Remove an item from the set relative to a given sentinel value.
+
+        Notes
+        -----
+        Removals are O(steps).
+        """
+        # dispatch to remove.h
+        self.view.discardafter(<PyObject*>sentinel, <PyObject*>item, <ssize_t>steps)
+
+    def pop_relative(self, sentinel: object, offset: int = 1) -> None:
+        """Remove an item from the set relative to a given sentinel and return
+        its value.
+
+        Parameters
+        ----------
+        sentinel : Any
+            The value to remove after.
+        steps : int, optional
+            An offset from the sentinel value.  If this is positive, this
+            method will count to the right the specified number of spaces from
+            the sentinel and pop the item at that index.  Negative values
+            count to the left.  The default is ``1``.
+
+        Raises
+        ------
+        ValueError
+            If the sentinel is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.pop :
+            Remove and return the item at the specified index.
+        LinkedSet.popleft :
+            Remove and return the first item in the set.
+        LinkedSet.popright :
+            Remove and return the last item in the set.
+        LinkedSet.popbefore :
+            Remove an item from the set relative to a given sentinel value.
+
+        Notes
+        -----
+        Pops are O(steps).
+        """
+        raise NotImplementedError()
+
+    def clear_relative(
+        self,
+        sentinel: object,
+        offset: int = 1,
+        length: int = -1
+    ) -> None:
+        """Remove multiple items after a given sentinel value.
+
+        Parameters
+        ----------
+        sentinel : Any
+            The value to remove items after.
+        length : int, optional
+            The number of items to remove.  If this is negative, then every
+            value after the sentinel will be removed, making it the new tail.
+
+        Raises
+        ------
+        ValueError
+            If the sentinel is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.clear :
+            Remove all items from the set.
+        LinkedSet.clearbefore :
+            Remove all items before a given sentinel value.
+
+        Notes
+        -----
+        Clearing is O(length).
+        """
+        raise NotImplementedError()
+
     #############################
     ####    SET INTERFACE    ####
     #############################
@@ -1114,537 +1446,6 @@ cdef class LinkedSet:
         return self.view.contains(<PyObject*>item)
 
     ###################################
-    ####    RELATIVE OPERATIONS    ####
-    ###################################
-
-    # NOTE: one thing linked sets are especially good at is inserting, removing
-    # and reordering items relative to one another.  Since the set has O(1)
-    # access to each node, these operations can often be done in constant time
-    # anywhere in the set, which is not possible with LinkedLists or standard
-    # Python sets.
-
-    def insertafter(self, sentinel: object, item: object, steps: int = 1) -> None:
-        """Insert an item after a given sentinel value.
-
-        Parameters
-        ----------
-        sentinel : Any
-            The value to insert the item after.
-        item : Any
-            The item to add to the set.
-        steps : int, optional
-            An offset from the sentinel value.  If this is positive, this
-            method will count to the right the specified number of spaces from
-            the sentinel and insert the item at that index.  Negative values
-            count to the left.  The default is ``1``.
-
-        Raises
-        ------
-        ValueError
-            If the sentinel is not contained in the set.
-
-        See Also
-        --------
-        LinkedSet.insert :
-            Insert an item at the specified index.
-        LinkedSet.insertbefore :
-            Insert an item relative to a given sentinel value.
-
-        Notes
-        -----
-        Inserts are O(steps).
-
-        Calling this method with negative steps is equivalent to calling
-        :meth:`insertbefore() <LinkedSet.insertbefore>` with ``steps=-steps``.
-        """
-        raise NotImplementedError()
-
-    def insertbefore(self, sentinel: object, item: object, steps: int = 1) -> None:
-        """Insert an item before a given sentinel value.
-
-        Parameters
-        ----------
-        sentinel : Any
-            The value to insert the item before.
-        item : Any
-            The item to add to the list.
-        steps : int, optional
-            An offset from the sentinel value.  If this is positive, this
-            method will count to the left the specified number of spaces from
-            the sentinel and insert the item at that index.  Negative values
-            count to the right.  The default is ``1``.
-
-        Raises
-        ------
-        ValueError
-            If the sentinel is not contained in the set.
-
-        See Also
-        --------
-        LinkedSet.insert :
-            Insert an item at the specified index.
-        LinkedSet.insertafter :
-            Insert an item relative to a given sentinel value.
-
-        Notes
-        -----
-        Inserts are O(steps).
-
-        Calling this method with negative steps is equivalent to calling
-        :meth:`insertafter() <LinkedSet.insertafter>` with ``steps=-steps``.
-        """
-        # NOTE: call the same C++ method as insertafter, but with a negative
-        # offset.
-        raise NotImplementedError()
-
-    def extendafter(self, sentinel: object, items: Iterable[object]) -> None:
-        """Add multiple items after a given sentinel value.
-
-        Parameters
-        ----------
-        items : Iterable[Any]
-            An iterable of items to add to the set.
-
-        See Also
-        --------
-        LinkedSet.extend :
-            Add multiple items to the end of the set.
-        LinkedSet.extendleft :
-            Add multiple items to the beginning of the set.
-        LinkedSet.extendbefore :
-            Add multiple items before a given sentinel value.
-
-        Notes
-        -----
-        Extends are O(m), where `m` is the length of ``items``.
-        """
-        raise NotImplementedError()
-
-    def extendbefore(self, sentinel: object, items: Iterable[object]) -> None:
-        """Add multiple items before a given sentinel value.
-
-        Parameters
-        ----------
-        items : Iterable[Any]
-            An iterable of items to add to the set.
-
-        See Also
-        --------
-        LinkedSet.extend :
-            Add multiple items to the end of the set.
-        LinkedSet.extendleft :
-            Add multiple items to the beginning of the set.
-        LinkedSet.extendafter :
-            Add multiple items after a given sentinel value.
-
-        Notes
-        -----
-        Extends are O(m), where `m` is the length of ``items``.
-
-        Just like :meth:`extendleft() <LinkedSet.extendleft>`, this method
-        implicitly reverses the order of elements in ``items``.
-        """
-        raise NotImplementedError()
-
-    def discardafter(self, sentinel: object, item: object, steps: int = 1) -> None:
-        """Remove an item from the set, relative to a given sentinel value.
-
-        Parameters
-        ----------
-        item : Any
-            The item to remove from the set.
-        sentinel : Any
-            The value to remove the item after.
-        steps : int, optional
-            An offset from the sentinel value.  If this is positive, this
-            method will count to the right the specified number of spaces from
-            the sentinel and remove the item at that index.  Negative values
-            count to the left.  The default is ``1``.
-
-        Raises
-        ------
-        ValueError
-            If either the item or the sentinel is not contained in the set.
-
-        See Also
-        --------
-        LinkedSet.remove :
-            Remove an item from the set.
-        LinkedSet.removebefore :
-            Remove an item from the set relative to a given sentinel value.
-
-        Notes
-        -----
-        Removals are O(steps).
-        """
-        raise NotImplementedError()
-
-    def discardbefore(self, sentinel: object, item: object, steps: int = 1) -> None:
-        """Remove an item from the set, relative to a given sentinel value.
-
-        Parameters
-        ----------
-        item : Any
-            The item to remove from the set.
-        sentinel : Any
-            The value to remove the item before.
-        steps : int, optional
-            An offset from the sentinel value.  If this is positive, this
-            method will count to the left the specified number of spaces from
-            the sentinel and remove the item at that index.  Negative values
-            count to the right.  The default is ``1``.
-
-        Raises
-        ------
-        ValueError
-            If either the item or the sentinel is not contained in the set.
-
-        See Also
-        --------
-        LinkedSet.remove :
-            Remove an item from the set.
-        LinkedSet.removeafter :
-            Remove an item from the set relative to a given sentinel value.
-
-        Notes
-        -----
-        Removals are O(steps).
-        """
-        raise NotImplementedError()
-
-    def popafter(self, sentinel: object, steps: int = 1) -> None:
-        """Remove an item from the set relative to a given sentinel and return
-        its value.
-
-        Parameters
-        ----------
-        sentinel : Any
-            The value to remove after.
-        steps : int, optional
-            An offset from the sentinel value.  If this is positive, this
-            method will count to the right the specified number of spaces from
-            the sentinel and pop the item at that index.  Negative values
-            count to the left.  The default is ``1``.
-
-        Raises
-        ------
-        ValueError
-            If the sentinel is not contained in the set.
-
-        See Also
-        --------
-        LinkedSet.pop :
-            Remove and return the item at the specified index.
-        LinkedSet.popleft :
-            Remove and return the first item in the set.
-        LinkedSet.popright :
-            Remove and return the last item in the set.
-        LinkedSet.popbefore :
-            Remove an item from the set relative to a given sentinel value.
-
-        Notes
-        -----
-        Pops are O(steps).
-        """
-        raise NotImplementedError()
-
-    def popbefore(self, sentinel: object, steps: int = 1) -> None:
-        """Remove an item from the set relative to a given sentinel and return
-        its value.
-
-        Parameters
-        ----------
-        sentinel : Any
-            The value to remove before.
-        steps : int, optional
-            An offset from the sentinel value.  If this is positive, this
-            method will count to the left the specified number of spaces from
-            the sentinel and pop the item at that index.  Negative values
-            count to the right.  The default is ``1``.
-
-        Raises
-        ------
-        ValueError
-            If the sentinel is not contained in the set.
-
-        See Also
-        --------
-        LinkedSet.pop :
-            Remove and return the item at the specified index.
-        LinkedSet.popleft :
-            Remove and return the first item in the set.
-        LinkedSet.popright :
-            Remove and return the last item in the set.
-        LinkedSet.popafter :
-            Remove an item from the set relative to a given sentinel value.
-
-        Notes
-        -----
-        Pops are O(steps).
-        """
-        raise NotImplementedError()
-
-    def clearafter(self, sentinel: object, length: int = -1):
-        """Remove multiple items after a given sentinel value.
-
-        Parameters
-        ----------
-        sentinel : Any
-            The value to remove items after.
-        length : int, optional
-            The number of items to remove.  If this is negative, then every
-            value after the sentinel will be removed, making it the new tail.
-
-        Raises
-        ------
-        ValueError
-            If the sentinel is not contained in the set.
-
-        See Also
-        --------
-        LinkedSet.clear :
-            Remove all items from the set.
-        LinkedSet.clearbefore :
-            Remove all items before a given sentinel value.
-
-        Notes
-        -----
-        Clearing is O(length).
-        """
-        raise NotImplementedError()
-
-    def clearbefore(self, sentinel: object, length: int = -1):
-        """Remove multiple items before a given sentinel value.
-
-        Parameters
-        ----------
-        sentinel : Any
-            The value to remove items before.
-        length : int, optional
-            The number of items to remove.  If this is negative, then every
-            value before the sentinel will be removed, making it the new head.
-
-        Raises
-        ------
-        ValueError
-            If the sentinel is not contained in the set.
-
-        See Also
-        --------
-        LinkedSet.clear :
-            Remove all items from the set.
-        LinkedSet.clearafter :
-            Remove all items after a given sentinel value.
-
-        Notes
-        -----
-        Clearing is O(length).
-        """
-        raise NotImplementedError()
-
-    def move(self, item: object, index: int = 0):
-        """Move an item to a specific index in the set.
-
-        Parameters
-        ----------
-        item : Any
-            The item to move.
-        index : int, optional
-            The index to move the item to.  If this is negative, it will be
-            translated to a positive index by counting backwards from the end
-            of the set.  The default is ``0``, which moves the item to the
-            beginning of the set.
-
-        Raises
-        ------
-        KeyError
-            If the item is not contained in the set.
-        IndexError
-            If the index is out of bounds.
-
-        Notes
-        -----
-        Moves are O(1) for either end of the set, and scale up to O(n)
-        towards the middle of the list.
-        """
-        raise NotImplementedError()
-
-    def moveright(self, item: object, steps: int = 1):
-        """Move an item to the right by the specified number of steps.
-
-        Parameters
-        ----------
-        item : Any
-            The item to move.
-        steps : int, optional
-            The number of steps to move the item.  If this is positive, the
-            item will be moved to the right.  If it is negative, the item will
-            be moved to the left.  The default is to move 1 index to the right.
-
-        Raises
-        ------
-        KeyError
-            If the item is not contained in the set.
-
-        See Also
-        --------
-        LinkedSet.move :
-            Move an item to a specific index in the set.
-        LinkedSet.moveleft :
-            Move an item to the left by the specified number of steps.
-        LinkedSet.moveafter :
-            Move an item relative to a given sentinel value.
-        LinkedSet.movebefore :
-            Move an item relative to a given sentinel value.
-
-        Notes
-        -----
-        Moves are O(steps).
-
-        Calling this method with negative steps is equivalent to calling
-        :meth:`moveleft() <LinkedSet.moveleft>` with ``steps=-steps``.
-        """
-        raise NotImplementedError()
-
-    def moveleft(self, item: object, steps: int = 1):
-        """Move an item to the left by the specified number of steps.
-
-        Parameters
-        ----------
-        item : Any
-            The item to move.
-        steps : int, optional
-            The number of steps to move the item.  If this is positive, the
-            item will be moved to the left.  If it is negative, the item will
-            be moved to the right.  The default is to move 1 index to the left.
-
-        Raises
-        ------
-        KeyError
-            If the item is not contained in the set.
-
-        See Also
-        --------
-        LinkedSet.move :
-            Move an item to a specific index in the set.
-        LinkedSet.moveright :
-            Move an item to the right by the specified number of steps.
-        LinkedSet.moveafter :
-            Move an item relative to a given sentinel value.
-        LinkedSet.movebefore :
-            Move an item relative to a given sentinel value.
-
-        Notes
-        -----
-        Moves are O(steps).
-
-        Calling this method with negative steps is equivalent to calling
-        :meth:`moveright() <LinkedSet.moveright>` with ``steps=-steps``.
-        """
-        raise NotImplementedError()
-
-    def moveafter(self, item: object, sentinel: object, steps: int = 1):
-        """Move an item to the right of a given sentinel value.
-
-        Parameters
-        ----------
-        item : Any
-            The item to move.
-        sentinel : Any
-            The value to move the item after.
-        steps : int, optional
-            The number of steps to move the item.  If this is positive, the
-            item will be moved to the right.  If it is negative, the item will
-            be moved to the left.  The default is to move 1 index to the right
-            of the sentinel.
-
-        Raises
-        ------
-        KeyError
-            If either the item or the sentinel is not contained in the set.
-
-        See Also
-        --------
-        LinkedSet.move :
-            Move an item to a specific index in the set.
-        LinkedSet.moveleft :
-            Move an item to the left by the specified number of steps.
-        LinkedSet.moveright :
-            Move an item to the right by the specified number of steps.
-        LinkedSet.movebefore :
-            Move an item relative to a given sentinel value.
-
-        Notes
-        -----
-        Moves are O(steps).
-
-        Calling this method with negative steps is equivalent to calling
-        :meth:`movebefore() <LinkedSet.movebefore>` with ``steps=-steps``.
-        """
-        raise NotImplementedError()
-
-    def movebefore(self, item: object, sentinel: object, steps: int = 1):
-        """Move an item to the left of a given sentinel value.
-
-        Parameters
-        ----------
-        item : Any
-            The item to move.
-        sentinel : Any
-            The value to move the item before.
-        steps : int, optional
-            The number of steps to move the item.  If this is positive, the
-            item will be moved to the right.  If it is negative, the item will
-            be moved to the left.  The default is to move 1 index to the left
-            of the sentinel.
-
-        Raises
-        ------
-        KeyError
-            If either the item or the sentinel is not contained in the set.
-
-        See Also
-        --------
-        LinkedSet.move :
-            Move an item to a specific index in the set.
-        LinkedSet.moveleft :
-            Move an item to the left by the specified number of steps.
-        LinkedSet.moveright :
-            Move an item to the right by the specified number of steps.
-        LinkedSet.moveafter :
-            Move an item relative to a given sentinel value.
-
-        Notes
-        -----
-        Moves are O(steps).
-
-        Calling this method with negative steps is equivalent to calling
-        :meth:`moveafter() <LinkedSet.moveafter>` with ``steps=-steps``.
-        """
-        raise NotImplementedError()
-
-    def swap(self, item1: object, item2: object) -> None:
-        """Swap the positions of two items in the set.
-
-        Parameters
-        ----------
-        item1 : Any
-            The first item to swap.
-        item2 : Any
-            The second item to swap.
-
-        Raises
-        ------
-        KeyError
-            If either item is not contained in the set.
-
-        Notes
-        -----
-        Swaps are O(1).
-        """
-        raise NotImplementedError()
-
-    ###################################
     ####    TYPE SPECIALIZATION    ####
     ###################################
 
@@ -1951,195 +1752,6 @@ cdef class DoublyLinkedSet(LinkedSet):
     :class:`LinkedList`.
     """
 
-    cdef void _insertafter(self, PyObject* sentinel, PyObject* item):
-        """Insert an item immediately after the specified sentinel.
-
-        Parameters
-        ----------
-        sentinel : PyObject*
-            The value after which to insert the new value.
-        item : PyObject*
-            The value to insert into the list.
-
-        Raises
-        ------
-        KeyError
-            If the sentinel is not contained in the list.
-        TypeError
-            If the value is not hashable.
-        ValueError
-            If the value is already contained in the list.
-        """
-        # look up sentinel node
-        cdef HashNode* curr = self.table.search(sentinel)
-        if curr is NULL:
-            raise KeyError(
-                f"{repr(<object>sentinel)} is not contained in the list"
-            )
-
-        # allocate new node
-        cdef HashNode* node = allocate_hash_node(item)
-
-        # add node to hash table
-        try:
-            self.table.remember(node)
-        except ValueError:  # node is not unique
-            free_node(node)
-            raise
-
-        # insert node after sentinel
-        self._link_node(curr, node, curr.next)
-
-    cdef void _insertbefore(self, PyObject* sentinel, PyObject* item):
-        """Insert an item immediately before the specified sentinel.
-
-        Parameters
-        ----------
-        sentinel : PyObject*
-            The value before which to insert the new value.
-        item : PyObject*
-            The value to insert into the list.
-
-        Raises
-        ------
-        KeyError
-            If the sentinel is not contained in the list.
-        TypeError
-            If the value is not hashable.
-        ValueError
-            If the value is already contained in the list.
-        """
-        # look up sentinel node
-        cdef HashNode* curr = self.table.search(sentinel)
-        if curr is NULL:
-            raise KeyError(
-                f"{repr(<object>sentinel)} is not contained in the list"
-            )
-
-        # allocate new node
-        cdef HashNode* node = allocate_hash_node(item)
-
-        # add node to hash table
-        try:
-            self.table.remember(node)
-        except ValueError:  # node is not unique
-            free_node(node)
-            raise
-
-        # insert node before sentinel
-        self._link_node(curr.prev, node, curr)
-
-    cdef void _extendafter(self, PyObject* sentinel, PyObject* other):
-        """Insert a sequence of items immediately after the specified sentinel.
-
-        Parameters
-        ----------
-        sentinel : PyObject*
-            The value after which to insert the new values.
-        other : Iterable[Hashable]
-            The values to insert into the list.
-
-        Raises
-        ------
-        KeyError
-            If the sentinel is not contained in the list.
-        TypeError
-            If any values are not hashable.
-        ValueError
-            If any values are already contained in the list.
-        """
-        # look up sentinel node
-        cdef HashNode* curr = self.table.search(sentinel)
-        if curr is NULL:
-            raise KeyError(
-                f"{repr(<object>sentinel)} is not contained in the list"
-            )
-
-        cdef HashNode* staged_head
-        cdef HashNode* staged_tail
-        cdef size_t count
-
-        # NOTE: we stage the items in a temporary list to ensure we don't
-        # modify the original if we encounter any errors
-        staged_head, staged_tail, count = self._stage_nodes(other, False)
-        if staged_head is NULL:
-            return
-
-        # insert staged immediately after sentinel
-        self.size += count
-        if curr.next is NULL:
-            curr.next = staged_head
-            staged_head.prev = curr
-            self.tail = staged_tail
-        else:
-            curr.next.prev = staged_tail
-            staged_tail.next = curr.next
-            curr.next = staged_head
-            staged_head.prev = curr
-
-        # add staged nodes to hash table
-        while True:
-            self.table.remember(staged_head)
-            if staged_head is staged_tail:
-                break
-            staged_head = staged_head.next
-
-    cdef void _extendbefore(self, PyObject* sentinel, PyObject* other):
-        """Insert a sequence of items immediately before the specified sentinel.
-
-        Parameters
-        ----------
-        sentinel : PyObject*
-            The value before which to insert the new values.
-        other : Iterable[Hashable]
-            The values to insert into the list.  Note that this method
-            implicitly reverses the order of the elements.
-
-        Raises
-        ------
-        KeyError
-            If the sentinel is not contained in the list.
-        TypeError
-            If any values are not hashable.
-        ValueError
-            If any values are already contained in the list.
-        """
-        # look up sentinel node
-        cdef HashNode* curr = self.table.search(sentinel)
-        if curr is NULL:
-            raise KeyError(
-                f"{repr(<object>sentinel)} is not contained in the list"
-            )
-
-        cdef HashNode* staged_head
-        cdef HashNode* staged_tail
-        cdef size_t count
-
-        # NOTE: we stage the items in a temporary list to ensure we don't
-        # modify the original if we encounter any errors
-        staged_head, staged_tail, count = self._stage_nodes(other, True)
-        if staged_head is NULL:
-            return
-
-        # insert staged immediately before sentinel
-        self.size += count
-        if curr.prev is NULL:
-            curr.prev = staged_tail
-            staged_tail.next = curr
-            self.head = staged_head
-        else:
-            curr.prev.next = staged_head
-            staged_head.prev = curr.prev
-            curr.prev = staged_tail
-            staged_tail.next = curr
-
-        # add staged nodes to hash table
-        while True:
-            self.table.remember(staged_head)
-            if staged_head is staged_tail:
-                break
-            staged_head = staged_head.next
-
     cdef void _move(self, PyObject* item, long index):
         """Move a specified value to a particular index.
 
@@ -2351,129 +1963,6 @@ cdef class DoublyLinkedSet(LinkedSet):
     ##################################
     ####    ADDITIONAL METHODS    ####
     ##################################
-
-    # removebefore/removeafter?
-    # clearbefore/clearafter?
-    # popbefore/popafter?
-
-    def insertafter(self, sentinel: object, item: object) -> None:
-        """Insert an item immediately after the specified sentinel.
-
-        Parameters
-        ----------
-        sentinel : object
-            The value after which to insert the new value.
-        item : object
-            The value to insert into the list.
-
-        Raises
-        ------
-        KeyError
-            If the sentinel is not contained in the list.
-        TypeError
-            If the value is not hashable.
-        ValueError
-            If the value is already contained in the list.
-
-        Notes
-        -----
-        Value-based inserts are O(1) thanks to the internal item map.
-
-        This method is significantly faster than an :meth:`index() <HashedList.index>`
-        lookup followed by an :meth:`insert() <HashedList.insert>` call, which
-        would be O(2n) on average.
-        """
-        self._insertafter(<PyObject*>sentinel, <PyObject*>item)
-
-    def insertbefore(self, sentinel: object, item: object) -> None:
-        """Insert an item immediately before the specified sentinel.
-
-        Parameters
-        ----------
-        sentinel : PyObject*
-            The value before which to insert the new value.
-        item : PyObject*
-            The value to insert into the list.
-
-        Raises
-        ------
-        KeyError
-            If the sentinel is not contained in the list.
-        TypeError
-            If the value is not hashable.
-        ValueError
-            If the value is already contained in the list.
-
-        Notes
-        -----
-        Value-based inserts are O(1) thanks to the internal item map.
-
-        This method is significantly faster than an :meth:`index() <HashedList.index>`
-        lookup followed by an :meth:`insert() <HashedList.insert>` call, which
-        would be O(2n) on average.
-        """
-        self._insertbefore(<PyObject*>sentinel, <PyObject*>item)
-
-    def extendafter(self, sentinel: object, other: Iterable[Hashable]) -> None:
-        """Insert a sequence of items immediately after the specified sentinel.
-
-        Parameters
-        ----------
-        sentinel : PyObject*
-            The value after which to insert the new values.
-        other : Iterable[Hashable]
-            The values to insert into the list.
-
-        Raises
-        ------
-        KeyError
-            If the sentinel is not contained in the list.
-        TypeError
-            If any values are not hashable.
-        ValueError
-            If any values are already contained in the list.
-
-        Notes
-        -----
-        Thanks to the internal item map, value-based inserts are O(m), where
-        `m` is the length of ``other``.
-
-        This method is significantly faster than an :meth:`index() <HashedList.index>`
-        lookup followed by a slice assignment, which would be O(2n + m) on
-        average.
-        """
-        self._extendafter(<PyObject*>sentinel, <PyObject*>other)
-
-    def extendbefore(self, sentinel: object, item: object):
-        """Insert a sequence of items immediately before the specified sentinel.
-
-        Parameters
-        ----------
-        sentinel : PyObject*
-            The value before which to insert the new values.
-        other : Iterable[Hashable]
-            The values to insert into the list.  Note that this method
-            implicitly reverses the order of the elements.
-
-        Raises
-        ------
-        KeyError
-            If the sentinel is not contained in the list.
-        TypeError
-            If any values are not hashable.
-        ValueError
-            If any values are already contained in the list.
-
-        Notes
-        -----
-        Thanks to the internal item map, value-based inserts are O(m), where
-        `m` is the length of ``other``.
-
-        This method is significantly faster than an :meth:`index() <HashedList.index>`
-        lookup followed by a slice assignment, which would be O(2n + m) on
-        average.
-        """
-        self._extendbefore(<PyObject*>sentinel, <PyObject*>item)
 
     def __mul__(self, repeat: int) -> "HashedList":
         """Repeat the list a specified number of times.

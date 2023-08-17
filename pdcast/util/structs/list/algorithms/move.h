@@ -1,9 +1,9 @@
 // include guard prevents multiple inclusion
-#ifndef MOVE_H
-#define MOVE_H
+#ifndef BERTRAND_STRUCTS_ALGORITHMS_MOVE_H
+#define BERTRAND_STRUCTS_ALGORITHMS_MOVE_H
 
 
 
 
 
-#endif // MOVE_H include guard
+#endif // BERTRAND_STRUCTS_ALGORITHMS_MOVE_H include guard

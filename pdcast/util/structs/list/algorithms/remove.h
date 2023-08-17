@@ -53,7 +53,7 @@ namespace Ops {
         view->recycle(curr);
     }
 
-    /* Remove the first occurrence of an item within a list. */
+    /* Remove the first occurrence of an item from a linked list. */
     template <typename NodeType, template <typename> class Allocator>
     void remove(ListView<NodeType, Allocator>* view, PyObject* item) {
         using Node = typename ListView<NodeType, Allocator>::Node;
@@ -120,8 +120,8 @@ namespace Ops {
         view->recycle(curr);
     }
 
-    /* Remove an item from a set or dictionary immediately after the specified
-    sentinel value. */
+    /* Remove an item from a linked set or dictionary immediately after the
+    specified sentinel value. */
     template <
         template <typename, template <typename> class> class ViewType,
         typename NodeType,
@@ -142,8 +142,8 @@ namespace Ops {
         view->recycle(curr);
     }
 
-    /* Remove an item from a singly-linked set immediately before the specified sentinel
-    value. */
+    /* Remove an item from a linked set or dictionary immediately before the
+    specified sentinel value. */
     template <
         template <typename, template <typename> class> class ViewType,
         typename NodeType,

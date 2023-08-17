@@ -31,6 +31,15 @@
 #include "core/view.h"  // Views
 
 
+// TODO: if we expand the variant to include sets and dictionaries, we can have
+// VariantSet and VariantDict inherit from VariantList and VariantSet, respectively.
+// This means we don't have to reimplement the base class's interface.
+
+
+// TODO: we can probably carry this up to the Cython level and reduce duplication
+// of documentation.
+
+
 ///////////////////////
 ////    PRIVATE    ////
 ///////////////////////
@@ -38,13 +47,26 @@
 
 /* Using a `std::variant` allows us to expose only a single Cython wrapper for
 all linked lists. */
-using VariantListView = std::variant<
+using VariantView = std::variant<
     ListView<SingleNode, DirectAllocator>,
     ListView<SingleNode, FreeListAllocator>,
     ListView<SingleNode, PreAllocator>,
     ListView<DoubleNode, DirectAllocator>,
     ListView<DoubleNode, FreeListAllocator>,
-    ListView<DoubleNode, PreAllocator>
+    ListView<DoubleNode, PreAllocator>,
+    ListView<Hashed<DoubleNode>, DirectAllocator>,
+    SetView<SingleNode, DirectAllocator>,
+    SetView<SingleNode, FreeListAllocator>,
+    SetView<SingleNode, PreAllocator>,
+    SetView<DoubleNode, DirectAllocator>,
+    SetView<DoubleNode, FreeListAllocator>,
+    SetView<DoubleNode, PreAllocator>
+    // DictView<SingleNode, DirectAllocator>,
+    // DictView<SingleNode, FreeListAllocator>,
+    // DictView<SingleNode, PreAllocator>,
+    // DictView<DoubleNode, DirectAllocator>,
+    // DictView<DoubleNode, FreeListAllocator>,
+    // DictView<DoubleNode, PreAllocator>
 >;
 
 
@@ -68,30 +90,33 @@ of templated `ListView` types. */
 class VariantList {
 public:
 
-    /* Construct a new VariantList from an existing ListView.  This is called
-    to construct a new `VariantList` from the output of `ListView.copy()` or
-    `get_slice()`. */
-    template <typename NodeType, template <typename> class Allocator>
-    VariantList(ListView<NodeType, Allocator>&& view) {
-        using Node = typename ListView<NodeType, Allocator>::Node;
+    /* Construct a new VariantList from an existing view.  This is called to
+    construct a new `VariantList` from the output of `view.copy()` or `get_slice()`. */
+    template <
+        template <typename, template <typename> class> class ViewType,
+        typename NodeType,
+        template <typename> class Allocator
+    >
+    VariantList(ViewType<NodeType, Allocator>&& view) {
+        using Node = typename ViewType<NodeType, Allocator>::Node;
         _doubly_linked = is_doubly_linked<Node>::value;
-        view_variant = std::move(view);
+        variant = std::move(view);
     }
 
-    /* Construct an empty ListView to match the given template parameters and
-    wrap it as a VariantList. This is called during `LinkedList.__init__()`. */
+    /* Construct an empty ListView to match the given template parameters.  This
+    is called to construct a LinkedList from an initializer sequence. */
     VariantList(bool doubly_linked, ssize_t max_size) : _doubly_linked(doubly_linked) {
         if (doubly_linked) {
             if (max_size < 0) {
-                view_variant = ListView<DoubleNode, FreeListAllocator>(max_size);
+                variant = ListView<DoubleNode, FreeListAllocator>(max_size);
             } else {
-                view_variant = ListView<DoubleNode, PreAllocator>(max_size);
+                variant = ListView<DoubleNode, PreAllocator>(max_size);
             }
         } else {
             if (max_size < 0) {
-                view_variant = ListView<SingleNode, FreeListAllocator>(max_size);
+                variant = ListView<SingleNode, FreeListAllocator>(max_size);
             } else {
-                view_variant = ListView<SingleNode, PreAllocator>(max_size);
+                variant = ListView<SingleNode, PreAllocator>(max_size);
             }
         }
     }
@@ -107,21 +132,21 @@ public:
     ) : _doubly_linked(doubly_linked) {
         if (doubly_linked) {
             if (max_size < 0) {
-                view_variant = ListView<DoubleNode, FreeListAllocator>(
+                variant = ListView<DoubleNode, FreeListAllocator>(
                     iterable, reverse, max_size, spec
                 );
             } else {
-                view_variant = ListView<DoubleNode, PreAllocator>(
+                variant = ListView<DoubleNode, PreAllocator>(
                     iterable, reverse, max_size, spec
                 );
             }
         } else {
             if (max_size < 0) {
-                view_variant = ListView<SingleNode, FreeListAllocator>(
+                variant = ListView<SingleNode, FreeListAllocator>(
                     iterable, reverse, max_size, spec
                 );
             } else {
-                view_variant = ListView<SingleNode, PreAllocator>(
+                variant = ListView<SingleNode, PreAllocator>(
                     iterable, reverse, max_size, spec
                 );
             }
@@ -138,7 +163,7 @@ public:
             [&](auto& view) {
                 Ops::append(&view, item, left);
             },
-            view_variant
+            variant
         );
     }
 
@@ -151,7 +176,7 @@ public:
                 size_t norm_index = normalize_index(index, view.size, true);
                 Ops::insert(&view, norm_index, item);
             },
-            view_variant
+            variant
         );
     }
 
@@ -161,7 +186,7 @@ public:
             [&](auto& view) {
                 Ops::extend(&view, items, left);
             },
-            view_variant
+            variant
         );
     }
 
@@ -176,7 +201,7 @@ public:
                 );
                 return Ops::index(&view, item, bounds.first, bounds.second);
             },
-            view_variant
+            variant
         );
     }
 
@@ -191,7 +216,7 @@ public:
                 );
                 return Ops::count(&view, item, bounds.first, bounds.second);
             },
-            view_variant
+            variant
         );
     }
 
@@ -201,7 +226,7 @@ public:
             [&](auto& view) {
                 Ops::remove(&view, item);
             },
-            view_variant
+            variant
         );
     }
 
@@ -214,7 +239,7 @@ public:
                 size_t norm_index = normalize_index(index, view.size, false);
                 return Ops::pop(&view, norm_index);
             },
-            view_variant
+            variant
         );
     }
 
@@ -228,7 +253,7 @@ public:
                 }
                 return new VariantList(std::move(*copied));
             },
-            view_variant
+            variant
         );
     }
 
@@ -238,7 +263,7 @@ public:
             [&](auto& view) {
                 view.clear();
             },
-            view_variant
+            variant
         );
     }
 
@@ -248,7 +273,7 @@ public:
             [&](auto& view) {
                 Ops::sort(&view, key, reverse);
             },
-            view_variant
+            variant
         );
     }
 
@@ -258,7 +283,7 @@ public:
             [&](auto& view) {
                 Ops::reverse(&view);
             },
-            view_variant
+            variant
         );
     }
 
@@ -268,7 +293,7 @@ public:
             [&](auto& view) {
                 Ops::rotate(&view, steps);
             },
-            view_variant
+            variant
         );
     }
 
@@ -278,7 +303,7 @@ public:
             [&](auto& view) {
                 return view.get_specialization();
             },
-            view_variant
+            variant
         );
     }
 
@@ -288,7 +313,7 @@ public:
             [&](auto& view) {
                 view.specialize(spec);
             },
-            view_variant
+            variant
         );
     }
 
@@ -298,7 +323,7 @@ public:
             [&](auto& view) {
                 return view.nbytes();
             },
-            view_variant
+            variant
         );
     }
 
@@ -308,7 +333,7 @@ public:
             [&](auto& view) {
                 return view.size;
             },
-            view_variant
+            variant
         );
     }
 
@@ -321,7 +346,7 @@ public:
                 size_t norm_index = normalize_index(index, view.size, false);
                 return Ops::get_index(&view, norm_index);
             },
-            view_variant
+            variant
         );
     }
 
@@ -335,7 +360,7 @@ public:
                 }
                 return new VariantList(std::move(*slice));
             },
-            view_variant
+            variant
         );
     }
 
@@ -348,7 +373,7 @@ public:
                 size_t norm_index = normalize_index(index, view.size, false);
                 Ops::set_index(&view, norm_index, value);
             },
-            view_variant
+            variant
         );
     }
 
@@ -363,7 +388,7 @@ public:
             [&](auto& view) {
                 Ops::set_slice(&view, start, stop, step, items);
             },
-            view_variant
+            variant
         );
     }
 
@@ -376,7 +401,7 @@ public:
                 size_t norm_index = normalize_index(index, view.size, false);
                 Ops::delete_index(&view, norm_index);
             },
-            view_variant
+            variant
         );
     }
 
@@ -386,7 +411,7 @@ public:
             [&](auto& view) {
                 Ops::delete_slice(&view, start, stop, step);
             },
-            view_variant
+            variant
         );
     }
 
@@ -396,7 +421,7 @@ public:
             [&](auto& view) {
                 return Ops::contains(&view, item);
             },
-            view_variant
+            variant
         );
     }
 
@@ -422,7 +447,7 @@ public:
                     return static_cast<SingleNode*>(view.head);
                 }
             },
-            view_variant
+            variant
         );
     }
 
@@ -439,7 +464,7 @@ public:
                     return static_cast<SingleNode*>(view.tail);
                 }
             },
-            view_variant
+            variant
         );
     }
 
@@ -456,7 +481,7 @@ public:
                     throw std::runtime_error("List is not doubly-linked.");
                 }
             },
-            view_variant
+            variant
         );
     }
 
@@ -473,12 +498,12 @@ public:
                     throw std::runtime_error("List is not doubly-linked.");
                 }
             },
-            view_variant
+            variant
         );
     }
 
-private:
-    VariantListView view_variant;
+protected:
+    VariantView variant;
     bool _doubly_linked;
 };
 

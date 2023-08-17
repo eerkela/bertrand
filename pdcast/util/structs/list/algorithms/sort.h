@@ -23,7 +23,7 @@
 
 namespace Ops {
 
-    /* Sort a generic view in-place. */
+    /* Sort a linked set or dictionary in-place. */
     template <
         template <typename, template <typename> class> class ViewType,
         typename NodeType,
@@ -54,7 +54,7 @@ namespace Ops {
         delete list_view;
     }
 
-    /* Sort a ListView in-place. */
+    /* Sort a linked list in-place. */
     template <typename NodeType, template <typename> class Allocator>
     void sort(ListView<NodeType, Allocator>* view, PyObject* key_func, bool reverse) {
         using Node = typename ListView<NodeType, Allocator>::Node;

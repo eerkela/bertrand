@@ -4,7 +4,7 @@
 
 #include <queue>  // for std::queue
 #include <stdexcept>  // for std::invalid_argument
-#include <type_traits>  // for std::integer_constant, std::is_base_of
+#include <type_traits>  // for std::integral_constant, std::is_base_of_v
 #include <Python.h>  // for CPython API
 
 
@@ -462,7 +462,7 @@ has a `prev` pointer). */
 template <typename Node>
 struct is_doubly_linked : std::integral_constant<
     bool,
-    std::is_base_of<DoubleNode, Node>::value
+    std::is_base_of_v<DoubleNode, Node>
     // || std::is_base_of<OtherNode, Node>::value  // additional node types
 > {};
 
