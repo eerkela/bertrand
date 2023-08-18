@@ -17,8 +17,8 @@
 /* MAX_SIZE_T is used to signal errors in indexing operations where NULL would
 not be a valid return value, and 0 is likely to be valid output. */
 const size_t MAX_SIZE_T = std::numeric_limits<size_t>::max();
-const std::pair<size_t, size_t> MAX_SIZE_T_PAIR = (
-    std::make_pair(MAX_SIZE_T, MAX_SIZE_T)
+const std::pair<size_t, size_t> MAX_SIZE_T_PAIR = std::make_pair(
+    MAX_SIZE_T, MAX_SIZE_T
 );
 
 
@@ -285,7 +285,7 @@ std::pair<Node*, Node*> walk(
     // adjust steps to account for forward/backward traversal
     if (steps == 0) {
         PyErr_Format(PyExc_ValueError, "steps must be non-zero");
-        return MAX_SIZE_T_PAIR;
+        return std::make_pair<Node*, Node*>(nullptr, nullptr);
     }
 
     Node* left;
@@ -302,7 +302,7 @@ std::pair<Node*, Node*> walk(
                     break;  // truncate to end of list
                 } else {
                     PyErr_SetString(PyExc_IndexError, "list index out of range");
-                    return MAX_SIZE_T_PAIR;
+                    return std::make_pair<Node*, Node*>(nullptr, nullptr);
                 }
             }
             left = right;
@@ -318,7 +318,12 @@ std::pair<Node*, Node*> walk(
         left = static_cast<Node*>(right->prev);
         for (Py_ssize_t i = -1; i > steps; i--) {
             if (left == nullptr) {
-                break;  // insert at beginning of list
+                if (truncate) {
+                    break;  // truncate to start of list
+                } else {
+                    PyErr_SetString(PyExc_IndexError, "list index out of range");
+                    return std::make_pair<Node*, Node*>(nullptr, nullptr);
+                }
             }
             right = left;
             left = static_cast<Node*>(left->prev);

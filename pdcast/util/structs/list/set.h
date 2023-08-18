@@ -139,6 +139,18 @@ public:
     ////    RELATIVE OPERATIONS    ////
     ///////////////////////////////////
 
+    /* Dispatch to the correct implementation of get_relative() for each variant. */
+    inline PyObject* get_relative(PyObject* sentinel, Py_ssize_t offset) {
+        PyObject* item = nullptr;
+        std::visit(
+            [&](auto& view) {
+                return Ops::get_relative(&view, sentinel, offset);
+            },
+            this->variant
+        );
+        return item;
+    }
+
     /* Dispatch to the correct implementation of insert_relative() for each variant. */
     inline void insert_relative(PyObject* item, PyObject* sentinel, Py_ssize_t offset) {
         std::visit(
@@ -164,131 +176,58 @@ public:
         );
     }
 
-    /* Dispatch to the correct implementation of discardafter() for each variant. */
-    inline void discardafter(PyObject* sentinel, PyObject* item, Py_ssize_t offset) {
+    /* Dispatch to the correct implementation of remove_relative() for each variant. */
+    inline void remove_relative(PyObject* sentinel, Py_ssize_t offset) {
         std::visit(
             [&](auto& view) {
-                Ops::discardafter(&view, sentinel, item, offset);
+                Ops::remove_relative(&view, sentinel, offset);
             },
             this->variant
         );
     }
 
-    /* Dispatch to the correct implementation of discardbefore() for each variant. */
-    inline void discardbefore(PyObject* sentinel, PyObject* item, Py_ssize_t offset) {
+    /* Dispatch to the correct implementation of discard_relative() for each variant. */
+    inline void discard_relative(PyObject* sentinel, Py_ssize_t offset) {
         std::visit(
             [&](auto& view) {
-                Ops::discardbefore(&view, sentinel, item, offset);
+                Ops::discard_relative(&view, sentinel, offset);
             },
             this->variant
         );
     }
 
-    /* Dispatch to the correct implementation of popafter() for each variant. */
-    inline void popafter(PyObject* sentinel, PyObject* item, Py_ssize_t offset) {
+    /* Dispatch to the correct implementation of pop_relative() for each variant. */
+    inline PyObject* pop_relative(PyObject* sentinel, Py_ssize_t offset) {
+        PyObject* item = nullptr;
         std::visit(
             [&](auto& view) {
-                Ops::popafter(&view, sentinel, item, offset);
+                item = Ops::pop_relative(&view, sentinel, offset);
             },
             this->variant
         );
+        return item;
     }
 
-    /* Dispatch to the correct implementation of popbefore() for each variant. */
-    inline void popbefore(PyObject* sentinel, PyObject* item, Py_ssize_t offset) {
-        std::visit(
-            [&](auto& view) {
-                Ops::popbefore(&view, sentinel, item, offset);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of clearafter() for each variant. */
-    inline void clearafter(
+    /* Dispatch to the correct implementation of clear_relative() for each variant. */
+    inline void clear_relative(
         PyObject* sentinel,
-        PyObject* item,
         Py_ssize_t offset,
         Py_ssize_t length
     ) {
         std::visit(
             [&](auto& view) {
-                Ops::clearafter(&view, sentinel, item, offset, length);
+                Ops::clear_relative(&view, sentinel, offset, length);
             },
             this->variant
         );
     }
 
-    /* Dispatch to the correct implementation of clearbefore() for each variant. */
-    inline void clearbefore(
-        PyObject* sentinel,
-        PyObject* item,
-        Py_ssize_t offset,
-        Py_ssize_t length
-    ) {
-        std::visit(
-            [&](auto& view) {
-                Ops::clearbefore(&view, sentinel, item, offset, length);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of move() for each variant. */
-    template <typename T>
-    inline void move(PyObject* item, T index) {
-        std::visit(
-            [&](auto& view) {
-                // allow Python-style negative indexing + boundschecking
-                size_t norm_index = normalize_index(index, view.size, true);
-                Ops::move(&view, item, norm_index);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of moveright() for each variant. */
-    inline void moveright(PyObject* item, Py_ssize_t offset) {
-        std::visit(
-            [&](auto& view) {
-                Ops::moveright(&view, item, offset);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of moveleft() for each variant. */
-    inline void moveleft(PyObject* item, Py_ssize_t offset) {
-        std::visit(
-            [&](auto& view) {
-                Ops::moveleft(&view, item, offset);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of moveafter() for each variant. */
-    inline void moveafter(PyObject* sentinel, PyObject* item, Py_ssize_t offset) {
-        std::visit(
-            [&](auto& view) {
-                Ops::moveafter(&view, sentinel, item, offset);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of movebefore() for each variant. */
-    inline void movebefore(PyObject* sentinel, PyObject* item, Py_ssize_t offset) {
-        std::visit(
-            [&](auto& view) {
-                Ops::movebefore(&view, sentinel, item, offset);
-            },
-            this->variant
-        );
-    }
+    ///////////////////////////////
+    ////    MOVE OPERATIONS    ////
+    ///////////////////////////////
 
     /* Dispatch to the correct implementation of edge() for each variant. */
-    inline void edge(PyObject* item1, PyObject* item2) {
+    inline void distance(PyObject* item1, PyObject* item2) {
         std::visit(
             [&](auto& view) {
                 Ops::edge(&view, item1, item2);
@@ -302,6 +241,39 @@ public:
         std::visit(
             [&](auto& view) {
                 Ops::swap(&view, item1, item2);
+            },
+            this->variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of move() for each variant. */
+    inline void move(PyObject* item, Py_ssize_t steps) {
+        std::visit(
+            [&](auto& view) {
+                Ops::move(&view, item, offset);
+            },
+            this->variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of move_to_index() for each variant. */
+    template <typename T>
+    inline void move_to_index(PyObject* item, T index) {
+        std::visit(
+            [&](auto& view) {
+                // allow Python-style negative indexing + boundschecking
+                size_t norm_index = normalize_index(index, view.size, true);
+                Ops::move(&view, item, norm_index);
+            },
+            this->variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of move_relative() for each variant. */
+    inline void move_relative(PyObject* item, PyObject* sentinel, Py_ssize_t offset) {
+        std::visit(
+            [&](auto& view) {
+                Ops::move_relative(&view, item, sentinel, offset);
             },
             this->variant
         );

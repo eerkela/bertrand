@@ -1046,37 +1046,33 @@ cdef class LinkedList:
         if key is None:
             return cls
 
-        # TODO: We can maybe maintain an LRU dictionary of specialized classes
-        # to avoid creating a new one every time.  This would also allow
-        # isinstance() checks to work properly on specialized lists, provided
-        # that the class is in the LRU dictionary.
-
-        # we return a decorated class that permanently specializes itself
-        # with the given type.
-        class TypedList(cls):
-            """Implement `TypedList` for the given specialization."""
-
-            def __init__(
+        def __init__(
+            self,
+            items: Iterable[object] | None = None,
+            doubly_linked: bool = False,
+            reverse: bool = False,
+            max_size: int = -1,
+        ) -> None:
+            """Disable the `spec` argument for strictly-typed lists."""
+            cls.__init__(
                 self,
-                items: Iterable[object] | None = None,
-                doubly_linked: bool = False,
-                reverse: bool = False,
-                max_size: int = -1,
-            ) -> None:
-                """Disable the `spec` argument for TypedLists."""
-                super().__init__(
-                    items,
-                    doubly_linked=doubly_linked,
-                    reverse=reverse,
-                    max_size=max_size,
-                    spec=key
-                )
+                items,
+                doubly_linked=doubly_linked,
+                reverse=reverse,
+                max_size=max_size,
+                spec=key
+            )
 
-            def specialize(self, spec: object) -> None:
-                """Disable runtime specialization for TypedLists."""
-                raise TypeError(f"TypedList is already specialized to {repr(key)}")
+        def specialize(self, spec: object) -> None:
+            """Disable runtime specialization for strictly-typed lists."""
+            raise TypeError(f"{cls.__name__} is already specialized to {repr(key)}")
 
-        return TypedList
+        # dynamically create the new class
+        return type(
+            cls.__name__,
+            (cls,),
+            {"__init__": __init__, "specialize": specialize}
+        )
 
     ####################
     ####    MISC    ####
