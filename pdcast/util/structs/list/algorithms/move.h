@@ -18,6 +18,130 @@
 
 namespace Ops {
 
+    /* Get the linear distance between two values in a linked set or dictionary. */
+    template <
+        template <typename, template <typename> class> class ViewType,
+        typename NodeType,
+        template <typename> class Allocator
+    >
+    Py_ssize_t distance(
+        ViewType<NodeType, Allocator>* view,
+        PyObject* item1,
+        PyObject* item2
+    ) {
+        using Node = typename ViewType<NodeType, Allocator>::Node;
+
+        // search for nodes in hash table
+        Node* node1 = view->search(item1);
+        if (node1 == nullptr) {
+            PyErr_Format(PyExc_KeyError, "%R is not in the set", item1);
+            return 0;
+        }
+        Node* node2 = view->search(item2);
+        if (node2 == nullptr) {
+            PyErr_Format(PyExc_KeyError, "%R is not in the set", item2);
+            return 0;
+        }
+
+        // check for no-op
+        if (node1 == node2) {
+            return 0;  // do nothing
+        }
+
+        // get indices of both nodes
+        Py_ssize_t idx = 0;
+        Py_ssize_t index1 = -1;
+        Py_ssize_t index2 = -1;
+        Node* curr = view->head;
+        while (true) {
+            if (curr == node1) {
+                index1 = idx;
+                if (index2 != -1) {
+                    break;  // both nodes found
+                }
+            } else if (curr == node2) {
+                index2 = idx;
+                if (index1 != -1) {
+                    break;  // both nodes found
+                }
+            }
+            curr = static_cast<Node*>(curr->next);
+            idx++;
+        }
+
+        // return difference between indices
+        return index2 - index1;
+    }
+
+    /* Swap the positions of two values in a linked set or dictionary. */
+    template <
+        template <typename, template <typename> class> class ViewType,
+        typename NodeType,
+        template <typename> class Allocator
+    >
+    void swap(
+        ViewType<NodeType, Allocator>* view,
+        PyObject* item1,
+        PyObject* item2
+    ) {
+        using Node = typename ViewType<NodeType, Allocator>::Node;
+
+        // search for nodes in hash table
+        Node* node1 = view->search(item1);
+        if (node1 == nullptr) {
+            PyErr_Format(PyExc_KeyError, "%R is not in the set", item1);
+            return;
+        }
+        Node* node2 = view->search(item2);
+        if (node2 == nullptr) {
+            PyErr_Format(PyExc_KeyError, "%R is not in the set", item2);
+            return;
+        }
+
+        // check for no-op
+        if (node1 == node2) {
+            return;  // do nothing
+        }
+
+        // get predecessors of both nodes
+        Node* prev1;
+        Node* prev2;
+        if constexpr (is_doubly_linked<Node>::value) {
+            // NOTE: if the list is doubly-linked, then we can use the `prev`
+            // pointer to get the previous nodes in constant time.
+            prev1 = static_cast<Node*>(node1->prev);
+            prev2 = static_cast<Node*>(node2->prev);
+        } else {
+            // Otherwise, we have to iterate from the head of the list.
+            prev1 = nullptr;
+            prev2 = nullptr;
+            Node* prev = nullptr;
+            Node* curr = view->head;
+            while (true) {
+                if (curr == node1) {
+                    prev1 = prev;
+                    if (prev2 != nullptr) {
+                        break;  // both nodes found
+                    }
+                } else if (curr == node2) {
+                    prev2 = prev;
+                    if (prev1 != nullptr) {
+                        break;  // both nodes found
+                    }
+                }
+                prev = curr;
+                curr = static_cast<Node*>(curr->next);
+            }
+        }
+
+        // swap nodes
+        Node* next1 = static_cast<Node*>(node1->next);
+        Node* next2 = static_cast<Node*>(node2->next);
+        view->unlink(prev1, node1, next1);
+        view->unlink(prev2, node2, next2);
+        view->link(prev1, node2, next1);
+        view->link(prev2, node1, next2);
+    }
 
     /* Move an item within a linked set or dictionary. */
     template <
@@ -121,7 +245,11 @@ std::tuple<Node*, Node*, Node*> _walk_double(
 
     // return as 3-tuple
     return std::make_tuple(static_cast<Node*>(sentinel->prev), left, right);
-
 }
+
+
+
+
+
 
 #endif // BERTRAND_STRUCTS_ALGORITHMS_MOVE_H include guard

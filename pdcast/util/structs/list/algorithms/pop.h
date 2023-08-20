@@ -4,7 +4,9 @@
 
 #include <cstddef>  // size_t
 #include <queue>  // std::queue
+#include <tuple>  // std::tuple
 #include <Python.h>  // CPython API
+#include "../core/bounds.h"  // neighbors()
 #include "../core/node.h"  // is_doubly_linked<>
 #include "../core/view.h"  // views
 
@@ -16,61 +18,27 @@
 
 namespace Ops {
 
+    /////////////////////
+    ////    POP()    ////
+    /////////////////////
+
     /* Pop an item from a linked list, set, or dictionary at the given index. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    inline PyObject* pop(ViewType<NodeType, Allocator>* view, size_t index) {
-        using Node = typename ViewType<NodeType, Allocator>::Node;
-        Node* prev;
-        Node* curr;
-        Node* next;
+    template <typename View, typename T>
+    PyObject* pop(View* view, T index) {
+        using Node = typename View::Node;
 
-        // NOTE: index is normalized at the Cython level and raises an out of bounds
-        // error, so we don't need to worry about negative values or empty lists.
-
-        // check for pop at head of list (O(1) in both cases)
-        if (index == 0) {
-            prev = nullptr;
-            curr = view->head;
-            next = static_cast<Node*>(curr->next);
-            return _pop_node(view, prev, curr, next);
+        // get neighbors at index
+        std::tuple<Node*, Node*, Node*> bounds = neighbors(
+            view, view->head, index, false
+        );
+        Node* prev = std::get<0>(bounds);
+        Node* curr = std::get<1>(bounds);
+        Node* next = std::get<2>(bounds);
+        if (prev == nullptr && curr == nullptr && next == nullptr) {
+            // walked off end of list
+            PyErr_Format(PyExc_IndexError, "index %zd is out of range", index);
+            return nullptr;
         }
-
-        // get neighboring nodes
-        if constexpr (is_doubly_linked<Node>::value) {
-            // check for pop at tail of list
-            if (index == view->size - 1) {
-                next = nullptr;
-                curr = view->tail;
-                prev = static_cast<Node*>(curr->prev);  // use tail's prev pointer
-                return _pop_node(view, prev, curr, next);
-
-            // NOTE: if the list is doubly-linked, then we can iterate from either
-            // end to find the neighboring nodes.
-            } else if (index > view->size / 2) {
-                curr = view->tail;
-                for (size_t i = view->size - 1; i > index; i--) {
-                    curr = static_cast<Node*>(curr->prev);
-                }
-                prev = static_cast<Node*>(curr->prev);
-                next = static_cast<Node*>(curr->next);
-                return _pop_node(view, prev, curr, next);
-            }
-        }
-
-        // NOTE: due to the singly-linked nature of the list, popping from the
-        // front of the list is O(1) while popping from the back is O(n).  This is
-        // because we need to traverse the entire list to find the previous node.
-        prev = nullptr;
-        curr = view->head;
-        for (size_t i = 0; i < index; i++) {
-            prev = curr;
-            curr = static_cast<Node*>(curr->next);
-        }
-        next = static_cast<Node*>(curr->next);
 
         // recycle node and return a new reference to its value
         return _pop_node(view, prev, curr, next);
@@ -78,7 +46,7 @@ namespace Ops {
 
     /* Pop a key from a linked dictionary and return its corresponding value. */
     template <typename NodeType, template <typename> class Allocator>
-    inline PyObject* pop(
+    PyObject* pop(
         DictView<NodeType, Allocator>* view,
         PyObject* key,
         PyObject* default_value
@@ -110,7 +78,48 @@ namespace Ops {
         }
 
         // recycle node and return a new reference to its value
-        return _pop_node(view, prev, curr, static_cast<Node*>(curr->next));
+        Node* next = static_cast<Node*>(curr->next);
+        return _pop_node(view, prev, curr, next);
+    }
+
+    //////////////////////////////
+    ////    POP_RELATIVE()    ////
+    //////////////////////////////
+
+    /* Pop an item from a linked list, set, or dictionary relative to a given
+    sentinel value. */
+    template <typename View>
+    PyObject* pop_relative(View* view, PyObject* sentinel, Py_ssize_t offset) {
+        using Node = typename View::Node;
+
+        // ensure offset is nonzero
+        if (offset == 0) {
+            PyErr_SetString(PyExc_ValueError, "offset must be non-zero");
+            return nullptr;
+        }
+
+        // search for sentinel
+        Node* node = view->search(sentinel);
+        if (node == nullptr) {
+            PyErr_Format(PyExc_ValueError, "%R is not in the set", sentinel);
+            return nullptr;
+        }
+
+        // walk according to offset
+        std::tuple<Node*, Node*, Node*> bounds = relative_neighbors(
+            view, node, offset, false
+        );
+        Node* prev = std::get<0>(bounds);
+        Node* curr = std::get<1>(bounds);
+        Node* next = std::get<2>(bounds);
+        if (prev == nullptr  && curr == nullptr && next == nullptr) {
+            // walked off end of list
+            PyErr_Format(PyExc_IndexError, "offset %zd is out of range", offset);
+            return nullptr;  // propagate
+        }
+
+        // pop node between boundaries
+        return _pop_node(view, prev, curr, next);
     }
 
 }
@@ -122,18 +131,8 @@ namespace Ops {
 
 
 /* Unlink and remove a node and return its value. */
-template <
-    template <typename, template <typename> class> class ViewType,
-    typename NodeType,
-    template <typename> class Allocator,
-    typename Node
->
-inline PyObject* _pop_node(
-    ViewType<NodeType, Allocator>* view,
-    Node* prev,
-    Node* curr,
-    Node* next
-) {
+template <typename View, typename Node>
+inline PyObject* _pop_node(View* view, Node* prev, Node* curr, Node* next) {
     // get return value
     PyObject* value = curr->value;
     Py_INCREF(value);  // have to INCREF because we DECREF in recycle()

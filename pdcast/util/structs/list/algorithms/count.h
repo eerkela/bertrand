@@ -16,18 +16,9 @@
 namespace Ops {
 
     /* Count the number of occurrences of an item within a linked set or dictionary. */
-    template<
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    size_t count(
-        ViewType<NodeType, Allocator>* view,
-        PyObject* item,
-        size_t start,
-        size_t stop
-    ) {
-        using Node = typename ViewType<NodeType, Allocator>::Node;
+    template <typename View>
+    size_t count(View* view, PyObject* item, size_t start, size_t stop) {
+        using Node = typename View::Node;
 
         // check if item is contained in hash table
         Node* node = view->search(item);

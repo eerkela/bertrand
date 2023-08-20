@@ -111,8 +111,7 @@ cdef class LinkedSet(LinkedList):
     # NOTE: since LinkedSets are just variations on LinkedLists, they support
     # all of the same operations as normal Python lists.  The only difference
     # is that they require their values to be hashable and unique, and will
-    # throw exceptions if this is not the case.  Only the methods that differ
-    # from LinkedLists are documented here.
+    # either silently ignore or throw exceptions if this is not the case.
 
     def count(self, item: object, start: int = 0, stop: int = -1) -> int:
         """Count the number of occurrences of an item in the set.
@@ -221,6 +220,527 @@ cdef class LinkedSet(LinkedList):
             raise ValueError("repetition count must be 0 or 1")
 
         return self
+
+    #############################
+    ####    SET INTERFACE    ####
+    #############################
+
+    # NOTE: LinkedSets also conform to the standard library's set interface,
+    # making them interchangeable with their built-in counterparts.
+
+    # TODO: add() could be distinct from append() in that it silently ignores
+    # uniqueness errors.  This mirrors discard() vs. remove().  This is similar
+    # with extend() vs update().
+
+    def add(self, item: object, left: bool = False) -> None:
+        """An alias for :meth:`LinkedSet.append` that is consistent with the
+        standard library :class:`set <python:set>` interface.
+        """
+        # dispatch to append.h
+        self.view.add(<PyObject*>item, <bint>left)
+
+    def discard(self, item: object) -> None:
+        """Remove an item from the set if it is present.
+
+        Parameters
+        ----------
+        item : Any
+            The item to remove from the set.
+
+        Notes
+        -----
+        This method is consistent with the standard :class:`set <python:set>`
+        interface.  It is functionally equivalent to :meth:`LinkedSet.remove`
+        except that it does not raise an error if the item is not contained in
+        the set.
+        """
+        self.view.discard(<PyObject*>item)
+
+    def union(self, *others: Iterable[object]) -> LinkedSet:
+        """Return a new set with elements from this set and all others.
+
+        Parameters
+        ----------
+        *others : Iterable[Any]
+            Any number of iterables containing items to add to the set.
+
+        Returns
+        -------
+        LinkedSet
+            A new set containing the combination of this set with each of the
+            inputs.
+
+        Notes
+        -----
+        This translates to a series of :meth:`extend() <LinkedSet.extend>`
+        calls for each iterable.
+        """
+        result = self.copy()
+        result.update(*others)
+        return result
+
+    def intersection(self, *others: Iterable[object]) -> LinkedSet:
+        """Return a new set with elements common to this set and all others.
+
+        Parameters
+        ----------
+        *others : Iterable[Any]
+            Any number of iterables containing items to intersect with the set.
+
+        Returns
+        -------
+        LinkedSet
+            A new set containing the intersection of this set with each of the
+            inputs.
+        """
+        result = self.copy()
+        result.intersection_update(*others)
+        return result
+
+    def difference(self, *others: Iterable[object]) -> LinkedSet:
+        """Return a new set with elements in this set that are not in others.
+
+        Parameters
+        ----------
+        *others : Iterable[Any]
+            Any number of iterables containing items to subtract from the set.
+
+        Returns
+        -------
+        LinkedSet
+            A new set containing the difference of this set with each of the
+            inputs.
+        """
+        result = self.copy()
+        result.difference_update(*others)
+        return result
+
+    def symmetric_difference(self, other: Iterable[object]) -> LinkedSet:
+        """Return a new set with elements in either this set or ``other``, but
+        not both.
+
+        Parameters
+        ----------
+        other : Iterable[Any]
+            An iterable containing items to compare with the set.
+
+        Returns
+        -------
+        LinkedSet
+            A new set containing the symmetric difference of this set with the
+            input.
+        """
+        result = self.copy()
+        result.symmetric_difference_update(other)
+        return result
+
+    def update(self, *others: Iterable[object]) -> None:
+        """Update the set, adding elements from all others.
+
+        Parameters
+        ----------
+        *others : Iterable[Any]
+            Any number of iterables containing items to add to the set.
+
+        Notes
+        -----
+        This behaves just like the standard :meth:`set.update()` method.  It
+        translates to a series of :meth:`extend() <LinkedSet.extend>` calls for
+        each iterable.
+        """
+        for items in others:
+            self.extend(items)
+
+    def intersection_update(self, *others: Iterable[object]) -> None:
+        """Update the set, keeping only elements found in all others.
+
+        Parameters
+        ----------
+        *others : Iterable[Any]
+            Any number of iterables containing items to intersect with the set.
+
+        Notes
+        -----
+        This behaves just like the standard :meth:`set.intersection_update()`
+        method.
+        """
+        for other in others:
+            self &= other
+
+    def difference_update(self, *others: Iterable[object]) -> None:
+        """Update the set, removing elements found in others.
+
+        Parameters
+        ----------
+        *others : Iterable[Any]
+            Any number of iterables containing items to remove from the set.
+
+        Notes
+        -----
+        This behaves just like the standard :meth:`set.difference_update()`
+        method.
+        """
+        for other in others:
+            self -= other
+
+    def symmetric_difference_update(self, other: Iterable[object]) -> None:
+        """Update the set, keeping only elements found in either set, but not
+        in both.
+
+        Parameters
+        ----------
+        other : Iterable[Any]
+            An iterable containing items to compare with the set.
+
+        Notes
+        -----
+        This behaves just like the standard
+        :meth:`set.symmetric_difference_update()` method.
+        """
+        self ^= other
+
+    def isdisjoint(self, other: Iterable[object]) -> bool:
+        """Check if this set is disjoint with another iterable.
+
+        Parameters
+        ----------
+        other : Iterable[Any]
+            The other iterable to check for disjointness.
+
+        Returns
+        -------
+        bool
+            Indicates whether the set is disjoint with the other iterable.
+
+        Notes
+        -----
+        This is equivalent to ``len(self.intersection(other)) == 0``.
+        """
+        return not (self & other)
+
+    def issubset(self, other: Iterable[object]) -> bool:
+        """Check if this set is a subset of another iterable.
+
+        Parameters
+        ----------
+        other : Iterable[Any]
+            The other iterable to check for subsetness.
+
+        Returns
+        -------
+        bool
+            Indicates whether the set is a subset of the other iterable.
+
+        Notes
+        -----
+        This is equivalent to ``len(self.difference(other)) == 0``.
+        """
+        return self <= other
+
+    def issuperset(self, other: Iterable[object]) -> bool:
+        """Check if this set is a superset of another iterable.
+
+        Parameters
+        ----------
+        other : Iterable[Any]
+            The other iterable to check for supersetness.
+
+        Returns
+        -------
+        bool
+            Indicates whether the set is a superset of the other iterable.
+
+        Notes
+        -----
+        This is equivalent to ``len(self.symmetric_difference(other)) == 0``.
+        """
+        return self >= other
+
+    def __or__(self, other: set | LinkedSet) -> LinkedSet:
+        """Return the union of this set and another iterable.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to take the union with.
+
+        Returns
+        -------
+        LinkedSet
+            A new set containing the union of this set and the other iterable.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        cdef LinkedSet result = self.copy()
+        result.extend(other)
+        return result
+
+    def __ior__(self, other: set | LinkedSet) -> LinkedSet:
+        """Update this set with the union of itself and another iterable.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to take the union with.
+
+        Returns
+        -------
+        LinkedSet
+            A combination of this set with the elements of the other set.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        self.extend(other)
+        return self
+
+    def __and__(self, other: set | LinkedSet) -> LinkedSet:
+        """Return the intersection of this set and another iterable.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to take the intersection with.
+
+        Returns
+        -------
+        LinkedSet
+            A new set containing the intersection of this set and the other
+            iterable.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        return LinkedSet(item for item in other if item in self)
+
+    def __iand__(self, other: set | LinkedSet) -> LinkedSet:
+        """Update this set with the intersection of itself and another iterable.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to take the intersection with.
+
+        Returns
+        -------
+        LinkedSet
+            A combination of this set with the elements of the other set.
+        """
+        # this should be implemented in C++
+        # cdef self.view.Node* prev = NULL
+        # cdef self.view.Node* curr = self.view.head
+        # cdef PyObject* value
+
+        # while curr is not NULL:
+        #     value = <object>curr.value
+        #     if <object>curr.value not in other:
+        #         if prev is NULL:
+        #             self.view.head = curr.next
+        #         else:
+        #             prev.next = curr.next
+
+        #         stack.push(curr)
+        #     else:
+        #         prev = curr
+
+        #     curr = curr.next
+
+        # return self
+        raise NotImplementedError()
+
+    def __sub__(self, other: set | LinkedSet) -> LinkedSet:
+        """Return the difference of this set and another iterable.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to take the difference with.
+
+        Returns
+        -------
+        LinkedSet
+            A new set containing the difference of this set and the other
+            iterable.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        return LinkedSet(item for item in self if item not in other)
+
+    def __isub__(self, other: set | LinkedSet) -> LinkedSet:
+        """Update this set with the difference of itself and another iterable.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to take the difference with.
+
+        Returns
+        -------
+        LinkedSet
+            A combination of this set with the elements of the other set.
+        """
+        # TODO: implement this in C++ under a compare.h header
+        # -> this is the opposite of __iand__(), so we can do it in one
+        # iteration.
+        raise NotImplementedError()
+
+    def __xor__(self, other: set | LinkedSet) -> LinkedSet:
+        """Return the symmetric difference of this set and another iterable.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to take the symmetric difference with.
+
+        Returns
+        -------
+        LinkedSet
+            A new set containing the symmetric difference of this set and the
+            other iterable.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        cdef set left = set(item for item in self if item not in other)
+        cdef set right = set(item for item in other if item not in self)
+
+        return LinkedSet(left | right)
+
+    def __ixor__(self, other: set | LinkedSet) -> LinkedSet:
+        """Update this set with the symmetric difference of itself and another
+        iterable.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to take the symmetric difference with.
+
+        Returns
+        -------
+        LinkedSet
+            A combination of this set with the symmetric difference of the
+            other set.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        cdef set left = set(item for item in self if item not in other)
+        cdef set right = set(item for item in other if item not in self)
+
+        self.clear()
+        self.extend(left | right)
+        return self
+
+    def __lt__(self, other: set | LinkedSet) -> bool:
+        """Return whether this set is a proper subset of another.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to compare with.
+
+        Returns
+        -------
+        bool
+            Whether this set is a proper subset of the other set.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        return len(self) < len(other) and all(item in other for item in self)
+
+    def __le__(self, other: set | LinkedSet) -> bool:
+        """Return whether this set is a subset of another.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to compare with.
+
+        Returns
+        -------
+        bool
+            Whether this set is a subset of the other set.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        return len(self) <= len(other) and all(item in other for item in self)
+
+    def __eq__(self, other: set | LinkedSet) -> bool:
+        """Return whether this set is equal to another.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to compare with.
+
+        Returns
+        -------
+        bool
+            Whether this set is equal to the other set.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        return len(self) == len(other) and all(item in self for item in other)
+
+    def __ge__(self, other: set | LinkedSet) -> bool:
+        """Return whether this set is a superset of another.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to compare with.
+
+        Returns
+        -------
+        bool
+            Whether this set is a superset of the other set.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        return len(self) >= len(other) and all(item in self for item in other)
+
+    def __gt__(self, other: set | LinkedSet) -> bool:
+        """Return whether this set is a proper superset of another.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to compare with.
+
+        Returns
+        -------
+        bool
+            Whether this set is a proper superset of the other set.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        return len(self) > len(other) and all(item in self for item in other)
+
+    def __contains__(self, item: object) -> bool:
+        """Check if the item is contained in the set.
+
+        Parameters
+        ----------
+        item : Any
+            The item to search for.
+
+        Returns
+        -------
+        bool
+            Indicates whether the item is contained in the set.
+
+        Notes
+        -----
+        Membership checks are O(1) due to the integrated hash table.
+        """
+        return self.view.contains(<PyObject*>item)
 
     ###################################
     ####    RELATIVE OPERATIONS    ####
@@ -560,523 +1080,6 @@ cdef class LinkedSet(LinkedList):
         """
         raise NotImplementedError()
 
-    #############################
-    ####    SET INTERFACE    ####
-    #############################
-
-    # NOTE: LinkedSets also conform to the standard library's set interface,
-    # making them interchangeable with their built-in counterparts.
-
-    def add(self, item: object, left: bool = False) -> None:
-        """An alias for :meth:`LinkedSet.append` that is consistent with the
-        standard library :class:`set <python:set>` interface.
-        """
-        # dispatch to append.h
-        self.view.add(<PyObject*>item, <bint>left)
-
-    def discard(self, item: object) -> None:
-        """Remove an item from the set if it is present.
-
-        Parameters
-        ----------
-        item : Any
-            The item to remove from the set.
-
-        Notes
-        -----
-        This method is consistent with the standard :class:`set <python:set>`
-        interface.  It is functionally equivalent to :meth:`LinkedSet.remove`
-        except that it does not raise an error if the item is not contained in
-        the set.
-        """
-        self.view.discard(<PyObject*>item)
-
-    def isdisjoint(self, other: Iterable[object]) -> bool:
-        """Check if this set is disjoint with another iterable.
-
-        Parameters
-        ----------
-        other : Iterable[Any]
-            The other iterable to check for disjointness.
-
-        Returns
-        -------
-        bool
-            Indicates whether the set is disjoint with the other iterable.
-
-        Notes
-        -----
-        This is equivalent to ``len(self.intersection(other)) == 0``.
-        """
-        return not (self & other)
-
-    def issubset(self, other: Iterable[object]) -> bool:
-        """Check if this set is a subset of another iterable.
-
-        Parameters
-        ----------
-        other : Iterable[Any]
-            The other iterable to check for subsetness.
-
-        Returns
-        -------
-        bool
-            Indicates whether the set is a subset of the other iterable.
-
-        Notes
-        -----
-        This is equivalent to ``len(self.difference(other)) == 0``.
-        """
-        return self <= other
-
-    def issuperset(self, other: Iterable[object]) -> bool:
-        """Check if this set is a superset of another iterable.
-
-        Parameters
-        ----------
-        other : Iterable[Any]
-            The other iterable to check for supersetness.
-
-        Returns
-        -------
-        bool
-            Indicates whether the set is a superset of the other iterable.
-
-        Notes
-        -----
-        This is equivalent to ``len(self.symmetric_difference(other)) == 0``.
-        """
-        return self >= other
-
-    def union(self, *others: Iterable[object]) -> LinkedSet:
-        """Return a new set with elements from this set and all others.
-
-        Parameters
-        ----------
-        *others : Iterable[Any]
-            Any number of iterables containing items to add to the set.
-
-        Returns
-        -------
-        LinkedSet
-            A new set containing the combination of this set with each of the
-            inputs.
-
-        Notes
-        -----
-        This translates to a series of :meth:`extend() <LinkedSet.extend>`
-        calls for each iterable.
-        """
-        result = self.copy()
-        result.update(*others)
-        return result
-
-    def intersection(self, *others: Iterable[object]) -> LinkedSet:
-        """Return a new set with elements common to this set and all others.
-
-        Parameters
-        ----------
-        *others : Iterable[Any]
-            Any number of iterables containing items to intersect with the set.
-
-        Returns
-        -------
-        LinkedSet
-            A new set containing the intersection of this set with each of the
-            inputs.
-        """
-        result = self.copy()
-        result.intersection_update(*others)
-        return result
-
-    def difference(self, *others: Iterable[object]) -> LinkedSet:
-        """Return a new set with elements in this set that are not in others.
-
-        Parameters
-        ----------
-        *others : Iterable[Any]
-            Any number of iterables containing items to subtract from the set.
-
-        Returns
-        -------
-        LinkedSet
-            A new set containing the difference of this set with each of the
-            inputs.
-        """
-        result = self.copy()
-        result.difference_update(*others)
-        return result
-
-    def symmetric_difference(self, other: Iterable[object]) -> LinkedSet:
-        """Return a new set with elements in either this set or ``other``, but
-        not both.
-
-        Parameters
-        ----------
-        other : Iterable[Any]
-            An iterable containing items to compare with the set.
-
-        Returns
-        -------
-        LinkedSet
-            A new set containing the symmetric difference of this set with the
-            input.
-        """
-        result = self.copy()
-        result.symmetric_difference_update(other)
-        return result
-
-    def update(self, *others: Iterable[object]) -> None:
-        """Update the set, adding elements from all others.
-
-        Parameters
-        ----------
-        *others : Iterable[Any]
-            Any number of iterables containing items to add to the set.
-
-        Notes
-        -----
-        This behaves just like the standard :meth:`set.update()` method.  It
-        translates to a series of :meth:`extend() <LinkedSet.extend>` calls for
-        each iterable.
-        """
-        for items in others:
-            self.extend(items)
-
-    def intersection_update(self, *others: Iterable[object]) -> None:
-        """Update the set, keeping only elements found in all others.
-
-        Parameters
-        ----------
-        *others : Iterable[Any]
-            Any number of iterables containing items to intersect with the set.
-
-        Notes
-        -----
-        This behaves just like the standard :meth:`set.intersection_update()`
-        method.
-        """
-        for other in others:
-            self &= other
-
-    def difference_update(self, *others: Iterable[object]) -> None:
-        """Update the set, removing elements found in others.
-
-        Parameters
-        ----------
-        *others : Iterable[Any]
-            Any number of iterables containing items to remove from the set.
-
-        Notes
-        -----
-        This behaves just like the standard :meth:`set.difference_update()`
-        method.
-        """
-        for other in others:
-            self -= other
-
-    def symmetric_difference_update(self, other: Iterable[object]) -> None:
-        """Update the set, keeping only elements found in either set, but not
-        in both.
-
-        Parameters
-        ----------
-        other : Iterable[Any]
-            An iterable containing items to compare with the set.
-
-        Notes
-        -----
-        This behaves just like the standard
-        :meth:`set.symmetric_difference_update()` method.
-        """
-        self ^= other
-
-    def __or__(self, other: set | LinkedSet) -> LinkedSet:
-        """Return the union of this set and another iterable.
-
-        Parameters
-        ----------
-        other : set or LinkedSet
-            The other set to take the union with.
-
-        Returns
-        -------
-        LinkedSet
-            A new set containing the union of this set and the other iterable.
-        """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        cdef LinkedSet result = self.copy()
-        result.extend(other)
-        return result
-
-    def __ior__(self, other: set | LinkedSet) -> LinkedSet:
-        """Update this set with the union of itself and another iterable.
-
-        Parameters
-        ----------
-        other : set or LinkedSet
-            The other set to take the union with.
-
-        Returns
-        -------
-        LinkedSet
-            A combination of this set with the elements of the other set.
-        """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        self.extend(other)
-        return self
-
-    def __and__(self, other: set | LinkedSet) -> LinkedSet:
-        """Return the intersection of this set and another iterable.
-
-        Parameters
-        ----------
-        other : set or LinkedSet
-            The other set to take the intersection with.
-
-        Returns
-        -------
-        LinkedSet
-            A new set containing the intersection of this set and the other
-            iterable.
-        """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        return LinkedSet(item for item in other if item in self)
-
-    def __iand__(self, other: set | LinkedSet) -> LinkedSet:
-        """Update this set with the intersection of itself and another iterable.
-
-        Parameters
-        ----------
-        other : set or LinkedSet
-            The other set to take the intersection with.
-
-        Returns
-        -------
-        LinkedSet
-            A combination of this set with the elements of the other set.
-        """
-        # this should be implemented in C++
-        # cdef self.view.Node* prev = NULL
-        # cdef self.view.Node* curr = self.view.head
-        # cdef PyObject* value
-
-        # while curr is not NULL:
-        #     value = <object>curr.value
-        #     if <object>curr.value not in other:
-        #         if prev is NULL:
-        #             self.view.head = curr.next
-        #         else:
-        #             prev.next = curr.next
-
-        #         stack.push(curr)
-        #     else:
-        #         prev = curr
-
-        #     curr = curr.next
-
-        # return self
-        raise NotImplementedError()
-
-    def __sub__(self, other: set | LinkedSet) -> LinkedSet:
-        """Return the difference of this set and another iterable.
-
-        Parameters
-        ----------
-        other : set or LinkedSet
-            The other set to take the difference with.
-
-        Returns
-        -------
-        LinkedSet
-            A new set containing the difference of this set and the other
-            iterable.
-        """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        return LinkedSet(item for item in self if item not in other)
-
-    def __isub__(self, other: set | LinkedSet) -> LinkedSet:
-        """Update this set with the difference of itself and another iterable.
-
-        Parameters
-        ----------
-        other : set or LinkedSet
-            The other set to take the difference with.
-
-        Returns
-        -------
-        LinkedSet
-            A combination of this set with the elements of the other set.
-        """
-        # TODO: implement this in C++ under a compare.h header
-        # -> this is the opposite of __iand__(), so we can do it in one
-        # iteration.
-        raise NotImplementedError()
-
-    def __xor__(self, other: set | LinkedSet) -> LinkedSet:
-        """Return the symmetric difference of this set and another iterable.
-
-        Parameters
-        ----------
-        other : set or LinkedSet
-            The other set to take the symmetric difference with.
-
-        Returns
-        -------
-        LinkedSet
-            A new set containing the symmetric difference of this set and the
-            other iterable.
-        """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        cdef set left = set(item for item in self if item not in other)
-        cdef set right = set(item for item in other if item not in self)
-
-        return LinkedSet(left | right)
-
-    def __ixor__(self, other: set | LinkedSet) -> LinkedSet:
-        """Update this set with the symmetric difference of itself and another
-        iterable.
-
-        Parameters
-        ----------
-        other : set or LinkedSet
-            The other set to take the symmetric difference with.
-
-        Returns
-        -------
-        LinkedSet
-            A combination of this set with the symmetric difference of the
-            other set.
-        """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        cdef set left = set(item for item in self if item not in other)
-        cdef set right = set(item for item in other if item not in self)
-
-        self.clear()
-        self.extend(left | right)
-        return self
-
-    def __lt__(self, other: set | LinkedSet) -> bool:
-        """Return whether this set is a proper subset of another.
-
-        Parameters
-        ----------
-        other : set or LinkedSet
-            The other set to compare with.
-
-        Returns
-        -------
-        bool
-            Whether this set is a proper subset of the other set.
-        """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        return len(self) < len(other) and all(item in other for item in self)
-
-    def __le__(self, other: set | LinkedSet) -> bool:
-        """Return whether this set is a subset of another.
-
-        Parameters
-        ----------
-        other : set or LinkedSet
-            The other set to compare with.
-
-        Returns
-        -------
-        bool
-            Whether this set is a subset of the other set.
-        """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        return len(self) <= len(other) and all(item in other for item in self)
-
-    def __eq__(self, other: set | LinkedSet) -> bool:
-        """Return whether this set is equal to another.
-
-        Parameters
-        ----------
-        other : set or LinkedSet
-            The other set to compare with.
-
-        Returns
-        -------
-        bool
-            Whether this set is equal to the other set.
-        """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        return len(self) == len(other) and all(item in self for item in other)
-
-    def __ge__(self, other: set | LinkedSet) -> bool:
-        """Return whether this set is a superset of another.
-
-        Parameters
-        ----------
-        other : set or LinkedSet
-            The other set to compare with.
-
-        Returns
-        -------
-        bool
-            Whether this set is a superset of the other set.
-        """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        return len(self) >= len(other) and all(item in self for item in other)
-
-    def __gt__(self, other: set | LinkedSet) -> bool:
-        """Return whether this set is a proper superset of another.
-
-        Parameters
-        ----------
-        other : set or LinkedSet
-            The other set to compare with.
-
-        Returns
-        -------
-        bool
-            Whether this set is a proper superset of the other set.
-        """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        return len(self) > len(other) and all(item in self for item in other)
-
-    def __contains__(self, item: object) -> bool:
-        """Check if the item is contained in the set.
-
-        Parameters
-        ----------
-        item : Any
-            The item to search for.
-
-        Returns
-        -------
-        bool
-            Indicates whether the item is contained in the set.
-
-        Notes
-        -----
-        Membership checks are O(1) due to the integrated hash table.
-        """
-        return self.view.contains(<PyObject*>item)
-
     ####################
     ####    MISC    ####
     ####################
@@ -1110,8 +1113,9 @@ cdef class LinkedSet(LinkedList):
         prefix = f"{type(self).__name__}"
 
         # append specialization if given
-        if self.specialization is not None:
-            prefix += f"[{repr(self.specialization)}]"
+        specialization = self.specialization
+        if specialization is not None:
+            prefix += f"[{', '.join(repr(s) for s in specialization)}]"
 
         # abbreviate in order to avoid spamming the console
         if len(self) > 64:

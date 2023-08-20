@@ -17,71 +17,54 @@
 
 namespace Ops {
 
+    ////////////////////////
+    ////    INSERT()    ////
+    ////////////////////////
+
     /* Insert an item into a linked list, set, or dictionary at the given index. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    void insert(ViewType<NodeType, Allocator>* view, size_t index, PyObject* item) {
-        using Node = typename ViewType<NodeType, Allocator>::Node;
+    template <typename View, typename T>
+    inline void insert(View* view, T index, PyObject* item) {
+        using Node = typename View::Node;
 
-        // If the index is closer to the tail and the list is doubly-linked,
-        // then we can iterate from the tail to save time.
-        if constexpr (is_doubly_linked<Node>::value) {
-            if (index > view->size / 2) {  // backward traversal
-                Node* next = nullptr;
-                Node* prev = view->tail;
-                for (size_t i = view->size - 1; i > index; i--) {
-                    next = prev;
-                    prev = static_cast<Node*>(prev->prev);
-                }
-
-                // insert node between neighbors
-                _insert_between(view, prev, next, item);
-                return;
-            }
-        }
-
-        // Otherwise, iterate from the head
-        Node* prev = nullptr;
-        Node* next = view->head;
-        for (size_t i = 0; i < index; i++) {
-            prev = next;
-            next = static_cast<Node*>(next->next);
-        }
+        // get neighboring nodes at index
+        std::pair<Node*, Node*> neighbors = junction(
+            view, view->head, index, true
+        );
 
         // insert node between neighbors
-        _insert_between(view, prev, next, item);
+        _insert_between(view, neighbors.first, neighbors.second, item, false);
     }
+
+    /////////////////////////////////
+    ////    INSERT_RELATIVE()    ////
+    /////////////////////////////////
 
     /* Insert an item into a linked set or dictionary relative to a given sentinel
     value. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    void insert_relative(
-        ViewType<NodeType, Allocator>* view,
+    template <typename View>
+    inline void insert_relative(
+        View* view,
         PyObject* item,
         PyObject* sentinel,
         Py_ssize_t offset
     ) {
-        using Node = typename ViewType<NodeType, Allocator>::Node;
+        _insert_relative(view, item, sentinel, offset, true);  // propagate errors
+    }
 
-        // search for sentinel
-        Node* node = view->search(sentinel);
-        if (node == nullptr) {  // sentinel not found
-            PyErr_Format(PyExc_KeyError, "%R is not contained in the set", sentinel);
-            return;
-        }
+    //////////////////////////////
+    ////    ADD_RELATIVE()    ////
+    //////////////////////////////
 
-        // walk according to offset
-        std::pair<Node*, Node*> bounds = walk(view, node, offset, true);
-
-        // insert node between left and right boundaries
-        _insert_between(view, bounds.first, bounds.second, item);
+    /* Add an item to a linked set or dictionary relative to a given sentinel
+    value if it is not already present. */
+    template <typename View>
+    inline void add_relative(
+        View* view,
+        PyObject* item,
+        PyObject* sentinel,
+        Py_ssize_t offset
+    ) {
+        _insert_relative(view, item, sentinel, offset, false);  // suppress errors
     }
 
 }
@@ -103,12 +86,30 @@ void _insert_between(
     ViewType<NodeType, Allocator>* view,
     Node* left,
     Node* right,
-    PyObject* item
+    PyObject* item,
+    bool update
 ) {
     // allocate a new node
     Node* curr = view->node(item);
     if (curr == nullptr) {
         return;  // propagate error
+    }
+
+    // check if we should update an existing node
+    if constexpr (is_setlike<ViewType, NodeType, Allocator>::value) {
+        if (update) {
+            Node* existing = view->search(curr);
+            if (existing != nullptr) {  // item already exists
+                if constexpr (has_mapped<Node>::value) {
+                    // update mapped value
+                    Py_DECREF(existing->mapped);
+                    Py_INCREF(curr->mapped);
+                    existing->mapped = curr->mapped;
+                }
+                view->recycle(curr);
+                return;
+            }
+        }
     }
 
     // insert node between neighbors
@@ -118,6 +119,42 @@ void _insert_between(
     }
 }
 
+
+/* Implement both insert_relative() and add_relative() depending on error handling
+flag. */
+template <typename View>
+void _insert_relative(
+    View* view,
+    PyObject* item,
+    PyObject* sentinel,
+    Py_ssize_t offset,
+    bool update
+) {
+    using Node = typename View::Node;
+
+    // ensure offset is nonzero
+    if (offset == 0) {
+        PyErr_Format(PyExc_ValueError, "offset must be non-zero");
+        return;
+    } else if (offset < 0) {
+        offset += 1;
+    }
+
+    // search for sentinel
+    Node* node = view->search(sentinel);
+    if (node == nullptr) {  // sentinel not found
+        PyErr_Format(PyExc_KeyError, "%R is not contained in the set", sentinel);
+        return;
+    }
+
+    // walk according to offset
+    std::pair<Node*,Node*> neighbors = relative_junction(
+        view, node, offset, true
+    );
+
+    // insert node between neighbors
+    _insert_between(view, neighbors.first, neighbors.second, item, update);
+}
 
 
 #endif // BERTRAND_STRUCTS_ALGORITHMS_INSERT_H include guard

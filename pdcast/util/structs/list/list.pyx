@@ -16,6 +16,44 @@ from typing import Iterable, Iterator
 # https://github.com/python/cpython/blob/3.11/Lib/test/list_tests.py
 
 
+
+
+# TODO: full specification for typed container syntax:
+
+# - If a single value is given to `spec`, `specialize()` or `__class_getitem__()`,
+# then it will be used directly in `isinstance()` checks.
+# - lists represent unions, and are converted into `typing.Union` objects in the
+# backend, to make them compatible with `isinstance()`.
+# - tuples represent variant types, which are tested in order.  Only the first
+# matching branch is accepted while the others are discarded.  There are a few
+# ways to implicitly convert comma-separated inputs into tuples, so we prefer
+# them for this use case.
+# - The `spec` argument can accept tuples directly to invoke this behavior on
+# the initializer.
+# - The `specialize()` method accepts `*args`, which allows branches to be
+# naturally separated by commas.
+# - `__class_getitem__()` can also accept multiple comma-separated values and
+# implicitly converts them into a tuple.
+
+# Here are some examples:
+
+# foo = LinkedList[int](...)
+# foo = LinkedList[[int, float]](...)  # and/or
+# foo = LinkedList[int, float](...)  # xor
+# foo = LinkedList[[int, float], str]  # (int | float) ^ str
+
+# And for dictionaries using the slicing syntax to represent different key and
+# value types:
+
+# bar = LinkedDict[str](...)  # str:Any
+# bar = LinkedDict[str:int](...)
+# bar = LinkedDict[str:int, str:float](...)  # xor
+# bar = LinkedDict[str:[int, float]](...)  # and/or
+
+# The problem with this is that the slice syntax is only usable in __class_getitem__().
+# We can't use it in `spec` or `specialize()`.
+
+
 cdef class LinkedList:
     """A pure Cython/C++ implementation of a linked list data structure.
 
@@ -901,7 +939,7 @@ cdef class LinkedList:
             return None
         return <object>spec
 
-    def specialize(self, spec: object) -> None:
+    def specialize(self, *args: object) -> None:
         """Specialize the list with a particular type.
 
         Parameters
@@ -938,7 +976,7 @@ cdef class LinkedList:
             type check.  Otherwise, they have identical performance to their
             untyped equivalents.
         """
-        self.view.specialize(<PyObject*>spec)
+        self.view.specialize(<PyObject*>args)
 
     def __class_getitem__(cls, key: object) -> type:
         """Subscribe a :class:`LinkedList` to a particular type specialization.
@@ -1130,8 +1168,9 @@ cdef class LinkedList:
         prefix = f"{type(self).__name__}"
 
         # append specialization if given
-        if self.specialization is not None:
-            prefix += f"[{repr(self.specialization)}]"
+        specialization = self.specialization
+        if specialization is not None:
+            prefix += f"[{', '.join(repr(s) for s in specialization)}]"
 
         # abbreviate in order to avoid spamming the console
         if len(self) > 64:

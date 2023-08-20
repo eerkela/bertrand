@@ -187,19 +187,36 @@ public:
 
     /* Enforce strict type checking for elements of this list. */
     void specialize(PyObject* spec) {
-        // check the contents of the list
-        if (spec != nullptr) {
-            Node* curr = head;
-            for (size_t i = 0; i < size; i++) {
-                if (!Node::typecheck(curr, spec)) {
-                    return;  // propagate TypeError()
-                }
-                curr = static_cast<Node*>(curr->next);
+        // handle null assignment
+        if (spec == nullptr) {
+            if (specialization != nullptr) {
+                Py_DECREF(specialization);  // remember to release old spec
+                specialization = nullptr;
             }
-            Py_INCREF(spec);
+            return;
+        }
+
+        // early return if new spec is same as old spec
+        if (specialization != nullptr) {
+            int comp = PyObject_RichCompareBool(spec, specialization, Py_EQ);
+            if (comp == -1) {  // comparison raised an exception
+                return;  // propagate error
+            } else if (comp == 1) {  // spec is identical
+                return;  // do nothing
+            }
+        }
+
+        // check the contents of the list
+        Node* curr = head;
+        for (size_t i = 0; i < size; i++) {
+            if (!Node::typecheck(curr, spec)) {
+                return;  // propagate TypeError()
+            }
+            curr = static_cast<Node*>(curr->next);
         }
 
         // replace old specialization
+        Py_INCREF(spec);
         if (specialization != nullptr) {
             Py_DECREF(specialization);
         }

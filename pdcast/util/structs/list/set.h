@@ -115,7 +115,7 @@ public:
     inline void add(PyObject* item, bool left) {
         std::visit(
             [&](auto& view) {
-                Ops::append(&view, item, left);
+                Ops::add(&view, item, left);
             },
             this->variant
         );
@@ -130,6 +130,17 @@ public:
             this->variant
         );
     }
+
+    /* Dispatch to the correct implementation of update() for each variant. */
+    inline void update(PyObject* items, bool left) {
+        std::visit(
+            [&](auto& view) {
+                Ops::update(&view, items, left);
+            },
+            this->variant
+        );
+    }
+
 
 
     // TODO: intersect, difference, issubset, issuperset, isdisjoint, etc.
@@ -161,6 +172,16 @@ public:
         );
     }
 
+    /* Dispatch to the correct implementation of add_relative() for each variant. */
+    inline void add_relative(PyObject* item, PyObject* sentinel, Py_ssize_t offset) {
+        std::visit(
+            [&](auto& view) {
+                Ops::add_relative(&view, item, sentinel, offset);
+            },
+            this->variant
+        );
+    }
+
     /* Dispatch to the correct implementation of extend_relative() for each variant. */
     inline void extend_relative(
         PyObject* items,
@@ -171,6 +192,21 @@ public:
         std::visit(
             [&](auto& view) {
                 Ops::extend_relative(&view, items, sentinel, offset, reverse);
+            },
+            this->variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of update_relative() for each variant. */
+    inline void update_relative(
+        PyObject* items,
+        PyObject* sentinel,
+        Py_ssize_t offset,
+        bool reverse
+    ) {
+        std::visit(
+            [&](auto& view) {
+                Ops::update_relative(&view, items, sentinel, offset, reverse);
             },
             this->variant
         );
@@ -227,13 +263,15 @@ public:
     ///////////////////////////////
 
     /* Dispatch to the correct implementation of edge() for each variant. */
-    inline void distance(PyObject* item1, PyObject* item2) {
+    inline Py_ssize_t distance(PyObject* item1, PyObject* item2) {
+        Py_ssize_t dist = 0;
         std::visit(
             [&](auto& view) {
-                Ops::edge(&view, item1, item2);
+                dist = Ops::distance(&view, item1, item2);
             },
             this->variant
         );
+        return dist;
     }
 
     /* Dispatch to the correct implementation of swap() for each variant. */

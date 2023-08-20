@@ -467,4 +467,22 @@ struct is_doubly_linked : std::integral_constant<
 > {};
 
 
+/* A trait that detects whether the templated node type holds a reference to a
+mapped value. */
+template <typename Node>
+struct has_mapped {
+private:
+    // Helper template to detect whether Node has a `PyObject* mapped` field
+    template <typename T>
+    static std::true_type test(decltype(&T::mapped)*);
+
+    // Overload for when `mapped` is not present
+    template <typename T>
+    static std::false_type test(...);
+
+public:
+    static const bool value = decltype(test<Node>(nullptr))::value;
+};
+
+
 #endif // BERTRAND_STRUCTS_CORE_NODE_H include guard

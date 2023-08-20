@@ -14,12 +14,8 @@
 namespace Ops {
 
     /* Check if an item is contained within a linked set or dictionary. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    inline int contains(ViewType<NodeType, Allocator>* view, PyObject* item) {
+    template <typename View>
+    inline int contains(View* view, PyObject* item) {
         return view->search(item) != nullptr;
     }
 
