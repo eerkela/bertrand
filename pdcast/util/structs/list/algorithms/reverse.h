@@ -14,13 +14,9 @@
 namespace Ops {
 
     /* Reverse a linked list in-place. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    void reverse(ViewType<NodeType, Allocator>* view) {
-        using Node = typename ViewType<NodeType, Allocator>::Node;
+    template <typename View>
+    void reverse(View* view) {
+        using Node = typename View::Node;
 
         // save original `head` pointer
         Node* head = view->head;

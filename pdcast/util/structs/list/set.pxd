@@ -8,12 +8,12 @@ from .list cimport LinkedList, VariantList
 
 cdef extern from "set.h":
     cdef cppclass VariantSet(VariantList):
-        VariantSet(bint doubly_linked, ssize_t max_size) except +
+        VariantSet(bint doubly_linked, Py_ssize_t max_size) except +
         VariantSet(
             PyObject* iterable,
             bint doubly_linked,
             bint reverse,
-            ssize_t max_size,
+            Py_ssize_t max_size,
             PyObject* spec
         ) except +
 

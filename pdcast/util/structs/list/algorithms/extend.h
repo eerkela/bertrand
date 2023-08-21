@@ -97,6 +97,41 @@ namespace Ops {
         _extend_relative(view, items, sentinel, offset, reverse, true);
     }
 
+    ////////////////////////////////
+    ////    CLEAR_RELATIVE()    ////
+    ////////////////////////////////
+
+    /* Remove a sequence of items from a linked set or dictionary relative to a
+    given sentinel value. */
+    template <typename View>
+    void clear_relative(
+        View* view,
+        PyObject* sentinel,
+        Py_ssize_t offset,
+        Py_ssize_t length
+    ) {
+        using Node = typename View::Node;
+
+        // ensure offset is nonzero
+        if (offset == 0) {
+            PyErr_SetString(PyExc_ValueError, "offset must be non-zero");
+            return;
+        }
+
+        // search for sentinel
+        Node* node = view->search(sentinel);
+        if (node == nullptr) {  // sentinel not found
+            PyErr_Format(PyExc_KeyError, "%R is not contained in the set", sentinel);
+            return;
+        }
+
+        // get neighbors for deletion
+        std::pair<Node*, Node*> bounds = relative_junction(
+            view, node, offset, true
+        );
+
+        // TODO: if length = -1, clear to the end of the list.  
+    }
 }
 
 
@@ -106,14 +141,9 @@ namespace Ops {
 
 
 /* Insert items from the left node to the right node. */
-template <
-    template <typename, template <typename> class> class ViewType,
-    typename NodeType,
-    template <typename> class Allocator,
-    typename Node
->
+template <typename View, typename Node>
 void _extend_left_to_right(
-    ViewType<NodeType, Allocator>* view,
+    View* view,
     Node* left,
     Node* right,
     PyObject* items,
@@ -143,7 +173,7 @@ void _extend_left_to_right(
         }
 
         // check if we should update existing nodes
-        if constexpr (is_setlike<ViewType, NodeType, Allocator>::value) {
+        if constexpr (is_setlike<View>::value) {
             if (update) {
                 Node* existing = view->search(curr);
                 if (existing != nullptr) {  // item already exists
@@ -197,14 +227,9 @@ void _extend_left_to_right(
 
 
 /* Insert items from the right node to the left node. */
-template <
-    template <typename, template <typename> class> class ViewType,
-    typename NodeType,
-    template <typename> class Allocator,
-    typename Node
->
+template <typename View, typename Node>
 void _extend_right_to_left(
-    ViewType<NodeType, Allocator>* view,
+    View* view,
     Node* left,
     Node* right,
     PyObject* items,
@@ -234,7 +259,7 @@ void _extend_right_to_left(
         }
 
         // check if we should update existing nodes
-        if constexpr (is_setlike<ViewType, NodeType, Allocator>::value) {
+        if constexpr (is_setlike<View>::value) {
             if (update) {
                 Node* existing = view->search(curr);
                 if (existing != nullptr) {  // item already exists

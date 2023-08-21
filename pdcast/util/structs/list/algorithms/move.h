@@ -19,17 +19,9 @@
 namespace Ops {
 
     /* Get the linear distance between two values in a linked set or dictionary. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    Py_ssize_t distance(
-        ViewType<NodeType, Allocator>* view,
-        PyObject* item1,
-        PyObject* item2
-    ) {
-        using Node = typename ViewType<NodeType, Allocator>::Node;
+    template <typename View>
+    Py_ssize_t distance(View* view, PyObject* item1, PyObject* item2) {
+        using Node = typename View::Node;
 
         // search for nodes in hash table
         Node* node1 = view->search(item1);
@@ -74,17 +66,9 @@ namespace Ops {
     }
 
     /* Swap the positions of two values in a linked set or dictionary. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    void swap(
-        ViewType<NodeType, Allocator>* view,
-        PyObject* item1,
-        PyObject* item2
-    ) {
-        using Node = typename ViewType<NodeType, Allocator>::Node;
+    template <typename View>
+    void swap(View* view, PyObject* item1, PyObject* item2) {
+        using Node = typename View::Node;
 
         // search for nodes in hash table
         Node* node1 = view->search(item1);
@@ -144,13 +128,9 @@ namespace Ops {
     }
 
     /* Move an item within a linked set or dictionary. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    void move(ViewType<NodeType, Allocator>* view, PyObject* item, Py_ssize_t steps) {
-        using Node = typename ViewType<NodeType, Allocator>::Node;
+    template <typename View>
+    void move(View* view, PyObject* item, Py_ssize_t steps) {
+        using Node = typename View::Node;
 
         // search for node in hash table
         Node* node = view->search(item);
@@ -184,14 +164,9 @@ namespace Ops {
 
 /* Traverse a list relative to a given sentinel to find the left and right
 neighbors for an insertion or removal. */
-template <
-    template <typename, template <typename> class> class ViewType,
-    typename NodeType,
-    template <typename> class Allocator,
-    typename Node
->
+template <typename View, typename Node>
 std::tuple<Node*, Node*, Node*> _walk_double(
-    ViewType<NodeType, Allocator>* view,
+    View* view,
     Node* sentinel,
     Py_ssize_t steps,
     bool truncate

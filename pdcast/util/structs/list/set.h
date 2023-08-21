@@ -57,7 +57,7 @@ public:
 
     /* Construct an empty SetView to match the given template parameters.  This
     is called during `LinkedSet.__init__()` when no iterable is given. */
-    VariantSet(bool doubly_linked, ssize_t max_size) {
+    VariantSet(bool doubly_linked, Py_ssize_t max_size) {
         if (doubly_linked) {
             if (max_size < 0) {
                 this->variant = SetView<DoubleNode, FreeListAllocator>(max_size);
@@ -80,7 +80,7 @@ public:
         PyObject* iterable,
         bool doubly_linked,
         bool reverse,
-        ssize_t max_size,
+        Py_ssize_t max_size,
         PyObject* spec
     ) {
         if (doubly_linked) {
@@ -152,14 +152,12 @@ public:
 
     /* Dispatch to the correct implementation of get_relative() for each variant. */
     inline PyObject* get_relative(PyObject* sentinel, Py_ssize_t offset) {
-        PyObject* item = nullptr;
-        std::visit(
+        return std::visit(
             [&](auto& view) {
                 return Ops::get_relative(&view, sentinel, offset);
             },
             this->variant
         );
-        return item;
     }
 
     /* Dispatch to the correct implementation of insert_relative() for each variant. */
@@ -234,14 +232,12 @@ public:
 
     /* Dispatch to the correct implementation of pop_relative() for each variant. */
     inline PyObject* pop_relative(PyObject* sentinel, Py_ssize_t offset) {
-        PyObject* item = nullptr;
-        std::visit(
+        return std::visit(
             [&](auto& view) {
                 item = Ops::pop_relative(&view, sentinel, offset);
             },
             this->variant
         );
-        return item;
     }
 
     /* Dispatch to the correct implementation of clear_relative() for each variant. */
@@ -264,14 +260,12 @@ public:
 
     /* Dispatch to the correct implementation of edge() for each variant. */
     inline Py_ssize_t distance(PyObject* item1, PyObject* item2) {
-        Py_ssize_t dist = 0;
-        std::visit(
+        return std::visit(
             [&](auto& view) {
                 dist = Ops::distance(&view, item1, item2);
             },
             this->variant
         );
-        return dist;
     }
 
     /* Dispatch to the correct implementation of swap() for each variant. */

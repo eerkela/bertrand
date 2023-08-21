@@ -73,7 +73,7 @@ cdef extern from "core/view.h":
         ListView(
             PyObject* iterable,
             bint reverse,
-            ssize_t max_size,
+            Py_ssize_t max_size,
             PyObject* spec
         ) except +
         T* node(PyObject* value) except NULL
@@ -101,7 +101,7 @@ cdef extern from "core/view.h":
             PyObject* iterable,
             bint reverse,
             PyObject* spec,
-            ssize_t max_size
+            Py_ssize_t max_size
         ) except +
         Node* node(PyObject* value, PyObject* mapped) except NULL
         void recycle(Node* node)
@@ -132,7 +132,7 @@ cdef extern from "core/view.h":
             PyObject* iterable,
             bint reverse,
             PyObject* spec,
-            ssize_t max_size
+            Py_ssize_t max_size
         ) except +
         Node* node(PyObject* value) except NULL
         Node* node(PyObject* value, PyObject* mapped) except NULL

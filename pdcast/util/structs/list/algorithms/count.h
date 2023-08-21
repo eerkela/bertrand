@@ -3,6 +3,7 @@
 #define BERTRAND_STRUCTS_ALGORITHMS_COUNT_H
 
 #include <cstddef>  // size_t
+#include <utility>  // std::pair
 #include <Python.h>  // CPython API
 #include "../core/node.h"  // is_doubly_linked<>
 #include "../core/view.h"  // views, MAX_SIZE_T
@@ -16,9 +17,14 @@
 namespace Ops {
 
     /* Count the number of occurrences of an item within a linked set or dictionary. */
-    template <typename View>
-    size_t count(View* view, PyObject* item, size_t start, size_t stop) {
+    template <typename View, typename T>
+    size_t count(View* view, PyObject* item, T start, T stop) {
         using Node = typename View::Node;
+
+        // allow Python-style negative indexing + boundschecking
+        std::pair<size_t, size_t> bounds = normalize_bounds(
+            start, stop, view->size, true
+        );
 
         // check if item is contained in hash table
         Node* node = view->search(item);
@@ -27,50 +33,57 @@ namespace Ops {
         }
 
         // if range includes all items, return true
-        if (start == 0 && stop == view->size - 1) {
+        if (bounds.first == 0 && bounds.second == view->size - 1) {
             return 1;
         }
 
         // else, find index of item
         Node* curr = view->head;
         size_t idx = 0;
-        while (curr != node && idx < stop) {
+        while (curr != node && idx < bounds.second) {
             curr = static_cast<Node*>(curr->next);
             idx++;
         }
 
         // check if index is in range
-        if (idx >= start && idx < stop) {
+        if (idx >= bounds.first && idx < bounds.second) {
             return 1;
         }
         return 0;
     }
 
     /* Count the number of occurrences of an item within a linked list. */
-    template <typename NodeType, template <typename> class Allocator>
+    template <typename NodeType, template <typename> class Allocator, typename T>
     size_t count(
         ListView<NodeType, Allocator>* view,
         PyObject* item,
-        size_t start,
-        size_t stop
+        T start,
+        T stop
     ) {
         using Node = typename ListView<NodeType, Allocator>::Node;
         size_t observed = 0;
         Node* curr;
         size_t idx;
 
+        // allow Python-style negative indexing + boundschecking
+        std::pair<size_t, size_t> bounds = normalize_bounds(
+            start, stop, view->size, true
+        );
+
         // NOTE: if start index is closer to tail and the list is doubly-linked,
         // we can iterate from the tail to save time.
         if constexpr (is_doubly_linked<Node>::value) {
-            if (start > view->size / 2) {
+            if (bounds.first > view->size / 2) {
                 // else, start from tail
                 curr = view->tail;
-                for (idx = view->size - 1; idx >= stop; idx--) {  // skip to stop index
+
+                // skip to stop index
+                for (idx = view->size - 1; idx >= bounds.second; idx--) {
                     curr = static_cast<Node*>(curr->prev);
                 }
 
                 // search until we hit start index
-                while (idx >= start) {
+                while (idx >= bounds.first) {
                     // C API equivalent of the == operator
                     int comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
                     if (comp == -1) {  // comparison raised an exception
@@ -90,12 +103,12 @@ namespace Ops {
 
         // NOTE: otherwise, we iterate forward from the head
         curr = view->head;
-        for (idx = 0; idx < start; idx++) {  // skip to start index
+        for (idx = 0; idx < bounds.first; idx++) {  // skip to start index
             curr = static_cast<Node*>(curr->next);
         }
 
         // search until we hit stop index
-        while (idx < stop) {
+        while (idx < bounds.second) {
             // C API equivalent of the == operator
             int comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
             if (comp == -1) {  // comparison raised an exception

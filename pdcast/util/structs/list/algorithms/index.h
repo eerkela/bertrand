@@ -3,7 +3,9 @@
 #define BERTRAND_STRUCTS_ALGORITHMS_INDEX_H
 
 #include <cstddef>  // size_t
+#include <utility>  // std::pair
 #include <Python.h>  // CPython API
+#include "../core/bounds.h"  // normalize_index(), normalize_bounds(), etc.
 #include "../core/node.h"  // is_doubly_linked<>
 #include "../core/view.h"  // views, MAX_SIZE_T
 
@@ -20,18 +22,14 @@
 namespace Ops {
 
     /* Get the index of an item within a linked set or dictionary. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    size_t index(
-        ViewType<NodeType, Allocator>* view,
-        PyObject* item,
-        size_t start,
-        size_t stop
-    ) {
-        using Node = typename ViewType<NodeType, Allocator>::Node;
+    template <typename View, typename T>
+    size_t index(View* view, PyObject* item, T start, T stop) {
+        using Node = typename View::Node;
+
+        // allow python-style negative indexing + boundschecking
+        std::pair<size_t, size_t> bounds = normalize_bounds(
+            start, stop, view->size, true
+        );
 
         // search for item in hash table
         Node* node = view->search(item);
@@ -43,7 +41,7 @@ namespace Ops {
         // skip to start index
         Node* curr = view->head;
         size_t idx;
-        for (idx = 0; idx < start; idx++) {
+        for (idx = 0; idx < bounds.first; idx++) {
             if (curr == node) {  // item exists, but comes before range
                 PyErr_Format(PyExc_ValueError, "%R is not in the set", item);
                 return MAX_SIZE_T;
@@ -52,7 +50,7 @@ namespace Ops {
         }
 
         // iterate until we hit match or stop index
-        while (curr != node && idx < stop) {
+        while (curr != node && idx < bounds.second) {
             curr = static_cast<Node*>(curr->next);
             idx++;
         }
@@ -66,30 +64,37 @@ namespace Ops {
     }
 
     /* Get the index of an item within a linked list. */
-    template <typename NodeType, template <typename> class Allocator>
+    template <typename NodeType, template <typename> class Allocator, typename T>
     size_t index(
         ListView<NodeType, Allocator>* view,
         PyObject* item,
-        size_t start,
-        size_t stop
+        T start,
+        T stop
     ) {
         using Node = typename ListView<NodeType, Allocator>::Node;
         Node* curr;
         size_t idx;
 
+        // allow python-style negative indexing + boundschecking
+        std::pair<size_t, size_t> bounds = normalize_bounds(
+            start, stop, view->size, true
+        );
+
         // NOTE: if start index is closer to tail and the list is doubly-linked,
         // we can iterate from the tail to save time.
         if constexpr (is_doubly_linked<Node>::value) {
-            if (start > view->size / 2) {
+            if (bounds.first > view->size / 2) {
                 curr = view->tail;
-                for (idx = view->size - 1; idx > stop; idx--) {  // skip to stop index
+
+                // skip to stop index
+                for (idx = view->size - 1; idx > bounds.second; idx--) {
                     curr = static_cast<Node*>(curr->prev);
                 }
 
                 // search until we hit start index
                 bool found = false;
                 size_t last_observed;
-                while (idx >= start) {
+                while (idx >= bounds.first) {
                     // C API equivalent of the == operator
                     int comp = PyObject_RichCompareBool(item, curr->value, Py_EQ);
                     if (comp == -1) {  // comparison raised an exception
@@ -117,12 +122,12 @@ namespace Ops {
 
         // NOTE: otherwise, we iterate forward from the head
         curr = view->head;
-        for (idx = 0; idx < start; idx++) {  // skip to start index
+        for (idx = 0; idx < bounds.first; idx++) {  // skip to start index
             curr = static_cast<Node*>(curr->next);
         }
 
         // search until we hit stop index
-        while (idx < stop) {
+        while (idx < bounds.second) {
             // C API equivalent of the == operator
             int comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
             if (comp == -1) {  // `==` raised an exception

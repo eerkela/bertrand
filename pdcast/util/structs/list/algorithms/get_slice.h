@@ -24,22 +24,21 @@
 namespace Ops {
 
     /* Get the value at a particular index of a linked list, set, or dictionary. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    PyObject* get_index(ViewType<NodeType, Allocator>* view, size_t index) {
-        using Node = typename ViewType<NodeType, Allocator>::Node;
+    template <typename View, typename T>
+    PyObject* get_index(View* view, T index) {
+        using Node = typename View::Node;
         Node* curr;
+
+        // allow python-style negative indexing + boundschecking
+        size_t norm_index = normalize_index(index, view->size, false);
 
         // NOTE: if the index is closer to tail and the list is doubly-linked, we
         // can iterate from the tail to save time.
         if constexpr (is_doubly_linked<Node>::value) {
-            if (index > view->size / 2) {
+            if (norm_index > view->size / 2) {
                 // backward traversal
                 curr = view->tail;
-                for (size_t i = view->size - 1; i > index; i--) {
+                for (size_t i = view->size - 1; i > norm_index; i--) {
                     curr = static_cast<Node*>(curr->prev);
                 }
                 Py_INCREF(curr->value);  // caller takes ownership of reference
@@ -49,7 +48,7 @@ namespace Ops {
 
         // forward traversal
         curr = view->head;
-        for (size_t i = 0; i < index; i++) {
+        for (size_t i = 0; i < norm_index; i++) {
             curr = static_cast<Node*>(curr->next);
         }
         Py_INCREF(curr->value);  // caller takes ownership of reference
@@ -57,24 +56,20 @@ namespace Ops {
     }
 
     /* Extract a slice from a linked list, set, or dictionary. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    inline ViewType<NodeType, Allocator>* get_slice(
-        ViewType<NodeType, Allocator>* view,
+    template <typename View>
+    inline View* get_slice(
+        View* view,
         Py_ssize_t start,
         Py_ssize_t stop,
         Py_ssize_t step
     ) {
-        using Node = typename ViewType<NodeType, Allocator>::Node;
+        using Node = typename View::Node;
         size_t abs_step = static_cast<size_t>(llabs(step));
 
         // determine direction of traversal to avoid backtracking
         std::pair<size_t, size_t> bounds = normalize_slice(view, start, stop, step);
         if (PyErr_Occurred()) {  // Python returns an empty list here
-            return new ViewType<NodeType, Allocator>();
+            return new View();
         }
 
         // NOTE: if the slice is closer to the end of a doubly-linked list, we can
@@ -111,24 +106,20 @@ namespace Ops {
 
 
 /* Extract a slice from left to right. */
-template <
-    template <typename, template <typename> class> class ViewType,
-    typename NodeType,
-    template <typename> class Allocator
->
-ViewType<NodeType, Allocator>* _extract_slice_forward(
-    ViewType<NodeType, Allocator>* view,
+template <typename View>
+View* _extract_slice_forward(
+    View* view,
     size_t begin,
     size_t end,
     size_t abs_step,
     bool reverse
 ) {
-    using Node = typename ViewType<NodeType, Allocator>::Node;
+    using Node = typename View::Node;
 
     // create a new view to hold the slice
-    ViewType<NodeType, Allocator>* slice;
+    View* slice;
     try {
-        slice = new ViewType<NodeType, Allocator>();
+        slice = new View();
     } catch (const std::bad_alloc&) {  // MemoryError()
         PyErr_NoMemory();
         return nullptr;
@@ -174,24 +165,20 @@ ViewType<NodeType, Allocator>* _extract_slice_forward(
 
 
 /* Extract a slice from right to left. */
-template <
-    template <typename, template <typename> class> class ViewType,
-    typename NodeType,
-    template <typename> class Allocator
->
-ViewType<NodeType, Allocator>* _extract_slice_backward(
-    ViewType<NodeType, Allocator>* view,
+template <typename View>
+View* _extract_slice_backward(
+    View* view,
     size_t begin,
     size_t end,
     size_t abs_step,
     bool reverse
 ) {
-    using Node = typename ViewType<NodeType, Allocator>::Node;
+    using Node = typename View::Node;
 
     // create a new view to hold the slice
-    ViewType<NodeType, Allocator>* slice;
+    View* slice;
     try {
-        slice = new ViewType<NodeType, Allocator>();  // TODO: cannot default-construct
+        slice = new View();  // TODO: cannot default-construct
     } catch (const std::bad_alloc&) {  // MemoryError()
         PyErr_NoMemory();
         return nullptr;

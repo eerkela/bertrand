@@ -30,6 +30,7 @@ public:
     Node* head;
     Node* tail;
     size_t size;
+    Py_ssize_t max_size;
 
     /* Copy constructors. These are disabled for the sake of efficiency,
     preventing us from unintentionally copying data. */
@@ -37,19 +38,19 @@ public:
     ListView& operator=(const ListView&) = delete;      // copy assignment
 
     /* Construct an empty ListView. */
-    ListView(ssize_t max_size = -1) :
-        head(nullptr), tail(nullptr), size(0), specialization(nullptr),
-        allocator(max_size)
+    ListView(Py_ssize_t max_size = -1) :
+        head(nullptr), tail(nullptr), size(0), max_size(max_size),
+        specialization(nullptr), allocator(max_size)
     {}
 
     /* Construct a ListView from an input iterable. */
     ListView(
         PyObject* iterable,
         bool reverse = false,
-        ssize_t max_size = -1,
+        Py_ssize_t max_size = -1,
         PyObject* spec = nullptr
-    ) : head(nullptr), tail(nullptr), size(0), specialization(spec),
-        allocator(max_size)
+    ) : head(nullptr), tail(nullptr), size(0), max_size(max_size),
+        specialization(spec), allocator(max_size)
     {
         // unpack iterator into ListView (can throw std::invalid_argument)
         unpack_iterable(iterable, reverse);
@@ -60,13 +61,14 @@ public:
 
     /* Move ownership from one ListView to another (move constructor). */
     ListView(ListView&& other) :
-        head(other.head), tail(other.tail), size(other.size),
+        head(other.head), tail(other.tail), size(other.size), max_size(other.max_size),
         specialization(other.specialization), allocator(std::move(other.allocator))
     {
         // reset other ListView
         other.head = nullptr;
         other.tail = nullptr;
         other.size = 0;
+        other.max_size = 0;
         other.specialization = nullptr;
     }
 
@@ -84,6 +86,7 @@ public:
         head = other.head;
         tail = other.tail;
         size = other.size;
+        max_size = other.max_size;
         specialization = other.specialization;
         allocator = std::move(other.allocator);
 
@@ -91,6 +94,7 @@ public:
         other.head = nullptr;
         other.tail = nullptr;
         other.size = 0;
+        other.max_size = 0;
         other.specialization = nullptr;
 
         return *this;
@@ -127,7 +131,8 @@ public:
 
     /* Make a shallow copy of the entire list. */
     ListView<NodeType, Allocator>* copy() {
-        ListView<NodeType, Allocator>* result = new ListView<NodeType, Allocator>();
+        using View = ListView<NodeType, Allocator>;
+        View* result = new View(max_size);
 
         // copy nodes into new list
         copy_to(result);
@@ -361,14 +366,14 @@ public:
     using Base = ListView<Hashed<NodeType>, Allocator>;
 
     /* Construct an empty SetView. */
-    SetView(ssize_t max_size = -1) : Base(max_size), table() {}
+    SetView(Py_ssize_t max_size = -1) : Base(max_size), table() {}
 
     /* Construct a SetView from an input iterable. */
     SetView(
         PyObject* iterable,
         bool reverse = false,
         PyObject* spec = nullptr,
-        ssize_t max_size = -1
+        Py_ssize_t max_size = -1
     ) : Base(max_size), table()
     {
         // unpack iterator into SetView  (can throw std::invalid_argument)
@@ -404,7 +409,8 @@ public:
 
     /* Make a shallow copy of the entire list. */
     SetView<NodeType, Allocator>* copy() {
-        SetView<NodeType, Allocator>* result = new SetView<NodeType, Allocator>();
+        using View = SetView<NodeType, Allocator>;
+        View* result = new View(this->max_size);
 
         // copy nodes into new set
         Base::copy_to(result);
@@ -504,7 +510,7 @@ public:
     DictView& operator=(DictView&&) = delete;       // move assignment
 
     /* Construct an empty DictView. */
-    DictView(ssize_t max_size = -1) :
+    DictView(Py_ssize_t max_size = -1) :
         head(nullptr), tail(nullptr), size(0), specialization(nullptr),
         table(), allocator(max_size) {}
 
@@ -513,7 +519,7 @@ public:
         PyObject* iterable,
         bool reverse = false,
         PyObject* spec = nullptr,
-        ssize_t max_size = -1
+        Py_ssize_t max_size = -1
     ) : head(nullptr), tail(nullptr), size(0), specialization(nullptr),
         table(), allocator(max_size)
     {
@@ -803,18 +809,22 @@ private:
 ///////////////////////////
 
 
-/* A trait that detects whether the templated view type is set-like (i.e. uses
-a hash table to track each node). */
-template <
-    template <typename, template <typename> class> class ViewType,
-    typename NodeType,
-    template <typename> class Allocator
->
-struct is_setlike : std::integral_constant<
-    bool,
-    std::is_base_of_v<SetView<NodeType, Allocator>, ViewType<NodeType, Allocator>> ||
-    std::is_base_of_v<DictView<NodeType, Allocator>, ViewType<NodeType, Allocator>>
-> {};
+/* A trait that detects whether the templated view is set-like (i.e. has a
+search() method). */
+template <typename View>
+struct is_setlike {
+private:
+    // Helper template to detect whether View has a search() method
+    template <typename T>
+    static auto test(T* t) -> decltype(t->search(nullptr), std::true_type());
+
+    // Overload for when View does not have a search() method
+    template <typename T>
+    static std::false_type test(...);
+
+public:
+    static constexpr bool value = decltype(test<View>(nullptr))::value;
+};
 
 
 ///////////////////////////////

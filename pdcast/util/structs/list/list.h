@@ -54,7 +54,6 @@ using VariantView = std::variant<
     ListView<DoubleNode, DirectAllocator>,
     ListView<DoubleNode, FreeListAllocator>,
     ListView<DoubleNode, PreAllocator>,
-    ListView<Hashed<DoubleNode>, DirectAllocator>,
     SetView<SingleNode, DirectAllocator>,
     SetView<SingleNode, FreeListAllocator>,
     SetView<SingleNode, PreAllocator>,
@@ -92,20 +91,17 @@ public:
 
     /* Construct a new VariantList from an existing view.  This is called to
     construct a new `VariantList` from the output of `view.copy()` or `get_slice()`. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    VariantList(ViewType<NodeType, Allocator>&& view) {
-        using Node = typename ViewType<NodeType, Allocator>::Node;
-        _doubly_linked = is_doubly_linked<Node>::value;
+    template <typename View>
+    VariantList(View&& view) {
+        _doubly_linked = is_doubly_linked<typename View::Node>::value;
         variant = std::move(view);
     }
 
     /* Construct an empty ListView to match the given template parameters.  This
     is called to construct a LinkedList from an initializer sequence. */
-    VariantList(bool doubly_linked, ssize_t max_size) : _doubly_linked(doubly_linked) {
+    VariantList(bool doubly_linked, Py_ssize_t max_size) :
+        _doubly_linked(doubly_linked)
+    {
         if (doubly_linked) {
             if (max_size < 0) {
                 variant = ListView<DoubleNode, FreeListAllocator>(max_size);
@@ -127,7 +123,7 @@ public:
         PyObject* iterable,
         bool doubly_linked,
         bool reverse,
-        ssize_t max_size,
+        Py_ssize_t max_size,
         PyObject* spec
     ) : _doubly_linked(doubly_linked) {
         if (doubly_linked) {
@@ -172,9 +168,7 @@ public:
     inline void insert(T index, PyObject* item) {
         std::visit(
             [&](auto& view) {
-                // allow Python-style negative indexing + boundschecking
-                size_t norm_index = normalize_index(index, view.size, true);
-                Ops::insert(&view, norm_index, item);
+                Ops::insert(&view, index, item);
             },
             variant
         );
@@ -195,11 +189,7 @@ public:
     inline size_t index(PyObject* item, T start, T stop) {
         return std::visit(
             [&](auto& view) {
-                // allow Python-style negative indexing + boundschecking
-                std::pair<size_t, size_t> bounds = normalize_bounds(
-                    start, stop, view.size, true
-                );
-                return Ops::index(&view, item, bounds.first, bounds.second);
+                return Ops::index(&view, item, start, stop);
             },
             variant
         );
@@ -210,11 +200,7 @@ public:
     inline size_t count(PyObject* item, T start, T stop) {
         return std::visit(
             [&](auto& view) {
-                // allow Python-style negative indexing + boundschecking
-                std::pair<size_t, size_t> bounds = normalize_bounds(
-                    start, stop, view.size, true
-                );
-                return Ops::count(&view, item, bounds.first, bounds.second);
+                return Ops::count(&view, item, start, stop);
             },
             variant
         );
@@ -235,9 +221,7 @@ public:
     inline PyObject* pop(T index) {
         return std::visit(
             [&](auto& view) {
-                // allow Python-style negative indexing + boundschecking
-                size_t norm_index = normalize_index(index, view.size, false);
-                return Ops::pop(&view, norm_index);
+                return Ops::pop(&view, index);
             },
             variant
         );
@@ -288,7 +272,7 @@ public:
     }
 
     /* Dispatch to the correct implementation of rotate() for each variant. */
-    inline void rotate(ssize_t steps) {
+    inline void rotate(Py_ssize_t steps) {
         std::visit(
             [&](auto& view) {
                 Ops::rotate(&view, steps);
@@ -342,9 +326,7 @@ public:
     inline PyObject* get_index(T index) {
         return std::visit(
             [&](auto& view) {
-                // allow Python-style negative indexing + boundschecking
-                size_t norm_index = normalize_index(index, view.size, false);
-                return Ops::get_index(&view, norm_index);
+                return Ops::get_index(&view, index);
             },
             variant
         );
@@ -369,9 +351,7 @@ public:
     inline void set_index(T index, PyObject* value) {
         std::visit(
             [&](auto& view) {
-                // allow Python-style negative indexing + boundschecking
-                size_t norm_index = normalize_index(index, view.size, false);
-                Ops::set_index(&view, norm_index, value);
+                Ops::set_index(&view, index, value);
             },
             variant
         );
@@ -397,9 +377,7 @@ public:
     inline void delete_index(T index) {
         std::visit(
             [&](auto& view) {
-                // allow Python-style negative indexing + boundschecking
-                size_t norm_index = normalize_index(index, view.size, false);
-                Ops::delete_index(&view, norm_index);
+                Ops::delete_index(&view, index);
             },
             variant
         );

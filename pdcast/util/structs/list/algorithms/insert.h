@@ -76,14 +76,9 @@ namespace Ops {
 
 
 /* Attempt to insert a node between the left and right neighbors. */
-template <
-    template <typename, template <typename> class> class ViewType,
-    typename NodeType,
-    template <typename> class Allocator,
-    typename Node
->
+template <typename View, typename Node>
 void _insert_between(
-    ViewType<NodeType, Allocator>* view,
+    View* view,
     Node* left,
     Node* right,
     PyObject* item,
@@ -96,7 +91,7 @@ void _insert_between(
     }
 
     // check if we should update an existing node
-    if constexpr (is_setlike<ViewType, NodeType, Allocator>::value) {
+    if constexpr (is_setlike<View>::value) {
         if (update) {
             Node* existing = view->search(curr);
             if (existing != nullptr) {  // item already exists

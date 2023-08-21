@@ -18,25 +18,24 @@
 namespace Ops {
 
     /* Delete the value at a particular index of a linked list, set, or dictionary. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    void delete_index(ViewType<NodeType, Allocator>* view, size_t index) {
-        using Node = typename ViewType<NodeType, Allocator>::Node;
+    template <typename View, typename T>
+    void delete_index(View* view, T index) {
+        using Node = typename View::Node;
         Node* prev;
         Node* curr;
         Node* next;
 
+        // allow python-style negative indexing + boundschecking
+        size_t norm_index = normalize_index(index, view->size, false);
+
         // NOTE: if the index is closer to tail and the list is doubly-linked, we
         // can iterate from the tail to save time.
         if constexpr (is_doubly_linked<Node>::value) {
-            if (index > view->size / 2) {
+            if (norm_index > view->size / 2) {
                 // backward traversal
                 next = nullptr;
                 curr = view->tail;
-                for (size_t i = view->size - 1; i > index; i--) {
+                for (size_t i = view->size - 1; i > norm_index; i--) {
                     next = curr;
                     curr = static_cast<Node*>(curr->prev);
                 }
@@ -51,7 +50,7 @@ namespace Ops {
         // forward traversal
         prev = nullptr;
         curr = view->head;
-        for (size_t i = 0; i < index; i++) {
+        for (size_t i = 0; i < norm_index; i++) {
             prev = curr;
             curr = static_cast<Node*>(curr->next);
         }
@@ -62,18 +61,14 @@ namespace Ops {
     }
 
     /* Delete a slice from a linked list, set, or dictionary. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
+    template <typename View>
     void delete_slice(
-        ViewType<NodeType, Allocator>* view,
+        View* view,
         Py_ssize_t start,
         Py_ssize_t stop,
         Py_ssize_t step
     ) {
-        using Node = typename ViewType<NodeType, Allocator>::Node;
+        using Node = typename View::Node;
         size_t abs_step = static_cast<size_t>(llabs(step));
 
         // get direction in which to traverse slice that minimizes iterations
@@ -110,18 +105,14 @@ namespace Ops {
 
 
 /* Remove a slice from left to right. */
-template <
-    template <typename, template <typename> class> class ViewType,
-    typename NodeType,
-    template <typename> class Allocator
->
+template <typename View>
 void _drop_slice_forward(
-    ViewType<NodeType, Allocator>* view,
+    View* view,
     size_t begin,
     size_t slice_length,
     size_t abs_step
 ) {
-    using Node = typename ViewType<NodeType, Allocator>::Node;
+    using Node = typename View::Node;
 
     // skip to start index
     Node* prev = nullptr;
@@ -154,18 +145,14 @@ void _drop_slice_forward(
 
 
 /* Remove a slice from right to left. */
-template <
-    template <typename, template <typename> class> class ViewType,
-    typename NodeType,
-    template <typename> class Allocator
->
+template <typename View>
 void _drop_slice_backward(
-    ViewType<NodeType, Allocator>* view,
+    View* view,
     size_t begin,
     size_t slice_length,
     size_t abs_step
 ) {
-    using Node = typename ViewType<NodeType, Allocator>::Node;
+    using Node = typename View::Node;
 
     // skip to start index
     Node* next = nullptr;

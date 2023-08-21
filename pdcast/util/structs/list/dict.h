@@ -69,7 +69,9 @@ public:
 
     /* Construct an empty DictView to match the given template parameters and
     wrap it as a VariantDict. This is called during `LinkedSet.__init__()`. */
-    VariantDict(bool doubly_linked, ssize_t max_size) : _doubly_linked(doubly_linked) {
+    VariantDict(bool doubly_linked, Py_ssize_t max_size) :
+        _doubly_linked(doubly_linked)
+    {
         if (doubly_linked) {
             if (max_size < 0) {
                 view_variant = DictView<DoubleNode, FreeListAllocator>(max_size);
@@ -91,7 +93,7 @@ public:
         PyObject* iterable,
         bool doubly_linked,
         bool reverse,
-        ssize_t max_size,
+        Py_ssize_t max_size,
         PyObject* spec
     ) : _doubly_linked(doubly_linked) {
         if (doubly_linked) {

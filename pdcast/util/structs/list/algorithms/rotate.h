@@ -18,16 +18,12 @@
 namespace Ops {
 
     /* Rotate a linked list to the right by the specified number of steps. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    void rotate(ViewType<NodeType, Allocator>* view, ssize_t steps) {
-        using Node = typename ViewType<NodeType, Allocator>::Node;
+    template <typename View>
+    void rotate(View* view, Py_ssize_t steps) {
+        using Node = typename View::Node;
 
         // normalize steps
-        size_t norm_steps = abs(steps) % view->size;
+        size_t norm_steps = llabs(steps) % view->size;
         if (norm_steps == 0) {
             return;  // rotated list is identical to original
         }

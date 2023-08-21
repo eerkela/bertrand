@@ -460,11 +460,19 @@ struct Counted : public NodeType {
 /* A trait that detects whether the templated node type is doubly-linked (i.e.
 has a `prev` pointer). */
 template <typename Node>
-struct is_doubly_linked : std::integral_constant<
-    bool,
-    std::is_base_of_v<DoubleNode, Node>
-    // || std::is_base_of<OtherNode, Node>::value  // additional node types
-> {};
+struct is_doubly_linked {
+private:
+    // Helper template to detect whether Node has a `prev` field
+    template <typename T>
+    static std::true_type test(decltype(&T::prev)*);
+
+    //  Overload for when `prev` is not present
+    template <typename T>
+    static std::false_type test(...);
+
+public:
+    static constexpr bool value = decltype(test<Node>(nullptr))::value;
+};
 
 
 /* A trait that detects whether the templated node type holds a reference to a
@@ -472,7 +480,7 @@ mapped value. */
 template <typename Node>
 struct has_mapped {
 private:
-    // Helper template to detect whether Node has a `PyObject* mapped` field
+    // Helper template to detect whether Node has a `mapped` field
     template <typename T>
     static std::true_type test(decltype(&T::mapped)*);
 
@@ -481,7 +489,7 @@ private:
     static std::false_type test(...);
 
 public:
-    static const bool value = decltype(test<Node>(nullptr))::value;
+    static constexpr bool value = decltype(test<Node>(nullptr))::value;
 };
 
 
