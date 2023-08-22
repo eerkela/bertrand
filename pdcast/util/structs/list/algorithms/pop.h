@@ -2,8 +2,6 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_POP_H
 #define BERTRAND_STRUCTS_ALGORITHMS_POP_H
 
-#include <cstddef>  // size_t
-#include <queue>  // std::queue
 #include <tuple>  // std::tuple
 #include <Python.h>  // CPython API
 #include "../core/bounds.h"  // neighbors()
@@ -17,10 +15,6 @@
 
 
 namespace Ops {
-
-    /////////////////////
-    ////    POP()    ////
-    /////////////////////
 
     /* Pop an item from a linked list, set, or dictionary at the given index. */
     template <typename View, typename T>
@@ -79,46 +73,6 @@ namespace Ops {
 
         // recycle node and return a new reference to its value
         Node* next = static_cast<Node*>(curr->next);
-        return _pop_node(view, prev, curr, next);
-    }
-
-    //////////////////////////////
-    ////    POP_RELATIVE()    ////
-    //////////////////////////////
-
-    /* Pop an item from a linked list, set, or dictionary relative to a given
-    sentinel value. */
-    template <typename View>
-    PyObject* pop_relative(View* view, PyObject* sentinel, Py_ssize_t offset) {
-        using Node = typename View::Node;
-
-        // ensure offset is nonzero
-        if (offset == 0) {
-            PyErr_SetString(PyExc_ValueError, "offset must be non-zero");
-            return nullptr;
-        }
-
-        // search for sentinel
-        Node* node = view->search(sentinel);
-        if (node == nullptr) {
-            PyErr_Format(PyExc_ValueError, "%R is not in the set", sentinel);
-            return nullptr;
-        }
-
-        // walk according to offset
-        std::tuple<Node*, Node*, Node*> bounds = relative_neighbors(
-            view, node, offset, false
-        );
-        Node* prev = std::get<0>(bounds);
-        Node* curr = std::get<1>(bounds);
-        Node* next = std::get<2>(bounds);
-        if (prev == nullptr  && curr == nullptr && next == nullptr) {
-            // walked off end of list
-            PyErr_Format(PyExc_IndexError, "offset %zd is out of range", offset);
-            return nullptr;  // propagate
-        }
-
-        // pop node between boundaries
         return _pop_node(view, prev, curr, next);
     }
 

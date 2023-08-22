@@ -2,8 +2,6 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_REMOVE_H
 #define BERTRAND_STRUCTS_ALGORITHMS_REMOVE_H
 
-#include <cstddef>  // size_t
-#include <tuple>  // std::tuple
 #include <Python.h>  // CPython API
 #include "../core/node.h"  // is_doubly_linked<>
 #include "../core/view.h"  // views
@@ -56,36 +54,10 @@ namespace Ops {
         PyErr_Format(PyExc_ValueError, "%R not in list", item);
     }
 
-    /////////////////////////////////
-    ////    REMOVE_RELATIVE()    ////
-    /////////////////////////////////
-
-    /* Remove an item from a linked set or dictionary relative to a given sentinel
-    value. */
-    template <typename View>
-    inline void remove_relative(View* view, PyObject* sentinel, Py_ssize_t offset) {
-        _drop_relative(view, sentinel, offset, true);  // propagate errors
-    }
-
-    /////////////////////////
-    ////    DISCARD()    ////
-    /////////////////////////
-
     /* Remove an item from a linked set or dictionary if it is present. */
     template <typename View>
     inline void discard(View* view, PyObject* item) {
         _drop_setlike(view, item, false);  // suppress errors
-    }
-
-    //////////////////////////////////
-    ////    DISCARD_RELATIVE()    ////
-    //////////////////////////////////
-
-    /* Remove an item from a linked set or dictionary immediately after the
-    specified sentinel value. */
-    template <typename View>
-    inline void discard_relative(View* view, PyObject* sentinel, Py_ssize_t offset) {
-        _drop_relative(view, sentinel, offset, false);  // suppress errors
     }
 
 }
@@ -130,49 +102,6 @@ void _drop_setlike(View* view, PyObject* item, bool raise) {
 
     // unlink and free node
     view->unlink(prev, curr, static_cast<Node*>(curr->next));
-    view->recycle(curr);
-}
-
-
-/* Implement both remove_relative() and discard_relative() depending on error handling
-flag. */
-template <typename View>
-void _drop_relative(View* view, PyObject* sentinel, Py_ssize_t offset, bool raise) {
-    using Node = typename View::Node;
-
-    // ensure offset is nonzero
-    if (offset == 0) {
-        PyErr_Format(PyExc_ValueError, "offset must be non-zero");
-        return;
-    } else if (offset < 0) {
-        offset += 1;
-    }
-
-    // search for sentinel
-    Node* node = view->search(sentinel);
-    if (node == nullptr) {
-        if (raise) {  // sentinel not found
-            PyErr_Format(PyExc_KeyError, "%R is not contained in the set", sentinel);
-        }
-        return;
-    }
-
-    // walk according to offset
-    std::tuple<Node*, Node*, Node*> neighbors = relative_neighbors(
-        view, node, offset, false
-    );
-    Node* prev = std::get<0>(neighbors);
-    Node* curr = std::get<1>(neighbors);
-    Node* next = std::get<2>(neighbors);
-    if (prev == nullptr  && curr == nullptr && next == nullptr) {
-        if (raise) {  // walked off end of list
-            PyErr_Format(PyExc_IndexError, "offset %zd is out of range", offset);
-        }
-        return;
-    }
-
-    // remove node between boundaries
-    view->unlink(prev, curr, next);
     view->recycle(curr);
 }
 

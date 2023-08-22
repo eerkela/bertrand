@@ -234,7 +234,7 @@ public:
     inline PyObject* pop_relative(PyObject* sentinel, Py_ssize_t offset) {
         return std::visit(
             [&](auto& view) {
-                item = Ops::pop_relative(&view, sentinel, offset);
+                return Ops::pop_relative(&view, sentinel, offset);
             },
             this->variant
         );
@@ -262,7 +262,7 @@ public:
     inline Py_ssize_t distance(PyObject* item1, PyObject* item2) {
         return std::visit(
             [&](auto& view) {
-                dist = Ops::distance(&view, item1, item2);
+                return Ops::distance(&view, item1, item2);
             },
             this->variant
         );

@@ -358,7 +358,7 @@ template <typename View, typename Node>
 std::pair<Node*, Node*> relative_junction(
     View* view,
     Node* sentinel,
-    Py_ssize_t steps,
+    Py_ssize_t offset,
     bool truncate
 ) {
     Node* prev;
@@ -368,9 +368,9 @@ std::pair<Node*, Node*> relative_junction(
     // NOTE: this is trivial for doubly-linked lists since we can easily
     // iterate in both directions.
     if constexpr (is_doubly_linked<Node>::value) {
-        if (steps < 0) {
+        if (offset < 0) {
             prev = static_cast<Node*>(curr->prev);
-            for (Py_ssize_t i = 0; i > steps; i--) {
+            for (Py_ssize_t i = 0; i > offset; i--) {
                 if (prev == nullptr) {
                     if (truncate) {
                         break;
@@ -384,7 +384,7 @@ std::pair<Node*, Node*> relative_junction(
             return std::make_pair(prev, curr);
         } else {
             next = static_cast<Node*>(curr->next);
-            for (Py_ssize_t i = 0; i < steps; i++) {
+            for (Py_ssize_t i = 0; i < offset; i++) {
                 if (next == nullptr) {
                     if (truncate) {
                         break;
@@ -409,14 +409,14 @@ std::pair<Node*, Node*> relative_junction(
     // normally we would always get the previous node while iterating forward,
     // but this is not the case if the sentinel is the tail of the list and
     // truncate=true. If truncate=False, we just raise an error like normal.
-    if (truncate && steps > 0 && sentinel == view->tail) {
-        steps = 0;  // skip forward iteration branch
+    if (truncate && offset > 0 && curr == view->tail) {
+        offset = 0;  // skip forward iteration branch
     }
 
     // forward iteration (efficient)
-    if (steps > 0) {
+    if (offset > 0) {
         next = static_cast<Node*>(curr->next);
-        for (Py_ssize_t i = 0; i < steps; i++) {
+        for (Py_ssize_t i = 0; i < offset; i++) {
             if (next == nullptr) {  // walked off end of list
                 if (truncate) {
                     break;
@@ -435,8 +435,8 @@ std::pair<Node*, Node*> relative_junction(
     // number of steps.  When it reaches the sentinel, `curr` will be at the
     // correct position.
     Node* lookahead = view->head;
-    for (size_t i = 0; i > steps; i--) {  // advance lookahead to offset
-        if (lookahead == sentinel) {
+    for (Py_ssize_t i = 0; i > offset; i--) {  // advance lookahead to offset
+        if (lookahead == curr) {
             if (truncate) {  // truncate to beginning of list
                 return std::make_pair(nullptr, view->head);
             } else {  // index out of range
@@ -448,13 +448,13 @@ std::pair<Node*, Node*> relative_junction(
 
     // advance both pointers until lookahead reaches sentinel
     prev = nullptr;
-    curr = view->head;
-    while (lookahead != sentinel) {
-        prev = curr;
-        curr = static_cast<Node*>(curr->next);
+    Node* temp = view->head;
+    while (lookahead != curr) {
+        prev = temp;
+        temp = static_cast<Node*>(temp->next);
         lookahead = static_cast<Node*>(lookahead->next);
     }
-    return std::make_tuple(prev, curr);
+    return std::make_tuple(prev, temp);
 }
 
 
@@ -464,7 +464,7 @@ template <typename View, typename Node>
 std::tuple<Node*, Node*, Node*> relative_neighbors(
     View* view,
     Node* sentinel,
-    Py_ssize_t steps,
+    Py_ssize_t offset,
     bool truncate
 ) {
     Node* prev;
@@ -473,9 +473,9 @@ std::tuple<Node*, Node*, Node*> relative_neighbors(
 
     // doubly-linked case
     if constexpr (is_doubly_linked<Node>::value) {
-        if (steps < 0) {  // backward traversal
+        if (offset < 0) {  // backward traversal
             prev = static_cast<Node*>(curr->prev);
-            for (Py_ssize_t i = 0; i > steps; i--) {
+            for (Py_ssize_t i = 0; i > offset; i--) {
                 if (prev == nullptr) {
                     if (truncate) {
                         break;
@@ -489,7 +489,7 @@ std::tuple<Node*, Node*, Node*> relative_neighbors(
             next = static_cast<Node*>(curr->next);
         } else {  // forward traversal
             next = static_cast<Node*>(curr->next);
-            for (Py_ssize_t i = 0; i < steps; i++) {
+            for (Py_ssize_t i = 0; i < offset; i++) {
                 if (next == nullptr) {
                     if (truncate) {
                         break;
@@ -506,15 +506,15 @@ std::tuple<Node*, Node*, Node*> relative_neighbors(
     }
 
     // handle edge case where sentinel is tail and truncate=true
-    if (truncate && steps > 0 && sentinel == view->tail) {
-        steps = 0;  // skip forward iteration branch
+    if (truncate && offset > 0 && curr == view->tail) {
+        offset = 0;  // skip forward iteration branch
     }
 
     // forward iteration (efficient)
-    if (steps > 0) {
+    if (offset > 0) {
         prev = nullptr;
         next = static_cast<Node*>(curr->next);
-        for (Py_ssize_t i = 0; i < steps; i++) {
+        for (Py_ssize_t i = 0; i < offset; i++) {
             if (next == nullptr) {  // walked off end of list
                 if (truncate) {
                     break;
@@ -533,8 +533,8 @@ std::tuple<Node*, Node*, Node*> relative_neighbors(
 
     // backward iteration (inefficient)
     Node* lookahead = view->head;
-    for (size_t i = 0; i > steps; i--) {  // advance lookahead to offset
-        if (lookahead == sentinel) {
+    for (size_t i = 0; i > offset; i--) {  // advance lookahead to offset
+        if (lookahead == curr) {
             if (truncate) {  // truncate to beginning of list
                 return std::make_tuple(nullptr, view->head, view->head->next);
             } else {  // index out of range
@@ -546,14 +546,14 @@ std::tuple<Node*, Node*, Node*> relative_neighbors(
 
     // advance both pointers until lookahead reaches sentinel
     prev = nullptr;
-    curr = view->head;
-    while (lookahead != sentinel) {
-        prev = curr;
-        curr = static_cast<Node*>(curr->next);
+    Node* temp = view->head;
+    while (lookahead != curr) {
+        prev = temp;
+        temp = static_cast<Node*>(temp->next);
         lookahead = static_cast<Node*>(lookahead->next);
     }
-    next = static_cast<Node*>(curr->next);
-    return std::make_tuple(prev, curr, next);
+    next = static_cast<Node*>(temp->next);
+    return std::make_tuple(prev, temp, next);
 }
 
 

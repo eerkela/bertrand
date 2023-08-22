@@ -5,13 +5,9 @@
 #include <cstddef>  // size_t
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
-#include "../core/bounds.h"  // normalize_index(), normalize_bounds(), etc.
+#include "../core/bounds.h"  // normalize_bounds(), etc.
 #include "../core/node.h"  // is_doubly_linked<>
 #include "../core/view.h"  // views, MAX_SIZE_T
-
-
-// TODO: add a list.edge(a, b, compare="<") method for sets and dictionaries
-// that checks whether A comes before or after B in the list.
 
 
 //////////////////////
