@@ -140,12 +140,75 @@ namespace Ops {
         }
 
         // check for no-op
-        if (steps == 0) {
+        if (
+            steps == 0 ||
+            (steps > 0 && node == view->tail) ||
+            (steps < 0 && node == view->head)
+        ) {
             return;  // do nothing
         }
 
-        // TODO: similar to walk, but gets the current node's predecessor at
-        // the same time.
+        // TODO: all we really need to do is find old_prev and new_prev.  The
+        // next pointers can be inferred from the prev pointers.
+
+
+        Node* old_prev;
+        Node* old_next = static_cast<Node*>(node->next);
+        Node* new_prev;
+        Node* new_next;
+
+        // get neighbors at both the insertion and removal points
+        if constexpr (is_doubly_linked<Node>::value) {
+            // get old_prev from `prev` pointer
+            old_prev = static_cast<Node*>(node->prev);
+
+            // determine new_prev and new_next
+            if (steps > 0) {
+                new_prev = old_next;
+                new_next = static_cast<Node*>(new_prev->next);
+                for (Py_ssize_t i = 1; i < steps; i++) {
+                    if (new_next == nullptr) {
+                        break;  // truncate to end of list
+                    }
+                    new_prev = new_next;
+                    new_next = static_cast<Node*>(new_next->next);
+                }
+            } else {
+                new_next = old_prev;
+                new_prev = static_cast<Node*>(new_next->prev);
+                for (Py_ssize_t i = -1; i > steps; i--) {
+                    if (new_prev == nullptr) {
+                        break;  // truncate to start of list
+                    }
+                    new_next = new_prev;
+                    new_prev = static_cast<Node*>(new_prev->prev);
+                }
+            }
+        } else {
+            if (steps > 0) {
+                old_prev = nullptr;
+                Node* temp = view->head;
+                while (temp != node) {
+                    old_prev = temp;
+                    temp = static_cast<Node*>(temp->next);
+                }
+                new_prev = old_next;
+                new_next = static_cast<Node*>(new_prev->next);
+                for (Py_ssize_t i = 1; i < steps; i++) {
+                    if (new_next == nullptr) {
+                        break;  // truncate to end of list
+                    }
+                    new_prev = new_next;
+                    new_next = static_cast<Node*>(new_next->next);
+                }
+            } else {
+                new_prev = nullptr;
+
+                // TODO: 2-pointer approach.  Lagging pointer is the new_prev.
+                // Lookahead pointer is old_prev.
+
+            }
+        }
 
     }
 
@@ -157,71 +220,19 @@ namespace Ops {
 ///////////////////////
 
 
-// TODO: implement a shared method that walks the list and returns the current
-// node's predecessor as well as the insertion bounds.  This is relevant for
-// move operations since we're moving the node from one position to another.
-
-
-/* Traverse a list relative to a given sentinel to find the left and right
-neighbors for an insertion or removal. */
+/* Get the prev pointers for a relative move operation. */
 template <typename View, typename Node>
-std::tuple<Node*, Node*, Node*> _walk_double(
+std::pair<Node*, Node*> _walk_relative(
     View* view,
+    Node* node,
     Node* sentinel,
-    Py_ssize_t steps,
-    bool truncate
+    Py_ssize_t steps
 ) {
-    // adjust steps to account for forward/backward traversal
-    if (steps == 0) {
-        PyErr_Format(PyExc_ValueError, "steps must be non-zero");
-        return std::make_tuple(nullptr, nullptr, nullptr);
-    }
+    
 
-    // NOTE: if the list is doubly-linked, then finding the previous node and
-    // iterating to the junction point is trivial in both directions.
 
-    Node* left;
-    Node* right;
-    if (steps > 0) {  // iterate forward 
-        left = sentinel;
-        right = static_cast<Node*>(left->next);
-        for (Py_ssize_t i = 0; i < steps; i++) {
-            if (right == nullptr) {
-                if (truncate) {
-                    break;  // truncate to end of list
-                } else {
-                    PyErr_SetString(PyExc_IndexError, "list index out of range");
-                    return std::tuple<Node*, Node*, Node*> std::make_tuple(
-                        nullptr, nullptr, nullptr
-                    );
-                }
-            }
-            left = right;
-            right = static_cast<Node*>(right->next);
-        }
-    } else {  // iterate backward
-        right = sentinel;
-        left = static_cast<Node*>(right->prev);
-        for (Py_ssize_t i = -1; i > steps; i--) {
-            if (left == nullptr) {
-                if (truncate) {
-                    break;  // truncate to start of list
-                } else {
-                    PyErr_SetString(PyExc_IndexError, "list index out of range");
-                    return std::tuple<Node*, Node*, Node*> std::make_tuple(
-                        nullptr, nullptr, nullptr
-                    );
-                }
-            }
-            right = left;
-            left = static_cast<Node*>(left->prev);
-        }
-    }
 
-    // return as 3-tuple
-    return std::make_tuple(static_cast<Node*>(sentinel->prev), left, right);
 }
-
 
 
 

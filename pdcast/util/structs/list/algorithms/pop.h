@@ -21,18 +21,17 @@ namespace Ops {
     PyObject* pop(View* view, T index) {
         using Node = typename View::Node;
 
+        // allow python-style negative indexing + boundschecking
+        size_t idx = normalize_index(index, view->size, false);
+        if (idx == MAX_SIZE_T && PyErr_Occurred()) {
+            return nullptr;  // propagate error
+        }
+
         // get neighbors at index
-        std::tuple<Node*, Node*, Node*> bounds = neighbors(
-            view, view->head, index, false
-        );
+        std::tuple<Node*, Node*, Node*> bounds = neighbors(view, view->head, idx);
         Node* prev = std::get<0>(bounds);
         Node* curr = std::get<1>(bounds);
         Node* next = std::get<2>(bounds);
-        if (prev == nullptr && curr == nullptr && next == nullptr) {
-            // walked off end of list
-            PyErr_Format(PyExc_IndexError, "index %zd is out of range", index);
-            return nullptr;
-        }
 
         // recycle node and return a new reference to its value
         return _pop_node(view, prev, curr, next);

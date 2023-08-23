@@ -27,9 +27,8 @@ namespace Ops {
         using Node = typename View::Node;
 
         // get neighboring nodes at index
-        std::pair<Node*, Node*> neighbors = junction(
-            view, view->head, index, true
-        );
+        size_t idx = normalize_index(index, view->size, true);
+        std::pair<Node*, Node*> neighbors = junction(view, view->head, idx);
 
         // insert node between neighbors
         _insert_between(view, neighbors.first, neighbors.second, item, false);

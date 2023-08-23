@@ -10,6 +10,11 @@
 #include "node.h"  // is_doubly_linked<>
 
 
+// TODO: slice methods can use walk(), relative_junction(), and relative_neighbors()
+// to traverse the slice.  This might allow us to cut down on the complexity of
+// the slice methods.
+
+
 /////////////////////////
 ////    CONSTANTS    ////
 /////////////////////////
@@ -202,8 +207,8 @@ std::pair<size_t, size_t> normalize_slice(
     Py_ssize_t step
 ) {
     // NOTE: the input to this function is assumed to be the output of
-    // slice.indices(), which handles negative indices and 0 step size.  Its
-    // behavior is undefined if these conditions are not met.
+    // slice.indices(), which handles missing and negative indices as well as 0
+    // step size.  Its behavior is undefined if these conditions are not met.
     using Node = typename View::Node;
 
     // convert from half-open to closed interval
@@ -254,93 +259,64 @@ std::pair<size_t, size_t> normalize_slice(
 
 // NOTE: similarly, we have to be careful about how we handle insertions and
 // removals within the list.  Since these need access to the neighboring nodes,
-// we have to find the previous node.  This is trivial for doubly-linked lists,
-// but requires a full linear traversal for singly-linked ones.  These helper
-// methods allow us to abstract away the differences between the two.
+// we actually have to find the previous node and then return its successor(s).
+// These helpers greatly simplify the process of finding the correct nodes in
+// these cases.
+
+
+/* Get a node at a specified position within a linked list. */
+template <typename View, typename Node>
+Node* node_at_index(View* view, Node* head, size_t index) {
+    // If the list is doubly-linked, we can traverse from either end
+    if constexpr (is_doubly_linked<Node>::value) {
+        if (index > view->size / 2) {  // backward traversal
+            Node* curr = view->tail;
+            for (size_t i = view->size - 1; i > index; i--) {
+                curr = static_cast<Node*>(curr->prev);
+            }
+            return curr;
+        }
+    }
+
+    // Otherwise, we have to iterate from the head
+    Node* curr = view->head;
+    for (size_t i = 0; i < index; i++) {
+        curr = static_cast<Node*>(curr->next);
+    }
+    return curr;
+}
 
 
 /* Traverse a list to a given index in order to find the left and right
 bounds for an insertion. */
-template <typename View, typename Node, typename T>
-std::pair<Node*, Node*> junction(View* view, Node* head, T index, bool truncate) {
-    // allow Python-style negative indexing + boundschecking
-    size_t norm_index = normalize_index(index, view->size, truncate);
+template <typename View, typename Node>
+std::pair<Node*, Node*> junction(View* view, Node* head, size_t index) {
+    Node* prev;
     Node* curr;
 
-    // NOTE: if the list is doubly-linked, then we can traverse from either end
-    // and only need a single pointer.
-    if constexpr (is_doubly_linked<Node>::value) {
-        if (norm_index > view->size / 2) {  // backward traversal
-            curr = view->tail;
-            for (size_t i = view->size - 1; i > norm_index; i--) {
-                curr = static_cast<Node*>(curr->prev);
-            }
-            return std::make_pair(curr, static_cast<Node*>(curr->next));
-
-        } else {  // forward traversal
-            curr = view->head;
-            for (size_t i = 0; i < norm_index; i++) {
-                curr = static_cast<Node*>(curr->next);
-            }
-            return std::make_pair(static_cast<Node*>(curr->prev), curr);
-        }
+    // get previous node and next successor
+    if (index == 0) {  // special case for head of list
+        prev = nullptr;
+        curr = view->head;
+    } else {
+        prev = node_at_index(view, head, index - 1);
+        curr = static_cast<Node*>(prev->next);
     }
 
-    // Otherwise, iterate from the head
-    Node* prev = nullptr;
-    curr = view->head;
-    for (size_t i = 0; i < norm_index; i++) {
-        prev = curr;
-        curr = static_cast<Node*>(curr->next);
-    }
     return std::make_pair(prev, curr);
 }
 
 
 /* Traverse a list to a given index in order to find the left and right
 bounds for a removal. */
-template <typename View, typename Node, typename T>
-std::tuple<Node*, Node*, Node*> neighbors(
-    View* view,
-    Node* head,
-    T index,
-    bool truncate
-) {
-    // allow Python-style negative indexing + boundschecking
-    size_t norm_index = normalize_index(index, view->size, truncate);
+template <typename View, typename Node>
+inline std::tuple<Node*, Node*, Node*> neighbors(View* view, Node* head, size_t index) {
+    // start with junction() to get the previous and current nodes
+    std::pair<Node*, Node*> bounds = junction(view, head, index);
 
-    Node* prev;
-    Node* curr;
-    Node* next;
-
-    // NOTE: if the list is doubly-linked, then we can traverse from either end
-    // and only need a single pointer.
-    if constexpr (is_doubly_linked<Node>::value) {
-        if (norm_index > view->size / 2) {  // backward traversal
-            curr = view->tail;
-            for (size_t i = view->size - 1; i > norm_index; i--) {
-                curr = static_cast<Node*>(curr->prev);
-            }
-        } else {  // forward traversal
-            curr = view->head;
-            for (size_t i = 0; i < norm_index; i++) {
-                curr = static_cast<Node*>(curr->next);
-            }
-        }
-        prev = static_cast<Node*>(curr->prev);
-        next = static_cast<Node*>(curr->next);
-        return std::make_tuple(prev, curr, next);
-    }
-
-    // Otherwise, iterate from the head
-    prev = nullptr;
-    curr = view->head;
-    for (size_t i = 0; i < norm_index; i++) {
-        prev = curr;
-        curr = static_cast<Node*>(curr->next);
-    }
-    next = static_cast<Node*>(curr->next);
-    return std::make_tuple(prev, curr, next);
+    // second bound corresponds to current node, so we just get its successor
+    Node* next = static_cast<Node*>(bounds.second->next);
+    return std::make_tuple(bounds.first, bounds.second, next);
 }
 
 
@@ -352,6 +328,73 @@ std::tuple<Node*, Node*, Node*> neighbors(
 // blindly starting at the head or tail.
 
 
+/* Get a node relative to another node within a linked list, set, or dictionary. */
+template <typename View, typename Node>
+Node* walk(View* view, Node* node, Py_ssize_t offset, bool truncate) {
+    // check for no-op
+    if (offset == 0) {
+        return node;
+    }
+
+    // if we're traversing forward, then the process is the same for both
+    // singly- and doubly-linked lists
+    if (offset > 0) {
+        Node* curr = node;
+        for (Py_ssize_t i = 0; i < offset; i++) {
+            if (curr == nullptr) {
+                if (truncate) {
+                    return view->tail;  // truncate to end of list
+                } else {
+                    return nullptr;  // index out of range
+                }
+            }
+            curr = static_cast<Node*>(curr->next);
+        }
+        return curr;
+    }
+
+    // if the list is doubly-linked, then we can traverse backward just as easily
+    if constexpr (is_doubly_linked<Node>::value) {
+        Node* curr = node;
+        for (Py_ssize_t i = 0; i > offset; i--) {
+            if (curr == nullptr) {
+                if (truncate) {
+                    return view->head;  // truncate to beginning of list
+                } else {
+                    return nullptr;  // index out of range
+                }
+            }
+            curr = static_cast<Node*>(curr->prev);
+        }
+        return curr;
+    }
+
+    // Otherwise, we have to iterate from the head of the list.  We do this using
+    // a two-pointer approach where the `lookahead` pointer is offset from the
+    // `curr` pointer by the specified number of steps.  When it reaches the
+    // sentinel, then `curr` will be at the correct position.
+    Node* lookahead = view->head;
+    for (Py_ssize_t i = 0; i > offset; i--) {  // advance lookahead to offset
+        if (lookahead == node) {
+            if (truncate) {
+                return view->head;  // truncate to beginning of list
+            } else {
+                return nullptr;  // index out of range
+            }
+        }
+        lookahead = static_cast<Node*>(lookahead->prev);
+    }
+
+    // advance both pointers until lookahead reaches sentinel
+    Node* curr = view->head;
+    while (lookahead != node) {
+        curr = static_cast<Node*>(curr->next);
+        lookahead = static_cast<Node*>(lookahead->next);
+    }
+    return curr;
+}
+
+
 /* Traverse a list relative to a given sentinel to find the left and right
 bounds for an insertion. */
 template <typename View, typename Node>
@@ -361,100 +404,23 @@ std::pair<Node*, Node*> relative_junction(
     Py_ssize_t offset,
     bool truncate
 ) {
-    Node* prev;
-    Node* curr = sentinel;
-    Node* next;
+    // get the previous node for the insertion point
+    Node* prev = walk(view, sentinel, offset - 1, false);
 
-    // NOTE: this is trivial for doubly-linked lists since we can easily
-    // iterate in both directions.
-    if constexpr (is_doubly_linked<Node>::value) {
+    // apply truncate rule
+    if (prev == nullptr) {  // walked off end of list
+        if (!truncate) {
+            return std::make_pair(nullptr, nullptr);  // error code
+        }
         if (offset < 0) {
-            prev = static_cast<Node*>(curr->prev);
-            for (Py_ssize_t i = 0; i > offset; i--) {
-                if (prev == nullptr) {
-                    if (truncate) {
-                        break;
-                    } else {
-                        return std::make_pair(nullptr, nullptr);
-                    }
-                }
-                curr = prev;
-                prev = static_cast<Node*>(curr->prev);
-            }
-            return std::make_pair(prev, curr);
-        } else {
-            next = static_cast<Node*>(curr->next);
-            for (Py_ssize_t i = 0; i < offset; i++) {
-                if (next == nullptr) {
-                    if (truncate) {
-                        break;
-                    } else {
-                        return std::make_pair(nullptr, nullptr);
-                    }
-                }
-                curr = next;
-                next = static_cast<Node*>(curr->next);
-            }
-            return std::make_pair(curr, next);
+            return std::make_pair(nullptr, view->head);  // beginning of list
         }
+        return std::make_pair(view->tail, nullptr);  // end of list
     }
 
-    // NOTE: it is substantially more complicated if the list is singly-linked.
-    // in this case, we can only iterate in one direction, which means our
-    // traversal must be asymmetric.  we can still optimize for the case where
-    // we are iterating forward from the sentinel by one or more nodes, but
-    // in all other cases, we have to start from the head and iterate forward
-    // until we find the preceding node.
-
-    // normally we would always get the previous node while iterating forward,
-    // but this is not the case if the sentinel is the tail of the list and
-    // truncate=true. If truncate=False, we just raise an error like normal.
-    if (truncate && offset > 0 && curr == view->tail) {
-        offset = 0;  // skip forward iteration branch
-    }
-
-    // forward iteration (efficient)
-    if (offset > 0) {
-        next = static_cast<Node*>(curr->next);
-        for (Py_ssize_t i = 0; i < offset; i++) {
-            if (next == nullptr) {  // walked off end of list
-                if (truncate) {
-                    break;
-                } else {
-                    return std::make_pair(nullptr, nullptr);
-                }
-            }
-            curr = next;
-            next = static_cast<Node*>(curr->next);
-        }
-        return std::make_pair(curr, next);
-    }
-
-    // NOTE: iterating from the head requires a two-pointer approach where the
-    // `lookahead` pointer is offset from the `curr` pointer by the specified
-    // number of steps.  When it reaches the sentinel, `curr` will be at the
-    // correct position.
-    Node* lookahead = view->head;
-    for (Py_ssize_t i = 0; i > offset; i--) {  // advance lookahead to offset
-        if (lookahead == curr) {
-            if (truncate) {  // truncate to beginning of list
-                return std::make_pair(nullptr, view->head);
-            } else {  // index out of range
-                return std::make_pair(nullptr, nullptr);
-            }
-        }
-        lookahead = static_cast<Node*>(lookahead->next);
-    }
-
-    // advance both pointers until lookahead reaches sentinel
-    prev = nullptr;
-    Node* temp = view->head;
-    while (lookahead != curr) {
-        prev = temp;
-        temp = static_cast<Node*>(temp->next);
-        lookahead = static_cast<Node*>(lookahead->next);
-    }
-    return std::make_tuple(prev, temp);
+    // return the previous node and its successor
+    Node* next = static_cast<Node*>(prev->next);
+    return std::make_pair(prev, next);
 }
 
 
@@ -467,32 +433,21 @@ std::tuple<Node*, Node*, Node*> relative_neighbors(
     Py_ssize_t offset,
     bool truncate
 ) {
+    // NOTE: we can't reuse relative_junction() here because we need access to
+    // the node preceding the tail in the event that we walk off the end of the
+    // list and truncate=true.
     Node* prev;
     Node* curr = sentinel;
     Node* next;
 
-    // doubly-linked case
+    // NOTE: this is trivial for doubly-linked lists
     if constexpr (is_doubly_linked<Node>::value) {
-        if (offset < 0) {  // backward traversal
-            prev = static_cast<Node*>(curr->prev);
-            for (Py_ssize_t i = 0; i > offset; i--) {
-                if (prev == nullptr) {
-                    if (truncate) {
-                        break;
-                    } else {
-                        return std::make_tuple(nullptr, nullptr, nullptr);
-                    }
-                }
-                curr = prev;
-                prev = static_cast<Node*>(curr->prev);
-            }
-            next = static_cast<Node*>(curr->next);
-        } else {  // forward traversal
+        if (offset > 0) {  // forward traversal
             next = static_cast<Node*>(curr->next);
             for (Py_ssize_t i = 0; i < offset; i++) {
                 if (next == nullptr) {
                     if (truncate) {
-                        break;
+                        break;  // truncate to end of list
                     } else {
                         return std::make_tuple(nullptr, nullptr, nullptr);
                     }
@@ -501,11 +456,28 @@ std::tuple<Node*, Node*, Node*> relative_neighbors(
                 next = static_cast<Node*>(curr->next);
             }
             prev = static_cast<Node*>(curr->prev);
+        } else {  // backward traversal
+            prev = static_cast<Node*>(curr->prev);
+            for (Py_ssize_t i = 0; i > offset; i--) {
+                if (prev == nullptr) {
+                    if (truncate) {
+                        break;  // truncate to beginning of list
+                    } else {
+                        return std::make_tuple(nullptr, nullptr, nullptr);
+                    }
+                }
+                curr = prev;
+                prev = static_cast<Node*>(curr->prev);
+            }
+            next = static_cast<Node*>(curr->next);
         }
         return std::make_tuple(prev, curr, next);
     }
 
-    // handle edge case where sentinel is tail and truncate=true
+    // NOTE: It gets significantly more complicated if the list is singly-linked.
+    // In this case, we can only optimize the forward traversal branch if we're
+    // advancing at least one node and the current node is not the tail of the
+    // list.
     if (truncate && offset > 0 && curr == view->tail) {
         offset = 0;  // skip forward iteration branch
     }

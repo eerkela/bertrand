@@ -71,108 +71,36 @@ namespace Ops {
     template <typename View, typename T>
     void set_index(View* view, T index, PyObject* item) {
         using Node = typename View::Node;
-        Node* prev;
-        Node* curr;
-        Node* next;
 
         // allow python-style negative indexing + boundschecking
-        size_t norm_index = normalize_index(index, view->size, false);
+        size_t idx = normalize_index(index, view->size, false);
+        if (idx == MAX_SIZE_T && PyErr_Occurred()) {
+            return;  // propagate error
+        }
 
         // allocate a new node
         Node* new_node = view->node(item);
         if (new_node == nullptr) {
-            return;
+            return;  // propagate error
         }
 
-        // get neighboring nodes
-        if constexpr (is_doubly_linked<Node>::value) {
-            // NOTE: if the list is doubly-linked, then we can iterate from either
-            // end to find the preceding node.
-            if (norm_index > view->size / 2) {  // backward traversal
-                next = nullptr;
-                curr = view->tail;
-                for (size_t i = view->size - 1; i > norm_index; i--) {
-                    next = curr;
-                    curr = static_cast<Node*>(curr->prev);
-                }
-                prev = static_cast<Node*>(curr->prev);
-
-                // replace node
-                view->unlink(prev, curr, next);
-                view->link(prev, new_node, next);
-                if (PyErr_Occurred()) {  // error during link()
-                    view->link(prev, curr, next);  // restore list to original state
-                    view->recycle(new_node);  // free new node
-                    return;  // propagate error
-                }
-
-                // free old node
-                view->recycle(curr);
-                return;
-            }
-        }
-
-        // iterate forwards from head
-        prev = nullptr;
-        curr = view->head;
-        for (size_t i = 0; i < norm_index; i++) {
-            prev = curr;
-            curr = static_cast<Node*>(curr->next);
-        }
-        next = static_cast<Node*>(curr->next);
+        // get neighboring nodes at index
+        std::tuple<Node*, Node*, Node*> bounds = neighbors(view, view->head, idx);
+        Node* prev = std::get<0>(bounds);
+        Node* old_node = std::get<1>(bounds);
+        Node* next = std::get<2>(bounds);
 
         // replace node
-        view->unlink(prev, curr, next);
+        view->unlink(prev, old_node, next);
         view->link(prev, new_node, next);
-        if (PyErr_Occurred()) {  // error during link()
-            view->link(prev, curr, next);  // restore list to original state
-            view->recycle(new_node);  // free new node
+        if (PyErr_Occurred()) {  // restore list to original state
+            view->link(prev, old_node, next);
+            view->recycle(new_node);
             return;  // propagate error
         }
 
         // free old node
-        view->recycle(curr);
-    }
-
-    /* Overwrite the value at a particular index of a linked list. */
-    template <typename NodeType, template <typename> class Allocator, typename T>
-    void set_index(ListView<NodeType, Allocator>* view, T index, PyObject* item) {
-        using Node = typename ListView<NodeType, Allocator>::Node;
-        Node* curr;
-        PyObject* old_value;
-
-        // allow python-style negative indexing + boundschecking
-        size_t norm_index = normalize_index(index, view->size, false);
-
-        // NOTE: if the list is doubly linked and the index is closer to the tail,
-        // we can iterate from the tail to save time.
-        if constexpr (is_doubly_linked<Node>::value) {
-            if (norm_index > view->size / 2) {  // backward traversal
-                curr = view->tail;
-                for (size_t i = view->size - 1; i > norm_index; i--) {
-                    curr = static_cast<Node*>(curr->prev);
-                }
-
-                // overwrite value (unrecoverable)
-                old_value = curr->value;
-                Py_INCREF(item);
-                curr->value = item;
-                Py_DECREF(old_value);
-                return;
-            }
-        }
-
-        // forward traversal
-        curr = view->head;
-        for (size_t i = 0; i < norm_index; i++) {
-            curr = static_cast<Node*>(curr->next);
-        }
-
-        // overwrite value (unrecoverable)
-        old_value = curr->value;
-        Py_INCREF(item);
-        curr->value = item;
-        Py_DECREF(old_value);
+        view->recycle(old_node);
     }
 
     /* Set a slice within a linked list, set, or dictionary. */
