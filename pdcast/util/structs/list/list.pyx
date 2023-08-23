@@ -127,20 +127,22 @@ cdef class LinkedList:
         max_size: int = -1,
         spec: object | None = None,
     ):
+        cdef PyObject* c_spec
+
+        # make specialization C-compatible
+        if spec is None:
+            c_spec = NULL
+        else:
+            c_spec = <PyObject*>spec
+
         # init empty
         if items is None:
-            self.view = new VariantList(doubly_linked, max_size)
-            if spec is not None:
-                self.view.specialize(<PyObject*>spec)
+            self.view = new VariantList(doubly_linked, max_size, c_spec)
 
         # unpack iterable
-        elif spec is None:
-            self.view = new VariantList(
-                <PyObject*>items, doubly_linked, reverse, max_size, NULL
-            )
         else:
             self.view = new VariantList(
-                <PyObject*>items, doubly_linked, reverse, max_size, <PyObject*>spec
+                <PyObject*>items, doubly_linked, reverse, max_size, c_spec
             )
 
     def __dealloc__(self):
@@ -934,9 +936,9 @@ cdef class LinkedList:
         and/or :meth:`specialize() <LinkedList.specialize>` method.
         """
         cdef PyObject* spec = self.view.get_specialization()
-
         if spec is NULL:
             return None
+
         return <object>spec
 
     def specialize(self, spec: object) -> None:

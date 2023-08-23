@@ -99,20 +99,20 @@ public:
 
     /* Construct an empty ListView to match the given template parameters.  This
     is called to construct a LinkedList from an initializer sequence. */
-    VariantList(bool doubly_linked, Py_ssize_t max_size) :
+    VariantList(bool doubly_linked, Py_ssize_t max_size, PyObject* spec) :
         _doubly_linked(doubly_linked)
     {
         if (doubly_linked) {
             if (max_size < 0) {
-                variant = ListView<DoubleNode, FreeListAllocator>(max_size);
+                variant = ListView<DoubleNode, FreeListAllocator>(max_size, spec);
             } else {
-                variant = ListView<DoubleNode, PreAllocator>(max_size);
+                variant = ListView<DoubleNode, PreAllocator>(max_size, spec);
             }
         } else {
             if (max_size < 0) {
-                variant = ListView<SingleNode, FreeListAllocator>(max_size);
+                variant = ListView<SingleNode, FreeListAllocator>(max_size, spec);
             } else {
-                variant = ListView<SingleNode, PreAllocator>(max_size);
+                variant = ListView<SingleNode, PreAllocator>(max_size, spec);
             }
         }
     }
@@ -285,7 +285,11 @@ public:
     inline PyObject* get_specialization() {
         return std::visit(
             [&](auto& view) {
-                return view.get_specialization();
+                PyObject* spec = view.specialization;
+                if (spec != nullptr) {
+                    Py_INCREF(spec);
+                }
+                return spec;
             },
             variant
         );

@@ -7,7 +7,7 @@ from .base cimport MAX_SIZE_T, SingleNode, DoubleNode, Py_INCREF, Py_DECREF
 
 cdef extern from "list.h":
     cdef cppclass VariantList:
-        VariantList(bint doubly_linked, Py_ssize_t max_size) except +
+        VariantList(bint doubly_linked, Py_ssize_t max_size, PyObject* spec) except +
         VariantList(
             PyObject* iterable,
             bint doubly_linked,

@@ -31,6 +31,7 @@ public:
     Node* tail;
     size_t size;
     Py_ssize_t max_size;
+    PyObject* specialization;
 
     /* Copy constructors. These are disabled for the sake of efficiency,
     preventing us from unintentionally copying data. */
@@ -38,10 +39,14 @@ public:
     ListView& operator=(const ListView&) = delete;      // copy assignment
 
     /* Construct an empty ListView. */
-    ListView(Py_ssize_t max_size = -1) :
+    ListView(Py_ssize_t max_size = -1, PyObject* spec = nullptr) :
         head(nullptr), tail(nullptr), size(0), max_size(max_size),
-        specialization(nullptr), allocator(max_size)
-    {}
+        specialization(spec), allocator(max_size)
+    {
+        if (spec != nullptr) {
+            Py_INCREF(spec);  // hold reference to specialization if given
+        }
+    }
 
     /* Construct a ListView from an input iterable. */
     ListView(
@@ -132,7 +137,7 @@ public:
     /* Make a shallow copy of the entire list. */
     ListView<NodeType, Allocator>* copy() {
         using View = ListView<NodeType, Allocator>;
-        View* result = new View(max_size);
+        View* result = new View(max_size, specialization);
 
         // copy nodes into new list
         copy_to(result);
@@ -226,14 +231,6 @@ public:
             Py_DECREF(specialization);
         }
         specialization = spec;
-    }
-
-    /* Get the type specialization for elements of this list. */
-    inline PyObject* get_specialization() const {
-        if (specialization != nullptr) {
-            Py_INCREF(specialization);
-        }
-        return specialization;  // return a new reference or NULL
     }
 
     /* Get the total memory consumed by the list (in bytes). */
@@ -348,7 +345,6 @@ protected:
     }
 
 private:
-    PyObject* specialization;  // specialized type for elements of this list
     mutable Allocator<Node> allocator;
 
 };
@@ -366,7 +362,9 @@ public:
     using Base = ListView<Hashed<NodeType>, Allocator>;
 
     /* Construct an empty SetView. */
-    SetView(Py_ssize_t max_size = -1) : Base(max_size), table() {}
+    SetView(Py_ssize_t max_size = -1, PyObject* spec = nullptr) :
+        Base(max_size, spec), table()
+    {}
 
     /* Construct a SetView from an input iterable. */
     SetView(
@@ -374,14 +372,10 @@ public:
         bool reverse = false,
         PyObject* spec = nullptr,
         Py_ssize_t max_size = -1
-    ) : Base(max_size), table()
+    ) : Base(max_size, spec), table()
     {
         // unpack iterator into SetView  (can throw std::invalid_argument)
         Base::unpack_iterable(iterable, reverse);
-        if (spec != nullptr) {
-            Py_INCREF(spec);  // hold reference to specialization if given
-            this->specialization = spec;
-        }
     }
 
     /* Move ownership from one SetView to another (move constructor). */
@@ -410,7 +404,7 @@ public:
     /* Make a shallow copy of the entire list. */
     SetView<NodeType, Allocator>* copy() {
         using View = SetView<NodeType, Allocator>;
-        View* result = new View(this->max_size);
+        View* result = new View(this->max_size, this->specialization);
 
         // copy nodes into new set
         Base::copy_to(result);

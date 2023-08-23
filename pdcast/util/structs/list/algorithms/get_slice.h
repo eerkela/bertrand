@@ -10,10 +10,6 @@
 #include "../core/view.h"  // views
 
 
-// TODO: the views returned by get_slice() and copy() should retain their original
-// specialization.
-
-
 //////////////////////
 ////    PUBLIC    ////
 //////////////////////
@@ -67,9 +63,9 @@ namespace Ops {
         View* slice;
         try {
             if (view->max_size < 0) {
-                slice = new View(view->max_size);
+                slice = new View(view->max_size, view->specialization);
             } else {
-                slice = new View(length);
+                slice = new View(length, view->specialization);
             }
         } catch (const std::bad_alloc&) {
             PyErr_NoMemory();
