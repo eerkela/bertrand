@@ -939,7 +939,7 @@ cdef class LinkedList:
             return None
         return <object>spec
 
-    def specialize(self, *args: object) -> None:
+    def specialize(self, spec: object) -> None:
         """Specialize the list with a particular type.
 
         Parameters
@@ -976,7 +976,7 @@ cdef class LinkedList:
             type check.  Otherwise, they have identical performance to their
             untyped equivalents.
         """
-        self.view.specialize(<PyObject*>args)
+        self.view.specialize(<PyObject*>spec)
 
     def __class_getitem__(cls, key: object) -> type:
         """Subscribe a :class:`LinkedList` to a particular type specialization.
@@ -1170,7 +1170,7 @@ cdef class LinkedList:
         # append specialization if given
         specialization = self.specialization
         if specialization is not None:
-            prefix += f"[{', '.join(repr(s) for s in specialization)}]"
+            prefix += f"[{repr(specialization)}]"
 
         # abbreviate in order to avoid spamming the console
         if len(self) > 64:

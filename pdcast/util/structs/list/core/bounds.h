@@ -257,6 +257,13 @@ std::pair<size_t, size_t> normalize_slice(
 }
 
 
+/* Get the total number of nodes that are included in a closed slice. */
+inline size_t slice_length(size_t begin, size_t end, size_t abs_step) {
+    size_t length = llabs((long long)end - (long long)begin);
+    return (length / abs_step) + 1;
+}
+
+
 // NOTE: similarly, we have to be careful about how we handle insertions and
 // removals within the list.  Since these need access to the neighboring nodes,
 // we actually have to find the previous node and then return its successor(s).

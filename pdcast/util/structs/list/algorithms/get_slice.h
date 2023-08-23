@@ -10,6 +10,10 @@
 #include "../core/view.h"  // views
 
 
+// TODO: the views returned by get_slice() and copy() should retain their original
+// specialization.
+
+
 //////////////////////
 ////    PUBLIC    ////
 //////////////////////
@@ -45,26 +49,28 @@ namespace Ops {
         Py_ssize_t step
     ) {
         using Node = typename View::Node;
-        size_t abs_step = static_cast<size_t>(llabs(step));
 
         // get direction in which to traverse slice that minimizes iterations
         std::pair<size_t, size_t> bounds = normalize_slice(view, start, stop, step);
-        if (
-            bounds.first == MAX_SIZE_T &&
-            bounds.second == MAX_SIZE_T &&
-            PyErr_Occurred()
-        ) {
+        size_t begin = bounds.first;
+        size_t end = bounds.second;
+        if (begin == MAX_SIZE_T && end == MAX_SIZE_T && PyErr_Occurred()) {
+            PyErr_Clear();  // swallow error
             return new View();  // Python returns an empty list in this case
         }
 
         // get number of nodes in slice
-        size_t slice_length = llabs((long long)bounds.second - (long long)bounds.first);
-        slice_length = (slice_length / abs_step) + 1;
+        size_t abs_step = static_cast<size_t>(llabs(step));
+        size_t length = slice_length(begin, end, abs_step);
 
         // create a new view to hold the slice
         View* slice;
         try {
-            slice = new View();
+            if (view->max_size < 0) {
+                slice = new View(view->max_size);
+            } else {
+                slice = new View(length);
+            }
         } catch (const std::bad_alloc&) {
             PyErr_NoMemory();
             return nullptr;
@@ -73,13 +79,13 @@ namespace Ops {
         // NOTE: if the slice is closer to the end of a doubly-linked list, we can
         // iterate from the tail to save time.
         if constexpr (is_doubly_linked<Node>::value) {
-            if (bounds.first > bounds.second) {
+            if (begin > end) {
                 // backward traversal
                 return _extract_slice_backward(
                     view,
                     slice,
-                    bounds.first,
-                    slice_length,
+                    begin,
+                    length,
                     abs_step,
                     (step > 0)
                 );
@@ -90,8 +96,8 @@ namespace Ops {
         return _extract_slice_forward(
             view,
             slice,
-            bounds.first,
-            slice_length,
+            begin,
+            length,
             abs_step,
             (step < 0)
         );
@@ -124,7 +130,6 @@ View* _extract_slice_forward(
     }
 
     // copy nodes from original view
-    size_t last_iter = slice_length - 1;
     for (size_t i = 0; i < slice_length; i++) {
         Node* copy = slice->copy(curr);
         if (copy == nullptr) {  // error during copy()
@@ -145,7 +150,7 @@ View* _extract_slice_forward(
         }
 
         // advance according to step size
-        if (i < last_iter) {  // don't jump on final iteration
+        if (i < slice_length - 1) {  // don't jump on final iteration
             for (size_t j = 0; j < abs_step; j++) {
                 curr = static_cast<Node*>(curr->next);
             }
@@ -175,7 +180,6 @@ View* _extract_slice_backward(
     }
 
     // copy nodes from original view
-    size_t last_iter = slice_length - 1;
     for (size_t i = 0; i < slice_length; i++) {
         Node* copy = slice->copy(curr);
         if (copy == nullptr) {  // error during copy()
@@ -196,7 +200,7 @@ View* _extract_slice_backward(
         }
 
         // advance according to step size
-        if (i < last_iter) {  // don't jump on final iteration
+        if (i < slice_length - 1) {  // don't jump on final iteration
             for (size_t j = 0; j < abs_step; j++) {
                 curr = static_cast<Node*>(curr->prev);
             }

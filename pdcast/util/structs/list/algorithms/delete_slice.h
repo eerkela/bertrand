@@ -48,35 +48,31 @@ namespace Ops {
         Py_ssize_t step
     ) {
         using Node = typename View::Node;
-        size_t abs_step = static_cast<size_t>(llabs(step));
 
         // get direction in which to traverse slice that minimizes iterations
         std::pair<size_t, size_t> bounds = normalize_slice(view, start, stop, step);
-        if (
-            bounds.first == MAX_SIZE_T &&
-            bounds.second == MAX_SIZE_T &&
-            PyErr_Occurred()
-        ) {
-            PyErr_Clear();  // Python does nothing in this case
-            return;
+        size_t begin = bounds.first;
+        size_t end = bounds.second;
+        if (begin == MAX_SIZE_T && end == MAX_SIZE_T && PyErr_Occurred()) {
+            PyErr_Clear();  // swallow error
+            return;  // Python does nothing in this case
         }
 
         // get number of nodes in slice
-        size_t slice_length = llabs((long long)bounds.second - (long long)bounds.first);
-        slice_length = (slice_length / abs_step) + 1;
+        size_t abs_step = static_cast<size_t>(llabs(step));
+        size_t length = slice_length(begin, end, abs_step);
 
-        // NOTE: if the list is doubly-linked, then we can traverse from either
-        // end.  As such, we choose whichever is closest to a slice boundary in
-        // order to minimize total iterations.
+        // NOTE: if the slice is closer to the end of a doubly-linked list, we can
+        // iterate from the tail to save time.
         if constexpr (is_doubly_linked<Node>::value) {
-            if (bounds.first > view->size / 2) {  // backward traversal
-                _drop_slice_backward(view, bounds.first, slice_length, abs_step);
+            if (begin > view->size / 2) {  // backward traversal
+                _drop_slice_backward(view, begin, length, abs_step);
                 return;
             }
         }
 
         // forward traversal
-        _drop_slice_forward(view, bounds.first, slice_length, abs_step);
+        _drop_slice_forward(view, begin, length, abs_step);
     }
 
 }
@@ -108,7 +104,6 @@ void _drop_slice_forward(
     // delete nodes from view
     Node* next;
     size_t small_step = abs_step - 1;  // we jump by 1 whenever we remove a node
-    size_t last_iter = slice_length - 1;
     for (size_t i = 0; i < slice_length; i++) {
         // unlink and deallocate node
         next = static_cast<Node*>(curr->next);
@@ -117,7 +112,7 @@ void _drop_slice_forward(
         curr = next;
 
         // advance according to step size
-        if (i < last_iter) {  // don't jump on final iteration
+        if (i < slice_length - 1) {  // don't jump on final iteration
             for (size_t j = 0; j < small_step; j++) {
                 prev = curr;
                 curr = static_cast<Node*>(curr->next);
@@ -148,7 +143,6 @@ void _drop_slice_backward(
     // delete nodes from view
     Node* prev;
     size_t small_step = abs_step - 1;  // we jump by 1 whenever we remove a node
-    size_t last_iter = slice_length - 1;
     for (size_t i = 0; i < slice_length; i++) {
         // unlink and deallocate node
         prev = static_cast<Node*>(curr->prev);
@@ -157,7 +151,7 @@ void _drop_slice_backward(
         curr = prev;
 
         // advance according to step size
-        if (i < last_iter) {  // don't jump on final iteration
+        if (i < slice_length - 1) {  // don't jump on final iteration
             for (size_t j = 0; j < small_step; j++) {
                 next = curr;
                 curr = static_cast<Node*>(curr->prev);
