@@ -148,50 +148,37 @@ namespace Ops {
             return;  // do nothing
         }
 
-        // TODO: all we really need to do is find old_prev and new_prev.  The
-        // next pointers can be inferred from the prev pointers.
-
-
+        // get prev pointers at both insertion and removal point
         Node* old_prev;
         Node* old_next = static_cast<Node*>(node->next);
         Node* new_prev;
         Node* new_next;
 
-        // get neighbors at both the insertion and removal points
+        // NOTE: if the list is doubly-linked, then we can use the `prev` pointer
+        // to get the previous node in constant time.
         if constexpr (is_doubly_linked<Node>::value) {
-            // get old_prev from `prev` pointer
             old_prev = static_cast<Node*>(node->prev);
+            std::pair<Node*, Node*> bounds = relative_junction(
+                view, node, steps, true
+            );
+            new_prev = bounds.first;
+            new_next = bounds.second;
 
-            // determine new_prev and new_next
-            if (steps > 0) {
-                new_prev = old_next;
-                new_next = static_cast<Node*>(new_prev->next);
-                for (Py_ssize_t i = 1; i < steps; i++) {
-                    if (new_next == nullptr) {
-                        break;  // truncate to end of list
-                    }
-                    new_prev = new_next;
-                    new_next = static_cast<Node*>(new_next->next);
-                }
-            } else {
-                new_next = old_prev;
-                new_prev = static_cast<Node*>(new_next->prev);
-                for (Py_ssize_t i = -1; i > steps; i--) {
-                    if (new_prev == nullptr) {
-                        break;  // truncate to start of list
-                    }
-                    new_next = new_prev;
-                    new_prev = static_cast<Node*>(new_prev->prev);
-                }
-            }
+        // NOTE: otherwise, we have to iterate from the head of the list.  If
+        // we're careful, we can do this in a single traversal for both the old
+        // and new pointers, without having to repeat any work.
         } else {
             if (steps > 0) {
-                old_prev = nullptr;
+                // if we're moving forwards, then we'll hit the removal point before
+                // the insertion point, so we don't need any lookahead pointers
+                old_prev = nullptr
                 Node* temp = view->head;
                 while (temp != node) {
                     old_prev = temp;
                     temp = static_cast<Node*>(temp->next);
                 }
+
+                // we then iterate forward to find the insertion point
                 new_prev = old_next;
                 new_next = static_cast<Node*>(new_prev->next);
                 for (Py_ssize_t i = 1; i < steps; i++) {
@@ -202,40 +189,115 @@ namespace Ops {
                     new_next = static_cast<Node*>(new_next->next);
                 }
             } else {
-                new_prev = nullptr;
+                // if we're moving backwards, then we'll hit the insertion point
+                // before the removal point, so we need a lookahead pointer
+                old_prev = nullptr;
+                Node* lookahead = view->head;
+                bool found = false;
+                for (Py_ssize_t i = 0; i > steps; i--) {
+                    if (lookahead == node) {  // truncate to beginning of list
+                        new_prev = nullptr;
+                        new_next = view->head;
+                        found = true;
+                        break;
+                    }
+                    old_prev = lookahead;
+                    lookahead = static_cast<Node*>(lookahead->next);
+                }
 
-                // TODO: 2-pointer approach.  Lagging pointer is the new_prev.
-                // Lookahead pointer is old_prev.
-
+                // if we didn't truncate, then we advance both pointers until
+                // we find the removal point
+                if (!found) {
+                    new_prev = view->head;
+                    while (lookahead != node) {
+                        new_prev = static_cast<Node*>(new_prev->next);
+                        old_prev = lookahead;
+                        lookahead = static_cast<Node*>(lookahead->next);
+                    }
+                    new_next = static_cast<Node*>(new_prev->next);
+                }
             }
         }
+
+        // move node to new position
+        view->unlink(old_prev, node, old_next);
+        view->link(new_prev, node, new_next);
+    }
+
+    /* Move an item to a particular index of a linked set or dictionary. */
+    template <typename View, typename T>
+    void move_to_index(View* view, PyObject* item, T index) {
+        using Node = typename View::Node;
+
+        // search for node in hash table
+        Node* node = view->search(item);
+        if (node == nullptr) {
+            PyErr_Format(PyExc_KeyError, "%R is not in the set", item);
+            return;
+        }
+
+        // normalize index
+        size_t idx = normalize_index(index, view->size, true);
+
+        // get prev pointers at both insertion and removal point
+        Node* old_prev;
+        Node* old_next = static_cast<Node*>(node->next);
+        Node* new_prev;
+        Node* new_next;
+
+        // NOTE: if the list is doubly-linked, then we can use the `prev` pointer
+        // to get the previous node in constant time.
+        if constexpr (is_doubly_linked<Node>::value) {
+            old_prev = static_cast<Node*>(node->prev);
+            std::pair<Node*, Node*> bounds = junction(view, view->head, idx);
+            new_prev = bounds.first;
+            new_next = bounds.second;
+
+        // NOTE: otherwise, we have to iterate from the head of the list.  If
+        // we're careful, we can do this in a single traversal for both the old
+        // and new pointers, without having to repeat any work.
+        } else {
+            new_prev = nullptr;
+            new_next = view->head;
+            bool found = false;
+            for (size_t i = 0; i < idx; i++) {
+                if (new_next == node) {
+                    old_prev = new_prev;
+                    found = true;
+                }
+                new_prev = new_next;
+                new_next = static_cast<Node*>(new_next->next);
+            }
+
+            // if we didn't find the removal point, then we need to continue
+            // iterating until we do
+            if (!found) {
+                Node* temp = new_next;
+                while (temp != node) {
+                    old_prev = temp;
+                    temp = static_cast<Node*>(temp->next);
+                }
+            }
+        }
+
+        // move node to new position
+        view->unlink(old_prev, node, old_next);
+        view->link(new_prev, node, new_next);
+    }
+
+    /* Move an item within a linked set or dictionary relative to a given sentinel
+    value. */
+    template <typename View>
+    void move_relative(
+        View* view,
+        PyObject* item,
+        PyObject* sentinel,
+        Py_ssize_t offset
+    ) {
 
     }
 
 }
-
-
-///////////////////////
-////    PRIVATE    ////
-///////////////////////
-
-
-/* Get the prev pointers for a relative move operation. */
-template <typename View, typename Node>
-std::pair<Node*, Node*> _walk_relative(
-    View* view,
-    Node* node,
-    Node* sentinel,
-    Py_ssize_t steps
-) {
-    
-
-
-
-}
-
-
-
 
 
 #endif // BERTRAND_STRUCTS_ALGORITHMS_MOVE_H include guard

@@ -293,9 +293,7 @@ public:
     inline void move_to_index(PyObject* item, T index) {
         std::visit(
             [&](auto& view) {
-                // allow Python-style negative indexing + boundschecking
-                size_t norm_index = normalize_index(index, view.size, true);
-                Ops::move(&view, item, norm_index);
+                Ops::move(&view, item, index);
             },
             this->variant
         );

@@ -96,6 +96,11 @@ protected:
     }
 
 public:
+    // TODO: include a temp node that gets stack allocated with the allocator itself.
+    // This is reused for __setitem__() and sort(), as well as lru lookups/appends
+    // the node may be present in the set/dictionary, so we need to avoid allocating
+    // a new node.
+
 
     /* Copy constructors. These are disabled for the sake of efficiency,
     forcing us not to copy data unnecessarily. */
@@ -156,7 +161,7 @@ public:
 
     /* Initialize a new node for the list. */
     template <typename... Args>
-    inline Node* create(PyObject* value, Args... args) {
+    Node* create(PyObject* value, Args... args) {
         // allocate a blank node
         Node* node = this->malloc_node(value);
         if (node == nullptr) {  // malloc() failed
@@ -175,7 +180,7 @@ public:
     }
 
     /* Copy an existing node. */
-    inline Node* copy(Node* node) {
+    Node* copy(Node* node) {
         Node* copied = this->malloc_node(node->value);
         if (copied == nullptr) {  // malloc() failed
             PyErr_NoMemory();
@@ -273,7 +278,7 @@ public:
 
     /* Initialize a new node for the list. */
     template <typename... Args>
-    inline Node* create(PyObject* value, Args... args) {
+    Node* create(PyObject* value, Args... args) {
         // get blank node
         Node* node = pop_node(value);
         if (node == nullptr) {  // malloc() failed
@@ -292,7 +297,7 @@ public:
     }
 
     /* Copy an existing node. */
-    inline Node* copy(Node* old_node) {
+    Node* copy(Node* old_node) {
         // get blank node
         Node* new_node = pop_node(old_node->value);
         if (new_node == nullptr) {  // malloc() failed
@@ -422,7 +427,7 @@ public:
 
     /* Initialize a new node for the list. */
     template <typename... Args>
-    inline Node* create(PyObject* value, Args... args) {
+    Node* create(PyObject* value, Args... args) {
         // check if block is full
         if (available.empty()) {
             PyErr_Format(
@@ -448,7 +453,7 @@ public:
     }
 
     /* Copy an existing node. */
-    inline Node* copy(Node* old_node) {
+    Node* copy(Node* old_node) {
         // check if block is full
         if (available.empty()) {
             PyErr_Format(
