@@ -193,12 +193,12 @@ namespace Ops {
                 // before the removal point, so we need a lookahead pointer
                 old_prev = nullptr;
                 Node* lookahead = view->head;
-                bool found = false;
+                bool truncate = false;
                 for (Py_ssize_t i = 0; i > steps; i--) {
                     if (lookahead == node) {  // truncate to beginning of list
                         new_prev = nullptr;
                         new_next = view->head;
-                        found = true;
+                        truncate = true;
                         break;
                     }
                     old_prev = lookahead;
@@ -207,7 +207,7 @@ namespace Ops {
 
                 // if we didn't truncate, then we advance both pointers until
                 // we find the removal point
-                if (!found) {
+                if (!truncate) {
                     new_prev = view->head;
                     while (lookahead != node) {
                         new_prev = static_cast<Node*>(new_prev->next);
@@ -294,7 +294,148 @@ namespace Ops {
         PyObject* sentinel,
         Py_ssize_t offset
     ) {
+        using Node = typename View::Node;
 
+        // check for trivial case
+        int comp = PyObject_RichCompareBool(item, sentinel, Py_EQ);
+        if (comp == -1) {
+            return;  // propagate error
+        } else if (comp == 1) {  // this devolves into a simple move()
+            move(view, item, offset);
+            return;
+        }
+
+        // search for item in hash table
+        Node* node = view->search(item);
+        if (node == nullptr) {
+            PyErr_Format(PyExc_KeyError, "%R is not in the set", item);
+            return;
+        }
+
+        // search for sentinel in hash table
+        Node* sentinel_node = view->search(sentinel);
+        if (sentinel_node == nullptr) {
+            PyErr_Format(PyExc_KeyError, "%R is not in the set", sentinel);
+            return;
+        }
+
+        // get prev pointers at both insertion and removal point
+        Node* old_prev;
+        Node* old_next = static_cast<Node*>(node->next);
+        Node* new_prev;
+        Node* new_next;
+
+        // NOTE: if the list is doubly-linked, then we can use the `prev` pointer
+        // to get the previous node in constant time.
+        if constexpr (is_doubly_linked<Node>::value) {
+            // NOTE: because we're moving relative to some other node, we can
+            // run into a situation where the junction includes the node to be
+            // moved, which can cause an error.  If we remove the node before
+            // searching for the junction, then we can avoid this problem.
+            old_prev = static_cast<Node*>(node->prev);
+            view->unlink(old_prev, node, old_next);
+            std::pair<Node*, Node*> bounds = relative_junction(
+                view, sentinel_node, offset, true
+            );
+            new_prev = bounds.first;
+            new_next = bounds.second;
+
+        // NOTE: otherwise, we have to iterate from the head of the list.  If
+        // we're careful, we can do this in a single traversal for both the old
+        // and new pointers, without having to repeat any work.
+        } else {
+            if (offset > 0) {
+                // advance to sentinel, recording the original node if we encounter it.
+                new_prev = nullptr;
+                new_next = view->head;
+                bool found = false;
+                while (new_next != sentinel_node) {
+                    if (new_next == node) {
+                        old_prev = new_prev;
+                        found = true;
+                    }
+                    new_prev = new_next;
+                    new_next = static_cast<Node*>(new_next->next);
+                }
+
+                // continue out to offset to find insertion point
+                for (Py_ssize_t i = 0; i < offset; i++) {
+                    if (new_next == nullptr) {
+                        break;  // truncate to end of list
+                    } else if (new_next == node) {
+                        old_prev = new_prev;
+                        found = true;
+                    }
+                    new_prev = new_next;
+                    new_next = static_cast<Node*>(new_next->next);
+                }
+
+                // if we still haven't found the original node, then we need to
+                // continue iterating until we do
+                if (!found) {
+                    Node* temp = new_next;
+                    while (temp != node) {
+                        old_prev = temp;
+                        temp = static_cast<Node*>(temp->next);
+                    }
+                }
+            } else {
+                // create lookahead pointer
+                Node* temp = nullptr;
+                Node* lookahead = view->head;
+                bool found = false;
+                bool truncate = false;
+                for (Py_ssize_t i = 0; i > offset; i--) {
+                    if (lookahead == sentinel_node) {  // truncate to beginning of list
+                        new_prev = nullptr;
+                        new_next = view->head;
+                        truncate = true;
+                        break;
+                    } else if (lookahead == node) {
+                        old_prev = temp;
+                        found = true;
+                    }
+                    temp = lookahead;
+                    lookahead = static_cast<Node*>(lookahead->next);
+                }
+
+                // if we didn't truncate, then we advance both pointers until
+                // we find the removal point
+                if (!truncate) {
+                    new_prev = view->head;
+                    while (lookahead != sentinel_node) {
+                        if (lookahead == node) {
+                            old_prev = temp;
+                            found = true;
+                        }
+                        new_prev = static_cast<Node*>(new_prev->next);
+                        temp = lookahead;
+                        lookahead = static_cast<Node*>(lookahead->next);
+                    }
+                    new_next = static_cast<Node*>(new_prev->next);
+                }
+
+                // if we still haven't found the original node, then we need to
+                // continue iterating until we do
+                if (!found) {
+                    temp = new_next;
+                    while (temp != node) {
+                        old_prev = temp;
+                        temp = static_cast<Node*>(temp->next);
+                    }
+                }
+            }
+
+            // remove node from original position
+            view->unlink(old_prev, node, old_next);
+
+            // TODO: handle situation where node is present in junction.  Probably
+            // need to 
+
+        }
+
+        // insert node at new position
+        view->link(new_prev, node, new_next);
     }
 
 }
