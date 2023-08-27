@@ -111,6 +111,10 @@ public:
     ////    SET INTERFACE    ////
     /////////////////////////////
 
+    // TODO: these should take arbitrary PyObject* arguments, not just
+    // VariantSet* arguments.  Perhaps they should take either/or and use template
+    // specialization to dispatch to the correct implementation.
+
     /* Dispatch to the correct implementation of add() for each variant. */
     inline void add(PyObject* item, bool left) {
         std::visit(
@@ -131,6 +135,93 @@ public:
         );
     }
 
+    /* Dispatch to the correct implementation of isdisjoint() for each variant. */
+    inline bool isdisjoint(VariantSet* other) {
+        return std::visit(
+            [&](auto& view) {
+                return Ops::isdisjoint(&view, other);
+            },
+            this->variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of issubset() for each variant. */
+    inline bool issubset(VariantSet* other, bool strict) {
+        return std::visit(
+            [&](auto& view) {
+                return Ops::issubset(&view, other, strict);
+            },
+            this->variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of issuperset() for each variant. */
+    inline bool issuperset(VariantSet* other, bool strict) {
+        return std::visit(
+            [&](auto& view) {
+                return Ops::issuperset(&view, other);
+            },
+            this->variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of union() for each variant. */
+    inline VariantSet* union_(VariantSet* other) {
+        return std::visit(
+            [&](auto& view) {
+                auto result = Ops::union_(&view, other);
+                if (result == nullptr) {
+                    return nullptr;  // propagate Python errors
+                }
+                return new VariantSet(std::move(*result));
+            },
+            this->variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of intersection() for each variant. */
+    inline VariantSet* intersection(VariantSet* other) {
+        return std::visit(
+            [&](auto& view) {
+                auto result = Ops::intersection(&view, other);
+                if (result == nullptr) {
+                    return nullptr;  // propagate Python errors
+                }
+                return new VariantSet(std::move(*result));
+            },
+            this->variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of difference() for each variant. */
+    inline VariantSet* difference(VariantSet* other) {
+        return std::visit(
+            [&](auto& view) {
+                auto result = Ops::difference(&view, other);
+                if (result == nullptr) {
+                    return nullptr;  // propagate Python errors
+                }
+                return new VariantSet(std::move(*result));
+            },
+            this->variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of symmetric_difference() for each
+    variant. */
+    inline VariantSet* symmetric_difference(VariantSet* other) {
+        return std::visit(
+            [&](auto& view) {
+                auto result = Ops::symmetric_difference(&view, other);
+                if (result == nullptr) {
+                    return nullptr;  // propagate Python errors
+                }
+                return new VariantSet(std::move(*result));
+            },
+            this->variant
+        );
+    }
+
     /* Dispatch to the correct implementation of update() for each variant. */
     inline void update(PyObject* items, bool left) {
         std::visit(
@@ -141,14 +232,93 @@ public:
         );
     }
 
+    /* Dispatch to the correct implementation of intersection_update() for each
+    variant. */
+    inline void intersection_update(VariantSet* other) {
+        std::visit(
+            [&](auto& view) {
+                Ops::intersection_update(&view, other);
+            },
+            this->variant
+        );
+    }
 
+    /* Dispatch to the correct implementation of difference_update() for each
+    variant. */
+    inline void difference_update(VariantSet* other) {
+        std::visit(
+            [&](auto& view) {
+                Ops::difference_update(&view, other);
+            },
+            this->variant
+        );
+    }
 
-    // TODO: intersect, difference, issubset, issuperset, isdisjoint, etc.
-
+    /* Dispatch to the correct implementation of symmetric_difference_update() for
+    each variant. */
+    inline void symmetric_difference_update(VariantSet* other) {
+        std::visit(
+            [&](auto& view) {
+                Ops::symmetric_difference_update(&view, other);
+            },
+            this->variant
+        );
+    }
 
     ///////////////////////////////////
     ////    RELATIVE OPERATIONS    ////
     ///////////////////////////////////
+
+    /* Dispatch to the correct implementation of edge() for each variant. */
+    inline Py_ssize_t distance(PyObject* item1, PyObject* item2) {
+        return std::visit(
+            [&](auto& view) {
+                return Ops::distance(&view, item1, item2);
+            },
+            this->variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of swap() for each variant. */
+    inline void swap(PyObject* item1, PyObject* item2) {
+        std::visit(
+            [&](auto& view) {
+                Ops::swap(&view, item1, item2);
+            },
+            this->variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of move() for each variant. */
+    inline void move(PyObject* item, Py_ssize_t steps) {
+        std::visit(
+            [&](auto& view) {
+                Ops::move(&view, item, offset);
+            },
+            this->variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of move_to_index() for each variant. */
+    template <typename T>
+    inline void move_to_index(PyObject* item, T index) {
+        std::visit(
+            [&](auto& view) {
+                Ops::move(&view, item, index);
+            },
+            this->variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of move_relative() for each variant. */
+    inline void move_relative(PyObject* item, PyObject* sentinel, Py_ssize_t offset) {
+        std::visit(
+            [&](auto& view) {
+                Ops::move_relative(&view, item, sentinel, offset);
+            },
+            this->variant
+        );
+    }
 
     /* Dispatch to the correct implementation of get_relative() for each variant. */
     inline PyObject* get_relative(PyObject* sentinel, Py_ssize_t offset) {
@@ -249,61 +419,6 @@ public:
         std::visit(
             [&](auto& view) {
                 Ops::clear_relative(&view, sentinel, offset, length);
-            },
-            this->variant
-        );
-    }
-
-    ///////////////////////////////
-    ////    MOVE OPERATIONS    ////
-    ///////////////////////////////
-
-    /* Dispatch to the correct implementation of edge() for each variant. */
-    inline Py_ssize_t distance(PyObject* item1, PyObject* item2) {
-        return std::visit(
-            [&](auto& view) {
-                return Ops::distance(&view, item1, item2);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of swap() for each variant. */
-    inline void swap(PyObject* item1, PyObject* item2) {
-        std::visit(
-            [&](auto& view) {
-                Ops::swap(&view, item1, item2);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of move() for each variant. */
-    inline void move(PyObject* item, Py_ssize_t steps) {
-        std::visit(
-            [&](auto& view) {
-                Ops::move(&view, item, offset);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of move_to_index() for each variant. */
-    template <typename T>
-    inline void move_to_index(PyObject* item, T index) {
-        std::visit(
-            [&](auto& view) {
-                Ops::move(&view, item, index);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of move_relative() for each variant. */
-    inline void move_relative(PyObject* item, PyObject* sentinel, Py_ssize_t offset) {
-        std::visit(
-            [&](auto& view) {
-                Ops::move_relative(&view, item, sentinel, offset);
             },
             this->variant
         );

@@ -6,9 +6,13 @@
 #include <tuple>  // std::tuple
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
-#include "../core/bounds.h"  // walk()
+#include "../core/bounds.h"  // relative_junction()
 #include "../core/node.h"  // is_doubly_linked<>
 #include "../core/view.h"  // views, MAX_SIZE_T
+
+
+// TODO: move_relative() is probably buggy for singly-linked lists, since it's
+// so complicated.  It will need thorough testing.
 
 
 //////////////////////
@@ -353,8 +357,9 @@ namespace Ops {
                     if (new_next == node) {
                         old_prev = new_prev;
                         found = true;
+                    } else {
+                        new_prev = new_next;
                     }
-                    new_prev = new_next;
                     new_next = static_cast<Node*>(new_next->next);
                 }
 
@@ -365,8 +370,9 @@ namespace Ops {
                     } else if (new_next == node) {
                         old_prev = new_prev;
                         found = true;
+                    } else {
+                        new_prev = new_next;
                     }
-                    new_prev = new_next;
                     new_next = static_cast<Node*>(new_next->next);
                 }
 
@@ -407,8 +413,9 @@ namespace Ops {
                         if (lookahead == node) {
                             old_prev = temp;
                             found = true;
+                        } else {
+                            new_prev = static_cast<Node*>(new_prev->next);
                         }
-                        new_prev = static_cast<Node*>(new_prev->next);
                         temp = lookahead;
                         lookahead = static_cast<Node*>(lookahead->next);
                     }
@@ -428,10 +435,6 @@ namespace Ops {
 
             // remove node from original position
             view->unlink(old_prev, node, old_next);
-
-            // TODO: handle situation where node is present in junction.  Probably
-            // need to 
-
         }
 
         // insert node at new position
