@@ -63,7 +63,7 @@ public:
     template <typename NodeType, template <typename> class Allocator>
     VariantDict(DictView<NodeType, Allocator>&& view) {
         using Node = typename DictView<NodeType, Allocator>::Node;
-        _doubly_linked = is_doubly_linked<Node>::value;
+        _doubly_linked = has_prev<Node>::value;
         view_variant = std::move(view);
     }
 
@@ -142,7 +142,7 @@ public:
                 using View = std::decay_t<decltype(view)>;
                 using Node = typename View::Node;
 
-                if constexpr (is_doubly_linked<Node>::value) {
+                if constexpr (has_prev<Node>::value) {
                     throw std::runtime_error("List is not singly-linked.");
                 } else {
                     return static_cast<SingleNode*>(view.head);
@@ -159,7 +159,7 @@ public:
                 using View = std::decay_t<decltype(view)>;
                 using Node = typename View::Node;
 
-                if constexpr (is_doubly_linked<Node>::value) {
+                if constexpr (has_prev<Node>::value) {
                     throw std::runtime_error("List is not singly-linked.");
                 } else {
                     return static_cast<SingleNode*>(view.tail);
@@ -176,7 +176,7 @@ public:
                 using View = std::decay_t<decltype(view)>;
                 using Node = typename View::Node;
 
-                if constexpr (is_doubly_linked<Node>::value) {
+                if constexpr (has_prev<Node>::value) {
                     return static_cast<DoubleNode*>(view.head);
                 } else {
                     throw std::runtime_error("List is not doubly-linked.");
@@ -193,7 +193,7 @@ public:
                 using View = std::decay_t<decltype(view)>;
                 using Node = typename View::Node;
 
-                if constexpr (is_doubly_linked<Node>::value) {
+                if constexpr (has_prev<Node>::value) {
                     return static_cast<DoubleNode*>(view.tail);
                 } else {
                     throw std::runtime_error("List is not doubly-linked.");

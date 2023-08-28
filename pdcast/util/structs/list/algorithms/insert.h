@@ -6,7 +6,6 @@
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
 #include "../core/bounds.h"  // walk()
-#include "../core/node.h"  // is_doubly_linked<>
 #include "../core/view.h"  // views
 
 

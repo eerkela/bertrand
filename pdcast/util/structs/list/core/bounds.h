@@ -7,7 +7,7 @@
 #include <tuple>  // std::tuple
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
-#include "node.h"  // is_doubly_linked<>
+#include "node.h"  // has_prev<>
 
 
 // TODO: slice methods can use walk(), relative_junction(), and relative_neighbors()
@@ -229,7 +229,7 @@ std::pair<size_t, size_t> normalize_slice(
     size_t begin, end;
 
     // get begin and end indices
-    if constexpr (is_doubly_linked<Node>::value) {
+    if constexpr (has_prev<Node>::value) {
         if (
             (step > 0 && norm_start <= view->size - norm_stop) ||
             (step < 0 && view->size - norm_start <= norm_stop)
@@ -275,7 +275,7 @@ inline size_t slice_length(size_t begin, size_t end, size_t abs_step) {
 template <typename View, typename Node>
 Node* node_at_index(View* view, Node* head, size_t index) {
     // If the list is doubly-linked, we can traverse from either end
-    if constexpr (is_doubly_linked<Node>::value) {
+    if constexpr (has_prev<Node>::value) {
         if (index > view->size / 2) {  // backward traversal
             Node* curr = view->tail;
             for (size_t i = view->size - 1; i > index; i--) {
@@ -361,7 +361,7 @@ Node* walk(View* view, Node* node, Py_ssize_t offset, bool truncate) {
     }
 
     // if the list is doubly-linked, then we can traverse backward just as easily
-    if constexpr (is_doubly_linked<Node>::value) {
+    if constexpr (has_prev<Node>::value) {
         Node* curr = node;
         for (Py_ssize_t i = 0; i > offset; i--) {
             if (curr == nullptr) {
@@ -448,7 +448,7 @@ std::tuple<Node*, Node*, Node*> relative_neighbors(
     Node* next;
 
     // NOTE: this is trivial for doubly-linked lists
-    if constexpr (is_doubly_linked<Node>::value) {
+    if constexpr (has_prev<Node>::value) {
         if (offset > 0) {  // forward traversal
             next = static_cast<Node*>(curr->next);
             for (Py_ssize_t i = 0; i < offset; i++) {

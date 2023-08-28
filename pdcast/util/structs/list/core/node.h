@@ -460,13 +460,31 @@ struct Counted : public NodeType {
 /* A trait that detects whether the templated node type is doubly-linked (i.e.
 has a `prev` pointer). */
 template <typename Node>
-struct is_doubly_linked {
+struct has_prev {
 private:
     // Helper template to detect whether Node has a `prev` field
     template <typename T>
     static std::true_type test(decltype(&T::prev)*);
 
     //  Overload for when `prev` is not present
+    template <typename T>
+    static std::false_type test(...);
+
+public:
+    static constexpr bool value = decltype(test<Node>(nullptr))::value;
+};
+
+
+/* A trait that detects whether the templated node type stores the hash of the
+underlying value. */
+template <typename Node>
+struct has_hash {
+private:
+    // Helper template to detect whether Node has a `hash` field
+    template <typename T>
+    static std::true_type test(decltype(&T::hash)*);
+
+    // Overload for when `hash` is not present
     template <typename T>
     static std::false_type test(...);
 

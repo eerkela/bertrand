@@ -12,6 +12,11 @@
 // if the key is in both views.
 
 
+// TODO: we can't look up nodes of a type that doesn't match the view's node type.
+// This affects any function that unpacks items into a temporary view, especially if
+// the temporary view is an explicit SetView.
+
+
 //////////////////////
 ////    PUBLIC    ////
 //////////////////////
@@ -72,6 +77,9 @@ namespace Ops {
     int issubset(ViewType<NodeType, Allocator>* view, PyObject* items, bool strict) {
         using View = ViewType<NodeType, Allocator>;
         using Node = typename View::Node;
+
+        // TODO: temp_view->search() will fail if the original view is a dictionary.
+        // -> node types don't match in this case.
 
         // unpack items into temporary view
         SetView<NodeType, DynamicAllocator> temp_view(items);
@@ -239,7 +247,7 @@ namespace Ops {
         // unpack items into temporary view
         SetView<NodeType, DynamicAllocator> temp_view(items);
 
-        // iterate over view1 and add all elements not in view2 to result
+        // iterate over view and add all elements that are not in temp view to result
         Node* curr = view->head;
         while (curr != nullptr) {
             if (temp_view->search(curr) == nullptr) {
@@ -281,14 +289,12 @@ namespace Ops {
         // unpack items into temporary view
         ViewType<NodeType, DynamicAllocator> temp_view(items);
 
-        // TODO: intersection() should update mapped values for linked dictionaries
-        // if the key is in both views.
-
         // iterate over view1 and add all elements in view2 to result
         Node* curr = view->head;
         while (curr != nullptr) {
-            if (temp_view->search(curr) != nullptr) {
-                _copy_into(result, curr, false);
+            Node* other = temp_view->search(curr);
+            if (other != nullptr) {
+                _copy_into(result, other, false);  // copy from temporary view
                 if (PyErr_Occurred()) {
                     delete result;
                     return nullptr;
@@ -306,13 +312,17 @@ namespace Ops {
     View* symmetric_difference(View* view, PyObject* items) {
         using Node = typename View::Node;
 
-        // (A - B)
-        View* diff1 = difference(view1, view2, false);
+        // unpack items into temporary view
+
+
+        // compute (A - B)
+        View* diff1 = difference(view, items, false);
         if (diff1 == nullptr) {
             return nullptr;  // propagate error
         }
 
-        // (B - A)
+
+        // compute (B - A)
         View* diff2 = difference(view2, view1, false);
         if (diff2 == nullptr) {
             delete diff1;
@@ -333,7 +343,7 @@ namespace Ops {
     /* Update a linked set or dictionary in-place, adding elements from a second
     set or dictionary. */
     template <typename View>
-    void update(View* view1, View* view2, bool left) {
+    void update(View* view, PyObject* items, bool left) {
         using Node = typename View::Node;
 
         // iterate over view2 and add all unique elements to view1
@@ -354,13 +364,21 @@ namespace Ops {
 
     /* Update a linked set or dictionary in-place, removing elements from a second
     set or dictionary. */
-    template <typename View>
-    void difference_update(View* view1, View* view2) {
+    template <
+        template <typename, template <typename> class> class ViewType,
+        typename NodeType,
+        template <typename> class Allocator
+    >
+    void difference_update(ViewType<NodeType, Allocator>* view, PyObject* items) {
+        using View = ViewType<NodeType, Allocator>;
         using Node = typename View::Node;
 
-        // iterate over view1 and remove all elements in view2
+        // unpack items into temporary view
+        SetView<NodeType, DynamicAllocator> temp_view(items);
+
+        // iterate over view and remove all elements in view2
         Node* prev = nullptr;
-        Node* curr = view1->head;
+        Node* curr = view->head;
         while (curr != nullptr) {
             Node* next = static_cast<Node*>(curr->next);
             if (view2->search(curr) != nullptr) {
@@ -370,13 +388,6 @@ namespace Ops {
             prev = curr;
             curr = next;
         }
-    }
-
-    /* Update a linked set or dictionary in-place, removing elements from a Python
-    iterable. */
-    template <typename View>
-    inline void difference_update(View* view1, PyObject* iterable) {
-        _from_python(difference_update, view1, iterable);
     }
 
     /* Update a linked set or dictionary in-place, keeping only elements found in
@@ -398,14 +409,6 @@ namespace Ops {
             curr = next;
         }
     }
-
-    /* Update a linked set or dictionary in-place, keeping only elements found in
-    a Python iterable. */
-    template <typename View>
-    inline void intersection_update(View* view1, PyObject* iterable) {
-        _from_python(intersection_update, view1, iterable);
-    }
-
     /* Update a linked set or dictionary in-place, keeping only elements found in
     either set or dictionary, but not both. */
     template <typename View>
@@ -423,13 +426,6 @@ namespace Ops {
 
         // (A - B) U (B - A)
         update(view1, diff2);
-    }
-
-    /* Update a linked set or dictionary in-place, keeping only elements found in
-    a Python iterable, but not both. */
-    template <typename View>
-    inline void symmetric_difference_update(View* view1, PyObject* iterable) {
-        _from_python(symmetric_difference_update, view1, iterable);
     }
 
 }

@@ -6,7 +6,7 @@
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
 #include "../core/bounds.h"  // normalize_slice()
-#include "../core/node.h"  // is_doubly_linked<>
+#include "../core/node.h"  // has_prev<>
 #include "../core/view.h"  // views
 
 
@@ -74,7 +74,7 @@ namespace Ops {
 
         // NOTE: if the slice is closer to the end of a doubly-linked list, we can
         // iterate from the tail to save time.
-        if constexpr (is_doubly_linked<Node>::value) {
+        if constexpr (has_prev<Node>::value) {
             if (begin > end) {
                 // backward traversal
                 return _extract_slice_backward(

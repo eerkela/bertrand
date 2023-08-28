@@ -5,7 +5,7 @@
 #include <cstddef>  // size_t
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
-#include "../core/node.h"  // is_doubly_linked<>
+#include "../core/node.h"  // has_prev<>
 #include "../core/view.h"  // views, MAX_SIZE_T
 
 
@@ -72,7 +72,7 @@ namespace Ops {
 
         // NOTE: if start index is closer to tail and the list is doubly-linked,
         // we can iterate from the tail to save time.
-        if constexpr (is_doubly_linked<Node>::value) {
+        if constexpr (has_prev<Node>::value) {
             if (bounds.first > view->size / 2) {
                 // else, start from tail
                 curr = view->tail;

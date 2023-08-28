@@ -7,7 +7,7 @@
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
 #include "../core/bounds.h"  // relative_junction(), relative_neighbors()
-#include "../core/node.h"  // is_doubly_linked<>
+#include "../core/node.h"  // has_prev<>
 #include "../core/view.h"  // views
 #include "extend.h"  // _extend_left_to_right(), _extend_right_to_left()
 #include "insert.h"  // _insert_between()
@@ -58,7 +58,7 @@ namespace Ops {
 
         // If we're iterating backwards and the list is doubly-linked, then we can
         // just use the `prev` pointer at each node
-        if constexpr (is_doubly_linked<Node>::value) {
+        if constexpr (has_prev<Node>::value) {
             for (Py_ssize_t i = 0; i > offset; i--) {
                 curr = static_cast<Node*>(curr->prev);
                 if (curr == nullptr) {
@@ -231,7 +231,7 @@ namespace Ops {
 
         // If we're iterating backwards and the list is doubly-linked, then we can
         // just use the `prev` pointer at each node
-        if constexpr (is_doubly_linked<Node>::value) {
+        if constexpr (has_prev<Node>::value) {
             _clear_backward_double(view, curr, offset, length);
             return;
         }

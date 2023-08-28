@@ -6,7 +6,7 @@
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
 #include "../core/bounds.h"  // normalize_slice()
-#include "../core/node.h"  // is_doubly_linked<>
+#include "../core/node.h"  // has_prev<>
 #include "../core/view.h"  // views
 
 
@@ -200,7 +200,7 @@ void _replace_slice(
     // by the original allocator, they are not subject to any size restrictions.
 
     // replace existing nodes with new ones and rewind if an error occurs
-    if constexpr (is_doubly_linked<Node>::value) {
+    if constexpr (has_prev<Node>::value) {
         if (begin > end) {  // backward traversal
             _replace_slice_backward(
                 view,

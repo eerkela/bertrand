@@ -6,7 +6,7 @@
 #include <cmath>  // abs()
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
-#include "../core/node.h"  // is_doubly_linked<>
+#include "../core/node.h"  // has_prev<>
 #include "../core/view.h"  // views
 
 
@@ -41,7 +41,7 @@ namespace Ops {
         Node* new_tail;
 
         // identify new head and tail of rotated list
-        if constexpr (is_doubly_linked<Node>::value) {
+        if constexpr (has_prev<Node>::value) {
             // NOTE: if the list is doubly-linked, then we can iterate in either
             // direction to find the junction point.
             if (index > view->size / 2) {  // backward traversal

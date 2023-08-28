@@ -2,7 +2,7 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_REVERSE_H
 #define BERTRAND_STRUCTS_ALGORITHMS_REVERSE_H
 
-#include "../core/node.h"  // is_doubly_linked<>
+#include "../core/node.h"  // has_prev<>
 #include "../core/view.h"  // views
 
 
@@ -22,7 +22,7 @@ namespace Ops {
         Node* head = view->head;
         Node* curr = head;
         
-        if constexpr (is_doubly_linked<Node>::value) {
+        if constexpr (has_prev<Node>::value) {
             // swap all `next`/`prev` pointers
             while (curr != nullptr) {
                 Node* next = static_cast<Node*>(curr->next);

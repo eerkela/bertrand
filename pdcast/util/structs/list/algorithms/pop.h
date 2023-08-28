@@ -5,7 +5,7 @@
 #include <tuple>  // std::tuple
 #include <Python.h>  // CPython API
 #include "../core/bounds.h"  // neighbors()
-#include "../core/node.h"  // is_doubly_linked<>
+#include "../core/node.h"  // has_prev<>
 #include "../core/view.h"  // views
 
 
@@ -55,7 +55,7 @@ namespace Ops {
         }
 
         // get neighboring nodes
-        if constexpr (is_doubly_linked<Node>::value) {
+        if constexpr (has_prev<Node>::value) {
             // NOTE: this is O(1) for doubly-linked dictionaries because we can use
             // the node's prev and next pointers to unlink it from the list.
             prev = static_cast<Node*>(curr->prev);

@@ -3,7 +3,7 @@
 #define BERTRAND_STRUCTS_ALGORITHMS_REMOVE_H
 
 #include <Python.h>  // CPython API
-#include "../core/node.h"  // is_doubly_linked<>
+#include "../core/node.h"  // has_prev<>
 #include "../core/view.h"  // views
 
 
@@ -85,7 +85,7 @@ void _drop_setlike(View* view, PyObject* item, bool raise) {
 
     // get previous node
     Node* prev;
-    if constexpr (is_doubly_linked<Node>::value) {
+    if constexpr (has_prev<Node>::value) {
         // NOTE: this is O(1) for doubly-linked sets and dictionaries because
         // we already have a pointer to the previous node.
         prev = static_cast<Node*>(curr->prev);

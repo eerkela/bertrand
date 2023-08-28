@@ -7,6 +7,7 @@
 #include <stdexcept>  // std::bad_alloc
 #include <Python.h>  // CPython API
 #include "allocate.h"  // DEBUG
+#include "node.h"  // has_hash<>
 
 
 // TODO: table should have move constructors, but not copy constructors.
@@ -133,6 +134,35 @@ private:
             printf("    -> free: HashTable(%lu)\n", old_capacity);
         }
         free(old_table);
+    }
+
+    /* Look up a value in the hash table by providing an explicit hash. */
+    Node* lookup(Py_hash_t hash, PyObject* value) const {
+        // get index and step for double hashing
+        size_t index = hash % capacity;
+        size_t step = prime - (hash % prime);
+        Node* lookup = table[index];
+        int comp;
+
+        // search table
+        while (lookup != nullptr) {
+            if (lookup != tombstone) {
+                // CPython API equivalent of == operator
+                comp = PyObject_RichCompareBool(lookup->value, value, Py_EQ);
+                if (comp == -1) {  // error occurred during ==
+                    return nullptr;
+                } else if (comp == 1) {  // value found
+                    return lookup;
+                }
+            }
+
+            // advance to next slot
+            index = (index + step) % capacity;
+            lookup = table[index];
+        }
+
+        // value not found
+        return nullptr;
     }
 
 public:
@@ -327,68 +357,30 @@ public:
         prime = PRIMES[exponent];
     }
 
-    /* Search for a node in the hash map by value. */
-    Node* search(PyObject* value) const {
-        // CPython API equivalent of hash(value)
-        Py_hash_t hash = PyObject_Hash(value);
-        if (hash == -1 && PyErr_Occurred()) {  // error occurred during hash()
+    /* Search for a node by reusing attributes from another node. */
+    template <typename T>
+    Node* search(T* key) const {
+        Py_hash_t hash_val;
+        if constexpr (has_hash<T>::value) {
+            // if input node has a pre-computed hash, then we can reuse it to
+            // speed up lookups
+            hash_val = key->hash;
+            return lookup(hash_val, key->value);
+        }
+
+        // otherwise, we have to compute the hash ourselves
+        return search(key->value);
+    }
+
+    /* Search for a node by value. */
+    Node* search(PyObject* key) const {
+        Py_hash_t hash_val = PyObject_Hash(key);
+        if (hash_val == -1 && PyErr_Occurred()) {
             return nullptr;
         }
 
-        // get index and step for double hashing
-        size_t index = hash % capacity;
-        size_t step = prime - (hash % prime);
-        Node* lookup = table[index];
-        int comp;
-
-        // search table
-        while (lookup != nullptr) {
-            if (lookup != tombstone) {
-                // CPython API equivalent of == operator
-                comp = PyObject_RichCompareBool(lookup->value, value, Py_EQ);
-                if (comp == -1) {  // error occurred during ==
-                    return nullptr;
-                } else if (comp == 1) {  // value found
-                    return lookup;
-                }
-            }
-
-            // advance to next slot
-            index = (index + step) % capacity;
-            lookup = table[index];
-        }
-
-        // value not found
-        return nullptr;
-    }
-
-    /* Search for a node directly. */
-    Node* search(Node* value) const {
-        // reuse the node's pre-computed hash
-        size_t index = value->hash % capacity;
-        size_t step = prime - (value->hash % prime);
-        Node* lookup = table[index];
-        int comp;
-
-        // search table
-        while (lookup != nullptr) {
-            if (lookup != tombstone) {
-                // CPython API equivalent of == operator
-                comp = PyObject_RichCompareBool(lookup->value, value->value, Py_EQ);
-                if (comp == -1) {  // error occurred during ==
-                    return nullptr;
-                } else if (comp == 1) {  // value found
-                    return lookup;
-                }
-            }
-
-            // advance to next slot
-            index = (index + step) % capacity;
-            lookup = table[index];
-        }
-
-        // value was not found
-        return nullptr;
+        // delegate to shared lookup() method
+        return lookup(hash_val, key);
     }
 
     /* Clear tombstones from the hash table. */

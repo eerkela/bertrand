@@ -446,13 +446,12 @@ public:
     }
 
     /* Search for a node by its value. */
-    inline Node* search(PyObject* value) const {
-        return table.search(value);
-    }
-
-    /* Search for a node by its value. */
-    inline Node* search(Node* value) const {
-        return table.search(value);
+    template <typename T>
+    inline Node* search(T* key) const {
+        // NOTE: T can be either a PyObject or node pointer.  If a node is provided,
+        // then its precomputed hash will be reused if available.  Otherwise, the value
+        // will be passed through `PyObject_Hash()` before searching the table.
+        return table.search(key);
     }
 
     /* Clear all tombstones from the hash table. */

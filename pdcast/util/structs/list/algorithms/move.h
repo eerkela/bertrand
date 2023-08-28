@@ -7,7 +7,7 @@
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
 #include "../core/bounds.h"  // relative_junction()
-#include "../core/node.h"  // is_doubly_linked<>
+#include "../core/node.h"  // has_prev<>
 #include "../core/view.h"  // views, MAX_SIZE_T
 
 
@@ -94,7 +94,7 @@ namespace Ops {
         // get predecessors of both nodes
         Node* prev1;
         Node* prev2;
-        if constexpr (is_doubly_linked<Node>::value) {
+        if constexpr (has_prev<Node>::value) {
             // NOTE: if the list is doubly-linked, then we can use the `prev`
             // pointer to get the previous nodes in constant time.
             prev1 = static_cast<Node*>(node1->prev);
@@ -160,7 +160,7 @@ namespace Ops {
 
         // NOTE: if the list is doubly-linked, then we can use the `prev` pointer
         // to get the previous node in constant time.
-        if constexpr (is_doubly_linked<Node>::value) {
+        if constexpr (has_prev<Node>::value) {
             old_prev = static_cast<Node*>(node->prev);
             std::pair<Node*, Node*> bounds = relative_junction(
                 view, node, steps, true
@@ -251,7 +251,7 @@ namespace Ops {
 
         // NOTE: if the list is doubly-linked, then we can use the `prev` pointer
         // to get the previous node in constant time.
-        if constexpr (is_doubly_linked<Node>::value) {
+        if constexpr (has_prev<Node>::value) {
             old_prev = static_cast<Node*>(node->prev);
             std::pair<Node*, Node*> bounds = junction(view, view->head, idx);
             new_prev = bounds.first;
@@ -331,7 +331,7 @@ namespace Ops {
 
         // NOTE: if the list is doubly-linked, then we can use the `prev` pointer
         // to get the previous node in constant time.
-        if constexpr (is_doubly_linked<Node>::value) {
+        if constexpr (has_prev<Node>::value) {
             // NOTE: because we're moving relative to some other node, we can
             // run into a situation where the junction includes the node to be
             // moved, which can cause an error.  If we remove the node before
