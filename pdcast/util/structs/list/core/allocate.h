@@ -492,4 +492,28 @@ public:
 };
 
 
+///////////////////////
+////    ALIASES    ////
+///////////////////////
+
+
+// NOTE: views are normally packaged into Variants whose allocators are determined
+// by the `max_size` argument to the variant's constructor.  These only come in 2
+// flavors, FixedAllocator and DynamicAllocator, which are themselves aliases for
+// one of the above allocator classes.  These aliases can be reassigned to change
+// these default allocators on a global basis for all views.
+
+
+/* FixedAllocators are used whenever a positive (or zero) `max_size` is given to a
+variant constructor. */
+template <typename Node>
+using FixedAllocator = PreAllocator<Node>;
+
+
+/* DynamicAllocators are used whenever a negative `max_size` is given to a variant
+constructor. */
+template <typename Node>
+using DynamicAllocator = FreeListAllocator<Node>;
+
+
 #endif  // BERTRAND_STRUCTS_CORE_ALLOCATE_H include guard

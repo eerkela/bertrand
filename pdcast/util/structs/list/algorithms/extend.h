@@ -17,8 +17,8 @@ namespace Ops {
     template <typename View>
     inline void extend(View* view, PyObject* items, bool left) {
         using Node = typename View::Node;
-        Node* null = static_cast<Node*>(nullptr);
 
+        Node* null = static_cast<Node*>(nullptr);
         if (left) {
             _extend_right_to_left(view, null, view->head, items, false);
         } else {
@@ -30,8 +30,8 @@ namespace Ops {
     template <typename View>
     inline void update(View* view, PyObject* items, bool left) {
         using Node = typename View::Node;
-        Node* null = static_cast<Node*>(nullptr);
 
+        Node* null = static_cast<Node*>(nullptr);
         if (left) {
             _extend_right_to_left(view, null, view->head, items, true);
         } else {
@@ -47,7 +47,8 @@ namespace Ops {
 ///////////////////////
 
 
-/* Insert items from the left node to the right node. */
+/* Insert items from an arbitrary Python iterable from the left node to the right
+node. */
 template <typename View, typename Node>
 void _extend_left_to_right(
     View* view,
@@ -85,10 +86,7 @@ void _extend_left_to_right(
                 Node* existing = view->search(curr);
                 if (existing != nullptr) {  // item already exists
                     if constexpr (has_mapped<Node>::value) {
-                        // update mapped value
-                        Py_DECREF(existing->mapped);
-                        Py_INCREF(curr->mapped);
-                        existing->mapped = curr->mapped;
+                        _update_mapped(existing, curr->mapped);
                     }
                     view->recycle(curr);
                     Py_DECREF(item);
@@ -114,26 +112,13 @@ void _extend_left_to_right(
 
     // check for error
     if (PyErr_Occurred()) {  // recover original list
-        // remove staged nodes from left to right
-        prev = left;
-        curr = static_cast<Node*>(prev->next);
-        while (curr != right) {
-            Node* next = static_cast<Node*>(curr->next);
-            view->unlink(prev, curr, next);
-            view->recycle(curr);
-            curr = next;
-        }
-
-        // join left and right bounds
-        Node::join(left, right);
-        if (right == nullptr) {
-            view->tail = right;  // reset tail if necessary
-        }
+        _undo_left_to_right(view, left, right);
     }
 }
 
 
-/* Insert items from the right node to the left node. */
+/* Insert items from an arbitrary Python iterable from the right node to the left
+node. */
 template <typename View, typename Node>
 void _extend_right_to_left(
     View* view,
@@ -171,10 +156,7 @@ void _extend_right_to_left(
                 Node* existing = view->search(curr);
                 if (existing != nullptr) {  // item already exists
                     if constexpr (has_mapped<Node>::value) {
-                        // update mapped value
-                        Py_DECREF(existing->mapped);
-                        Py_INCREF(curr->mapped);
-                        existing->mapped = curr->mapped;
+                        _update_mapped(existing, curr->mapped);
                     }
                     view->recycle(curr);
                     Py_DECREF(item);
@@ -200,29 +182,74 @@ void _extend_right_to_left(
 
     // check for error
     if (PyErr_Occurred()) {  // recover original list
-        // NOTE: the list isn't guaranteed to be doubly-linked, so we have to
-        // iterate from left to right to delete the staged nodes.
-        Node* prev;
-        if (left == nullptr) {
-            prev = view->head;
-        } else {
-            prev = left;
-        }
+        _undo_right_to_left(view, left, right);
+    }
+}
 
-        // remove staged nodes from left to right bounds
-        curr = static_cast<Node*>(prev->next);
-        while (curr != right) {
-            next = static_cast<Node*>(curr->next);
-            view->unlink(prev, curr, next);
-            view->recycle(curr);
-            curr = next;
-        }
 
-        // join left and right bounds (can be NULL)
-        Node::join(left, right);
-        if (left == nullptr) {
-            view->head = left;  // reset head if necessary
-        }
+/* Update mapped values for linked dictionaries during update(). */
+template <typename Node>
+inline void _update_mapped(Node* existing, PyObject* value) {
+    Py_DECREF(existing->mapped);
+    Py_INCREF(value);
+    existing->mapped = value;
+}
+
+
+/* Recover the original list in the event of error during extend()/update(). */
+template <typename View, typename Node>
+void _undo_left_to_right(
+    View* view,
+    Node* left,
+    Node* right
+) {
+    // remove staged nodes from left to right
+    Node* prev = left;
+    Node* curr = static_cast<Node*>(prev->next);
+    while (curr != right) {
+        Node* next = static_cast<Node*>(curr->next);
+        view->unlink(prev, curr, next);
+        view->recycle(curr);
+        curr = next;
+    }
+
+    // join left and right bounds
+    Node::join(left, right);
+    if (right == nullptr) {
+        view->tail = right;  // reset tail if necessary
+    }
+}
+
+
+/* Recover the original list in the event of error during extend()/update(). */
+template <typename View, typename Node>
+void _undo_right_to_left(
+    View* view,
+    Node* left,
+    Node* right
+) {
+    // NOTE: the list isn't guaranteed to be doubly-linked, so we have to
+    // iterate from left to right to delete the staged nodes.
+    Node* prev;
+    if (left == nullptr) {
+        prev = view->head;
+    } else {
+        prev = left;
+    }
+
+    // remove staged nodes from left to right bounds
+    Node* curr = static_cast<Node*>(prev->next);
+    while (curr != right) {
+        Node* next = static_cast<Node*>(curr->next);
+        view->unlink(prev, curr, next);
+        view->recycle(curr);
+        curr = next;
+    }
+
+    // join left and right bounds (can be NULL)
+    Node::join(left, right);
+    if (left == nullptr) {
+        view->head = left;  // reset head if necessary
     }
 }
 

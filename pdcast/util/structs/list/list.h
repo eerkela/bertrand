@@ -104,15 +104,15 @@ public:
     {
         if (doubly_linked) {
             if (max_size < 0) {
-                variant = ListView<DoubleNode, FreeListAllocator>(max_size, spec);
+                variant = ListView<DoubleNode, DynamicAllocator>(max_size, spec);
             } else {
-                variant = ListView<DoubleNode, PreAllocator>(max_size, spec);
+                variant = ListView<DoubleNode, FixedAllocator>(max_size, spec);
             }
         } else {
             if (max_size < 0) {
-                variant = ListView<SingleNode, FreeListAllocator>(max_size, spec);
+                variant = ListView<SingleNode, DynamicAllocator>(max_size, spec);
             } else {
-                variant = ListView<SingleNode, PreAllocator>(max_size, spec);
+                variant = ListView<SingleNode, FixedAllocator>(max_size, spec);
             }
         }
     }
@@ -128,21 +128,21 @@ public:
     ) : _doubly_linked(doubly_linked) {
         if (doubly_linked) {
             if (max_size < 0) {
-                variant = ListView<DoubleNode, FreeListAllocator>(
+                variant = ListView<DoubleNode, DynamicAllocator>(
                     iterable, reverse, max_size, spec
                 );
             } else {
-                variant = ListView<DoubleNode, PreAllocator>(
+                variant = ListView<DoubleNode, FixedAllocator>(
                     iterable, reverse, max_size, spec
                 );
             }
         } else {
             if (max_size < 0) {
-                variant = ListView<SingleNode, FreeListAllocator>(
+                variant = ListView<SingleNode, DynamicAllocator>(
                     iterable, reverse, max_size, spec
                 );
             } else {
-                variant = ListView<SingleNode, PreAllocator>(
+                variant = ListView<SingleNode, FixedAllocator>(
                     iterable, reverse, max_size, spec
                 );
             }

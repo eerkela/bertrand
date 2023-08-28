@@ -4,7 +4,12 @@
 
 #include <optional>  // std::optional
 #include <Python.h>  // CPython API
+#include "../core/allocate.h"  // DynamicAllocator
 #include "../core/view.h"  // views
+
+
+// TODO: intersection() should update mapped values for linked dictionaries
+// if the key is in both views.
 
 
 //////////////////////
@@ -19,162 +24,226 @@ namespace Ops {
     ///////////////////////////////
 
     /* Check whether a linked set or dictionary has any elements in common with
-    another set or dictionary. */
+    an arbitrary Python iterable. */
     template <typename View>
-    int isdisjoint(View* view1, View* view2) {
+    int isdisjoint(View* view, PyObject* items) {
         using Node = typename View::Node;
 
-        // iterate over view1 and check if any elements are in view2
-        Node* curr = view1->head;
-        while (curr != nullptr) {
-            if (view2->search(curr) != nullptr) {
-                return 0;
-            }
-            curr = static_cast<Node*>(curr->next);
-        }
-        return 1;
-    }
-
-    /* A specialization for isdisjoint() that converts a Python iterable into an
-    appropriate view before continuing as normal. */
-    template <typename View>
-    int isdisjoint(View* view1, PyObject* iterable) {
-        auto result = _unpack_python(isdisjoint, view1, iterable);
-        if (!result.has_value()) {
+        // CPython API equivalent of `iter(items)`
+        PyObject* iterator = PyObject_GetIter(items);
+        if (iterator == nullptr) {
             return -1;  // propagate error
         }
-        return result.value();
+
+        // iterate over items and check if any are in view
+        while (true) {
+            PyObject* item = PyIter_Next(iterator);  // next(iterator)
+            if (item == nullptr) {  // end of iterator or error
+                if (PyErr_Occurred()) {
+                    Py_DECREF(iterator);
+                    return -1;
+                }
+                break;
+            }
+
+            // check if item is in view
+            if (view->search(item) != nullptr) {
+                Py_DECREF(item);
+                Py_DECREF(iterator);
+                return 0;
+            }
+
+            // advance to next item
+            Py_DECREF(item);
+        }
+
+        // release iterator
+        Py_DECREF(iterator);
+        return 1;  // no items in common
     }
 
-    /* Check whether a linked set or dictionary is a subset of another set or
-    dictionary. */
-    template <typename View>
-    int issubset(View* view1, View* view2, bool strict) {
+    /* Check whether a linked set or dictionary represents a subset of an arbitrary
+    Python iterable. */
+    template <
+        template <typename, template <typename> class> class ViewType,
+        typename NodeType,
+        template <typename> class Allocator
+    >
+    int issubset(ViewType<NodeType, Allocator>* view, PyObject* items, bool strict) {
+        using View = ViewType<NodeType, Allocator>;
         using Node = typename View::Node;
 
-        // iterate over view1 and check if all elements are in view2
-        Node* curr = view1->head;
+        // unpack items into temporary view
+        SetView<NodeType, DynamicAllocator> temp_view(items);
+
+        // iterate over view and check if all elements are in temporary view
+        Node* curr = view->head;
         while (curr != nullptr) {
-            if (view2->search(curr) == nullptr) {
+            if (temp_view->search(curr) == nullptr) {
                 return 0;
             }
             curr = static_cast<Node*>(curr->next);
         }
 
-        // if strict, check that view1 is not equal to view2
+        // if strict, check that view is not equal to temporary view
         if (strict) {
-            return view1->size < view2->size;
+            return view->size < temp_view->size;
         }
         return 1;
     }
 
-    /* A specialization for issubset() that converts a Python iterable into an
-    appropriate view before continuing as normal. */
+    /* Check whether a linked set or dictionary represents a superset of an arbitrary
+    Python iterable. */
     template <typename View>
-    int issubset(View* view1, PyObject* iterable, bool strict) {
-        auto result = _unpack_python(issubset, view1, iterable, strict);
-        if (!result.has_value()) {
-            return -1;  // propagate error
-        }
-        return result.value();
-    }
-
-    /* Check whether a linked set or dictionary is a superset of another set or
-    dictionary. */
-    template <typename View>
-    int issuperset(View* view1, View* view2, bool strict) {
+    int issuperset(View* view, PyObject* items, bool strict) {
         using Node = typename View::Node;
 
-        // iterate over view2 and check if all elements are in view1
-        Node* curr = view2->head;
-        while (curr != nullptr) {
-            if (view1->search(curr) == nullptr) {
-                return 0;
-            }
-            curr = static_cast<Node*>(curr->next);
-        }
-
-        // if strict, check that view1 is not equal to view2
-        if (strict) {
-            return view1->size > view2->size;
-        }
-        return 1;
-    }
-
-    /* A specialization for issuperset() that converts a Python iterable into an
-    appropriate view before continuing as normal. */
-    template <typename View>
-    int issuperset(View* view1, PyObject* iterable, bool strict) {
-        auto result = _unpack_python(issuperset, view1, iterable, strict);
-        if (!result.has_value()) {
+        // CPython API equivalent of `iter(items)`
+        PyObject* iterator = PyObject_GetIter(items);
+        if (iterator == nullptr) {
             return -1;  // propagate error
         }
-        return result.value();
+        size_t iter_size = 0;  // track number of items in iterator
+
+        // iterate over items and check if any are not in view
+        while (true) {
+            PyObject* item = PyIter_Next(iterator);  // next(iterator)
+            if (item == nullptr) {  // end of iterator or error
+                if (PyErr_Occurred()) {
+                    Py_DECREF(iterator);
+                    return -1;
+                }
+                break;
+            }
+
+            // check if item is in view
+            if (view->search(item) == nullptr) {
+                Py_DECREF(item);
+                Py_DECREF(iterator);
+                return 0;
+            }
+
+            // advance to next item
+            Py_DECREF(item);
+            iter_size++;
+        }
+
+        // release iterator
+        Py_DECREF(iterator);
+
+        // if strict, check that view is not equal to items
+        if (strict) {
+            return view->size > iter_size;
+        }
+        return 1;
     }
 
     //////////////////////////////
     ////    SET OPERATIONS    ////
     //////////////////////////////
 
-    /* Get the union between two linked sets or dictionaries. */
+    /* Get the union between a linked set or dictionary and an arbitrary Python
+    iterable. */
     template <typename View>
-    View* union_(View* view1, View* view2) {
+    View* union_(View* view, PyObject* items, bool left) {
         using Node = typename View::Node;
 
-        // copy view1
-        View* result = view1->copy();
-        if (result == nullptr) {
+        // CPython API equivalent of `iter(items)`
+        PyObject* iterator = PyObject_GetIter(items);
+        if (iterator == nullptr) {
             return nullptr;  // propagate error
         }
 
-        // iterate over view2 and add all elements that are missing from result
-        Node* curr = view2->head;
-        while (curr != nullptr) {
-            if (result->search(curr) == nullptr) {
-                _copy_into(result, curr);
+        // copy view
+        View* result = view->copy();
+        if (result == nullptr) {
+            Py_DECREF(iterator);
+            return nullptr;  // propagate error
+        }
+
+        // iterate over items and add any elements that are missing from view
+        while (true) {
+            PyObject* item = PyIter_Next(iterator);  // next(iterator)
+            if (item == nullptr) {  // end of iterator or error
                 if (PyErr_Occurred()) {
+                    Py_DECREF(iterator);
                     delete result;
                     return nullptr;
                 }
+                break;
             }
-            curr = static_cast<Node*>(curr->next);
+
+            // allocate a new node
+            Node* node = result->node(item);
+            if (node == nullptr) {
+                Py_DECREF(iterator);
+                Py_DECREF(item);
+                delete result;
+                return nullptr;
+            }
+
+            // check if item is contained in hash table
+            Node* existing = result->search(node);
+            if (existing != nullptr) {
+                if constexpr (has_mapped<Node>::value) {
+                    _update_mapped(existing, node->mapped);
+                }
+                result->recycle(node);
+                Py_DECREF(item);
+                continue;  // advance to next item
+            }
+
+            // link to beginning/end of list
+            if (left) {
+                result->link(nullptr, node, result->head);
+            } else {
+                result->link(result->tail, node, nullptr);
+            }
+            if (PyErr_Occurred()) {  // check for errors during link()
+                Py_DECREF(iterator);
+                Py_DECREF(item);
+                delete result;
+                return nullptr;
+            }
+
+            // advance to next item
+            Py_DECREF(item);
         }
 
         return result;
     }
 
-    /* A specialization for union_() that converts a Python iterable into an
-    appropriate view before continuing as normal. */
-    template <typename View>
-    View* union_(View* view1, PyObject* iterable) {
-        try {
-            View view2(iterable);
-            return union_(view1, &view2);
-        } catch (const std::bad_alloc&) {
-            PyErr_NoMemory();
-            return nullptr;
-        }
-    }
-
-    /* Get the difference between two linked sets or dictionaries. */
-    template <typename View>
-    View* difference(View* view1, View* view2) {
+    /* Get the difference between a linked set or dictionary and an arbitrary Python
+    iterable. */
+    template <
+        template <typename, template <typename> class> class ViewType,
+        typename NodeType,
+        template <typename> class Allocator
+    >
+    ViewType<NodeType, Allocator>* difference(
+        ViewType<NodeType, Allocator>* view,
+        PyObject* items
+    ) {
+        using View = ViewType<NodeType, Allocator>;
         using Node = typename View::Node;
 
-        // generate a new view to hold the result
+        // allocate a new view to hold the result
         View* result;
         try {
-            result = new View(view1->max_size, view1->specialization);
+            result = new View(view->max_size, view->specialization);
         } catch (const std::bad_alloc&) {
             PyErr_NoMemory();
             return nullptr;
         }
+
+        // unpack items into temporary view
+        SetView<NodeType, DynamicAllocator> temp_view(items);
 
         // iterate over view1 and add all elements not in view2 to result
-        Node* curr = view1->head;
+        Node* curr = view->head;
         while (curr != nullptr) {
-            if (view2->search(curr) == nullptr) {
-                _copy_into(result, curr);
+            if (temp_view->search(curr) == nullptr) {
+                _copy_into(result, curr, false);
                 if (PyErr_Occurred()) {
                     delete result;
                     return nullptr;
@@ -186,38 +255,40 @@ namespace Ops {
         return result;
     }
 
-    /* A specialization for difference() that converts a Python iterable into an
-    appropriate view before continuing as normal. */
-    template <typename View>
-    View* difference(View* view1, PyObject* iterable) {
-        try {
-            View view2(iterable);
-            return difference(view1, &view2);
-        } catch (const std::bad_alloc&) {
-            PyErr_NoMemory();
-            return nullptr;
-        }
-    }
-
-    /* Get the intersection between two linked sets or dictionaries. */
-    template <typename View>
-    View* intersection(View* view1, View* view2) {
+    /* Get the intersection between a linked set or dictionary and an arbitrary Python
+    iterable. */
+    template <
+        template <typename, template <typename> class> class ViewType,
+        typename NodeType,
+        template <typename> class Allocator
+    >
+    ViewType<NodeType, Allocator>* intersection(
+        ViewType<NodeType, Allocator>* view,
+        PyObject* items
+    ) {
+        using View = ViewType<NodeType, Allocator>;
         using Node = typename View::Node;
 
         // generate a new view to hold the result
         View* result;
         try {
-            result = new View(view1->max_size, view1->specialization);
+            result = new View(view->max_size, view->specialization);
         } catch (const std::bad_alloc&) {
             PyErr_NoMemory();
             return nullptr;
         }
 
+        // unpack items into temporary view
+        ViewType<NodeType, DynamicAllocator> temp_view(items);
+
+        // TODO: intersection() should update mapped values for linked dictionaries
+        // if the key is in both views.
+
         // iterate over view1 and add all elements in view2 to result
-        Node* curr = view1->head;
+        Node* curr = view->head;
         while (curr != nullptr) {
-            if (view2->search(curr) != nullptr) {
-                _copy_into(result, curr);
+            if (temp_view->search(curr) != nullptr) {
+                _copy_into(result, curr, false);
                 if (PyErr_Occurred()) {
                     delete result;
                     return nullptr;
@@ -229,9 +300,10 @@ namespace Ops {
         return result;
     }
 
-    /* Get the symmetric difference between two linked sets or dictionaries. */
+    /* Get the symmetric difference between a linked set or dictionary and an arbitrary
+    Python iterable. */
     template <typename View>
-    View* symmetric_difference(View* view1, View* view2) {
+    View* symmetric_difference(View* view, PyObject* items) {
         using Node = typename View::Node;
 
         // (A - B)
@@ -261,14 +333,14 @@ namespace Ops {
     /* Update a linked set or dictionary in-place, adding elements from a second
     set or dictionary. */
     template <typename View>
-    void update(View* view1, View* view2) {
+    void update(View* view1, View* view2, bool left) {
         using Node = typename View::Node;
 
         // iterate over view2 and add all unique elements to view1
         Node* curr = view2->head;
         while (curr != nullptr) {
             if (view1->search(curr) == nullptr) {
-                _copy_into(view1, curr);
+                _copy_into(view1, curr, left);
                 if (PyErr_Occurred()) {
                     return;
                 }
@@ -276,6 +348,9 @@ namespace Ops {
             curr = static_cast<Node*>(curr->next);
         }
     }
+
+    // NOTE: update() does not have a specialization for Python iterables because
+    // it is already implemented in extend.h
 
     /* Update a linked set or dictionary in-place, removing elements from a second
     set or dictionary. */
@@ -295,6 +370,13 @@ namespace Ops {
             prev = curr;
             curr = next;
         }
+    }
+
+    /* Update a linked set or dictionary in-place, removing elements from a Python
+    iterable. */
+    template <typename View>
+    inline void difference_update(View* view1, PyObject* iterable) {
+        _from_python(difference_update, view1, iterable);
     }
 
     /* Update a linked set or dictionary in-place, keeping only elements found in
@@ -318,6 +400,13 @@ namespace Ops {
     }
 
     /* Update a linked set or dictionary in-place, keeping only elements found in
+    a Python iterable. */
+    template <typename View>
+    inline void intersection_update(View* view1, PyObject* iterable) {
+        _from_python(intersection_update, view1, iterable);
+    }
+
+    /* Update a linked set or dictionary in-place, keeping only elements found in
     either set or dictionary, but not both. */
     template <typename View>
     void symmetric_difference_update(View* view1, View* view2) {
@@ -336,6 +425,13 @@ namespace Ops {
         update(view1, diff2);
     }
 
+    /* Update a linked set or dictionary in-place, keeping only elements found in
+    a Python iterable, but not both. */
+    template <typename View>
+    inline void symmetric_difference_update(View* view1, PyObject* iterable) {
+        _from_python(symmetric_difference_update, view1, iterable);
+    }
+
 }
 
 
@@ -344,19 +440,20 @@ namespace Ops {
 ///////////////////////
 
 
-// TODO: use function pointers for PyObject* based specializations.
-
-
 /* Copy a node from one view to another. */
 template <typename View, typename Node>
-void _copy_into(View* view, Node* node) {
+void _copy_into(View* view, Node* node, bool left) {
     Node* copied = view->copy(node);
     if (copied == nullptr) {  // check for errors during init_copy()
         return;  // propagate
     }
 
     // add node to result
-    view->link(view->tail, copied, nullptr);
+    if (left) {
+        view->link(nullptr, copied, view->head);
+    } else {
+        view->link(view->tail, copied, nullptr);
+    }
     if (PyErr_Occurred()) {  // check for errors during link()
         view->recycle(copied);
         return;  // propagate
@@ -364,21 +461,41 @@ void _copy_into(View* view, Node* node) {
 }
 
 
-/* Convert a Python iterable into an appropriate view before calling the associated
+/* Convert a Python iterable into an appropriate view before calling the specified
 function. */
 template <typename Func, typename View, typename... Args>
-auto _unpack_python(Func func, View* view, PyObject* iterable, Args... args)
-    -> std::optional<decltype(func(view, std::declval<View*>(), args...))>
-{
+auto _from_python(Func func, View* view, PyObject* iterable, Args... args) {
+    using ReturnType = decltype(func(view, std::declval<View*>(), args...));
+
     try {
-        View view2(iterable);
-        return {func(view, &view2, args...)};
+        // convert iterable into a temporary view
+        View temp_view(iterable);
+
+        // if the specified function returns void, call it directly.  Otherwise,
+        // wrap the result in a std::optional.
+        if constexpr (std::is_void_v<ReturnType>) {
+            func(view, &temp_view, args...);
+        } else {
+            return std::optional<ReturnType>{func(view, &temp_view, args...)};
+        }
+
+    // memory error during view construction
     } catch (const std::bad_alloc&) {
         PyErr_NoMemory();
-        return std::nullopt;
+        if constexpr (!std::is_void_v<ReturnType>) {
+            return std::optional<ReturnType>{};  // propagate error
+        }
     }
 }
 
+
+/* Update mapped values for linked dictionaries during update(). */
+template <typename Node>
+inline void _update_mapped(Node* existing, PyObject* value) {
+    Py_DECREF(existing->mapped);
+    Py_INCREF(value);
+    existing->mapped = value;
+}
 
 
 #endif // BERTRAND_STRUCTS_ALGORITHMS_COMPARE_H include guard

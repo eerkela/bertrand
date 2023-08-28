@@ -136,7 +136,8 @@ public:
     }
 
     /* Dispatch to the correct implementation of isdisjoint() for each variant. */
-    inline bool isdisjoint(VariantSet* other) {
+    template <typename T>
+    inline int isdisjoint(T* other) {
         return std::visit(
             [&](auto& view) {
                 return Ops::isdisjoint(&view, other);
@@ -146,7 +147,8 @@ public:
     }
 
     /* Dispatch to the correct implementation of issubset() for each variant. */
-    inline bool issubset(VariantSet* other, bool strict) {
+    template <typename T>
+    inline int issubset(T* other, bool strict) {
         return std::visit(
             [&](auto& view) {
                 return Ops::issubset(&view, other, strict);
@@ -156,7 +158,8 @@ public:
     }
 
     /* Dispatch to the correct implementation of issuperset() for each variant. */
-    inline bool issuperset(VariantSet* other, bool strict) {
+    template <typename T>
+    inline int issuperset(T* other, bool strict) {
         return std::visit(
             [&](auto& view) {
                 return Ops::issuperset(&view, other);
@@ -166,7 +169,8 @@ public:
     }
 
     /* Dispatch to the correct implementation of union() for each variant. */
-    inline VariantSet* union_(VariantSet* other) {
+    template <typename T>
+    inline VariantSet* union_(T* other) {
         return std::visit(
             [&](auto& view) {
                 auto result = Ops::union_(&view, other);
@@ -180,7 +184,8 @@ public:
     }
 
     /* Dispatch to the correct implementation of intersection() for each variant. */
-    inline VariantSet* intersection(VariantSet* other) {
+    template <typename T>
+    inline VariantSet* intersection(T* other) {
         return std::visit(
             [&](auto& view) {
                 auto result = Ops::intersection(&view, other);
@@ -194,7 +199,8 @@ public:
     }
 
     /* Dispatch to the correct implementation of difference() for each variant. */
-    inline VariantSet* difference(VariantSet* other) {
+    template <typename T>
+    inline VariantSet* difference(T* other) {
         return std::visit(
             [&](auto& view) {
                 auto result = Ops::difference(&view, other);
@@ -209,7 +215,8 @@ public:
 
     /* Dispatch to the correct implementation of symmetric_difference() for each
     variant. */
-    inline VariantSet* symmetric_difference(VariantSet* other) {
+    template <typename T>
+    inline VariantSet* symmetric_difference(T* other) {
         return std::visit(
             [&](auto& view) {
                 auto result = Ops::symmetric_difference(&view, other);
@@ -223,7 +230,8 @@ public:
     }
 
     /* Dispatch to the correct implementation of update() for each variant. */
-    inline void update(PyObject* items, bool left) {
+    template <typename T>
+    inline void update(T* items, bool left) {
         std::visit(
             [&](auto& view) {
                 Ops::update(&view, items, left);
@@ -234,7 +242,8 @@ public:
 
     /* Dispatch to the correct implementation of intersection_update() for each
     variant. */
-    inline void intersection_update(VariantSet* other) {
+    template <typename T>
+    inline void intersection_update(T* other) {
         std::visit(
             [&](auto& view) {
                 Ops::intersection_update(&view, other);
@@ -245,7 +254,8 @@ public:
 
     /* Dispatch to the correct implementation of difference_update() for each
     variant. */
-    inline void difference_update(VariantSet* other) {
+    template <typename T>
+    inline void difference_update(T* other) {
         std::visit(
             [&](auto& view) {
                 Ops::difference_update(&view, other);
@@ -256,7 +266,8 @@ public:
 
     /* Dispatch to the correct implementation of symmetric_difference_update() for
     each variant. */
-    inline void symmetric_difference_update(VariantSet* other) {
+    template <typename T>
+    inline void symmetric_difference_update(T* other) {
         std::visit(
             [&](auto& view) {
                 Ops::symmetric_difference_update(&view, other);
