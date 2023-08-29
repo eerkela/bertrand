@@ -99,6 +99,76 @@ namespace Ops {
         );
     }
 
+    /* Get a value from a linked set or dictionary relative to a given sentinel
+    value. */
+    template <typename View>
+    PyObject* get_relative(View* view, PyObject* sentinel, Py_ssize_t offset) {
+        using Node = typename View::Node;
+
+        // ensure offset is nonzero
+        if (offset == 0) {
+            PyErr_Format(PyExc_ValueError, "offset must be non-zero");
+            return nullptr;
+        } else if (offset < 0) {
+            offset += 1;
+        }
+
+        // search for sentinel
+        Node* curr = view->search(sentinel);
+        if (curr == nullptr) {  // sentinel not found
+            PyErr_Format(PyExc_KeyError, "%R is not contained in the set", sentinel);
+            return nullptr;
+        }
+
+        // If we're iterating forward from the sentinel, then the process is the same
+        // for singly- and doubly-linked lists
+        if (offset > 0) {
+            for (Py_ssize_t i = 0; i < offset; i++) {
+                curr = static_cast<Node*>(curr->next);
+                if (curr == nullptr) {
+                    PyErr_Format(PyExc_IndexError, "offset %zd is out of range", offset);
+                    return nullptr;
+                }
+            }
+            Py_INCREF(curr->value);
+            return curr->value;
+        }
+
+        // If we're iterating backwards and the list is doubly-linked, then we can
+        // just use the `prev` pointer at each node
+        if constexpr (has_prev<Node>::value) {
+            for (Py_ssize_t i = 0; i > offset; i--) {
+                curr = static_cast<Node*>(curr->prev);
+                if (curr == nullptr) {
+                    PyErr_Format(PyExc_IndexError, "offset %zd is out of range", offset);
+                    return nullptr;
+                }
+            }
+            Py_INCREF(curr->value);
+            return curr->value;
+        }
+
+        // Otherwise, we have to start from the head and walk forward using a 2-pointer
+        // approach.
+        Node* lookahead = view->head;
+        for (Py_ssize_t i = 0; i > offset; i--) {  // advance lookahead to offset
+            lookahead = static_cast<Node*>(lookahead->next);
+            if (lookahead == curr) {
+                PyErr_Format(PyExc_IndexError, "offset %zd is out of range", offset);
+                return nullptr;
+            }
+        }
+
+        // advance both pointers until lookahead hits the end of the list
+        Node* temp = view->head;
+        while (lookahead != curr) {
+            temp = static_cast<Node*>(temp->next);
+            lookahead = static_cast<Node*>(lookahead->next);
+        }
+        Py_INCREF(temp->value);
+        return temp->value;
+    }
+
 }
 
 

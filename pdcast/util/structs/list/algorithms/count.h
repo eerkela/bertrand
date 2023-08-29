@@ -9,11 +9,6 @@
 #include "../core/view.h"  // views, MAX_SIZE_T
 
 
-//////////////////////
-////    PUBLIC    ////
-//////////////////////
-
-
 namespace Ops {
 
     /* Count the number of occurrences of an item within a linked set or dictionary. */

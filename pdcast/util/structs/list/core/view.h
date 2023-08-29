@@ -10,17 +10,36 @@
 #include "allocate.h"  // Allocator
 #include "table.h"  // HashTable
 
+/*
+algorithms/
+    add.h
+    append.h
+    compare.h  (isdisjoint(), issubset(), lexical_lt(), lexical_gt(), etc.)
+    contains.h
+    count.h
+    delete_slice.h
+    discard.h
+    extend.h
+    get_slice.h
+    index.h
+    insert.h
+    lookup.h
+    move.h  (move(), move_to_index())
+    pop.h
+    relative.h  (distance(), get_relative(), insert_relative(), etc.)
+    remove.h
+    reverse.h
+    rotate.h
+    set_slice.h
+    sort.h
+    union.h  (union(), intersection(), difference(), symmetric_difference())
+    update.h
+*/
+
 
 ////////////////////////
 ////    LISTVIEW    ////
 ////////////////////////
-
-
-// TODO: view needs to store the max_size parameter and pass it to any ListView
-// that it creates via copy().
-
-// When slicing a fixed-size list, the resulting list should also have a fixed
-// size equal to the length of the slice.  This is not currently the case.
 
 
 template <typename NodeType, template <typename> class Allocator>
@@ -57,11 +76,47 @@ public:
     ) : head(nullptr), tail(nullptr), size(0), max_size(max_size),
         specialization(spec), allocator(max_size)
     {
-        // unpack iterator into ListView (can throw std::invalid_argument)
-        unpack_iterable(iterable, reverse);
+        // hold reference to specialization, if given
         if (spec != nullptr) {
-            Py_INCREF(spec);  // hold reference to specialization if given
+            Py_INCREF(spec);
         }
+
+        // C API equivalent of iter(iterable)
+        PyObject* iterator = PyObject_GetIter(iterable);
+        if (iterator == nullptr) {  // TypeError()
+            self_destruct();
+            throw std::invalid_argument("Value is not iterable");
+        }
+
+        // unpack iterator into ListView
+        PyObject* item;
+        while (true) {
+            // C API equivalent of next(iterator)
+            item = PyIter_Next(iterator);
+            if (item == nullptr) { // end of iterator or error
+                if (PyErr_Occurred()) {
+                    Py_DECREF(iterator);
+                    self_destruct();
+                    throw std::invalid_argument("could not get item from iterator");
+                }
+                break;
+            }
+
+            // allocate a new node and link it to the list
+            stage(item, reverse);
+            if (PyErr_Occurred()) {
+                Py_DECREF(iterator);
+                Py_DECREF(item);
+                self_destruct();
+                throw std::invalid_argument("could not stage item");
+            }
+
+            // advance to next item
+            Py_DECREF(item);
+        }
+
+        // release reference on iterator
+        Py_DECREF(iterator);
     }
 
     /* Move ownership from one ListView to another (move constructor). */
@@ -276,46 +331,6 @@ protected:
         }
     }
 
-    /* Unpack a Python sequence into a ListView (or one of its subclasses)
-    during construction. */
-    void unpack_iterable(PyObject* iterable, bool reverse) {
-        // C API equivalent of iter(iterable)
-        PyObject* iterator = PyObject_GetIter(iterable);
-        if (iterator == nullptr) {  // TypeError()
-            throw std::invalid_argument("Value is not iterable");
-        }
-
-        // unpack iterator into ListView
-        PyObject* item;
-        while (true) {
-            // C API equivalent of next(iterator)
-            item = PyIter_Next(iterator);
-            if (item == nullptr) { // end of iterator or error
-                if (PyErr_Occurred()) {
-                    Py_DECREF(iterator);
-                    self_destruct();
-                    throw std::invalid_argument("could not get item from iterator");
-                }
-                break;
-            }
-
-            // allocate a new node and link it to the list
-            stage(item, reverse);
-            if (PyErr_Occurred()) {
-                Py_DECREF(iterator);
-                Py_DECREF(item);
-                self_destruct();
-                throw std::invalid_argument("could not stage item");
-            }
-
-            // advance to next item
-            Py_DECREF(item);
-        }
-
-        // release reference on iterator
-        Py_DECREF(iterator);
-    }
-
     /* Copy all the nodes from this list into a newly-allocated view. */
     void copy_to(ListView<NodeType, Allocator>* other) const {
         Node* curr = head;
@@ -374,8 +389,42 @@ public:
         Py_ssize_t max_size = -1
     ) : Base(max_size, spec), table()
     {
-        // unpack iterator into SetView  (can throw std::invalid_argument)
-        Base::unpack_iterable(iterable, reverse);
+        // C API equivalent of iter(iterable)
+        PyObject* iterator = PyObject_GetIter(iterable);
+        if (iterator == nullptr) {  // TypeError()
+            this->self_destruct();
+            throw std::invalid_argument("Value is not iterable");
+        }
+
+        // unpack iterator into SetView
+        PyObject* item;
+        while (true) {
+            // C API equivalent of next(iterator)
+            item = PyIter_Next(iterator);
+            if (item == nullptr) { // end of iterator or error
+                if (PyErr_Occurred()) {
+                    Py_DECREF(iterator);
+                    this->self_destruct();
+                    throw std::invalid_argument("could not get item from iterator");
+                }
+                break;
+            }
+
+            // allocate a new node and link it to the list
+            stage(item, reverse);
+            if (PyErr_Occurred()) {
+                Py_DECREF(iterator);
+                Py_DECREF(item);
+                this->self_destruct();
+                throw std::invalid_argument("could not stage item");
+            }
+
+            // advance to next item
+            Py_DECREF(item);
+        }
+
+        // release reference on iterator
+        Py_DECREF(iterator);
     }
 
     /* Move ownership from one SetView to another (move constructor). */
@@ -462,6 +511,46 @@ public:
     /* Get the total amount of memory consumed by the set (in bytes).  */
     inline size_t nbytes() const {
         return Base::nbytes() + table.nbytes();
+    }
+
+protected:
+
+    /* Allocate a new node for the item and append it to the list, discarding
+    it in the event of an error. */
+    inline void stage(PyObject* item, bool reverse) {
+        // allocate a new node
+        Node* curr = this->node(item);
+        if (curr == nullptr) {  // error during node initialization
+            if constexpr (DEBUG) {
+                // QoL - nothing has been allocated, so we don't actually free
+                printf("    -> free: %s\n", repr(item));
+            }
+            return;
+        }
+
+        // search for node in hash table
+        Node* existing = search(curr);
+        if (existing != nullptr) {  // item already exists
+            if constexpr (has_mapped<Node>::value) {
+                // update mapped value
+                Py_DECREF(existing->mapped);
+                Py_INCREF(curr->mapped);
+                existing->mapped = curr->mapped;
+            }
+            this->recycle(curr);
+            return;
+        }
+
+        // link the node to the staged list
+        if (reverse) {
+            link(nullptr, curr, this->head);
+        } else {
+            link(this->tail, curr, nullptr);
+        }
+        if (PyErr_Occurred()) {
+            this->recycle(curr);  // clean up allocated node
+            return;
+        }
     }
 
 private:

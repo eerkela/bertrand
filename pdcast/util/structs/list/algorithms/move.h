@@ -22,53 +22,6 @@
 
 namespace Ops {
 
-    /* Get the linear distance between two values in a linked set or dictionary. */
-    template <typename View>
-    Py_ssize_t distance(View* view, PyObject* item1, PyObject* item2) {
-        using Node = typename View::Node;
-
-        // search for nodes in hash table
-        Node* node1 = view->search(item1);
-        if (node1 == nullptr) {
-            PyErr_Format(PyExc_KeyError, "%R is not in the set", item1);
-            return 0;
-        }
-        Node* node2 = view->search(item2);
-        if (node2 == nullptr) {
-            PyErr_Format(PyExc_KeyError, "%R is not in the set", item2);
-            return 0;
-        }
-
-        // check for no-op
-        if (node1 == node2) {
-            return 0;  // do nothing
-        }
-
-        // get indices of both nodes
-        Py_ssize_t idx = 0;
-        Py_ssize_t index1 = -1;
-        Py_ssize_t index2 = -1;
-        Node* curr = view->head;
-        while (true) {
-            if (curr == node1) {
-                index1 = idx;
-                if (index2 != -1) {
-                    break;  // both nodes found
-                }
-            } else if (curr == node2) {
-                index2 = idx;
-                if (index1 != -1) {
-                    break;  // both nodes found
-                }
-            }
-            curr = static_cast<Node*>(curr->next);
-            idx++;
-        }
-
-        // return difference between indices
-        return index2 - index1;
-    }
-
     /* Swap the positions of two values in a linked set or dictionary. */
     template <typename View>
     void swap(View* view, PyObject* item1, PyObject* item2) {

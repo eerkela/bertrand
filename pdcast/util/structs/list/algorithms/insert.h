@@ -16,10 +16,6 @@
 
 namespace Ops {
 
-    ////////////////////////
-    ////    INSERT()    ////
-    ////////////////////////
-
     /* Insert an item into a linked list, set, or dictionary at the given index. */
     template <typename View, typename T>
     inline void insert(View* view, T index, PyObject* item) {
@@ -33,12 +29,27 @@ namespace Ops {
         _insert_between(view, neighbors.first, neighbors.second, item, false);
     }
 
+    /* Insert an item into a linked set or dictionary relative to a given sentinel
+    value. */
+    template <typename View>
+    inline void insert_relative(
+        View* view,
+        PyObject* item,
+        PyObject* sentinel,
+        Py_ssize_t offset
+    ) {
+        _insert_relative(view, item, sentinel, offset, true);  // propagate errors
+    }
+
 }
 
 
 ///////////////////////
 ////    PRIVATE    ////
 ///////////////////////
+
+
+// NOTE: these are reused for add_relative() as well
 
 
 /* Attempt to insert a node between the left and right neighbors. */
@@ -78,6 +89,43 @@ void _insert_between(
     if (PyErr_Occurred()) {
         view->recycle(curr);  // clean up staged node before propagating
     }
+}
+
+
+/* Implement both insert_relative() and add_relative() depending on error handling
+flag. */
+template <typename View>
+void _insert_relative(
+    View* view,
+    PyObject* item,
+    PyObject* sentinel,
+    Py_ssize_t offset,
+    bool update
+) {
+    using Node = typename View::Node;
+
+    // ensure offset is nonzero
+    if (offset == 0) {
+        PyErr_Format(PyExc_ValueError, "offset must be non-zero");
+        return;
+    } else if (offset < 0) {
+        offset += 1;
+    }
+
+    // search for sentinel
+    Node* node = view->search(sentinel);
+    if (node == nullptr) {  // sentinel not found
+        PyErr_Format(PyExc_KeyError, "%R is not contained in the set", sentinel);
+        return;
+    }
+
+    // walk according to offset
+    std::pair<Node*,Node*> neighbors = relative_junction(
+        view, node, offset, true
+    );
+
+    // insert node between neighbors
+    _insert_between(view, neighbors.first, neighbors.second, item, update);
 }
 
 

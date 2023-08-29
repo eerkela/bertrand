@@ -6,11 +6,6 @@
 #include "../core/view.h"  // views
 
 
-//////////////////////
-////    PUBLIC    ////
-//////////////////////
-
-
 namespace Ops {
 
     /* Check if an item is contained within a linked set or dictionary. */

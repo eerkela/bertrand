@@ -75,6 +75,42 @@ namespace Ops {
         return _pop_node(view, prev, curr, next);
     }
 
+    /* Pop an item from a linked list, set, or dictionary relative to a given
+    sentinel value. */
+    template <typename View>
+    PyObject* pop_relative(View* view, PyObject* sentinel, Py_ssize_t offset) {
+        using Node = typename View::Node;
+
+        // ensure offset is nonzero
+        if (offset == 0) {
+            PyErr_SetString(PyExc_ValueError, "offset must be non-zero");
+            return nullptr;
+        }
+
+        // search for sentinel
+        Node* node = view->search(sentinel);
+        if (node == nullptr) {
+            PyErr_Format(PyExc_ValueError, "%R is not in the set", sentinel);
+            return nullptr;
+        }
+
+        // walk according to offset
+        std::tuple<Node*, Node*, Node*> bounds = relative_neighbors(
+            view, node, offset, false
+        );
+        Node* prev = std::get<0>(bounds);
+        Node* curr = std::get<1>(bounds);
+        Node* next = std::get<2>(bounds);
+        if (prev == nullptr  && curr == nullptr && next == nullptr) {
+            // walked off end of list
+            PyErr_Format(PyExc_IndexError, "offset %zd is out of range", offset);
+            return nullptr;  // propagate
+        }
+
+        // pop node between boundaries
+        return _pop_node(view, prev, curr, next);
+    }
+
 }
 
 

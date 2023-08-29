@@ -3,6 +3,7 @@
 #define BERTRAND_STRUCTS_ALGORITHMS_EXTEND_H
 
 #include <Python.h>  // CPython API
+#include "../core/bounds.h"  // relative_junction()
 #include "../core/view.h"  // views
 
 
@@ -26,17 +27,17 @@ namespace Ops {
         }
     }
 
-    /* Update a set or dictionary, appending items that are not already present. */
+    /* Insert elements into a linked set or dictionary relative to the given
+    sentinel value. */
     template <typename View>
-    inline void update(View* view, PyObject* items, bool left) {
-        using Node = typename View::Node;
-
-        Node* null = static_cast<Node*>(nullptr);
-        if (left) {
-            _extend_right_to_left(view, null, view->head, items, true);
-        } else {
-            _extend_left_to_right(view, view->tail, null, items, true);
-        }
+    inline void extend_relative(
+        View* view,
+        PyObject* items,
+        PyObject* sentinel,
+        Py_ssize_t offset,
+        bool reverse
+    ) {
+        _extend_relative(view, items, sentinel, offset, reverse, false);
     }
 
 }
@@ -47,6 +48,9 @@ namespace Ops {
 ///////////////////////
 
 
+// NOTE: these are reused for update() and update_relative() as well
+
+
 /* Insert items from an arbitrary Python iterable from the left node to the right
 node. */
 template <typename View, typename Node>
@@ -55,7 +59,7 @@ void _extend_left_to_right(
     Node* left,
     Node* right,
     PyObject* items,
-    bool update
+    const bool update
 ) {
     // CPython API equivalent of `iter(items)`
     PyObject* iterator = PyObject_GetIter(items);
@@ -86,7 +90,9 @@ void _extend_left_to_right(
                 Node* existing = view->search(curr);
                 if (existing != nullptr) {  // item already exists
                     if constexpr (has_mapped<Node>::value) {
-                        _update_mapped(existing, curr->mapped);
+                        Py_DECREF(existing->mapped);
+                        Py_INCREF(curr->mapped);
+                        existing->mapped = curr->mapped;
                     }
                     view->recycle(curr);
                     Py_DECREF(item);
@@ -125,7 +131,7 @@ void _extend_right_to_left(
     Node* left,
     Node* right,
     PyObject* items,
-    bool update
+    const bool update
 ) {
     // CPython API equivalent of `iter(items)`
     PyObject* iterator = PyObject_GetIter(items);
@@ -156,7 +162,9 @@ void _extend_right_to_left(
                 Node* existing = view->search(curr);
                 if (existing != nullptr) {  // item already exists
                     if constexpr (has_mapped<Node>::value) {
-                        _update_mapped(existing, curr->mapped);
+                        Py_DECREF(existing->mapped);
+                        Py_INCREF(curr->mapped);
+                        existing->mapped = curr->mapped;
                     }
                     view->recycle(curr);
                     Py_DECREF(item);
@@ -187,12 +195,44 @@ void _extend_right_to_left(
 }
 
 
-/* Update mapped values for linked dictionaries during update(). */
-template <typename Node>
-inline void _update_mapped(Node* existing, PyObject* value) {
-    Py_DECREF(existing->mapped);
-    Py_INCREF(value);
-    existing->mapped = value;
+/* Implement both extend_relative() and update_relative() depending on error handling
+flag. */
+template <typename View>
+void _extend_relative(
+    View* view,
+    PyObject* items,
+    PyObject* sentinel,
+    Py_ssize_t offset,
+    bool reverse,
+    bool update
+) {
+    using Node = typename View::Node;
+
+    // ensure offset is nonzero
+    if (offset == 0) {
+        PyErr_SetString(PyExc_ValueError, "offset must be non-zero");
+        return;
+    }
+
+    // search for sentinel
+    Node* node = view->search(sentinel);
+    if (node == nullptr) {  // sentinel not found
+        if (!update) {
+            PyErr_Format(PyExc_KeyError, "%R is not contained in the set", sentinel);
+        }
+        return;
+    }
+
+    // get neighbors for insertion
+    // NOTE: truncate = true means we will never raise an error
+    std::pair<Node*, Node*> bounds = relative_junction(view, node, offset, true);
+
+    // insert items between left and right bounds
+    if (reverse) {
+        _extend_right_to_left(view, bounds.first, bounds.second, items, update);
+    } else {
+        _extend_left_to_right(view, bounds.first, bounds.second, items, update);
+    }
 }
 
 
