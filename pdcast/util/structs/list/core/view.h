@@ -385,8 +385,8 @@ public:
     SetView(
         PyObject* iterable,
         bool reverse = false,
-        PyObject* spec = nullptr,
-        Py_ssize_t max_size = -1
+        Py_ssize_t max_size = -1,
+        PyObject* spec = nullptr
     ) : Base(max_size, spec), table()
     {
         // C API equivalent of iter(iterable)

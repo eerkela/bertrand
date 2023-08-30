@@ -89,6 +89,7 @@ void _clear_forward(View* view, Node* curr, Py_ssize_t offset, Py_ssize_t length
         prev = curr;
         curr = static_cast<Node*>(curr->next);
     }
+
     if (length < 0) {  // clear to tail of list
         while (curr != nullptr) {
             Node* next = static_cast<Node*>(curr->next);
@@ -102,7 +103,7 @@ void _clear_forward(View* view, Node* curr, Py_ssize_t offset, Py_ssize_t length
                 return;
             }
             Node* next = static_cast<Node*>(curr->next);
-            view->unlink(static_cast<Node*>(curr->prev), curr, next);
+            view->unlink(prev, curr, next);
             view->recycle(curr);
             curr = next;
         }
@@ -126,6 +127,7 @@ void _clear_backward_double(
             return;  // do nothing
         }
     }
+
     if (length < 0) {  // clear to head of list
         while (curr != nullptr) {
             Node* prev = static_cast<Node*>(curr->prev);

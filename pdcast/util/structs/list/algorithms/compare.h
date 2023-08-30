@@ -2,7 +2,6 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_COMPARE_H
 #define BERTRAND_STRUCTS_ALGORITHMS_COMPARE_H
 
-#include <optional>  // std::optional
 #include <Python.h>  // CPython API
 #include "../core/allocate.h"  // DynamicAllocator
 #include "../core/view.h"  // views
@@ -14,8 +13,6 @@ namespace Ops {
     an arbitrary Python iterable. */
     template <typename View>
     int isdisjoint(View* view, PyObject* items) {
-        using Node = typename View::Node;
-
         // CPython API equivalent of `iter(items)`
         PyObject* iterator = PyObject_GetIter(items);
         if (iterator == nullptr) {

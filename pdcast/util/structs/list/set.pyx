@@ -5,6 +5,24 @@ uses a hash map of linked nodes to support fast lookups by value.
 from typing import Iterable, Iterator
 
 
+# TODO: inheritance approach is good.  Just add a `(consider using LinkedSet.add()
+# to avoid errors)` note to the error message.
+
+
+# TODO: relative operations can be hidden behind a proxy object that handles the
+# sentinel lookup + offset calculation.  This avoids cluttering the base class's
+# interface and centralizes some of the concerns.  We would then invoke these
+# methods as follows:
+
+# l = LinkedSet("abc")
+# l.relative("b").insert("x")  # insert "x" after "b"
+# l.relative("c", -1).insert("y")  # insert "y" before "c"
+# l == LinkedSet("abxyc")
+
+# This necessitates the creation of a RelativeSet proxy in C++
+
+
+
 cdef class LinkedSet(LinkedList):
     """A pure Cython/C++ implementation of an ordered set using a linked list
     and a hash table for fast access to each node.
@@ -78,20 +96,22 @@ cdef class LinkedSet(LinkedList):
         max_size: int = -1,
         spec: object | None = None,
     ):
+        cdef PyObject* c_spec
+
+        # make specialization C-compatible
+        if spec is None:
+            c_spec = NULL
+        else:
+            c_spec = <PyObject*>spec  # borrowed reference
+
         # init empty
         if items is None:
-            self.view = new VariantSet(doubly_linked, max_size)
-            if spec is not None:
-                self.view.specialize(<PyObject*>spec)
+            self.view = new VariantSet(doubly_linked, max_size, c_spec)
 
         # unpack iterable
-        elif spec is None:
-            self.view = new VariantSet(
-                <PyObject*>items, doubly_linked, reverse, max_size, NULL
-            )
         else:
             self.view = new VariantSet(
-                <PyObject*>items, doubly_linked, reverse, max_size, <PyObject*>spec
+                <PyObject*>items, doubly_linked, reverse, max_size, c_spec
             )
 
     def __dealloc__(self):
@@ -133,7 +153,7 @@ cdef class LinkedSet(LinkedList):
         it is O(n) on average, where ``n`` is the number of items in the set.
         """
         # dispatch to count.h
-        return self.view.count(<PyObject*>item, start, stop)
+        return (<VariantSet*>self.view).count(<PyObject*>item, start, stop)
 
     def remove(self, item: object) -> None:
         """Remove an item from the set.
@@ -155,7 +175,7 @@ cdef class LinkedSet(LinkedList):
         on average, where ``n`` is the number of items in the set.
         """
         # delegate to remove.h
-        self.view.remove(<PyObject*>item)
+        (<VariantSet*>self.view).remove(<PyObject*>item)
 
     def __mul__(self, repeat: int) -> LinkedSet:
         """Repeat the list a specified number of times.
@@ -233,7 +253,7 @@ cdef class LinkedSet(LinkedList):
         standard library :class:`set <python:set>` interface.
         """
         # dispatch to add.h
-        self.view.add(<PyObject*>item, <bint>left)
+        (<VariantSet*>self.view).add(<PyObject*>item, <bint>left)
 
     def discard(self, item: object) -> None:
         """Remove an item from the set if it is present.
@@ -251,9 +271,9 @@ cdef class LinkedSet(LinkedList):
         the set.
         """
         # dispatch to discard.h
-        self.view.discard(<PyObject*>item)
+        (<VariantSet*>self.view).discard(<PyObject*>item)
 
-    def union(self, *others: Iterable[object]) -> LinkedSet:
+    def union(self, *others: Iterable[object], left: bool = False) -> LinkedSet:
         """Return a new set with elements from this set and all others.
 
         Parameters
@@ -272,10 +292,10 @@ cdef class LinkedSet(LinkedList):
         This translates to a series of :meth:`extend() <LinkedSet.extend>`
         calls for each iterable.
         """
-        cdef VariantSet* result = self.view.copy()
+        cdef VariantSet* result = <VariantSet*>self.view.copy()
 
         for items in others:
-            result.update(<PyObject*>items)
+            result.update(<PyObject*>items, <bint>left)
 
         return LinkedSet.from_view(result)
 
@@ -293,7 +313,7 @@ cdef class LinkedSet(LinkedList):
             A new set containing the intersection of this set with each of the
             inputs.
         """
-        cdef VariantSet* result = self.view.copy()
+        cdef VariantSet* result = <VariantSet*>self.view.copy()
 
         for items in others:
             result.intersection_update(<PyObject*>items)
@@ -314,7 +334,7 @@ cdef class LinkedSet(LinkedList):
             A new set containing the difference of this set with each of the
             inputs.
         """
-        cdef VariantSet* result = self.view.copy()
+        cdef VariantSet* result = <VariantSet*>self.view.copy()
 
         for items in others:
             result.difference_update(<PyObject*>items)
@@ -336,9 +356,11 @@ cdef class LinkedSet(LinkedList):
             A new set containing the symmetric difference of this set with the
             input.
         """
-        return LinkedSet.from_view(self.view.symmetric_difference(<PyObject*>other))
+        return LinkedSet.from_view(
+            (<VariantSet*>self.view).symmetric_difference(<PyObject*>other)
+        )
 
-    def update(self, *others: Iterable[object]) -> None:
+    def update(self, *others: Iterable[object], left: bool = False) -> None:
         """Update the set, adding elements from all others.
 
         Parameters
@@ -353,7 +375,7 @@ cdef class LinkedSet(LinkedList):
         each iterable.
         """
         for items in others:
-            self.view.update(items)
+            (<VariantSet*>self.view).update(<PyObject*>items, <bint>left)
 
     def intersection_update(self, *others: Iterable[object]) -> None:
         """Update the set, keeping only elements found in all others.
@@ -369,7 +391,7 @@ cdef class LinkedSet(LinkedList):
         method.
         """
         for other in others:
-            self.view.intersection_update(<PyObject*>other)
+            (<VariantSet*>self.view).intersection_update(<PyObject*>other)
 
     def difference_update(self, *others: Iterable[object]) -> None:
         """Update the set, removing elements found in others.
@@ -385,7 +407,7 @@ cdef class LinkedSet(LinkedList):
         method.
         """
         for other in others:
-            self.view.difference_update(<PyObject*>other)
+            (<VariantSet*>self.view).difference_update(<PyObject*>other)
 
     def symmetric_difference_update(self, other: Iterable[object]) -> None:
         """Update the set, keeping only elements found in either set, but not
@@ -401,7 +423,7 @@ cdef class LinkedSet(LinkedList):
         This behaves just like the standard
         :meth:`set.symmetric_difference_update()` method.
         """
-        self.view.symmetric_difference_update(<PyObject*>other)
+        (<VariantSet*>self.view).symmetric_difference_update(<PyObject*>other)
 
     def isdisjoint(self, other: Iterable[object]) -> bool:
         """Check if this set is disjoint with another iterable.
@@ -420,7 +442,7 @@ cdef class LinkedSet(LinkedList):
         -----
         This is equivalent to ``len(self.intersection(other)) == 0``.
         """
-        return self.view.isdisjoint(<PyObject*>other)
+        return (<VariantSet*>self.view).isdisjoint(<PyObject*>other)
 
     def issubset(self, other: Iterable[object]) -> bool:
         """Check if this set is a subset of another iterable.
@@ -439,7 +461,7 @@ cdef class LinkedSet(LinkedList):
         -----
         This is equivalent to ``len(self.difference(other)) == 0``.
         """
-        return self.view.issubset(<PyObject*>other, <bint>False)
+        return (<VariantSet*>self.view).issubset(<PyObject*>other, <bint>False)
 
     def issuperset(self, other: Iterable[object]) -> bool:
         """Check if this set is a superset of another iterable.
@@ -458,7 +480,7 @@ cdef class LinkedSet(LinkedList):
         -----
         This is equivalent to ``len(self.symmetric_difference(other)) == 0``.
         """
-        return self.view.issuperset(<PyObject*>other, <bint>False)
+        return (<VariantSet*>self.view).issuperset(<PyObject*>other, <bint>False)
 
     def __or__(self, other: set | LinkedSet) -> LinkedSet:
         """Return the union of this set and another iterable.
@@ -476,7 +498,9 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        return LinkedSet.from_view(self.view.union_(<PyObject*> other))
+        return LinkedSet.from_view(
+            (<VariantSet*>self.view).union_(<PyObject*>other, <bint>False)
+        )
 
     def __ior__(self, other: set | LinkedSet) -> LinkedSet:
         """Update this set with the union of itself and another iterable.
@@ -494,7 +518,7 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        self.view.update(other)
+        (<VariantSet*>self.view).update(<PyObject*>other, <bint>False)
         return self
 
     def __and__(self, other: set | LinkedSet) -> LinkedSet:
@@ -514,7 +538,9 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        return LinkedSet.from_view(self.view.intersection(<PyObject*> other))
+        return LinkedSet.from_view(
+            (<VariantSet*>self.view).intersection(<PyObject*>other)
+        )
 
     def __iand__(self, other: set | LinkedSet) -> LinkedSet:
         """Update this set with the intersection of itself and another iterable.
@@ -532,7 +558,7 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        self.view.intersection_update(<PyObject*>other)
+        (<VariantSet*>self.view).intersection_update(<PyObject*>other)
         return self
 
     def __sub__(self, other: set | LinkedSet) -> LinkedSet:
@@ -552,7 +578,9 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        return LinkedSet.from_view(self.view.difference(<PyObject*> other))
+        return LinkedSet.from_view(
+            (<VariantSet*>self.view).difference(<PyObject*>other)
+        )
 
     def __isub__(self, other: set | LinkedSet) -> LinkedSet:
         """Update this set with the difference of itself and another iterable.
@@ -570,7 +598,7 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        self.view.difference_update(<PyObject*>other)
+        (<VariantSet*>self.view).difference_update(<PyObject*>other)
         return self
 
     def __xor__(self, other: set | LinkedSet) -> LinkedSet:
@@ -590,7 +618,9 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        return LinkedSet.from_view(self.view.symmetric_difference(<PyObject*> other))
+        return LinkedSet.from_view(
+            (<VariantSet*>self.view).symmetric_difference(<PyObject*>other)
+        )
 
     def __ixor__(self, other: set | LinkedSet) -> LinkedSet:
         """Update this set with the symmetric difference of itself and another
@@ -610,7 +640,7 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        self.view.symmetric_difference_update(<PyObject*>other)
+        (<VariantSet*>self.view).symmetric_difference_update(<PyObject*>other)
         return self
 
     def __lt__(self, other: set | LinkedSet) -> bool:
@@ -630,7 +660,7 @@ cdef class LinkedSet(LinkedList):
             return NotImplemented
 
         # setting `strict` to `True` makes this a proper subset check
-        return bool(self.view.issubset(<PyObject*>other, <bint>True))
+        return bool((<VariantSet*>self.view).issubset(<PyObject*>other, <bint>True))
 
     def __le__(self, other: set | LinkedSet) -> bool:
         """Return whether this set is a subset of another.
@@ -649,7 +679,7 @@ cdef class LinkedSet(LinkedList):
             return NotImplemented
 
         # setting `strict` to `False` allows for equality between sets
-        return bool(self.view.issubset(<PyObject*>other, <bint>False))
+        return bool((<VariantSet*>self.view).issubset(<PyObject*>other, <bint>False))
 
     # TODO: implement equals on the View itself.
 
@@ -688,7 +718,7 @@ cdef class LinkedSet(LinkedList):
             return NotImplemented
 
         # setting `strict` to `False` allows for equality between sets
-        return bool(self.view.issuperset(<PyObject*>other, <bint>False))
+        return bool((<VariantSet*>self.view).issuperset(<PyObject*>other, <bint>False))
 
     def __gt__(self, other: set | LinkedSet) -> bool:
         """Return whether this set is a proper superset of another.
@@ -707,7 +737,7 @@ cdef class LinkedSet(LinkedList):
             return NotImplemented
 
         # setting `strict` to `True` makes this a proper superset check
-        return bool(self.view.issuperset(<PyObject*>other, <bint>True))
+        return bool((<VariantSet*>self.view).issuperset(<PyObject*>other, <bint>True))
 
     def __contains__(self, item: object) -> bool:
         """Check if the item is contained in the set.
@@ -726,7 +756,7 @@ cdef class LinkedSet(LinkedList):
         -----
         Membership checks are O(1) due to the integrated hash table.
         """
-        return self.view.contains(<PyObject*>item)
+        return (<VariantSet*>self.view).contains(<PyObject*>item)
 
     ###################################
     ####    RELATIVE OPERATIONS    ####
@@ -769,7 +799,7 @@ cdef class LinkedSet(LinkedList):
         except that it gathers both indices in a single iteration.
         """
         # dispatch to index.h
-        return self.view.distance(<PyObject*>item1, <PyObject*>item2)
+        return (<VariantSet*>self.view).distance(<PyObject*>item1, <PyObject*>item2)
 
     def swap(self, item1: object, item2: object) -> None:
         """Swap the positions of two items in the set.
@@ -791,7 +821,7 @@ cdef class LinkedSet(LinkedList):
         Swaps are O(1) if the set is doubly-linked, and O(n) otherwise.
         """
         # dispatch to move.h
-        self.view.swap(<PyObject*>item1, <PyObject*>item2)
+        (<VariantSet*>self.view).swap(<PyObject*>item1, <PyObject*>item2)
 
     def move(self, item: object, steps: int = 1) -> None:
         """Move an item within the set by the specified number of steps.
@@ -829,7 +859,7 @@ cdef class LinkedSet(LinkedList):
         :meth:`moveleft() <LinkedSet.moveleft>` with ``steps=-steps``.
         """
         # dispatch to move.h
-        self.view.move(<PyObject*>item, <Py_ssize_t>steps)
+        (<VariantSet*>self.view).move(<PyObject*>item, <Py_ssize_t>steps)
 
     def move_to_index(self, item: object, index: int = 0) -> None:
         """Move an item to a specific index in the set.
@@ -857,7 +887,7 @@ cdef class LinkedSet(LinkedList):
         towards the middle of the list.
         """
         # dispatch to move.h
-        self.view.move_to_index(<PyObject*>item, <Py_ssize_t>index)
+        (<VariantSet*>self.view).move_to_index(<PyObject*>item, <Py_ssize_t>index)
 
     def move_relative(self, item: object, sentinel: object, offset: int = 1) -> None:
         """Move an item to the right of a given sentinel value.
@@ -898,7 +928,7 @@ cdef class LinkedSet(LinkedList):
         :meth:`movebefore() <LinkedSet.movebefore>` with ``steps=-steps``.
         """
         # dispatch to move.h
-        self.view.move_relative(
+        (<VariantSet*>self.view).move_relative(
             <PyObject*>item,
             <PyObject*>sentinel,
             <Py_ssize_t>offset
@@ -943,7 +973,7 @@ cdef class LinkedSet(LinkedList):
         would be O(2n) on average.
         """
         # dispatch to insert.h
-        self.view.insert_relative(
+        (<VariantSet*>self.view).insert_relative(
             <PyObject*>sentinel,
             <PyObject*>item,
             <ssize_t>offset
@@ -989,7 +1019,7 @@ cdef class LinkedSet(LinkedList):
         average.
         """
         # dispatch to extend.h
-        self.view.extend_relative(
+        (<VariantSet*>self.view).extend_relative(
             <PyObject*>sentinel,
             <PyObject*>items,
             <Py_ssize_t>offset,
@@ -1021,7 +1051,9 @@ cdef class LinkedSet(LinkedList):
         -----
         """
         # dispatch to remove.h
-        self.view.remove_relative(<PyObject*>sentinel, <Py_ssize_t>offset)
+        (<VariantSet*>self.view).remove_relative(
+            <PyObject*>sentinel, <Py_ssize_t>offset
+        )
 
     def discard_relative(self, sentinel: object, offset: int = 1) -> None:
         """Remove an item from the set, relative to a given sentinel value.
@@ -1053,7 +1085,9 @@ cdef class LinkedSet(LinkedList):
         Removals are O(steps).
         """
         # dispatch to discard.h
-        self.view.discardafter(<PyObject*>sentinel, <PyObject*>item, <ssize_t>steps)
+        (<VariantSet*>self.view).discard_relative(
+            <PyObject*>sentinel, <Py_ssize_t>offset
+        )
 
     def pop_relative(self, sentinel: object, offset: int = 1) -> object:
         """Remove an item from the set relative to a given sentinel and return
@@ -1090,7 +1124,9 @@ cdef class LinkedSet(LinkedList):
         Pops are O(steps).
         """
         # dispatch to pop.h
-        return <object>self.view.pop_relative(<PyObject*>sentinel, <Py_ssize_t>offset)
+        return <object>(<VariantSet*>self.view).pop_relative(
+            <PyObject*>sentinel, <Py_ssize_t>offset
+        )
 
     def clear_relative(
         self,
@@ -1125,7 +1161,7 @@ cdef class LinkedSet(LinkedList):
         Clearing is O(length).
         """
         # dispatch to clear.h
-        self.view.clear_relative(
+        (<VariantSet*>self.view).clear_relative(
             <PyObject*>sentinel,
             <Py_ssize_t>offset,
             <Py_ssize_t>length

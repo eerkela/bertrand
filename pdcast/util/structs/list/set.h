@@ -39,27 +39,23 @@ public:
     /* Construct a new VariantSet from an existing SetView.  This is called to
     construct a new `VariantSet` from the output of `SetView.copy()` or
     `get_slice()`. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    VariantSet(ViewType<NodeType, Allocator>&& view) : Base(view) {}
+    template <typename View>
+    VariantSet(View&& view) : Base(view) {}
 
     /* Construct an empty SetView to match the given template parameters.  This
     is called during `LinkedSet.__init__()` when no iterable is given. */
-    VariantSet(bool doubly_linked, Py_ssize_t max_size) {
+    VariantSet(bool doubly_linked, Py_ssize_t max_size, PyObject* spec) {
         if (doubly_linked) {
             if (max_size < 0) {
-                this->variant = SetView<DoubleNode, FreeListAllocator>(max_size);
+                this->variant = SetView<DoubleNode, DynamicAllocator>(max_size, spec);
             } else {
-                this->variant = SetView<DoubleNode, PreAllocator>(max_size);
+                this->variant = SetView<DoubleNode, FixedAllocator>(max_size, spec);
             }
         } else {
             if (max_size < 0) {
-                this->variant = SetView<SingleNode, FreeListAllocator>(max_size);
+                this->variant = SetView<SingleNode, DynamicAllocator>(max_size, spec);
             } else {
-                this->variant = SetView<SingleNode, PreAllocator>(max_size);
+                this->variant = SetView<SingleNode, FixedAllocator>(max_size, spec);
             }
         }
         this->_doubly_linked = doubly_linked;
@@ -76,21 +72,21 @@ public:
     ) {
         if (doubly_linked) {
             if (max_size < 0) {
-                this->variant = SetView<DoubleNode, FreeListAllocator>(
+                this->variant = SetView<DoubleNode, DynamicAllocator>(
                     iterable, reverse, max_size, spec
                 );
             } else {
-                this->variant = SetView<DoubleNode, PreAllocator>(
+                this->variant = SetView<DoubleNode, FixedAllocator>(
                     iterable, reverse, max_size, spec
                 );
             }
         } else {
             if (max_size < 0) {
-                this->variant = SetView<SingleNode, FreeListAllocator>(
+                this->variant = SetView<SingleNode, DynamicAllocator>(
                     iterable, reverse, max_size, spec
                 );
             } else {
-                this->variant = SetView<SingleNode, PreAllocator>(
+                this->variant = SetView<SingleNode, FixedAllocator>(
                     iterable, reverse, max_size, spec
                 );
             }
@@ -146,17 +142,17 @@ public:
     inline int issuperset(PyObject* other, bool strict) {
         return std::visit(
             [&](auto& view) {
-                return Ops::issuperset(&view, other);
+                return Ops::issuperset(&view, other, strict);
             },
             this->variant
         );
     }
 
     /* Dispatch to the correct implementation of union() for each variant. */
-    inline VariantSet* union_(PyObject* other) {
+    inline VariantSet* union_(PyObject* other, bool left) {
         return std::visit(
             [&](auto& view) {
-                auto result = Ops::union_(&view, other);
+                auto result = Ops::union_(&view, other, left);
                 if (result == nullptr) {
                     return nullptr;  // propagate Python errors
                 }

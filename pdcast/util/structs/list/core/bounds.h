@@ -389,7 +389,7 @@ Node* walk(View* view, Node* node, Py_ssize_t offset, bool truncate) {
                 return nullptr;  // index out of range
             }
         }
-        lookahead = static_cast<Node*>(lookahead->prev);
+        lookahead = static_cast<Node*>(lookahead->next);
     }
 
     // advance both pointers until lookahead reaches sentinel
@@ -515,7 +515,8 @@ std::tuple<Node*, Node*, Node*> relative_neighbors(
     for (size_t i = 0; i > offset; i--) {  // advance lookahead to offset
         if (lookahead == curr) {
             if (truncate) {  // truncate to beginning of list
-                return std::make_tuple(nullptr, view->head, view->head->next);
+                next = static_cast<Node*>(view->head->next);
+                return std::make_tuple(nullptr, view->head, next);
             } else {  // index out of range
                 return std::make_tuple(nullptr, nullptr, nullptr);
             }

@@ -128,7 +128,7 @@ namespace Ops {
             if (steps > 0) {
                 // if we're moving forwards, then we'll hit the removal point before
                 // the insertion point, so we don't need any lookahead pointers
-                old_prev = nullptr
+                old_prev = nullptr;
                 Node* temp = view->head;
                 while (temp != node) {
                     old_prev = temp;

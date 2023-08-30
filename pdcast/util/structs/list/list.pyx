@@ -5,11 +5,13 @@ structure.
 from typing import Iterable, Iterator
 
 
+# TODO: __add__() and __mul__() should be implemented in concatenate.h and repeat.h,
+# respectively.
+
+
+
 # TODO: __getitem__() sometimes throws unexpected ValueErrors and occasionally
 # causes a segfault.
-
-# TODO: __repr__() calls `__getitem__()`, which yields a default-constructed
-# list.  This causes an error if the list has a maximum size.
 
 # TODO: in order to rigorously test these, we should copy over the tests from
 # the standard library.
@@ -133,7 +135,7 @@ cdef class LinkedList:
         if spec is None:
             c_spec = NULL
         else:
-            c_spec = <PyObject*>spec
+            c_spec = <PyObject*>spec  # borrowed reference
 
         # init empty
         if items is None:
@@ -151,7 +153,7 @@ cdef class LinkedList:
     @staticmethod
     cdef LinkedList from_view(VariantList* view):
         """Create a new LinkedList from a C++ view."""
-        cdef LinkedList result = LinkedList().__new__(LinkedList)  # bypass __init__()
+        cdef LinkedList result = LinkedList.__new__(LinkedList)  # bypass __init__()
         result.view = view
         return result
 
@@ -722,11 +724,20 @@ cdef class LinkedList:
         -----
         Repetition is O(n * repeat).
         """
+        # TODO: implement this in C++?  Otherwise, __class_getitem__() can interfere
+        # with `spec` argument.
+        # if repeat < 1:
+        #     return type(self)(
+        #         doubly_linked=self.view.doubly_linked(),
+        #         max_size=self.view.max_size(),
+        #         spec=self.specialization,
+        #     )
+
         cdef Py_ssize_t i
 
         result = self.copy()
         for i in range(<Py_ssize_t>repeat):
-            result.extend(self.copy())
+            result.extend(self)
         return result
 
     def __imul__(self, repeat: int) -> LinkedList:
