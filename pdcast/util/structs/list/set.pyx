@@ -228,15 +228,11 @@ cdef class LinkedSet(LinkedList):
     # NOTE: LinkedSets also conform to the standard library's set interface,
     # making them interchangeable with their built-in counterparts.
 
-    # TODO: add() could be distinct from append() in that it silently ignores
-    # uniqueness errors.  This mirrors discard() vs. remove().  This is similar
-    # with extend() vs update().
-
     def add(self, item: object, left: bool = False) -> None:
         """An alias for :meth:`LinkedSet.append` that is consistent with the
         standard library :class:`set <python:set>` interface.
         """
-        # dispatch to append.h
+        # dispatch to add.h
         self.view.add(<PyObject*>item, <bint>left)
 
     def discard(self, item: object) -> None:
@@ -254,6 +250,7 @@ cdef class LinkedSet(LinkedList):
         except that it does not raise an error if the item is not contained in
         the set.
         """
+        # dispatch to discard.h
         self.view.discard(<PyObject*>item)
 
     def union(self, *others: Iterable[object]) -> LinkedSet:
@@ -275,9 +272,12 @@ cdef class LinkedSet(LinkedList):
         This translates to a series of :meth:`extend() <LinkedSet.extend>`
         calls for each iterable.
         """
-        result = self.copy()
-        result.update(*others)
-        return result
+        cdef VariantSet* result = self.view.copy()
+
+        for items in others:
+            result.update(<PyObject*>items)
+
+        return LinkedSet.from_view(result)
 
     def intersection(self, *others: Iterable[object]) -> LinkedSet:
         """Return a new set with elements common to this set and all others.
@@ -293,9 +293,12 @@ cdef class LinkedSet(LinkedList):
             A new set containing the intersection of this set with each of the
             inputs.
         """
-        result = self.copy()
-        result.intersection_update(*others)
-        return result
+        cdef VariantSet* result = self.view.copy()
+
+        for items in others:
+            result.intersection_update(<PyObject*>items)
+
+        return LinkedSet.from_view(result)
 
     def difference(self, *others: Iterable[object]) -> LinkedSet:
         """Return a new set with elements in this set that are not in others.
@@ -311,9 +314,12 @@ cdef class LinkedSet(LinkedList):
             A new set containing the difference of this set with each of the
             inputs.
         """
-        result = self.copy()
-        result.difference_update(*others)
-        return result
+        cdef VariantSet* result = self.view.copy()
+
+        for items in others:
+            result.difference_update(<PyObject*>items)
+
+        return LinkedSet.from_view(result)
 
     def symmetric_difference(self, other: Iterable[object]) -> LinkedSet:
         """Return a new set with elements in either this set or ``other``, but
@@ -330,9 +336,7 @@ cdef class LinkedSet(LinkedList):
             A new set containing the symmetric difference of this set with the
             input.
         """
-        result = self.copy()
-        result.symmetric_difference_update(other)
-        return result
+        return LinkedSet.from_view(self.view.symmetric_difference(<PyObject*>other))
 
     def update(self, *others: Iterable[object]) -> None:
         """Update the set, adding elements from all others.
@@ -349,7 +353,7 @@ cdef class LinkedSet(LinkedList):
         each iterable.
         """
         for items in others:
-            self.extend(items)
+            self.view.update(items)
 
     def intersection_update(self, *others: Iterable[object]) -> None:
         """Update the set, keeping only elements found in all others.
@@ -365,7 +369,7 @@ cdef class LinkedSet(LinkedList):
         method.
         """
         for other in others:
-            self &= other
+            self.view.intersection_update(<PyObject*>other)
 
     def difference_update(self, *others: Iterable[object]) -> None:
         """Update the set, removing elements found in others.
@@ -381,7 +385,7 @@ cdef class LinkedSet(LinkedList):
         method.
         """
         for other in others:
-            self -= other
+            self.view.difference_update(<PyObject*>other)
 
     def symmetric_difference_update(self, other: Iterable[object]) -> None:
         """Update the set, keeping only elements found in either set, but not
@@ -397,7 +401,7 @@ cdef class LinkedSet(LinkedList):
         This behaves just like the standard
         :meth:`set.symmetric_difference_update()` method.
         """
-        self ^= other
+        self.view.symmetric_difference_update(<PyObject*>other)
 
     def isdisjoint(self, other: Iterable[object]) -> bool:
         """Check if this set is disjoint with another iterable.
@@ -416,7 +420,7 @@ cdef class LinkedSet(LinkedList):
         -----
         This is equivalent to ``len(self.intersection(other)) == 0``.
         """
-        return not (self & other)
+        return self.view.isdisjoint(<PyObject*>other)
 
     def issubset(self, other: Iterable[object]) -> bool:
         """Check if this set is a subset of another iterable.
@@ -435,7 +439,7 @@ cdef class LinkedSet(LinkedList):
         -----
         This is equivalent to ``len(self.difference(other)) == 0``.
         """
-        return self <= other
+        return self.view.issubset(<PyObject*>other, <bint>False)
 
     def issuperset(self, other: Iterable[object]) -> bool:
         """Check if this set is a superset of another iterable.
@@ -454,7 +458,7 @@ cdef class LinkedSet(LinkedList):
         -----
         This is equivalent to ``len(self.symmetric_difference(other)) == 0``.
         """
-        return self >= other
+        return self.view.issuperset(<PyObject*>other, <bint>False)
 
     def __or__(self, other: set | LinkedSet) -> LinkedSet:
         """Return the union of this set and another iterable.
@@ -472,9 +476,7 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        cdef LinkedSet result = self.copy()
-        result.extend(other)
-        return result
+        return LinkedSet.from_view(self.view.union_(<PyObject*> other))
 
     def __ior__(self, other: set | LinkedSet) -> LinkedSet:
         """Update this set with the union of itself and another iterable.
@@ -492,7 +494,7 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        self.extend(other)
+        self.view.update(other)
         return self
 
     def __and__(self, other: set | LinkedSet) -> LinkedSet:
@@ -512,7 +514,7 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        return LinkedSet(item for item in other if item in self)
+        return LinkedSet.from_view(self.view.intersection(<PyObject*> other))
 
     def __iand__(self, other: set | LinkedSet) -> LinkedSet:
         """Update this set with the intersection of itself and another iterable.
@@ -527,27 +529,11 @@ cdef class LinkedSet(LinkedList):
         LinkedSet
             A combination of this set with the elements of the other set.
         """
-        # this should be implemented in C++
-        # cdef self.view.Node* prev = NULL
-        # cdef self.view.Node* curr = self.view.head
-        # cdef PyObject* value
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
 
-        # while curr is not NULL:
-        #     value = <object>curr.value
-        #     if <object>curr.value not in other:
-        #         if prev is NULL:
-        #             self.view.head = curr.next
-        #         else:
-        #             prev.next = curr.next
-
-        #         stack.push(curr)
-        #     else:
-        #         prev = curr
-
-        #     curr = curr.next
-
-        # return self
-        raise NotImplementedError()
+        self.view.intersection_update(<PyObject*>other)
+        return self
 
     def __sub__(self, other: set | LinkedSet) -> LinkedSet:
         """Return the difference of this set and another iterable.
@@ -566,7 +552,7 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        return LinkedSet(item for item in self if item not in other)
+        return LinkedSet.from_view(self.view.difference(<PyObject*> other))
 
     def __isub__(self, other: set | LinkedSet) -> LinkedSet:
         """Update this set with the difference of itself and another iterable.
@@ -581,10 +567,11 @@ cdef class LinkedSet(LinkedList):
         LinkedSet
             A combination of this set with the elements of the other set.
         """
-        # TODO: implement this in C++ under a compare.h header
-        # -> this is the opposite of __iand__(), so we can do it in one
-        # iteration.
-        raise NotImplementedError()
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        self.view.difference_update(<PyObject*>other)
+        return self
 
     def __xor__(self, other: set | LinkedSet) -> LinkedSet:
         """Return the symmetric difference of this set and another iterable.
@@ -603,10 +590,7 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        cdef set left = set(item for item in self if item not in other)
-        cdef set right = set(item for item in other if item not in self)
-
-        return LinkedSet(left | right)
+        return LinkedSet.from_view(self.view.symmetric_difference(<PyObject*> other))
 
     def __ixor__(self, other: set | LinkedSet) -> LinkedSet:
         """Update this set with the symmetric difference of itself and another
@@ -626,11 +610,7 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        cdef set left = set(item for item in self if item not in other)
-        cdef set right = set(item for item in other if item not in self)
-
-        self.clear()
-        self.extend(left | right)
+        self.view.symmetric_difference_update(<PyObject*>other)
         return self
 
     def __lt__(self, other: set | LinkedSet) -> bool:
@@ -649,7 +629,8 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        return len(self) < len(other) and all(item in other for item in self)
+        # setting `strict` to `True` makes this a proper subset check
+        return bool(self.view.issubset(<PyObject*>other, <bint>True))
 
     def __le__(self, other: set | LinkedSet) -> bool:
         """Return whether this set is a subset of another.
@@ -667,7 +648,10 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        return len(self) <= len(other) and all(item in other for item in self)
+        # setting `strict` to `False` allows for equality between sets
+        return bool(self.view.issubset(<PyObject*>other, <bint>False))
+
+    # TODO: implement equals on the View itself.
 
     def __eq__(self, other: set | LinkedSet) -> bool:
         """Return whether this set is equal to another.
@@ -703,7 +687,8 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        return len(self) >= len(other) and all(item in self for item in other)
+        # setting `strict` to `False` allows for equality between sets
+        return bool(self.view.issuperset(<PyObject*>other, <bint>False))
 
     def __gt__(self, other: set | LinkedSet) -> bool:
         """Return whether this set is a proper superset of another.
@@ -721,7 +706,8 @@ cdef class LinkedSet(LinkedList):
         if not isinstance(other, (set, LinkedSet)):
             return NotImplemented
 
-        return len(self) > len(other) and all(item in self for item in other)
+        # setting `strict` to `True` makes this a proper superset check
+        return bool(self.view.issuperset(<PyObject*>other, <bint>True))
 
     def __contains__(self, item: object) -> bool:
         """Check if the item is contained in the set.
@@ -753,7 +739,37 @@ cdef class LinkedSet(LinkedList):
     # Python sets.
 
     def distance(self, item1: object, item2: object) -> int:
-        raise NotImplementedError()
+        """Get the linear distance between two items in the set.
+
+        Parameters
+        ----------
+        item1 : Any
+            The first item to measure.
+        item2 : Any
+            The second item to measure.
+
+        Returns
+        -------
+        int
+            The difference between the indices of the two items.  Positive values
+            indicate that ``item1`` is to the left of ``item2``, while negative
+            values indicate the opposite.  If the items are the same, this will
+            be 0.
+
+        Raises
+        ------
+        KeyError
+            If either item is not contained in the set.
+
+        Notes
+        -----
+        Calculating the distance between two items is O(n) on average.
+
+        This method is equivalent to ``self.index(item2) - self.index(item1)``,
+        except that it gathers both indices in a single iteration.
+        """
+        # dispatch to index.h
+        return self.view.distance(<PyObject*>item1, <PyObject*>item2)
 
     def swap(self, item1: object, item2: object) -> None:
         """Swap the positions of two items in the set.
@@ -772,12 +788,13 @@ cdef class LinkedSet(LinkedList):
 
         Notes
         -----
-        Swaps are O(1).
+        Swaps are O(1) if the set is doubly-linked, and O(n) otherwise.
         """
-        raise NotImplementedError()
+        # dispatch to move.h
+        self.view.swap(<PyObject*>item1, <PyObject*>item2)
 
     def move(self, item: object, steps: int = 1) -> None:
-        """Move an item to the right by the specified number of steps.
+        """Move an item within the set by the specified number of steps.
 
         Parameters
         ----------
@@ -811,7 +828,8 @@ cdef class LinkedSet(LinkedList):
         Calling this method with negative steps is equivalent to calling
         :meth:`moveleft() <LinkedSet.moveleft>` with ``steps=-steps``.
         """
-        raise NotImplementedError()
+        # dispatch to move.h
+        self.view.move(<PyObject*>item, <Py_ssize_t>steps)
 
     def move_to_index(self, item: object, index: int = 0) -> None:
         """Move an item to a specific index in the set.
@@ -838,7 +856,8 @@ cdef class LinkedSet(LinkedList):
         Moves are O(1) for either end of the set, and scale up to O(n)
         towards the middle of the list.
         """
-        raise NotImplementedError()
+        # dispatch to move.h
+        self.view.move_to_index(<PyObject*>item, <Py_ssize_t>index)
 
     def move_relative(self, item: object, sentinel: object, offset: int = 1) -> None:
         """Move an item to the right of a given sentinel value.
@@ -878,7 +897,12 @@ cdef class LinkedSet(LinkedList):
         Calling this method with negative steps is equivalent to calling
         :meth:`movebefore() <LinkedSet.movebefore>` with ``steps=-steps``.
         """
-        raise NotImplementedError()
+        # dispatch to move.h
+        self.view.move_relative(
+            <PyObject*>item,
+            <PyObject*>sentinel,
+            <Py_ssize_t>offset
+        )
 
     def insert_relative(self, item: object, sentinel: object, offset: int = 1) -> None:
         """Insert an item relative to a given sentinel value.
@@ -929,7 +953,7 @@ cdef class LinkedSet(LinkedList):
         self,
         items: Iterable[object],
         sentinel: object,
-        offset: int = 1
+        offset: int = 1,
         reverse: bool = False
     ) -> None:
         """Insert a sequence of items relative to a given sentinel value.
@@ -976,7 +1000,28 @@ cdef class LinkedSet(LinkedList):
         raise NotImplementedError()
 
     def remove_relative(self, sentinel: object, offset: int = 1) -> None:
-        raise NotImplementedError()
+        """Remove an item from the set relative to a given sentinel value.
+
+        Parameters
+        ----------
+        sentinel : Any
+            The value to remove relative to.
+        offset : int, optional
+            An offset from the sentinel value.  If this is positive, then this
+            method will count to the right by the specified number of spaces
+            from the sentinel and remove the item at that index.  Negative
+            values count to the left instead.  The default is ``1``.
+
+        Raises
+        ------
+        KeyError
+            If the sentinel is not contained in the set.
+
+        Notes
+        -----
+        """
+        # dispatch to remove.h
+        self.view.remove_relative(<PyObject*>sentinel, <Py_ssize_t>offset)
 
     def discard_relative(self, sentinel: object, offset: int = 1) -> None:
         """Remove an item from the set, relative to a given sentinel value.
@@ -1007,7 +1052,7 @@ cdef class LinkedSet(LinkedList):
         -----
         Removals are O(steps).
         """
-        # dispatch to remove.h
+        # dispatch to discard.h
         self.view.discardafter(<PyObject*>sentinel, <PyObject*>item, <ssize_t>steps)
 
     def pop_relative(self, sentinel: object, offset: int = 1) -> object:
@@ -1044,7 +1089,8 @@ cdef class LinkedSet(LinkedList):
         -----
         Pops are O(steps).
         """
-        raise NotImplementedError()
+        # dispatch to pop.h
+        return <object>self.view.pop_relative(<PyObject*>sentinel, <Py_ssize_t>offset)
 
     def clear_relative(
         self,
@@ -1078,7 +1124,12 @@ cdef class LinkedSet(LinkedList):
         -----
         Clearing is O(length).
         """
-        raise NotImplementedError()
+        # dispatch to clear.h
+        self.view.clear_relative(
+            <PyObject*>sentinel,
+            <Py_ssize_t>offset,
+            <Py_ssize_t>length
+        )
 
     ####################
     ####    MISC    ####
@@ -1126,246 +1177,3 @@ cdef class LinkedSet(LinkedList):
             contents = ", ".join(repr(item) for item in self)
 
         return f"{prefix}({{{contents}}})"
-
-
-#############################
-####    DOUBLY-LINKED    ####
-#############################
-
-
-cdef class DoublyLinkedSet(LinkedSet):
-    """A pure Cython implementation of a doubly-linked list where every element
-    is hashable and unique.
-
-    Parameters
-    ----------
-    items : Iterable[Hashable], optional
-        An iterable of hashable items to initialize the list.
-
-    Attributes
-    ----------
-    head : HashNode
-        The first node in the list.
-    tail : HashNode
-        The last node in the list.
-    items : dict
-        A dictionary mapping items to their corresponding nodes for fast access.
-
-    Notes
-    -----
-    This data structure is a special case of :class:`LinkedList` where every
-    value is both unique and hashable.  This allows it to use a hash table to
-    map each value to its corresponding node, which allows for O(1) removals
-    and membership checks.
-
-    For an implementation without these constraints, see the base
-    :class:`LinkedList`.
-    """
-
-    cdef void _move(self, PyObject* item, long index):
-        """Move a specified value to a particular index.
-
-        Parameters
-        ----------
-        item : PyObject*
-            The value to move.
-        index : long int
-            The index to move the value to.  This can be negative, following
-            the same convention as Python's standard :class:`list <python:list>`.
-
-        Raises
-        ------
-        KeyError
-            If the item is not contained in the list.
-        IndexError
-            If the index is out of bounds.
-        """        
-        # normalize index
-        cdef size_t norm_index = normalize_index(index, self.size)
-
-        # look up item in hash map
-        cdef HashNode* node = self.table.search(item)
-        if node is NULL:
-            raise KeyError(
-                f"{repr(<object>item)} is not contained in the list"
-            )
-
-        # fastpaths for move to beginning/end of list
-        if norm_index == 0:
-            self._unlink_node(node)
-            self._link_node(NULL, node, self.head)
-            return
-        elif norm_index == self.size - 1:
-            self._unlink_node(node)
-            self._link_node(self.tail, node, NULL)
-            return
-
-        cdef HashNode* curr = node
-        cdef size_t curr_index = 0
-
-        # get current index
-        while curr is not NULL:
-            curr = curr.prev
-            curr_index += 1
-
-        # move forwards
-        if curr_index < norm_index:
-            while curr_index < norm_index:
-                curr = curr.next
-                curr_index += 1
-            self._unlink_node(node)
-            self._link_node(curr, node, curr.next)
-
-        # move backwards
-        elif curr_index > norm_index:
-            while curr_index > norm_index:
-                curr = curr.prev
-                curr_index -= 1
-            self._unlink_node(node)
-            self._link_node(curr.prev, node, curr)
-
-    cdef void _moveleft(self, PyObject* item, size_t steps = 1):
-        """Move a specified value a number of steps to the left (toward the
-        front of the list).
-
-        Parameters
-        ----------
-        item : PyObject*
-            The value to move.
-        steps : unsigned int, optional
-            The number of steps to move the value.  The default is ``1``.
-
-        Raises
-        ------
-        KeyError
-            If the item is not contained in the list.
-        """
-        # look up item in hash map
-        cdef HashNode* node = self.table.search(item)
-        if node is NULL:
-            raise KeyError(
-                f"{repr(<object>item)} is not contained in the list"
-            )
-
-        # no-op if moving zero steps
-        if steps == 0:
-            return
-
-        cdef HashNode* curr = node
-        cdef size_t i
-
-        # get node at new index
-        for i in range(steps):
-            if curr.prev is NULL:
-                break
-            curr = curr.prev
-
-        # move node
-        self._unlink_node(node)
-        self._link_node(curr.prev, node, curr)
-
-    cdef void _moveright(self, PyObject* item, size_t steps = 1):
-        """Move a specified value a number of steps to the right (toward the
-        back of the list).
-
-        Parameters
-        ----------
-        item : PyObject*
-            The value to move.
-        steps : unsigned int, optional
-            The number of steps to move the value.  The default is ``1``.
-
-        Raises
-        ------
-        KeyError
-            If the item is not contained in the list.
-        """
-        # look up item in hash map
-        cdef HashNode* node = self.table.search(item)
-        if node is NULL:
-            raise KeyError(
-                f"{repr(<object>item)} is not contained in the list"
-            )
-
-        # no-op if moving zero steps
-        if steps == 0:
-            return
-
-        cdef HashNode* curr = node
-        cdef size_t i
-
-        # get node at new index
-        for i in range(steps):
-            if curr.next is NULL:
-                break
-            curr = curr.next
-
-        # move node
-        self._unlink_node(node)
-        self._link_node(curr, node, curr.next)
-
-    cdef void _moveafter(self, PyObject* sentinel, PyObject* item):
-        """Move an item immediately after the specified sentinel.
-
-        Parameters
-        ----------
-        item : PyObject*
-            The value to move.
-        sentinel : PyObject*
-            The value after which to move the item.
-
-        Raises
-        ------
-        KeyError
-            If the item or sentinel is not contained in the list.
-        """
-        # look up item in hash map
-        cdef HashNode* node = self.table.search(item)
-        if node is NULL:
-            raise KeyError(
-                f"{repr(<object>item)} is not contained in the list"
-            )
-
-        # look up sentinel node
-        cdef HashNode* curr = self.table.search(sentinel)
-        if curr is NULL:
-            raise KeyError(
-                f"{repr(<object>sentinel)} is not contained in the list"
-            )
-
-        # move node after sentinel
-        self._unlink_node(node)
-        self._link_node(curr, node, curr.next)
-
-    cdef void _movebefore(self, PyObject* sentinel, PyObject* item):
-        """Move an item immediately before the specified sentinel.
-
-        Parameters
-        ----------
-        item : PyObject*
-            The value to move.
-        sentinel : PyObject*
-            The value before which to move the item.
-
-        Raises
-        ------
-        KeyError
-            If the item or sentinel is not contained in the list.
-        """
-        # look up item in hash map
-        cdef HashNode* node = self.table.search(item)
-        if node is NULL:
-            raise KeyError(
-                f"{repr(<object>item)} is not contained in the list"
-            )
-
-        # look up sentinel node
-        cdef HashNode* curr = self.table.search(sentinel)
-        if curr is NULL:
-            raise KeyError(
-                f"{repr(<object>sentinel)} is not contained in the list"
-            )
-
-        # move node before sentinel
-        self._unlink_node(node)
-        self._link_node(curr.prev, node, curr)

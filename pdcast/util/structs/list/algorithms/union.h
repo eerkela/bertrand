@@ -2,6 +2,10 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_UNION_H
 #define BERTRAND_STRUCTS_ALGORITHMS_UNION_H
 
+#include <Python.h>  // CPython API
+#include "../core/allocate.h"  // DynamicAllocator
+#include "../core/view.h"  // views
+
 
 namespace Ops {
 
@@ -101,10 +105,10 @@ namespace Ops {
             return nullptr;
         }
 
-        // unpack items into temporary view
+        // unpack items into temporary set
         SetView<NodeType, DynamicAllocator> temp_view(items);
 
-        // iterate over view and add all elements that are not in temp view to result
+        // iterate over view and add all elements that are not in temp set to result
         Node* curr = view->head;
         while (curr != nullptr) {
             if (temp_view->search(curr) == nullptr) {
@@ -146,7 +150,7 @@ namespace Ops {
         // unpack items into temporary view
         ViewType<NodeType, DynamicAllocator> temp_view(items);
 
-        // iterate over view1 and add all elements in view2 to result
+        // iterate over view and add all elements in temp view to result
         Node* curr = view->head;
         while (curr != nullptr) {
             Node* other = temp_view->search(curr);
@@ -165,31 +169,56 @@ namespace Ops {
 
     /* Get the symmetric difference between a linked set or dictionary and an arbitrary
     Python iterable. */
-    template <typename View>
-    View* symmetric_difference(View* view, PyObject* items) {
+    template <
+        template <typename, template <typename> class> class ViewType,
+        typename NodeType,
+        template <typename> class Allocator
+    >
+    ViewType<NodeType, Allocator>* symmetric_difference(
+        ViewType<NodeType, Allocator>* view,
+        PyObject* items
+    ) {
+        using View = ViewType<NodeType, Allocator>;
         using Node = typename View::Node;
 
+        // generate a new view to hold the result
+        View* result;
+        try {
+            result = new View(view->max_size, view->specialization);
+        } catch (const std::bad_alloc&) {
+            PyErr_NoMemory();
+            return nullptr;
+        }
+
         // unpack items into temporary view
+        ViewType<NodeType, DynamicAllocator> temp_view(items);
 
-
-        // compute (A - B)
-        View* diff1 = difference(view, items, false);
-        if (diff1 == nullptr) {
-            return nullptr;  // propagate error
+        // iterate over view and add all elements not in temp view to result
+        Node* curr = view->head;
+        while (curr != nullptr) {
+            if (temp_view->search(curr) == nullptr) {
+                _copy_into(result, curr, false);
+                if (PyErr_Occurred()) {
+                    delete result;
+                    return nullptr;
+                }
+            }
+            curr = static_cast<Node*>(curr->next);
         }
 
-
-        // compute (B - A)
-        View* diff2 = difference(view2, view1, false);
-        if (diff2 == nullptr) {
-            delete diff1;
-            return nullptr;  // propagate error
+        // iterate over temp view and add all elements not in view to result
+        curr = temp_view->head;
+        while (curr != nullptr) {
+            if (view->search(curr) == nullptr) {
+                _copy_into(result, curr, false);
+                if (PyErr_Occurred()) {
+                    delete result;
+                    return nullptr;
+                }
+            }
+            curr = static_cast<Node*>(curr->next);
         }
 
-        // (A - B) U (B - A)
-        View* result = union_(diff1, diff2);
-        delete diff1;  // clean up intermediate views
-        delete diff2;
         return result;
     }
 

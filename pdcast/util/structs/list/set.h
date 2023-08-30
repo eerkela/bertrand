@@ -9,26 +9,17 @@
 #include <Python.h>  // CPython API
 
 // Algorithms
-#include "algorithms/append.h"
+#include "algorithms/add.h"
+#include "algorithms/clear.h"
 #include "algorithms/compare.h"
-#include "algorithms/contains.h"
-#include "algorithms/count.h"
-#include "algorithms/delete_slice.h"
-#include "algorithms/extend.h"
-#include "algorithms/get_slice.h"
+#include "algorithms/discard.h"
 #include "algorithms/index.h"
-#include "algorithms/insert.h"
 #include "algorithms/move.h"
-#include "algorithms/pop.h"
-#include "algorithms/remove.h"
-#include "algorithms/reverse.h"
-#include "algorithms/rotate.h"
-#include "algorithms/set_slice.h"
-#include "algorithms/sort.h"
+#include "algorithms/union.h"
+#include "algorithms/update.h"
 
 // Core
 #include "core/allocate.h"  // Allocator policies
-#include "core/bounds.h"  // normalize_index(), normalize_bounds(), etc.
 #include "core/node.h"  // Nodes
 #include "core/view.h"  // Views
 
@@ -111,10 +102,6 @@ public:
     ////    SET INTERFACE    ////
     /////////////////////////////
 
-    // TODO: these should take arbitrary PyObject* arguments, not just
-    // VariantSet* arguments.  Perhaps they should take either/or and use template
-    // specialization to dispatch to the correct implementation.
-
     /* Dispatch to the correct implementation of add() for each variant. */
     inline void add(PyObject* item, bool left) {
         std::visit(
@@ -136,8 +123,7 @@ public:
     }
 
     /* Dispatch to the correct implementation of isdisjoint() for each variant. */
-    template <typename T>
-    inline int isdisjoint(T* other) {
+    inline int isdisjoint(PyObject* other) {
         return std::visit(
             [&](auto& view) {
                 return Ops::isdisjoint(&view, other);
@@ -147,8 +133,7 @@ public:
     }
 
     /* Dispatch to the correct implementation of issubset() for each variant. */
-    template <typename T>
-    inline int issubset(T* other, bool strict) {
+    inline int issubset(PyObject* other, bool strict) {
         return std::visit(
             [&](auto& view) {
                 return Ops::issubset(&view, other, strict);
@@ -158,8 +143,7 @@ public:
     }
 
     /* Dispatch to the correct implementation of issuperset() for each variant. */
-    template <typename T>
-    inline int issuperset(T* other, bool strict) {
+    inline int issuperset(PyObject* other, bool strict) {
         return std::visit(
             [&](auto& view) {
                 return Ops::issuperset(&view, other);
@@ -169,8 +153,7 @@ public:
     }
 
     /* Dispatch to the correct implementation of union() for each variant. */
-    template <typename T>
-    inline VariantSet* union_(T* other) {
+    inline VariantSet* union_(PyObject* other) {
         return std::visit(
             [&](auto& view) {
                 auto result = Ops::union_(&view, other);
@@ -184,8 +167,7 @@ public:
     }
 
     /* Dispatch to the correct implementation of intersection() for each variant. */
-    template <typename T>
-    inline VariantSet* intersection(T* other) {
+    inline VariantSet* intersection(PyObject* other) {
         return std::visit(
             [&](auto& view) {
                 auto result = Ops::intersection(&view, other);
@@ -199,8 +181,7 @@ public:
     }
 
     /* Dispatch to the correct implementation of difference() for each variant. */
-    template <typename T>
-    inline VariantSet* difference(T* other) {
+    inline VariantSet* difference(PyObject* other) {
         return std::visit(
             [&](auto& view) {
                 auto result = Ops::difference(&view, other);
@@ -215,8 +196,7 @@ public:
 
     /* Dispatch to the correct implementation of symmetric_difference() for each
     variant. */
-    template <typename T>
-    inline VariantSet* symmetric_difference(T* other) {
+    inline VariantSet* symmetric_difference(PyObject* other) {
         return std::visit(
             [&](auto& view) {
                 auto result = Ops::symmetric_difference(&view, other);
@@ -230,8 +210,7 @@ public:
     }
 
     /* Dispatch to the correct implementation of update() for each variant. */
-    template <typename T>
-    inline void update(T* items, bool left) {
+    inline void update(PyObject* items, bool left) {
         std::visit(
             [&](auto& view) {
                 Ops::update(&view, items, left);
@@ -242,8 +221,7 @@ public:
 
     /* Dispatch to the correct implementation of intersection_update() for each
     variant. */
-    template <typename T>
-    inline void intersection_update(T* other) {
+    inline void intersection_update(PyObject* other) {
         std::visit(
             [&](auto& view) {
                 Ops::intersection_update(&view, other);
@@ -254,8 +232,7 @@ public:
 
     /* Dispatch to the correct implementation of difference_update() for each
     variant. */
-    template <typename T>
-    inline void difference_update(T* other) {
+    inline void difference_update(PyObject* other) {
         std::visit(
             [&](auto& view) {
                 Ops::difference_update(&view, other);
@@ -266,8 +243,7 @@ public:
 
     /* Dispatch to the correct implementation of symmetric_difference_update() for
     each variant. */
-    template <typename T>
-    inline void symmetric_difference_update(T* other) {
+    inline void symmetric_difference_update(PyObject* other) {
         std::visit(
             [&](auto& view) {
                 Ops::symmetric_difference_update(&view, other);

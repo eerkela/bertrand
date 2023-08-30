@@ -91,7 +91,7 @@ namespace Ops {
         PyObject* sentinel,
         Py_ssize_t offset
     ) {
-        _insert_relative(view, item, sentinel, offset, false);  // suppress errors
+        _insert_relative(view, item, sentinel, offset, true);
     }
 
 }

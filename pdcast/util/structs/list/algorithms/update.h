@@ -34,17 +34,17 @@ namespace Ops {
         using View = ViewType<NodeType, Allocator>;
         using Node = typename View::Node;
 
-        // unpack items into temporary view
+        // unpack items into temporary set
         SetView<NodeType, DynamicAllocator> temp_view(items);
 
-        // iterate over view and remove all elements in view2
+        // iterate over view and remove all elements in temporary set
         Node* prev = nullptr;
         Node* curr = view->head;
         while (curr != nullptr) {
             Node* next = static_cast<Node*>(curr->next);
-            if (view2->search(curr) != nullptr) {
-                view1->unlink(prev, curr, next);
-                view1->recycle(curr);
+            if (temp_view->search(curr) != nullptr) {
+                view->unlink(prev, curr, next);
+                view->recycle(curr);
             }
             prev = curr;
             curr = next;
@@ -53,40 +53,81 @@ namespace Ops {
 
     /* Update a linked set or dictionary in-place, keeping only elements found in
     both sets or dictionaries. */
-    template <typename View>
-    void intersection_update(View* view1, View* view2) {
+    template <
+        template <typename, template <typename> class> class ViewType,
+        typename NodeType,
+        template <typename> class Allocator
+    >
+    void intersection_update(ViewType<NodeType, Allocator>* view1, PyObject* items) {
+        using View = ViewType<NodeType, Allocator>;
         using Node = typename View::Node;
 
-        // iterate over view1 and remove all elements not in view2
+        // unpack items into temporary view
+        ViewType<NodeType, DynamicAllocator> temp_view(items);
+
+        // iterate over view and remove all elements not in temp view
         Node* prev = nullptr;
         Node* curr = view1->head;
         while (curr != nullptr) {
             Node* next = static_cast<Node*>(curr->next);
-            if (view2->search(curr) == nullptr) {
+            Node* other = temp_view->search(curr);
+            if (other == nullptr) {
                 view1->unlink(prev, curr, next);
                 view1->recycle(curr);
+            } else {
+                if constexpr (has_mapped<Node>::value) {  // update mapped value
+                    Py_DECREF(curr->mapped);
+                    Py_INCREF(other->mapped);
+                    curr->mapped = other->mapped;
+                }
             }
             prev = curr;
             curr = next;
         }
     }
+
     /* Update a linked set or dictionary in-place, keeping only elements found in
     either set or dictionary, but not both. */
-    template <typename View>
-    void symmetric_difference_update(View* view1, View* view2) {
+    template <
+        template <typename, template <typename> class> class ViewType,
+        typename NodeType,
+        template <typename> class Allocator
+    >
+    void symmetric_difference_update(
+        ViewType<NodeType, Allocator>* view,
+        PyObject* items
+    ) {
+        using View = ViewType<NodeType, Allocator>;
         using Node = typename View::Node;
 
-        // (B - A)  (NOTE: this avoids modifying view2 during update)
-        View* diff2 = difference(view2, view1);
-        if (diff2 == nullptr) {
-            return;  // propagate error
+        // unpack items into temporary view
+        ViewType<NodeType, DynamicAllocator> temp_view(items);
+
+        // iterate over view and remove all elements in temp view
+        Node* prev = nullptr;
+        Node* curr = view->head;
+        while (curr != nullptr) {
+            Node* next = static_cast<Node*>(curr->next);
+            if (temp_view->search(curr) != nullptr) {
+                view->unlink(prev, curr, next);
+                view->recycle(curr);
+            }
+            prev = curr;
+            curr = next;
         }
 
-        // (A - B)
-        difference_update(view1, view2);
+        // iterate over temp view and add all elements not in view
+        curr = temp_view->head;
+        while (curr != nullptr) {
+            if (view->search(curr) == nullptr) {
+                _copy_into(view, curr, false);  // copy from temporary view
+                if (PyErr_Occurred()) {
+                    return;
+                }
+            }
+            curr = static_cast<Node*>(curr->next);
+        }
 
-        // (A - B) U (B - A)
-        update(view1, diff2);
     }
 
     /* Update a set or dictionary relative to a given sentinel value, appending

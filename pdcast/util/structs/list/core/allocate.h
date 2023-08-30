@@ -9,6 +9,11 @@
 #include <Python.h>
 
 
+// TODO:
+// DirectAllocator -> HeapAllocator
+// PreAllocator -> PoolAllocator
+
+
 // In the future, we could look into dynamically allocating blocks of nodes
 // using block allocation, but then we'd need to keep track of which blocks are
 // full and which are empty, and allocate/remove them as needed.  This would

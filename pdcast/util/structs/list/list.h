@@ -26,18 +26,8 @@
 
 // Core
 #include "core/allocate.h"  // Allocator policies
-#include "core/bounds.h"  // normalize_index(), normalize_bounds(), etc.
 #include "core/node.h"  // Nodes
 #include "core/view.h"  // Views
-
-
-// TODO: if we expand the variant to include sets and dictionaries, we can have
-// VariantSet and VariantDict inherit from VariantList and VariantSet, respectively.
-// This means we don't have to reimplement the base class's interface.
-
-
-// TODO: we can probably carry this up to the Cython level and reduce duplication
-// of documentation.
 
 
 ///////////////////////

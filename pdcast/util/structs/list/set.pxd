@@ -18,6 +18,6 @@ cdef extern from "set.h":
         ) except +
 
 
-cdef class LinkedSet:
+cdef class LinkedSet(LinkedList):
     @staticmethod
     cdef LinkedSet from_view(VariantSet* view)

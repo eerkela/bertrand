@@ -674,6 +674,9 @@ cdef class LinkedList:
         -----
         Concatenation is O(n), where `n` is the length of the other list.
         """
+        if not isinstance(other, (list, LinkedList)):
+            return NotImplemented
+
         result = self.copy()
         result.extend(other)
         return result
@@ -695,6 +698,9 @@ cdef class LinkedList:
         -----
         Concatenation is O(m), where `m` is the length of the ``other`` list.
         """
+        if not isinstance(other, (list, LinkedList)):
+            return NotImplemented
+
         self.extend(other)
         return self
 
