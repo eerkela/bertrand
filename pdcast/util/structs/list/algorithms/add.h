@@ -82,6 +82,11 @@ namespace Ops {
         }
     }
 
+}
+
+
+namespace Relative {
+
     /* Add an item to a linked set or dictionary relative to a given sentinel
     value if it is not already present. */
     template <typename View>
@@ -95,6 +100,7 @@ namespace Ops {
     }
 
 }
+
 
 
 #endif // BERTRAND_STRUCTS_ALGORITHMS_ADD_H

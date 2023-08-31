@@ -3,6 +3,7 @@
 #define BERTRAND_STRUCTS_CORE_VIEW_H
 
 #include <cstddef>  // size_t
+#include <mutex>  // std::mutex
 #include <queue>  // std::queue
 #include <type_traits>  // std::integral_constant, std::is_base_of_v
 #include <Python.h>  // CPython API
@@ -45,7 +46,9 @@ algorithms/
 template <typename NodeType, template <typename> class Allocator>
 class ListView {
 public:
+    using View = ListView<NodeType, Allocator>;
     using Node = NodeType;
+
     Node* head;
     Node* tail;
     size_t size;
@@ -190,8 +193,7 @@ public:
     }
 
     /* Make a shallow copy of the entire list. */
-    ListView<NodeType, Allocator>* copy() {
-        using View = ListView<NodeType, Allocator>;
+    View* copy() {
         View* result = new View(max_size, specialization);
 
         // copy nodes into new list
@@ -288,6 +290,15 @@ public:
         specialization = spec;
     }
 
+    /* Lock the list for use in a multithreaded context.
+
+    This method returns a lock guard that controls the state of an internal mutex.  The
+    mutex is locked when the method is called and unlocked when the lock guard goes out
+    of scope.  Any operations in between are guaranteed to be thread-safe. */
+    std::lock_guard<std::mutex> lock() {
+        return std::lock_guard<std::mutex>(thread_lock);
+    }
+
     /* Get the total memory consumed by the list (in bytes). */
     inline size_t nbytes() const {
         return allocator.nbytes() + sizeof(*this);
@@ -332,7 +343,7 @@ protected:
     }
 
     /* Copy all the nodes from this list into a newly-allocated view. */
-    void copy_to(ListView<NodeType, Allocator>* other) const {
+    void copy_to(View* other) const {
         Node* curr = head;
         Node* copied = nullptr;
         Node* copied_tail = nullptr;
@@ -361,7 +372,7 @@ protected:
 
 private:
     mutable Allocator<Node> allocator;
-
+    mutable std::mutex thread_lock;
 };
 
 
@@ -373,8 +384,9 @@ private:
 template <typename NodeType, template <typename> class Allocator>
 class SetView : public ListView<Hashed<NodeType>, Allocator> {
 public:
-    using Node = Hashed<NodeType>;
     using Base = ListView<Hashed<NodeType>, Allocator>;
+    using View = SetView<NodeType, Allocator>;
+    using Node = Hashed<NodeType>;
 
     /* Construct an empty SetView. */
     SetView(Py_ssize_t max_size = -1, PyObject* spec = nullptr) :
@@ -451,8 +463,7 @@ public:
     }
 
     /* Make a shallow copy of the entire list. */
-    SetView<NodeType, Allocator>* copy() {
-        using View = SetView<NodeType, Allocator>;
+    View* copy() {
         View* result = new View(this->max_size, this->specialization);
 
         // copy nodes into new set
@@ -501,6 +512,49 @@ public:
         // then its precomputed hash will be reused if available.  Otherwise, the value
         // will be passed through `PyObject_Hash()` before searching the table.
         return table.search(key);
+    }
+
+    /* A nested class that allows for operations relative to a particular value
+    within the set. */
+    class RelativeProxy {
+    public:
+        using View = SetView<NodeType, Allocator>;
+        using Node = View::Node;
+
+        View* view;
+        Node* sentinel;
+
+        /* Construct a new RelativeProxy for the set. */
+        RelativeProxy(View* view, Node* sentinel) : view(view), sentinel(sentinel) {}
+
+        // TODO: add walk(), junction(), neighbors(), etc.  Any helpers for relative
+        // opreations, really.
+
+        // TODO: LinkedSet
+    };
+
+    /* Generate a proxy for a set that allows operations relative to a particular
+    sentinel value. */
+    template <typename T, typename Func, typename... Args>
+    auto relative(T* sentinel, Func func, Args... args) {
+        using ReturnType = decltype(func(std::declval<RelativeProxy*>(), args...));
+
+        // search for sentinel
+        Node* sentinel_node = search(sentinel);
+        if (sentinel_node == nullptr) {  // sentinel not found
+            PyErr_Format(PyExc_KeyError, "%R is not contained in the set", sentinel);
+            return nullptr;  // propagate
+        }
+
+        // stack-allocate a temporary (memory-safe) proxy for the set
+        RelativeProxy proxy(this, sentinel_node);
+
+        // call function with proxy
+        if constexpr (std::is_void_v<ReturnType>) {
+            func(&proxy, args...);
+        } else {
+            return func(&proxy, args...);
+        }
     }
 
     /* Clear all tombstones from the hash table. */

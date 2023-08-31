@@ -4,6 +4,7 @@
 #define BERTRAND_STRUCTS_SET_H
 
 #include <cstddef>  // for size_t
+#include <memory>
 #include <utility>  // std::pair
 #include <variant>  // std::variant
 #include <Python.h>  // CPython API
@@ -40,11 +41,13 @@ public:
     construct a new `VariantSet` from the output of `SetView.copy()` or
     `get_slice()`. */
     template <typename View>
-    VariantSet(View&& view) : Base(view) {}
+    VariantSet(View&& view) : Base(view), self(nullptr) {}
 
     /* Construct an empty SetView to match the given template parameters.  This
     is called during `LinkedSet.__init__()` when no iterable is given. */
-    VariantSet(bool doubly_linked, Py_ssize_t max_size, PyObject* spec) {
+    VariantSet(bool doubly_linked, Py_ssize_t max_size, PyObject* spec) :
+        self(nullptr)
+    {
         if (doubly_linked) {
             if (max_size < 0) {
                 this->variant = SetView<DoubleNode, DynamicAllocator>(max_size, spec);
@@ -69,7 +72,8 @@ public:
         bool reverse,
         Py_ssize_t max_size,
         PyObject* spec
-    ) {
+    ) : self(nullptr)
+    {
         if (doubly_linked) {
             if (max_size < 0) {
                 this->variant = SetView<DoubleNode, DynamicAllocator>(
@@ -151,7 +155,7 @@ public:
     /* Dispatch to the correct implementation of union() for each variant. */
     inline VariantSet* union_(PyObject* other, bool left) {
         return std::visit(
-            [&](auto& view) {
+            [&](auto& view) -> VariantSet* {
                 auto result = Ops::union_(&view, other, left);
                 if (result == nullptr) {
                     return nullptr;  // propagate Python errors
@@ -165,7 +169,7 @@ public:
     /* Dispatch to the correct implementation of intersection() for each variant. */
     inline VariantSet* intersection(PyObject* other) {
         return std::visit(
-            [&](auto& view) {
+            [&](auto& view) -> VariantSet* {
                 auto result = Ops::intersection(&view, other);
                 if (result == nullptr) {
                     return nullptr;  // propagate Python errors
@@ -179,7 +183,7 @@ public:
     /* Dispatch to the correct implementation of difference() for each variant. */
     inline VariantSet* difference(PyObject* other) {
         return std::visit(
-            [&](auto& view) {
+            [&](auto& view) -> VariantSet* {
                 auto result = Ops::difference(&view, other);
                 if (result == nullptr) {
                     return nullptr;  // propagate Python errors
@@ -194,7 +198,7 @@ public:
     variant. */
     inline VariantSet* symmetric_difference(PyObject* other) {
         return std::visit(
-            [&](auto& view) {
+            [&](auto& view) -> VariantSet* {
                 auto result = Ops::symmetric_difference(&view, other);
                 if (result == nullptr) {
                     return nullptr;  // propagate Python errors
@@ -276,7 +280,7 @@ public:
     inline void move(PyObject* item, Py_ssize_t steps) {
         std::visit(
             [&](auto& view) {
-                Ops::move(&view, item, offset);
+                Ops::move(&view, item, steps);
             },
             this->variant
         );
@@ -292,6 +296,120 @@ public:
             this->variant
         );
     }
+
+    /* A proxy object that weakly references a VariantSet and exposes additional
+    methods for efficient operations with respect to a particular value. */
+    class RelativeProxy {
+    public:
+        /* Disabled copy/move constructors.  These are potentially dangerous since
+        we're using a raw PyObject* pointer. */
+        RelativeProxy(const RelativeProxy&) = delete;
+        RelativeProxy(RelativeProxy&&) = delete;
+        RelativeProxy& operator=(const RelativeProxy&) = delete;
+        RelativeProxy& operator=(RelativeProxy&&) = delete;
+
+        /* Construct a proxy for the set that allows efficient operations relative
+        to a particular sentinel value. */
+        RelativeProxy(
+            std::shared_ptr<VariantSet> variant,
+            PyObject* sentinel,
+            Py_ssize_t offset
+        ) : variant(variant), sentinel(sentinel), steps(offset)
+        {
+            Py_INCREF(this->sentinel);
+        }
+
+        /* Decrement the reference count of the sentinel value on destruction. */
+        ~RelativeProxy() {
+            Py_DECREF(this->sentinel);
+        }
+
+        // TODO: can't return nullptr from offset().  Have to use std::optional or
+        // something similar.
+
+        /* Builder-pattern method for assigning an offset from the RelativeProxy's
+        sentinel value at which to operate. */
+        inline RelativeProxy offset(Py_ssize_t steps) {
+            auto ref = strong_ref();
+            if (ref == nullptr) {
+                return nullptr;  // propagate
+            }
+
+            // return a new RelativeProxy with the updated offset
+            return RelativeProxy(ref, sentinel, steps);
+        }
+
+        /* Dispatch to the correct implementation of get_relative() for each variant. */
+        PyObject* get() {
+            // get a strong reference to the VariantSet
+            auto ref = strong_ref();
+            if (ref == nullptr) {
+                return nullptr;  // propagate
+            }
+
+            // dispatch to view.relative()
+            return std::visit(
+                [&](auto& view) {
+                    return view.relative(sentinel, steps, Relative::get);
+                },
+                ref->variant
+            );
+        }
+
+        /* Dispatch to the correct implementation of move_relative() for each variant. */
+        void move(PyObject* value) {
+            // get a strong reference to the VariantSet
+            auto ref = strong_ref();
+            if (ref == nullptr) {
+                return;  // propagate
+            }
+
+            // dispatch to view.relative()
+            std::visit(
+                [&](auto& view) {
+                    view.relative(sentinel, steps, Relative::move, value);
+                },
+                ref->variant
+            );
+        }
+
+    private:
+        const std::weak_ptr<VariantSet> variant;
+        PyObject* const sentinel;
+        const Py_ssize_t steps;
+
+        /* Generate a strong reference to the VariantSet. */
+        std::shared_ptr<VariantSet> strong_ref() {
+            auto strong_ref = variant.lock();
+            if (strong_ref == nullptr) {
+                PyErr_SetString(
+                    PyExc_ReferenceError,
+                    "proxy references a set that no longer exists"
+                );
+            }
+            return strong_ref;
+        }
+    };
+
+    /* Construct a RelativeProxy for relative operations within a linked set. */
+    inline RelativeProxy* relative(PyObject* sentinel, Py_ssize_t offset) {
+        // NOTE: using an internal shared_ptr to allow the VariantSet to be weakly
+        // referenced from the RelativeProxy.  If a set is destroyed while a
+        // RelativeProxy is still referencing it, then the proxy will start raising
+        // errors whenever it is accessed.
+        if (self == nullptr) {
+            self = std::make_shared<VariantSet>(*this);
+        }
+
+        // TODO: should probably return a new instance rather than using the new
+        // keyword.
+
+        return new RelativeProxy(self, sentinel, offset);
+    }
+
+
+
+
 
     /* Dispatch to the correct implementation of move_relative() for each variant. */
     inline void move_relative(PyObject* item, PyObject* sentinel, Py_ssize_t offset) {
@@ -406,6 +524,10 @@ public:
             this->variant
         );
     }
+
+
+private:
+    std::shared_ptr<VariantSet> self;
 
 };
 

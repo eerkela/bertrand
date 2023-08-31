@@ -13,13 +13,7 @@
 //////////////////////
 
 
-namespace Ops {
-
-    /* Clear the contents of a linked list, set, or dictionary. */
-    template <typename View>
-    inline void clear(View* view) {
-        view->clear();
-    }
+namespace Relative {
 
     /* Remove a sequence of items from a linked set or dictionary relative to a
     given sentinel value. */
