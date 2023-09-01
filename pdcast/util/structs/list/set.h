@@ -507,6 +507,9 @@ public:
 
         /* Generate a strong reference to the VariantSet. */
         std::shared_ptr<VariantSet> strong_ref() {
+            // NOTE: since the proxy maintains a weak reference to the VariantSet that
+            // spawned it, the VariantSet can be deleted out from underneath it.  In
+            // this case
             auto strong_ref = variant.lock();
             if (strong_ref == nullptr) {
                 PyErr_SetString(
@@ -520,6 +523,7 @@ public:
 
     /* Construct a RelativeProxy for relative operations within a linked set. */
     inline RelativeProxy relative(PyObject* sentinel, Py_ssize_t offset) {
+        // lazily initialize self pointer
         if (self == nullptr) {
             self = std::make_shared<VariantSet>(*this);
         }

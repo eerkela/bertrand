@@ -29,16 +29,16 @@ namespace Ops {
         _insert_between(view, neighbors.first, neighbors.second, item, false);
     }
 
+}
+
+
+namespace Relative {
+
     /* Insert an item into a linked set or dictionary relative to a given sentinel
     value. */
-    template <typename View>
-    inline void insert_relative(
-        View* view,
-        PyObject* item,
-        PyObject* sentinel,
-        Py_ssize_t offset
-    ) {
-        _insert_relative(view, item, sentinel, offset, false);  // propagate errors
+    template <typename RelativeProxy>
+    inline void insert(RelativeProxy* proxy, PyObject* item) {
+        _insert_relative(proxy, item, false);  // propagate errors
     }
 
 }
@@ -94,38 +94,26 @@ void _insert_between(
 
 /* Implement both insert_relative() and add_relative() depending on error handling
 flag. */
-template <typename View>
-void _insert_relative(
-    View* view,
-    PyObject* item,
-    PyObject* sentinel,
-    Py_ssize_t offset,
-    bool update
-) {
-    using Node = typename View::Node;
+template <typename RelativeProxy>
+void _insert_relative(RelativeProxy* proxy, PyObject* item, bool update) {
+    using Node = typename RelativeProxy::Node;
 
     // ensure offset is nonzero
-    if (offset == 0) {
+    if (proxy->offset == 0) {
         PyErr_Format(PyExc_ValueError, "offset must be non-zero");
         return;
-    } else if (offset < 0) {
-        offset += 1;
-    }
-
-    // search for sentinel
-    Node* node = view->search(sentinel);
-    if (node == nullptr) {  // sentinel not found
-        PyErr_Format(PyExc_KeyError, "%R is not contained in the set", sentinel);
-        return;
+    } else if (proxy->offset < 0) {
+        proxy->offset += 1;
     }
 
     // walk according to offset
-    std::pair<Node*,Node*> neighbors = relative_junction(
-        view, node, offset, true
-    );
+    // std::pair<Node*,Node*> neighbors = relative_junction(
+    //     proxy->view, proxy->sentinel, proxy->offset, true
+    // );
+    std::pair<Node*, Node*> neighbors = proxy->junction(proxy->offset, true);
 
     // insert node between neighbors
-    _insert_between(view, neighbors.first, neighbors.second, item, update);
+    _insert_between(proxy->view, neighbors.first, neighbors.second, item, update);
 }
 
 

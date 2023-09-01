@@ -3,6 +3,7 @@
 #define BERTRAND_STRUCTS_CORE_NODE_H
 
 #include <queue>  // for std::queue
+#include <mutex>  // std::mutex
 #include <stdexcept>  // for std::invalid_argument
 #include <type_traits>  // for std::integral_constant, std::is_base_of_v
 #include <Python.h>  // for CPython API
@@ -409,6 +410,69 @@ struct Mapped : public NodeType {
 };
 
 
+/* A node decorator that adds a separate mutex to each node, for use in heavily
+multithreaded contexts. */
+template <typename NodeType>
+struct Threaded : public NodeType {
+    using Node = Threaded<NodeType>;
+
+    mutable std::mutex mutex;
+
+    // NOTE: the idea here is that we implement standard next()/prev() getters
+    // on all nodes.  For most nodes, these just cast the associated pointer to
+    // the correct type and return it.  For threaded nodes, however, we also
+    // lock the node's mutex before returning the pointer.  This allows us to
+    // abstract away the mutex locking/unlocking from the user.
+
+    // This would be paired with head() and tail() accessors on the list itself,
+    // which do the same thing.  Same with the search() method.
+
+    // Since these methods encompass the entire traversal mechanism for the list,
+    // we can effectively automate the locking/unlocking process and rely on
+    // polymorphism to handle it for us.
+
+    // We would still have to put in some constexpr checks to make sure that
+    // nodes are properly unlocked after we're done with them, but otherwise,
+    // this would create a linked list where every node is individually locked
+    // and unlocked, which would allow concurrent access to several different
+    // parts of the list at the same time.
+
+    // NOTE: Here's how the accessors would work:
+    // - calling the accessor without arguments would act as a getter
+    // - calling the accessor with arguments would act as a setter
+
+    // Node* curr = view->head();
+    // Node* next = curr->next();
+
+    // Node* temp = view->node(item);
+    // curr->next(temp);  // assigns temp to curr->next  
+
+    /* Access the next node in the list. */
+    inline Node* next() {
+        Node* result = static_cast<Node*>(NodeType::next());
+        if (result != nullptr) {
+            result->mutex.lock();  // lock the next node's mutex on access
+        }
+        return result;
+    }
+
+    /* Access the previous node in the list. */
+    inline Node* prev() {
+        Node* result = static_cast<Node*>(NodeType::prev());
+        if (result != nullptr) {
+            result->mutex.lock();  // lock the previous node's mutex on access
+        }
+        return result;
+    }
+
+    /* Unlock this node's mutex. */
+    inline void unlock() {
+        mutex.unlock();
+    }
+
+};
+
+
 /* A node decorator that adds a frequency count to the underyling node type. */
 template <typename NodeType>
 struct Counted : public NodeType {
@@ -503,6 +567,24 @@ private:
     static std::true_type test(decltype(&T::mapped)*);
 
     // Overload for when `mapped` is not present
+    template <typename T>
+    static std::false_type test(...);
+
+public:
+    static constexpr bool value = decltype(test<Node>(nullptr))::value;
+};
+
+
+/* A trait that detects whether the templated node type has a mutex for advanced
+thread-safety. */
+template <typename Node>
+struct has_mutex {
+private:
+    // Helper template to detect whether Node has a `mutex` field
+    template <typename T>
+    static std::true_type test(decltype(&T::mutex)*);
+
+    // Overload for when `mutex` is not present
     template <typename T>
     static std::false_type test(...);
 

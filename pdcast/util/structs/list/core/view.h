@@ -3,7 +3,8 @@
 #define BERTRAND_STRUCTS_CORE_VIEW_H
 
 #include <cstddef>  // size_t
-#include <mutex>  // std::mutex
+#include <mutex>  // std::mutex, std::lock_guard
+#include <optional>  // std::optional
 #include <queue>  // std::queue
 #include <type_traits>  // std::integral_constant, std::is_base_of_v
 #include <Python.h>  // CPython API
@@ -252,6 +253,451 @@ public:
         }
     }
 
+    /* Normalize a numeric index, allowing Python-style wraparound and
+    bounds checking. */
+    template <typename T>
+    std::optional<size_t> index(T index, bool truncate) {
+        bool index_lt_zero = index < 0;
+
+        // wraparound negative indices
+        if (index_lt_zero) {
+            index += size;
+            index_lt_zero = index < 0;
+        }
+
+        // boundscheck
+        if (index_lt_zero || index >= static_cast<T>(size)) {
+            if (truncate) {
+                if (index_lt_zero) {
+                    return 0;
+                }
+                return size - 1;
+            }
+            PyErr_SetString(PyExc_IndexError, "list index out of range");
+            return std::nullopt;
+        }
+
+        // return as size_t
+        return std::optional<size_t>{ static_cast<size_t>(index) };
+    }
+
+    /* Normalize a Python integer for use as an index to the list. */
+    std::optional<size_t> index(PyObject* index, bool truncate) {
+        // check that index is a Python integer
+        if (!PyLong_Check(index)) {
+            PyErr_SetString(PyExc_TypeError, "index must be a Python integer");
+            return std::nullopt;
+        }
+
+        // comparisons are kept at the python level until we're ready to return
+        PyObject* py_zero = PyLong_FromSize_t(0);  // new reference
+        PyObject* py_size = PyLong_FromSize_t(size);  // new reference
+        int index_lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
+
+        // wraparound negative indices
+        bool release_index = false;
+        if (index_lt_zero) {
+            index = PyNumber_Add(index, py_size);  // new reference
+            index_lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
+            release_index = true;  // remember to DECREF index later
+        }
+
+        // boundscheck
+        if (index_lt_zero || PyObject_RichCompareBool(index, py_size, Py_GE)) {
+            // clean up references
+            Py_DECREF(py_zero);
+            Py_DECREF(py_size);
+            if (release_index) {
+                Py_DECREF(index);
+            }
+
+            // apply truncation if directed
+            if (truncate) {
+                if (index_lt_zero) {
+                    return std::optional<size_t>{ 0 };
+                }
+                return std::optional<size_t>{ size - 1 };
+            }
+
+            // raise IndexError
+            PyErr_SetString(PyExc_IndexError, "list index out of range");
+            return std::nullopt;
+        }
+
+        // value is good - convert to size_t
+        size_t result = PyLong_AsSize_t(index);
+
+        // clean up references
+        Py_DECREF(py_zero);
+        Py_DECREF(py_size);
+        if (release_index) {
+            Py_DECREF(index);
+        }
+
+        return std::optional<size_t>{ result };
+    }
+
+    /* A proxy class that allows for operations on slices within the list. */
+    class SliceProxy {
+    public:
+        using View = ListView<NodeType, Allocator>;
+        using Node = View::Node;
+
+        View* view;
+        long long const start;  // original inputs
+        long long const stop;
+        long long const step;
+        size_t const first;  // normalized and chosen to minimize total iterations
+        size_t const last;
+        size_t const abs_step;
+        size_t const length;
+        bool const reverse;  // accounts for singly-/doubly-linked lists
+
+        /* Construct a new SliceProxy for the list. */
+        SliceProxy(View* view, long long start, long long stop, long long step) :
+            view(view), start(start), stop(stop), step(step), first(MAX_SIZE_T),
+            last(MAX_SIZE_T), abs_step(llabs(step)), length(0), reverse(false),
+            source(nullptr)
+        {
+            // convert to closed interval
+            long long stop_closed = closed_interval();
+
+            // continue initializing only if slice contains at least one element
+            if (
+                (step > 0 && start <= stop_closed) ||
+                (step < 0 && start >= stop_closed)
+            ) {
+                std::pair<size_t, size_t> bounds = slice_direction();
+                first = bounds.first;
+                last = bounds.second;
+                length = slice_length();
+                reverse = (step < 0) ^ (first > last);
+                source = find_source();
+            }
+        }
+
+        /* Indicates whether the slice contains any elements. */
+        inline bool empty() const {
+            return length == 0;
+        }
+
+        /* An iterator  */
+        template <typename ItemType>
+        class SliceIterator {
+        public:
+            // iterator tags for std::iterator_traits
+            using iterator_category     = std::forward_iterator_tag;
+            using difference_type       = std::ptrdiff_t;
+            using value_type            = ItemType;
+            using pointer               = ItemType*;
+            using reference             = ItemType&;
+
+            /* Get an iterator to the start of the slice. */
+            SliceIterator(Node* source, size_t step, size_t length, bool backward) :
+                step(step), index(0), length(length), backward(backward)
+            {
+                init_from_source(source);
+            }
+
+            /* Get an iterator to terminate the slice. */
+            SliceIterator(size_t length) :
+                step(0), index(length), length(length), backward(false)
+            {}
+
+            /* Dereference the iterator. */
+            inline ItemType operator*() const {
+                using junction = std::pair<Node*, Node*>;
+                using neighbors = std::tuple<Node*, Node*, Node*>;
+
+                // return only the current node (Slice::get())
+                if constexpr (std::is_same_v<ItemType, Node*>) {
+                    return curr;
+
+                // return the previous and current nodes (2nd loop of Slice::set())
+                } else if constexpr (std::is_same_v<ItemType, junction>) {
+                    if constexpr (has_prev<Node>::value) {
+                        if (backward) {  // backward traversal
+                            return std::make_pair(curr, next);
+                        }
+                    }
+                    return std::make_pair(prev, curr);  // forward traversal
+
+                // return the previous, current, and next nodes (Slice::del())
+                } else if constexpr (std::is_same_v<ItemType, neighbors>) {
+                    return std::make_tuple(prev, curr, next);
+
+                // error - invalid ItemType
+                } else {
+                    throw std::runtime_error("invalid ItemType for SliceIterator");
+                }
+            }
+
+            /* Prefix increment. */
+            inline SliceIterator& operator++() {
+                ++index;
+                if (index == length) {
+                    return *this;  // don't jump on last iteration
+                }
+
+                if constexpr (has_prev<Node>::value) {
+                    if (backward) {  // backward traversal
+                        for (size_t i = 0; i < step; ++i) {
+                            next = curr;
+                            curr = prev;
+                            prev = static_cast<Node*>(curr->prev);
+                        }
+                        return *this;
+                    }
+                }
+
+                // forward traversal
+                for (size_t i = 0; i < step; ++i) {
+                    prev = curr;
+                    curr = next;
+                    next = static_cast<Node*>(curr->next);
+                }
+                return *this;
+            }
+
+            /* Inequality comparison. */
+            inline bool operator!=(const SliceIterator& other) const {
+                return index != other.index;
+            }
+
+            /* Remove the node from the current index in the slice. */
+            Node* remove() {
+                // unlink node from list
+                Node* result = curr;
+                view->unlink(prev, curr, next);
+
+                // update iterator
+                if constexpr (has_prev<Node>::value) {
+                    if (backward) {  // backward traversal
+                        curr = prev;
+                        if (prev != nullptr) {
+                            prev = static_cast<Node*>(prev->prev);
+                        }
+                        return result;
+                    }
+                }
+
+                // forward traversal
+                curr = next;
+                if (next != nullptr) {
+                    next = static_cast<Node*>(next->next);
+                }
+                return result;
+            }
+
+            /* Insert a node at the current index in the slice. */
+            inline void insert(Node* node) {
+                if constexpr (has_prev<Node>::value) {
+                    if (backward) {  // backward traversal
+                        view->link(prev, node, curr);
+                        prev = node;
+                        return;
+                    }
+                }
+
+                // forward traversal
+                view->link(curr, node, next);
+                next = node;
+            }
+
+        private:
+            Node* prev;
+            Node* curr;
+            Node* next;
+            size_t step;
+            size_t index;
+            size_t length;
+            bool backward;
+
+            /* Get the initial values for the iterator based on a source node. */
+            inline void init_from_source(Node* source) {
+                if constexpr (has_prev<Node>::value) {
+                    if (backward) {  // backward traversal
+                        next = source;
+                        if (source == nullptr) {
+                            curr = view->tail;
+                        } else {
+                            curr = static_cast<Node*>(source->prev);
+                        }
+                        return;
+                    }
+                }
+
+                // forward traversal
+                prev = source;
+                if (source == nullptr) {
+                    curr = view->head;
+                } else {
+                    curr = static_cast<Node*>(source->next);
+                }
+            }
+
+        };
+
+        /* Return an iterator to the start of the slice. */
+        template <typename ItemType>
+        inline SliceIterator<ItemType> begin(bool zero_index = true) const {
+            // NOTE: if zero_index = false, then the iterator will implicitly skip
+            // a single step at each iteration.  This is useful for the removal loops
+            // in Slice::set() and Slice::del(), since deleting a node implicitly
+            // advances the iterator by one step.
+            if (zero_index) {
+                return SliceIterator<ItemType>(source, abs_step, length, first > last);
+            }
+            return SliceIterator<ItemType>(source, abs_step - 1, length, first > last);
+        }
+
+        /* Return an iterator to the end of the slice. */
+        template <typename ItemType>
+        inline SliceIterator<ItemType> end() {
+            return SliceIterator<ItemType>(length);
+        }
+
+    private:
+        Node* source;  // node that immediately precedes the slice
+
+        /* Adjust the stop index in a slice to make it closed on both ends. */
+        inline long long closed_interval() {
+            long long remainder = py_modulo((stop - start), step);
+            if (remainder == 0) {
+                return stop - step; // decrement by 1 full step
+            }
+            return stop - remainder;  // decrement to nearest multiple of step
+        }
+
+        /* Swap the start and stop indices based on the singly-/doubly-linked nature
+        of the list. */
+        inline std::pair<size_t, size_t> slice_direction() {
+            // get first and last indices
+            if constexpr (has_prev<Node>::value) {
+                // iterate normally
+                long long size = static_cast<long long>(view->size);
+                if (
+                    (step > 0 && start <= size - stop) ||
+                    (step < 0 && size - start <= stop)
+                ) {
+                    return std::make_pair(start, stop);
+                }
+
+                // reverse
+                return std::make_pair(stop, start);
+            }
+
+            // iterate normally
+            if (step > 0) {
+                return std::make_pair(start, stop);
+            }
+
+            // reverse
+            return std::make_pair(stop, start);
+        }
+
+        /* Get the number of items in the slice. */
+        inline size_t slice_length() {
+            size_t range;
+            if (first < last) {
+                range = last - first;
+            } else {
+                range = first - last;
+            }
+            return (range / abs_step) + 1;  // add 1 to account for closed interval
+        }
+
+        /* Iterate to find the source node for the slice. */
+        Node* find_source() {
+            if constexpr (has_prev<Node>::value) {
+                if (first > last) {  // backward traversal
+                    Node* next = nullptr;
+                    Node* curr = view->tail;
+                    for (size_t i = view->size - 1; i > first; i--) {
+                        next = curr;
+                        curr = static_cast<Node*>(curr->prev);
+                    }
+                    return next;
+                }
+            }
+
+            // forward traversal
+            Node* prev = nullptr;
+            Node* curr = view->head;
+            for (size_t i = 0; i < first; i++) {
+                prev = curr;
+                curr = static_cast<Node*>(curr->next);
+            }
+            return prev;
+        }
+
+        /* A modulo operator (%) that matches Python's behavior with respect to
+        negative numbers. */
+        template <typename T>
+        inline static T py_modulo(T a, T b) {
+            // NOTE: Python's `%` operator is defined such that the result has
+            // the same sign as the divisor (b).  This differs from C/C++, where
+            // the result has the same sign as the dividend (a).
+            return (a % b + b) % b;
+        }
+    };
+
+    /* Generate a proxy for the list that references a particular slice. */
+    template <typename T>
+    std::optional<SliceProxy> slice(
+        std::optional<T> start = std::nullopt,
+        std::optional<T> stop = std::nullopt,
+        std::optional<T> step = std::nullopt
+    ) {
+        long long _start;
+        long long _stop;
+        long long _step;
+
+        // parse step size
+        if (!step.has_value()) {
+            _step = 1;
+        } else {
+            _step = static_cast<long long>(step.value());
+            if (_step == 0) {
+                PyErr_SetString(PyExc_ValueError, "slice step cannot be zero");
+                return std::nullopt;
+            }
+        }
+
+        // parse start index
+        if (!start.has_value()) {
+            if (step > 0) {
+                _start = 0;
+            } else {
+                _start = static_cast<long long>(size) - 1;
+            }
+        } else {
+            std::optional<size_t> norm = index(start.value(), true);
+            if (!norm.has_value()) {
+                return std::nullopt;
+            }
+            _start = static_cast<long long>(norm.value());
+        }
+
+        // parse stop index
+        if (!stop.has_value()) {
+            if (step > 0) {
+                _stop = static_cast<long long>(size);
+            } else {
+                _stop = -1;
+            }
+        } else {
+            std::optional<size_t> norm = index(stop.value(), true);
+            if (!norm.has_value()) {
+                return std::nullopt;
+            }
+            _stop = static_cast<long long>(norm.value());
+        }
+
+        // create proxy
+        return SliceProxy(this, _start, _stop, _step);
+    }
+
     /* Enforce strict type checking for elements of this list. */
     void specialize(PyObject* spec) {
         // handle null assignment
@@ -292,10 +738,13 @@ public:
 
     /* Lock the list for use in a multithreaded context.
 
-    This method returns a std::lock_guard that controls the state of an internal mutex.
-    The mutex is acquired when the method is called and unlocked when the guard goes
-    out of scope.  Any operations in between are guaranteed to be thread-safe. */
-    std::lock_guard<std::mutex> lock() {
+    The only difference between this method and `lock_context()` is that this returns a
+    stack-allocated lock guard that uses RAII semantics.  The mutex is acquired when
+    this method returns and is automatically released when the guard goes out of scope.
+    Any operations in between are thus guaranteed to be atomic.  This is generally the
+    safest and most natural way to lock the list in a C++ context, but doesn't work
+    well with Python's context manager protocol. */
+    inline std::lock_guard<std::mutex> lock() {
         return std::lock_guard<std::mutex>(thread_lock);
     }
 
@@ -303,9 +752,9 @@ public:
 
     This method returns a head-allocated std::lock_guard that can be manually deleted
     later to release the mutex.  This is used to enable Pythonic locking from a context
-    manager, rather than always relying on C++-style RAII principles.  The normal
-    lock() method is generally safer and should almost always be preferred over this. */
-    std::lock_guard<std::mutex>* lock_context() {
+    manager, rather than always relying on C++ RAII principles.  The normal `lock()` is
+    generally safer and should be preferred if calling from C++. */
+    inline std::lock_guard<std::mutex>* lock_context() {
         return new std::lock_guard<std::mutex>(thread_lock);
     }
 
@@ -524,7 +973,7 @@ public:
         return table.search(key);
     }
 
-    /* A nested class that allows for operations relative to a particular value
+    /* A proxy class that allows for operations relative to a particular value
     within the set. */
     class RelativeProxy {
     public:
@@ -533,20 +982,246 @@ public:
 
         View* view;
         Node* sentinel;
+        Py_ssize_t offset;
+
+        // TODO: truncate could be handled at the proxy level.  It would just be
+        // another constructor argument
 
         /* Construct a new RelativeProxy for the set. */
-        RelativeProxy(View* view, Node* sentinel) : view(view), sentinel(sentinel) {}
+        RelativeProxy(View* view, Node* sentinel, Py_ssize_t offset) :
+            view(view), sentinel(sentinel), offset(offset)
+        {}
 
-        // TODO: add walk(), junction(), neighbors(), etc.  Any helpers for relative
-        // opreations, really.
+        // TODO: these could maybe just get the proxy's curr(), prev(), and next()
+        // nodes, respectively.  We can then derive the other nodes from whichever one
+        // is populated.  For example, if we've already found and cached the prev()
+        // node, then curr() is just generated by getting prev()->next, and same with
+        // next() and curr()->next.  If none of the nodes are cached, then we have to
+        // iterate like we do now to find and cache them.  This means that in any
+        // situation where we need to get all three nodes, we should always start with
+        // prev().
 
-        // TODO: LinkedSet
+        /* Return the node at the proxy's current location. */
+        Node* walk(Py_ssize_t offset, bool truncate) {
+            // check for no-op
+            if (offset == 0) {
+                return sentinel;
+            }
+
+            // TODO: introduce caching for the proxy's current position.  Probably
+            // need to use std::optional<Node*> for these, since nullptr might be a
+            // valid value.
+
+            // if we're traversing forward from the sentinel, then the process is the
+            // same for both singly- and doubly-linked lists
+            if (offset > 0) {
+                curr = sentinel;
+                for (Py_ssize_t i = 0; i < offset; i++) {
+                    if (curr == nullptr) {
+                        if (truncate) {
+                            return view->tail;  // truncate to end of list
+                        } else {
+                            return nullptr;  // index out of range
+                        }
+                    }
+                    curr = static_cast<Node*>(curr->next);
+                }
+                return curr;
+            }
+
+            // if the list is doubly-linked, we can traverse backward just as easily
+            if constexpr (has_prev<Node>::value) {
+                curr = sentinel;
+                for (Py_ssize_t i = 0; i > offset; i--) {
+                    if (curr == nullptr) {
+                        if (truncate) {
+                            return view->head;  // truncate to beginning of list
+                        } else {
+                            return nullptr;  // index out of range
+                        }
+                    }
+                    curr = static_cast<Node*>(curr->prev);
+                }
+                return curr;
+            }
+
+            // Otherwise, we have to iterate from the head of the list.  We do this
+            // using a two-pointer approach where the `lookahead` pointer is offset
+            // from the `curr` pointer by the specified number of steps.  When it
+            // reaches the sentinel, then `curr` will be at the correct position.
+            Node* lookahead = view->head;
+            for (Py_ssize_t i = 0; i > offset; i--) {  // advance lookahead to offset
+                if (lookahead == sentinel) {
+                    if (truncate) {
+                        return view->head;  // truncate to beginning of list
+                    } else {
+                        return nullptr;  // index out of range
+                    }
+                }
+                lookahead = static_cast<Node*>(lookahead->next);
+            }
+
+            // advance both pointers until lookahead reaches sentinel
+            curr = view->head;
+            while (lookahead != sentinel) {
+                curr = static_cast<Node*>(curr->next);
+                lookahead = static_cast<Node*>(lookahead->next);
+            }
+            return curr;
+        }
+
+        /* Find the left and right bounds for an insertion. */
+        std::pair<Node*, Node*> junction(Py_ssize_t offset, bool truncate) {
+            // get the previous node for the insertion point
+            prev = walk(offset - 1, truncate);
+
+            // apply truncate rule
+            if (prev == nullptr) {  // walked off end of list
+                if (!truncate) {
+                    return std::make_pair(nullptr, nullptr);  // error code
+                }
+                if (offset < 0) {
+                    return std::make_pair(nullptr, view->head);  // beginning of list
+                }
+                return std::make_pair(view->tail, nullptr);  // end of list
+            }
+
+            // return the previous node and its successor
+            curr = static_cast<Node*>(prev->next);
+            return std::make_pair(prev, curr);
+        }
+
+        /* Find the left and right bounds for a removal. */
+        std::tuple<Node*, Node*, Node*> neighbors(Py_ssize_t offset, bool truncate) {
+            // NOTE: we can't reuse junction() here because we need access to the node
+            // preceding the tail in the event that we walk off the end of the list and
+            // truncate=true.
+            curr = sentinel;
+
+            // NOTE: this is trivial for doubly-linked lists
+            if constexpr (has_prev<Node>::value) {
+                if (offset > 0) {  // forward traversal
+                    next = static_cast<Node*>(curr->next);
+                    for (Py_ssize_t i = 0; i < offset; i++) {
+                        if (next == nullptr) {
+                            if (truncate) {
+                                break;  // truncate to end of list
+                            } else {
+                                return std::make_tuple(nullptr, nullptr, nullptr);
+                            }
+                        }
+                        curr = next;
+                        next = static_cast<Node*>(curr->next);
+                    }
+                    prev = static_cast<Node*>(curr->prev);
+                } else {  // backward traversal
+                    prev = static_cast<Node*>(curr->prev);
+                    for (Py_ssize_t i = 0; i > offset; i--) {
+                        if (prev == nullptr) {
+                            if (truncate) {
+                                break;  // truncate to beginning of list
+                            } else {
+                                return std::make_tuple(nullptr, nullptr, nullptr);
+                            }
+                        }
+                        curr = prev;
+                        prev = static_cast<Node*>(curr->prev);
+                    }
+                    next = static_cast<Node*>(curr->next);
+                }
+                return std::make_tuple(prev, curr, next);
+            }
+
+            // NOTE: It gets significantly more complicated if the list is singly-linked.
+            // In this case, we can only optimize the forward traversal branch if we're
+            // advancing at least one node and the current node is not the tail of the
+            // list.
+            if (truncate && offset > 0 && curr == view->tail) {
+                offset = 0;  // skip forward iteration branch
+            }
+
+            // forward iteration (efficient)
+            if (offset > 0) {
+                prev = nullptr;
+                next = static_cast<Node*>(curr->next);
+                for (Py_ssize_t i = 0; i < offset; i++) {
+                    if (next == nullptr) {  // walked off end of list
+                        if (truncate) {
+                            break;
+                        } else {
+                            return std::make_tuple(nullptr, nullptr, nullptr);
+                        }
+                    }
+                    if (prev == nullptr) {
+                        prev = curr;
+                    }
+                    curr = next;
+                    next = static_cast<Node*>(curr->next);
+                }
+                return std::make_tuple(prev, curr, next);
+            }
+
+            // backward iteration (inefficient)
+            Node* lookahead = view->head;
+            for (size_t i = 0; i > offset; i--) {  // advance lookahead to offset
+                if (lookahead == curr) {
+                    if (truncate) {  // truncate to beginning of list
+                        next = static_cast<Node*>(view->head->next);
+                        return std::make_tuple(nullptr, view->head, next);
+                    } else {  // index out of range
+                        return std::make_tuple(nullptr, nullptr, nullptr);
+                    }
+                }
+                lookahead = static_cast<Node*>(lookahead->next);
+            }
+
+            // advance both pointers until lookahead reaches sentinel
+            prev = nullptr;
+            Node* temp = view->head;
+            while (lookahead != curr) {
+                prev = temp;
+                temp = static_cast<Node*>(temp->next);
+                lookahead = static_cast<Node*>(lookahead->next);
+            }
+            next = static_cast<Node*>(temp->next);
+            return std::make_tuple(prev, temp, next);
+        }
+
+
+        // TODO: relative() could just return a RelativeProxy by value, which would
+        // be deleted as soon as it falls out of scope.  This means we create a new
+        // proxy every time a variant method is called, but we can reuse them in a
+        // C++ context.
+
+        // TODO: index() can do the same thing for IndexProxy, and same with slice()
+        // and SliceProxy.
+
+        /* Execute a function with the RelativeProxy as its first argument. */
+        template <typename Func, typename... Args>
+        auto execute(Func func, Args... args) {
+            // function pointer must accept a RelativeProxy* as its first argument
+            using ReturnType = decltype(func(std::declval<RelativeProxy*>(), args...));
+
+            // call function with proxy
+            if constexpr (std::is_void_v<ReturnType>) {
+                func(this, args...);
+            } else {
+                return func(this, args...);
+            }
+        }
+
+    private:
+        // cache the proxy's current position in the set
+        Node* prev;
+        Node* curr;
+        Node* next;
     };
 
     /* Generate a proxy for a set that allows operations relative to a particular
     sentinel value. */
     template <typename T, typename Func, typename... Args>
-    auto relative(T* sentinel, Func func, Args... args) {
+    auto relative(T* sentinel, Py_ssize_t offset, Func func, Args... args) {
+        // function pointer must accept a RelativeProxy* as its first argument
         using ReturnType = decltype(func(std::declval<RelativeProxy*>(), args...));
 
         // search for sentinel
@@ -556,8 +1231,8 @@ public:
             return nullptr;  // propagate
         }
 
-        // stack-allocate a temporary (memory-safe) proxy for the set
-        RelativeProxy proxy(this, sentinel_node);
+        // stack-allocate a temporary proxy for the set (memory-safe)
+        RelativeProxy proxy(this, sentinel_node, offset);
 
         // call function with proxy
         if constexpr (std::is_void_v<ReturnType>) {
@@ -579,8 +1254,8 @@ public:
 
 protected:
 
-    /* Allocate a new node for the item and append it to the list, discarding
-    it in the event of an error. */
+    /* Allocate a new node for the item and add it to the set, discarding it in
+    the event of an error. */
     inline void stage(PyObject* item, bool reverse) {
         // allocate a new node
         Node* curr = this->node(item);

@@ -10,9 +10,22 @@
 #include "node.h"  // has_prev<>
 
 
-// TODO: slice methods can use walk(), relative_junction(), and relative_neighbors()
-// to traverse the slice.  This might allow us to cut down on the complexity of
-// the slice methods.
+
+// TODO: what if the slice methods are implemented in a SliceProxy class similar to
+// RelativeProxy?  This would automatically compute the slice bounds, make them
+// inclusive, and get the overall length of the slice.  This removes some boilerplate
+// from the slice methods and makes them a bit easier to understand.  The proxy could
+// have an invalid() flag that indicates whether the slice is malformed.
+
+// view->slice(start, stop, step) -> SliceProxy
+
+// view.slice(1, 6, 2).get()
+// view.slice(1, 6, 2).set(items)
+// view.slice(1, 6, 2).del()
+
+// view->slice(1, 6, 2).execute(Slice::get)
+// view->slice(1, 6, 2).execute(Slice::set, [1, 2, 3])
+// view->slice(1, 6, 2).execute(Slice::del)
 
 
 /////////////////////////
