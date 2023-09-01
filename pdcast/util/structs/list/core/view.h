@@ -292,11 +292,21 @@ public:
 
     /* Lock the list for use in a multithreaded context.
 
-    This method returns a lock guard that controls the state of an internal mutex.  The
-    mutex is locked when the method is called and unlocked when the lock guard goes out
-    of scope.  Any operations in between are guaranteed to be thread-safe. */
+    This method returns a std::lock_guard that controls the state of an internal mutex.
+    The mutex is acquired when the method is called and unlocked when the guard goes
+    out of scope.  Any operations in between are guaranteed to be thread-safe. */
     std::lock_guard<std::mutex> lock() {
         return std::lock_guard<std::mutex>(thread_lock);
+    }
+
+    /* Lock the list for use in a multithreaded context.
+
+    This method returns a head-allocated std::lock_guard that can be manually deleted
+    later to release the mutex.  This is used to enable Pythonic locking from a context
+    manager, rather than always relying on C++-style RAII principles.  The normal
+    lock() method is generally safer and should almost always be preferred over this. */
+    std::lock_guard<std::mutex>* lock_context() {
+        return new std::lock_guard<std::mutex>(thread_lock);
     }
 
     /* Get the total memory consumed by the list (in bytes). */

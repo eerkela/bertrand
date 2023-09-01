@@ -9,7 +9,6 @@ from typing import Iterable, Iterator
 # respectively.
 
 
-
 # TODO: __getitem__() sometimes throws unexpected ValueErrors and occasionally
 # causes a segfault.
 
@@ -928,9 +927,64 @@ cdef class LinkedList:
         # if all elements are equal, the longer list is greater
         return len(self) >= len(other)
 
-    ###################################
-    ####    TYPE SPECIALIZATION    ####
-    ###################################
+    def __bool__(self) -> bool:
+        """Treat empty lists as Falsy in boolean logic.
+
+        Returns
+        -------
+        bool
+            Indicates whether the list is empty.
+        """
+        return bool(len(self))
+
+    def __str__(self):
+        """Return a standard string representation of the list.
+
+        Returns
+        -------
+        str
+            A string representation of the list.
+
+        Notes
+        -----
+        Creating a string representation of a list is O(n).
+        """
+        return f"[{', '.join(str(item) for item in self)}]"
+
+    def __repr__(self):
+        """Return an annotated string representation of the list.
+
+        Returns
+        -------
+        str
+            An annotated string representation of the list.
+
+        Notes
+        -----
+        Creating a string representation of a list is O(n).
+        """
+        prefix = f"{type(self).__name__}"
+
+        # append specialization if given
+        specialization = self.specialization
+        if specialization is not None:
+            prefix += f"[{repr(specialization)}]"
+
+        # abbreviate in order to avoid spamming the console
+        if len(self) > 64:
+            contents = ", ".join(repr(item) for item in self[:32])
+            contents += ", ..., "
+            contents += ", ".join(repr(item) for item in self[-32:])
+        else:
+            contents = ", ".join(repr(item) for item in self)
+
+        return f"{prefix}([{contents}])"
+
+    __hash__ = None  # mutable containers are not hashable
+
+    #############################
+    ####    EXTRA METHODS    ####
+    #############################
 
     @property
     def specialization(self) -> Any:
@@ -1131,9 +1185,39 @@ cdef class LinkedList:
             {"__init__": __init__, "specialize": specialize}
         )
 
-    ####################
-    ####    MISC    ####
-    ####################
+    def lock(self) -> ThreadGuard:
+        """Generate a context manager that temporarily locks a list for use in a
+        multithreaded environment.
+
+        Returns
+        -------
+        ThreadGuard
+            A Python-style context manager that acquires an internal mutex upon entering
+            a context block and releases it after exiting.  Any operations within the
+            context block are guaranteed to be atomic.
+
+        Notes
+        -----
+        By default, :class:`LinkedList`-based data structures are not considered to be
+        thread-safe.  Instead, they are optimized for maximum single-threaded
+        performance, and do not introduce any more overhead than is necessary.
+
+        Examples
+        --------
+        This method allows users to choose when and where to enforce thread-safety for
+        their specific use case.
+
+        .. doctest::
+
+            >>> l = LinkedList("abcdef")
+            >>> with l.lock():
+            >>>     # anything inside the context block is guaranteed to be atomic
+            >>>     l.append("x")
+            >>> 
+            >>> # anything outside the context block is not
+            >>> l.append("y")
+        """
+        return ThreadGuard(self)
 
     def nbytes(self) -> int:
         """The total memory consumption of the list in bytes.
@@ -1146,122 +1230,53 @@ cdef class LinkedList:
         """
         return self.view.nbytes()
 
-    __hash__ = None  # mutable containers are not hashable
 
-    def __bool__(self) -> bool:
-        """Treat empty lists as Falsy in boolean logic.
+#######################
+####    PRIVATE    ####
+#######################
+
+
+cdef class ThreadGuard:
+    """A context manager that enforces thread-safety within its context block.
+
+    This is basically just a wrapper around a heap-allocated `std::thread_guard`,
+    which is manually deleted upon exiting the context block.
+    """
+
+    def __cinit__(self, LinkedList parent):
+        self.context = parent.view.lock_context()  # acquire mutex
+
+    def __enter__(self):
+        return self  # enter context block
+
+    def locked(self) -> bool:
+        """Check if the :class:`ThreadGuard` is currently blocking access from other
+        threads.
 
         Returns
         -------
         bool
-            Indicates whether the list is empty.
+            ``True`` if this method is called from within the guard's context block.
+            ``False`` otherwise.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> l = LinkedList("abcdef")
+            >>> with l.lock() as thread_guard:
+            ...     print(thread_guard.locked())
+            True
+            >>> print(thread_guard.locked())
+            False
         """
-        return bool(len(self))
+        return self.context is not NULL
 
-    def __str__(self):
-        """Return a standard string representation of the list.
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.context is not NULL:  # release mutex
+            del self.context
+            self.context = NULL
 
-        Returns
-        -------
-        str
-            A string representation of the list.
-
-        Notes
-        -----
-        Creating a string representation of a list is O(n).
-        """
-        return f"[{', '.join(str(item) for item in self)}]"
-
-    def __repr__(self):
-        """Return an annotated string representation of the list.
-
-        Returns
-        -------
-        str
-            An annotated string representation of the list.
-
-        Notes
-        -----
-        Creating a string representation of a list is O(n).
-        """
-        prefix = f"{type(self).__name__}"
-
-        # append specialization if given
-        specialization = self.specialization
-        if specialization is not None:
-            prefix += f"[{repr(specialization)}]"
-
-        # abbreviate in order to avoid spamming the console
-        if len(self) > 64:
-            contents = ", ".join(repr(item) for item in self[:32])
-            contents += ", ..., "
-            contents += ", ".join(repr(item) for item in self[-32:])
-        else:
-            contents = ", ".join(repr(item) for item in self)
-
-        return f"{prefix}([{contents}])"
-
-
-#####################
-####    TESTS    ####
-#####################
-
-
-# TODO: migrate these to pytest.  In general, testing consists of comparing
-# the output from this data structure to the built-in list.
-
-
-def test_doubly_linked_list_getitem_slice():
-    l = list(range(20))
-    d = LinkedList(l)
-
-    import random
-    r = lambda low, high: random.randrange(low, high)
-
-    offset = len(d) - int(0.25 * len(d)) + 1
-    a, b = -offset, len(d) + offset
-    start, stop, step = r(a, b), r(a, b), r(-b, b)
-    if not step:
-        return
-
-    s1 = d[start:stop:step]
-    s2 = l[start:stop:step]
-
-    assert list(s1) == s2, (
-        f"{repr(s1)} != {s2}   <- {':'.join([str(x) for x in (start, stop, step)])}"
-    )
-
-
-def test_doubly_linked_list_setitem_slice():
-    l = list(range(20))
-    d = LinkedList(l)
-
-    import random
-    r = lambda low, high: random.randrange(low, high)
-
-    offset = len(d) - int(0.25 * len(d)) + 1
-    a, b = -offset, len(d) + offset
-    start, stop, step = r(a, b), r(a, b), r(-b, b)
-    if not step:
-        return
-
-    start, stop, step = slice(start, stop, step).indices(len(d))
-    stop -= (stop - start) % step or step  # make stop inclusive
-    expected_size = 1 + abs(stop - start) // abs(step)
-    if (step > 0 and stop < start) or (step < 0 and start < stop):
-        return
-
-    assign = [r(100, 200) for _ in range(expected_size)]
-
-    if step > 0:
-        stop += 1
-    else:
-        stop -= 1
-
-    d[start:stop:step] = assign
-    l[start:stop:step] = assign
-
-    assert list(d) == l, (
-        f"{repr(d)} != {l}   <- {':'.join([str(x) for x in (start, stop, step)])}"
-        f"    {assign}"
-    )
+    def __dealloc__(self):
+        if self.context is not NULL:
+            del self.context  # release mutex if __exit__ wasn't called for some reason

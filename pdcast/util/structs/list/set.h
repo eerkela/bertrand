@@ -252,9 +252,9 @@ public:
         );
     }
 
-    ///////////////////////////////////
-    ////    RELATIVE OPERATIONS    ////
-    ///////////////////////////////////
+    /////////////////////////////
+    ////    EXTRA METHODS    ////
+    /////////////////////////////
 
     /* Dispatch to the correct implementation of edge() for each variant. */
     inline Py_ssize_t distance(PyObject* item1, PyObject* item2) {
@@ -314,7 +314,7 @@ public:
             std::shared_ptr<VariantSet> variant,
             PyObject* sentinel,
             Py_ssize_t offset
-        ) : variant(variant), sentinel(sentinel), steps(offset)
+        ) : variant(variant), sentinel(sentinel), offset(offset)
         {
             Py_INCREF(this->sentinel);
         }
@@ -324,22 +324,8 @@ public:
             Py_DECREF(this->sentinel);
         }
 
-        // TODO: can't return nullptr from offset().  Have to use std::optional or
-        // something similar.
-
-        /* Builder-pattern method for assigning an offset from the RelativeProxy's
-        sentinel value at which to operate. */
-        inline RelativeProxy offset(Py_ssize_t steps) {
-            auto ref = strong_ref();
-            if (ref == nullptr) {
-                return nullptr;  // propagate
-            }
-
-            // return a new RelativeProxy with the updated offset
-            return RelativeProxy(ref, sentinel, steps);
-        }
-
-        /* Dispatch to the correct implementation of get_relative() for each variant. */
+        /* Dispatch to the correct implementation of Relative::get() for each
+        variant. */
         PyObject* get() {
             // get a strong reference to the VariantSet
             auto ref = strong_ref();
@@ -350,13 +336,154 @@ public:
             // dispatch to view.relative()
             return std::visit(
                 [&](auto& view) {
-                    return view.relative(sentinel, steps, Relative::get);
+                    return view.relative(sentinel, offset, Relative::get);
                 },
                 ref->variant
             );
         }
 
-        /* Dispatch to the correct implementation of move_relative() for each variant. */
+        /* Dispatch to the correct implementation of Relative::insert() for each
+        variant. */
+        void insert(PyObject* value) {
+            // get a strong reference to the VariantSet
+            auto ref = strong_ref();
+            if (ref == nullptr) {
+                return;  // propagate
+            }
+
+            std::visit(
+                [&](auto& view) {
+                    view.relative(sentinel, offset, Relative::insert, item);
+                },
+                ref->variant
+            );
+        }
+
+        /* Dispatch to the correct implementation of Relative::add() for each
+        variant. */
+        void add(PyObject* value) {
+            // get a strong reference to the VariantSet
+            auto ref = strong_ref();
+            if (ref == nullptr) {
+                return;  // propagate
+            }
+
+            std::visit(
+                [&](auto& view) {
+                    view.relative(sentinel, offset, Relative::add, item);
+                },
+                ref->variant
+            );
+        }
+
+        /* Dispatch to the correct implementation of Relative::extend() for each
+        variant. */
+        void extend(PyObject* items, bool reverse) {
+            // get a strong reference to the VariantSet
+            auto ref = strong_ref();
+            if (ref == nullptr) {
+                return;  // propagate
+            }
+
+            std::visit(
+                [&](auto& view) {
+                    view.relative(sentinel, offset, Relative::extend, items, reverse);
+                },
+                ref->variant
+            );
+        }
+
+        /* Dispatch to the correct implementation of Relative::update() for each
+        variant. */
+        void update(PyObject* items, bool reverse) {
+            // get a strong reference to the VariantSet
+            auto ref = strong_ref();
+            if (ref == nullptr) {
+                return;  // propagate
+            }
+
+            std::visit(
+                [&](auto& view) {
+                    view.relative(sentinel, offset, Relative::update, items, reverse);
+                },
+                ref->variant
+            );
+        }
+
+        /* Dispatch to the correct implementation of Relative::remove() for each
+        variant. */
+        void remove() {
+            // get a strong reference to the VariantSet
+            auto ref = strong_ref();
+            if (ref == nullptr) {
+                return;  // propagate
+            }
+
+            // dispatch to view.relative()
+            std::visit(
+                [&](auto& view) {
+                    view.relative(sentinel, offset, Relative::remove);
+                },
+                ref->variant
+            );
+        }
+
+        /* Dispatch to the correct implementation of Relative::discard() for each
+        variant. */
+        void discard() {
+            // get a strong reference to the VariantSet
+            auto ref = strong_ref();
+            if (ref == nullptr) {
+                return;  // propagate
+            }
+
+            // dispatch to view.relative()
+            std::visit(
+                [&](auto& view) {
+                    view.relative(sentinel, offset, Relative::discard);
+                },
+                ref->variant
+            );
+        }
+
+        /* Dispatch to the correct implementation of Relative::pop() for each
+        variant. */
+        PyObject* pop() {
+            // get a strong reference to the VariantSet
+            auto ref = strong_ref();
+            if (ref == nullptr) {
+                return nullptr;  // propagate
+            }
+
+            // dispatch to view.relative()
+            return std::visit(
+                [&](auto& view) {
+                    return view.relative(sentinel, offset, Relative::pop);
+                },
+                ref->variant
+            );
+        }
+
+        /* Dispatch to the correct implementation of Relative::clear() for each
+        variant. */
+        void clear(Py_ssize_t length) {
+            // get a strong reference to the VariantSet
+            auto ref = strong_ref();
+            if (ref == nullptr) {
+                return;  // propagate
+            }
+
+            // dispatch to view.relative()
+            std::visit(
+                [&](auto& view) {
+                    view.relative(sentinel, offset, Relative::clear, length);
+                },
+                ref->variant
+            );
+        }
+
+        /* Dispatch to the correct implementation of Relative::move() for each
+        variant. */
         void move(PyObject* value) {
             // get a strong reference to the VariantSet
             auto ref = strong_ref();
@@ -367,7 +494,7 @@ public:
             // dispatch to view.relative()
             std::visit(
                 [&](auto& view) {
-                    view.relative(sentinel, steps, Relative::move, value);
+                    view.relative(sentinel, offset, Relative::move, value);
                 },
                 ref->variant
             );
@@ -376,7 +503,7 @@ public:
     private:
         const std::weak_ptr<VariantSet> variant;
         PyObject* const sentinel;
-        const Py_ssize_t steps;
+        const Py_ssize_t offset;
 
         /* Generate a strong reference to the VariantSet. */
         std::shared_ptr<VariantSet> strong_ref() {
@@ -392,143 +519,15 @@ public:
     };
 
     /* Construct a RelativeProxy for relative operations within a linked set. */
-    inline RelativeProxy* relative(PyObject* sentinel, Py_ssize_t offset) {
-        // NOTE: using an internal shared_ptr to allow the VariantSet to be weakly
-        // referenced from the RelativeProxy.  If a set is destroyed while a
-        // RelativeProxy is still referencing it, then the proxy will start raising
-        // errors whenever it is accessed.
+    inline RelativeProxy relative(PyObject* sentinel, Py_ssize_t offset) {
         if (self == nullptr) {
             self = std::make_shared<VariantSet>(*this);
         }
-
-        // TODO: should probably return a new instance rather than using the new
-        // keyword.
-
-        return new RelativeProxy(self, sentinel, offset);
+        return RelativeProxy(self, sentinel, offset);
     }
-
-
-
-
-
-    /* Dispatch to the correct implementation of move_relative() for each variant. */
-    inline void move_relative(PyObject* item, PyObject* sentinel, Py_ssize_t offset) {
-        std::visit(
-            [&](auto& view) {
-                Ops::move_relative(&view, item, sentinel, offset);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of get_relative() for each variant. */
-    inline PyObject* get_relative(PyObject* sentinel, Py_ssize_t offset) {
-        return std::visit(
-            [&](auto& view) {
-                return Ops::get_relative(&view, sentinel, offset);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of insert_relative() for each variant. */
-    inline void insert_relative(PyObject* item, PyObject* sentinel, Py_ssize_t offset) {
-        std::visit(
-            [&](auto& view) {
-                Ops::insert_relative(&view, item, sentinel, offset);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of add_relative() for each variant. */
-    inline void add_relative(PyObject* item, PyObject* sentinel, Py_ssize_t offset) {
-        std::visit(
-            [&](auto& view) {
-                Ops::add_relative(&view, item, sentinel, offset);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of extend_relative() for each variant. */
-    inline void extend_relative(
-        PyObject* items,
-        PyObject* sentinel,
-        Py_ssize_t offset,
-        bool reverse
-    ) {
-        std::visit(
-            [&](auto& view) {
-                Ops::extend_relative(&view, items, sentinel, offset, reverse);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of update_relative() for each variant. */
-    inline void update_relative(
-        PyObject* items,
-        PyObject* sentinel,
-        Py_ssize_t offset,
-        bool reverse
-    ) {
-        std::visit(
-            [&](auto& view) {
-                Ops::update_relative(&view, items, sentinel, offset, reverse);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of remove_relative() for each variant. */
-    inline void remove_relative(PyObject* sentinel, Py_ssize_t offset) {
-        std::visit(
-            [&](auto& view) {
-                Ops::remove_relative(&view, sentinel, offset);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of discard_relative() for each variant. */
-    inline void discard_relative(PyObject* sentinel, Py_ssize_t offset) {
-        std::visit(
-            [&](auto& view) {
-                Ops::discard_relative(&view, sentinel, offset);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of pop_relative() for each variant. */
-    inline PyObject* pop_relative(PyObject* sentinel, Py_ssize_t offset) {
-        return std::visit(
-            [&](auto& view) {
-                return Ops::pop_relative(&view, sentinel, offset);
-            },
-            this->variant
-        );
-    }
-
-    /* Dispatch to the correct implementation of clear_relative() for each variant. */
-    inline void clear_relative(
-        PyObject* sentinel,
-        Py_ssize_t offset,
-        Py_ssize_t length
-    ) {
-        std::visit(
-            [&](auto& view) {
-                Ops::clear_relative(&view, sentinel, offset, length);
-            },
-            this->variant
-        );
-    }
-
 
 private:
-    std::shared_ptr<VariantSet> self;
-
+    std::shared_ptr<VariantSet> self;  // allows weak references in proxies
 };
 
 

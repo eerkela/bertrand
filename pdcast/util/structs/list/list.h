@@ -271,40 +271,6 @@ public:
         );
     }
 
-    /* Get the specialization of the variant view. */
-    inline PyObject* get_specialization() {
-        return std::visit(
-            [&](auto& view) {
-                PyObject* spec = view.specialization;
-                if (spec != nullptr) {
-                    Py_INCREF(spec);
-                }
-                return spec;
-            },
-            variant
-        );
-    }
-
-    /* Set the specialization of the variant view. */
-    inline void specialize(PyObject* spec) {
-        std::visit(
-            [&](auto& view) {
-                view.specialize(spec);
-            },
-            variant
-        );
-    }
-
-    /* Get the amount of memory being consumed by the view. */
-    inline size_t nbytes() {
-        return std::visit(
-            [&](auto& view) {
-                return view.nbytes();
-            },
-            variant
-        );
-    }
-
     /* Get the number of elements in the view. */
     inline size_t size() {
         return std::visit(
@@ -397,9 +363,63 @@ public:
         );
     }
 
-    /////////////////////////////////
-    ////    ITERATOR PROTOCOL    ////
-    /////////////////////////////////
+    /////////////////////////////
+    ////    EXTRA METHODS    ////
+    /////////////////////////////
+
+    /* Get the specialization of the variant view. */
+    inline PyObject* get_specialization() {
+        return std::visit(
+            [&](auto& view) {
+                PyObject* spec = view.specialization;
+                if (spec != nullptr) {
+                    Py_INCREF(spec);
+                }
+                return spec;
+            },
+            variant
+        );
+    }
+
+    /* Set the specialization of the variant view. */
+    inline void specialize(PyObject* spec) {
+        std::visit(
+            [&](auto& view) {
+                view.specialize(spec);
+            },
+            variant
+        );
+    }
+
+    /* Lock the list for use in a multithreaded context. */
+    inline std::lock_guard<std::mutex> lock() {
+        return std::visit(
+            [&](auto& view) {
+                return view.lock();
+            },
+            variant
+        );
+    }
+
+    /* Lock the list for use in a multithreaded context. */
+    inline std::lock_guard<std::mutex>* lock_context() {
+        return std::visit(
+            [&](auto& view) {
+                return view.lock_context();
+            },
+            variant
+        );
+    }
+
+    /* Get the amount of memory being consumed by the view. */
+    inline size_t nbytes() {
+        return std::visit(
+            [&](auto& view) {
+                return view.nbytes();
+            },
+            variant
+        );
+    }
 
     /* Check if the underlying view is doubly-linked. */
     inline bool doubly_linked() const {

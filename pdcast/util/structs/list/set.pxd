@@ -8,6 +8,7 @@ from .list cimport LinkedList, VariantList
 
 cdef extern from "set.h":
     cdef cppclass VariantSet(VariantList):
+        # constructors
         VariantSet(bint doubly_linked, Py_ssize_t max_size, PyObject* spec) except +
         VariantSet(
             PyObject* iterable,
@@ -16,6 +17,8 @@ cdef extern from "set.h":
             Py_ssize_t max_size,
             PyObject* spec
         ) except +
+
+        # set interface
         void add(PyObject* item, bint left) except *
         void discard(PyObject* item) except *
         int isdisjoint(PyObject* other) except -1
@@ -29,46 +32,29 @@ cdef extern from "set.h":
         void intersection_update(PyObject* items) except *
         void difference_update(PyObject* items) except *
         void symmetric_difference_update(PyObject* items) except *
+
+        # extra methods
         Py_ssize_t distance(PyObject* item1, PyObject* item2) except? MAX_SIZE_T
         void swap(PyObject* item1, PyObject* item2) except *
         void move(PyObject* item, Py_ssize_t steps) except *
         void move_to_index[T](PyObject* item, T index) except *
-        void move_relative(
-            PyObject* item,
-            PyObject* sentinel,
-            Py_ssize_t offset
-        ) except *
-        PyObject* get_relative(PyObject* sentinel, Py_ssize_t offset) except NULL
-        void insert_relative(
-            PyObject* item,
-            PyObject* sentinel,
-            Py_ssize_t offset
-        ) except *
-        void add_relative(
-            PyObject* item,
-            PyObject* sentinel,
-            Py_ssize_t offset
-        ) except *
-        void extend_relative(
-            PyObject* items,
-            PyObject* sentinel,
-            Py_ssize_t offset,
-            bint reverse
-        ) except *
-        void update_relative(
-            PyObject* items,
-            PyObject* sentinel,
-            Py_ssize_t offset,
-            bint reverse
-        ) except *
-        void remove_relative(PyObject* sentinel, Py_ssize_t offset) except *
-        void discard_relative(PyObject* sentinel, Py_ssize_t offset) except *
-        PyObject* pop_relative(PyObject* sentinel, Py_ssize_t offset) except NULL
-        void clear_relative(
-            PyObject* sentinel,
-            Py_ssize_t offset,
-            Py_ssize_t length
-        ) except *
+
+        # relative operations
+        cppclass RelativeProxy:
+            PyObject* get() except NULL
+            void insert(PyObject* value) except *
+            void add(PyObject* value) except *
+            void extend(PyObject* items, bint reverse) except *
+            void update(PyObject* items, bint reverse) except *
+            void remove() except *
+            void discard() except*
+            PyObject* pop() except NULL
+            void clear(Py_ssize_t length) except *
+            void move(PyObject* value) except *
+
+
+cdef class RelativeProxy:
+    cdef VariantSet.RelativeProxy proxy
 
 
 cdef class LinkedSet(LinkedList):
