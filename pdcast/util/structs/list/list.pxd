@@ -1,6 +1,7 @@
 """Cython headers for pdcast/util/structs/list/double.pyx"""
 from cpython.ref cimport PyObject
 from libcpp.memory cimport unique_ptr, make_unique
+from libcpp.optional cimport optional, nullopt, make_optional
 from libcpp.stack cimport stack
 
 from .base cimport MAX_SIZE_T, SingleNode, DoubleNode, Py_INCREF, Py_DECREF
@@ -63,6 +64,13 @@ cdef extern from "list.h":
         ) except *
         int contains(PyObject* item) except *
         size_t size()
+
+        cppclass SliceProxy:
+            VariantList* get_() except NULL
+            void set_(PyObject* items) except *
+            void delete_() except *
+
+        SliceProxy slice(long long start, long long stop, long long step)
 
         # extra methods
         PyObject* get_specialization()

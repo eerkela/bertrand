@@ -1,9 +1,9 @@
-
 // include guard prevents multiple inclusion
 #ifndef BERTRAND_STRUCTS_LIST_H
 #define BERTRAND_STRUCTS_LIST_H
 
 #include <cstddef>  // for size_t
+#include <optional>  // std::optional
 #include <utility>  // std::pair
 #include <variant>  // std::variant
 #include <Python.h>  // CPython API
@@ -43,13 +43,13 @@ using VariantView = std::variant<
     ListView<SingleNode, PreAllocator>,
     ListView<DoubleNode, DirectAllocator>,
     ListView<DoubleNode, FreeListAllocator>,
-    ListView<DoubleNode, PreAllocator>,
-    SetView<SingleNode, DirectAllocator>,
-    SetView<SingleNode, FreeListAllocator>,
-    SetView<SingleNode, PreAllocator>,
-    SetView<DoubleNode, DirectAllocator>,
-    SetView<DoubleNode, FreeListAllocator>,
-    SetView<DoubleNode, PreAllocator>
+    ListView<DoubleNode, PreAllocator>
+    // SetView<SingleNode, DirectAllocator>,
+    // SetView<SingleNode, FreeListAllocator>,
+    // SetView<SingleNode, PreAllocator>,
+    // SetView<DoubleNode, DirectAllocator>,
+    // SetView<DoubleNode, FreeListAllocator>,
+    // SetView<DoubleNode, PreAllocator>
     // DictView<SingleNode, DirectAllocator>,
     // DictView<SingleNode, FreeListAllocator>,
     // DictView<SingleNode, PreAllocator>,
@@ -82,7 +82,7 @@ public:
     /* Construct a new VariantList from an existing view.  This is called to
     construct a new `VariantList` from the output of `view.copy()` or `get_slice()`. */
     template <typename View>
-    VariantList(View&& view) {
+    VariantList(View&& view) : self(nullptr) {
         _doubly_linked = has_prev<typename View::Node>::value;
         variant = std::move(view);
     }
@@ -90,7 +90,7 @@ public:
     /* Construct an empty ListView to match the given template parameters.  This
     is called to construct a LinkedList from an initializer sequence. */
     VariantList(bool doubly_linked, Py_ssize_t max_size, PyObject* spec) :
-        _doubly_linked(doubly_linked)
+        _doubly_linked(doubly_linked), self(nullptr)
     {
         if (doubly_linked) {
             if (max_size < 0) {
@@ -115,7 +115,8 @@ public:
         bool reverse,
         Py_ssize_t max_size,
         PyObject* spec
-    ) : _doubly_linked(doubly_linked) {
+    ) : _doubly_linked(doubly_linked), self(nullptr)
+    {
         if (doubly_linked) {
             if (max_size < 0) {
                 variant = ListView<DoubleNode, DynamicAllocator>(
@@ -363,6 +364,119 @@ public:
         );
     }
 
+    /* A proxy object that weakly references a VariantList and exposes additional
+    methods for efficient operations on slices within the list. */
+    class SliceProxy {
+    public:
+
+        /* Construct a new SliceProxy from a VariantList and a slice. */
+        SliceProxy(
+            std::weak_ptr<VariantList> variant,
+            long long start,
+            long long stop,
+            long long step
+        ) : variant(variant), start(start), stop(stop), step(step)
+        {}
+
+        /* Dispatch to the correct implementation of Slice::get() for each variant. */
+        VariantList* get_() {
+            // get strong reference to variant
+            auto ref = strong_ref();
+            if (ref == nullptr) {
+                return nullptr;  // propagate
+            }
+
+            // dispatch to proxy
+            return std::visit(
+                [&](auto& view) -> VariantList* {
+                    auto proxy = view.slice(start, stop, step);
+                    if (!proxy.has_value()) {
+                        return nullptr;  // propagate errors
+                    }
+                    auto result = Slice::get_(&(proxy.value()));
+                    if (!result.has_value()) {
+                        return nullptr;  // propagate errors
+                    }
+                    return new VariantList(std::move(result.value()));
+                },
+                ref->variant
+            );
+        }
+
+        // /* Dispatch to the correct implementation of Slice::set() for each variant. */
+        // void set_(PyObject* items) {
+        //     // get strong reference to variant
+        //     auto ref = strong_ref();
+        //     if (ref == nullptr) {
+        //         return;  // propagate
+        //     }
+
+        //     // dispatch to proxy
+        //     std::visit(
+        //         [&](auto& view) {
+        //             auto proxy = view.slice(start, stop, step);
+        //             proxy.execute(Slice::set, items);
+        //         },
+        //         ref->variant
+        //     );
+        // }
+
+        /* Dispatch to the correct implementation of Slice::del() for each variant. */
+        void delete_() {
+            // get strong reference to variant
+            auto ref = strong_ref();
+            if (ref == nullptr) {
+                return;  // propagate
+            }
+
+            // dispatch to proxy
+            std::visit(
+                [&](auto& view) {
+                    auto proxy = view.slice(start, stop, step);
+                    if (!proxy.has_value()) {
+                        return;  // propagate error
+                    }
+                    Slice::delete_(&(proxy.value()));
+                },
+                ref->variant
+            );
+        }
+
+    private:
+        std::weak_ptr<VariantList> variant;
+        long long start;
+        long long stop;
+        long long step;
+
+        /* Generate a strong reference to the VariantList. */
+        std::shared_ptr<VariantList> strong_ref() {
+            auto strong_ref = variant.lock();
+            if (strong_ref == nullptr) {
+                PyErr_SetString(
+                    PyExc_ReferenceError,
+                    "SliceProxy references a list that no longer exists"
+                );
+            }
+            return strong_ref;
+        }
+
+    };
+
+    /* Construct a SliceProxy for slice operations within a linked list. */
+    inline SliceProxy slice(
+        long long start,
+        long long stop,
+        long long step = 1
+    ) {
+        // lazily initialize self reference
+        if (self == nullptr) {
+            // NOTE: we use a custom deleter to prevent the shared_ptr from
+            // double freeing the VariantList when it goes out of scope.
+            self = std::shared_ptr<VariantList>(this, [](VariantList*) {});
+        }
+        return SliceProxy(std::weak_ptr<VariantList>(self), start, stop, step);
+    }
+
     /////////////////////////////
     ////    EXTRA METHODS    ////
     /////////////////////////////
@@ -497,6 +611,7 @@ public:
 protected:
     VariantView variant;
     bool _doubly_linked;
+    std::shared_ptr<VariantList> self;  // allows weak references in proxies
 };
 
 

@@ -172,6 +172,49 @@ namespace Ops {
 }
 
 
+namespace Slice {
+
+    /* Extract a slice from a linked list, set, or dictionary. */
+    template <typename SliceProxy>
+    auto get_(SliceProxy* slice) -> std::optional<typename SliceProxy::View> {
+        using View = typename SliceProxy::View;
+        using Node = typename SliceProxy::Node;
+
+        // create a new view to hold the slice
+        PyObject* specialization = slice->view->specialization;
+        Py_ssize_t max_size = slice->view->max_size; 
+        if (max_size >= 0) {
+            max_size = static_cast<Py_ssize_t>(slice->length);
+        }
+
+        // allocate a new view to hold the slice
+        View result(max_size, specialization);
+
+        // copy nodes from original view into result
+        for (auto iter = slice->begin(), end = slice->end(); iter != end; ++iter) {
+            Node* copy = result.copy(*iter);
+            if (copy == nullptr) {  // error during copy()
+                return std::nullopt;  // propagate error
+            }
+
+            // link to slice
+            if (slice->reverse) {
+                result.link(nullptr, copy, result.head);
+            } else {
+                result.link(result.tail, copy, nullptr);
+            }
+            if (PyErr_Occurred()) {
+                result.recycle(copy);  // clean up staged node
+                return std::nullopt;  // propagate error
+            }
+        }
+
+        return std::optional<View>(std::move(result));
+    }
+
+}
+
+
 ///////////////////////
 ////    PRIVATE    ////
 ///////////////////////

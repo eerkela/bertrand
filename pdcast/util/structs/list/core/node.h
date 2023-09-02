@@ -456,8 +456,14 @@ struct Threaded : public NodeType {
         return result;
     }
 
+    // NOTE: prev() is conditionally compiled based on whether the templated node type
+    // is doubly-linked (i.e. has a prev() method).  This is done using SFINAE.
+
     /* Access the previous node in the list. */
-    inline Node* prev() {
+    inline auto prev() -> std::enable_if_t<
+        std::is_same_v<decltype(std::declval<NodeType>().prev()), NodeType*>,
+        Node*
+    > {
         Node* result = static_cast<Node*>(NodeType::prev());
         if (result != nullptr) {
             result->mutex.lock();  // lock the previous node's mutex on access

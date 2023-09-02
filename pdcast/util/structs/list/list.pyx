@@ -540,11 +540,22 @@ cdef class LinkedList:
         single iteration and stops as soon as the slice is complete.
         """
         cdef Py_ssize_t start, stop, step
+        # cdef long long start, stop, step
 
         # support slicing
         if isinstance(key, slice):
             start, stop, step = key.indices(self.view.size())
             return LinkedList.from_view(self.view.get_slice(start, stop, step))
+            # return LinkedList.from_view(self.view.slice(start, stop, step).get_())
+
+        # l = LinkedList("abcdef")
+        # l[5:2:-2]
+        # LinkedList(['f', 'd'])
+
+        # TODO: using the proxy leaves off the 'd'.  Why?
+
+        # TODO: going to have to compare the indices of the SliceProxy to the current
+        # implementation to see if there are any differences.
 
         # index directly
         return <object>self.view.get_index(<PyObject*>key)
@@ -628,12 +639,13 @@ cdef class LinkedList:
         values in a single iteration and stops as soon as the slice is
         complete.
         """
-        cdef Py_ssize_t start, stop, step
+
+        cdef long long start, stop, step
 
         # support slicing
         if isinstance(key, slice):
             start, stop, step = key.indices(self.view.size())
-            self.view.delete_slice(start, stop, step)
+            self.view.slice(start, stop, step).delete_()
 
         # index directly
         else:

@@ -1,4 +1,3 @@
-
 // include guard prevents multiple inclusion
 #ifndef BERTRAND_STRUCTS_SET_H
 #define BERTRAND_STRUCTS_SET_H
@@ -41,13 +40,11 @@ public:
     construct a new `VariantSet` from the output of `SetView.copy()` or
     `get_slice()`. */
     template <typename View>
-    VariantSet(View&& view) : Base(view), self(nullptr) {}
+    VariantSet(View&& view) : Base(view) {}
 
     /* Construct an empty SetView to match the given template parameters.  This
     is called during `LinkedSet.__init__()` when no iterable is given. */
-    VariantSet(bool doubly_linked, Py_ssize_t max_size, PyObject* spec) :
-        self(nullptr)
-    {
+    VariantSet(bool doubly_linked, Py_ssize_t max_size, PyObject* spec) {
         if (doubly_linked) {
             if (max_size < 0) {
                 this->variant = SetView<DoubleNode, DynamicAllocator>(max_size, spec);
@@ -507,14 +504,11 @@ public:
 
         /* Generate a strong reference to the VariantSet. */
         std::shared_ptr<VariantSet> strong_ref() {
-            // NOTE: since the proxy maintains a weak reference to the VariantSet that
-            // spawned it, the VariantSet can be deleted out from underneath it.  In
-            // this case
             auto strong_ref = variant.lock();
             if (strong_ref == nullptr) {
                 PyErr_SetString(
                     PyExc_ReferenceError,
-                    "proxy references a set that no longer exists"
+                    "RelativeProxy references a set that no longer exists"
                 );
             }
             return strong_ref;
@@ -524,14 +518,11 @@ public:
     /* Construct a RelativeProxy for relative operations within a linked set. */
     inline RelativeProxy relative(PyObject* sentinel, Py_ssize_t offset) {
         // lazily initialize self pointer
-        if (self == nullptr) {
-            self = std::make_shared<VariantSet>(*this);
+        if (this->self == nullptr) {
+            this->self = std::make_shared<VariantSet>(*this);
         }
-        return RelativeProxy(self, sentinel, offset);
+        return RelativeProxy(this->self, sentinel, offset);
     }
-
-private:
-    std::shared_ptr<VariantSet> self;  // allows weak references in proxies
 };
 
 

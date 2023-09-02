@@ -78,6 +78,27 @@ namespace Ops {
 }
 
 
+namespace Slice {
+
+    /* Delete a slice from a linked list, set, or dictionary. */
+    template <typename SliceProxy>
+    void delete_(SliceProxy* slice) {
+        using Node = typename SliceProxy::Node;
+        using View = typename SliceProxy::View;
+
+        // retrieve underlying view
+        View* view = slice->view;
+
+        // recycle every node in slice
+        for (auto iter = slice->begin(1), end = slice->end(); iter != end; ++iter) {
+            Node* node = iter.remove();
+            view->recycle(node);
+        }
+    }
+
+}
+
+
 ///////////////////////
 ////    PRIVATE    ////
 ///////////////////////

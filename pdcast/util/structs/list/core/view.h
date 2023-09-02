@@ -344,14 +344,14 @@ public:
         using Node = View::Node;
 
         View* view;
-        long long const start;  // original inputs
-        long long const stop;
-        long long const step;
-        size_t const first;  // normalized and chosen to minimize total iterations
-        size_t const last;
-        size_t const abs_step;
-        size_t const length;
-        bool const reverse;  // accounts for singly-/doubly-linked lists
+        const long long start;  // original inputs
+        const long long stop;
+        const long long step;
+        size_t first;  // normalized and chosen to minimize total iterations
+        size_t last;
+        size_t abs_step;
+        size_t length;
+        bool reverse;  // accounts for singly-/doubly-linked lists
 
         /* Construct a new SliceProxy for the list. */
         SliceProxy(View* view, long long start, long long stop, long long step) :
@@ -381,62 +381,45 @@ public:
             return length == 0;
         }
 
-        /* An iterator  */
-        template <typename ItemType>
+        /* An iterator that traverses through all the nodes that are contained within
+        a slice. */
         class SliceIterator {
         public:
             // iterator tags for std::iterator_traits
             using iterator_category     = std::forward_iterator_tag;
             using difference_type       = std::ptrdiff_t;
-            using value_type            = ItemType;
-            using pointer               = ItemType*;
-            using reference             = ItemType&;
+            using value_type            = Node*;
+            using pointer               = Node**;
+            using reference             = Node*&;
 
             /* Get an iterator to the start of the slice. */
-            SliceIterator(Node* source, size_t step, size_t length, bool backward) :
-                step(step), index(0), length(length), backward(backward)
+            SliceIterator(
+                View* view,
+                Node* source,
+                size_t step,
+                size_t length,
+                bool backward
+            ) :
+                view(view), step(step), index(0), length(length), backward(backward)
             {
                 init_from_source(source);
             }
 
             /* Get an iterator to terminate the slice. */
-            SliceIterator(size_t length) :
-                step(0), index(length), length(length), backward(false)
+            SliceIterator(View* view, size_t length) :
+                view(view), step(0), index(length - 1), length(length), backward(false)
             {}
 
             /* Dereference the iterator. */
-            inline ItemType operator*() const {
-                using junction = std::pair<Node*, Node*>;
-                using neighbors = std::tuple<Node*, Node*, Node*>;
-
-                // return only the current node (Slice::get())
-                if constexpr (std::is_same_v<ItemType, Node*>) {
-                    return curr;
-
-                // return the previous and current nodes (2nd loop of Slice::set())
-                } else if constexpr (std::is_same_v<ItemType, junction>) {
-                    if constexpr (has_prev<Node>::value) {
-                        if (backward) {  // backward traversal
-                            return std::make_pair(curr, next);
-                        }
-                    }
-                    return std::make_pair(prev, curr);  // forward traversal
-
-                // return the previous, current, and next nodes (Slice::del())
-                } else if constexpr (std::is_same_v<ItemType, neighbors>) {
-                    return std::make_tuple(prev, curr, next);
-
-                // error - invalid ItemType
-                } else {
-                    throw std::runtime_error("invalid ItemType for SliceIterator");
-                }
+            inline Node* operator*() const {
+                return curr;
             }
 
             /* Prefix increment. */
             inline SliceIterator& operator++() {
                 ++index;
-                if (index == length) {
-                    return *this;  // don't jump on last iteration
+                if (index == length) {  // don't jump on last iteration
+                    return *this;
                 }
 
                 if constexpr (has_prev<Node>::value) {
@@ -464,10 +447,9 @@ public:
                 return index != other.index;
             }
 
-            /* Remove the node from the current index in the slice. */
+            /* Remove the node at the current index in the slice. */
             Node* remove() {
-                // unlink node from list
-                Node* result = curr;
+                Node* removed = curr;
                 view->unlink(prev, curr, next);
 
                 // update iterator
@@ -477,7 +459,7 @@ public:
                         if (prev != nullptr) {
                             prev = static_cast<Node*>(prev->prev);
                         }
-                        return result;
+                        return removed;
                     }
                 }
 
@@ -486,7 +468,7 @@ public:
                 if (next != nullptr) {
                     next = static_cast<Node*>(next->next);
                 }
-                return result;
+                return removed;
             }
 
             /* Insert a node at the current index in the slice. */
@@ -505,6 +487,7 @@ public:
             }
 
         private:
+            View* view;
             Node* prev;
             Node* curr;
             Node* next;
@@ -523,6 +506,7 @@ public:
                         } else {
                             curr = static_cast<Node*>(source->prev);
                         }
+                        prev = static_cast<Node*>(curr->prev);
                         return;
                     }
                 }
@@ -534,27 +518,33 @@ public:
                 } else {
                     curr = static_cast<Node*>(source->next);
                 }
+                next = static_cast<Node*>(curr->next);
             }
 
         };
 
         /* Return an iterator to the start of the slice. */
-        template <typename ItemType>
-        inline SliceIterator<ItemType> begin(bool zero_index = true) const {
+        inline SliceIterator begin(size_t skip = 0) const {
+            // return an empty iterator if the slice is empty
+            if (empty()) {
+                return SliceIterator(view, length);
+            }
+
+            // Otherwise, return an iterator to the first node in the slice
+            if (skip == 0) {
+                return SliceIterator(view, source, abs_step, length, first > last);
+            }
+
             // NOTE: if zero_index = false, then the iterator will implicitly skip
             // a single step at each iteration.  This is useful for the removal loops
             // in Slice::set() and Slice::del(), since deleting a node implicitly
             // advances the iterator by one step.
-            if (zero_index) {
-                return SliceIterator<ItemType>(source, abs_step, length, first > last);
-            }
-            return SliceIterator<ItemType>(source, abs_step - 1, length, first > last);
+            return SliceIterator(view, source, abs_step - skip, length, first > last);
         }
 
         /* Return an iterator to the end of the slice. */
-        template <typename ItemType>
-        inline SliceIterator<ItemType> end() {
-            return SliceIterator<ItemType>(length);
+        inline SliceIterator end() {
+            return SliceIterator(view, length);
         }
 
     private:
@@ -643,59 +633,24 @@ public:
     };
 
     /* Generate a proxy for the list that references a particular slice. */
-    template <typename T>
     std::optional<SliceProxy> slice(
-        std::optional<T> start = std::nullopt,
-        std::optional<T> stop = std::nullopt,
-        std::optional<T> step = std::nullopt
+        long long start,
+        long long stop,
+        long long step = 1
     ) {
-        long long _start;
-        long long _stop;
-        long long _step;
-
-        // parse step size
-        if (!step.has_value()) {
-            _step = 1;
-        } else {
-            _step = static_cast<long long>(step.value());
-            if (_step == 0) {
-                PyErr_SetString(PyExc_ValueError, "slice step cannot be zero");
-                return std::nullopt;
-            }
+        // check for invalid step
+        if (step == 0) {
+            PyErr_SetString(PyExc_ValueError, "slice step cannot be zero");
+            return std::nullopt;
         }
 
-        // parse start index
-        if (!start.has_value()) {
-            if (step > 0) {
-                _start = 0;
-            } else {
-                _start = static_cast<long long>(size) - 1;
-            }
-        } else {
-            std::optional<size_t> norm = index(start.value(), true);
-            if (!norm.has_value()) {
-                return std::nullopt;
-            }
-            _start = static_cast<long long>(norm.value());
-        }
-
-        // parse stop index
-        if (!stop.has_value()) {
-            if (step > 0) {
-                _stop = static_cast<long long>(size);
-            } else {
-                _stop = -1;
-            }
-        } else {
-            std::optional<size_t> norm = index(stop.value(), true);
-            if (!norm.has_value()) {
-                return std::nullopt;
-            }
-            _stop = static_cast<long long>(norm.value());
-        }
+        // normalize start/stop indices
+        // NOTE: because truncate = true, index() will never return an error
+        start = static_cast<long long>(index(start, true).value());
+        stop = static_cast<long long>(index(stop, true).value());
 
         // create proxy
-        return SliceProxy(this, _start, _stop, _step);
+        return std::make_optional(SliceProxy(this, start, stop, step));
     }
 
     /* Enforce strict type checking for elements of this list. */
@@ -992,6 +947,26 @@ public:
             view(view), sentinel(sentinel), offset(offset)
         {}
 
+        // TODO: relative() could just return a RelativeProxy by value, which would
+        // be deleted as soon as it falls out of scope.  This means we create a new
+        // proxy every time a variant method is called, but we can reuse them in a
+        // C++ context.
+
+        /* Execute a function with the RelativeProxy as its first argument. */
+        template <typename Func, typename... Args>
+        auto execute(Func func, Args... args) {
+            // function pointer must accept a RelativeProxy* as its first argument
+            using ReturnType = decltype(func(std::declval<RelativeProxy*>(), args...));
+
+            // call function with proxy
+            if constexpr (std::is_void_v<ReturnType>) {
+                func(this, args...);
+            } else {
+                return func(this, args...);
+            }
+        }
+
+
         // TODO: these could maybe just get the proxy's curr(), prev(), and next()
         // nodes, respectively.  We can then derive the other nodes from whichever one
         // is populated.  For example, if we've already found and cached the prev()
@@ -1185,29 +1160,6 @@ public:
             }
             next = static_cast<Node*>(temp->next);
             return std::make_tuple(prev, temp, next);
-        }
-
-
-        // TODO: relative() could just return a RelativeProxy by value, which would
-        // be deleted as soon as it falls out of scope.  This means we create a new
-        // proxy every time a variant method is called, but we can reuse them in a
-        // C++ context.
-
-        // TODO: index() can do the same thing for IndexProxy, and same with slice()
-        // and SliceProxy.
-
-        /* Execute a function with the RelativeProxy as its first argument. */
-        template <typename Func, typename... Args>
-        auto execute(Func func, Args... args) {
-            // function pointer must accept a RelativeProxy* as its first argument
-            using ReturnType = decltype(func(std::declval<RelativeProxy*>(), args...));
-
-            // call function with proxy
-            if constexpr (std::is_void_v<ReturnType>) {
-                func(this, args...);
-            } else {
-                return func(this, args...);
-            }
         }
 
     private:
