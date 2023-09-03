@@ -20,17 +20,17 @@ namespace Ops {
 
     /* Get the value at a particular index of a linked list, set, or dictionary. */
     template <typename View, typename T>
-    PyObject* get_index(View* view, T index) {
+    PyObject* get_index(View& view, T index) {
         using Node = typename View::Node;
 
         // allow python-style negative indexing + boundschecking
-        size_t norm_index = normalize_index(index, view->size, false);
+        size_t norm_index = normalize_index(index, view.size, false);
         if (norm_index == MAX_SIZE_T && PyErr_Occurred()) {
             return nullptr;  // propagate error
         }
 
         // get node at index
-        Node* curr = node_at_index(view, view->head, norm_index);
+        Node* curr = node_at_index(&view, view.head, norm_index);
 
         // return a new reference to the node's value
         Py_INCREF(curr->value);
@@ -40,7 +40,7 @@ namespace Ops {
     /* Get a value from a linked set or dictionary relative to a given sentinel
     value. */
     template <typename View>
-    PyObject* get_relative(View* view, PyObject* sentinel, Py_ssize_t offset) {
+    PyObject* get_relative(View& view, PyObject* sentinel, Py_ssize_t offset) {
         using Node = typename View::Node;
 
         // ensure offset is nonzero
@@ -52,7 +52,7 @@ namespace Ops {
         }
 
         // search for sentinel
-        Node* curr = view->search(sentinel);
+        Node* curr = view.search(sentinel);
         if (curr == nullptr) {  // sentinel not found
             PyErr_Format(PyExc_KeyError, "%R is not contained in the set", sentinel);
             return nullptr;
@@ -88,7 +88,7 @@ namespace Ops {
 
         // Otherwise, we have to start from the head and walk forward using a 2-pointer
         // approach.
-        Node* lookahead = view->head;
+        Node* lookahead = view.head;
         for (Py_ssize_t i = 0; i > offset; i--) {  // advance lookahead to offset
             lookahead = static_cast<Node*>(lookahead->next);
             if (lookahead == curr) {
@@ -98,7 +98,7 @@ namespace Ops {
         }
 
         // advance both pointers until lookahead hits the end of the list
-        Node* temp = view->head;
+        Node* temp = view.head;
         while (lookahead != curr) {
             temp = static_cast<Node*>(temp->next);
             lookahead = static_cast<Node*>(lookahead->next);
@@ -119,8 +119,8 @@ namespace Slice {
         using Node = typename SliceProxy::Node;
 
         // allocate a new view to hold the slice
-        PyObject* specialization = slice.view()->specialization;
-        Py_ssize_t max_size = slice.view()->max_size; 
+        PyObject* specialization = slice.view().specialization;
+        Py_ssize_t max_size = slice.view().max_size; 
         if (max_size >= 0) {
             max_size = static_cast<Py_ssize_t>(slice.length());
         }

@@ -15,7 +15,7 @@ namespace Ops {
     /* Get the index of an item within a linked list. */
     template <typename NodeType, template <typename> class Allocator, typename T>
     size_t index(
-        ListView<NodeType, Allocator>* view,
+        ListView<NodeType, Allocator>& view,
         PyObject* item,
         T start,
         T stop
@@ -26,17 +26,17 @@ namespace Ops {
 
         // allow python-style negative indexing + boundschecking
         std::pair<size_t, size_t> bounds = normalize_bounds(
-            start, stop, view->size, true
+            start, stop, view.size, true
         );
 
         // NOTE: if start index is closer to tail and the list is doubly-linked,
         // we can iterate from the tail to save time.
         if constexpr (has_prev<Node>::value) {
-            if (bounds.first > view->size / 2) {
-                curr = view->tail;
+            if (bounds.first > view.size / 2) {
+                curr = view.tail;
 
                 // skip to stop index
-                for (idx = view->size - 1; idx > bounds.second; idx--) {
+                for (idx = view.size - 1; idx > bounds.second; idx--) {
                     curr = static_cast<Node*>(curr->prev);
                 }
 
@@ -70,7 +70,7 @@ namespace Ops {
         }
 
         // NOTE: otherwise, we iterate forward from the head
-        curr = view->head;
+        curr = view.head;
         for (idx = 0; idx < bounds.first; idx++) {  // skip to start index
             curr = static_cast<Node*>(curr->next);
         }
@@ -97,23 +97,23 @@ namespace Ops {
 
     /* Get the index of an item within a linked set or dictionary. */
     template <typename View, typename T>
-    size_t index(View* view, PyObject* item, T start, T stop) {
+    size_t index(View& view, PyObject* item, T start, T stop) {
         using Node = typename View::Node;
 
         // allow python-style negative indexing + boundschecking
         std::pair<size_t, size_t> bounds = normalize_bounds(
-            start, stop, view->size, true
+            start, stop, view.size, true
         );
 
         // search for item in hash table
-        Node* node = view->search(item);
+        Node* node = view.search(item);
         if (node == nullptr) {
             PyErr_Format(PyExc_ValueError, "%R is not in the set", item);
             return MAX_SIZE_T;
         }
 
         // skip to start index
-        Node* curr = view->head;
+        Node* curr = view.head;
         size_t idx;
         for (idx = 0; idx < bounds.first; idx++) {
             if (curr == node) {  // item exists, but comes before range
@@ -139,16 +139,16 @@ namespace Ops {
 
     /* Get the linear distance between two values in a linked set or dictionary. */
     template <typename View>
-    Py_ssize_t distance(View* view, PyObject* item1, PyObject* item2) {
+    Py_ssize_t distance(View& view, PyObject* item1, PyObject* item2) {
         using Node = typename View::Node;
 
         // search for nodes in hash table
-        Node* node1 = view->search(item1);
+        Node* node1 = view.search(item1);
         if (node1 == nullptr) {
             PyErr_Format(PyExc_KeyError, "%R is not in the set", item1);
             return 0;
         }
-        Node* node2 = view->search(item2);
+        Node* node2 = view.search(item2);
         if (node2 == nullptr) {
             PyErr_Format(PyExc_KeyError, "%R is not in the set", item2);
             return 0;
@@ -163,7 +163,7 @@ namespace Ops {
         Py_ssize_t idx = 0;
         Py_ssize_t index1 = -1;
         Py_ssize_t index2 = -1;
-        Node* curr = view->head;
+        Node* curr = view.head;
         while (true) {
             if (curr == node1) {
                 index1 = idx;

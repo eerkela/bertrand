@@ -18,12 +18,12 @@ namespace Ops {
 
     /* Insert an item into a linked list, set, or dictionary at the given index. */
     template <typename View, typename T>
-    inline void insert(View* view, T index, PyObject* item) {
+    inline void insert(View& view, T index, PyObject* item) {
         using Node = typename View::Node;
 
         // get neighboring nodes at index
-        size_t idx = normalize_index(index, view->size, true);
-        std::pair<Node*, Node*> neighbors = junction(view, view->head, idx);
+        size_t idx = normalize_index(index, view.size, true);
+        std::pair<Node*, Node*> neighbors = junction(&view, view.head, idx);
 
         // insert node between neighbors
         _insert_between(view, neighbors.first, neighbors.second, item, false);
@@ -55,14 +55,14 @@ namespace Relative {
 /* Attempt to insert a node between the left and right neighbors. */
 template <typename View, typename Node>
 void _insert_between(
-    View* view,
+    View& view,
     Node* left,
     Node* right,
     PyObject* item,
     bool update
 ) {
     // allocate a new node
-    Node* curr = view->node(item);
+    Node* curr = view.node(item);
     if (curr == nullptr) {
         return;  // propagate error
     }
@@ -70,7 +70,7 @@ void _insert_between(
     // check if we should update an existing node
     if constexpr (is_setlike<View>::value) {
         if (update) {
-            Node* existing = view->search(curr);
+            Node* existing = view.search(curr);
             if (existing != nullptr) {  // item already exists
                 if constexpr (has_mapped<Node>::value) {
                     // update mapped value
@@ -78,16 +78,16 @@ void _insert_between(
                     Py_INCREF(curr->mapped);
                     existing->mapped = curr->mapped;
                 }
-                view->recycle(curr);
+                view.recycle(curr);
                 return;
             }
         }
     }
 
     // insert node between neighbors
-    view->link(left, curr, right);
+    view.link(left, curr, right);
     if (PyErr_Occurred()) {
-        view->recycle(curr);  // clean up staged node before propagating
+        view.recycle(curr);  // clean up staged node before propagating
     }
 }
 

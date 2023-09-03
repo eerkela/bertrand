@@ -14,24 +14,24 @@ namespace Ops {
 
     /* Delete the value at a particular index of a linked list, set, or dictionary. */
     template <typename View, typename T>
-    void delete_index(View* view, T index) {
+    void delete_index(View& view, T index) {
         using Node = typename View::Node;
 
         // allow python-style negative indexing + boundschecking
-        size_t idx = normalize_index(index, view->size, false);
+        size_t idx = normalize_index(index, view.size, false);
         if (idx == MAX_SIZE_T && PyErr_Occurred()) {
             return;  // propagate error
         }
 
         // get neighbors at index
-        std::tuple<Node*, Node*, Node*> bounds = neighbors(view, view->head, idx);
+        std::tuple<Node*, Node*, Node*> bounds = neighbors(&view, view.head, idx);
         Node* prev = std::get<0>(bounds);
         Node* curr = std::get<1>(bounds);
         Node* next = std::get<2>(bounds);
 
         // unlink and deallocate node
-        view->unlink(prev, curr, next);
-        view->recycle(curr);
+        view.unlink(prev, curr, next);
+        view.recycle(curr);
     }
 
 }
@@ -52,7 +52,7 @@ namespace Slice {
         // recycle every node in slice
         for (auto iter = slice.begin(1), end = slice.end(); iter != end; ++iter) {
             Node* node = iter.remove();
-            slice.view()->recycle(node);
+            slice.view().recycle(node);
         }
     }
 

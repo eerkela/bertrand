@@ -16,12 +16,12 @@ namespace Ops {
 
     /* Remove the first occurrence of an item from a linked list. */
     template <typename NodeType, template <typename> class Allocator>
-    void remove(ListView<NodeType, Allocator>* view, PyObject* item) {
+    void remove(ListView<NodeType, Allocator>& view, PyObject* item) {
         using Node = typename ListView<NodeType, Allocator>::Node;
 
         // find the node to remove
         Node* prev = nullptr;
-        Node* curr = view->head;
+        Node* curr = view.head;
         while (curr != nullptr) {
             Node* next = static_cast<Node*>(curr->next);
 
@@ -30,8 +30,8 @@ namespace Ops {
             if (comp == -1) {  // comparison raised an exception
                 return;  // propagate
             } else if (comp == 1) {  // found a match
-                view->unlink(prev, curr, next);
-                view->recycle(curr);
+                view.unlink(prev, curr, next);
+                view.recycle(curr);
                 return;
             }
 
@@ -46,14 +46,14 @@ namespace Ops {
 
     /* Remove an item from a linked set or dictionary. */
     template <typename View>
-    inline void remove(View* view, PyObject* item) {
+    inline void remove(View& view, PyObject* item) {
         _drop_setlike(view, item, true);  // propagate errors
     }
 
     /* Remove an item from a linked set or dictionary relative to a given sentinel
     value. */
     template <typename View>
-    inline void remove_relative(View* view, PyObject* sentinel, Py_ssize_t offset) {
+    inline void remove_relative(View& view, PyObject* sentinel, Py_ssize_t offset) {
         _drop_relative(view, sentinel, offset, true);  // propagate errors
     }
 
@@ -71,11 +71,11 @@ namespace Ops {
 /* Implement both remove() and discard() for sets and dictionaries depending on error
 handling flag. */
 template <typename View>
-void _drop_setlike(View* view, PyObject* item, bool raise) {
+void _drop_setlike(View& view, PyObject* item, bool raise) {
     using Node = typename View::Node;
 
     // search for node
-    Node* curr = view->search(item);
+    Node* curr = view.search(item);
     if (curr == nullptr) {  // item not found
         if (raise) {
             PyErr_Format(PyExc_KeyError, "%R not in set", item);
@@ -93,7 +93,7 @@ void _drop_setlike(View* view, PyObject* item, bool raise) {
         // NOTE: this is O(n) for singly-linked sets and dictionaries because we
         // have to traverse the whole list to find the previous node.
         prev = nullptr;
-        Node* temp = view->head;
+        Node* temp = view.head;
         while (temp != curr) {
             prev = temp;
             temp = static_cast<Node*>(temp->next);
@@ -101,15 +101,15 @@ void _drop_setlike(View* view, PyObject* item, bool raise) {
     }
 
     // unlink and free node
-    view->unlink(prev, curr, static_cast<Node*>(curr->next));
-    view->recycle(curr);
+    view.unlink(prev, curr, static_cast<Node*>(curr->next));
+    view.recycle(curr);
 }
 
 
 /* Implement both remove_relative() and discard_relative() depending on error handling
 flag. */
 template <typename View>
-void _drop_relative(View* view, PyObject* sentinel, Py_ssize_t offset, bool raise) {
+void _drop_relative(View& view, PyObject* sentinel, Py_ssize_t offset, bool raise) {
     using Node = typename View::Node;
 
     // ensure offset is nonzero
@@ -121,7 +121,7 @@ void _drop_relative(View* view, PyObject* sentinel, Py_ssize_t offset, bool rais
     }
 
     // search for sentinel
-    Node* node = view->search(sentinel);
+    Node* node = view.search(sentinel);
     if (node == nullptr) {
         if (raise) {  // sentinel not found
             PyErr_Format(PyExc_KeyError, "%R is not contained in the set", sentinel);
@@ -131,7 +131,7 @@ void _drop_relative(View* view, PyObject* sentinel, Py_ssize_t offset, bool rais
 
     // walk according to offset
     std::tuple<Node*, Node*, Node*> neighbors = relative_neighbors(
-        view, node, offset, false
+        &view, node, offset, false
     );
     Node* prev = std::get<0>(neighbors);
     Node* curr = std::get<1>(neighbors);
@@ -144,8 +144,8 @@ void _drop_relative(View* view, PyObject* sentinel, Py_ssize_t offset, bool rais
     }
 
     // remove node between boundaries
-    view->unlink(prev, curr, next);
-    view->recycle(curr);
+    view.unlink(prev, curr, next);
+    view.recycle(curr);
 }
 
 

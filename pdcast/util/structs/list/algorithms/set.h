@@ -76,38 +76,38 @@ namespace Ops {
 
     /* Set the value at a particular index of a linked list, set, or dictionary. */
     template <typename View, typename T>
-    void set_index(View* view, T index, PyObject* item) {
+    void set_index(View& view, T index, PyObject* item) {
         using Node = typename View::Node;
 
         // allow python-style negative indexing + boundschecking
-        size_t idx = normalize_index(index, view->size, false);
+        size_t idx = normalize_index(index, view.size, false);
         if (idx == MAX_SIZE_T && PyErr_Occurred()) {
             return;  // propagate error
         }
 
         // allocate a new node
-        Node* new_node = view->node(item);
+        Node* new_node = view.node(item);
         if (new_node == nullptr) {
             return;  // propagate error
         }
 
         // get neighboring nodes at index
-        std::tuple<Node*, Node*, Node*> bounds = neighbors(view, view->head, idx);
+        std::tuple<Node*, Node*, Node*> bounds = neighbors(&view, view.head, idx);
         Node* prev = std::get<0>(bounds);
         Node* old_node = std::get<1>(bounds);
         Node* next = std::get<2>(bounds);
 
         // replace node
-        view->unlink(prev, old_node, next);
-        view->link(prev, new_node, next);
+        view.unlink(prev, old_node, next);
+        view.link(prev, new_node, next);
         if (PyErr_Occurred()) {  // restore list to original state
-            view->link(prev, old_node, next);
-            view->recycle(new_node);
+            view.link(prev, old_node, next);
+            view.recycle(new_node);
             return;  // propagate error
         }
 
         // free old node
-        view->recycle(old_node);
+        view.recycle(old_node);
     }
 
     /* Set a slice within a linked list, set, or dictionary. */
@@ -213,11 +213,6 @@ namespace Slice {
             return;
         }
 
-        // NOTE: the general strategy here is as follows:
-        // 1) Allocate a contiguous array of nodes to hold the contents of the slice.
-        // 2) Remove all the nodes currently in the slice, copying them to the recovery
-        //    array.
-        // 3) Iterate through the sequence, inserting each item into the vacated slice.
         // 4) If we encounter an error, reverse the process and remove all the nodes
         //    we've added thus far.  Then, copy the contents of the recovery array back
         //    into the list, returning it to its original state.
@@ -233,15 +228,16 @@ namespace Slice {
         // loop 1: remove current nodes in slice
         for (auto iter = slice.begin(1), end = slice.end(); iter != end; ++iter) {
             Node* node = iter.remove();  // remove node from list
-            Node::init_copy(&recovery[iter.index()], node);  // copy to recovery
-            slice.view()->recycle(node);  // return node to allocator
+            Node::init_copy(&recovery[iter.index()], node);  // copy to recovery array
+            slice.view().recycle(node);  // return node to allocator
         }
 
         // TODO: this implementation doesn't work if the slice is empty and the
         // sequence is not.  In this case, the loop below will never execute.
         // -> need to find a way to handle this.
+        // -> use the optional parameters to begin()/end()
 
-        // loop 2: insert new nodes from sequence
+        // loop 2: insert new nodes from sequence into vacated slice
         for (auto iter = slice.begin(), end = slice.end(); iter != end; ++iter) {
             // NOTE: PySequence_Fast_GET_ITEM() returns a borrowed reference (no
             // DECREF required)
@@ -254,9 +250,9 @@ namespace Slice {
             }
 
             // allocate a new node for the item
-            Node* new_node = slice.view()->node(item);
+            Node* new_node = slice.view().node(item);
             if (new_node == nullptr) {
-                _undo(slice, recovery, iter.index());
+                _undo(slice, recovery, iter.index());  // recover original list
                 Py_DECREF(sequence);
                 return;
             }
@@ -264,7 +260,7 @@ namespace Slice {
             // insert node into slice at current index
             iter.insert(new_node);
             if (PyErr_Occurred()) {
-                _undo(slice, recovery, iter.index());
+                _undo(slice, recovery, iter.index());  // recover original list
                 Py_DECREF(sequence);
                 return;
             }
@@ -319,15 +315,15 @@ struct RecoveryArray {
 /* Undo a call to Slice::replace() in the event of an error. */
 template <typename SliceProxy, typename Node>
 void _undo(SliceProxy& slice, RecoveryArray<Node>& recovery, size_t n_staged) {
-    // loop 1: remove nodes that have already been added to slice
+    // loop 3: remove nodes that have already been added to slice
     for (auto iter = slice.begin(1), end = slice.end(n_staged); iter != end; ++iter) {
         Node* node = iter.remove();  // remove node from list
-        slice.view()->recycle(node);  // return node to allocator
+        slice.view().recycle(node);  // return node to allocator
     }
 
-    // loop 2: reinsert original nodes
+    // loop 4: reinsert original nodes
     for (auto iter = slice.begin(), end = slice.end(); iter != end; ++iter) {
-        Node* node = slice.view()->copy(&recovery[iter.index()]);  // copy from recovery
+        Node* node = slice.view().copy(&recovery[iter.index()]);  // copy from recovery
         Node::teardown(&recovery[iter.index()]);  // release recovery node
         iter.insert(node);  // insert into list
     }

@@ -13,27 +13,27 @@ namespace Ops {
 
     /* Count the number of occurrences of an item within a linked set or dictionary. */
     template <typename View, typename T>
-    size_t count(View* view, PyObject* item, T start, T stop) {
+    size_t count(View& view, PyObject* item, T start, T stop) {
         using Node = typename View::Node;
 
         // allow Python-style negative indexing + boundschecking
         std::pair<size_t, size_t> bounds = normalize_bounds(
-            start, stop, view->size, true
+            start, stop, view.size, true
         );
 
         // check if item is contained in hash table
-        Node* node = view->search(item);
+        Node* node = view.search(item);
         if (node == nullptr) {
             return 0;
         }
 
         // if range includes all items, return true
-        if (bounds.first == 0 && bounds.second == view->size - 1) {
+        if (bounds.first == 0 && bounds.second == view.size - 1) {
             return 1;
         }
 
         // else, find index of item
-        Node* curr = view->head;
+        Node* curr = view.head;
         size_t idx = 0;
         while (curr != node && idx < bounds.second) {
             curr = static_cast<Node*>(curr->next);
@@ -50,7 +50,7 @@ namespace Ops {
     /* Count the number of occurrences of an item within a linked list. */
     template <typename NodeType, template <typename> class Allocator, typename T>
     size_t count(
-        ListView<NodeType, Allocator>* view,
+        ListView<NodeType, Allocator>& view,
         PyObject* item,
         T start,
         T stop
@@ -62,18 +62,18 @@ namespace Ops {
 
         // allow Python-style negative indexing + boundschecking
         std::pair<size_t, size_t> bounds = normalize_bounds(
-            start, stop, view->size, true
+            start, stop, view.size, true
         );
 
         // NOTE: if start index is closer to tail and the list is doubly-linked,
         // we can iterate from the tail to save time.
         if constexpr (has_prev<Node>::value) {
-            if (bounds.first > view->size / 2) {
+            if (bounds.first > view.size / 2) {
                 // else, start from tail
-                curr = view->tail;
+                curr = view.tail;
 
                 // skip to stop index
-                for (idx = view->size - 1; idx >= bounds.second; idx--) {
+                for (idx = view.size - 1; idx >= bounds.second; idx--) {
                     curr = static_cast<Node*>(curr->prev);
                 }
 
@@ -97,7 +97,7 @@ namespace Ops {
         }
 
         // NOTE: otherwise, we iterate forward from the head
-        curr = view->head;
+        curr = view.head;
         for (idx = 0; idx < bounds.first; idx++) {  // skip to start index
             curr = static_cast<Node*>(curr->next);
         }

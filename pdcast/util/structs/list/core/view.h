@@ -60,11 +60,6 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Copy constructors. These are disabled for the sake of efficiency,
-    preventing us from unintentionally copying data. */
-    ListView(const ListView& other) = delete;           // copy constructor
-    ListView& operator=(const ListView&) = delete;      // copy assignment
-
     /* Construct an empty ListView. */
     ListView(Py_ssize_t max_size = -1, PyObject* spec = nullptr) :
         head(nullptr), tail(nullptr), size(0), max_size(max_size),
@@ -127,7 +122,7 @@ public:
         Py_DECREF(iterator);
     }
 
-    /* Move ownership from one ListView to another (move constructor). */
+    /* Move constructor: transfer ownership from one ListView to another. */
     ListView(ListView&& other) :
         head(other.head), tail(other.tail), size(other.size), max_size(other.max_size),
         specialization(other.specialization), allocator(std::move(other.allocator))
@@ -140,7 +135,7 @@ public:
         other.specialization = nullptr;
     }
 
-    /* Move ownership from one ListView to another (move assignment). */
+    /* Move assignment operator: transfer ownership from one ListView to another. */
     ListView& operator=(ListView&& other) {
         // check for self-assignment
         if (this == &other) {
@@ -167,6 +162,11 @@ public:
 
         return *this;
     }
+
+    /* Copy constructors. These are disabled for the sake of efficiency,
+    preventing us from unintentionally copying data. */
+    ListView(const ListView& other) = delete;           // copy constructor
+    ListView& operator=(const ListView&) = delete;      // copy assignment
 
     /* Destroy a ListView and free all its nodes. */
     ~ListView() {
@@ -202,16 +202,20 @@ public:
     }
 
     /* Make a shallow copy of the entire list. */
-    View* copy() {
-        View* result = new View(max_size, specialization);
+    std::optional<View> copy() const {
+        try {
+            View result(max_size, specialization);
 
-        // copy nodes into new list
-        copy_to(result);
-        if (PyErr_Occurred()) {
-            delete result;  // clean up staged list
-            return nullptr;
+            // copy nodes into new list
+            copy_into(result);
+            if (PyErr_Occurred()) {
+                return std::nullopt;
+            }
+            return std::make_optional(std::move(result));
+
+        } catch (std::invalid_argument&) {
+            return std::nullopt;  // propagate
         }
-        return result;
     }
 
     /* Clear the list. */
@@ -259,49 +263,6 @@ public:
         if (next == nullptr) {
             tail = prev;
         }
-    }
-
-    /* Enforce strict type checking for elements of this list. */
-    void specialize(PyObject* spec) {
-        // handle null assignment
-        if (spec == nullptr) {
-            if (specialization != nullptr) {
-                Py_DECREF(specialization);  // remember to release old spec
-                specialization = nullptr;
-            }
-            return;
-        }
-
-        // early return if new spec is same as old spec
-        if (specialization != nullptr) {
-            int comp = PyObject_RichCompareBool(spec, specialization, Py_EQ);
-            if (comp == -1) {  // comparison raised an exception
-                return;  // propagate error
-            } else if (comp == 1) {  // spec is identical
-                return;  // do nothing
-            }
-        }
-
-        // check the contents of the list
-        Node* curr = head;
-        for (size_t i = 0; i < size; i++) {
-            if (!Node::typecheck(curr, spec)) {
-                return;  // propagate TypeError()
-            }
-            curr = static_cast<Node*>(curr->next);
-        }
-
-        // replace old specialization
-        Py_INCREF(spec);
-        if (specialization != nullptr) {
-            Py_DECREF(specialization);
-        }
-        specialization = spec;
-    }
-
-    /* Get the total memory consumed by the list (in bytes). */
-    inline size_t nbytes() const {
-        return allocator.nbytes() + sizeof(*this);
     }
 
     /* Normalize a numeric index, allowing Python-style wraparound and
@@ -388,15 +349,58 @@ public:
         return std::optional<size_t>{ result };
     }
 
+    /* Enforce strict type checking for elements of this list. */
+    void specialize(PyObject* spec) {
+        // handle null assignment
+        if (spec == nullptr) {
+            if (specialization != nullptr) {
+                Py_DECREF(specialization);  // remember to release old spec
+                specialization = nullptr;
+            }
+            return;
+        }
+
+        // early return if new spec is same as old spec
+        if (specialization != nullptr) {
+            int comp = PyObject_RichCompareBool(spec, specialization, Py_EQ);
+            if (comp == -1) {  // comparison raised an exception
+                return;  // propagate error
+            } else if (comp == 1) {  // spec is identical
+                return;  // do nothing
+            }
+        }
+
+        // check the contents of the list
+        Node* curr = head;
+        for (size_t i = 0; i < size; i++) {
+            if (!Node::typecheck(curr, spec)) {
+                return;  // propagate TypeError()
+            }
+            curr = static_cast<Node*>(curr->next);
+        }
+
+        // replace old specialization
+        Py_INCREF(spec);
+        if (specialization != nullptr) {
+            Py_DECREF(specialization);
+        }
+        specialization = spec;
+    }
+
+    /* Get the total memory consumed by the list (in bytes). */
+    inline size_t nbytes() const {
+        return allocator.nbytes() + sizeof(*this);
+    }
+
     /* Lock the list for use in a multithreaded context.
 
     The only difference between this method and `lock_context()` is that this returns a
     stack-allocated lock guard that uses RAII semantics.  The mutex is acquired when
     this method returns and is automatically released when the guard goes out of scope.
     Any operations in between are thus guaranteed to be atomic.  This is generally the
-    safest and most natural way to lock the list in a C++ context, but doesn't work
-    well with Python's context manager protocol. */
-    inline std::lock_guard<std::mutex> lock() {
+    safest and most natural way to lock the list from C++, but doesn't work well with
+    Python's context manager protocol. */
+    inline std::lock_guard<std::mutex> lock() const {
         return std::lock_guard<std::mutex>(thread_lock);
     }
 
@@ -404,9 +408,9 @@ public:
 
     This method returns a head-allocated std::lock_guard that can be manually deleted
     later to release the mutex.  This is used to enable Pythonic locking from a context
-    manager, rather than always relying on C++ RAII principles.  The normal `lock()` is
-    generally safer and should be preferred if calling from C++. */
-    inline std::lock_guard<std::mutex>* lock_context() {
+    manager, rather than always relying on C++ RAII principles.  The normal `lock()`
+    method is generally safer and should be preferred if calling from C++. */
+    inline std::lock_guard<std::mutex>* lock_context() const {
         return new std::lock_guard<std::mutex>(thread_lock);
     }
 
@@ -422,6 +426,7 @@ public:
     public:
         using View = ListView<NodeType, Allocator>;
         using Node = View::Node;
+        class SliceIterator;  // forward declaration
 
         /* normalized inputs to slice() (half-open) */
         const long long start;
@@ -429,7 +434,7 @@ public:
         const long long step;
 
         /* Get the underlying view being referenced by the proxy. */
-        inline View* view() const {
+        inline View& view() const {
             return _view;
         }
 
@@ -448,6 +453,8 @@ public:
             return _length;
         }
 
+        // TODO: reverse() should probably be implemented at the iterator level.
+
         /* Indicates whether the direction of a SliceIterator matches the sign of the
         step size.
 
@@ -458,6 +465,36 @@ public:
         required to traverse the slice without backtracking. */
         inline bool reverse() const {
             return _reverse;
+        }
+
+        // TODO: skip should be automatically handled by the iterator whenever
+        // remove() is called.  Instead, we should implement an optional length()
+        // argument just like end().  These would be used to artificially determine
+        // the length of the iterator in __setitem__().  It should ordinarily not be
+        // necessary, and could lead to segfaults if used improperly.
+
+        /* Return an iterator to the start of the slice. */
+        inline SliceIterator begin(size_t skip = 0) const {
+            // return an empty iterator if the slice is empty
+            if (_length == 0) {
+                return SliceIterator(_view, _length);
+            }
+
+            // NOTE: if skip is nonzero, then the iterator will implicitly reduce the
+            // step size by the given amount.  This is useful for the removal loops
+            // in Slice::set() and Slice::del(), since deleting a node implicitly
+            // advances the iterator by one step.
+            return SliceIterator(
+                _view, _source, _abs_step - skip, _length, _first > _last
+            );
+        }
+
+        /* Return an iterator to the end of the slice. */
+        inline SliceIterator end(std::optional<size_t> index = std::nullopt) const {
+            if (index.has_value()) {
+                return SliceIterator(_view, index.value());
+            }
+            return SliceIterator(_view, _length);
         }
 
         /* An iterator that traverses through all the nodes that are contained within
@@ -471,9 +508,14 @@ public:
             using pointer               = Node**;
             using reference             = Node*&;
 
+            // neighboring nodes at the current position
+            Node* prev;
+            Node* curr;
+            Node* next;
+
             /* Get the current index of the iterator within the slice.
 
-            NOTE: this can be used to index into an array (or similar data structure)
+            NOTE: this can be used to index into an array or similar data structure
             during iteration. */
             size_t index() const {
                 return _index;
@@ -522,7 +564,7 @@ public:
             /* Remove the node at the current position. */
             Node* remove() {
                 Node* removed = curr;
-                view->unlink(prev, curr, next);
+                view.unlink(prev, curr, next);
 
                 // update iterator
                 if constexpr (has_prev<Node>::value) {
@@ -544,10 +586,10 @@ public:
             }
 
             /* Insert a node at the current position. */
-            inline void insert(Node* node) {
+            void insert(Node* node) {
                 if constexpr (has_prev<Node>::value) {
                     if (backward) {  // backward traversal
-                        view->link(curr, node, next);
+                        view.link(curr, node, next);
                         prev = curr;
                         curr = node;
                         return;
@@ -555,16 +597,13 @@ public:
                 }
 
                 // forward traversal
-                view->link(prev, node, curr);
+                view.link(prev, node, curr);
                 next = curr;
                 curr = node;
             }
 
         private:
-            View* view;
-            Node* prev;
-            Node* curr;
-            Node* next;
+            View& view;
             size_t step;
             size_t _index;
             size_t length;
@@ -577,7 +616,7 @@ public:
 
             /* Get an iterator to the start of the slice. */
             SliceIterator(
-                View* view,
+                View& view,
                 Node* source,
                 size_t step,
                 size_t length,
@@ -588,7 +627,7 @@ public:
             }
 
             /* Get an iterator to terminate the slice. */
-            SliceIterator(View* view, size_t index) :
+            SliceIterator(View& view, size_t index) :
                 view(view), step(0), _index(index), length(index), backward(false)
             {}
 
@@ -598,7 +637,7 @@ public:
                     if (backward) {  // backward traversal
                         next = source;
                         if (source == nullptr) {
-                            curr = view->tail;
+                            curr = view.tail;
                         } else {
                             curr = static_cast<Node*>(source->prev);
                         }
@@ -610,7 +649,7 @@ public:
                 // forward traversal
                 prev = source;
                 if (source == nullptr) {
-                    curr = view->head;
+                    curr = view.head;
                 } else {
                     curr = static_cast<Node*>(source->next);
                 }
@@ -619,39 +658,8 @@ public:
 
         };
 
-        /* Return an iterator to the start of the slice. */
-        inline SliceIterator begin(size_t skip = 0) const {
-            // return an empty iterator if the slice is empty
-            if (_length == 0) {
-                return SliceIterator(_view, _length);
-            }
-
-            // Otherwise, return an iterator to the first node in the slice
-            if (skip == 0) {
-                return SliceIterator(
-                    _view, _source, _abs_step, _length, _first > _last
-                );
-            }
-
-            // NOTE: if skip is nonzero, then the iterator will implicitly reduce the
-            // step size by the given amount.  This is useful for the removal loops
-            // in Slice::set() and Slice::del(), since deleting a node implicitly
-            // advances the iterator by one step.
-            return SliceIterator(
-                _view, _source, _abs_step - skip, _length, _first > _last
-            );
-        }
-
-        /* Return an iterator to the end of the slice. */
-        inline SliceIterator end(std::optional<size_t> index = std::nullopt) const {
-            if (index.has_value()) {
-                return SliceIterator(_view, index.value());
-            }
-            return SliceIterator(_view, _length);
-        }
-
     private:
-        View* _view;
+        View& _view;
         size_t _first;  // normalized and chosen to minimize total iterations
         size_t _last;
         size_t _abs_step;
@@ -665,7 +673,7 @@ public:
         friend class ListView<NodeType, Allocator>;
 
         /* Construct a new SliceProxy for the list. */
-        SliceProxy(View* view, long long start, long long stop, long long step) :
+        SliceProxy(View& view, long long start, long long stop, long long step) :
             start(start), stop(stop), step(step), _view(view), _first(MAX_SIZE_T),
             _last(MAX_SIZE_T), _abs_step(llabs(step)), _length(0), _reverse(false),
             _source(nullptr)
@@ -704,7 +712,7 @@ public:
             // number of iterations, but means that we may not be iterating in the same
             // direction as the step size would indicate
             if constexpr (has_prev<Node>::value) {
-                long long size = static_cast<long long>(_view->size);
+                long long size = static_cast<long long>(_view.size);
                 if (
                     (step > 0 && start <= size - stop_closed) ||
                     (step < 0 && size - start <= stop_closed)
@@ -739,8 +747,8 @@ public:
             if constexpr (has_prev<Node>::value) {
                 if (_first > _last) {  // backward traversal
                     Node* next = nullptr;
-                    Node* curr = _view->tail;
-                    for (size_t i = _view->size - 1; i > _first; i--) {
+                    Node* curr = _view.tail;
+                    for (size_t i = _view.size - 1; i > _first; i--) {
                         next = curr;
                         curr = static_cast<Node*>(curr->prev);
                     }
@@ -750,7 +758,7 @@ public:
 
             // forward traversal
             Node* prev = nullptr;
-            Node* curr = _view->head;
+            Node* curr = _view.head;
             for (size_t i = 0; i < _first; i++) {
                 prev = curr;
                 curr = static_cast<Node*>(curr->next);
@@ -767,6 +775,7 @@ public:
             // the result has the same sign as the dividend (a).
             return (a % b + b) % b;
         }
+
     };
 
     /* Generate a proxy for the list that references a particular slice. */
@@ -787,7 +796,7 @@ public:
         stop = static_cast<long long>(index(stop, true).value());
 
         // create proxy
-        return std::make_optional(SliceProxy(this, start, stop, step));
+        return std::make_optional(SliceProxy(*this, start, stop, step));
     }
 
 protected:
@@ -833,7 +842,7 @@ protected:
     }
 
     /* Copy all the nodes from this list into a newly-allocated view. */
-    void copy_to(View* other) const {
+    void copy_into(View& other) const {
         Node* curr = head;
         Node* copied = nullptr;
         Node* copied_tail = nullptr;
@@ -846,7 +855,7 @@ protected:
             }
 
             // link to tail of copied list
-            other->link(copied_tail, copied, nullptr);
+            other.link(copied_tail, copied, nullptr);
             if (PyErr_Occurred()) {  // error during link()
                 return;  // propagate error
             }
@@ -855,9 +864,6 @@ protected:
             copied_tail = copied;
             curr = static_cast<Node*>(curr->next);
         }
-
-        // return copied list
-        return;
     }
 
 private:
@@ -953,16 +959,20 @@ public:
     }
 
     /* Make a shallow copy of the entire list. */
-    View* copy() {
-        View* result = new View(this->max_size, this->specialization);
+    std::optional<View> copy() const {
+        try {
+            View result(this->max_size, this->specialization);
 
-        // copy nodes into new set
-        Base::copy_to(result);
-        if (PyErr_Occurred()) {
-            delete result;
-            return nullptr;
+            // copy nodes into new list
+            Base::copy_into(result);
+            if (PyErr_Occurred()) {
+                return std::nullopt;
+            }
+
+            return std::make_optional(std::move(result));
+        } catch (std::invalid_argument&) {
+            return std::nullopt;
         }
-        return result;
     }
 
     /* Clear the list and reset the associated hash table. */

@@ -15,11 +15,11 @@ namespace Ops {
 
     /* Reverse a linked list in-place. */
     template <typename View>
-    void reverse(View* view) {
+    void reverse(View& view) {
         using Node = typename View::Node;
 
         // save original `head` pointer
-        Node* head = view->head;
+        Node* head = view.head;
         Node* curr = head;
         
         if constexpr (has_prev<Node>::value) {
@@ -42,8 +42,8 @@ namespace Ops {
         }
 
         // swap `head`/`tail` pointers
-        view->head = view->tail;
-        view->tail = head;
+        view.head = view.tail;
+        view.tail = head;
     }
 
 }

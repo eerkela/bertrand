@@ -16,14 +16,14 @@ namespace Ops {
 
     /* Add multiple items to the end of a list, set, or dictionary. */
     template <typename View>
-    inline void extend(View* view, PyObject* items, bool left) {
+    inline void extend(View& view, PyObject* items, bool left) {
         using Node = typename View::Node;
 
         Node* null = static_cast<Node*>(nullptr);
         if (left) {
-            _extend_right_to_left(view, null, view->head, items, false);
+            _extend_right_to_left(view, null, view.head, items, false);
         } else {
-            _extend_left_to_right(view, view->tail, null, items, false);
+            _extend_left_to_right(view, view.tail, null, items, false);
         }
     }
 
@@ -31,7 +31,7 @@ namespace Ops {
     sentinel value. */
     template <typename View>
     inline void extend_relative(
-        View* view,
+        View& view,
         PyObject* items,
         PyObject* sentinel,
         Py_ssize_t offset,
@@ -55,7 +55,7 @@ namespace Ops {
 node. */
 template <typename View, typename Node>
 void _extend_left_to_right(
-    View* view,
+    View& view,
     Node* left,
     Node* right,
     PyObject* items,
@@ -78,7 +78,7 @@ void _extend_left_to_right(
         }
 
         // allocate a new node
-        curr = view->node(item);
+        curr = view.node(item);
         if (curr == nullptr) {
             Py_DECREF(item);
             break;  // enter undo branch
@@ -87,14 +87,14 @@ void _extend_left_to_right(
         // check if we should update existing nodes
         if constexpr (is_setlike<View>::value) {
             if (update) {
-                Node* existing = view->search(curr);
+                Node* existing = view.search(curr);
                 if (existing != nullptr) {  // item already exists
                     if constexpr (has_mapped<Node>::value) {
                         Py_DECREF(existing->mapped);
                         Py_INCREF(curr->mapped);
                         existing->mapped = curr->mapped;
                     }
-                    view->recycle(curr);
+                    view.recycle(curr);
                     Py_DECREF(item);
                     continue;  // advance to next item without updating `prev`
                 }
@@ -102,7 +102,7 @@ void _extend_left_to_right(
         }
 
         // insert from left to right
-        view->link(prev, curr, right);
+        view.link(prev, curr, right);
         if (PyErr_Occurred()) {  // ValueError() item is already in list
             Py_DECREF(item);
             break;  // enter undo branch
@@ -127,7 +127,7 @@ void _extend_left_to_right(
 node. */
 template <typename View, typename Node>
 void _extend_right_to_left(
-    View* view,
+    View& view,
     Node* left,
     Node* right,
     PyObject* items,
@@ -150,7 +150,7 @@ void _extend_right_to_left(
         }
 
         // allocate a new node
-        curr = view->node(item);
+        curr = view.node(item);
         if (curr == nullptr) {  // error during node allocation
             Py_DECREF(item);
             break;  // enter undo branch
@@ -159,14 +159,14 @@ void _extend_right_to_left(
         // check if we should update existing nodes
         if constexpr (is_setlike<View>::value) {
             if (update) {
-                Node* existing = view->search(curr);
+                Node* existing = view.search(curr);
                 if (existing != nullptr) {  // item already exists
                     if constexpr (has_mapped<Node>::value) {
                         Py_DECREF(existing->mapped);
                         Py_INCREF(curr->mapped);
                         existing->mapped = curr->mapped;
                     }
-                    view->recycle(curr);
+                    view.recycle(curr);
                     Py_DECREF(item);
                     continue;  // advance to next item without updating `next`
                 }
@@ -174,7 +174,7 @@ void _extend_right_to_left(
         }
 
         // insert from right to left
-        view->link(left, curr, next);
+        view.link(left, curr, next);
         if (PyErr_Occurred()) {  // error during list insertion
             Py_DECREF(item);
             break;  // enter undo branch
@@ -199,7 +199,7 @@ void _extend_right_to_left(
 flag. */
 template <typename View>
 void _extend_relative(
-    View* view,
+    View& view,
     PyObject* items,
     PyObject* sentinel,
     Py_ssize_t offset,
@@ -215,7 +215,7 @@ void _extend_relative(
     }
 
     // search for sentinel
-    Node* node = view->search(sentinel);
+    Node* node = view.search(sentinel);
     if (node == nullptr) {  // sentinel not found
         if (!update) {
             PyErr_Format(PyExc_KeyError, "%R is not contained in the set", sentinel);
@@ -225,7 +225,7 @@ void _extend_relative(
 
     // get neighbors for insertion
     // NOTE: truncate = true means we will never raise an error
-    std::pair<Node*, Node*> bounds = relative_junction(view, node, offset, true);
+    std::pair<Node*, Node*> bounds = relative_junction(&view, node, offset, true);
 
     // insert items between left and right bounds
     if (reverse) {
@@ -239,7 +239,7 @@ void _extend_relative(
 /* Recover the original list in the event of error during extend()/update(). */
 template <typename View, typename Node>
 void _undo_left_to_right(
-    View* view,
+    View& view,
     Node* left,
     Node* right
 ) {
@@ -248,15 +248,15 @@ void _undo_left_to_right(
     Node* curr = static_cast<Node*>(prev->next);
     while (curr != right) {
         Node* next = static_cast<Node*>(curr->next);
-        view->unlink(prev, curr, next);
-        view->recycle(curr);
+        view.unlink(prev, curr, next);
+        view.recycle(curr);
         curr = next;
     }
 
     // join left and right bounds
     Node::join(left, right);
     if (right == nullptr) {
-        view->tail = right;  // reset tail if necessary
+        view.tail = right;  // reset tail if necessary
     }
 }
 
@@ -264,7 +264,7 @@ void _undo_left_to_right(
 /* Recover the original list in the event of error during extend()/update(). */
 template <typename View, typename Node>
 void _undo_right_to_left(
-    View* view,
+    View& view,
     Node* left,
     Node* right
 ) {
@@ -272,7 +272,7 @@ void _undo_right_to_left(
     // iterate from left to right to delete the staged nodes.
     Node* prev;
     if (left == nullptr) {
-        prev = view->head;
+        prev = view.head;
     } else {
         prev = left;
     }
@@ -281,15 +281,15 @@ void _undo_right_to_left(
     Node* curr = static_cast<Node*>(prev->next);
     while (curr != right) {
         Node* next = static_cast<Node*>(curr->next);
-        view->unlink(prev, curr, next);
-        view->recycle(curr);
+        view.unlink(prev, curr, next);
+        view.recycle(curr);
         curr = next;
     }
 
     // join left and right bounds (can be NULL)
     Node::join(left, right);
     if (left == nullptr) {
-        view->head = left;  // reset head if necessary
+        view.head = left;  // reset head if necessary
     }
 }
 
