@@ -41,15 +41,15 @@ using VariantView = std::variant<
     ListView<SingleNode, DynamicAllocator>,
     ListView<SingleNode, FixedAllocator>,
     ListView<DoubleNode, DynamicAllocator>,
-    ListView<DoubleNode, FixedAllocator>,
-    ListView<Hashed<SingleNode>, DynamicAllocator>,
-    ListView<Hashed<SingleNode>, FixedAllocator>,
-    ListView<Hashed<DoubleNode>, DynamicAllocator>,
-    ListView<Hashed<DoubleNode>, FixedAllocator>,
-    SetView<SingleNode, DynamicAllocator>,
-    SetView<SingleNode, FixedAllocator>,
-    SetView<DoubleNode, DynamicAllocator>,
-    SetView<DoubleNode, FixedAllocator>
+    ListView<DoubleNode, FixedAllocator>
+    // ListView<Hashed<SingleNode>, DynamicAllocator>,
+    // ListView<Hashed<SingleNode>, FixedAllocator>,
+    // ListView<Hashed<DoubleNode>, DynamicAllocator>,
+    // ListView<Hashed<DoubleNode>, FixedAllocator>,
+    // SetView<SingleNode, DynamicAllocator>,
+    // SetView<SingleNode, FixedAllocator>,
+    // SetView<DoubleNode, DynamicAllocator>,
+    // SetView<DoubleNode, FixedAllocator>
     // DictView<SingleNode, DynamicAllocator>,
     // DictView<SingleNode, FixedAllocator>,
     // DictView<DoubleNode, DynamicAllocator>,
@@ -76,7 +76,7 @@ using VariantView = std::variant<
 of templated `ListView` types. */
 class VariantList {
 public:
-    class SliceProxy;  // forward declaration
+    class Slice;  // forward declaration
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -268,7 +268,7 @@ public:
         std::visit([&](auto& view) { Ops::set_index(view, index, value); }, variant);
     }
 
-    // TODO: rewrite set_slice using new SliceProxy
+    // TODO: rewrite set_slice using new Slice proxy
 
     /* Dispatch to the correct implementation of set_slice() for each variant. */
     inline void set_slice(
@@ -291,8 +291,8 @@ public:
         std::visit([&](auto& view) { Ops::delete_index(view, index); }, variant);
     }
 
-    /* Construct a SliceProxy for a list using the given indices. */
-    inline SliceProxy slice(long long start, long long stop, long long step = 1) {
+    /* Construct a Slice proxy for a list using the given indices. */
+    inline Slice slice(long long start, long long stop, long long step = 1) {
         // lazily initialize self reference
         if (self == nullptr) {
             // NOTE: if we don't use a custom deleter, then the shared_ptr will
@@ -300,12 +300,12 @@ public:
             // causes a segfault due to a double-free.
             self = std::shared_ptr<VariantList>(this, [](VariantList*) {});
         }
-        return SliceProxy(std::weak_ptr<VariantList>(self), start, stop, step);
+        return Slice(std::weak_ptr<VariantList>(self), start, stop, step);
     }
 
     /* A proxy for a list that allows for efficient operations on slices within
     the list. */
-    class SliceProxy {
+    class Slice {
     public:
 
         /* Implement LinkedList.__getitem__() for all variants (slice). */
@@ -326,7 +326,7 @@ public:
                     }
 
                     // extract slice
-                    auto result = Slice::extract(proxy.value());
+                    auto result = SliceOps::extract(proxy.value());
                     if (!result.has_value()) {
                         return nullptr;  // propagate
                     }
@@ -355,7 +355,7 @@ public:
                     }
 
                     // replace slice
-                    Slice::replace(proxy.value(), items);
+                    SliceOps::replace(proxy.value(), items);
                 },
                 ref->variant
             );
@@ -379,7 +379,7 @@ public:
                     }
 
                     // drop slice
-                    Slice::drop(proxy.value());
+                    SliceOps::drop(proxy.value());
                 },
                 ref->variant
             );
@@ -391,13 +391,11 @@ public:
         long long stop;
         long long step;
 
-        // NOTE: the SliceProxy constructor is private to prevent users from
-        // constructing SliceProxy objects directly.  Instead, they should always use
-        // the `slice()` factory method on the VariantList itself.
+        // allow VariantList to construct Slice objects using private constructor
         friend class VariantList;
 
-        /* Construct a new SliceProxy from a VariantList and a slice. */
-        SliceProxy(
+        /* Construct a new Slice from a VariantList and a slice. */
+        Slice(
             std::weak_ptr<VariantList> variant,
             long long start,
             long long stop,
@@ -411,7 +409,7 @@ public:
             if (strong_ref == nullptr) {
                 PyErr_SetString(
                     PyExc_ReferenceError,
-                    "SliceProxy references a list that no longer exists"
+                    "Slice proxy references a list that no longer exists"
                 );
                 return nullptr;  // propagate error
             }

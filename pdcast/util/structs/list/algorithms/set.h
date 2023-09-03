@@ -178,23 +178,21 @@ namespace Ops {
 }
 
 
-namespace Slice {
+namespace SliceOps {
 
     /* Replace a slice from a linked list, set, or dictionary. */
     template <typename SliceProxy>
     void replace(SliceProxy& slice, PyObject* items) {
         using Node = typename SliceProxy::Node;
 
-        // unpack iterable into a reversible sequence
+        // unpack iterable into reversible sequence
         PyObject* sequence = PySequence_Fast(items, "can only assign an iterable");
         if (sequence == nullptr) {
             return;  // propagate TypeError: can only assign an iterable
         }
 
-        // get length of sequence
-        size_t seq_length = static_cast<size_t>(PySequence_Fast_GET_SIZE(sequence));
-
         // check for no-op
+        size_t seq_length = static_cast<size_t>(PySequence_Fast_GET_SIZE(sequence));
         if (slice.length() == 0 && seq_length == 0) {
             Py_DECREF(sequence);
             return;
@@ -213,11 +211,6 @@ namespace Slice {
             return;
         }
 
-        // 4) If we encounter an error, reverse the process and remove all the nodes
-        //    we've added thus far.  Then, copy the contents of the recovery array back
-        //    into the list, returning it to its original state.
-        // 5) Otherwise, free the recovery array and return.  
-
         // allocate recovery array
         RecoveryArray<Node> recovery(slice.length());
         if (PyErr_Occurred()) {  // error during array allocation
@@ -229,13 +222,16 @@ namespace Slice {
         for (auto iter = slice.begin(1), end = slice.end(); iter != end; ++iter) {
             Node* node = iter.remove();  // remove node from list
             Node::init_copy(&recovery[iter.index()], node);  // copy to recovery array
-            slice.view().recycle(node);  // return node to allocator
+            slice.view().recycle(node);  // recycle original node
         }
 
         // TODO: this implementation doesn't work if the slice is empty and the
         // sequence is not.  In this case, the loop below will never execute.
         // -> need to find a way to handle this.
         // -> use the optional parameters to begin()/end()
+
+        // TODO: move the contents of loop 2 into a private helper, and then remove
+        // the _undo helper.  This will densify the code and make it easier to read.
 
         // loop 2: insert new nodes from sequence into vacated slice
         for (auto iter = slice.begin(), end = slice.end(); iter != end; ++iter) {

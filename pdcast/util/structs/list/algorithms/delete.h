@@ -37,7 +37,7 @@ namespace Ops {
 }
 
 
-namespace Slice {
+namespace SliceOps {
 
     /* Delete a slice from a linked list, set, or dictionary. */
     template <typename SliceProxy>

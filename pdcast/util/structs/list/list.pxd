@@ -60,12 +60,12 @@ cdef extern from "list.h":
         int contains(PyObject* item) except *
         size_t size()
 
-        cppclass SliceProxy:
+        cppclass Slice:
             VariantList* extract() except NULL
             void replace(PyObject* items) except *
             void drop() except *
 
-        SliceProxy slice(long long start, long long stop, long long step)
+        Slice slice(long long start, long long stop, long long step)
 
         # extra methods
         PyObject* specialization()

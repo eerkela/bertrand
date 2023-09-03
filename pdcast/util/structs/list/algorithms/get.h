@@ -110,7 +110,7 @@ namespace Ops {
 }
 
 
-namespace Slice {
+namespace SliceOps {
 
     /* Extract a slice from a linked list, set, or dictionary. */
     template <typename SliceProxy>
