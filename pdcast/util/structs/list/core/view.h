@@ -56,6 +56,10 @@ public:
     Py_ssize_t max_size;
     PyObject* specialization;
 
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     /* Copy constructors. These are disabled for the sake of efficiency,
     preventing us from unintentionally copying data. */
     ListView(const ListView& other) = delete;           // copy constructor
@@ -169,6 +173,10 @@ public:
         self_destruct();
     }
 
+    //////////////////////////////
+    ////    LIST INTERFACE    ////
+    //////////////////////////////
+
     /* Construct a new node for the list. */
     template <typename... Args>
     inline Node* node(Args... args) const {
@@ -251,6 +259,49 @@ public:
         if (next == nullptr) {
             tail = prev;
         }
+    }
+
+    /* Enforce strict type checking for elements of this list. */
+    void specialize(PyObject* spec) {
+        // handle null assignment
+        if (spec == nullptr) {
+            if (specialization != nullptr) {
+                Py_DECREF(specialization);  // remember to release old spec
+                specialization = nullptr;
+            }
+            return;
+        }
+
+        // early return if new spec is same as old spec
+        if (specialization != nullptr) {
+            int comp = PyObject_RichCompareBool(spec, specialization, Py_EQ);
+            if (comp == -1) {  // comparison raised an exception
+                return;  // propagate error
+            } else if (comp == 1) {  // spec is identical
+                return;  // do nothing
+            }
+        }
+
+        // check the contents of the list
+        Node* curr = head;
+        for (size_t i = 0; i < size; i++) {
+            if (!Node::typecheck(curr, spec)) {
+                return;  // propagate TypeError()
+            }
+            curr = static_cast<Node*>(curr->next);
+        }
+
+        // replace old specialization
+        Py_INCREF(spec);
+        if (specialization != nullptr) {
+            Py_DECREF(specialization);
+        }
+        specialization = spec;
+    }
+
+    /* Get the total memory consumed by the list (in bytes). */
+    inline size_t nbytes() const {
+        return allocator.nbytes() + sizeof(*this);
     }
 
     /* Normalize a numeric index, allowing Python-style wraparound and
@@ -337,48 +388,76 @@ public:
         return std::optional<size_t>{ result };
     }
 
+    /* Lock the list for use in a multithreaded context.
+
+    The only difference between this method and `lock_context()` is that this returns a
+    stack-allocated lock guard that uses RAII semantics.  The mutex is acquired when
+    this method returns and is automatically released when the guard goes out of scope.
+    Any operations in between are thus guaranteed to be atomic.  This is generally the
+    safest and most natural way to lock the list in a C++ context, but doesn't work
+    well with Python's context manager protocol. */
+    inline std::lock_guard<std::mutex> lock() {
+        return std::lock_guard<std::mutex>(thread_lock);
+    }
+
+    /* Lock the list for use in a multithreaded context.
+
+    This method returns a head-allocated std::lock_guard that can be manually deleted
+    later to release the mutex.  This is used to enable Pythonic locking from a context
+    manager, rather than always relying on C++ RAII principles.  The normal `lock()` is
+    generally safer and should be preferred if calling from C++. */
+    inline std::lock_guard<std::mutex>* lock_context() {
+        return new std::lock_guard<std::mutex>(thread_lock);
+    }
+
+    ///////////////////////
+    ////    PROXIES    ////
+    ///////////////////////
+
+    // NOTE: could have a separate index() proxy that handles index normalization +
+    // bounds checking.  It could implement extract(), drop(), replace(), and insert()
+
     /* A proxy class that allows for operations on slices within the list. */
     class SliceProxy {
     public:
         using View = ListView<NodeType, Allocator>;
         using Node = View::Node;
 
-        View* view;
-        const long long start;  // original inputs
+        /* normalized inputs to slice() (half-open) */
+        const long long start;
         const long long stop;
         const long long step;
-        size_t first;  // normalized and chosen to minimize total iterations
-        size_t last;
-        size_t abs_step;
-        size_t length;
-        bool reverse;  // accounts for singly-/doubly-linked lists
 
-        /* Construct a new SliceProxy for the list. */
-        SliceProxy(View* view, long long start, long long stop, long long step) :
-            view(view), start(start), stop(stop), step(step), first(MAX_SIZE_T),
-            last(MAX_SIZE_T), abs_step(llabs(step)), length(0), reverse(false),
-            source(nullptr)
-        {
-            // convert to closed interval
-            long long stop_closed = closed_interval();
-
-            // continue initializing only if slice contains at least one element
-            if (
-                (step > 0 && start <= stop_closed) ||
-                (step < 0 && start >= stop_closed)
-            ) {
-                std::pair<size_t, size_t> bounds = slice_direction();
-                first = bounds.first;
-                last = bounds.second;
-                length = slice_length();
-                reverse = (step < 0) ^ (first > last);
-                source = find_source();
-            }
+        /* Get the underlying view being referenced by the proxy. */
+        inline View* view() const {
+            return _view;
         }
 
-        /* Indicates whether the slice contains any elements. */
-        inline bool empty() const {
-            return length == 0;
+        /* Get the first index to be included by a SliceIterator. */
+        inline size_t first() const {
+            return _first;
+        }
+
+        /* Get the last index to be included by a SliceIterator. */
+        inline size_t last() const {
+            return _last;
+        }
+
+        /* Get the total number of items in the slice. */
+        inline size_t length() const {
+            return _length;
+        }
+
+        /* Indicates whether the direction of a SliceIterator matches the sign of the
+        step size.
+
+        If this is false, then the iterator will yield items in the same order as
+        expected from the slice parameters.  Otherwise, it will yield items in the
+        opposite order, and the user will have to account for this when getting/setting
+        items within the list.  This is done to minimize the total number of iterations
+        required to traverse the slice without backtracking. */
+        inline bool reverse() const {
+            return _reverse;
         }
 
         /* An iterator that traverses through all the nodes that are contained within
@@ -392,33 +471,26 @@ public:
             using pointer               = Node**;
             using reference             = Node*&;
 
-            /* Get an iterator to the start of the slice. */
-            SliceIterator(
-                View* view,
-                Node* source,
-                size_t step,
-                size_t length,
-                bool backward
-            ) :
-                view(view), step(step), index(0), length(length), backward(backward)
-            {
-                init_from_source(source);
+            /* Get the current index of the iterator within the slice.
+
+            NOTE: this can be used to index into an array (or similar data structure)
+            during iteration. */
+            size_t index() const {
+                return _index;
             }
 
-            /* Get an iterator to terminate the slice. */
-            SliceIterator(View* view, size_t length) :
-                view(view), step(0), index(length - 1), length(length), backward(false)
-            {}
-
-            /* Dereference the iterator. */
+            /* Dereference the iterator to get the node at the current position. */
             inline Node* operator*() const {
                 return curr;
             }
 
-            /* Prefix increment. */
+            /* Prefix increment to advance the iterator to the next node in the slice. */
             inline SliceIterator& operator++() {
-                ++index;
-                if (index == length) {  // don't jump on last iteration
+                ++_index;
+                if (_index == length) {
+                    // NOTE: we don't jump on the last iteration.  This prevents
+                    // unnecessary iterations and stops us from accidentally walking
+                    // off the end of the list.
                     return *this;
                 }
 
@@ -442,12 +514,12 @@ public:
                 return *this;
             }
 
-            /* Inequality comparison. */
+            /* Inequality comparison to terminate the slice. */
             inline bool operator!=(const SliceIterator& other) const {
-                return index != other.index;
+                return _index != other._index;
             }
 
-            /* Remove the node at the current index in the slice. */
+            /* Remove the node at the current position. */
             Node* remove() {
                 Node* removed = curr;
                 view->unlink(prev, curr, next);
@@ -471,19 +543,21 @@ public:
                 return removed;
             }
 
-            /* Insert a node at the current index in the slice. */
+            /* Insert a node at the current position. */
             inline void insert(Node* node) {
                 if constexpr (has_prev<Node>::value) {
                     if (backward) {  // backward traversal
-                        view->link(prev, node, curr);
-                        prev = node;
+                        view->link(curr, node, next);
+                        prev = curr;
+                        curr = node;
                         return;
                     }
                 }
 
                 // forward traversal
-                view->link(curr, node, next);
-                next = node;
+                view->link(prev, node, curr);
+                next = curr;
+                curr = node;
             }
 
         private:
@@ -492,9 +566,31 @@ public:
             Node* curr;
             Node* next;
             size_t step;
-            size_t index;
+            size_t _index;
             size_t length;
             bool backward;
+
+            // NOTE: SliceProxy uses a private constructor to force users to use the
+            // SliceProxy::begin() and SliceProxy::end() factory methods.  This ensures
+            // that the iterator is always properly normalized before it is used.
+            friend class SliceProxy;
+
+            /* Get an iterator to the start of the slice. */
+            SliceIterator(
+                View* view,
+                Node* source,
+                size_t step,
+                size_t length,
+                bool backward
+            ) : view(view), step(step), _index(0), length(length), backward(backward)
+            {
+                init_from_source(source);
+            }
+
+            /* Get an iterator to terminate the slice. */
+            SliceIterator(View* view, size_t index) :
+                view(view), step(0), _index(index), length(index), backward(false)
+            {}
 
             /* Get the initial values for the iterator based on a source node. */
             inline void init_from_source(Node* source) {
@@ -526,29 +622,70 @@ public:
         /* Return an iterator to the start of the slice. */
         inline SliceIterator begin(size_t skip = 0) const {
             // return an empty iterator if the slice is empty
-            if (empty()) {
-                return SliceIterator(view, length);
+            if (_length == 0) {
+                return SliceIterator(_view, _length);
             }
 
             // Otherwise, return an iterator to the first node in the slice
             if (skip == 0) {
-                return SliceIterator(view, source, abs_step, length, first > last);
+                return SliceIterator(
+                    _view, _source, _abs_step, _length, _first > _last
+                );
             }
 
-            // NOTE: if zero_index = false, then the iterator will implicitly skip
-            // a single step at each iteration.  This is useful for the removal loops
+            // NOTE: if skip is nonzero, then the iterator will implicitly reduce the
+            // step size by the given amount.  This is useful for the removal loops
             // in Slice::set() and Slice::del(), since deleting a node implicitly
             // advances the iterator by one step.
-            return SliceIterator(view, source, abs_step - skip, length, first > last);
+            return SliceIterator(
+                _view, _source, _abs_step - skip, _length, _first > _last
+            );
         }
 
         /* Return an iterator to the end of the slice. */
-        inline SliceIterator end() {
-            return SliceIterator(view, length);
+        inline SliceIterator end(std::optional<size_t> index = std::nullopt) const {
+            if (index.has_value()) {
+                return SliceIterator(_view, index.value());
+            }
+            return SliceIterator(_view, _length);
         }
 
     private:
-        Node* source;  // node that immediately precedes the slice
+        View* _view;
+        size_t _first;  // normalized and chosen to minimize total iterations
+        size_t _last;
+        size_t _abs_step;
+        size_t _length;
+        bool _reverse;  // accounts for singly-/doubly-linked lists
+        Node* _source;  // node that immediately precedes the slice (can be NULL)
+
+        // NOTE: SliceProxy uses a private constructor to force users to go through
+        // the ListView::slice() factory method.  This ensures that the slice is
+        // always properly normalized before it is used.
+        friend class ListView<NodeType, Allocator>;
+
+        /* Construct a new SliceProxy for the list. */
+        SliceProxy(View* view, long long start, long long stop, long long step) :
+            start(start), stop(stop), step(step), _view(view), _first(MAX_SIZE_T),
+            _last(MAX_SIZE_T), _abs_step(llabs(step)), _length(0), _reverse(false),
+            _source(nullptr)
+        {
+            // convert to closed interval
+            long long stop_closed = closed_interval();
+
+            // continue initializing only if slice contains at least one element
+            if (
+                (step > 0 && start <= stop_closed) ||
+                (step < 0 && start >= stop_closed)
+            ) {
+                std::pair<size_t, size_t> bounds = slice_direction(stop_closed);
+                _first = bounds.first;
+                _last = bounds.second;
+                _length = slice_length();
+                _reverse = (step < 0) ^ (_first > _last);
+                _source = find_source();
+            }
+        }
 
         /* Adjust the stop index in a slice to make it closed on both ends. */
         inline long long closed_interval() {
@@ -561,49 +698,49 @@ public:
 
         /* Swap the start and stop indices based on the singly-/doubly-linked nature
         of the list. */
-        inline std::pair<size_t, size_t> slice_direction() {
-            // get first and last indices
+        inline std::pair<size_t, size_t> slice_direction(long long stop_closed) {
+            // NOTE: if the list is doubly-linked, then we start at whichever end is
+            // closest to its respective slice boundary.  This minimizes the total
+            // number of iterations, but means that we may not be iterating in the same
+            // direction as the step size would indicate
             if constexpr (has_prev<Node>::value) {
-                // iterate normally
-                long long size = static_cast<long long>(view->size);
+                long long size = static_cast<long long>(_view->size);
                 if (
-                    (step > 0 && start <= size - stop) ||
-                    (step < 0 && size - start <= stop)
+                    (step > 0 && start <= size - stop_closed) ||
+                    (step < 0 && size - start <= stop_closed)
                 ) {
-                    return std::make_pair(start, stop);
+                    return std::make_pair(start, stop_closed);  // consistent with step
                 }
-
-                // reverse
-                return std::make_pair(stop, start);
+                return std::make_pair(stop_closed, start);  // opposite of step
             }
 
-            // iterate normally
+            // NOTE: if the list is singly-linked, then we always have to iterate from
+            // the head of the list.  If the step size is negative, this means that we
+            // will end up iterating in the opposite direction.
             if (step > 0) {
-                return std::make_pair(start, stop);
+                return std::make_pair(start, stop_closed);  // consistent with step
             }
-
-            // reverse
-            return std::make_pair(stop, start);
+            return std::make_pair(stop_closed, start);  // opposite of step
         }
 
-        /* Get the number of items in the slice. */
+        /* Get the total number of items included in the slice. */
         inline size_t slice_length() {
             size_t range;
-            if (first < last) {
-                range = last - first;
+            if (_first < _last) {
+                range = _last - _first;
             } else {
-                range = first - last;
+                range = _first - _last;
             }
-            return (range / abs_step) + 1;  // add 1 to account for closed interval
+            return (range / _abs_step) + 1;  // add 1 to account for closed interval
         }
 
         /* Iterate to find the source node for the slice. */
         Node* find_source() {
             if constexpr (has_prev<Node>::value) {
-                if (first > last) {  // backward traversal
+                if (_first > _last) {  // backward traversal
                     Node* next = nullptr;
-                    Node* curr = view->tail;
-                    for (size_t i = view->size - 1; i > first; i--) {
+                    Node* curr = _view->tail;
+                    for (size_t i = _view->size - 1; i > _first; i--) {
                         next = curr;
                         curr = static_cast<Node*>(curr->prev);
                     }
@@ -613,8 +750,8 @@ public:
 
             // forward traversal
             Node* prev = nullptr;
-            Node* curr = view->head;
-            for (size_t i = 0; i < first; i++) {
+            Node* curr = _view->head;
+            for (size_t i = 0; i < _first; i++) {
                 prev = curr;
                 curr = static_cast<Node*>(curr->next);
             }
@@ -653,72 +790,11 @@ public:
         return std::make_optional(SliceProxy(this, start, stop, step));
     }
 
-    /* Enforce strict type checking for elements of this list. */
-    void specialize(PyObject* spec) {
-        // handle null assignment
-        if (spec == nullptr) {
-            if (specialization != nullptr) {
-                Py_DECREF(specialization);  // remember to release old spec
-                specialization = nullptr;
-            }
-            return;
-        }
-
-        // early return if new spec is same as old spec
-        if (specialization != nullptr) {
-            int comp = PyObject_RichCompareBool(spec, specialization, Py_EQ);
-            if (comp == -1) {  // comparison raised an exception
-                return;  // propagate error
-            } else if (comp == 1) {  // spec is identical
-                return;  // do nothing
-            }
-        }
-
-        // check the contents of the list
-        Node* curr = head;
-        for (size_t i = 0; i < size; i++) {
-            if (!Node::typecheck(curr, spec)) {
-                return;  // propagate TypeError()
-            }
-            curr = static_cast<Node*>(curr->next);
-        }
-
-        // replace old specialization
-        Py_INCREF(spec);
-        if (specialization != nullptr) {
-            Py_DECREF(specialization);
-        }
-        specialization = spec;
-    }
-
-    /* Lock the list for use in a multithreaded context.
-
-    The only difference between this method and `lock_context()` is that this returns a
-    stack-allocated lock guard that uses RAII semantics.  The mutex is acquired when
-    this method returns and is automatically released when the guard goes out of scope.
-    Any operations in between are thus guaranteed to be atomic.  This is generally the
-    safest and most natural way to lock the list in a C++ context, but doesn't work
-    well with Python's context manager protocol. */
-    inline std::lock_guard<std::mutex> lock() {
-        return std::lock_guard<std::mutex>(thread_lock);
-    }
-
-    /* Lock the list for use in a multithreaded context.
-
-    This method returns a head-allocated std::lock_guard that can be manually deleted
-    later to release the mutex.  This is used to enable Pythonic locking from a context
-    manager, rather than always relying on C++ RAII principles.  The normal `lock()` is
-    generally safer and should be preferred if calling from C++. */
-    inline std::lock_guard<std::mutex>* lock_context() {
-        return new std::lock_guard<std::mutex>(thread_lock);
-    }
-
-    /* Get the total memory consumed by the list (in bytes). */
-    inline size_t nbytes() const {
-        return allocator.nbytes() + sizeof(*this);
-    }
-
 protected:
+
+    ////////////////////////
+    ////    INTERNAL    ////
+    ////////////////////////
 
     /* Release the resources being managed by the ListView. */
     inline void self_destruct() {

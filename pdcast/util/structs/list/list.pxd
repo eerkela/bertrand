@@ -44,11 +44,6 @@ cdef extern from "list.h":
         void reverse()
         void rotate(ssize_t steps)
         PyObject* get_index[T](T index) except NULL
-        VariantList* get_slice(
-            Py_ssize_t start,
-            Py_ssize_t stop,
-            Py_ssize_t step
-        ) except *
         void set_index[T](T index, PyObject* item) except *
         void set_slice(
             Py_ssize_t start,
@@ -66,14 +61,14 @@ cdef extern from "list.h":
         size_t size()
 
         cppclass SliceProxy:
-            VariantList* get_() except NULL
-            void set_(PyObject* items) except *
-            void delete_() except *
+            VariantList* extract() except NULL
+            void replace(PyObject* items) except *
+            void drop() except *
 
         SliceProxy slice(long long start, long long stop, long long step)
 
         # extra methods
-        PyObject* get_specialization()
+        PyObject* specialization()
         void specialize(PyObject* spec) except *
         lock_guard[mutex] lock() except +  # RAII-style threading lock
         lock_guard[mutex]* lock_context() except +  # Heap-allocated threading lock

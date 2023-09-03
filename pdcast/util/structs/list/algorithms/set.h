@@ -62,6 +62,11 @@ inline void _invalid_slice_error(size_t seq_length, size_t slice_length) {
 }
 
 
+// forward declare RecoveryArray for use in Slice::replace()
+template <typename Node>
+struct RecoveryArray;
+
+
 //////////////////////
 ////    PUBLIC    ////
 //////////////////////
@@ -173,9 +178,170 @@ namespace Ops {
 }
 
 
+namespace Slice {
+
+    /* Replace a slice from a linked list, set, or dictionary. */
+    template <typename SliceProxy>
+    void replace(SliceProxy& slice, PyObject* items) {
+        using Node = typename SliceProxy::Node;
+
+        // unpack iterable into a reversible sequence
+        PyObject* sequence = PySequence_Fast(items, "can only assign an iterable");
+        if (sequence == nullptr) {
+            return;  // propagate TypeError: can only assign an iterable
+        }
+
+        // get length of sequence
+        size_t seq_length = static_cast<size_t>(PySequence_Fast_GET_SIZE(sequence));
+
+        // check for no-op
+        if (slice.length() == 0 && seq_length == 0) {
+            Py_DECREF(sequence);
+            return;
+        }
+
+        // check slice length matches sequence length
+        if (slice.length() != seq_length && slice.step != 1) {
+            // NOTE: Python allows forced insertion if and only if the step size is 1
+            PyErr_Format(
+                PyExc_ValueError,
+                "attempt to assign sequence of size %zu to extended slice of size %zu",
+                seq_length,
+                slice.length()
+            );
+            Py_DECREF(sequence);
+            return;
+        }
+
+        // NOTE: the general strategy here is as follows:
+        // 1) Allocate a contiguous array of nodes to hold the contents of the slice.
+        // 2) Remove all the nodes currently in the slice, copying them to the recovery
+        //    array.
+        // 3) Iterate through the sequence, inserting each item into the vacated slice.
+        // 4) If we encounter an error, reverse the process and remove all the nodes
+        //    we've added thus far.  Then, copy the contents of the recovery array back
+        //    into the list, returning it to its original state.
+        // 5) Otherwise, free the recovery array and return.  
+
+        // allocate recovery array
+        RecoveryArray<Node> recovery(slice.length());
+        if (PyErr_Occurred()) {  // error during array allocation
+            Py_DECREF(sequence);
+            return;
+        }
+
+        // loop 1: remove current nodes in slice
+        for (auto iter = slice.begin(1), end = slice.end(); iter != end; ++iter) {
+            Node* node = iter.remove();  // remove node from list
+            Node::init_copy(&recovery[iter.index()], node);  // copy to recovery
+            slice.view()->recycle(node);  // return node to allocator
+        }
+
+        // TODO: this implementation doesn't work if the slice is empty and the
+        // sequence is not.  In this case, the loop below will never execute.
+        // -> need to find a way to handle this.
+
+        // loop 2: insert new nodes from sequence
+        for (auto iter = slice.begin(), end = slice.end(); iter != end; ++iter) {
+            // NOTE: PySequence_Fast_GET_ITEM() returns a borrowed reference (no
+            // DECREF required)
+            PyObject* item;
+            if (slice.reverse()) {  // count from the back
+                size_t idx = seq_length - 1 - iter.index();
+                item = PySequence_Fast_GET_ITEM(sequence, idx);
+            } else {  // count from the front
+                item = PySequence_Fast_GET_ITEM(sequence, iter.index());
+            }
+
+            // allocate a new node for the item
+            Node* new_node = slice.view()->node(item);
+            if (new_node == nullptr) {
+                _undo(slice, recovery, iter.index());
+                Py_DECREF(sequence);
+                return;
+            }
+
+            // insert node into slice at current index
+            iter.insert(new_node);
+            if (PyErr_Occurred()) {
+                _undo(slice, recovery, iter.index());
+                Py_DECREF(sequence);
+                return;
+            }
+        }
+
+        // loop 3: deallocate removed nodes
+        for (size_t i = 0; i < slice.length(); i++) {
+            Node::teardown(&recovery[i]);
+        }
+
+        Py_DECREF(sequence);
+    }
+
+}
+
+
 ///////////////////////
 ////    PRIVATE    ////
 ///////////////////////
+
+
+/* A raw, contiguous memory block that nodes can be copied into and out of in case
+of an error. */
+template <typename Node>
+struct RecoveryArray {
+    Node* nodes;
+    size_t length;
+
+    /* Allocate a contiguous array of nodes. */
+    RecoveryArray(size_t length) : length(length) {
+        nodes = static_cast<Node*>(malloc(sizeof(Node) * length));
+        if (nodes == nullptr) {
+            PyErr_NoMemory();  // set a Python exception
+        }
+    }
+
+    /* Tear down all nodes and free the recovery array. */
+    ~RecoveryArray() {
+        if (nodes != nullptr) {
+            free(nodes);
+        }
+    }
+
+    /* Index the array to access a particular node. */
+    Node& operator[](size_t index) {
+        return nodes[index];
+    }
+
+};
+
+
+/* Undo a call to Slice::replace() in the event of an error. */
+template <typename SliceProxy, typename Node>
+void _undo(SliceProxy& slice, RecoveryArray<Node>& recovery, size_t n_staged) {
+    // loop 1: remove nodes that have already been added to slice
+    for (auto iter = slice.begin(1), end = slice.end(n_staged); iter != end; ++iter) {
+        Node* node = iter.remove();  // remove node from list
+        slice.view()->recycle(node);  // return node to allocator
+    }
+
+    // loop 2: reinsert original nodes
+    for (auto iter = slice.begin(), end = slice.end(); iter != end; ++iter) {
+        Node* node = slice.view()->copy(&recovery[iter.index()]);  // copy from recovery
+        Node::teardown(&recovery[iter.index()]);  // release recovery node
+        iter.insert(node);  // insert into list
+    }
+}
+
+
+
+
+
+
+
+
+
+
 
 
 /* Replace a slice in a linked list, set, or dictionary. */

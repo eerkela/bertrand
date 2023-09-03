@@ -539,23 +539,12 @@ cdef class LinkedList:
         a slice boundary, and to never backtrack.  It collects all values in a
         single iteration and stops as soon as the slice is complete.
         """
-        cdef Py_ssize_t start, stop, step
-        # cdef long long start, stop, step
+        cdef long long start, stop, step
 
         # support slicing
         if isinstance(key, slice):
             start, stop, step = key.indices(self.view.size())
-            return LinkedList.from_view(self.view.get_slice(start, stop, step))
-            # return LinkedList.from_view(self.view.slice(start, stop, step).get_())
-
-        # l = LinkedList("abcdef")
-        # l[5:2:-2]
-        # LinkedList(['f', 'd'])
-
-        # TODO: using the proxy leaves off the 'd'.  Why?
-
-        # TODO: going to have to compare the indices of the SliceProxy to the current
-        # implementation to see if there are any differences.
+            return LinkedList.from_view(self.view.slice(start, stop, step).extract())
 
         # index directly
         return <object>self.view.get_index(<PyObject*>key)
@@ -597,12 +586,12 @@ cdef class LinkedList:
         values in a single iteration and stops as soon as the slice is
         complete.
         """
-        cdef Py_ssize_t start, stop, step
+        cdef long long start, stop, step
 
         # support slicing
         if isinstance(key, slice):
             start, stop, step = key.indices(self.view.size())
-            self.view.set_slice(start, stop, step, <PyObject*>value)
+            self.view.slice(start, stop, step).replace(<PyObject*>value)
 
         # index directly
         else:
@@ -639,13 +628,12 @@ cdef class LinkedList:
         values in a single iteration and stops as soon as the slice is
         complete.
         """
-
         cdef long long start, stop, step
 
         # support slicing
         if isinstance(key, slice):
             start, stop, step = key.indices(self.view.size())
-            self.view.slice(start, stop, step).delete_()
+            self.view.slice(start, stop, step).drop()
 
         # index directly
         else:
@@ -1018,7 +1006,7 @@ cdef class LinkedList:
         This is equivalent to the ``spec`` argument passed to the constructor
         and/or :meth:`specialize() <LinkedList.specialize>` method.
         """
-        cdef PyObject* spec = self.view.get_specialization()
+        cdef PyObject* spec = self.view.specialization()
         if spec is NULL:
             return None
 
