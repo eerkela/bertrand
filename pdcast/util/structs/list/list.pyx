@@ -539,12 +539,9 @@ cdef class LinkedList:
         a slice boundary, and to never backtrack.  It collects all values in a
         single iteration and stops as soon as the slice is complete.
         """
-        cdef long long start, stop, step
-
         # support slicing
         if isinstance(key, slice):
-            start, stop, step = key.indices(self.view.size())
-            return LinkedList.from_view(self.view.slice(start, stop, step).extract())
+            return LinkedList.from_view(self.view.slice(<PyObject*>key).get())
 
         # index directly
         return <object>self.view.get_index(<PyObject*>key)
@@ -586,12 +583,9 @@ cdef class LinkedList:
         values in a single iteration and stops as soon as the slice is
         complete.
         """
-        cdef long long start, stop, step
-
         # support slicing
         if isinstance(key, slice):
-            start, stop, step = key.indices(self.view.size())
-            self.view.slice(start, stop, step).replace(<PyObject*>value)
+            self.view.slice(<PyObject*>key).set(<PyObject*>value)
 
         # index directly
         else:
@@ -628,12 +622,9 @@ cdef class LinkedList:
         values in a single iteration and stops as soon as the slice is
         complete.
         """
-        cdef long long start, stop, step
-
         # support slicing
         if isinstance(key, slice):
-            start, stop, step = key.indices(self.view.size())
-            self.view.slice(start, stop, step).drop()
+            self.view.slice(<PyObject*>key).delete()
 
         # index directly
         else:

@@ -182,7 +182,7 @@ namespace SliceOps {
 
     /* Replace a slice from a linked list, set, or dictionary. */
     template <typename SliceProxy>
-    void replace(SliceProxy& slice, PyObject* items) {
+    void set(SliceProxy& slice, PyObject* items) {
         using Node = typename SliceProxy::Node;
 
         // unpack iterable into reversible sequence
@@ -219,7 +219,7 @@ namespace SliceOps {
         }
 
         // loop 1: remove current nodes in slice
-        for (auto iter = slice.begin(1), end = slice.end(); iter != end; ++iter) {
+        for (auto iter = slice.iter(); iter != iter.end(); ++iter) {
             Node* node = iter.remove();  // remove node from list
             Node::init_copy(&recovery[iter.index()], node);  // copy to recovery array
             slice.view().recycle(node);  // recycle original node
@@ -234,11 +234,11 @@ namespace SliceOps {
         // the _undo helper.  This will densify the code and make it easier to read.
 
         // loop 2: insert new nodes from sequence into vacated slice
-        for (auto iter = slice.begin(), end = slice.end(); iter != end; ++iter) {
+        for (auto iter = slice.iter(); iter != iter.end(); ++iter) {
             // NOTE: PySequence_Fast_GET_ITEM() returns a borrowed reference (no
             // DECREF required)
             PyObject* item;
-            if (slice.reverse()) {  // count from the back
+            if (iter.reverse()) {  // count from the back
                 size_t idx = seq_length - 1 - iter.index();
                 item = PySequence_Fast_GET_ITEM(sequence, idx);
             } else {  // count from the front
@@ -312,13 +312,13 @@ struct RecoveryArray {
 template <typename SliceProxy, typename Node>
 void _undo(SliceProxy& slice, RecoveryArray<Node>& recovery, size_t n_staged) {
     // loop 3: remove nodes that have already been added to slice
-    for (auto iter = slice.begin(1), end = slice.end(n_staged); iter != end; ++iter) {
+    for (auto iter = slice.iter(n_staged); iter != iter.end(); ++iter) {
         Node* node = iter.remove();  // remove node from list
         slice.view().recycle(node);  // return node to allocator
     }
 
     // loop 4: reinsert original nodes
-    for (auto iter = slice.begin(), end = slice.end(); iter != end; ++iter) {
+    for (auto iter = slice.iter(); iter != iter.end(); ++iter) {
         Node* node = slice.view().copy(&recovery[iter.index()]);  // copy from recovery
         Node::teardown(&recovery[iter.index()]);  // release recovery node
         iter.insert(node);  // insert into list

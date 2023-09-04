@@ -114,7 +114,7 @@ namespace SliceOps {
 
     /* Extract a slice from a linked list, set, or dictionary. */
     template <typename SliceProxy>
-    auto extract(SliceProxy& slice) -> std::optional<typename SliceProxy::View> {
+    auto get(SliceProxy& slice) -> std::optional<typename SliceProxy::View> {
         using View = typename SliceProxy::View;
         using Node = typename SliceProxy::Node;
 
@@ -132,14 +132,14 @@ namespace SliceOps {
         }
 
         // copy nodes from original view into result
-        for (auto node : slice) {
-            Node* copy = result.copy(node);
+        for (auto iter = slice.iter(); iter != iter.end(); ++iter) {
+            Node* copy = result.copy(*iter);
             if (copy == nullptr) {
                 return std::nullopt;  // propagate
             }
 
             // link to slice
-            if (slice.reverse()) {
+            if (iter.reverse()) {
                 result.link(nullptr, copy, result.head);
             } else {
                 result.link(result.tail, copy, nullptr);

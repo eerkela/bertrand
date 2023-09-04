@@ -41,7 +41,7 @@ namespace SliceOps {
 
     /* Delete a slice from a linked list, set, or dictionary. */
     template <typename SliceProxy>
-    void drop(SliceProxy& slice) {
+    void del(SliceProxy& slice) {
         using Node = typename SliceProxy::Node;
 
         // check for no-op
@@ -50,7 +50,7 @@ namespace SliceOps {
         }
 
         // recycle every node in slice
-        for (auto iter = slice.begin(1), end = slice.end(); iter != end; ++iter) {
+        for (auto iter = slice.iter(); iter != iter.end(); ++iter) {
             Node* node = iter.remove();
             slice.view().recycle(node);
         }

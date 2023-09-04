@@ -61,11 +61,16 @@ cdef extern from "list.h":
         size_t size()
 
         cppclass Slice:
-            VariantList* extract() except NULL
-            void replace(PyObject* items) except *
-            void drop() except *
+            VariantList* get() except NULL
+            void set(PyObject* items) except *
+            void delete "del" () except *  # del() shadows Cython `delete` keyword
 
-        Slice slice(long long start, long long stop, long long step)
+        Slice slice(PyObject* py_slice)
+        Slice slice(
+            optional[long long] start = nullopt,
+            optional[long long] stop = nullopt,
+            optional[long long] step = nullopt
+        )
 
         # extra methods
         PyObject* specialization()
