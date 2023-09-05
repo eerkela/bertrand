@@ -226,15 +226,16 @@ namespace SliceOps {
         }
 
         // TODO: this implementation doesn't work if the slice is empty and the
-        // sequence is not.  In this case, the loop below will never execute.
-        // -> need to find a way to handle this.
-        // -> use the optional parameters to begin()/end()
+        // sequence is not.
+        // -> seems to create wierd reversing/misalignment behavior in the list
+        // -> slice parameters are not properly normalized
+
 
         // TODO: move the contents of loop 2 into a private helper, and then remove
         // the _undo helper.  This will densify the code and make it easier to read.
 
         // loop 2: insert new nodes from sequence into vacated slice
-        for (auto iter = slice.iter(); iter != iter.end(); ++iter) {
+        for (auto iter = slice.iter(seq_length); iter != iter.end(); ++iter) {
             // NOTE: PySequence_Fast_GET_ITEM() returns a borrowed reference (no
             // DECREF required)
             PyObject* item;
@@ -256,6 +257,7 @@ namespace SliceOps {
             // insert node into slice at current index
             iter.insert(new_node);
             if (PyErr_Occurred()) {
+                slice.view().recycle(new_node);  // free new node
                 _undo(slice, recovery, iter.index());  // recover original list
                 Py_DECREF(sequence);
                 return;

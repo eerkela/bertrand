@@ -7,19 +7,25 @@ from libcpp.stack cimport stack
 from .base cimport MAX_SIZE_T, SingleNode, DoubleNode, Py_INCREF, Py_DECREF
 
 
-cdef extern from "<mutex>" namespace "std":
-    cdef cppclass mutex:
-        mutex() except +
-        void lock() except +
-        bint try_lock() except +
-        void unlock() except +
-
-    cdef cppclass lock_guard[MutexType]:
-        lock_guard(MutexType& mtx) except +
-
-
 cdef extern from "list.h":
     cdef cppclass VariantList:
+        # nested types/classes
+        cppclass Slice:
+            VariantList* get() except NULL
+            void set(PyObject* items) except *
+            void delete "del" () except *  # del() shadows Cython `delete` keyword
+
+        cppclass Lock:
+            cppclass Guard:
+                pass
+            Guard operator()()
+            Guard* context()
+            bint diagnostics(optional[bint] enabled = nullopt)
+            size_t count()
+            size_t duration()
+            double contention()
+            void reset_diagnostics()
+
         # constructors
         VariantList(bint doubly_linked, Py_ssize_t max_size, PyObject* spec) except +
         VariantList(
@@ -52,19 +58,8 @@ cdef extern from "list.h":
             PyObject* items
         ) except *
         void delete_index[T](T index) except *
-        void delete_slice(
-            Py_ssize_t start,
-            Py_ssize_t stop,
-            Py_ssize_t step
-        ) except *
         int contains(PyObject* item) except *
         size_t size()
-
-        cppclass Slice:
-            VariantList* get() except NULL
-            void set(PyObject* items) except *
-            void delete "del" () except *  # del() shadows Cython `delete` keyword
-
         Slice slice(PyObject* py_slice)
         Slice slice(
             optional[long long] start = nullopt,
@@ -73,10 +68,9 @@ cdef extern from "list.h":
         )
 
         # extra methods
+        const Lock lock  # lock() functor
         PyObject* specialization()
         void specialize(PyObject* spec) except *
-        lock_guard[mutex] lock() except +  # RAII-style threading lock
-        lock_guard[mutex]* lock_context() except +  # Heap-allocated threading lock
         size_t nbytes()
         bint doubly_linked()
         SingleNode* get_head_single() except +
@@ -85,12 +79,13 @@ cdef extern from "list.h":
         DoubleNode* get_tail_double() except +
 
 
-cdef class ThreadGuard:
-    cdef lock_guard[mutex]* context  # context manager threading lock
-
-
 cdef class LinkedList:
     cdef VariantList* view
 
     @staticmethod
     cdef LinkedList from_view(VariantList* view)
+
+
+cdef class ThreadGuard:
+    cdef LinkedList parent
+    cdef VariantList.Lock.Guard* context  # context manager threading lock

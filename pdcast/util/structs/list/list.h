@@ -72,15 +72,125 @@ using VariantView = std::variant<
 // possible, which means no vtable lookups or other forms of indirection.
 
 
+/* A functor that generates weak references for the templated object. */
+template <typename SelfType>
+class SelfRef {
+public:
+
+    /* A weak reference to the associated object. */
+    class WeakRef {
+    public:
+
+        /* Check whether the referenced object still exists. */
+        bool exists() const {
+            return !ref.expired();
+        }
+
+        /* Follow the weak reference, yielding a pointer to the referenced object if it
+        still exists.  Otherwise, sets a Python error and return nullptr.  */
+        SelfType* get() const {
+            if (ref.expired()) {
+                PyErr_SetString(
+                    PyExc_ReferenceError,
+                    "referenced object no longer exists"
+                );
+                return nullptr;  // propagate error
+            }
+            return ref.lock().get();
+        }
+
+    private:
+        friend SelfRef;
+        std::weak_ptr<SelfType> ref;
+
+        template <typename... Args>
+        WeakRef(Args... args) : ref(args...) {}
+    };
+
+    /* Get a weak reference to the derived object. */
+    WeakRef operator()() const {
+        return WeakRef(_self);
+    }
+
+private:
+    friend SelfType;
+    const std::shared_ptr<SelfType> _self;
+
+    // NOTE: custom deleter prevents the shared_ptr from trying to delete the
+    // view when it goes out of scope, causing a double free segfault.
+
+    SelfRef(SelfType& self) : _self(&self, [](auto&) {}) {}
+};
+
+
+/* A functor that allows the list to be locked for use in a multithreaded
+environment. */
+template <typename VariantType>
+class VariantLock {
+public:
+    using Guard = std::lock_guard<std::mutex>;
+
+    /* Return an RAII-style lock guard for the underlying mutex. */
+    inline Guard operator()() const {
+        return std::visit([&](auto& view) { return view.lock(); }, variant.view);
+    }
+
+    /* Return a heap-allocated lock guard for the underlying mutex. */
+    inline Guard* context() const {
+        return std::visit([&](auto& view) { return view.lock.context(); }, variant.view);
+    }
+
+    /* Toggle diagnostics on or off. */
+    inline bool diagnostics(std::optional<bool> enabled = std::nullopt) const {
+        return std::visit(
+            [&](auto& view) {
+                return view.lock.diagnostics(enabled);
+            },
+            variant.view
+        );
+    }
+
+    /* Get the total number of times the mutex has been locked. */
+    inline size_t count() const {
+        return std::visit([&](auto& view) { return view.lock.count(); }, variant.view);
+    }
+
+    /* Get the total length of time spent waiting to acquire the lock. */
+    inline size_t duration() const {
+        return std::visit([&](auto& view) { return view.lock.duration(); }, variant.view);
+    }
+
+    /* Get the average time spent waiting to acquire the lock. */
+    inline double contention() const {
+        return std::visit([&](auto& view) { return view.lock.average(); }, variant.view);
+    }
+
+    /* Reset the internal diagnostic counters. */
+    inline void reset_diagnostics() const {
+        std::visit([&](auto& view) { view.lock.reset_diagnostics(); }, variant.view);
+    }
+
+private:
+    friend VariantType;
+    VariantType& variant;
+
+    VariantLock(VariantType& variant) : variant(variant) {}
+};
+
+
 /* A class that binds the appropriate methods for the given view as a std::variant
 of templated `ListView` types. */
-class VariantList : public WeakReferenceable<VariantList> {
+class VariantList {
 public:
-    using RefManager = WeakReferenceable<VariantList>;
-    using WeakRef = RefManager::WeakRef;
+    using Self = SelfRef<VariantList>;
+    using WeakRef = Self::WeakRef;
+    using Lock = VariantLock<VariantList>;
 
     template <typename... Args>
     class Slice;
+
+    const Self self;  // self()
+    const Lock lock;  // lock(), lock.context(), etc.
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -93,7 +203,7 @@ public:
         bool reverse,
         Py_ssize_t max_size,
         PyObject* spec
-    ) : RefManager()
+    ) : self(*this), lock(*this)
     {
         if (doubly_linked) {
             if (max_size < 0) {
@@ -119,7 +229,8 @@ public:
     }
 
     /* Implement LinkedList.__init__() for cases where no iterable is given. */
-    VariantList(bool doubly_linked, Py_ssize_t max_size, PyObject* spec) : RefManager()
+    VariantList(bool doubly_linked, Py_ssize_t max_size, PyObject* spec) :
+        self(*this), lock(*this)
     {
         if (doubly_linked) {
             if (max_size < 0) {
@@ -138,10 +249,11 @@ public:
 
     /* Construct a new VariantList from an existing C++ view. */
     template <typename View>
-    VariantList(View&& view) : RefManager(), view(std::move(view)) {}
+    VariantList(View&& view) : self(*this), lock(*this), view(std::move(view)) {}
 
     /* Move constructor. */
-    VariantList(VariantList&& other) : RefManager(), view(std::move(other.view))
+    VariantList(VariantList&& other) :
+        self(*this), lock(*this), view(std::move(other.view))
     {}
 
     /* Move assignment operator. */
@@ -416,16 +528,6 @@ public:
         std::visit([&](auto& view) { view.specialize(spec); }, view);
     }
 
-    /* (C++ only) Lock the list for use in a multithreaded context (RAII-style). */
-    inline std::lock_guard<std::mutex> lock() {
-        return std::visit([&](auto& view) { return view.lock(); }, view);
-    }
-
-    /* Implement LinkedList.lock() for all views. */
-    inline std::lock_guard<std::mutex>* lock_context() {
-        return std::visit([&](auto& view) { return view.lock_context(); }, view);
-    }
-
     /* Implement LinkedList.nbytes() for all views. */
     inline size_t nbytes() {
         return std::visit([&](auto& view) { return view.nbytes(); }, view);
@@ -512,8 +614,10 @@ public:
     }
 
 protected:
-    VariantView view;
+    friend Lock;
+    friend Self;
 
+    VariantView view;
 };
 
 

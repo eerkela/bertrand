@@ -539,11 +539,9 @@ cdef class LinkedList:
         a slice boundary, and to never backtrack.  It collects all values in a
         single iteration and stops as soon as the slice is complete.
         """
-        # support slicing
         if isinstance(key, slice):
             return LinkedList.from_view(self.view.slice(<PyObject*>key).get())
 
-        # index directly
         return <object>self.view.get_index(<PyObject*>key)
 
     def __setitem__(self, key: int | slice, value: object | Iterable[object]) -> None:
@@ -583,11 +581,8 @@ cdef class LinkedList:
         values in a single iteration and stops as soon as the slice is
         complete.
         """
-        # support slicing
         if isinstance(key, slice):
             self.view.slice(<PyObject*>key).set(<PyObject*>value)
-
-        # index directly
         else:
             self.view.set_index(<PyObject*>key, <PyObject*>value)
 
@@ -622,11 +617,8 @@ cdef class LinkedList:
         values in a single iteration and stops as soon as the slice is
         complete.
         """
-        # support slicing
         if isinstance(key, slice):
             self.view.slice(<PyObject*>key).delete()
-
-        # index directly
         else:
             self.view.delete_index(<PyObject*>key)
 
@@ -1235,9 +1227,12 @@ cdef class ThreadGuard:
     """
 
     def __cinit__(self, LinkedList parent):
-        self.context = parent.view.lock_context()  # acquire mutex
+        self.parent = parent
+        self.context = NULL
 
     def __enter__(self):
+        if self.context is NULL:
+            self.context = self.parent.view.lock.context()  # acquire mutex
         return self  # enter context block
 
     def locked(self) -> bool:
@@ -1264,8 +1259,8 @@ cdef class ThreadGuard:
         return self.context is not NULL
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.context is not NULL:  # release mutex
-            del self.context
+        if self.context is not NULL:
+            del self.context  # release mutex
             self.context = NULL
 
     def __dealloc__(self):

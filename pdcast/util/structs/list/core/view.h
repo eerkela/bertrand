@@ -2,6 +2,7 @@
 #ifndef BERTRAND_STRUCTS_CORE_VIEW_H
 #define BERTRAND_STRUCTS_CORE_VIEW_H
 
+#include <chrono>  // std::chrono
 #include <cstddef>  // size_t
 #include <memory>  // std::shared_ptr, std::weak_ptr
 #include <mutex>  // std::mutex, std::lock_guard
@@ -46,106 +47,17 @@ algorithms/
 ////////////////////////////////////
 
 
-// forward declaration
-template <typename View>
+template <typename ViewType>
 class SliceProxy;
+
+
+template <typename ViewType>
+class ThreadLock;
 
 
 //////////////////////
 ////    MIXINS    ////
 //////////////////////
-
-
-// TODO: these should probably go in a separate mixin.h file
-
-
-/* A mixin that allows the derived class to be weakly referenced from proxies. */
-template <typename Derived>
-class WeakReferenceable {
-public:
-    using StrongRef = std::shared_ptr<Derived>;
-    class WeakRef;
-
-    /* Get a weak reference to the derived object. */
-    WeakRef self() {
-        // lazily initialize shared reference
-        if (_self == nullptr) {
-            // NOTE: custom deleter prevents the shared_ptr from trying to delete the
-            // view when it goes out of scope, causing a double free segfault.
-            _self = StrongRef(static_cast<Derived*>(this), [](auto&) {});
-        }
-        return WeakRef(_self);
-    }
-
-    /* A weak reference to the derived object. */
-    class WeakRef {
-    public:
-
-        /* Check whether the referenced object still exists. */
-        bool exists() const {
-            return !ref.expired();
-        }
-
-        /* Follow the weak reference, yielding a pointer to the referenced object if it
-        still exists.  Otherwise, sets a Python error and return nullptr.  */
-        Derived* get() const {
-            if (ref.expired()) {
-                PyErr_SetString(
-                    PyExc_ReferenceError,
-                    "referenced object no longer exists"
-                );
-                return nullptr;  // propagate error
-            }
-            return ref.lock().get();
-        }
-
-    private:
-        friend WeakReferenceable;
-        std::weak_ptr<Derived> ref;
-
-        template <typename T>
-        WeakRef(T ref) : ref(ref) {}
-    };
-
-private:
-    friend Derived;
-    mutable StrongRef _self;
-
-    WeakReferenceable() : _self(nullptr) {}
-};
-
-
-/* A mixin that allows the derived class to be locked using an internal mutex. */
-class Lockable {
-public:
-    using LockGuard = std::lock_guard<std::mutex>;
-
-    /* Lock the list for use in a multithreaded context.
-
-    The only difference between this method and `lock_context()` is that this returns a
-    stack-allocated lock guard that uses RAII semantics.  The mutex is acquired when
-    this method returns and is automatically released when the guard goes out of scope.
-    Any operations in between are thus guaranteed to be atomic.  This is generally the
-    safest and most natural way to lock the list from C++, but doesn't work well with
-    Python's context manager protocol. */
-    inline LockGuard lock() const {
-        return LockGuard(thread_lock);
-    }
-
-    /* Lock the list for use in a multithreaded context.
-
-    This method returns a head-allocated std::lock_guard that can be manually deleted
-    later to release the mutex.  This is used to enable Pythonic locking from a context
-    manager, rather than always relying on C++ RAII principles.  The normal `lock()`
-    method is generally safer and should be preferred if calling from C++. */
-    inline LockGuard* lock_context() const {
-        return new LockGuard(thread_lock);
-    }
-
-private:
-    mutable std::mutex thread_lock;
-};
-
 
 
 ////////////////////////
@@ -201,18 +113,21 @@ template <
     typename NodeType = DoubleNode,
     template <typename> class Allocator = DynamicAllocator
 >
-class ListView : public Lockable {
+class ListView {
 public:
     using View = ListView<NodeType, Allocator>;
     using Node = NodeType;
+    using Lock = ThreadLock<View>;
     using Slice = SliceProxy<View>;
-    using LockGuard = Lockable::LockGuard;
 
     Node* head;
     Node* tail;
     size_t size;
     Py_ssize_t max_size;
     PyObject* specialization;
+
+    // A ThreadLock functor that manages an internal mutex for thread safety.
+    const Lock lock;  // lock(), lock.context(), lock.diagnostics, etc.
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -563,17 +478,14 @@ public:
             _stop = (step < 0) ? (size - 1) : (size);
         }
 
-        // get length of slice
-        long long length = Slice::slice_length(_start, _stop, _step);
-
-        // TODO: slice empty check doesn't work properly with negative step
-        // -> l = LinkedList("abcdef")[:3:-1]
-
         // convert to closed interval and check for empty slice
         long long closed = Slice::closed_interval(_start, _stop, _step);
         if ((_step > 0 && _start > closed) || (_step < 0 && _start < closed)) {
             return std::make_optional(Slice(*this, _start, _stop, _step));
         }
+
+        // get length of slice
+        long long length = Slice::slice_length(_start, _stop, _step);
 
         // slice has at least one element
         return std::make_optional(Slice(*this, _start, _stop, _step, closed, length));
@@ -945,9 +857,9 @@ public:
         }
 
         /* Get an iterator to terminate the slice. */
-        Iterator(View& view, size_t index) :
-            view(view), implicit_skip(0), step(0), idx(index), backward(false),
-            reversed(false), length(index)
+        Iterator(View& view, size_t length) :
+            view(view), implicit_skip(0), step(0), idx(length), backward(false),
+            reversed(false), length(length)
         {}
 
         /* Get the initial values for the iterator based on an origin node. */
@@ -1017,15 +929,13 @@ private:
     // force the use of the View::slice() factory method
     friend View;
 
+    // TODO: empty slice still needs to find origin node/etc in the case of a
+    // set() insertion.
+
     /* Construct an empty SliceProxy. */
-    SliceProxy(
-        View& view,
-        long long start,
-        long long stop,
-        long long step
-    ) :
+    SliceProxy(View& view, long long start, long long stop, long long step) :
         start(start), stop(stop), step(step), _view(view), _first(0), _last(0),
-        _length(0), abs_step(0), reversed(false), origin(nullptr)
+        _length(0), abs_step(llabs(step)), reversed(false), origin(nullptr)
     {}
 
     /* Construct a SliceProxy with at least one element. */
@@ -1137,6 +1047,112 @@ private:
         return (a % b + b) % b;
     }
 
+};
+
+
+/* A callable functor that produces iterators to a given index of a list. */
+template <typename ViewType>
+class IteratorFactory {
+public:
+    using View = ViewType;
+
+private:
+    friend View;
+    View& view;
+
+    IteratorFactory(View& view) : view(view) {}
+};
+
+
+/* A callable functor that allows a list to be locked for use from a multithreaded
+context. */
+template <typename ViewType>
+class ThreadLock {
+public:
+    using View = ViewType;
+    using Guard = std::lock_guard<std::mutex>;
+    using Clock = std::chrono::high_resolution_clock;
+    using Resolution = std::chrono::nanoseconds;
+
+    /* Return a std::lock_guard for the internal mutex using RAII semantics.  The mutex
+    is automatically acquired when the guard is constructed and released when it goes
+    out of scope.  Any operations in between are guaranteed to be atomic. */
+    inline Guard operator()() const {
+        if (track_diagnostics) {
+            auto start = Clock::now();
+
+            // acquire lock
+            mtx.lock();
+
+            auto end = Clock::now();
+            lock_time += std::chrono::duration_cast<Resolution>(end - start).count();
+            ++lock_count;
+
+            // create a guard using the acquired lock
+            return Guard(mtx, std::adopt_lock);
+        }
+
+        return Guard(mtx);
+    }
+
+    /* Return a heap-allocated std::lock_guard for the internal mutex.  The mutex is
+    automatically acquired when the guard is constructed and released when it is
+    manually deleted.  Any operations in between are guaranteed to be atomic.
+
+    NOTE: this method is generally less safe than using the standard functor operator,
+    but can be used for compatibility with Python's context manager protocol. */
+    inline Guard* context() const {
+        if (track_diagnostics) {
+            auto start = Clock::now();
+
+            // acquire lock
+            Guard* lock = new Guard(mtx);
+
+            auto end = Clock::now();
+            lock_time += std::chrono::duration_cast<Resolution>(end - start).count();
+            ++lock_count;
+
+            return lock;
+        }
+
+        return new Guard(mtx);
+    }
+
+    /* Toggle diagnostics on or off and return its current setting. */
+    inline bool diagnostics(std::optional<bool> enabled = std::nullopt) const {
+        if (enabled.has_value()) {
+            track_diagnostics = enabled.value();
+        }
+        return track_diagnostics;
+    }
+
+    /* Get the total number of times the mutex has been locked. */
+    inline size_t count() const {
+        return lock_count;
+    }
+
+    /* Get the total time spent waiting to acquire the lock. */
+    inline size_t duration() const {
+        return lock_time;  // includes a small overhead for lock acquisition
+    }
+
+    /* Get the average time spent waiting to acquire the lock. */
+    inline double contention() const {
+        return static_cast<double>(lock_time) / lock_count;
+    }
+
+    /* Reset the internal diagnostic counters. */
+    inline void reset_diagnostics() const {
+        lock_count = 0;
+        lock_time = 0;
+    }
+
+private:
+    friend View;
+    mutable std::mutex mtx;
+    mutable bool track_diagnostics = false;
+    mutable size_t lock_count = 0;
+    mutable size_t lock_time = 0;
 };
 
 
