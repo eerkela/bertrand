@@ -57,19 +57,9 @@ using VariantView = std::variant<
 >;
 
 
-//////////////////////
-////    PUBLIC    ////
-//////////////////////
-
-
-// NOTE: If we did not use a variant here, we would have to implement a dozen
-// or more different wrappers for each configuration of each data structure,
-// each of which would be identical except for the type of its view.  This is a
-// maintenance nightmare, and we would probably end up just wrapping everything
-// in a separate Python layer to achieve a unified interface anyways.  By using
-// a variant, we can the dispatch at the C++ level and avoid writing tons of
-// boilerplate.  This also allows us to keep things statically typed as much as
-// possible, which means no vtable lookups or other forms of indirection.
+////////////////////////
+////    FUNCTORS    ////
+////////////////////////
 
 
 /* A functor that generates weak references for the templated object. */
@@ -173,9 +163,179 @@ public:
 private:
     friend VariantType;
     VariantType& variant;
-
     VariantLock(VariantType& variant) : variant(variant) {}
 };
+
+
+/* A functor that generates slices for the list. */
+template <typename VariantType>
+class VariantSlice {
+public:
+
+    /* A simple container for normalized slice indices. */
+    struct Indices {
+        long long start, stop, step;
+        size_t abs_step, first, last, length;
+        bool empty, consistent, backward;
+    };
+
+    /* A proxy for a list that allows for efficient operations on slices within
+    the list. */
+    template <typename... Args>
+    class Slice {
+    public:
+
+        /* Implement LinkedList.__getitem__() for all views (slice). */
+        VariantType* get() {
+            VariantType* variant = ref.get();
+            if (variant == nullptr) {
+                return nullptr;  // propagate
+            }
+
+            // dispatch to proxy
+            return std::visit(
+                [&](auto& view) -> VariantType* {
+                    // generate proxy
+                    auto proxy = std::apply(
+                        [&](Args... args) { return view.slice(args...); },
+                        args
+                    );
+                    if (!proxy.has_value()) {
+                        return nullptr;  // propagate
+                    }
+
+                    // extract slice
+                    auto result = SliceOps::get(proxy.value());
+                    if (!result.has_value()) {
+                        return nullptr;  // propagate
+                    }
+
+                    // wrap result in VariantType
+                    return new VariantType(std::move(result.value()));
+                },
+                variant->view
+            );
+        }
+
+        /* Implement LinkedList.__setitem__() for all views (slice). */
+        void set(PyObject* items) {
+            VariantType* variant = ref.get();
+            if (variant == nullptr) {
+                return;  // propagate
+            }
+
+            // dispatch to proxy
+            std::visit(
+                [&](auto& view) {
+                    auto proxy = std::apply(
+                        [&](Args... args) { return view.slice(args...); },
+                        args
+                    );
+                    if (!proxy.has_value()) {
+                        return;  // propagate error
+                    }
+
+                    // replace slice
+                    SliceOps::set(proxy.value(), items);
+                },
+                variant->view
+            );
+        }
+
+        /* Implement LinkedList.__delitem__() for all views (slice). */
+        void del() {
+            VariantType* variant = ref.get();
+            if (variant == nullptr) {
+                return;  // propagate
+            }
+
+            // dispatch to proxy
+            std::visit(
+                [&](auto& view) {
+                    // generate proxy
+                    auto proxy = std::apply(
+                        [&](Args... args) { return view.slice(args...); },
+                        args
+                    );
+                    if (!proxy.has_value()) {
+                        return;  // propagate error
+                    }
+
+                    // drop slice
+                    SliceOps::del(proxy.value());
+                },
+                variant->view
+            );
+        }
+
+    private:
+        friend VariantType;
+        friend VariantSlice;
+        using WeakRef = typename VariantType::WeakRef;
+        WeakRef ref;
+        std::tuple<Args...> args;  // deferred arguments to view.slice()
+
+        /* Create a deferred factory for View::Slice objects. */
+        Slice(WeakRef variant, Args... args) :
+            ref(variant), args(std::make_tuple(args...))
+        {}
+
+    };
+
+    /* Construct a deferred Slice proxy for a list. */
+    template <typename... Args>
+    inline Slice<Args...> operator()(Args... args) const {
+        return Slice<Args...>(variant.self(), args...);
+    }
+
+    /* Normalize slice indices, applying Python-style wraparound and bounds
+    checking. */
+    template <typename... Args>
+    inline Indices* normalize(Args... args) const {
+        return std::visit(
+            [&](auto& view) -> Indices* {
+                auto result = view.slice.normalize(args...);
+                if (!result.has_value()) {
+                    return nullptr;
+                }
+                auto indices = result.value();
+                return new Indices {
+                    indices.start(),
+                    indices.stop(),
+                    indices.step(),
+                    indices.abs_step(),
+                    indices.first(),
+                    indices.last(),
+                    indices.length(),
+                    indices.empty(),
+                    indices.consistent(),
+                    indices.backward()
+                };
+            },
+            variant.view
+        );
+    }
+
+private:
+    friend VariantType;
+    VariantType& variant;
+    VariantSlice(VariantType& variant) : variant(variant) {}
+};
+
+
+//////////////////////
+////    PUBLIC    ////
+//////////////////////
+
+
+// NOTE: If we did not use a variant here, we would have to implement a dozen
+// or more different wrappers for each configuration of each data structure,
+// each of which would be identical except for the type of its view.  This is a
+// maintenance nightmare, and we would probably end up just wrapping everything
+// in a separate Python layer to achieve a unified interface anyways.  By using
+// a variant, we can the dispatch at the C++ level and avoid writing tons of
+// boilerplate.  This also allows us to keep things statically typed as much as
+// possible, which means no vtable lookups or other forms of indirection.
 
 
 /* A class that binds the appropriate methods for the given view as a std::variant
@@ -185,12 +345,10 @@ public:
     using Self = SelfRef<VariantList>;
     using WeakRef = Self::WeakRef;
     using Lock = VariantLock<VariantList>;
+    using SliceFactory = VariantSlice<VariantList>;
 
     template <typename... Args>
-    class Slice;
-
-    const Self self;  // self()
-    const Lock lock;  // lock(), lock.context(), etc.
+    using Slice = SliceFactory::Slice<Args...>;
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -203,7 +361,7 @@ public:
         bool reverse,
         Py_ssize_t max_size,
         PyObject* spec
-    ) : self(*this), lock(*this)
+    ) : slice(*this), self(*this), lock(*this)
     {
         if (doubly_linked) {
             if (max_size < 0) {
@@ -230,7 +388,7 @@ public:
 
     /* Implement LinkedList.__init__() for cases where no iterable is given. */
     VariantList(bool doubly_linked, Py_ssize_t max_size, PyObject* spec) :
-        self(*this), lock(*this)
+        slice(*this), self(*this), lock(*this)
     {
         if (doubly_linked) {
             if (max_size < 0) {
@@ -249,11 +407,13 @@ public:
 
     /* Construct a new VariantList from an existing C++ view. */
     template <typename View>
-    VariantList(View&& view) : self(*this), lock(*this), view(std::move(view)) {}
+    VariantList(View&& view) :
+        slice(*this), self(*this), lock(*this), view(std::move(view))
+    {}
 
     /* Move constructor. */
     VariantList(VariantList&& other) :
-        self(*this), lock(*this), view(std::move(other.view))
+        slice(*this), self(*this), lock(*this), view(std::move(other.view))
     {}
 
     /* Move assignment operator. */
@@ -402,116 +562,14 @@ public:
         std::visit([&](auto& view) { Ops::delete_index(view, index); }, view);
     }
 
-    /* Construct a deferred Slice proxy for a list. */
-    template <typename... Args>
-    inline Slice<Args...> slice(Args... args) {
-        return Slice<Args...>(self(), args...);
-    }
-
-    /* A proxy for a list that allows for efficient operations on slices within
-    the list. */
-    template <typename... Args>
-    class Slice {
-    public:
-
-        /* Implement LinkedList.__getitem__() for all views (slice). */
-        VariantList* get() {
-            VariantList* variant = ref.get();
-            if (variant == nullptr) {
-                return nullptr;  // propagate
-            }
-
-            // dispatch to proxy
-            return std::visit(
-                [&](auto& view) -> VariantList* {
-                    // generate proxy
-                    auto proxy = std::apply(
-                        [&](Args... args) { return view.slice(args...); },
-                        args
-                    );
-                    if (!proxy.has_value()) {
-                        return nullptr;  // propagate
-                    }
-
-                    // extract slice
-                    auto result = SliceOps::get(proxy.value());
-                    if (!result.has_value()) {
-                        return nullptr;  // propagate
-                    }
-
-                    // wrap result in VariantList
-                    return new VariantList(std::move(result.value()));
-                },
-                variant->view
-            );
-        }
-
-        /* Implement LinkedList.__setitem__() for all views (slice). */
-        void set(PyObject* items) {
-            VariantList* variant = ref.get();
-            if (variant == nullptr) {
-                return;  // propagate
-            }
-
-            // dispatch to proxy
-            std::visit(
-                [&](auto& view) {
-                    auto proxy = std::apply(
-                        [&](Args... args) { return view.slice(args...); },
-                        args
-                    );
-                    if (!proxy.has_value()) {
-                        return;  // propagate error
-                    }
-
-                    // replace slice
-                    SliceOps::set(proxy.value(), items);
-                },
-                variant->view
-            );
-        }
-
-        /* Implement LinkedList.__delitem__() for all views (slice). */
-        void del() {
-            VariantList* variant = ref.get();
-            if (variant == nullptr) {
-                return;  // propagate
-            }
-
-            // dispatch to proxy
-            std::visit(
-                [&](auto& view) {
-                    // generate proxy
-                    auto proxy = std::apply(
-                        [&](Args... args) { return view.slice(args...); },
-                        args
-                    );
-                    if (!proxy.has_value()) {
-                        return;  // propagate error
-                    }
-
-                    // drop slice
-                    SliceOps::del(proxy.value());
-                },
-                variant->view
-            );
-        }
-
-    private:
-        friend class VariantList;
-        WeakRef ref;
-        std::tuple<Args...> args;  // deferred arguments to view.slice()
-
-        /* Create a deferred factory for View::Slice objects. */
-        Slice(WeakRef variant, Args... args) :
-            ref(variant), args(std::make_tuple(args...))
-        {}
-
-    };
+    const SliceFactory slice;  // slice(), slice.normalize(), etc.
 
     /////////////////////////////
     ////    EXTRA METHODS    ////
     /////////////////////////////
+
+    const Self self;  // self()
+    const Lock lock;  // lock(), lock.context(), etc.
 
     /* Implement LinkedList.specialization() for all views. */
     inline PyObject* specialization() {
@@ -614,8 +672,9 @@ public:
     }
 
 protected:
-    friend Lock;
     friend Self;
+    friend Lock;
+    friend SliceFactory;
 
     VariantView view;
 };

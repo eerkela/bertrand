@@ -10,11 +10,6 @@ from .base cimport MAX_SIZE_T, SingleNode, DoubleNode, Py_INCREF, Py_DECREF
 cdef extern from "list.h":
     cdef cppclass VariantList:
         # nested types/classes
-        cppclass Slice:
-            VariantList* get() except NULL
-            void set(PyObject* items) except *
-            void delete "del" () except *  # del() shadows Cython `delete` keyword
-
         cppclass Lock:
             cppclass Guard:
                 pass
@@ -25,6 +20,33 @@ cdef extern from "list.h":
             size_t duration()
             double contention()
             void reset_diagnostics()
+
+        cppclass Slice:
+            VariantList* get() except NULL
+            void set(PyObject* items) except *
+            void delete "del" () except *  # del() shadows Cython `delete` keyword
+
+        cppclass SliceFactory:
+            cppclass Indices:
+                long long start, stop, step
+                size_t abs_step, first, last, length
+                bint empty, consistent, backward
+            Slice operator()(PyObject* py_slice)
+            Slice operator()(
+                optional[long long] start = nullopt,
+                optional[long long] stop = nullopt,
+                optional[long long] step = nullopt
+            )
+            Indices* normalize(PyObject* py_slice) except NULL
+            Indices* normalize(
+                optional[long long] start = nullopt,
+                optional[long long] stop = nullopt,
+                optional[long long] step = nullopt
+            ) except NULL
+
+        # functors
+        const Lock lock  # lock() functor
+        const SliceFactory slice  # slice() functor
 
         # constructors
         VariantList(bint doubly_linked, Py_ssize_t max_size, PyObject* spec) except +
@@ -60,15 +82,8 @@ cdef extern from "list.h":
         void delete_index[T](T index) except *
         int contains(PyObject* item) except *
         size_t size()
-        Slice slice(PyObject* py_slice)
-        Slice slice(
-            optional[long long] start = nullopt,
-            optional[long long] stop = nullopt,
-            optional[long long] step = nullopt
-        )
 
         # extra methods
-        const Lock lock  # lock() functor
         PyObject* specialization()
         void specialize(PyObject* spec) except *
         size_t nbytes()

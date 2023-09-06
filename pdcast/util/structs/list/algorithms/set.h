@@ -199,7 +199,7 @@ namespace SliceOps {
         }
 
         // check slice length matches sequence length
-        if (slice.length() != seq_length && slice.step != 1) {
+        if (slice.length() != seq_length && slice.step() != 1) {
             // NOTE: Python allows forced insertion if and only if the step size is 1
             PyErr_Format(
                 PyExc_ValueError,
