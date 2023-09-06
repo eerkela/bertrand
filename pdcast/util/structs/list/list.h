@@ -107,7 +107,7 @@ public:
         WeakRef(Args... args) : ref(args...) {}
     };
 
-    /* Get a weak reference to the derived object. */
+    /* Get a weak reference to the associated object. */
     WeakRef operator()() const {
         return WeakRef(_self);
     }
@@ -116,8 +116,8 @@ private:
     friend SelfType;
     const std::shared_ptr<SelfType> _self;
 
-    // NOTE: custom deleter prevents the shared_ptr from trying to delete the
-    // view when it goes out of scope, causing a double free segfault.
+    // NOTE: custom deleter prevents the shared_ptr from trying to delete the object
+    // when it goes out of scope, which can cause a segfault due to a double free.
 
     SelfRef(SelfType& self) : _self(&self, [](auto&) {}) {}
 };
@@ -619,7 +619,6 @@ protected:
 
     VariantView view;
 };
-
 
 
 #endif  // BERTRAND_STRUCTS_LIST_H include guard
