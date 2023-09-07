@@ -1,0 +1,464 @@
+// include guard prevents multiple inclusion
+#ifndef BERTRAND_STRUCTS_CORE_SLICE_H
+#define BERTRAND_STRUCTS_CORE_SLICE_H
+
+#include <optional>  // std::optional
+#include <type_traits>  // std::enable_if_t
+#include <Python.h>  // CPython API
+#include "node.h"  // has_prev<>
+#include "index.h"  // IndexFactory
+#include "util.h"  // CoupledIterator, Bidirectional
+
+
+////////////////////////////////////
+////    FORWARD DECLARATIONS    ////
+////////////////////////////////////
+
+
+template <typename ViewType>
+class SliceProxy;
+
+
+////////////////////////
+////    FUNCTORS    ////
+////////////////////////
+
+
+/* A functor that constructs bidirectional proxies for slices within the templated
+view. */
+template <typename ViewType>
+class SliceFactory {
+public:
+    using View = ViewType;
+    using Node = typename View::Node;
+    class Indices;
+    using Slice = SliceProxy<View>;
+
+    /* Return a Slice proxy over the given indices. */
+    template <typename... Args>
+    std::optional<Slice> operator()(Args... args) const {
+        auto indices = normalize(args...);
+        if (!indices.has_value()) {
+            return std::nullopt;
+        }
+        return std::make_optional(Slice(view, std::move(indices.value())));
+    }
+
+    /* Normalize slice indices, applying Python-style wraparound and bounds
+    checking. */
+    std::optional<Indices> normalize(
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt,
+        std::optional<long long> step = std::nullopt
+    ) const {
+        // normalize slice indices
+        long long size = static_cast<long long>(view.size);
+        long long default_start = (step.value_or(0) < 0) ? (size - 1) : (0);
+        long long default_stop = (step.value_or(0) < 0) ? (-1) : (size);
+        long long default_step = 1;
+
+        // normalize step
+        long long step_ = step.value_or(default_step);
+        if (step_ == 0) {
+            PyErr_SetString(PyExc_ValueError, "slice step cannot be zero");
+            return std::nullopt;
+        }
+
+        // normalize start index
+        long long start_ = start.value_or(default_start);
+        if (start_ < 0) {
+            start_ += size;
+            if (start_ < 0) {
+                start_ = (step_ < 0) ? (-1) : (0);
+            }
+        } else if (start_ >= size) {
+            start_ = (step_ < 0) ? (size - 1) : (size);
+        }
+
+        // normalize stop index
+        long long stop_ = stop.value_or(default_stop);
+        if (stop_ < 0) {
+            stop_ += size;
+            if (stop_ < 0) {
+                stop_ = (step_ < 0) ? -1 : 0;
+            }
+        } else if (stop_ > size) {
+            stop_ = (step_ < 0) ? (size - 1) : (size);
+        }
+
+        // get length of slice
+        size_t length = std::max(
+            (stop_ - start_ + step_ - (step_ > 0 ? 1 : -1)) / step_,
+            static_cast<long long>(0)
+        );
+
+        // return as Indices
+        return std::make_optional(Indices(start_, stop_, step_, length, view.size));
+    }
+
+    /* Normalize a Python slice object, applying Python-style wraparound and bounds
+    checking. */
+    std::optional<Indices> normalize(PyObject* py_slice) const {
+        // check that input is a Python slice object
+        if (!PySlice_Check(py_slice)) {
+            PyErr_SetString(PyExc_TypeError, "index must be a Python slice");
+            return std::nullopt;
+        }
+
+        // use CPython API to get slice indices
+        Py_ssize_t py_start, py_stop, py_step, py_length;
+        int err = PySlice_GetIndicesEx(
+            py_slice, view.size, &py_start, &py_stop, &py_step, &py_length
+        );
+        if (err == -1) {
+            return std::nullopt;  // propagate error
+        }
+
+        // cast from Py_ssize_t
+        long long start = static_cast<long long>(py_start);
+        long long stop = static_cast<long long>(py_stop);
+        long long step = static_cast<long long>(py_step);
+        size_t length = static_cast<size_t>(py_length);
+
+        // return as Indices
+        return std::make_optional(Indices(start, stop, step, length, view.size));
+    }
+
+    /* A simple class representing the normalized indices needed to construct a
+    coherent slice. */
+    class Indices {
+    public:
+        /* Get the original indices that were supplied to the constructor. */
+        inline long long start() const { return _start; }
+        inline long long stop() const { return _stop; }
+        inline long long step() const { return _step; }
+        inline size_t abs_step() const { return _abs_step; }
+
+        /* Get the first and last included indices. */
+        inline size_t first() const { return _first; }
+        inline size_t last() const { return _last; }
+
+        /* Get the number of items included in the slice. */
+        inline size_t length() const { return _length; }
+        inline bool empty() const { return _length == 0; }
+
+        /* Check if the first and last indices conform to the expected step size. */
+        inline bool consistent() const { return _consistent; }
+        inline bool backward() const { return _backward; }
+
+    private:
+        friend SliceFactory;
+        const long long _start;
+        const long long _stop;
+        const long long _step;
+        const size_t _abs_step;
+        size_t _first;
+        size_t _last;
+        const size_t _length;
+        bool _consistent;
+        bool _backward;
+
+        Indices(
+            const long long start,
+            const long long stop,
+            const long long step,
+            const size_t length,
+            const size_t view_size
+        ) : _start(start), _stop(stop), _step(step), _abs_step(llabs(step)),
+            _first(0), _last(0), _length(length), _consistent(true), _backward(false)
+        {
+            if (length > 0) {
+                // convert to closed interval [start, closed]
+                long long mod = py_modulo((stop - start), step);
+                long long closed = (mod == 0) ? (stop - step) : (stop - mod);
+
+                // get direction in which to traverse slice based on singly-/doubly-
+                // linked nature of the list
+                std::pair<size_t, size_t> dir = slice_direction(closed, view_size);
+                _first = dir.first;
+                _last = dir.second;
+
+                // because we've adjusted our indices to minimize total iterations, we
+                // may not necessarily be iterating in the same direction as the step
+                // size would indicate.  we need to account for this when
+                // getting/setting items in the slice
+                _consistent = (_step < 0) ? (_first >= _last) : (_first <= _last);
+                _backward = (_first > _last);
+            }
+        }
+
+        /* A modulo operator (%) that matches Python's behavior with respect to
+        negative numbers. */
+        template <typename T>
+        inline static T py_modulo(T a, T b) {
+            // NOTE: Python's `%` operator is defined such that the result has
+            // the same sign as the divisor (b).  This differs from C/C++, where
+            // the result has the same sign as the dividend (a).
+            return (a % b + b) % b;
+        }
+
+        /* Swap the start and stop indices based on the singly-/doubly-linked nature
+        of the list. */
+        inline std::pair<size_t, size_t> slice_direction(
+            long long closed_stop, size_t view_size
+        ) {
+            // NOTE: if the list is doubly-linked, then we start at whichever end is
+            // closest to its respective slice boundary.  This minimizes the total
+            // number of iterations, but means that we may not be iterating in the same
+            // direction as the step size would indicate
+            if constexpr (has_prev<Node>::value) {
+                long long size = static_cast<long long>(view_size);
+                if (
+                    (_step > 0 && _start <= size - closed_stop) ||
+                    (_step < 0 && size - _start <= closed_stop)
+                ) {
+                    return std::make_pair(_start, closed_stop);  // consistent with step
+                }
+                return std::make_pair(closed_stop, _start);  // opposite of step
+            }
+
+            // NOTE: if the list is singly-linked, then we always have to iterate from
+            // the head of the list.  If the step size is negative, this means that we
+            // will end up iterating in the opposite direction.
+            if (_step > 0) {
+                return std::make_pair(_start, closed_stop);  // consistent with step
+            }
+            return std::make_pair(closed_stop, _start);  // opposite of step
+        }
+    };
+
+private:
+    friend View;
+    View& view;
+
+    SliceFactory(View& view) : view(view) {}
+};
+
+
+///////////////////////
+////    PROXIES    ////
+///////////////////////
+
+
+// TODO:
+// l = LinkedList("abcdef")
+// l[4:2:-1]  // segfault
+
+
+/* A proxy that allows for efficient operations on slices within a list. */
+template <typename ViewType>
+class SliceProxy {
+public:
+    using View = ViewType;
+    using Node = typename View::Node;
+    using Indices = typename SliceFactory<View>::Indices;
+
+    // NOTE: Reverse iterators are only compiled for doubly-linked lists.
+
+    template <
+        bool reverse = false,
+        typename = std::enable_if_t<!reverse || has_prev<Node>::value>
+    >
+    class Iterator;
+    using IteratorPair = CoupledIterator<Bidirectional<Iterator>>;
+
+    /* Get the underlying view being referenced by the proxy. */
+    inline View& view() const { return _view; }
+
+    /* Pass through to Indices. */
+    inline long long start() const { return indices.start(); }
+    inline long long stop() const { return indices.stop(); }
+    inline long long step() const { return indices.step(); }
+    inline size_t abs_step() const { return indices.abs_step(); }
+    inline size_t first() const { return indices.first(); }
+    inline size_t last() const { return indices.last(); }
+    inline size_t length() const { return indices.length(); }
+    inline bool empty() const { return indices.empty(); }
+    inline bool consistent() const { return indices.consistent(); }
+    inline bool backward() const { return indices.backward(); }
+
+    /* Return a coupled pair of iterators for more fine-grained control. */
+    inline IteratorPair iter(std::optional<size_t> length = std::nullopt) const {
+        if (length.has_value()) {
+            return IteratorPair(
+                Bidirectional(Iterator(_view, origin, indices, length.value())),
+                Bidirectional(Iterator(_view, indices, length.value()))
+            );
+        }
+        return IteratorPair(begin(), end());
+    }
+
+    /* Return an iterator to the start of the slice. */
+    inline Bidirectional<Iterator> begin() const {
+        if (empty()) {
+            return Bidirectional(Iterator(_view, indices, length()));  // empty iterator
+        }
+        return Bidirectional(Iterator(_view, origin, indices, length()));
+    }
+
+    /* Return an iterator to the end of the slice. */
+    inline Bidirectional<Iterator> end() const {
+        return Bidirectional(Iterator(_view, indices, length()));
+    }
+
+    /////////////////////////////
+    ////    INNER CLASSES    ////
+    /////////////////////////////
+
+    template <bool reverse>
+    using BaseIterator = typename IndexFactory<View>::template Iterator<reverse>;
+
+    /* A specialized iterator built for slice traversal. */
+    template <bool reverse, typename>
+    class Iterator : public BaseIterator<reverse> {
+    public:
+        using Base = BaseIterator<reverse>;
+
+        /* Prefix increment to advance the iterator to the next node in the slice. */
+        inline Iterator& operator++() {
+            ++this->idx;
+            if (this->idx == length_override) {
+                return *this;  // don't jump on last iteration
+            }
+
+            if constexpr (reverse) {
+                for (size_t i = implicit_skip; i < indices.abs_step(); ++i) {
+                    this->next = this->curr;
+                    this->curr = this->prev;
+                    this->prev = static_cast<Node*>(this->curr->prev);
+                }
+            } else {
+                for (size_t i = implicit_skip; i < indices.abs_step(); ++i) {
+                    this->prev = this->curr;
+                    this->curr = this->next;
+                    this->next = static_cast<Node*>(this->curr->next);
+                }
+            }
+            return *this;
+        }
+
+        //////////////////////////////
+        ////    HELPER METHODS    ////
+        //////////////////////////////
+
+        /* Remove the node at the current position. */
+        inline Node* remove() { ++implicit_skip; return Base::remove(); }
+
+        /* Indicates whether the direction of an Iterator matches the sign of the
+        step size.
+
+        If this is true, then the iterator will yield items in the same order as
+        expected from the slice parameters.  Otherwise, it will yield items in the
+        opposite order, and the user will have to account for this when getting/setting
+        items within the list.  This is done to minimize the total number of iterations
+        required to traverse the slice without backtracking. */
+        inline bool consistent() const { return indices.consistent(); }
+
+    protected:
+        friend SliceProxy;
+        const Indices& indices;
+        size_t length_override;
+        size_t implicit_skip;
+
+        ////////////////////////////
+        ////    CONSTRUCTORS    ////
+        ////////////////////////////
+
+        /* Get an iterator to the start of the slice. */
+        Iterator(
+            View& view,
+            Node* origin,
+            const Indices& indices,
+            size_t length_override
+        ) :
+            Base(view, nullptr, 0), indices(indices), length_override(length_override),
+            implicit_skip(0)
+        { init(origin); }
+
+        /* Get an iterator to terminate the slice. */
+        Iterator(View& view, const Indices& indices, size_t length_override) :
+            Base(view, length_override), indices(indices),
+            length_override(length_override), implicit_skip(0)
+        {}
+
+        /* Get the initial values for the iterator based on an origin node. */
+        inline void init(Node* origin) {
+            if constexpr (reverse) {
+                this->next = origin;
+                if (origin == nullptr) {
+                    this->curr = this->view.tail;
+                } else {
+                    this->curr = static_cast<Node*>(origin->prev);
+                }
+                this->prev = static_cast<Node*>(this->curr->prev);
+            } else {
+                this->prev = origin;
+                if (origin == nullptr) {
+                    this->curr = this->view.head;
+                } else {
+                    this->curr = static_cast<Node*>(origin->next);
+                }
+                this->next = static_cast<Node*>(this->curr->next);
+            }
+        }
+
+    };
+
+private:
+    friend View;
+    friend SliceFactory<View>;
+    View& _view;
+    const Indices indices;
+    Node* origin;  // node that immediately precedes the slice (can be NULL)
+
+    // TODO: use a cache to find the origin node when it is first requested.  That way,
+    // creating a SliceProxy is still fast, and as long as we guard using slice.empty(),
+    // we can avoid the overhead of finding the origin node if we never need it.
+
+    // Once we call any of the iterator methods, we either find the origin node or use
+    // the cached value.
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    // TODO: empty slice still needs to find origin node/etc in the case of a
+    // set() insertion.
+
+    /* Construct a SliceProxy with at least one element. */
+    SliceProxy(View& view, Indices&& indices) :
+        _view(view), indices(indices), origin(nullptr)
+    {
+        if (!empty()) {
+            origin = find_origin();  // find the origin for the slice
+        }
+    }
+
+    /* Iterate to find the origin node for the slice. */
+    Node* find_origin() {
+        if constexpr (has_prev<Node>::value) {
+            if (backward()) {  // backward traversal
+                Node* next = nullptr;
+                Node* curr = _view.tail;
+                for (size_t i = _view.size - 1; i > first(); i--) {
+                    next = curr;
+                    curr = static_cast<Node*>(curr->prev);
+                }
+                return next;
+            }
+        }
+
+        // forward traversal
+        Node* prev = nullptr;
+        Node* curr = _view.head;
+        for (size_t i = 0; i < first(); i++) {
+            prev = curr;
+            curr = static_cast<Node*>(curr->next);
+        }
+        return prev;
+    }
+
+};
+
+
+#endif  // BERTRAND_STRUCTS_CORE_SLICE_H include guard
