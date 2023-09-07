@@ -3,7 +3,9 @@
 #define BERTRAND_STRUCTS_LIST_H
 
 #include <cstddef>  // for size_t
+#include <memory>  // std::shared_ptr, std::weak_ptr
 #include <optional>  // std::optional
+#include <stdexcept>  // std::runtime_error
 #include <utility>  // std::pair
 #include <variant>  // std::variant
 #include <Python.h>  // CPython API
@@ -285,7 +287,7 @@ public:
     /* Construct a deferred Slice proxy for a list. */
     template <typename... Args>
     inline Slice<Args...> operator()(Args... args) const {
-        return Slice<Args...>(variant.self(), args...);
+        return Slice<Args...>(variant.weak_ref(), args...);
     }
 
     /* Normalize slice indices, applying Python-style wraparound and bounds
@@ -361,7 +363,7 @@ public:
         bool reverse,
         Py_ssize_t max_size,
         PyObject* spec
-    ) : slice(*this), self(*this), lock(*this)
+    ) : slice(*this), lock(*this), weak_ref(*this)
     {
         if (doubly_linked) {
             if (max_size < 0) {
@@ -388,7 +390,7 @@ public:
 
     /* Implement LinkedList.__init__() for cases where no iterable is given. */
     VariantList(bool doubly_linked, Py_ssize_t max_size, PyObject* spec) :
-        slice(*this), self(*this), lock(*this)
+        slice(*this), lock(*this), weak_ref(*this)
     {
         if (doubly_linked) {
             if (max_size < 0) {
@@ -408,12 +410,12 @@ public:
     /* Construct a new VariantList from an existing C++ view. */
     template <typename View>
     VariantList(View&& view) :
-        slice(*this), self(*this), lock(*this), view(std::move(view))
+        slice(*this), lock(*this), weak_ref(*this), view(std::move(view))
     {}
 
     /* Move constructor. */
     VariantList(VariantList&& other) :
-        slice(*this), self(*this), lock(*this), view(std::move(other.view))
+        slice(*this), lock(*this), weak_ref(*this), view(std::move(other.view))
     {}
 
     /* Move assignment operator. */
@@ -425,6 +427,8 @@ public:
     //////////////////////////////
     ////    LIST INTERFACE    ////
     //////////////////////////////
+
+    const SliceFactory slice;  // slice(), slice.normalize(), etc.
 
     /* Implement LinkedList.append() for all views. */
     inline void append(PyObject* item, bool left) {
@@ -562,13 +566,10 @@ public:
         std::visit([&](auto& view) { Ops::delete_index(view, index); }, view);
     }
 
-    const SliceFactory slice;  // slice(), slice.normalize(), etc.
-
     /////////////////////////////
     ////    EXTRA METHODS    ////
     /////////////////////////////
 
-    const Self self;  // self()
     const Lock lock;  // lock(), lock.context(), etc.
 
     /* Implement LinkedList.specialization() for all views. */
@@ -676,6 +677,7 @@ protected:
     friend Lock;
     friend SliceFactory;
 
+    const Self weak_ref;  // weak_ref()
     VariantView view;
 };
 

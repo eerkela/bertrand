@@ -1,7 +1,6 @@
 """Cython headers for pdcast/util/structs/list/double.pyx"""
 from cpython.ref cimport PyObject
-from libcpp.memory cimport unique_ptr, make_unique
-from libcpp.optional cimport optional, nullopt, make_optional
+from libcpp.optional cimport optional, nullopt
 from libcpp.stack cimport stack
 
 from .base cimport MAX_SIZE_T, SingleNode, DoubleNode, Py_INCREF, Py_DECREF
@@ -44,10 +43,6 @@ cdef extern from "list.h":
                 optional[long long] step = nullopt
             ) except NULL
 
-        # functors
-        const Lock lock  # lock() functor
-        const SliceFactory slice  # slice() functor
-
         # constructors
         VariantList(bint doubly_linked, Py_ssize_t max_size, PyObject* spec) except +
         VariantList(
@@ -57,6 +52,10 @@ cdef extern from "list.h":
             Py_ssize_t max_size,
             PyObject* spec
         ) except +
+
+        # functors
+        const Lock lock  # lock() functor
+        const SliceFactory slice  # slice() functor
 
         # list interface
         void append(PyObject* item, bint left) except *

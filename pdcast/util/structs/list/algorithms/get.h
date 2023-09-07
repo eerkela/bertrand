@@ -139,7 +139,7 @@ namespace SliceOps {
             }
 
             // link to slice
-            if (iter.reverse()) {
+            if (!iter.consistent()) {
                 result.link(nullptr, copy, result.head);
             } else {
                 result.link(result.tail, copy, nullptr);

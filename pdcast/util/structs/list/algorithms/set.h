@@ -239,7 +239,7 @@ namespace SliceOps {
             // NOTE: PySequence_Fast_GET_ITEM() returns a borrowed reference (no
             // DECREF required)
             PyObject* item;
-            if (iter.reverse()) {  // count from the back
+            if (!iter.consistent()) {  // count from the back
                 size_t idx = seq_length - 1 - iter.index();
                 item = PySequence_Fast_GET_ITEM(sequence, idx);
             } else {  // count from the front
