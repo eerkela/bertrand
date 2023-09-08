@@ -72,12 +72,6 @@ cdef extern from "list.h":
         void rotate(ssize_t steps)
         PyObject* get_index[T](T index) except NULL
         void set_index[T](T index, PyObject* item) except *
-        void set_slice(
-            Py_ssize_t start,
-            Py_ssize_t stop,
-            Py_ssize_t step,
-            PyObject* items
-        ) except *
         void delete_index[T](T index) except *
         int contains(PyObject* item) except *
         size_t size()

@@ -543,23 +543,6 @@ public:
         std::visit([&](auto& view) { Ops::set_index(view, index, value); }, view);
     }
 
-    // TODO: rewrite set_slice using new Slice proxy
-
-    /* Dispatch to the correct implementation of set_slice() for each views. */
-    inline void set_slice(
-        Py_ssize_t start,
-        Py_ssize_t stop,
-        Py_ssize_t step,
-        PyObject* items
-    ) {
-        std::visit(
-            [&](auto& view) {
-                Ops::set_slice(&view, start, stop, step, items);
-            },
-            view
-        );
-    }
-
     /* Implement LinkedList.__delitem__() for all views (single index). */
     template <typename T>
     inline void delete_index(T index) {

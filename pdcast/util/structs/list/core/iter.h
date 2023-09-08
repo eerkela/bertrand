@@ -34,43 +34,43 @@ public:
     // NOTE: Reverse iterators are only compiled for doubly-linked lists.
 
     template <
-        bool reverse = false,
-        typename = std::enable_if_t<has_prev<Node>::value || !reverse>
+        Direction dir = Direction::forward,
+        typename = std::enable_if_t<dir == Direction::forward || has_prev<Node>::value>
     >
     class Iterator;
 
     template <
-        bool reverse = false,
-        typename = std::enable_if_t<has_prev<Node>::value || !reverse>
+        Direction dir = Direction::forward,
+        typename = std::enable_if_t<dir == Direction::forward || has_prev<Node>::value>
     >
-    using IteratorPair = CoupledIterator<Iterator<reverse>>;
+    using IteratorPair = CoupledIterator<Iterator<dir>>;
 
     /* Return a coupled iterator for clearer access to the iterator's interface. */
-    template <bool reverse = false>
-    inline IteratorPair<reverse> operator()() const {
-        return IteratorPair(begin<reverse>(), end<reverse>());
+    template <Direction dir = Direction::forward>
+    inline IteratorPair<dir> operator()() const {
+        return IteratorPair(begin<dir>(), end<dir>());
     }
 
     /* Return an iterator to the head/tail of a list based on the reverse parameter. */
-    template <bool reverse = false>
-    inline Iterator<reverse> begin() const {
+    template <Direction dir = Direction::forward>
+    inline Iterator<dir> begin() const {
         Node* origin;
-        if constexpr (reverse) {
+        if constexpr (dir == Direction::backward) {
             origin = view.tail;
         } else {
             origin = view.head;
         }
-        return Iterator<reverse>(view, origin);
+        return Iterator<dir>(view, origin);
     }
 
     /* Return a null iterator to terminate the sequence. */
-    template <bool reverse = false>
-    inline Iterator<reverse> end() const {
-        return Iterator<reverse>(view);
+    template <Direction dir = Direction::forward>
+    inline Iterator<dir> end() const {
+        return Iterator<dir>(view);
     }
 
     /* An iterator that traverses a list and keeps track of each node's neighbors. */
-    template <bool reverse, typename>
+    template <Direction dir, typename>
     class Iterator {
     public:
         using View = ViewType;
@@ -99,7 +99,7 @@ public:
 
         /* Prefix increment to advance the iterator to the next node in the slice. */
         inline Iterator& operator++() {
-            if constexpr (reverse) {
+            if constexpr (dir == Direction::backward) {
                 next = curr;
                 curr = prev;
                 prev = static_cast<Node*>(prev->prev);
@@ -112,7 +112,7 @@ public:
         }
 
         /* Inequality comparison to terminate the slice. */
-        template <bool T>
+        template <Direction T>
         inline bool operator!=(const Iterator<T>& other) const {
             return curr != other.curr;
         }
@@ -123,7 +123,7 @@ public:
 
         /* Insert a node at the current position. */
         inline void insert(Node* node) {
-            if constexpr (reverse) {
+            if constexpr (dir == Direction::backward) {
                 view.link(curr, node, next);
             } else {
                 view.link(prev, node, curr);
@@ -132,7 +132,11 @@ public:
                 return;  // propagate
             }
 
-            if constexpr (reverse) { prev = curr; } else { next = curr; }
+            if constexpr (dir == Direction::backward) {
+                prev = curr;
+            } else {
+                next = curr;
+            }
             curr = node;
         }
 
@@ -140,7 +144,7 @@ public:
         inline Node* remove() {
             Node* removed = curr;
             view.unlink(prev, curr, next);
-            if constexpr (reverse) {
+            if constexpr (dir == Direction::backward) {
                 curr = prev;
                 if (prev != nullptr) {
                     prev = static_cast<Node*>(prev->prev);
@@ -185,7 +189,7 @@ public:
             prev(nullptr), curr(node), next(nullptr), view(view)
         {
             if (curr != nullptr) {
-                if constexpr (reverse) {
+                if constexpr (dir == Direction::backward) {
                     prev = static_cast<Node*>(curr->prev);
                 } else {
                     next = static_cast<Node*>(curr->next);

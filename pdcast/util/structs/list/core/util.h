@@ -92,7 +92,7 @@ public:
         return first.inverted();
     }
 
-private:
+protected:
     Iterator first, second;
 };
 
@@ -186,7 +186,7 @@ public:
         Iterator() : py_iter(nullptr), curr(nullptr) {}
     };
 
-private:
+protected:
     PyObject* py_iter;
 };
 
@@ -214,41 +214,57 @@ statically-typed forward iterator, and there are no unnecessary branches at all.
 */
 
 
+/* enum to make iterator direction declarations more readable. */
+enum class Direction {
+    forward,
+    backward
+};
+
+
 /* Conditionally-compiled base class for Bidirectional iterators that respects the
 reversability of the associated view. */
-template <template <bool, typename = void> class Iterator, bool HasPrev>
+template <template <Direction, typename = void> class Iterator, bool HasPrev>
 class BidirectionalBase;
 
 
 /* Specialization for singly-linked lists. */
-template <template <bool, typename = void> class Iterator>
+template <template <Direction, typename = void> class Iterator>
 class BidirectionalBase<Iterator, false> {
 protected:
-    union { Iterator<false> forward; } it;
+    union { Iterator<Direction::forward> forward; } it;
 
-    BidirectionalBase(const Iterator<false>& iter) : it{.forward = iter} {}
+    BidirectionalBase(const Iterator<Direction::forward>& iter) :
+        it{.forward = iter}
+    {}
 };
 
 
 /* Specialization for doubly-linked lists. */
-template <template <bool, typename = void> class Iterator>
+template <template <Direction, typename = void> class Iterator>
 class BidirectionalBase<Iterator, true> {
 protected:
-    union { Iterator<false> forward; Iterator<true> backward; } it;
+    union {
+        Iterator<Direction::forward> forward;
+        Iterator<Direction::backward> backward;
+    } it;
 
-    BidirectionalBase(const Iterator<false>& iter) : it{.forward = iter} {}
-    BidirectionalBase(const Iterator<true>& iter) : it{.backward = iter} {}
+    BidirectionalBase(const Iterator<Direction::forward>& iter) :
+        it{.forward = iter}
+    {}
+    BidirectionalBase(const Iterator<Direction::backward>& iter) :
+        it{.backward = iter}
+    {}
 };
 
 
 /* A type-erased iterator that can contain either a forward or backward iterator. */
-template <template <bool, typename = void> class Iterator>
+template <template <Direction, typename = void> class Iterator>
 class Bidirectional : public BidirectionalBase<
     Iterator,
-    has_prev<typename Iterator<false>::Node>::value
+    has_prev<typename Iterator<Direction::forward>::Node>::value
 > {
 public:
-    using ForwardIterator = Iterator<false>;
+    using ForwardIterator = Iterator<Direction::forward>;
     using Node = typename ForwardIterator::Node;
     using Base = BidirectionalBase<Iterator, has_prev<Node>::value>;
 
@@ -259,9 +275,13 @@ public:
     using pointer               = typename ForwardIterator::pointer;
     using reference             = typename ForwardIterator::reference;
 
+    const bool backward;
+
     /* Initialize the union using an existing iterator. */
-    template <bool reverse>
-    Bidirectional(const Iterator<reverse>& it) : Base(it), backward(reverse) {}
+    template <Direction dir>
+    Bidirectional(const Iterator<dir>& it) :
+        Base(it), backward(dir == Direction::backward)
+    {}
 
     /* Call the contained type's destructor. */
     ~Bidirectional() {
@@ -387,8 +407,6 @@ public:
         return this->it.forward.inverted();
     }
 
-private:
-    const bool backward;
 };
 
 

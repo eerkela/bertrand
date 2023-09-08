@@ -406,14 +406,14 @@ public:
     const Iter iter;  // iter(), iter.begin(), iter.end(), etc.
 
     /* Return an iterator to the start of the list. */
-    template <bool reverse = false>
-    inline typename Iter::Iterator<reverse> begin() const {
+    template <Direction dir = Direction::forward>
+    inline typename Iter::template Iterator<dir> begin() const {
         return iter.begin();
     }
 
     /* Return an iterator to the end of the list. */
-    template <bool reverse = false>
-    inline typename Iter::Iterator<reverse> end() const {
+    template <Direction dir = Direction::forward>
+    inline typename Iter::template Iterator<dir> end() const {
         return iter.end();
     }
 

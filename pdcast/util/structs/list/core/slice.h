@@ -261,11 +261,15 @@ public:
     // NOTE: Reverse iterators are only compiled for doubly-linked lists.
 
     template <
-        bool reverse = false,
-        typename = std::enable_if_t<has_prev<Node>::value || !reverse>
+        Direction dir = Direction::forward,
+        typename = std::enable_if_t<dir == Direction::forward || has_prev<Node>::value>
     >
     class Iterator;
     using IteratorPair = CoupledIterator<Bidirectional<Iterator>>;
+
+    ////////////////////////////
+    ////    PROXY ACCESS    ////
+    ////////////////////////////
 
     /* Get the underlying view being referenced by the proxy. */
     inline View& view() const { return _view; }
@@ -282,26 +286,33 @@ public:
     inline bool backward() const { return indices.backward(); }
     inline bool inverted() const { return indices.inverted(); }
 
+    /////////////////////////
+    ////    ITERATORS    ////
+    /////////////////////////
+
     /* Return a coupled pair of iterators with a possible length override. */
     inline IteratorPair iter(std::optional<size_t> length = std::nullopt) const {
+        using Forward = Iterator<Direction::forward>;
+
         // use length override if given
         if (length.has_value()) {
             size_t len = length.value();
 
             // backward traversal
             if constexpr (has_prev<Node>::value) {
+                using Backward = Iterator<Direction::backward>;
                 if (backward()) {
                     return IteratorPair(
-                        Bidirectional(Iterator<true>(_view, origin(), indices, len)),
-                        Bidirectional(Iterator<true>(_view, indices, len))
+                        Bidirectional(Backward(_view, origin(), indices, len)),
+                        Bidirectional(Backward(_view, indices, len))
                     );
                 }
             }
 
             // forward traversal
             return IteratorPair(
-                Bidirectional(Iterator<false>(_view, origin(), indices, len)),
-                Bidirectional(Iterator<false>(_view, indices, len))
+                Bidirectional(Forward(_view, origin(), indices, len)),
+                Bidirectional(Forward(_view, indices, len))
             );
         }
 
@@ -311,52 +322,58 @@ public:
 
     /* Return an iterator to the start of the slice. */
     inline Bidirectional<Iterator> begin() const {
+        using Forward = Iterator<Direction::forward>;
+
         // account for empty sequence
         if (empty()) {
-            return Bidirectional(Iterator<false>(_view, indices, length()));
+            return Bidirectional(Forward(_view, indices, length()));
         }
 
         // backward traversal
         if constexpr (has_prev<Node>::value) {
+            using Backward = Iterator<Direction::backward>;
             if (backward()) {
-                return Bidirectional(Iterator<true>(_view, origin(), indices, length()));
+                return Bidirectional(Backward(_view, origin(), indices, length()));
             }
         }
 
         // forward traversal
-        return Bidirectional(Iterator<false>(_view, origin(), indices, length()));        
+        return Bidirectional(Forward(_view, origin(), indices, length()));        
     }
 
     /* Return an iterator to the end of the slice. */
     inline Bidirectional<Iterator> end() const {
+        using Forward = Iterator<Direction::forward>;
+
         // return same orientation as begin()
         if (empty()) {
-            return Bidirectional(Iterator<false>(_view, indices, length()));
+            return Bidirectional(Forward(_view, indices, length()));
         }
 
         // backward traversal
         if constexpr (has_prev<Node>::value) {
+            using Backward = Iterator<Direction::backward>;
             if (backward()) {
-                return Bidirectional(Iterator<true>(_view, indices, length()));
+                return Bidirectional(Backward(_view, indices, length()));
             }
         }
 
         // forward traversal
-        return Bidirectional(Iterator<false>(_view, indices, length()));
+        return Bidirectional(Forward(_view, indices, length()));
     }
 
     /////////////////////////////
     ////    INNER CLASSES    ////
     /////////////////////////////
 
-    template <bool reverse>
-    using BaseIterator = typename IndexFactory<View>::template Iterator<reverse>;
+    template <Direction dir>
+    using BaseIterator = typename IndexFactory<View>::template Iterator<dir>;
 
     /* A specialized iterator built for slice traversal. */
-    template <bool reverse, typename>
-    class Iterator : public BaseIterator<reverse> {
+    template <Direction dir, typename>
+    class Iterator : public BaseIterator<dir> {
     public:
-        using Base = BaseIterator<reverse>;
+        using Base = BaseIterator<dir>;
 
         /* Prefix increment to advance the iterator to the next node in the slice. */
         inline Iterator& operator++() {
@@ -365,7 +382,7 @@ public:
                 return *this;  // don't jump on last iteration
             }
 
-            if constexpr (reverse) {
+            if constexpr (dir == Direction::backward) {
                 for (size_t i = implicit_skip; i < indices.abs_step(); ++i) {
                     this->next = this->curr;
                     this->curr = this->prev;
@@ -418,7 +435,7 @@ public:
             Base(view, nullptr, 0), indices(indices), length_override(length_override),
             implicit_skip(0)
         {
-            if constexpr (reverse) {
+            if constexpr (dir == Direction::backward) {
                 this->next = origin;
                 if (this->next == nullptr) {
                     this->curr = this->view.tail;

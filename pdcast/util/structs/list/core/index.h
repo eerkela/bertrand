@@ -23,6 +23,73 @@ index normalization and bounds checking as Python lists.
 */
 
 
+// TODO: users could select a particular iteration direction for the return type of the
+// index() functor by using optional template arguments:
+
+// list.index(3)  // bidirectional
+// list.index<false>(3)  // forward iterator from index 3
+// list.index<true>(3)  // reverse iterator from index 3
+
+// class MyClass {
+// public:
+//     struct forward_tag {};
+//     struct backward_tag {};
+//     struct bidirectional_tag {};
+
+//     Bidirectional<Iterator> iter(bidirectional_tag = {}) {
+//         std::cout << "Bidirectional\n";
+//         // ...
+//         return Bidirectional<Iterator>();
+//     }
+
+//     Iterator<false> iter(forward_tag) {
+//         std::cout << "Forward\n";
+//         // ...
+//         return Iterator<false>();
+//     }
+
+//     Iterator<true> iter(backward_tag) {
+//         std::cout << "Backward\n";
+//         // ...
+//         return Iterator<true>();
+//     }
+
+//     template <bool reverse>
+//     Iterator<reverse> iter() {
+//         if constexpr (reverse) {
+//             return iter(backward_tag{});
+//         } else {
+//             return iter(forward_tag{});
+//         }
+//     }
+// };
+
+// int main() {
+//     MyClass bar;
+
+//     auto iter1 = bar.iter();  // Default: Bidirectional
+//     auto iter2 = bar.iter<false>();  // Forward
+//     auto iter3 = bar.iter<true>();   // Backward
+// }
+
+
+// TODO: we could still iterate to the index from the closest side, but this would
+// give us the ability to manually specify the iteration direction from there.
+
+
+// list.iter()
+// list.iter<false>()  // default
+// list.iter<true>()
+// list.begin()
+// list.end()
+// list.rbegin()
+// list.rend()
+
+// list.index()
+// list.index<false>()
+// list.index<true>()
+
+
 /* A functor that produces unidirectional iterators to a specific index of the
 templated view. */
 template <typename ViewType>
@@ -34,16 +101,16 @@ public:
     // NOTE: Reverse iterators are only compiled for doubly-linked lists.
 
     template <
-        bool reverse = false,
-        typename = std::enable_if_t<has_prev<Node>::value || !reverse>
+        Direction dir = Direction::forward,
+        typename = std::enable_if_t<dir == Direction::forward || has_prev<Node>::value>
     >
     class Iterator;
 
     template <
-        bool reverse = false,
-        typename = std::enable_if_t<has_prev<Node>::value || !reverse>
+        Direction dir = Direction::forward,
+        typename = std::enable_if_t<dir == Direction::forward || has_prev<Node>::value>
     >
-    using IteratorPair = CoupledIterator<Iterator<reverse>>;
+    using IteratorPair = CoupledIterator<Iterator<dir>>;
 
     /* Return an iterator to an arbitrary index of a linked list. */
     template <typename T>
@@ -61,7 +128,7 @@ public:
         size_t norm_index = opt_index.value();
         if constexpr (has_prev<Node>::value) {
             if (norm_index > view.size / 2) {  // backward traversal
-                Iterator<true> it(view, view.tail, view.size - 1);
+                Iterator<Direction::backward> it(view, view.tail, view.size - 1);
                 for (size_t i = view.size - 1; i > norm_index; --i) {
                     ++it;
                 }
@@ -70,7 +137,7 @@ public:
         }
 
         // forward traversal
-        Iterator<false> it(view, view.head, 0);
+        Iterator<Direction::forward> it(view, view.head, 0);
         for (size_t i = 0; i < norm_index; ++i) {
             ++it;
         }
@@ -166,17 +233,17 @@ public:
     // TODO: implement a find() method that returns a forward iterator to the first
     // occurrence of an item.
 
-    template <bool reverse>
-    using BaseIterator = typename IteratorFactory<View>::template Iterator<reverse>;
+    template <Direction dir>
+    using BaseIterator = typename IteratorFactory<View>::template Iterator<dir>;
 
-    template <bool reverse, typename>
-    class Iterator : public BaseIterator<reverse> {
+    template <Direction dir, typename>
+    class Iterator : public BaseIterator<dir> {
     public:
-        using Base = BaseIterator<reverse>;
+        using Base = BaseIterator<dir>;
 
         /* prefix increment to advance iterator and update index. */
         inline Iterator& operator++() {
-            if constexpr (reverse) {
+            if constexpr (dir == Direction::backward) {
                 --idx;
             } else {
                 ++idx;
@@ -186,7 +253,7 @@ public:
         }
 
         /* Inequality comparison to terminate the slice. */
-        template <bool T>
+        template <Direction T>
         inline bool operator!=(const Iterator<T>& other) const {
             return idx != other.idx;
         }
