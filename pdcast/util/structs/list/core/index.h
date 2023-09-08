@@ -6,13 +6,21 @@
 #include <type_traits>  // std::enable_if_t
 #include <Python.h>  // CPython API
 #include "node.h"  // has_prev<>
-#include "iter.h"  // IteratorFactory<>
-#include "util.h"  // CoupledIterator<>
+#include "iter.h"  // IteratorFactory
+#include "util.h"  // CoupledIterator
 
 
 ////////////////////////
 ////    FUNCTORS    ////
 ////////////////////////
+
+
+/*
+NOTE: IndexFactory is a functor (function object) that produces iterators to a specific
+index of a linked list, set, or dictionary.  It is used by the view classes to provide
+a uniform interface for accessing elements by their index, with the same semantics for
+index normalization and bounds checking as Python lists.
+*/
 
 
 /* A functor that produces unidirectional iterators to a specific index of the
@@ -27,13 +35,13 @@ public:
 
     template <
         bool reverse = false,
-        typename = std::enable_if_t<!reverse || has_prev<Node>::value>
+        typename = std::enable_if_t<has_prev<Node>::value || !reverse>
     >
     class Iterator;
 
     template <
         bool reverse = false,
-        typename = std::enable_if_t<!reverse || has_prev<Node>::value>
+        typename = std::enable_if_t<has_prev<Node>::value || !reverse>
     >
     using IteratorPair = CoupledIterator<Iterator<reverse>>;
 

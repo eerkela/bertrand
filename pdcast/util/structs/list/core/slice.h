@@ -24,6 +24,14 @@ class SliceProxy;
 ////////////////////////
 
 
+/*
+NOTE: SliceFactory is a functor (function object) that produces proxies for a linked
+list, set, or dictionary that refer to slices of the original view.  It is used by the
+view classes to allow for intuitive slicing with the same semantics as Python's
+built-in list type, including default values and negative indices.
+*/
+
+
 /* A functor that constructs bidirectional proxies for slices within the templated
 view. */
 template <typename ViewType>
@@ -143,7 +151,7 @@ public:
         inline bool empty() const { return _length == 0; }
 
         /* Check if the first and last indices conform to the expected step size. */
-        inline bool consistent() const { return _consistent; }
+        inline bool inverted() const { return _inverted; }
         inline bool backward() const { return _backward; }
 
     private:
@@ -155,7 +163,7 @@ public:
         size_t _first;
         size_t _last;
         const size_t _length;
-        bool _consistent;
+        bool _inverted;
         bool _backward;
 
         Indices(
@@ -165,30 +173,25 @@ public:
             const size_t length,
             const size_t view_size
         ) : _start(start), _stop(stop), _step(step), _abs_step(llabs(step)),
-            _first(0), _last(0), _length(length), _consistent(true), _backward(false)
+            _first(0), _last(0), _length(length), _inverted(false), _backward(false)
         {
-            if (length > 0) {
-                // convert to closed interval [start, closed]
-                long long mod = py_modulo((stop - start), step);
-                long long closed = (mod == 0) ? (stop - step) : (stop - mod);
+            // convert to closed interval [start, closed]
+            long long mod = py_modulo((stop - start), step);
+            long long closed = (mod == 0) ? (stop - step) : (stop - mod);
 
-                // get direction in which to traverse slice based on singly-/doubly-
-                // linked nature of the list
-                std::pair<size_t, size_t> dir = slice_direction(closed, view_size);
-                _first = dir.first;
-                _last = dir.second;
+            // get direction to traverse slice based on singly-/doubly-linked status
+            std::pair<size_t, size_t> dir = slice_direction(closed, view_size);
+            _first = dir.first;
+            _last = dir.second;
 
-                // because we've adjusted our indices to minimize total iterations, we
-                // may not necessarily be iterating in the same direction as the step
-                // size would indicate.  we need to account for this when
-                // getting/setting items in the slice
-                _consistent = (_step < 0) ? (_first >= _last) : (_first <= _last);
-                _backward = (_first > _last);
-            }
+            // Because we've adjusted our indices to minimize total iterations, we might
+            // not be iterating in the same direction as the step size would indicate.
+            // We must account for this when getting/setting items in the slice.
+            _backward = (_first > (view_size / 2));
+            _inverted = _backward ^ (_step < 0);
         }
 
-        /* A modulo operator (%) that matches Python's behavior with respect to
-        negative numbers. */
+        /* A Python-style modulo operator (%). */
         template <typename T>
         inline static T py_modulo(T a, T b) {
             // NOTE: Python's `%` operator is defined such that the result has
@@ -197,33 +200,27 @@ public:
             return (a % b + b) % b;
         }
 
-        /* Swap the start and stop indices based on the singly-/doubly-linked nature
-        of the list. */
+        /* Swap the start and stop indices based on singly-/doubly-linked status. */
         inline std::pair<size_t, size_t> slice_direction(
-            long long closed_stop, size_t view_size
+            long long closed, size_t view_size
         ) {
-            // NOTE: if the list is doubly-linked, then we start at whichever end is
-            // closest to its respective slice boundary.  This minimizes the total
-            // number of iterations, but means that we may not be iterating in the same
-            // direction as the step size would indicate
+            // if doubly-linked, start at whichever end is closest to slice boundary
             if constexpr (has_prev<Node>::value) {
                 long long size = static_cast<long long>(view_size);
                 if (
-                    (_step > 0 && _start <= size - closed_stop) ||
-                    (_step < 0 && size - _start <= closed_stop)
+                    (_step > 0 && _start <= size - closed) ||
+                    (_step < 0 && size - _start <= closed)
                 ) {
-                    return std::make_pair(_start, closed_stop);  // consistent with step
+                    return std::make_pair(_start, closed);
                 }
-                return std::make_pair(closed_stop, _start);  // opposite of step
+                return std::make_pair(closed, _start);
             }
 
-            // NOTE: if the list is singly-linked, then we always have to iterate from
-            // the head of the list.  If the step size is negative, this means that we
-            // will end up iterating in the opposite direction.
+            // if singly-linked, always start from head of list
             if (_step > 0) {
-                return std::make_pair(_start, closed_stop);  // consistent with step
+                return std::make_pair(_start, closed);
             }
-            return std::make_pair(closed_stop, _start);  // opposite of step
+            return std::make_pair(closed, _start);
         }
     };
 
@@ -240,9 +237,17 @@ private:
 ///////////////////////
 
 
-// TODO:
-// l = LinkedList("abcdef")
-// l[4:2:-1]  // segfault
+/*
+NOTE: SliceProxies are wrappers around a linked list, set, or dictionary that refer to
+slices within the view.  They contain their own iterators, which can be used to
+traverse the slice using standard `IteratorFactory` syntax.
+
+One thing to note is that due to the singly-/doubly-linked nature of the list, the
+direction of iteration may not always match the sign of the step size.  This is done to
+minimize the total number of iterations required to traverse the slice without
+backtracking.  Users will have to account for this (using the `inverted()` method)
+when getting/setting items within the slice.
+*/
 
 
 /* A proxy that allows for efficient operations on slices within a list. */
@@ -257,7 +262,7 @@ public:
 
     template <
         bool reverse = false,
-        typename = std::enable_if_t<!reverse || has_prev<Node>::value>
+        typename = std::enable_if_t<has_prev<Node>::value || !reverse>
     >
     class Iterator;
     using IteratorPair = CoupledIterator<Bidirectional<Iterator>>;
@@ -274,31 +279,70 @@ public:
     inline size_t last() const { return indices.last(); }
     inline size_t length() const { return indices.length(); }
     inline bool empty() const { return indices.empty(); }
-    inline bool consistent() const { return indices.consistent(); }
     inline bool backward() const { return indices.backward(); }
+    inline bool inverted() const { return indices.inverted(); }
 
-    /* Return a coupled pair of iterators for more fine-grained control. */
+    /* Return a coupled pair of iterators with a possible length override. */
     inline IteratorPair iter(std::optional<size_t> length = std::nullopt) const {
+        // use length override if given
         if (length.has_value()) {
+            size_t len = length.value();
+
+            // backward traversal
+            if constexpr (has_prev<Node>::value) {
+                if (backward()) {
+                    return IteratorPair(
+                        Bidirectional(Iterator<true>(_view, origin(), indices, len)),
+                        Bidirectional(Iterator<true>(_view, indices, len))
+                    );
+                }
+            }
+
+            // forward traversal
             return IteratorPair(
-                Bidirectional(Iterator(_view, origin, indices, length.value())),
-                Bidirectional(Iterator(_view, indices, length.value()))
+                Bidirectional(Iterator<false>(_view, origin(), indices, len)),
+                Bidirectional(Iterator<false>(_view, indices, len))
             );
         }
+
+        // default to length of slice
         return IteratorPair(begin(), end());
     }
 
     /* Return an iterator to the start of the slice. */
     inline Bidirectional<Iterator> begin() const {
+        // account for empty sequence
         if (empty()) {
-            return Bidirectional(Iterator(_view, indices, length()));  // empty iterator
+            return Bidirectional(Iterator<false>(_view, indices, length()));
         }
-        return Bidirectional(Iterator(_view, origin, indices, length()));
+
+        // backward traversal
+        if constexpr (has_prev<Node>::value) {
+            if (backward()) {
+                return Bidirectional(Iterator<true>(_view, origin(), indices, length()));
+            }
+        }
+
+        // forward traversal
+        return Bidirectional(Iterator<false>(_view, origin(), indices, length()));        
     }
 
     /* Return an iterator to the end of the slice. */
     inline Bidirectional<Iterator> end() const {
-        return Bidirectional(Iterator(_view, indices, length()));
+        // return same orientation as begin()
+        if (empty()) {
+            return Bidirectional(Iterator<false>(_view, indices, length()));
+        }
+
+        // backward traversal
+        if constexpr (has_prev<Node>::value) {
+            if (backward()) {
+                return Bidirectional(Iterator<true>(_view, indices, length()));
+            }
+        }
+
+        // forward traversal
+        return Bidirectional(Iterator<false>(_view, indices, length()));
     }
 
     /////////////////////////////
@@ -352,7 +396,7 @@ public:
         opposite order, and the user will have to account for this when getting/setting
         items within the list.  This is done to minimize the total number of iterations
         required to traverse the slice without backtracking. */
-        inline bool consistent() const { return indices.consistent(); }
+        inline bool inverted() const { return indices.inverted(); }
 
     protected:
         friend SliceProxy;
@@ -373,34 +417,35 @@ public:
         ) :
             Base(view, nullptr, 0), indices(indices), length_override(length_override),
             implicit_skip(0)
-        { init(origin); }
+        {
+            if constexpr (reverse) {
+                this->next = origin;
+                if (this->next == nullptr) {
+                    this->curr = this->view.tail;
+                } else {
+                    this->curr = static_cast<Node*>(this->next->prev);
+                }
+                if (this->curr != nullptr) {
+                    this->prev = static_cast<Node*>(this->curr->prev);
+                }
+            } else {
+                this->prev = origin;
+                if (this->prev == nullptr) {
+                    this->curr = this->view.head;
+                } else {
+                    this->curr = static_cast<Node*>(this->prev->next);
+                }
+                if (this->curr != nullptr) {
+                    this->next = static_cast<Node*>(this->curr->next);
+                }
+            }
+        }
 
         /* Get an iterator to terminate the slice. */
         Iterator(View& view, const Indices& indices, size_t length_override) :
             Base(view, length_override), indices(indices),
             length_override(length_override), implicit_skip(0)
         {}
-
-        /* Get the initial values for the iterator based on an origin node. */
-        inline void init(Node* origin) {
-            if constexpr (reverse) {
-                this->next = origin;
-                if (origin == nullptr) {
-                    this->curr = this->view.tail;
-                } else {
-                    this->curr = static_cast<Node*>(origin->prev);
-                }
-                this->prev = static_cast<Node*>(this->curr->prev);
-            } else {
-                this->prev = origin;
-                if (origin == nullptr) {
-                    this->curr = this->view.head;
-                } else {
-                    this->curr = static_cast<Node*>(origin->next);
-                }
-                this->next = static_cast<Node*>(this->curr->next);
-            }
-        }
 
     };
 
@@ -409,33 +454,25 @@ private:
     friend SliceFactory<View>;
     View& _view;
     const Indices indices;
-    Node* origin;  // node that immediately precedes the slice (can be NULL)
-
-    // TODO: use a cache to find the origin node when it is first requested.  That way,
-    // creating a SliceProxy is still fast, and as long as we guard using slice.empty(),
-    // we can avoid the overhead of finding the origin node if we never need it.
-
-    // Once we call any of the iterator methods, we either find the origin node or use
-    // the cached value.
+    mutable Node* _origin;  // node that immediately precedes the slice (can be NULL)
+    mutable bool found;  // indicates whether we've cached the origin node
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    // TODO: empty slice still needs to find origin node/etc in the case of a
-    // set() insertion.
-
     /* Construct a SliceProxy with at least one element. */
     SliceProxy(View& view, Indices&& indices) :
-        _view(view), indices(indices), origin(nullptr)
-    {
-        if (!empty()) {
-            origin = find_origin();  // find the origin for the slice
-        }
-    }
+        _view(view), indices(indices), _origin(nullptr), found(false)
+    {}
 
-    /* Iterate to find the origin node for the slice. */
-    Node* find_origin() {
+    /* Find and cache the origin node for the slice. */
+    Node* origin() const {
+        if (found) {
+            return _origin;
+        }
+
+        // find origin node
         if constexpr (has_prev<Node>::value) {
             if (backward()) {  // backward traversal
                 Node* next = nullptr;
@@ -444,7 +481,9 @@ private:
                     next = curr;
                     curr = static_cast<Node*>(curr->prev);
                 }
-                return next;
+                found = true;
+                _origin = next;
+                return _origin;
             }
         }
 
@@ -455,7 +494,9 @@ private:
             prev = curr;
             curr = static_cast<Node*>(curr->next);
         }
-        return prev;
+        found = true;
+        _origin = prev;
+        return _origin;
     }
 
 };

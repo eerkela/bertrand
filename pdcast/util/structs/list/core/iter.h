@@ -35,36 +35,38 @@ public:
 
     template <
         bool reverse = false,
-        typename = std::enable_if_t<!reverse || has_prev<Node>::value>
+        typename = std::enable_if_t<has_prev<Node>::value || !reverse>
     >
     class Iterator;
 
     template <
         bool reverse = false,
-        typename = std::enable_if_t<!reverse || has_prev<Node>::value>
+        typename = std::enable_if_t<has_prev<Node>::value || !reverse>
     >
     using IteratorPair = CoupledIterator<Iterator<reverse>>;
 
     /* Return a coupled iterator for clearer access to the iterator's interface. */
     template <bool reverse = false>
     inline IteratorPair<reverse> operator()() const {
-        return IteratorPair(begin<reverse>(), end());
+        return IteratorPair(begin<reverse>(), end<reverse>());
     }
 
     /* Return an iterator to the head/tail of a list based on the reverse parameter. */
     template <bool reverse = false>
     inline Iterator<reverse> begin() const {
+        Node* origin;
         if constexpr (reverse) {
-            return Iterator(view, view.tail);
+            origin = view.tail;
         } else {
-            return Iterator(view, view.head);
+            origin = view.head;
         }
+        return Iterator<reverse>(view, origin);
     }
 
     /* Return a null iterator to terminate the sequence. */
     template <bool reverse = false>
     inline Iterator<reverse> end() const {
-        return Iterator(view);
+        return Iterator<reverse>(view);
     }
 
     /* An iterator that traverses a list and keeps track of each node's neighbors. */

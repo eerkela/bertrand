@@ -88,8 +88,8 @@ public:
     }
 
     template <typename T = Iterator>
-    inline auto consistent() -> decltype(std::declval<T>().consistent()) const {
-        return first.consistent();
+    inline auto inverted() -> decltype(std::declval<T>().inverted()) const {
+        return first.inverted();
     }
 
 private:
@@ -226,8 +226,7 @@ class BidirectionalBase<Iterator, false> {
 protected:
     union { Iterator<false> forward; } it;
 
-    template <bool reverse>
-    BidirectionalBase(const Iterator<reverse>& it) : it{it} {}
+    BidirectionalBase(const Iterator<false>& iter) : it{.forward = iter} {}
 };
 
 
@@ -237,8 +236,8 @@ class BidirectionalBase<Iterator, true> {
 protected:
     union { Iterator<false> forward; Iterator<true> backward; } it;
 
-    template <bool reverse>
-    BidirectionalBase(const Iterator<reverse>& it) : it{it} {}
+    BidirectionalBase(const Iterator<false>& iter) : it{.forward = iter} {}
+    BidirectionalBase(const Iterator<true>& iter) : it{.backward = iter} {}
 };
 
 
@@ -318,6 +317,7 @@ public:
 
         if constexpr (has_prev<OtherNode>::value) {
             if (other.backward) {
+                printf("f\n");
                 return this->it.forward != other.it.backward;
             }
         }
@@ -378,13 +378,13 @@ public:
 
     /* Check whether the iterator direction is consistent with a slice's step size. */
     template <typename T = ForwardIterator>
-    inline auto consistent() -> decltype(std::declval<T>().consistent()) const {
+    inline auto inverted() -> decltype(std::declval<T>().inverted()) const {
         if constexpr (has_prev<Node>::value) {
             if (backward) {
-                return this->it.backward.consistent();
+                return this->it.backward.inverted();
             }
         }
-        return this->it.forward.consistent();
+        return this->it.forward.inverted();
     }
 
 private:
