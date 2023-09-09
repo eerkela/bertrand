@@ -240,7 +240,7 @@ protected:
 
     /* Forward iteration only. */
     BidirectionalBase(const Iterator<Direction::forward>& iter) :
-        backward(false), it{iter}
+        backward(false), it{.forward = iter}
     {}
 
     /* Copy constructor. */

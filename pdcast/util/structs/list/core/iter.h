@@ -196,8 +196,24 @@ public:
             prev(other.prev), curr(other.curr), next(other.next), view(other.view)
         {}
 
+        /* Copy constructor from a different direction. */
+        template <Direction T>
+        Iterator(const Iterator<T>& other) :
+            prev(other.prev), curr(other.curr), next(other.next), view(other.view)
+        {}
+
         /* Move constructor. */
         Iterator(Iterator&& other) :
+            prev(other.prev), curr(other.curr), next(other.next), view(other.view)
+        {
+            other.prev = nullptr;
+            other.curr = nullptr;
+            other.next = nullptr;
+        }
+
+        /* Move constructor from a different direction. */
+        template <Direction T>
+        Iterator(Iterator<T>&& other) :
             prev(other.prev), curr(other.curr), next(other.next), view(other.view)
         {
             other.prev = nullptr;

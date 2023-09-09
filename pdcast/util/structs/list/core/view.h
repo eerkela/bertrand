@@ -35,6 +35,7 @@ public:
     using Iter = IteratorFactory<View>;
     using Lock = ThreadLock<View>;
     using Slice = SliceProxy<View>;
+    inline static constexpr bool doubly_linked = has_prev<Node>::value;
 
     Node* head;
     Node* tail;
@@ -238,10 +239,6 @@ public:
 
     /* Make a shallow copy of the entire list. */
     std::optional<View> copy() const {
-        // auto it = index(0);
-        // Node* node = *(it.value());
-        // printf("%s\n", repr(node->value));
-
         try {
             View result(max_size, specialization);
 
@@ -433,7 +430,7 @@ public:
 
     /* Create a reverse iterator to the end of the list. */
     inline auto rbegin() const {
-        if constexpr (has_prev<Node>::value) {
+        if constexpr (doubly_linked) {
             return begin<Direction::backward>();
         }
         static_assert("singly-linked lists do not support reverse iteration");
@@ -441,7 +438,7 @@ public:
 
     /* Create a reverse iterator to the start of the list. */
     inline auto rend() const {
-        if constexpr (has_prev<Node>::value) {
+        if constexpr (doubly_linked) {
             return end<Direction::backward>();
         }
         static_assert("singly-linked lists do not support reverse iteration");

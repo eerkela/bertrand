@@ -90,7 +90,7 @@ public:
     /* Return a backward iterator at an arbitrary index of a linked list. */
     template <typename T, typename = std::enable_if<has_prev<Node>::value>>
     auto backward(T index, bool truncate = false) const {
-        return _directional<Direction::backward>(*this, index, truncate);
+        return _directional<Direction::backward>(index, truncate);
     }
 
     /////////////////////////////////
@@ -217,8 +217,16 @@ public:
         /* Copy constructor. */
         Iterator(const Iterator& other) : Base(other), idx(other.idx) {}
 
+        /* Copy constructor from a different direction. */
+        template <Direction T>
+        Iterator(const Iterator<T>& other) : Base(other), idx(other.idx) {}
+
         /* Move constructor. */
         Iterator(Iterator&& other) : Base(std::move(other)), idx(other.idx) {}
+
+        /* Move constructor from a different direction. */
+        template <Direction T>
+        Iterator(Iterator<T>&& other) : Base(std::move(other)), idx(other.idx) {}
 
     protected:
         friend IndexFactory;
