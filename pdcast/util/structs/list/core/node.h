@@ -527,6 +527,22 @@ struct Counted : public NodeType {
 ///////////////////////////
 
 
+// TODO: replace these with inline constexpr using C++17 syntax:
+
+// template <typename Node, typename = void>
+// inline constexpr bool has_prev = false;
+
+// template <typename Node>
+// inline constexpr bool has_prev<
+//     Node, std::void_t<decltype(std::declval<Node>().prev())>
+// > = true;
+
+
+// if constexpr (has_prev<Node>) {}
+// vs
+// if constexpr (has_prev<Node>::value) {}
+
+
 /* A trait that detects whether the templated node type is doubly-linked (i.e.
 has a `prev` pointer). */
 template <typename Node>

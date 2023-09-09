@@ -52,6 +52,10 @@ public:
         return std::make_optional(Slice(view, std::move(indices.value())));
     }
 
+    /////////////////////////////////
+    ////    NAMESPACE METHODS    ////
+    /////////////////////////////////
+
     /* Normalize slice indices, applying Python-style wraparound and bounds
     checking. */
     std::optional<Indices> normalize(
@@ -154,6 +158,26 @@ public:
         inline bool inverted() const { return _inverted; }
         inline bool backward() const { return _backward; }
 
+        /* Copy constructor. */
+        Indices(const Indices& other) :
+            _start(other._start), _stop(other._stop), _step(other._step),
+            _abs_step(other._abs_step), _first(other._first), _last(other._last),
+            _length(other._length), _inverted(other._inverted),
+            _backward(other._backward)
+        {}
+
+        /* Move constructor. */
+        Indices(Indices&& other) :
+            _start(other._start), _stop(other._stop), _step(other._step),
+            _abs_step(other._abs_step), _first(other._first), _last(other._last),
+            _length(other._length), _inverted(other._inverted),
+            _backward(other._backward)
+        {}
+
+        /* Assignment operators deleted due to presence of const members. */
+        Indices& operator=(const Indices& other) = delete;
+        Indices& operator=(Indices&& other) = delete;
+
     private:
         friend SliceFactory;
         const long long _start;
@@ -187,7 +211,7 @@ public:
             // Because we've adjusted our indices to minimize total iterations, we might
             // not be iterating in the same direction as the step size would indicate.
             // We must account for this when getting/setting items in the slice.
-            _backward = (_first > (view_size / 2));
+            _backward = (_first > ((view_size - (view_size > 0)) / 2));
             _inverted = _backward ^ (_step < 0);
         }
 
@@ -414,6 +438,19 @@ public:
         items within the list.  This is done to minimize the total number of iterations
         required to traverse the slice without backtracking. */
         inline bool inverted() const { return indices.inverted(); }
+
+        /* Copy constructor. */
+        Iterator(const Iterator& other) :
+            Base(other), indices(other.indices), length_override(other.length_override),
+            implicit_skip(other.implicit_skip)
+        {}
+
+        /* Move constructor. */
+        Iterator(Iterator&& other) :
+            Base(std::move(other)), indices(std::move(other.indices)),
+            length_override(other.length_override),
+            implicit_skip(other.implicit_skip)
+        {}
 
     protected:
         friend SliceProxy;

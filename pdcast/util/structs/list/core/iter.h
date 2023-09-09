@@ -45,11 +45,20 @@ public:
     >
     using IteratorPair = CoupledIterator<Iterator<dir>>;
 
+    /////////////////////////
+    ////    ITERATORS    ////
+    /////////////////////////
+
+    // TODO: template parameters to functor call operators don't really work.  The
+    // compiler interprets them as the less than/greater than operators.
+
     /* Return a coupled iterator for clearer access to the iterator's interface. */
     template <Direction dir = Direction::forward>
     inline IteratorPair<dir> operator()() const {
         return IteratorPair(begin<dir>(), end<dir>());
     }
+
+    // reverse()
 
     /* Return an iterator to the head/tail of a list based on the reverse parameter. */
     template <Direction dir = Direction::forward>
@@ -68,6 +77,12 @@ public:
     inline Iterator<dir> end() const {
         return Iterator<dir>(view);
     }
+
+    // rbegin()/rend()
+
+    /////////////////////////////
+    ////    INNER CLASSES    ////
+    /////////////////////////////
 
     /* An iterator that traverses a list and keeps track of each node's neighbors. */
     template <Direction dir, typename>
@@ -176,6 +191,24 @@ public:
             curr = node;
         }
 
+        /* Copy constructor. */
+        Iterator(const Iterator& other) :
+            prev(other.prev), curr(other.curr), next(other.next), view(other.view)
+        {}
+
+        /* Move constructor. */
+        Iterator(Iterator&& other) :
+            prev(other.prev), curr(other.curr), next(other.next), view(other.view)
+        {
+            other.prev = nullptr;
+            other.curr = nullptr;
+            other.next = nullptr;
+        }
+
+        /* Assignment operators deleted for consistency with Bidirectional. */
+        Iterator& operator=(const Iterator&) = delete;
+        Iterator& operator=(Iterator&&) = delete;
+
     protected:
         friend IteratorFactory;
         View& view;
@@ -184,7 +217,7 @@ public:
         ////    CONSTRUCTORS    ////
         ////////////////////////////
 
-        /* Get an iterator to the start or end of the list. */
+        /* Construct an iterator to the start or end of the list. */
         Iterator(View& view, Node* node) :
             prev(nullptr), curr(node), next(nullptr), view(view)
         {
@@ -197,7 +230,7 @@ public:
             }
         }
 
-        /* Get a null iterator to the end of the list. */
+        /* Empty iterator. */
         Iterator(View& view) :
             prev(nullptr), curr(nullptr), next(nullptr), view(view)
         {}

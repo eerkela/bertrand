@@ -49,7 +49,8 @@ public:
     /* Construct an empty ListView. */
     ListView(Py_ssize_t max_size = -1, PyObject* spec = nullptr) :
         head(nullptr), tail(nullptr), size(0), max_size(max_size),
-        specialization(spec), slice(*this), iter(*this), allocator(max_size)
+        specialization(spec), index(*this), slice(*this), iter(*this),
+        allocator(max_size)
     {
         if (spec != nullptr) {
             Py_INCREF(spec);  // hold reference to specialization if given
@@ -63,7 +64,8 @@ public:
         Py_ssize_t max_size = -1,
         PyObject* spec = nullptr
     ) : head(nullptr), tail(nullptr), size(0), max_size(max_size),
-        specialization(spec), slice(*this), iter(*this), allocator(max_size)
+        specialization(spec), index(*this), slice(*this), iter(*this),
+        allocator(max_size)
     {
         // hold reference to specialization, if given
         if (spec != nullptr) {
@@ -102,9 +104,9 @@ public:
     }
 
     /* Move constructor: transfer ownership from one ListView to another. */
-    ListView(ListView&& other) :
+    ListView(ListView&& other) noexcept :
         head(other.head), tail(other.tail), size(other.size), max_size(other.max_size),
-        specialization(other.specialization), slice(*this), iter(*this),
+        specialization(other.specialization), index(*this), slice(*this), iter(*this),
         allocator(std::move(other.allocator))
     {
         // reset other ListView
@@ -116,7 +118,7 @@ public:
     }
 
     /* Move assignment: transfer ownership from one ListView to another. */
-    ListView& operator=(ListView&& other) {
+    ListView& operator=(ListView&& other) noexcept {
         // check for self-assignment
         if (this == &other) {
             return *this;
@@ -149,7 +151,7 @@ public:
     ListView& operator=(const ListView&) = delete;
 
     /* Destroy a ListView and free all its nodes. */
-    ~ListView() {
+    ~ListView() noexcept {
         self_destruct();
     }
 
@@ -226,12 +228,20 @@ public:
     ////    LIST INTERFACE    ////
     //////////////////////////////
 
+    /* An IndexFactory functor that produces iterators to a specific index in the
+    list. */
+    const IndexFactory<View> index;  // index(), index.normalize(), etc.
+
     /* A SliceFactory functor that allows slice proxies to be extracted from the
     list. */
     const SliceFactory<View> slice;  // slice(), slice.normalize(), etc.
 
     /* Make a shallow copy of the entire list. */
     std::optional<View> copy() const {
+        // auto it = index(0);
+        // Node* node = *(it.value());
+        // printf("%s\n", repr(node->value));
+
         try {
             View result(max_size, specialization);
 
@@ -264,89 +274,89 @@ public:
         }
     }
 
-    /* Normalize a numeric index, allowing Python-style wraparound and
-    bounds checking. */
-    template <typename T>
-    std::optional<size_t> index(T index, bool truncate) {
-        bool index_lt_zero = index < 0;
+    // /* Normalize a numeric index, allowing Python-style wraparound and
+    // bounds checking. */
+    // template <typename T>
+    // std::optional<size_t> index(T index, bool truncate) {
+    //     bool index_lt_zero = index < 0;
 
-        // wraparound negative indices
-        if (index_lt_zero) {
-            index += size;
-            index_lt_zero = index < 0;
-        }
+    //     // wraparound negative indices
+    //     if (index_lt_zero) {
+    //         index += size;
+    //         index_lt_zero = index < 0;
+    //     }
 
-        // boundscheck
-        if (index_lt_zero || index >= static_cast<T>(size)) {
-            if (truncate) {
-                if (index_lt_zero) {
-                    return 0;
-                }
-                return size - 1;
-            }
-            PyErr_SetString(PyExc_IndexError, "list index out of range");
-            return std::nullopt;
-        }
+    //     // boundscheck
+    //     if (index_lt_zero || index >= static_cast<T>(size)) {
+    //         if (truncate) {
+    //             if (index_lt_zero) {
+    //                 return 0;
+    //             }
+    //             return size - 1;
+    //         }
+    //         PyErr_SetString(PyExc_IndexError, "list index out of range");
+    //         return std::nullopt;
+    //     }
 
-        // return as size_t
-        return std::optional<size_t>{ static_cast<size_t>(index) };
-    }
+    //     // return as size_t
+    //     return std::optional<size_t>{ static_cast<size_t>(index) };
+    // }
 
-    /* Normalize a Python integer for use as an index to the list. */
-    std::optional<size_t> index(PyObject* index, bool truncate) {
-        // check that index is a Python integer
-        if (!PyLong_Check(index)) {
-            PyErr_SetString(PyExc_TypeError, "index must be a Python integer");
-            return std::nullopt;
-        }
+    // /* Normalize a Python integer for use as an index to the list. */
+    // std::optional<size_t> index(PyObject* index, bool truncate) {
+    //     // check that index is a Python integer
+    //     if (!PyLong_Check(index)) {
+    //         PyErr_SetString(PyExc_TypeError, "index must be a Python integer");
+    //         return std::nullopt;
+    //     }
 
-        // comparisons are kept at the python level until we're ready to return
-        PyObject* py_zero = PyLong_FromSize_t(0);  // new reference
-        PyObject* py_size = PyLong_FromSize_t(size);  // new reference
-        int index_lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
+    //     // comparisons are kept at the python level until we're ready to return
+    //     PyObject* py_zero = PyLong_FromSize_t(0);  // new reference
+    //     PyObject* py_size = PyLong_FromSize_t(size);  // new reference
+    //     int index_lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
 
-        // wraparound negative indices
-        bool release_index = false;
-        if (index_lt_zero) {
-            index = PyNumber_Add(index, py_size);  // new reference
-            index_lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
-            release_index = true;  // remember to DECREF index later
-        }
+    //     // wraparound negative indices
+    //     bool release_index = false;
+    //     if (index_lt_zero) {
+    //         index = PyNumber_Add(index, py_size);  // new reference
+    //         index_lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
+    //         release_index = true;  // remember to DECREF index later
+    //     }
 
-        // boundscheck
-        if (index_lt_zero || PyObject_RichCompareBool(index, py_size, Py_GE)) {
-            // clean up references
-            Py_DECREF(py_zero);
-            Py_DECREF(py_size);
-            if (release_index) {
-                Py_DECREF(index);
-            }
+    //     // boundscheck
+    //     if (index_lt_zero || PyObject_RichCompareBool(index, py_size, Py_GE)) {
+    //         // clean up references
+    //         Py_DECREF(py_zero);
+    //         Py_DECREF(py_size);
+    //         if (release_index) {
+    //             Py_DECREF(index);
+    //         }
 
-            // apply truncation if directed
-            if (truncate) {
-                if (index_lt_zero) {
-                    return std::optional<size_t>{ 0 };
-                }
-                return std::optional<size_t>{ size - 1 };
-            }
+    //         // apply truncation if directed
+    //         if (truncate) {
+    //             if (index_lt_zero) {
+    //                 return std::optional<size_t>{ 0 };
+    //             }
+    //             return std::optional<size_t>{ size - 1 };
+    //         }
 
-            // raise IndexError
-            PyErr_SetString(PyExc_IndexError, "list index out of range");
-            return std::nullopt;
-        }
+    //         // raise IndexError
+    //         PyErr_SetString(PyExc_IndexError, "list index out of range");
+    //         return std::nullopt;
+    //     }
 
-        // value is good - convert to size_t
-        size_t result = PyLong_AsSize_t(index);
+    //     // value is good - convert to size_t
+    //     size_t result = PyLong_AsSize_t(index);
 
-        // clean up references
-        Py_DECREF(py_zero);
-        Py_DECREF(py_size);
-        if (release_index) {
-            Py_DECREF(index);
-        }
+    //     // clean up references
+    //     Py_DECREF(py_zero);
+    //     Py_DECREF(py_size);
+    //     if (release_index) {
+    //         Py_DECREF(index);
+    //     }
 
-        return std::optional<size_t>{ result };
-    }
+    //     return std::optional<size_t>{ result };
+    // }
 
     /////////////////////////////
     ////    EXTRA METHODS    ////
@@ -405,16 +415,36 @@ public:
     /* An IteratorFactory functor that allows iteration over the list. */
     const Iter iter;  // iter(), iter.begin(), iter.end(), etc.
 
-    /* Return an iterator to the start of the list. */
+    /* Create an iterator to the start of the list. */
     template <Direction dir = Direction::forward>
-    inline typename Iter::template Iterator<dir> begin() const {
-        return iter.begin();
+    inline auto begin() const {
+        // NOTE: need the `template` keyword to signal that `begin()` can accept
+        // template arguments
+        return iter.template begin<dir>();
     }
 
-    /* Return an iterator to the end of the list. */
+    /* Create an iterator to the end of the list. */
     template <Direction dir = Direction::forward>
-    inline typename Iter::template Iterator<dir> end() const {
-        return iter.end();
+    inline auto end() const {
+        // NOTE: need the `template` keyword to signal that `end()` can accept
+        // template arguments
+        return iter.template end<dir>();
+    }
+
+    /* Create a reverse iterator to the end of the list. */
+    inline auto rbegin() const {
+        if constexpr (has_prev<Node>::value) {
+            return begin<Direction::backward>();
+        }
+        static_assert("singly-linked lists do not support reverse iteration");
+    }
+
+    /* Create a reverse iterator to the start of the list. */
+    inline auto rend() const {
+        if constexpr (has_prev<Node>::value) {
+            return end<Direction::backward>();
+        }
+        static_assert("singly-linked lists do not support reverse iteration");
     }
 
 protected:

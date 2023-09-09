@@ -23,73 +23,6 @@ index normalization and bounds checking as Python lists.
 */
 
 
-// TODO: users could select a particular iteration direction for the return type of the
-// index() functor by using optional template arguments:
-
-// list.index(3)  // bidirectional
-// list.index<false>(3)  // forward iterator from index 3
-// list.index<true>(3)  // reverse iterator from index 3
-
-// class MyClass {
-// public:
-//     struct forward_tag {};
-//     struct backward_tag {};
-//     struct bidirectional_tag {};
-
-//     Bidirectional<Iterator> iter(bidirectional_tag = {}) {
-//         std::cout << "Bidirectional\n";
-//         // ...
-//         return Bidirectional<Iterator>();
-//     }
-
-//     Iterator<false> iter(forward_tag) {
-//         std::cout << "Forward\n";
-//         // ...
-//         return Iterator<false>();
-//     }
-
-//     Iterator<true> iter(backward_tag) {
-//         std::cout << "Backward\n";
-//         // ...
-//         return Iterator<true>();
-//     }
-
-//     template <bool reverse>
-//     Iterator<reverse> iter() {
-//         if constexpr (reverse) {
-//             return iter(backward_tag{});
-//         } else {
-//             return iter(forward_tag{});
-//         }
-//     }
-// };
-
-// int main() {
-//     MyClass bar;
-
-//     auto iter1 = bar.iter();  // Default: Bidirectional
-//     auto iter2 = bar.iter<false>();  // Forward
-//     auto iter3 = bar.iter<true>();   // Backward
-// }
-
-
-// TODO: we could still iterate to the index from the closest side, but this would
-// give us the ability to manually specify the iteration direction from there.
-
-
-// list.iter()
-// list.iter<false>()  // default
-// list.iter<true>()
-// list.begin()
-// list.end()
-// list.rbegin()
-// list.rend()
-
-// list.index()
-// list.index<false>()
-// list.index<true>()
-
-
 /* A functor that produces unidirectional iterators to a specific index of the
 templated view. */
 template <typename ViewType>
@@ -112,9 +45,13 @@ public:
     >
     using IteratorPair = CoupledIterator<Iterator<dir>>;
 
-    /* Return an iterator to an arbitrary index of a linked list. */
+    /////////////////////////
+    ////    ITERATORS    ////
+    /////////////////////////
+
+    /* Return a bidirectional iterator at an arbitrary index of a linked list. */
     template <typename T>
-    inline std::optional<Bidirectional<Iterator>> operator()(
+    std::optional<Bidirectional<Iterator>> operator()(
         T index,
         bool truncate = false
     ) const {
@@ -127,7 +64,7 @@ public:
         // get iterator to index
         size_t norm_index = opt_index.value();
         if constexpr (has_prev<Node>::value) {
-            if (norm_index > view.size / 2) {  // backward traversal
+            if (norm_index > (view.size - (view.size > 0)) / 2) {  // backward traversal
                 Iterator<Direction::backward> it(view, view.tail, view.size - 1);
                 for (size_t i = view.size - 1; i > norm_index; --i) {
                     ++it;
@@ -144,13 +81,26 @@ public:
         return std::make_optional(Bidirectional(it));
     }
 
-    // TODO: implement forward() and backward() methods that return iterators with a
-    // specific direction, rather than bidirectional.
+    /* Return a forward iterator at an arbitrary index of a linked list. */
+    template <typename T>
+    auto forward(T index, bool truncate = false) const {
+        return _directional<Direction::forward>(index, truncate);
+    }
+
+    /* Return a backward iterator at an arbitrary index of a linked list. */
+    template <typename T, typename = std::enable_if<has_prev<Node>::value>>
+    auto backward(T index, bool truncate = false) const {
+        return _directional<Direction::backward>(*this, index, truncate);
+    }
+
+    /////////////////////////////////
+    ////    NAMESPACE METHODS    ////
+    /////////////////////////////////
 
     /* Normalize a numeric index, applying Python-style wraparound and bounds
     checking. */
     template <typename T>
-    std::optional<size_t> normalize(T index, bool truncate = false) {
+    std::optional<size_t> normalize(T index, bool truncate = false) const {
         bool index_lt_zero = index < 0;
 
         // wraparound negative indices
@@ -176,7 +126,7 @@ public:
     }
 
     /* Normalize a Python integer for use as an index to the list. */
-    std::optional<size_t> normalize(PyObject* index, bool truncate = false) {
+    std::optional<size_t> normalize(PyObject* index, bool truncate = false) const {
         // check that index is a Python integer
         if (!PyLong_Check(index)) {
             PyErr_SetString(PyExc_TypeError, "index must be a Python integer");
@@ -230,8 +180,9 @@ public:
         return std::make_optional(result);
     }
 
-    // TODO: implement a find() method that returns a forward iterator to the first
-    // occurrence of an item.
+    /////////////////////////////
+    ////    INNER CLASSES    ////
+    /////////////////////////////
 
     template <Direction dir>
     using BaseIterator = typename IteratorFactory<View>::template Iterator<dir>;
@@ -258,20 +209,29 @@ public:
             return idx != other.idx;
         }
 
-        /* Get the zero-based index of the iterator within the slice. */
+        /* Get the current index of the iterator within the list. */
         inline size_t index() const {
             return idx;
         }
+
+        /* Copy constructor. */
+        Iterator(const Iterator& other) : Base(other), idx(other.idx) {}
+
+        /* Move constructor. */
+        Iterator(Iterator&& other) : Base(std::move(other)), idx(other.idx) {}
 
     protected:
         friend IndexFactory;
         size_t idx;
 
+        /* Construct an iterator at a given index. */
         Iterator(View& view, Node* node, size_t idx) :
             Base(view, node), idx(idx)
         {}
 
+        /* Empty iterator. */
         Iterator(View& view, size_t idx) : Base(view), idx(idx) {}
+
     };
 
 private:
@@ -279,6 +239,43 @@ private:
     View& view;
 
     IndexFactory(View& view) : view(view) {}
+
+    /* Return a unidirectional iterator at the specified index. */
+    template <Direction dir, typename T>
+    std::optional<Iterator<dir>> _directional(
+        T index,
+        bool truncate = false
+    ) const {
+        // normalize index
+        auto opt_index = normalize(index, truncate);
+        if (!opt_index.has_value()) {
+            return std::nullopt;
+        }
+
+        // NOTE: we still choose the closest side to iterate from, but rather than
+        // returning a bidirectional iterator, we move the result into an explicit
+        // forward or reverse iterator and return that instead.
+
+        // get iterator to index
+        size_t norm_index = opt_index.value();
+        if constexpr (has_prev<Node>::value) {
+            if (norm_index > (view.size - (view.size > 0)) / 2) {  // backward traversal
+                Iterator<Direction::backward> it(view, view.tail, view.size - 1);
+                for (size_t i = view.size - 1; i > norm_index; --i) {
+                    ++it;
+                }
+                return std::make_optional(Iterator<dir>(std::move(it)));
+            }
+        }
+
+        // forward traversal
+        Iterator<Direction::forward> it(view, view.head, 0);
+        for (size_t i = 0; i < norm_index; ++i) {
+            ++it;
+        }
+        return std::make_optional(Iterator<dir>(std::move(it)));
+    }
+
 };
 
 
