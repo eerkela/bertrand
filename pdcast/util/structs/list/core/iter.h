@@ -30,18 +30,19 @@ class IteratorFactory {
 public:
     using View = ViewType;
     using Node = typename View::Node;
+    inline static constexpr bool doubly_linked = has_prev<Node>::value;
 
     // NOTE: Reverse iterators are only compiled for doubly-linked lists.
 
     template <
         Direction dir = Direction::forward,
-        typename = std::enable_if_t<dir == Direction::forward || has_prev<Node>::value>
+        typename = std::enable_if_t<dir == Direction::forward || doubly_linked>
     >
     class Iterator;
 
     template <
         Direction dir = Direction::forward,
-        typename = std::enable_if_t<dir == Direction::forward || has_prev<Node>::value>
+        typename = std::enable_if_t<dir == Direction::forward || doubly_linked>
     >
     using IteratorPair = CoupledIterator<Iterator<dir>>;
 
@@ -49,36 +50,38 @@ public:
     ////    ITERATORS    ////
     /////////////////////////
 
-    // TODO: template parameters to functor call operators don't really work.  The
-    // compiler interprets them as the less than/greater than operators.
-
-    /* Return a coupled iterator for clearer access to the iterator's interface. */
-    template <Direction dir = Direction::forward>
-    inline IteratorPair<dir> operator()() const {
-        return IteratorPair(begin<dir>(), end<dir>());
+    /* Return a coupled iterator from the head of the list. */
+    inline auto operator()() const {
+        return IteratorPair<Direction::forward>(begin(), end());
     }
 
-    // reverse()
-
-    /* Return an iterator to the head/tail of a list based on the reverse parameter. */
-    template <Direction dir = Direction::forward>
-    inline Iterator<dir> begin() const {
-        Node* origin;
-        if constexpr (dir == Direction::backward) {
-            origin = view.tail;
-        } else {
-            origin = view.head;
-        }
-        return Iterator<dir>(view, origin);
+    /* Return a coupled iterator from the tail of the list. */
+    template <typename = std::enable_if<doubly_linked>>
+    inline auto reverse() const {
+        return IteratorPair<Direction::backward>(rbegin(), rend());
     }
 
-    /* Return a null iterator to terminate the sequence. */
-    template <Direction dir = Direction::forward>
-    inline Iterator<dir> end() const {
-        return Iterator<dir>(view);
+    /* Return a forward iterator to the head of the list. */
+    inline auto begin() const {
+        return Iterator<Direction::forward>(view, view.head);
     }
 
-    // rbegin()/rend()
+    /* Return a backward iterator to the tail of the list. */
+    template <typename = std::enable_if<doubly_linked>>
+    inline auto rbegin() const {
+        return Iterator<Direction::backward>(view, view.tail);
+    }
+
+    /* Return an empty forward iterator to terminate the sequence. */
+    inline auto end() const {
+        return Iterator<Direction::forward>(view);
+    }
+
+    /* Return an empty backward iterator to terminate the sequence. */
+    template <typename = std::enable_if<doubly_linked>>
+    inline auto rend() const {
+        return Iterator<Direction::backward>(view);
+    }
 
     /////////////////////////////
     ////    INNER CLASSES    ////
@@ -117,11 +120,15 @@ public:
             if constexpr (dir == Direction::backward) {
                 next = curr;
                 curr = prev;
-                prev = static_cast<Node*>(prev->prev);
+                if (prev != nullptr) {
+                    prev = static_cast<Node*>(prev->prev);
+                }
             } else {
                 prev = curr;
                 curr = next;
-                next = static_cast<Node*>(next->next);
+                if (next != nullptr) {
+                    next = static_cast<Node*>(next->next);
+                }
             }
             return *this;
         }

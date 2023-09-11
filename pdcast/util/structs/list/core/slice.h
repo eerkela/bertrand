@@ -41,6 +41,7 @@ public:
     using Node = typename View::Node;
     class Indices;
     using Slice = SliceProxy<View>;
+    inline static constexpr bool doubly_linked = has_prev<Node>::value;
 
     /* Return a Slice proxy over the given indices. */
     template <typename... Args>
@@ -225,11 +226,9 @@ public:
         }
 
         /* Swap the start and stop indices based on singly-/doubly-linked status. */
-        inline std::pair<size_t, size_t> slice_direction(
-            long long closed, size_t view_size
-        ) {
+        auto slice_direction(long long closed, size_t view_size) {
             // if doubly-linked, start at whichever end is closest to slice boundary
-            if constexpr (has_prev<Node>::value) {
+            if constexpr (doubly_linked) {
                 long long size = static_cast<long long>(view_size);
                 if (
                     (_step > 0 && _start <= size - closed) ||
@@ -281,12 +280,13 @@ public:
     using View = ViewType;
     using Node = typename View::Node;
     using Indices = typename SliceFactory<View>::Indices;
+    inline static constexpr bool doubly_linked = has_prev<Node>::value;
 
     // NOTE: Reverse iterators are only compiled for doubly-linked lists.
 
     template <
         Direction dir = Direction::forward,
-        typename = std::enable_if_t<dir == Direction::forward || has_prev<Node>::value>
+        typename = std::enable_if_t<dir == Direction::forward || doubly_linked>
     >
     class Iterator;
     using IteratorPair = CoupledIterator<Bidirectional<Iterator>>;
@@ -323,7 +323,7 @@ public:
             size_t len = length.value();
 
             // backward traversal
-            if constexpr (has_prev<Node>::value) {
+            if constexpr (doubly_linked) {
                 using Backward = Iterator<Direction::backward>;
                 if (backward()) {
                     return IteratorPair(
@@ -354,7 +354,7 @@ public:
         }
 
         // backward traversal
-        if constexpr (has_prev<Node>::value) {
+        if constexpr (doubly_linked) {
             using Backward = Iterator<Direction::backward>;
             if (backward()) {
                 return Bidirectional(Backward(_view, origin(), indices, length()));
@@ -375,7 +375,7 @@ public:
         }
 
         // backward traversal
-        if constexpr (has_prev<Node>::value) {
+        if constexpr (doubly_linked) {
             using Backward = Iterator<Direction::backward>;
             if (backward()) {
                 return Bidirectional(Backward(_view, indices, length()));
@@ -527,7 +527,7 @@ private:
         }
 
         // find origin node
-        if constexpr (has_prev<Node>::value) {
+        if constexpr (doubly_linked) {
             if (backward()) {  // backward traversal
                 Node* next = nullptr;
                 Node* curr = _view.tail;

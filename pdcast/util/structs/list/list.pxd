@@ -63,6 +63,7 @@ cdef extern from "list.h":
         void extend(PyObject* items, bint left) except *
         size_t index[T](PyObject* item, T start, T stop) except? MAX_SIZE_T
         size_t count[T](PyObject* item, T start, T stop) except? MAX_SIZE_T
+        int contains(PyObject* item) except -1
         void remove(PyObject*) except *
         PyObject* pop[T](T index) except NULL
         VariantList* copy() except NULL
@@ -73,7 +74,6 @@ cdef extern from "list.h":
         PyObject* get_index[T](T index) except NULL
         void set_index[T](T index, PyObject* item) except *
         void delete_index[T](T index) except *
-        int contains(PyObject* item) except *
         size_t size()
 
         # extra methods

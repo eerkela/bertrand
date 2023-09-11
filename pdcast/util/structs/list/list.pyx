@@ -1032,7 +1032,10 @@ cdef class LinkedList:
             type check.  Otherwise, they have identical performance to their
             untyped equivalents.
         """
-        self.view.specialize(<PyObject*>spec)
+        if spec is None:
+            self.view.specialize(<PyObject*>NULL)
+        else:
+            self.view.specialize(<PyObject*>spec)
 
     def __class_getitem__(cls, key: object) -> type:
         """Subscribe a :class:`LinkedList` to a particular type specialization.

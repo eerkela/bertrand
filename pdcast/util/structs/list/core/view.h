@@ -17,6 +17,492 @@
 #include "util.h"  // CoupledIterator<>, Bidirectional<>, PyIterable
 
 
+//////////////////////
+////    MIXINS    ////
+//////////////////////
+
+
+/*
+NOTE: The Python list interface is implemented as a mixin class so that it can be
+shared amongst any view.
+*/
+
+
+/* A mixin class that implements the full Python list interface. */
+template <
+    template <typename, template <typename> class> class ViewType,
+    typename NodeType,
+    template <typename> class Allocator
+>
+class ListInterface {
+public:
+    using View = ViewType<NodeType, Allocator>;
+
+    /* Append an item to the end of a list. */
+    void append(PyObject* item, const bool left = false) {
+        using Node = typename View::Node;  // compiler error if declared outside method
+        View& view = self();
+
+        // allocate a new node
+        Node* node = view.node(item);
+        if (node == nullptr) {
+            return;  // propagate error
+        }
+
+        // link to beginning/end of list
+        if (left) {
+            view.link(nullptr, node, view.head);
+        } else {
+            view.link(view.tail, node, nullptr);
+        }
+        if (PyErr_Occurred()) {
+            view.recycle(node);  // clean up allocated node
+        }
+    }
+
+    /* Insert an item into a list at the specified index. */
+    template <typename T>
+    void insert(T index, PyObject* item) {
+        using Node = typename View::Node;
+        View& view = self();
+
+        // get iterator to index
+        auto iter = view.position(index);
+        if (!iter.has_value()) {
+            return;  // propagate error
+        }
+
+        // allocate a new node
+        Node* node = view.node(item);
+        if (node == nullptr) {
+            return;  // propagate error
+        }
+
+        // attempt to insert
+        iter.value().insert(node);
+        if (PyErr_Occurred()) {
+            view.recycle(node);  // clean up staged node before propagating
+        }
+    }
+
+    /* Extend a list by appending elements from the iterable. */
+    void extend(PyObject* items, const bool left = false) {
+        using Node = typename View::Node;
+        View& view = self();
+
+        // note original head/tail in case of error
+        Node* original;
+        if (left) {
+            original = view.head;
+        } else {
+            original = view.tail;
+        }
+
+        // proceed with extend
+        try {
+            PyIterable sequence(items);
+            for (PyObject* item : sequence) {
+                // allocate a new node
+                Node* node = view.node(item);
+                if (node == nullptr) {
+                    throw std::invalid_argument("could not allocate node");
+                }
+
+                // link to beginning/end of list
+                if (left) {
+                    view.link(nullptr, node, view.head);
+                } else {
+                    view.link(view.tail, node, nullptr);
+                }
+                if (PyErr_Occurred()) {
+                    view.recycle(node);  // clean up allocated node
+                    throw std::invalid_argument("could not link node");
+                }
+            }
+        } catch (std::invalid_argument&) {
+            // NOTE: this branch can also be triggered if the iterator raises an
+            // exception during `iter()` or `next()`.
+            if (left) {
+                // if we added nodes to the left, then we just remove until we reach
+                // the original head
+                Node* curr = view.head;
+                while (curr != original) {
+                    Node* next = static_cast<Node*>(curr->next);
+                    view.unlink(nullptr, curr, curr->next);
+                    view.recycle(curr);
+                    curr = next;
+                }
+            } else {
+                // otherwise, we start from the original tail and remove until we reach
+                // the end of the list
+                Node* curr = static_cast<Node*>(original->next);
+                while (curr != nullptr) {
+                    Node* next = static_cast<Node*>(curr->next);
+                    view.unlink(original, curr, next);
+                    view.recycle(curr);
+                    curr = next;
+                }
+            }
+            return;  // propagate Python error
+        }
+    }
+
+    /* Get the index of an item within a list. */
+    template <typename T>
+    std::optional<size_t> index(PyObject* item, T start = 0, T stop = -1) const {
+        const View& view = self();
+
+        // normalize start/stop indices
+        std::optional<size_t> opt_start = view.position.normalize(start, true);
+        std::optional<size_t> opt_stop = view.position.normalize(stop, true);
+        if (!opt_start.has_value() || !opt_stop.has_value()) {
+            return std::nullopt;  // propagate error
+        }
+        size_t norm_start = opt_start.value();
+        size_t norm_stop = opt_stop.value();
+        if (norm_start > norm_stop) {
+            PyErr_Format(
+                PyExc_ValueError,
+                "start index cannot be greater than stop index"
+            );
+            return std::nullopt;
+        }
+
+        // if list is doubly-linked and stop is closer to tail than start is to head,
+        // then we iterate backward from the tail
+        if constexpr (view.doubly_linked) {
+            if ((view.size - 1 - norm_stop) < norm_start) {
+                // get backwards iterator to stop index
+                auto iter = view.iter.reverse();
+                size_t idx = view.size - 1;
+                while (idx > norm_stop) {
+                    ++iter;
+                    --idx;
+                }
+
+                // search until we hit start index
+                bool found = false;
+                size_t last_observed;
+                while (idx >= norm_start) {
+                    int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
+                    if (comp == -1) {
+                        return std::nullopt;  // propagate error
+                    } else if (comp == 1) {
+                        found = true;
+                        last_observed = idx;
+                    }
+                    ++iter;
+                    --idx;
+                }
+                if (found) {
+                    return std::make_optional(last_observed);
+                }
+                PyErr_Format(PyExc_ValueError, "%R is not in list", item);
+                return std::nullopt;
+            }
+        }
+
+        // otherwise, we iterate forward from the head
+        auto iter = view.iter();
+        size_t idx = 0;
+        while (idx < norm_start) {
+            ++iter;
+            ++idx;
+        }
+
+        // search until we hit item or stop index
+        while (idx < norm_stop) {
+            int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
+            if (comp == -1) {
+                return std::nullopt;  // propagate error
+            } else if (comp == 1) {
+                return std::make_optional(idx);
+            }
+            ++iter;
+            ++idx;
+        }
+        PyErr_Format(PyExc_ValueError, "%R is not in list", item);
+        return std::nullopt;
+    }
+
+    /* Count the number of occurrences of an item within a list. */
+    template <typename T>
+    std::optional<size_t> count(PyObject* item, T start = 0, T stop = -1) const {
+        const View& view = self();
+
+        // normalize start/stop indices
+        std::optional<size_t> opt_start = view.position.normalize(start, true);
+        std::optional<size_t> opt_stop = view.position.normalize(stop, true);
+        if (!opt_start.has_value() || !opt_stop.has_value()) {
+            return std::nullopt;  // propagate error
+        }
+        size_t norm_start = opt_start.value();
+        size_t norm_stop = opt_stop.value();
+        if (norm_start > norm_stop) {
+            PyErr_Format(
+                PyExc_ValueError,
+                "start index cannot be greater than stop index"
+            );
+            return std::nullopt;
+        }
+
+        // if list is doubly-linked and stop is closer to tail than start is to head,
+        // then we iterate backward from the tail
+        if constexpr (view.doubly_linked) {
+            if ((view.size - 1 - norm_stop) < norm_start) {
+                // get backwards iterator to stop index
+                auto iter = view.iter.reverse();
+                size_t idx = view.size - 1;
+                while (idx > norm_stop) {
+                    ++iter;
+                    --idx;
+                }
+
+                // search until we hit start index
+                size_t count = 0;
+                while (idx >= norm_start) {
+                    int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
+                    if (comp == -1) {
+                        return std::nullopt;  // propagate error
+                    } else if (comp == 1) {
+                        ++count;
+                    }
+                    ++iter;
+                    --idx;
+                }
+                return std::make_optional(count);
+            }
+        }
+
+        // otherwise, we iterate forward from the head
+        auto iter = view.iter();
+        size_t idx = 0;
+        while (idx < norm_start) {
+            ++iter;
+            ++idx;
+        }
+
+        // search until we hit item or stop index
+        size_t count = 0;
+        while (idx < norm_stop) {
+            int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
+            if (comp == -1) {
+                return std::nullopt;  // propagate error
+            } else if (comp == 1) {
+                ++count;
+            }
+            ++iter;
+            ++idx;
+        }
+        return std::make_optional(count);
+    }
+
+    /* Check if the list contains a certain item. */
+    std::optional<bool> contains(PyObject* item) const {
+        const View& view = self();
+
+        for (auto node : view) {
+            // C API equivalent of the == operator
+            int comp = PyObject_RichCompareBool(node->value, item, Py_EQ);
+            if (comp == -1) {  // == comparison raised an exception
+                return std::nullopt;
+            } else if (comp == 1) {  // found a match
+                return std::make_optional(true);
+            }
+        }
+
+        // item not found
+        return std::make_optional(false);
+    }
+
+    /* Remove the first occurrence of an item from a list. */
+    void remove(PyObject* item) {
+        View& view = self();
+
+        // find item in list
+        for (auto iter = view.iter(); iter != iter.end(); ++iter) {
+            // C API equivalent of the == operator
+            int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
+            if (comp == -1) {  // == comparison raised an exception
+                return;  // propagate error
+            } else if (comp == 1) {  // found a match
+                view.recycle(iter.remove());
+                return;
+            }
+        }
+
+        // item not found
+        PyErr_Format(PyExc_ValueError, "%R is not in list", item);        
+    }
+
+    /* Remove an item from a list and return its value. */
+    template <typename T>
+    PyObject* pop(T index) {
+        using Node = typename View::Node;
+        View& view = self();
+
+        // get an iterator to the specified index
+        auto iter = view.position(index);
+        if (!iter.has_value()) {
+            return nullptr;  // propagate error
+        }
+
+        // remove node at index and return its value
+        Node* node = iter.value().remove();
+        PyObject* result = node->value;
+        Py_INCREF(result);  // ensure value is not garbage collected during recycle()
+        view.recycle(node);
+        return result;
+    }
+
+    /* Remove all elements from a list. */
+    void clear() {
+        using Node = typename View::Node;
+        View& view = self();
+
+        // store temporary reference to head
+        Node* curr = view.head;
+
+        // reset list parameters
+        view.head = nullptr;
+        view.tail = nullptr;
+        view.size = 0;
+
+        // recycle all nodes
+        while (curr != nullptr) {
+            Node* next = static_cast<Node*>(curr->next);
+            view.recycle(curr);
+            curr = next;
+        }
+    }
+
+    /* Return a shallow copy of the list. */
+    std::optional<View> copy() const {
+        return self().copy();
+    }
+
+    /* Sort a list in-place using an optional key function. */
+    void sort() {
+        using Node = typename View::Node;
+        View& view = self();
+
+        // TODO: make this a functor
+        // BaseSorter is a parent class that implements the decorate() and undecorate()
+        // methods so they can be shared across different sorting algorithms.
+    }
+
+    /* Reverse a list in-place. */
+    void reverse() {
+        using Node = typename View::Node;
+        View& view = self();
+
+        // save original `head` pointer
+        Node* head = view.head;
+        Node* curr = head;
+        
+        if constexpr (view.doubly_linked) {
+            // swap all `next`/`prev` pointers
+            while (curr != nullptr) {
+                Node* next = static_cast<Node*>(curr->next);
+                curr->next = static_cast<Node*>(curr->prev);
+                curr->prev = next;
+                curr = next;
+            }
+        } else {
+            // swap all `next` pointers
+            Node* prev = nullptr;
+            while (curr != nullptr) {
+                Node* next = static_cast<Node*>(curr->next);
+                curr->next = prev;
+                prev = curr;
+                curr = next;
+            }
+        }
+
+        // swap `head`/`tail` pointers
+        view.head = view.tail;
+        view.tail = head;
+    }
+
+    /* Rotate a list to the right by the specified number of steps. */
+    void rotate(long long steps = 1) {
+        using Node = typename View::Node;
+        View& view = self();
+
+        // normalize steps
+        size_t norm_steps = llabs(steps) % view.size;
+        if (norm_steps == 0) {
+            return;  // rotated list is identical to original
+        }
+
+        // get index at which to split the list
+        size_t index;
+        size_t rotate_left = (steps < 0);
+        if (rotate_left) {  // count from head
+            index = norm_steps;
+        } else {  // count from tail
+            index = view.size - norm_steps;
+        }
+
+        Node* new_head;
+        Node* new_tail;
+
+        // identify new head and tail of rotated list
+        if constexpr (view.doubly_linked) {
+            // NOTE: if the list is doubly-linked, then we can iterate in either
+            // direction to find the junction point.
+            if (index > view.size / 2) {  // backward traversal
+                new_head = view.tail;
+                for (size_t i = view.size - 1; i > index; i--) {
+                    new_head = static_cast<Node*>(new_head->prev);
+                }
+                new_tail = static_cast<Node*>(new_head->prev);
+
+                // split list at junction and join previous head/tail
+                Node::split(new_tail, new_head);
+                Node::join(view.tail, view.head);
+
+                // update head/tail pointers
+                view.head = new_head;
+                view.tail = new_tail;
+                return;
+            }
+        }
+
+        // forward traversal
+        new_tail = view.head;
+        for (size_t i = 1; i < index; i++) {
+            new_tail = static_cast<Node*>(new_tail->next);
+        }
+        new_head = static_cast<Node*>(new_tail->next);
+
+        // split at junction and join previous head/tail
+        Node::split(new_tail, new_head);
+        Node::join(view.tail, view.head);
+
+        // update head/tail pointers
+        view.head = new_head;
+        view.tail = new_tail;
+    }
+
+private:
+
+    inline View& self() {
+        return static_cast<View&>(*this);
+    }
+
+    inline const View& self() const {
+        return static_cast<const View&>(*this);
+    }
+
+};
+
+
+// TODO: sort() could be another functor that encapsulates a sorting algorithm in an
+// interchangeable way.  This would allow us to swap out different sorting algorithms
+// without having to change the code that calls them.
+
+
 ////////////////////////
 ////    LISTVIEW    ////
 ////////////////////////
@@ -28,7 +514,7 @@ template <
     typename NodeType = DoubleNode,
     template <typename> class Allocator = DynamicAllocator
 >
-class ListView {
+class ListView : public ListInterface<ListView, NodeType, Allocator> {
 public:
     using View = ListView<NodeType, Allocator>;
     using Node = NodeType;
@@ -50,11 +536,11 @@ public:
     /* Construct an empty ListView. */
     ListView(Py_ssize_t max_size = -1, PyObject* spec = nullptr) :
         head(nullptr), tail(nullptr), size(0), max_size(max_size),
-        specialization(spec), index(*this), slice(*this), iter(*this),
+        specialization(spec), position(*this), slice(*this), iter(*this),
         allocator(max_size)
     {
         if (spec != nullptr) {
-            Py_INCREF(spec);  // hold reference to specialization if given
+            Py_INCREF(spec);
         }
     }
 
@@ -65,18 +551,17 @@ public:
         Py_ssize_t max_size = -1,
         PyObject* spec = nullptr
     ) : head(nullptr), tail(nullptr), size(0), max_size(max_size),
-        specialization(spec), index(*this), slice(*this), iter(*this),
+        specialization(spec), position(*this), slice(*this), iter(*this),
         allocator(max_size)
     {
-        // hold reference to specialization, if given
         if (spec != nullptr) {
             Py_INCREF(spec);
         }
 
-        // unpack iterable into ListView
+        // unpack Python iterable into ListView
         try {
             PyIterable sequence(iterable);
-            for (auto item : sequence) {
+            for (PyObject* item : sequence) {
                 // allocate a new node
                 Node* curr = node(item);
                 if (curr == nullptr) {  // error during node initialization
@@ -99,7 +584,7 @@ public:
                 }
             }
         } catch (std::invalid_argument& e) {
-            self_destruct();
+            self_destruct();  // decrements refcount of spec if necessary
             throw e;
         }
     }
@@ -107,8 +592,8 @@ public:
     /* Move constructor: transfer ownership from one ListView to another. */
     ListView(ListView&& other) noexcept :
         head(other.head), tail(other.tail), size(other.size), max_size(other.max_size),
-        specialization(other.specialization), index(*this), slice(*this), iter(*this),
-        allocator(std::move(other.allocator))
+        specialization(other.specialization), position(*this), slice(*this),
+        iter(*this), allocator(std::move(other.allocator))
     {
         // reset other ListView
         other.head = nullptr;
@@ -171,6 +656,17 @@ public:
     // -> or perhaps Node::init() can be overloaded to accept either a node or
     // PyObject*.
 
+    // const NodeFactory node;
+    /* node()
+     * node.copy()
+     * node.recycle()
+     * node.specialize()
+     * node.specialization()
+     * node.max_size()
+     * node.nbytes()
+     * node.purge()
+     */
+
     /* Construct a new node for the list. */
     template <typename... Args>
     inline Node* node(Args... args) const {
@@ -189,6 +685,10 @@ public:
     inline void recycle(Node* node) const {
         allocator.recycle(node);
     }
+
+    // TODO: the presence of the node copy() method means that we can't lift the
+    // no-arg copy() method out of ListView and into ListInterface.  We should
+    // remove the node copy() and move it into the `node()` factory function.
 
     /* Copy a node in the list. */
     inline Node* copy(Node* node) const {
@@ -229,138 +729,62 @@ public:
     ////    LIST INTERFACE    ////
     //////////////////////////////
 
-    /* An IndexFactory functor that produces iterators to a specific index in the
+    /* An IndexFactory functor that produces iterators to a specific index of the
     list. */
-    const IndexFactory<View> index;  // index(), index.normalize(), etc.
+    const IndexFactory<View> position;
+    /* position()
+     * position.forward()
+     * position.backward()
+     * position.normalize()
+     */
 
     /* A SliceFactory functor that allows slice proxies to be extracted from the
     list. */
-    const SliceFactory<View> slice;  // slice(), slice.normalize(), etc.
+    const SliceFactory<View> slice;
+    /* slice()
+     * slice.normalize()
+     */
+
+    // TODO: we should be able to lift the no-arg copy() method out of ListView and
+    // into ListInterface.  This requires us to also delete the node copy() overload,
+    // which requires a refactor of the interface methods at the same time.
 
     /* Make a shallow copy of the entire list. */
     std::optional<View> copy() const {
-        try {
-            View result(max_size, specialization);
+        View result(max_size, specialization);
 
-            // copy nodes into new list
-            copy_into(result);
-            if (PyErr_Occurred()) {
-                return std::nullopt;
+        // copy every node into result
+        for (Node* node : *this) {
+            // allocate a new node
+            Node* copied = result.copy(node);
+            if (copied == nullptr) {
+                return std::nullopt;  // propagate error
             }
-            return std::make_optional(std::move(result));
 
-        } catch (std::invalid_argument&) {
-            return std::nullopt;  // propagate
+            // link to end of copied list
+            result.link(result.tail, copied, nullptr);
+            if (PyErr_Occurred()) {
+                return std::nullopt;  // propagate error
+            }
         }
+
+        return std::make_optional(std::move(result));
     }
-
-    /* Clear the list. */
-    void clear() {
-        Node* curr = head;  // store temporary reference to head
-
-        // reset list parameters
-        head = nullptr;
-        tail = nullptr;
-        size = 0;
-
-        // recycle all nodes
-        while (curr != nullptr) {
-            Node* next = static_cast<Node*>(curr->next);
-            recycle(curr);
-            curr = next;
-        }
-    }
-
-    // /* Normalize a numeric index, allowing Python-style wraparound and
-    // bounds checking. */
-    // template <typename T>
-    // std::optional<size_t> index(T index, bool truncate) {
-    //     bool index_lt_zero = index < 0;
-
-    //     // wraparound negative indices
-    //     if (index_lt_zero) {
-    //         index += size;
-    //         index_lt_zero = index < 0;
-    //     }
-
-    //     // boundscheck
-    //     if (index_lt_zero || index >= static_cast<T>(size)) {
-    //         if (truncate) {
-    //             if (index_lt_zero) {
-    //                 return 0;
-    //             }
-    //             return size - 1;
-    //         }
-    //         PyErr_SetString(PyExc_IndexError, "list index out of range");
-    //         return std::nullopt;
-    //     }
-
-    //     // return as size_t
-    //     return std::optional<size_t>{ static_cast<size_t>(index) };
-    // }
-
-    // /* Normalize a Python integer for use as an index to the list. */
-    // std::optional<size_t> index(PyObject* index, bool truncate) {
-    //     // check that index is a Python integer
-    //     if (!PyLong_Check(index)) {
-    //         PyErr_SetString(PyExc_TypeError, "index must be a Python integer");
-    //         return std::nullopt;
-    //     }
-
-    //     // comparisons are kept at the python level until we're ready to return
-    //     PyObject* py_zero = PyLong_FromSize_t(0);  // new reference
-    //     PyObject* py_size = PyLong_FromSize_t(size);  // new reference
-    //     int index_lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
-
-    //     // wraparound negative indices
-    //     bool release_index = false;
-    //     if (index_lt_zero) {
-    //         index = PyNumber_Add(index, py_size);  // new reference
-    //         index_lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
-    //         release_index = true;  // remember to DECREF index later
-    //     }
-
-    //     // boundscheck
-    //     if (index_lt_zero || PyObject_RichCompareBool(index, py_size, Py_GE)) {
-    //         // clean up references
-    //         Py_DECREF(py_zero);
-    //         Py_DECREF(py_size);
-    //         if (release_index) {
-    //             Py_DECREF(index);
-    //         }
-
-    //         // apply truncation if directed
-    //         if (truncate) {
-    //             if (index_lt_zero) {
-    //                 return std::optional<size_t>{ 0 };
-    //             }
-    //             return std::optional<size_t>{ size - 1 };
-    //         }
-
-    //         // raise IndexError
-    //         PyErr_SetString(PyExc_IndexError, "list index out of range");
-    //         return std::nullopt;
-    //     }
-
-    //     // value is good - convert to size_t
-    //     size_t result = PyLong_AsSize_t(index);
-
-    //     // clean up references
-    //     Py_DECREF(py_zero);
-    //     Py_DECREF(py_size);
-    //     if (release_index) {
-    //         Py_DECREF(index);
-    //     }
-
-    //     return std::optional<size_t>{ result };
-    // }
 
     /////////////////////////////
     ////    EXTRA METHODS    ////
     /////////////////////////////
 
     /* A ThreadLock functor that allows the list to be locked for thread safety. */
-    const Lock lock;  // lock(), lock.context(), lock.diagnostics(), etc.
+    const Lock lock;
+    /* lock()
+     * lock.context()
+     * lock.diagnostics()
+     * lock.count()
+     * lock.duration()
+     * lock.contention()
+     * lock.reset_diagnostics()
+     */
 
     /* Enforce strict type checking for elements of this list. */
     void specialize(PyObject* spec) {
@@ -384,12 +808,10 @@ public:
         }
 
         // check the contents of the list
-        Node* curr = head;
-        for (size_t i = 0; i < size; i++) {
-            if (!Node::typecheck(curr, spec)) {
+        for (auto node : *this) {
+            if (!Node::typecheck(node, spec)) {
                 return;  // propagate TypeError()
             }
-            curr = static_cast<Node*>(curr->next);
         }
 
         // replace old specialization
@@ -409,29 +831,45 @@ public:
     ////    ITERATOR PROTOCOL    ////
     /////////////////////////////////
 
+    /* NOTE: any of the following loop constructions can be used:
+     *
+     * for (auto node : list) {}
+     * for (auto node : list.iter()) {}
+     * for (auto node : list.iter.reverse()) {}
+     * for (auto iter = list.iter(); iter != iter.end(); ++iter) {}
+     * for (auto iter = list.iter.reverse(); iter != iter.end(); ++iter) {}
+     * for (auto iter = list.begin(), end = list.end(); iter != end; ++iter) {}
+     * for (auto iter = list.rbegin(), end = list.rend(); iter != end; ++iter) {}
+     * for (auto iter = list.iter.begin(), end = list.iter.end(); iter != end; ++iter) {}
+     * for (auto iter = list.iter.rbegin(), end = list.iter.rend(); iter != end; ++iter) {}
+     *
+     * NOTE: reverse iteration is only supported for doubly-linked lists.
+     */
+
     /* An IteratorFactory functor that allows iteration over the list. */
-    const Iter iter;  // iter(), iter.begin(), iter.end(), etc.
+    const Iter iter;
+    /* iter()
+     * iter.reverse()
+     * iter.begin()
+     * iter.end()
+     * iter.rbegin()
+     * iter.rend()
+     */
 
     /* Create an iterator to the start of the list. */
-    template <Direction dir = Direction::forward>
     inline auto begin() const {
-        // NOTE: need the `template` keyword to signal that `begin()` can accept
-        // template arguments
-        return iter.template begin<dir>();
+        return iter.begin();
     }
 
     /* Create an iterator to the end of the list. */
-    template <Direction dir = Direction::forward>
     inline auto end() const {
-        // NOTE: need the `template` keyword to signal that `end()` can accept
-        // template arguments
-        return iter.template end<dir>();
+        return iter.end();
     }
 
     /* Create a reverse iterator to the end of the list. */
     inline auto rbegin() const {
         if constexpr (doubly_linked) {
-            return begin<Direction::backward>();
+            return iter.rbegin();
         }
         static_assert("singly-linked lists do not support reverse iteration");
     }
@@ -439,7 +877,7 @@ public:
     /* Create a reverse iterator to the start of the list. */
     inline auto rend() const {
         if constexpr (doubly_linked) {
-            return end<Direction::backward>();
+            return iter.rend();
         }
         static_assert("singly-linked lists do not support reverse iteration");
     }
@@ -449,7 +887,7 @@ protected:
 
     /* Release the resources being managed by the ListView. */
     inline void self_destruct() {
-        clear();  // clear all nodes in list
+        this->clear();  // clear all nodes in list
         if (specialization != nullptr) {
             Py_DECREF(specialization);
         }

@@ -17,8 +17,8 @@
 
 /*
 NOTE: IndexFactory is a functor (function object) that produces iterators to a specific
-index of a linked list, set, or dictionary.  It is used by the view classes to provide
-a uniform interface for accessing elements by their index, with the same semantics for
+index of a linked list, set, or dictionary.  It is used by view classes to provide a
+uniform interface for accessing elements by their index, with the same semantics for
 index normalization and bounds checking as Python lists.
 */
 
@@ -30,18 +30,19 @@ class IndexFactory {
 public:
     using View = ViewType;
     using Node = typename View::Node;
+    inline static constexpr bool doubly_linked = has_prev<Node>::value;
 
     // NOTE: Reverse iterators are only compiled for doubly-linked lists.
 
     template <
         Direction dir = Direction::forward,
-        typename = std::enable_if_t<dir == Direction::forward || has_prev<Node>::value>
+        typename = std::enable_if_t<dir == Direction::forward || doubly_linked>
     >
     class Iterator;
 
     template <
         Direction dir = Direction::forward,
-        typename = std::enable_if_t<dir == Direction::forward || has_prev<Node>::value>
+        typename = std::enable_if_t<dir == Direction::forward || doubly_linked>
     >
     using IteratorPair = CoupledIterator<Iterator<dir>>;
 
@@ -63,7 +64,7 @@ public:
 
         // get iterator to index
         size_t norm_index = opt_index.value();
-        if constexpr (has_prev<Node>::value) {
+        if constexpr (doubly_linked) {
             if (norm_index > (view.size - (view.size > 0)) / 2) {  // backward traversal
                 Iterator<Direction::backward> it(view, view.tail, view.size - 1);
                 for (size_t i = view.size - 1; i > norm_index; --i) {
@@ -83,12 +84,15 @@ public:
 
     /* Return a forward iterator at an arbitrary index of a linked list. */
     template <typename T>
-    auto forward(T index, bool truncate = false) const {
+    std::optional<Iterator<Direction::forward>> forward(
+        T index,
+        bool truncate = false
+    ) const {
         return _directional<Direction::forward>(index, truncate);
     }
 
     /* Return a backward iterator at an arbitrary index of a linked list. */
-    template <typename T, typename = std::enable_if<has_prev<Node>::value>>
+    template <typename T, typename = std::enable_if<doubly_linked>>
     auto backward(T index, bool truncate = false) const {
         return _directional<Direction::backward>(index, truncate);
     }
@@ -266,7 +270,7 @@ private:
 
         // get iterator to index
         size_t norm_index = opt_index.value();
-        if constexpr (has_prev<Node>::value) {
+        if constexpr (doubly_linked) {
             if (norm_index > (view.size - (view.size > 0)) / 2) {  // backward traversal
                 Iterator<Direction::backward> it(view, view.tail, view.size - 1);
                 for (size_t i = view.size - 1; i > norm_index; --i) {

@@ -432,18 +432,18 @@ public:
 
     /* Implement LinkedList.append() for all views. */
     inline void append(PyObject* item, bool left) {
-        std::visit([&](auto& view) { Ops::append(view, item, left); }, view);
+        std::visit([&](auto& view) { view.append(item, left); }, view);
     }
 
     /* Implement LinkedList.insert() for all views. */
     template <typename T>
     inline void insert(T index, PyObject* item) {
-        std::visit([&](auto& view) { Ops::insert(view, index, item); }, view);
+        std::visit([&](auto& view) { view.insert(index, item); }, view);
     }
 
     /* Insert LinkedList.extend() for all views. */
     inline void extend(PyObject* items, bool left) {
-        std::visit([&](auto& view) { Ops::extend(view, items, left); }, view);
+        std::visit([&](auto& view) { view.extend(items, left); }, view);
     }
 
     /* Implement LinkedList.index() for all views. */
@@ -451,7 +451,11 @@ public:
     inline size_t index(PyObject* item, T start, T stop) {
         return std::visit(
             [&](auto& view) {
-                return Ops::index(view, item, start, stop);
+                auto result = view.index(item, start, stop);
+                if (!result.has_value()) {
+                    return MAX_SIZE_T;  // Cython expects an explicit error code
+                }
+                return result.value();
             },
             view
         );
@@ -462,7 +466,25 @@ public:
     inline size_t count(PyObject* item, T start, T stop) {
         return std::visit(
             [&](auto& view) {
-                return Ops::count(view, item, start, stop);
+                auto result = view.count(item, start, stop);
+                if (!result.has_value()) {
+                    return MAX_SIZE_T;  // Cython expects an explicit error code
+                }
+                return result.value();
+            },
+            view
+        );
+    }
+
+    /* Implement LinkedList.__contains__() for all views. */
+    inline int contains(PyObject* item) {
+        return std::visit(
+            [&](auto& view) {
+                auto result = view.contains(item);
+                if (!result.has_value()) {
+                    return -1;  // Cython expects an explicit error code
+                }
+                return static_cast<int>(result.value());
             },
             view
         );
@@ -470,13 +492,18 @@ public:
 
     /* Implement LinkedList.remove() for all views. */
     inline void remove(PyObject* item) {
-        std::visit([&](auto& view) { Ops::remove(view, item); }, view);
+        std::visit([&](auto& view) { view.remove(item); }, view);
     }
 
     /* Implement LinkedList.pop() for all views. */
     template <typename T>
     inline PyObject* pop(T index) {
-        return std::visit([&](auto& view) { return Ops::pop(view, index); }, view);
+        return std::visit([&](auto& view) { return view.pop(index); }, view);
+    }
+
+    /* Implement LinkedList.clear() for all views. */
+    inline void clear() {
+        std::visit([&](auto& view) { view.clear(); }, view);
     }
 
     /* Implement LinkedList.copy() for all views. */
@@ -496,11 +523,6 @@ public:
         );
     }
 
-    /* Implement LinkedList.clear() for all views. */
-    inline void clear() {
-        std::visit([&](auto& view) { view.clear(); }, view);
-    }
-
     /* Implement LinkedList.sort() for all views. */
     inline void sort(PyObject* key, bool reverse) {
         std::visit([&](auto& view) { Ops::sort(view, key, reverse); }, view);
@@ -508,22 +530,17 @@ public:
 
     /* Implement LinkedList.reverse() for all views. */
     inline void reverse() {
-        std::visit([&](auto& view) { Ops::reverse(view); }, view);
+        std::visit([&](auto& view) { view.reverse(); }, view);
     }
 
     /* Implement LinkedList.rotate() for all views. */
-    inline void rotate(Py_ssize_t steps) {
-        std::visit([&](auto& view) { Ops::rotate(view, steps); }, view);
+    inline void rotate(long long steps) {
+        std::visit([&](auto& view) { view.rotate(steps); }, view);
     }
 
     /* Implement LinkedList.__len__() for all views. */
     inline size_t size() {
         return std::visit([&](auto& view) { return view.size; }, view);
-    }
-
-    /* Implement LinkedList.__contains__() for all views. */
-    inline int contains(PyObject* item) {
-        return std::visit([&](auto& view) { return Ops::contains(view, item); }, view);
     }
 
     /* Implement LinkedList.__getitem__() for all views (single index). */
