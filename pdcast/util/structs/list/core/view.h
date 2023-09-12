@@ -17,6 +17,131 @@
 #include "util.h"  // CoupledIterator<>, Bidirectional<>, PyIterable
 
 
+// TODO: importing core/sort.h causes a circular import error.  We need to separate
+// the views from the public interface to avoid this.  We can do this by making
+// the public C++ interface a separate class that contains a view as a member.  This
+// can hold all the functors and other methods that are exposed to the user, and can
+// separate the low-level view methods from the high-level interface.
+
+
+// TODO: the views are relagated to node allocation/deallocation and linking/unlinking.
+// In fact, it can absorb some of the complexity from Allocator and make NodeFactory
+// obsolete.
+
+
+
+/*
+
+bertrand/
+    structs/
+        core/
+            allocate.h
+            iter.h
+            node.h
+            search.h
+            thread.h
+            util.h
+        list/
+            cython.h
+            index.h
+            list.h
+            list.pxd
+            list.pyx
+            list.pyi
+            slice.h
+            sort.h
+        set/
+            cython.h
+            relative.h
+            set.h
+            set.pxd
+            set.pyx
+            set.pyi
+        dict/
+            cython.h
+            dict.h
+            dict.pxd
+            dict.pyx
+            dict.pyi
+
+*/
+
+
+/*
+    LinkedList (python)
+        VariantList
+            LinkedList (C++)
+                ListView
+
+    ListView:
+        head
+        tail
+        size
+        max_size
+        specialization
+        node()
+        recycle()
+        copy()
+        clear()
+        link()
+        unlink()
+        specialize()
+        nbytes()
+
+    LinkedList (C++):
+        append()
+        insert()
+        extend()
+        index()
+        count()
+        contains()
+        remove()
+        pop()
+        clear()
+        copy()
+        sort()
+        reverse()
+        rotate()
+        position()
+        position.forward()
+        position.backward()
+        position().get()
+        position().set()
+        position().del()
+        slice()
+        slice.normalize()
+        slice().get()
+        slice().set()
+        slice().del()
+        iter()
+        iter.reverse()
+        iter.begin()
+        iter.end()
+        iter.rbegin()
+        iter.rend()
+        begin()
+        end()
+        rbegin()
+        rend()
+        lock()
+        lock.context()
+        lock.diagnostics()
+        lock.count()
+        lock.duration()
+        lock.contention()
+        lock.reset_diagnostics()
+        specialize()
+        specialization()
+        size()
+        max_size()
+        nbytes()
+
+*/
+
+
+// TODO: Might be able to bring back inheritance between views.
+
+
 //////////////////////
 ////    MIXINS    ////
 //////////////////////
@@ -370,6 +495,10 @@ public:
 
         // recycle all nodes
         while (curr != nullptr) {
+            // NOTE: since we're clearing the entire list, we can omit some of the
+            // checks that would normally be necessary in `unlink()`.  This causes the
+            // deleted nodes to retain dangling pointers to their deleted neighbors,
+            // but that's okay because we're about to recycle them anyways.
             Node* next = static_cast<Node*>(curr->next);
             view.recycle(curr);
             curr = next;
@@ -381,15 +510,7 @@ public:
         return self().copy();
     }
 
-    /* Sort a list in-place using an optional key function. */
-    void sort() {
-        using Node = typename View::Node;
-        View& view = self();
-
-        // TODO: make this a functor
-        // BaseSorter is a parent class that implements the decorate() and undecorate()
-        // methods so they can be shared across different sorting algorithms.
-    }
+    // const MergeSort sort;
 
     /* Reverse a list in-place. */
     void reverse() {
@@ -498,11 +619,6 @@ private:
 };
 
 
-// TODO: sort() could be another functor that encapsulates a sorting algorithm in an
-// interchangeable way.  This would allow us to swap out different sorting algorithms
-// without having to change the code that calls them.
-
-
 ////////////////////////
 ////    LISTVIEW    ////
 ////////////////////////
@@ -518,9 +634,10 @@ class ListView : public ListInterface<ListView, NodeType, Allocator> {
 public:
     using View = ListView<NodeType, Allocator>;
     using Node = NodeType;
+    // using Allocator = Allocator<Node>;
     using Iter = IteratorFactory<View>;
-    using Lock = ThreadLock<View>;
-    using Slice = SliceProxy<View>;
+    using Lock = ThreadLock<View>;  // TODO: move this to LinkedList
+    using Slice = SliceProxy<View>;  // TODO: move this to LinkedList
     inline static constexpr bool doubly_linked = has_prev<Node>::value;
 
     Node* head;
@@ -656,6 +773,9 @@ public:
     // -> or perhaps Node::init() can be overloaded to accept either a node or
     // PyObject*.
 
+    // TODO: we could probably just use normal constructors and placement new instead
+    // of using separate init() methods.  This could give nodes copy/move semantics
+
     // const NodeFactory node;
     /* node()
      * node.copy()
@@ -679,6 +799,11 @@ public:
             }
         }
         return result;
+    }
+
+    /* Copy a node in the list. */
+    inline Node* node(Node* node) const {
+        return allocator.copy(node);
     }
 
     /* Release a node, returning it to the allocator. */
@@ -890,31 +1015,6 @@ protected:
         this->clear();  // clear all nodes in list
         if (specialization != nullptr) {
             Py_DECREF(specialization);
-        }
-    }
-
-    /* Copy all the nodes from this list into a newly-allocated view. */
-    void copy_into(View& other) const {
-        Node* curr = head;
-        Node* copied = nullptr;
-        Node* copied_tail = nullptr;
-
-        // copy each node in list
-        while (curr != nullptr) {
-            copied = copy(curr);  // copy node
-            if (copied == nullptr) {  // error during copy(node)
-                return;  // propagate error
-            }
-
-            // link to tail of copied list
-            other.link(copied_tail, copied, nullptr);
-            if (PyErr_Occurred()) {  // error during link()
-                return;  // propagate error
-            }
-
-            // advance to next node
-            copied_tail = copied;
-            curr = static_cast<Node*>(curr->next);
         }
     }
 
