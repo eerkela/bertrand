@@ -6,7 +6,7 @@ from libcpp.stack cimport stack
 from .base cimport MAX_SIZE_T, SingleNode, DoubleNode, Py_INCREF, Py_DECREF
 
 
-cdef extern from "list.h":
+cdef extern from "list_cython.h":
     cdef cppclass VariantList:
         # nested types/classes
         cppclass Lock:
@@ -14,7 +14,6 @@ cdef extern from "list.h":
                 pass
             Guard operator()()
             Guard* context()
-            bint diagnostics(optional[bint] enabled = nullopt)
             size_t count()
             size_t duration()
             double contention()

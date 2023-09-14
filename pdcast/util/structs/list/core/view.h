@@ -13,7 +13,7 @@
 #include "iter.h"  // IteratorFactory
 #include "slice.h"  // SliceFactory
 #include "table.h"  // HashTable
-#include "thread.h"  // ThreadLock
+#include "thread.h"  // BasicLock/DiagnosticLock
 #include "util.h"  // CoupledIterator<>, Bidirectional<>, PyIterable
 
 
@@ -480,35 +480,7 @@ public:
         return result;
     }
 
-    /* Remove all elements from a list. */
-    void clear() {
-        using Node = typename View::Node;
-        View& view = self();
-
-        // store temporary reference to head
-        Node* curr = view.head;
-
-        // reset list parameters
-        view.head = nullptr;
-        view.tail = nullptr;
-        view.size = 0;
-
-        // recycle all nodes
-        while (curr != nullptr) {
-            // NOTE: since we're clearing the entire list, we can omit some of the
-            // checks that would normally be necessary in `unlink()`.  This causes the
-            // deleted nodes to retain dangling pointers to their deleted neighbors,
-            // but that's okay because we're about to recycle them anyways.
-            Node* next = static_cast<Node*>(curr->next);
-            view.recycle(curr);
-            curr = next;
-        }
-    }
-
-    /* Return a shallow copy of the list. */
-    std::optional<View> copy() const {
-        return self().copy();
-    }
+    // copy()/clear() implemented on view
 
     // const MergeSort sort;
 
@@ -628,17 +600,20 @@ private:
 strategies. */
 template <
     typename NodeType = DoubleNode,
-    template <typename> class Allocator = DynamicAllocator
+    template <typename> class AllocatorPolicy = DynamicAllocator
 >
-class ListView : public ListInterface<ListView, NodeType, Allocator> {
+class ListView : public ListInterface<ListView, NodeType, AllocatorPolicy> {
 public:
-    using View = ListView<NodeType, Allocator>;
+    using View = ListView<NodeType, AllocatorPolicy>;
     using Node = NodeType;
-    // using Allocator = Allocator<Node>;
+    using Allocator = AllocatorPolicy<Node>;
     using Iter = IteratorFactory<View>;
-    using Lock = ThreadLock<View>;  // TODO: move this to LinkedList
+    using Lock = BasicLock;  // TODO: move this to LinkedList
     using Slice = SliceProxy<View>;  // TODO: move this to LinkedList
     inline static constexpr bool doubly_linked = has_prev<Node>::value;
+
+    template <typename T>
+    using AllocatorType = AllocatorPolicy<T>;  // in case we need to change it later
 
     Node* head;
     Node* tail;
@@ -820,6 +795,55 @@ public:
         return allocator.copy(node);
     }
 
+    // TODO: we should be able to lift the no-arg copy() method out of ListView and
+    // into ListInterface.  This requires us to also delete the node copy() overload,
+    // which requires a refactor of the interface methods at the same time.
+
+
+    /* Make a shallow copy of the entire list. */
+    std::optional<View> copy() const {
+        View result(max_size, specialization);
+
+        // copy every node into result
+        for (Node* node : *this) {
+            // allocate a new node
+            Node* copied = result.copy(node);
+            if (copied == nullptr) {
+                return std::nullopt;  // propagate error
+            }
+
+            // link to end of copied list
+            result.link(result.tail, copied, nullptr);
+            if (PyErr_Occurred()) {
+                return std::nullopt;  // propagate error
+            }
+        }
+
+        return std::make_optional(std::move(result));
+    }
+
+    /* Remove all elements from a list. */
+    void clear() {
+        // store temporary reference to head
+        Node* curr = head;
+
+        // reset list parameters
+        head = nullptr;
+        tail = nullptr;
+        size = 0;
+
+        // recycle all nodes
+        while (curr != nullptr) {
+            // NOTE: since we're clearing the entire list, we can omit some of the
+            // checks that would normally be necessary in `unlink()`.  This causes the
+            // deleted nodes to retain dangling pointers to their deleted neighbors,
+            // but that's okay because we're about to recycle them anyways.
+            Node* next = static_cast<Node*>(curr->next);
+            recycle(curr);
+            curr = next;
+        }
+    }
+
     /* Link a node to its neighbors to form a linked list. */
     inline void link(Node* prev, Node* curr, Node* next) {
         // delegate to node-specific link() helper
@@ -870,37 +894,11 @@ public:
      * slice.normalize()
      */
 
-    // TODO: we should be able to lift the no-arg copy() method out of ListView and
-    // into ListInterface.  This requires us to also delete the node copy() overload,
-    // which requires a refactor of the interface methods at the same time.
-
-    /* Make a shallow copy of the entire list. */
-    std::optional<View> copy() const {
-        View result(max_size, specialization);
-
-        // copy every node into result
-        for (Node* node : *this) {
-            // allocate a new node
-            Node* copied = result.copy(node);
-            if (copied == nullptr) {
-                return std::nullopt;  // propagate error
-            }
-
-            // link to end of copied list
-            result.link(result.tail, copied, nullptr);
-            if (PyErr_Occurred()) {
-                return std::nullopt;  // propagate error
-            }
-        }
-
-        return std::make_optional(std::move(result));
-    }
-
     /////////////////////////////
     ////    EXTRA METHODS    ////
     /////////////////////////////
 
-    /* A ThreadLock functor that allows the list to be locked for thread safety. */
+    /* A Lock functor that allows the list to be locked for thread safety. */
     const Lock lock;
     /* lock()
      * lock.context()
@@ -956,30 +954,8 @@ public:
     ////    ITERATOR PROTOCOL    ////
     /////////////////////////////////
 
-    /* NOTE: any of the following loop constructions can be used:
-     *
-     * for (auto node : list) {}
-     * for (auto node : list.iter()) {}
-     * for (auto node : list.iter.reverse()) {}
-     * for (auto iter = list.iter(); iter != iter.end(); ++iter) {}
-     * for (auto iter = list.iter.reverse(); iter != iter.end(); ++iter) {}
-     * for (auto iter = list.begin(), end = list.end(); iter != end; ++iter) {}
-     * for (auto iter = list.rbegin(), end = list.rend(); iter != end; ++iter) {}
-     * for (auto iter = list.iter.begin(), end = list.iter.end(); iter != end; ++iter) {}
-     * for (auto iter = list.iter.rbegin(), end = list.iter.rend(); iter != end; ++iter) {}
-     *
-     * NOTE: reverse iteration is only supported for doubly-linked lists.
-     */
-
     /* An IteratorFactory functor that allows iteration over the list. */
     const Iter iter;
-    /* iter()
-     * iter.reverse()
-     * iter.begin()
-     * iter.end()
-     * iter.rbegin()
-     * iter.rend()
-     */
 
     /* Create an iterator to the start of the list. */
     inline auto begin() const {
@@ -1008,7 +984,7 @@ public:
     }
 
 protected:
-    mutable Allocator<Node> allocator;
+    mutable Allocator allocator;
 
     /* Release the resources being managed by the ListView. */
     inline void self_destruct() {

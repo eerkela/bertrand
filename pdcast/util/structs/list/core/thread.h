@@ -13,18 +13,20 @@
 
 
 /*
-ThreadLock is a functor (function object) that produces std::lock_guards for an
-internal mutex to allow thread-safe operations on a linked list, set, or dictionary.
-It also optionally tracks diagnostics on the total number of times the mutex has been
-locked and the average contention time for each lock.
+Locks are functors (function objects) that produce std::lock_guards for an internal
+mutex.  They can be applied to any data structure, and are generally safer than
+manually locking and unlocking the mutex.
+
+DiagnosticLock is a variation of BasicLock that provides the same functionality, but
+also keeps track of basic diagnostics, including the total number of times the mutex
+has been locked and the average contention time for each lock.  This is useful for
+profiling the performance of threaded code and identifying potential bottlenecks.
 */
 
 
-/* A functor that produces threading locks for the templated view. */
-template <typename ViewType>
-class ThreadLock {
+/* A functor that produces threading locks for an internal mutex. */
+class BasicLock {
 public:
-    using View = ViewType;
     using Guard = std::lock_guard<std::mutex>;
     using Clock = std::chrono::high_resolution_clock;
     using Resolution = std::chrono::nanoseconds;
@@ -33,20 +35,6 @@ public:
     is automatically acquired when the guard is constructed and released when it goes
     out of scope.  Any operations in between are guaranteed to be atomic. */
     inline Guard operator()() const {
-        if (track_diagnostics) {
-            auto start = Clock::now();
-
-            // acquire lock
-            mtx.lock();
-
-            auto end = Clock::now();
-            lock_time += std::chrono::duration_cast<Resolution>(end - start).count();
-            ++lock_count;
-
-            // create a guard using the acquired lock
-            return Guard(mtx, std::adopt_lock);
-        }
-
         return Guard(mtx);
     }
 
@@ -57,28 +45,48 @@ public:
     NOTE: this method is generally less safe than using the standard functor operator,
     but can be used for compatibility with Python's context manager protocol. */
     inline Guard* context() const {
-        if (track_diagnostics) {
-            auto start = Clock::now();
-
-            // acquire lock
-            Guard* lock = new Guard(mtx);
-
-            auto end = Clock::now();
-            lock_time += std::chrono::duration_cast<Resolution>(end - start).count();
-            ++lock_count;
-
-            return lock;
-        }
-
         return new Guard(mtx);
     }
 
-    /* Toggle diagnostics on or off and return its current setting. */
-    inline bool diagnostics(std::optional<bool> enabled = std::nullopt) const {
-        if (enabled.has_value()) {
-            track_diagnostics = enabled.value();
-        }
-        return track_diagnostics;
+protected:
+    mutable std::mutex mtx;
+};
+
+
+/* A functor that also tracks performance diagnostics for the lock. */
+class DiagnosticLock : public BasicLock {
+public:
+    using Guard = typename BasicLock::Guard;
+    using Clock = typename BasicLock::Clock;
+    using Resolution = typename BasicLock::Resolution;
+
+    /* Track the elapsed time to acquire a lock guard for the mutex. */
+    inline Guard operator()() const {
+        auto start = Clock::now();
+
+        // acquire lock
+        this->mtx.lock();
+
+        auto end = Clock::now();
+        lock_time += std::chrono::duration_cast<Resolution>(end - start).count();
+        ++lock_count;
+
+        // create a guard using the acquired lock
+        return Guard(this->mtx, std::adopt_lock);
+    }
+
+    /* Track the elapsed time to acquire a heap-allocated lock guard for the mutex. */
+    inline Guard* context() const {
+        auto start = Clock::now();
+
+        // acquire lock
+        Guard* lock = new Guard(this->mtx);
+
+        auto end = Clock::now();
+        lock_time += std::chrono::duration_cast<Resolution>(end - start).count();
+        ++lock_count;
+
+        return lock;
     }
 
     /* Get the total number of times the mutex has been locked. */
@@ -97,15 +105,12 @@ public:
     }
 
     /* Reset the internal diagnostic counters. */
-    inline void reset_diagnostics() const {
+    inline void reset_diagnostics() {
         lock_count = 0;
         lock_time = 0;
     }
 
 private:
-    friend View;
-    mutable std::mutex mtx;
-    mutable bool track_diagnostics = false;
     mutable size_t lock_count = 0;
     mutable size_t lock_time = 0;
 };

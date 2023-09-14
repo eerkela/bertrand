@@ -46,6 +46,8 @@ public:
     >
     using IteratorPair = CoupledIterator<Iterator<dir>>;
 
+    IndexFactory(View& view) : view(view) {}
+
     /////////////////////////
     ////    ITERATORS    ////
     /////////////////////////
@@ -247,10 +249,7 @@ public:
     };
 
 private:
-    friend View;
     View& view;
-
-    IndexFactory(View& view) : view(view) {}
 
     /* Return a unidirectional iterator at the specified index. */
     template <Direction dir, typename T>

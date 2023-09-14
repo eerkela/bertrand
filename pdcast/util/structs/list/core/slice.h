@@ -43,6 +43,8 @@ public:
     using Slice = SliceProxy<View>;
     inline static constexpr bool doubly_linked = has_prev<Node>::value;
 
+    SliceFactory(View& view) : view(view) {}
+
     /* Return a Slice proxy over the given indices. */
     template <typename... Args>
     std::optional<Slice> operator()(Args... args) const {
@@ -248,10 +250,7 @@ public:
     };
 
 private:
-    friend View;
     View& view;
-
-    SliceFactory(View& view) : view(view) {}
 };
 
 

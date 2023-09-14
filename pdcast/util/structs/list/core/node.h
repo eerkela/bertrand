@@ -543,6 +543,22 @@ struct Counted : public NodeType {
 // if constexpr (has_prev<Node>::value) {}
 
 
+// using C++20 traits:
+
+/*
+template <typename Node>
+concept HasPrev = requires(Node node) {
+    { node.prev() } -> std::convertible_to<Node*>;
+};
+
+
+template <typename Node>
+concept HasHash = requires(Node node) {
+    { node.hash } -> std::convertible_to<Py_hash_t>;
+};
+*/
+
+
 /* A trait that detects whether the templated node type is doubly-linked (i.e.
 has a `prev` pointer). */
 template <typename Node>
@@ -613,6 +629,43 @@ private:
 public:
     static constexpr bool value = decltype(test<Node>(nullptr))::value;
 };
+
+
+// TODO: migrate code to use NodeTraits rather than has_xxx traits directly
+
+
+template <typename Node>
+struct NodeTraits {
+
+    inline static constexpr bool has_prev = has_prev<Node>::value;
+    inline static constexpr bool has_hash = has_hash<Node>::value;
+    inline static constexpr bool has_mapped = has_mapped<Node>::value;
+    inline static constexpr bool has_mutex = has_mutex<Node>::value;
+
+    //////////////////////
+    ////    SFINAE    ////
+    //////////////////////
+
+    /*
+    NOTE: when GCC accepts C++20 as the default standard, we can replace
+    all of the above with:
+
+    inline static constexpr bool has_prev = requires(Node node) {
+        { node.prev() } -> std::convertible_to<Node*>;
+    };
+    inline static constexpr bool has_hash = requires(Node node) {
+        { node.hash() } -> std::convertible_to<Py_hash_t>;
+    };
+    inline static constexpr bool has_mapped = requires(Node node) {
+        { node.mapped() } -> std::convertible_to<PyObject*>;
+    };
+    inline static constexpr bool has_mutex = requires(Node node) {
+        { node.mutex() } -> std::convertible_to<std::mutex&>;
+    };
+    */
+
+};
+
 
 
 #endif // BERTRAND_STRUCTS_CORE_NODE_H include guard
