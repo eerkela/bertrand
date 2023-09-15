@@ -239,9 +239,7 @@ public:
         size_t idx;
 
         /* Construct an iterator at a given index. */
-        Iterator(View& view, Node* node, size_t idx) :
-            Base(view, node), idx(idx)
-        {}
+        Iterator(View& view, Node* node, size_t idx) : Base(view, node), idx(idx) {}
 
         /* Empty iterator. */
         Iterator(View& view, size_t idx) : Base(view), idx(idx) {}

@@ -35,9 +35,11 @@ and end() iterators, which can be used to share state between the two.
 
 
 /* A coupled pair of begin() and end() iterators to simplify the iterator interface. */
-template <typename Iterator>
+template <typename IteratorType>
 class CoupledIterator {
 public:
+    using Iterator = IteratorType;
+
     // iterator tags for std::iterator_traits
     using iterator_category     = typename Iterator::iterator_category;
     using difference_type       = typename Iterator::difference_type;

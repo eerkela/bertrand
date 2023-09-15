@@ -64,6 +64,7 @@ using VariantView = std::variant<
 
 
 LinkedList<DoubleNode, DynamicAllocator, MergeSort, BasicLock> list;
+// std::vector<int> test = std::vector<int> {1, 2, 3} + list;
 
 
 ////////////////////////

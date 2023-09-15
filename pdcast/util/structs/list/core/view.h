@@ -615,6 +615,12 @@ public:
     template <typename T>
     using AllocatorType = AllocatorPolicy<T>;  // in case we need to change it later
 
+    template <Direction dir>
+    using Iterator = typename Iter::template Iterator<dir>;
+
+    template <Direction dir>
+    using IteratorPair = typename Iter::template IteratorPair<dir>;
+
     Node* head;
     Node* tail;
     size_t size;

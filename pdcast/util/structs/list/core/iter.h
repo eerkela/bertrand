@@ -55,26 +55,26 @@ public:
         return IteratorPair<Direction::forward>(begin(), end());
     }
 
+    /* Return a forward iterator to the head of the list. */
+    inline auto begin() const {
+        return Iterator<Direction::forward>(view, view.head);
+    }
+
+    /* Return an empty forward iterator to terminate the sequence. */
+    inline auto end() const {
+        return Iterator<Direction::forward>(view);
+    }
+
     /* Return a coupled iterator from the tail of the list. */
     template <typename = std::enable_if<doubly_linked>>
     inline auto reverse() const {
         return IteratorPair<Direction::backward>(rbegin(), rend());
     }
 
-    /* Return a forward iterator to the head of the list. */
-    inline auto begin() const {
-        return Iterator<Direction::forward>(view, view.head);
-    }
-
     /* Return a backward iterator to the tail of the list. */
     template <typename = std::enable_if<doubly_linked>>
     inline auto rbegin() const {
         return Iterator<Direction::backward>(view, view.tail);
-    }
-
-    /* Return an empty forward iterator to terminate the sequence. */
-    inline auto end() const {
-        return Iterator<Direction::forward>(view);
     }
 
     /* Return an empty backward iterator to terminate the sequence. */

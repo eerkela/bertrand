@@ -279,7 +279,7 @@ public:
     using View = ViewType;
     using Node = typename View::Node;
     using Indices = typename SliceFactory<View>::Indices;
-    inline static constexpr bool doubly_linked = has_prev<Node>::value;
+    inline static constexpr bool doubly_linked = View::doubly_linked;
 
     // NOTE: Reverse iterators are only compiled for doubly-linked lists.
 
@@ -503,7 +503,6 @@ public:
     };
 
 private:
-    friend View;
     friend SliceFactory<View>;
     View& _view;
     const Indices indices;
