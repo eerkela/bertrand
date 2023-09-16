@@ -7,10 +7,12 @@
 #include "core/view.h"
 #include "core/sort.h"
 
-#include <list>  // std::list
 #include <sstream>  // std::ostringstream
 #include <typeinfo>  // std::bad_typeid
-#include <vector>  // std::vector
+
+
+// TODO: should migrate over to using C++ exceptions instead of Python exceptions
+// or std::optional.  This will be more consistent with constructor/operator errors.
 
 
 ////////////////////////////
@@ -45,6 +47,7 @@ public:
 
     /* Get the current specialization for elements of this list. */
     inline PyObject* specialization() const {
+        // TODO: reference counting?
         return view.specialization;
     }
 
@@ -285,7 +288,7 @@ public:
         IteratorFactory(View& view) : view(view) {}
     };
 
-    /* Method functor to create coupled iterators over the list. */
+    /* Functor to create various kinds of iterators over the list. */
     const IteratorFactory iter;
 
     /* Get a forward iterator to the start of the list. */
@@ -312,6 +315,8 @@ public:
 
 protected:
 
+    // TODO: max_size should be std::optional<size_t> = std::nullopt
+
     /* Construct an empty list. */
     LinkedBase(long long max_size = -1, PyObject* spec = nullptr) :
         view(max_size, spec), iter(view)
@@ -321,13 +326,15 @@ protected:
     LinkedBase(
         PyObject* iterable,
         bool reverse = false,
-        long long max_size = -1,  // TODO: std::optional<size_t>?
+        long long max_size = -1,
         PyObject* spec = nullptr
     ) : view(iterable, reverse, max_size, spec), iter(view)
     {}
 
     /* Construct a list from a base view. */
-    LinkedBase(View& view) : view(view), iter(view) {}
+    LinkedBase(View&& view) : view(view), iter(view) {}
+
+    // TODO: construct from iterators?
 
     /* Copy constructor. */
     LinkedBase(const LinkedBase& other) :
@@ -354,9 +361,140 @@ protected:
 };
 
 
+////////////////////////////////////
+////    FORWARD DECLARATIONS    ////
+////////////////////////////////////
+
+
+template <typename Derived, typename ViewType, typename SortPolicy>
+class ListInterface_;
+
+
+template <typename Derived>
+class ListOps_;
+
+
+//////////////////////
+////    PUBLIC    ////
+//////////////////////
+
+
+template <
+    typename NodeType = DoubleNode,
+    template <typename> class AllocatorPolicy = DynamicAllocator,
+    template <typename> class SortPolicy = MergeSort,
+    typename LockPolicy = BasicLock
+>
+class LinkedList :
+    public LinkedBase<ListView<NodeType, AllocatorPolicy>>,
+    public ListInterface_<
+        LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>,
+        ListView<NodeType, AllocatorPolicy>,
+        SortPolicy<ListView<NodeType, AllocatorPolicy>>
+    >,
+    public ListOps_<
+        LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>
+    >
+{
+public:
+    using View = ListView<NodeType, AllocatorPolicy>;
+    using Node = typename View::Node;
+
+private:
+    using Self = LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>;
+    using Base = LinkedBase<View>;
+    using Sort = SortPolicy<View>;
+    using Lock = LockPolicy;
+    using IList = ListInterface_<Self, View, Sort>;
+    using ListOps = ListOps_<Self>;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct an empty list. */
+    LinkedList(long long max_size = -1, PyObject* spec = nullptr) :
+        Base(max_size, spec), IList(this->view)
+    {}
+
+    /* Construct a list from an input iterable. */
+    LinkedList(
+        PyObject* iterable,
+        bool reverse = false,
+        long long max_size = -1,
+        PyObject* spec = nullptr
+    ) : Base(iterable, reverse, max_size, spec), IList(this->view)
+    {}
+
+    /* Construct a list from a base view. */
+    LinkedList(View&& view) :
+        Base(view), IList(this->view)
+    {}
+
+    /* Copy constructor. */
+    LinkedList(const LinkedList& other) :
+        Base(other.view), IList(this->view)
+    {}
+
+    /* Move constructor. */
+    LinkedList(LinkedList&& other) :
+        Base(std::move(other.view)), IList(this->view)
+    {}
+
+    /* Copy assignment operator. */
+    LinkedList& operator=(const LinkedList& other) {
+        Base::operator=(other);
+        return *this;
+    }
+
+    /* Move assignment operator. */
+    LinkedList& operator=(LinkedList&& other) {
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    /* A functor that allows the list to be locked for thread safety. */
+    const Lock lock;
+    /* BasicLock:
+     * lock()
+     * lock.context()
+     *
+     * DiagnosticLock:
+     * lock()
+     * lock.context()
+     * lock.count()
+     * lock.duration()
+     * lock.contention()
+     * lock.reset_diagnostics()
+     */
+};
+
+
 //////////////////////
 ////    MIXINS    ////
 //////////////////////
+
+
+// TODO: list.position() should probably return a proxy for an iterator that can be
+// implicitly converted to a value type, and has the public interface methods.  In
+// fact, we could make position() completely internal to the view, and just use the
+// array index operator publicly.
+
+
+// TODO: IndexFactory might not even need to exist.  We could just put the
+// normalize_index() method in LinkedBase as a protected method, and then have
+// ListInterface_ call it in operator[].  This would remove a functor (and memory
+// overhead) from the public class.
+
+
+// slice() and iter() still need to be functors, but we don't need to make them any
+// more complicated than they already are.
+
+
+// We could just implement slice() directly within ListInterface.  This could avoid
+// another functor, and would inline the full interface into the public class.
 
 
 /* A mixin that implements the full Python list interface. */
@@ -364,8 +502,10 @@ template <typename Derived, typename ViewType, typename SortPolicy>
 class ListInterface_ {
     using View = ViewType;
     using Node = typename View::Node;
-    using Vector = std::vector<PyObject*>;
-    using List = std::list<PyObject*>;
+    using ValueType = PyObject*;
+
+    template <Direction dir, typename = void>
+    using ViewIter = typename View::template Iterator<dir>;
 
 public:
 
@@ -393,25 +533,7 @@ public:
     /* Insert an item into a list at the specified index. */
     template <typename T>
     void insert(T index, PyObject* item) {
-        View& view = self().view;
-
-        // get iterator to index
-        auto iter = view.position(index);
-        if (!iter.has_value()) {
-            return;  // propagate error
-        }
-
-        // allocate a new node
-        Node* node = view.node(item);
-        if (node == nullptr) {
-            return;  // propagate error
-        }
-
-        // attempt to insert
-        iter.value().insert(node);
-        if (PyErr_Occurred()) {
-            view.recycle(node);  // clean up staged node before propagating
-        }
+        (*this)[index].insert(item);
     }
 
     /* Extend a list by appending elements from the iterable. */
@@ -477,23 +599,23 @@ public:
 
     /* Get the index of an item within a list. */
     template <typename T>
-    std::optional<size_t> index(PyObject* item, T start = 0, T stop = -1) const {
+    size_t index(PyObject* item, T start = 0, T stop = -1) const {
         const View& view = self().view;
 
-        // normalize start/stop indices
-        std::optional<size_t> opt_start = view.position.normalize(start, true);
-        std::optional<size_t> opt_stop = view.position.normalize(stop, true);
-        if (!opt_start.has_value() || !opt_stop.has_value()) {
-            return std::nullopt;  // propagate error
+        // trivial case: empty list
+        if (view.size == 0) {
+            std::ostringstream msg;
+            msg << repr(item) << " is not in list";
+            throw std::invalid_argument(msg.str());
         }
-        size_t norm_start = opt_start.value();
-        size_t norm_stop = opt_stop.value();
+
+        // normalize start/stop indices
+        size_t norm_start = normalize_index(start, true);
+        size_t norm_stop = normalize_index(stop, true);
         if (norm_start > norm_stop) {
-            PyErr_Format(
-                PyExc_ValueError,
+            throw std::invalid_argument(
                 "start index cannot be greater than stop index"
             );
-            return std::nullopt;
         }
 
         // if list is doubly-linked and stop is closer to tail than start is to head,
@@ -501,9 +623,9 @@ public:
         if constexpr (view.doubly_linked) {
             if ((view.size - 1 - norm_stop) < norm_start) {
                 // get backwards iterator to stop index
-                auto iter = view.iter.reverse();
+                auto iter = view.rbegin();
                 size_t idx = view.size - 1;
-                while (idx > norm_stop) {
+                while (idx >= norm_stop) {
                     ++iter;
                     --idx;
                 }
@@ -514,7 +636,7 @@ public:
                 while (idx >= norm_start) {
                     int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
                     if (comp == -1) {
-                        return std::nullopt;  // propagate error
+                        throw std::runtime_error("could not compare item");
                     } else if (comp == 1) {
                         found = true;
                         last_observed = idx;
@@ -523,15 +645,16 @@ public:
                     --idx;
                 }
                 if (found) {
-                    return std::make_optional(last_observed);
+                    return last_observed;
                 }
-                PyErr_Format(PyExc_ValueError, "%R is not in list", item);
-                return std::nullopt;
+                std::ostringstream msg;
+                msg << repr(item) << " is not in list";
+                throw std::invalid_argument(msg.str());
             }
         }
 
         // otherwise, we iterate forward from the head
-        auto iter = view.iter();
+        auto iter = view.begin();
         size_t idx = 0;
         while (idx < norm_start) {
             ++iter;
@@ -542,36 +665,35 @@ public:
         while (idx < norm_stop) {
             int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
             if (comp == -1) {
-                return std::nullopt;  // propagate error
+                throw std::runtime_error("could not compare item");
             } else if (comp == 1) {
-                return std::make_optional(idx);
+                return idx;
             }
             ++iter;
             ++idx;
         }
-        PyErr_Format(PyExc_ValueError, "%R is not in list", item);
-        return std::nullopt;
+        std::ostringstream msg;
+        msg << repr(item) << " is not in list";
+        throw std::invalid_argument(msg.str());
     }
 
     /* Count the number of occurrences of an item within a list. */
     template <typename T>
-    std::optional<size_t> count(PyObject* item, T start = 0, T stop = -1) const {
+    size_t count(PyObject* item, T start = 0, T stop = -1) const {
         const View& view = self().view;
 
-        // normalize start/stop indices
-        std::optional<size_t> opt_start = view.position.normalize(start, true);
-        std::optional<size_t> opt_stop = view.position.normalize(stop, true);
-        if (!opt_start.has_value() || !opt_stop.has_value()) {
-            return std::nullopt;  // propagate error
+        // trivial case: empty list
+        if (view.size == 0) {
+            return 0;
         }
-        size_t norm_start = opt_start.value();
-        size_t norm_stop = opt_stop.value();
+
+        // normalize start/stop indices
+        size_t norm_start = normalize_index(start, true);
+        size_t norm_stop = normalize_index(stop, true);
         if (norm_start > norm_stop) {
-            PyErr_Format(
-                PyExc_ValueError,
+            throw std::invalid_argument(
                 "start index cannot be greater than stop index"
             );
-            return std::nullopt;
         }
 
         // if list is doubly-linked and stop is closer to tail than start is to head,
@@ -591,14 +713,14 @@ public:
                 while (idx >= norm_start) {
                     int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
                     if (comp == -1) {
-                        return std::nullopt;  // propagate error
+                        throw std::runtime_error("could not compare item");
                     } else if (comp == 1) {
                         ++count;
                     }
                     ++iter;
                     --idx;
                 }
-                return std::make_optional(count);
+                return count;
             }
         }
 
@@ -615,32 +737,32 @@ public:
         while (idx < norm_stop) {
             int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
             if (comp == -1) {
-                return std::nullopt;  // propagate error
+                throw std::runtime_error("could not compare item");
             } else if (comp == 1) {
                 ++count;
             }
             ++iter;
             ++idx;
         }
-        return std::make_optional(count);
+        return count;
     }
 
     /* Check if the list contains a certain item. */
-    std::optional<bool> contains(PyObject* item) const {
+    bool contains(PyObject* item) const {
         const View& view = self().view;
 
         for (auto node : view) {
             // C API equivalent of the == operator
             int comp = PyObject_RichCompareBool(node->value, item, Py_EQ);
             if (comp == -1) {  // == comparison raised an exception
-                return std::nullopt;
+                throw std::runtime_error("could not compare item");
             } else if (comp == 1) {  // found a match
-                return std::make_optional(true);
+                return true;
             }
         }
 
         // item not found
-        return std::make_optional(false);
+        return false;
     }
 
     /* Remove the first occurrence of an item from a list. */
@@ -666,20 +788,7 @@ public:
     /* Remove an item from a list and return its value. */
     template <typename T>
     PyObject* pop(T index) {
-        View& view = self().view;
-
-        // get an iterator to the specified index
-        auto iter = view.position(index);
-        if (!iter.has_value()) {
-            return nullptr;  // propagate error
-        }
-
-        // remove node at index and return its value
-        Node* node = iter.value().remove();
-        PyObject* result = node->value;
-        Py_INCREF(result);  // ensure value is not garbage collected during recycle()
-        view.recycle(node);
-        return result;
+        return (*this)[index].pop();
     }
 
     /* Remove all elements from a list. */
@@ -788,6 +897,44 @@ public:
         view.tail = new_tail;
     }
 
+    // forward declarations
+    class ElementProxy;
+    class SliceProxy;
+
+    /* Get a proxy for a value at a particular index of the list. */
+    template <typename T>
+    ElementProxy operator[](T index) {
+        // normalize index (can throw std::out_of_range, std::bad_typeid)
+        size_t norm_index = normalize_index(index);
+
+        // get iterator to index
+        View& view = self().view;
+        if constexpr (View::doubly_linked) {
+            if (norm_index > (view.size - (view.size > 0)) / 2) {  // backward traversal
+                ViewIter<Direction::backward> iter = view.rbegin();
+                for (size_t i = view.size - 1; i > norm_index; --i) {
+                    ++iter;
+                }
+                return ElementProxy(view, Bidirectional(iter));
+            }
+        }
+
+        // forward traversal
+        ViewIter<Direction::forward> iter = view.begin();
+        for (size_t i = 0; i < norm_index; ++i) {
+            ++iter;
+        }
+        return ElementProxy(view, Bidirectional(iter));
+    }
+
+    // /* Get a proxy for a slice within the list. */
+    // template <typename... Args>
+    // SliceProxy slice(Args&&... args) {
+    //     View& view = self().view;
+
+    //     return SliceProxy(view, std::forward<Args>(args)...);
+    // }
+
     ////////////////////////
     ////    FUNCTORS    ////
     ////////////////////////
@@ -813,20 +960,196 @@ public:
     /* sort(PyObject* key = nullptr, bool reverse = false)
      */
 
+    ///////////////////////
+    ////    PROXIES    ////
+    ///////////////////////
+
+    /* A proxy for an element at a particular index of the list, as returned by the []
+    operator. */
+    class ElementProxy {
+    public:
+
+        /* Get the value at the current index. */
+        inline ValueType& get() const {
+            return (*iter)->value;
+        }
+
+        /* Set the value at the current index. */
+        inline void set(const ValueType& value) {
+            Node* node = view.node(value);
+            if (node == nullptr) {
+                return;  // propagate error
+            }
+            iter.replace(node);
+        }
+
+        /* Insert a value at the current index. */
+        inline void insert(const ValueType& value) {
+            // allocate a new node
+            Node* node = view.node(value);
+            if (node == nullptr) {
+                return;  // propagate error
+            }
+
+            // insert node at current index
+            iter.insert(node);
+            if (PyErr_Occurred()) {
+                view.recycle(node);  // clean up allocated node
+            }
+        }
+
+        /* Delete the value at the current index. */
+        inline void del() {
+            iter.drop();
+        }
+
+        /* Remove the node at the current index and return its value. */
+        inline ValueType pop() {
+            Node* node = iter.remove();
+            ValueType result = node->value;
+            Py_INCREF(result);  // ensure value is not garbage collected during recycle()
+            view.recycle(node);
+            return result;
+        }
+
+        /* Assign the value at the current index.
+
+        This is syntactic sugar for set() such that `list[i] = value` is equivalent to
+        `list[i].set(value)`. */
+        inline ElementProxy& operator=(const ValueType& value) {
+            set(value);
+            return *this;
+        }
+
+        /* Implicitly convert the proxy to the value where applicable.
+
+        This is syntactic sugar for get() such that `ValueType value = list[i]` is
+        equivalent to `ValueType value = list[i].get()`.  The same implicit conversion
+        is also applied if the proxy is passed to a function that expects a value,
+        unless that function is marked as `explicit`. */
+        inline operator ValueType() const {
+            return get();
+        }
+
+    private:
+        friend ListInterface_;
+        View& view;
+        Bidirectional<ViewIter> iter;
+
+        template <Direction dir>
+        ElementProxy(View& view, ViewIter<dir>& iter) : view(view), iter(iter) {}
+    };
+
+    /* A proxy for a slice within a list, as returned by the slice() factory method. */
+    class SliceProxy {
+    public:
+
+    private:
+        friend ListInterface_;
+        View& view;
+
+    };
+
+
+private:
+
+    /* Enable access to members of the Derived type. */
+    inline Derived& self() {
+        return static_cast<Derived&>(*this);
+    }
+
+    /* Enable access to members of the Derived type in a const context. */
+    inline const Derived& self() const {
+        return static_cast<const Derived&>(*this);
+    }
+
 protected:
 
     ListInterface_(View& view) :
         position(view), slice(view), sort(view)
     {}
 
-private:
+    /* Normalize a numeric index, applying Python-style wraparound and bounds
+    checking. */
+    template <typename T>
+    size_t normalize_index(T index, bool truncate = false) const {
+        const View& view = self().view;
 
-    inline Derived& self() {
-        return static_cast<Derived&>(*this);
+        // wraparound negative indices
+        bool lt_zero = index < 0;
+        if (lt_zero) {
+            index += view.size;
+            lt_zero = index < 0;
+        }
+
+        // boundscheck
+        if (lt_zero || index >= static_cast<T>(view.size)) {
+            if (truncate) {
+                if (lt_zero) {
+                    return 0;
+                }
+                return view.size - 1;
+            }
+            throw std::out_of_range("list index out of range");
+        }
+
+        // return as size_t
+        return static_cast<size_t>(index);
     }
 
-    inline const Derived& self() const {
-        return static_cast<const Derived&>(*this);
+    /* Normalize a Python integer for use as an index to the list. */
+    size_t normalize_index(PyObject* index, bool truncate = false) const {
+        // check that index is a Python integer
+        if (!PyLong_Check(index)) {
+            throw std::bad_typeid("index must be a Python integer");
+        }
+
+        const View& view = self().view;
+
+        // comparisons are kept at the python level until we're ready to return
+        PyObject* py_zero = PyLong_FromSize_t(0);  // new reference
+        PyObject* py_size = PyLong_FromSize_t(view.size);  // new reference
+        int lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
+
+        // wraparound negative indices
+        bool release_index = false;
+        if (lt_zero) {
+            index = PyNumber_Add(index, py_size);  // new reference
+            lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
+            release_index = true;  // remember to DECREF index later
+        }
+
+        // boundscheck - value is bad
+        if (lt_zero || PyObject_RichCompareBool(index, py_size, Py_GE)) {
+            Py_DECREF(py_zero);
+            Py_DECREF(py_size);
+            if (release_index) {
+                Py_DECREF(index);
+            }
+
+            // apply truncation if directed
+            if (truncate) {
+                if (lt_zero) {
+                    return 0;
+                }
+                return view.size - 1;
+            }
+
+            // raise IndexError
+            throw std::out_of_range("list index out of range");
+        }
+
+        // value is good - cast to size_t
+        size_t result = PyLong_AsSize_t(index);
+
+        // clean up references
+        Py_DECREF(py_zero);
+        Py_DECREF(py_size);
+        if (release_index) {
+            Py_DECREF(index);
+        }
+
+        return result;
     }
 
 };
@@ -1431,103 +1754,6 @@ inline auto operator>(const T& lhs, const Derived& rhs)
 {
     return !(lhs <= rhs);
 }
-
-
-//////////////////////
-////    PUBLIC    ////
-//////////////////////
-
-
-template <
-    typename NodeType = DoubleNode,
-    template <typename> class AllocatorPolicy = DynamicAllocator,
-    template <typename> class SortPolicy = MergeSort,
-    typename LockPolicy = BasicLock
->
-class LinkedList :
-    public LinkedBase<ListView<NodeType, AllocatorPolicy>>,
-    public ListInterface_<
-        LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>,
-        ListView<NodeType, AllocatorPolicy>,
-        SortPolicy<ListView<NodeType, AllocatorPolicy>>
-    >,
-    public ListOps_<
-        LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>
-    >
-{
-public:
-    using View = ListView<NodeType, AllocatorPolicy>;
-    using Node = typename View::Node;
-
-private:
-    using Self = LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>;
-    using Base = LinkedBase<View>;
-    using Sort = SortPolicy<View>;
-    using Lock = LockPolicy;
-    using IList = ListInterface_<Self, View, Sort>;
-
-public:
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Construct an empty list. */
-    LinkedList(long long max_size = -1, PyObject* spec = nullptr) :
-        Base(max_size, spec), IList(this->view)
-    {}
-
-    /* Construct a list from an input iterable. */
-    LinkedList(
-        PyObject* iterable,
-        bool reverse = false,
-        long long max_size = -1,
-        PyObject* spec = nullptr
-    ) : Base(iterable, reverse, max_size, spec), IList(this->view)
-    {}
-
-    /* Construct a list from a base view. */
-    LinkedList(View& view) :
-        Base(view), IList(this->view)
-    {}
-
-    /* Copy constructor. */
-    LinkedList(const LinkedList& other) :
-        Base(other.view), IList(this->view)
-    {}
-
-    /* Move constructor. */
-    LinkedList(LinkedList&& other) :
-        Base(std::move(other.view)), IList(this->view)
-    {}
-
-    /* Copy assignment operator. */
-    LinkedList& operator=(const LinkedList& other) {
-        Base::operator=(other);
-        return *this;
-    }
-
-    /* Move assignment operator. */
-    LinkedList& operator=(LinkedList&& other) {
-        Base::operator=(std::move(other));
-        return *this;
-    }
-
-    /* A functor that allows the list to be locked for thread safety. */
-    const Lock lock;
-    /* BasicLock:
-     * lock()
-     * lock.context()
-     *
-     * DiagnosticLock:
-     * lock()
-     * lock.context()
-     * lock.count()
-     * lock.duration()
-     * lock.contention()
-     * lock.reset_diagnostics()
-     */
-};
 
 
 #endif  // BERTRAND_STRUCTS_LIST_LIST_H include guard

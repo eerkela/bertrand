@@ -389,14 +389,11 @@ public:
     ////    INNER CLASSES    ////
     /////////////////////////////
 
-    template <Direction dir>
-    using BaseIterator = typename IndexFactory<View>::template Iterator<dir>;
-
     /* A specialized iterator built for slice traversal. */
     template <Direction dir, typename>
-    class Iterator : public BaseIterator<dir> {
+    class Iterator : public IndexFactory<View>::template Iterator<dir> {
     public:
-        using Base = BaseIterator<dir>;
+        using Base = typename IndexFactory<View>::template Iterator<dir>;
 
         /* Prefix increment to advance the iterator to the next node in the slice. */
         inline Iterator& operator++() {

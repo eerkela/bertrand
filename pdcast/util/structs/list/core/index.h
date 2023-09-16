@@ -190,13 +190,10 @@ public:
     ////    INNER CLASSES    ////
     /////////////////////////////
 
-    template <Direction dir>
-    using BaseIterator = typename IteratorFactory<View>::template Iterator<dir>;
-
     template <Direction dir, typename>
-    class Iterator : public BaseIterator<dir> {
+    class Iterator : public IteratorFactory<View>::template Iterator<dir> {
     public:
-        using Base = BaseIterator<dir>;
+        using Base = typename IteratorFactory<View>::template Iterator<dir>;
 
         /* prefix increment to advance iterator and update index. */
         inline Iterator& operator++() {
