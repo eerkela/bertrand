@@ -15,34 +15,6 @@
 // or std::optional.  This will be more consistent with constructor/operator errors.
 
 
-// TODO: factor out mixins into separate files
-
-/*
-structs/
-    core/
-        allocate.h
-        iter.h
-        node.h
-        view.h
-    interface/
-        ilist.h
-        iset.h
-        idict.h
-        index.h
-        lock.h
-        slice.h
-        sort.h
-    ops/
-        listops.h
-        setops.h
-        dictops.h
-    list.h (LinkedList, VariantList, etc.)
-    list.pyx
-    list.pxd
-    list.pyi
-*/
-
-
 ////////////////////////////
 ////    BASE CLASSES    ////
 ////////////////////////////
@@ -75,8 +47,7 @@ public:
 
     /* Get the current specialization for elements of this list. */
     inline PyObject* specialization() const {
-        // TODO: reference counting?
-        return view.specialization;
+        return view.specialization;  // TODO: reference counting?
     }
 
     /* Enforce strict type checking for elements of the list. */
@@ -96,16 +67,44 @@ public:
     /* Forward the view.iter() functor. */
     class IteratorFactory {
     public:
+        inline static constexpr const char forward_name[] = "LinkedList.iter";
+        inline static constexpr const char backward_name[] = "LinkedList.reverse_iter";
 
         template <Direction dir>
         class Iterator;
 
         template <Direction dir>
-        class IteratorPair;
+        using IteratorPair = CoupledIterator<Iterator<dir>>;
+
+        template <Direction dir>
+        using PyIterator = PyIterator<
+            Iterator<dir>,
+            (dir == Direction::forward) ? (forward_name) : (backward_name)
+        >;
 
         /* Invoke the functor to get a coupled iterator over the list. */
         inline auto operator()() const {
             return IteratorPair<Direction::forward>(view.iter());
+        }
+
+        /* Get a coupled reverse iterator over the list. */
+        template <typename = std::enable_if<doubly_linked>>
+        inline auto reverse() const {
+            // if list is doubly-linked, then use a normal backwards iterator
+            // if constexpr (doubly_linked) {
+            return IteratorPair<Direction::backward>(view.iter.reverse());
+            // }
+
+            // TODO: have to create an iterator class that uses a temporary stack.
+
+            // otherwise, we need to use a temporary stack to reverse the sequence
+            // auto iter = view.iter();  // forward iterator
+            // std::stack<PyObject*> stack;
+            // while (iter != iter.end()) {
+            //     stack.push(*iter);
+            //     ++iter;
+            // }
+
         }
 
         /* Get a forward iterator to the head of the list. */
@@ -116,28 +115,6 @@ public:
         /* Get an empty forward iterator to terminate the sequence. */
         inline auto end() const {
             return Iterator<Direction::forward>(view.iter.end());
-        }
-
-        /* Get a forward Python iterator over the list. */
-        inline PyObject* python() const {
-            auto iter = PyIterator<Direction::forward>::create();
-            if (iter == nullptr) {
-                PyErr_SetString(
-                    PyExc_RuntimeError,
-                    "could not create iterator instance"
-                );
-                return nullptr;
-            }
-
-            // initialize iterator
-            iter->iter = (*this)();
-            return static_cast<PyObject*>(iter);
-        }
-
-        /* Get a coupled reverse iterator over the list. */
-        template <typename = std::enable_if<doubly_linked>>
-        inline auto reverse() const {
-            return IteratorPair<Direction::backward>(view.iter.reverse());
         }
 
         /* Get a backward iterator to the tail of the list. */
@@ -152,10 +129,12 @@ public:
             return Iterator<Direction::backward>(view.iter.rend());
         }
 
-        /* Get a reverse Python iterator over the list. */
-        template <typename = std::enable_if<doubly_linked>>
-        inline PyObject* rpython() const {
-            auto iter = PyIterator<Direction::backward>::create();
+        /* Get a forward Python iterator over the list. */
+        inline PyObject* python() const {
+            using Iter = PyIterator<Direction::forward>;
+
+            // create Python iterator over list
+            Iter* iter = Iter::create(begin(), end());
             if (iter == nullptr) {
                 PyErr_SetString(
                     PyExc_RuntimeError,
@@ -164,8 +143,26 @@ public:
                 return nullptr;
             }
 
-            // initialize iterator
-            iter->iter = reverse();
+            // return as PyObject*
+            return static_cast<PyObject*>(iter);
+        }
+
+        /* Get a reverse Python iterator over the list. */
+        template <typename = std::enable_if<doubly_linked>>
+        inline PyObject* rpython() const {
+            using Iter = PyIterator<Direction::backward>;
+
+            // create Python iterator over list
+            Iter iter = Iter::create(rbegin(), rend());
+            if (iter == nullptr) {
+                PyErr_SetString(
+                    PyExc_RuntimeError,
+                    "could not create iterator instance"
+                );
+                return nullptr;
+            }
+
+            // return as PyObject*
             return static_cast<PyObject*>(iter);
         }
 
@@ -205,109 +202,10 @@ public:
             Iterator(ViewIter iter) : iter(iter) {}
         };
 
-        /* A wrapper around a coupled iterator that combines separate begin() and end()
-        iterators. */
-        template <Direction dir>
-        class IteratorPair {
-            using ViewIterPair = typename View::template IteratorPair<dir>;
-            using ViewIter = typename View::template Iterator<dir>;
-
-        public:
-            /* iterator tags for std::iterator_traits */
-            using iterator_category     = typename ViewIterPair::iterator_category;
-            using difference_type       = typename ViewIterPair::difference_type;
-            using value_type            = PyObject*;
-            using pointer               = PyObject**;
-            using reference             = PyObject*&;
-
-            /* Get the begin() iterator from the pair. */
-            inline ViewIter& begin() const {
-                return iter.begin();
-            }
-
-            /* Get the end() iterator from the pair. */
-            inline ViewIter& end() const {
-                return iter.end();
-            }
-
-            /* Dereference the iterator to get the value at the current node. */
-            inline PyObject* operator*() const {
-                return (*iter)->value;
-            }
-
-            /* Advance the iterator to the next node. */
-            inline IteratorPair& operator++() {
-                ++iter;
-                return *this;
-            }
-
-            /* Inequality comparison to terminate the loop. */
-            inline bool operator!=(const IteratorPair& other) const {
-                return iter != other.iter;
-            }
-
-        private:
-            friend IteratorFactory;
-            ViewIterPair iter;
-
-            IteratorPair(ViewIterPair iter) : iter(iter) {}
-        };
-
-        /* A Python-compatible forward iterator over the list contents. */
-        template <Direction dir>
-        struct PyIterator {
-            PyObject_HEAD
-            IteratorPair<dir> iter;
-
-            /* Call next(iter) from Python. */
-            static PyObject* iter_next(PyObject* self) {
-                PyIterator* ref = static_cast<PyIterator*>(self);
-                if (ref->iter == ref->iter.end()) {  // terminate the sequence
-                    PyErr_SetNone(PyExc_StopIteration);
-                    return nullptr;
-                }
-
-                // increment iterator and return current value
-                PyObject* result = *(ref->iter);
-                ++(ref->iter);
-                return Py_NewRef(result);  // new reference
-            }
-
-            static constexpr PyTypeObject Type {
-                PyVarObject_HEAD_INIT(nullptr, 0)
-                .tp_name = (dir == Direction::forward ?
-                    "LinkedList.iter" :
-                    "LinkedList.iter_reverse"
-                ),
-                .tp_doc = (dir == Direction::forward ?
-                    "Forward iterator over a LinkedList." :
-                    "Reverse iterator over a LinkedList."
-                ),
-                .tp_basicsize = sizeof(PyIterator),
-                .tp_itemsize = 0,
-                .tp_flags = Py_TPFLAGS_DEFAULT,
-                .tp_new = PyType_GenericNew,
-                .tp_iter = PyObject_SelfIter,
-                .tp_iternext = iter_next,
-            };
-
-        private:
-            friend IteratorFactory;
-
-            static PyIterator<dir>* create() {
-                // lazily initialize python iterator type
-                static bool initialized = false;
-                if (!initialized) {
-                    if (PyType_Ready(&PyIterator<dir>::Type) < 0) {
-                        return nullptr;  // propagate error
-                    }
-                    initialized = true;
-                }
-
-                // create new iterator instance
-                return PyObject_New(PyIterator<dir>, &PyIterator<dir>::Type);
-            }
-        };
+        // TODO: rather than creating a separate StackIterator class, just provide a
+        // specialization of Iterator that is only enabled if the list is singly-linked
+        // and the direction is backward.  This uses a temporary stack to reverse the
+        // order of iteration.
 
     private:
         friend LinkedBase;
@@ -389,140 +287,9 @@ protected:
 };
 
 
-////////////////////////////////////
-////    FORWARD DECLARATIONS    ////
-////////////////////////////////////
-
-
-template <typename Derived, typename ViewType, typename SortPolicy>
-class ListInterface_;
-
-
-template <typename Derived>
-class ListOps_;
-
-
-//////////////////////
-////    PUBLIC    ////
-//////////////////////
-
-
-template <
-    typename NodeType = DoubleNode,
-    template <typename> class AllocatorPolicy = DynamicAllocator,
-    template <typename> class SortPolicy = MergeSort,
-    typename LockPolicy = BasicLock
->
-class LinkedList :
-    public LinkedBase<ListView<NodeType, AllocatorPolicy>>,
-    public ListInterface_<
-        LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>,
-        ListView<NodeType, AllocatorPolicy>,
-        SortPolicy<ListView<NodeType, AllocatorPolicy>>
-    >,
-    public ListOps_<
-        LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>
-    >
-{
-public:
-    using View = ListView<NodeType, AllocatorPolicy>;
-    using Node = typename View::Node;
-
-private:
-    using Self = LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>;
-    using Base = LinkedBase<View>;
-    using Sort = SortPolicy<View>;
-    using Lock = LockPolicy;
-    using IList = ListInterface_<Self, View, Sort>;
-    using ListOps = ListOps_<Self>;
-
-public:
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Construct an empty list. */
-    LinkedList(long long max_size = -1, PyObject* spec = nullptr) :
-        Base(max_size, spec), IList(this->view)
-    {}
-
-    /* Construct a list from an input iterable. */
-    LinkedList(
-        PyObject* iterable,
-        bool reverse = false,
-        long long max_size = -1,
-        PyObject* spec = nullptr
-    ) : Base(iterable, reverse, max_size, spec), IList(this->view)
-    {}
-
-    /* Construct a list from a base view. */
-    LinkedList(View&& view) :
-        Base(view), IList(this->view)
-    {}
-
-    /* Copy constructor. */
-    LinkedList(const LinkedList& other) :
-        Base(other.view), IList(this->view)
-    {}
-
-    /* Move constructor. */
-    LinkedList(LinkedList&& other) :
-        Base(std::move(other.view)), IList(this->view)
-    {}
-
-    /* Copy assignment operator. */
-    LinkedList& operator=(const LinkedList& other) {
-        Base::operator=(other);
-        return *this;
-    }
-
-    /* Move assignment operator. */
-    LinkedList& operator=(LinkedList&& other) {
-        Base::operator=(std::move(other));
-        return *this;
-    }
-
-    /* A functor that allows the list to be locked for thread safety. */
-    const Lock lock;
-    /* BasicLock:
-     * lock()
-     * lock.context()
-     *
-     * DiagnosticLock:
-     * lock()
-     * lock.context()
-     * lock.count()
-     * lock.duration()
-     * lock.contention()
-     * lock.reset_diagnostics()
-     */
-};
-
-
-//////////////////////
-////    MIXINS    ////
-//////////////////////
-
-
-// TODO: list.position() should probably return a proxy for an iterator that can be
-// implicitly converted to a value type, and has the public interface methods.  In
-// fact, we could make position() completely internal to the view, and just use the
-// array index operator publicly.
-
-
-// TODO: IndexFactory might not even need to exist.  We could just put the
-// normalize_index() method in LinkedBase as a protected method, and then have
-// ListInterface_ call it in operator[].  This would remove a functor (and memory
-// overhead) from the public class.
-
-
-// slice() and iter() still need to be functors, but we don't need to make them any
-// more complicated than they already are.
-
-
-// We could just implement slice() directly within ListInterface.  This could avoid
-// another functor, and would inline the full interface into the public class.
+////////////////////////////
+////    LIST METHODS    ////
+////////////////////////////
 
 
 /* A mixin that implements the full Python list interface. */
@@ -986,6 +753,10 @@ public:
     class ElementProxy {
     public:
 
+        //////////////////////
+        ////    PUBLIC    ////
+        //////////////////////
+
         /* Get the value at the current index. */
         inline ValueType& get() const {
             return (*iter)->value;
@@ -1029,6 +800,10 @@ public:
             return result;
         }
 
+        /////////////////////////////
+        ////    PROXY PATTERN    ////
+        /////////////////////////////
+
         /* Implicitly convert the proxy to the value where applicable.
 
         This is syntactic sugar for get() such that `ValueType value = list[i]` is
@@ -1060,22 +835,6 @@ public:
     /* A proxy for a slice within a list, as returned by the slice() factory method. */
     class SliceProxy {
     public:
-
-        ///////////////////////
-        ////    INDICES    ////
-        ///////////////////////
-
-        /* Pass through to SliceIndices. */
-        inline long long start() const { return indices.start; }
-        inline long long stop() const { return indices.stop; }
-        inline long long step() const { return indices.step; }
-        inline size_t abs_step() const { return indices.abs_step; }
-        inline size_t first() const { return indices.first; }
-        inline size_t last() const { return indices.last; }
-        inline size_t length() const { return indices.length; }
-        inline bool empty() const { return indices.length == 0; }
-        inline bool backward() const { return indices.backward; }
-        inline bool inverted() const { return indices.inverted; }
 
         //////////////////////
         ////    PUBLIC    ////
@@ -1224,6 +983,18 @@ public:
         class Iterator;
         using IteratorPair = CoupledIterator<Bidirectional<Iterator>>;
 
+        /* Pass through to SliceIndices. */
+        inline long long start() const { return indices.start; }
+        inline long long stop() const { return indices.stop; }
+        inline long long step() const { return indices.step; }
+        inline size_t abs_step() const { return indices.abs_step; }
+        inline size_t first() const { return indices.first; }
+        inline size_t last() const { return indices.last; }
+        inline size_t length() const { return indices.length; }
+        inline bool empty() const { return indices.length == 0; }
+        inline bool backward() const { return indices.backward; }
+        inline bool inverted() const { return indices.inverted; }
+
         /* Return a coupled pair of iterators with a possible length override. */
         inline IteratorPair iter(std::optional<size_t> length = std::nullopt) const {
             using Forward = Iterator<Direction::forward>;
@@ -1298,10 +1069,10 @@ public:
 
         /* A specialized iterator built for slice traversal. */
         template <Direction dir, typename>
-        class Iterator : public IndexFactory<View>::template Iterator<dir> {
-        public:
-            using Base = typename IndexFactory<View>::template Iterator<dir>;
+        class Iterator : public ViewIter<dir> {
+            using Base = ViewIter<dir>;
 
+        public:
             /* Prefix increment to advance the iterator to the next node in the slice. */
             inline Iterator& operator++() {
                 ++this->idx;
@@ -1345,7 +1116,8 @@ public:
 
             /* Copy constructor. */
             Iterator(const Iterator& other) :
-                Base(other), indices(other.indices), length_override(other.length_override),
+                Base(other), indices(other.indices),
+                length_override(other.length_override),
                 implicit_skip(other.implicit_skip)
             {}
 
@@ -1408,13 +1180,40 @@ public:
 
         };
 
-
     private:
         friend ListInterface_;
         View& view;
         const SliceIndices indices;
         mutable bool found;  // indicates whether we've cached the origin node
         mutable Node* _origin;  // node that immediately precedes slice (can be NULL)
+
+        /* A raw, contiguous memory block that nodes can be copied into and out of in case
+        of an error. */
+        struct RecoveryArray {
+            Node* nodes;
+            size_t length;
+
+            /* Allocate a contiguous array of nodes. */
+            RecoveryArray(size_t length) : length(length) {
+                nodes = static_cast<Node*>(malloc(sizeof(Node) * length));
+                if (nodes == nullptr) {
+                    throw std::bad_alloc();
+                }
+            }
+
+            /* Tear down all nodes and free the recovery array. */
+            ~RecoveryArray() {
+                if (nodes != nullptr) {
+                    free(nodes);
+                }
+            }
+
+            /* Index the array to access a particular node. */
+            Node& operator[](size_t index) {
+                return nodes[index];
+            }
+
+        };
 
         /* Construct a SliceProxy with at least one element. */
         SliceProxy(View& view, SliceIndices&& indices) :
@@ -1454,34 +1253,6 @@ public:
             return _origin;
         }
 
-        /* A raw, contiguous memory block that nodes can be copied into and out of in case
-        of an error. */
-        struct RecoveryArray {
-            Node* nodes;
-            size_t length;
-
-            /* Allocate a contiguous array of nodes. */
-            RecoveryArray(size_t length) : length(length) {
-                nodes = static_cast<Node*>(malloc(sizeof(Node) * length));
-                if (nodes == nullptr) {
-                    throw std::bad_alloc();
-                }
-            }
-
-            /* Tear down all nodes and free the recovery array. */
-            ~RecoveryArray() {
-                if (nodes != nullptr) {
-                    free(nodes);
-                }
-            }
-
-            /* Index the array to access a particular node. */
-            Node& operator[](size_t index) {
-                return nodes[index];
-            }
-
-        };
-
         /* Undo a call to Slice::replace() in the event of an error. */
         void undo_set_slice(RecoveryArray& recovery, size_t n_staged) {
             // loop 3: remove nodes that have already been added to slice
@@ -1501,6 +1272,16 @@ public:
     };
 
 private:
+
+    /* Enable access to members of the Derived type. */
+    inline Derived& self() {
+        return static_cast<Derived&>(*this);
+    }
+
+    /* Enable access to members of the Derived type in a const context. */
+    inline const Derived& self() const {
+        return static_cast<const Derived&>(*this);
+    }
 
     /* A simple class representing the normalized indices needed to construct a
     coherent slice. */
@@ -1600,16 +1381,6 @@ private:
             return std::make_pair(closed, start);
         }
     };
-
-    /* Enable access to members of the Derived type. */
-    inline Derived& self() {
-        return static_cast<Derived&>(*this);
-    }
-
-    /* Enable access to members of the Derived type in a const context. */
-    inline const Derived& self() const {
-        return static_cast<const Derived&>(*this);
-    }
 
 protected:
 
@@ -1781,6 +1552,11 @@ protected:
 };
 
 
+//////////////////////////////////
+////    OPERATOR OVERLOADS    ////
+//////////////////////////////////
+
+
 /* A mixin that adds operator overloads that mimic the behavior of Python lists with
 respect to concatenation, repetition, and lexicographic comparison. */
 template <typename Derived>
@@ -1864,12 +1640,6 @@ public:
     friend bool operator>=(const Derived& lhs, const T& rhs);
     template <typename T>
     friend bool operator>=(const T& lhs, const Derived& rhs);
-
-
-    // TODO: can also overload [] to return a proxy for a position() iterator with
-    // get(), set(), and del() methods.
-    // -> position() functor might be private
-
 };
 
 
@@ -1881,6 +1651,11 @@ template <typename Derived, typename ReturnType>
 using enable_list_ops = std::enable_if_t<
     std::is_base_of_v<ListOps_<Derived>, Derived>, ReturnType
 >;
+
+
+/////////////////////////////
+////    CONCATENATION    ////
+/////////////////////////////
 
 
 /* Allow Python-style concatenation between Linked data structures and arbitrary
@@ -1903,9 +1678,6 @@ structures. */
 template <typename T, typename Derived>
 inline auto operator+(const T& lhs, const Derived& rhs)
     -> std::enable_if_t<
-        // NOTE: this checks whether the container T has a range-based insert() method
-        // that we can use to insert the elements of rhs into lhs.  The return type of
-        // the concatenation operator thus always matches that of the lhs operand.
         std::is_same_v<
             decltype(
                 std::declval<T>().insert(
@@ -1962,9 +1734,14 @@ inline auto operator+=(Derived& lhs, const T& rhs)
 }
 
 
-// TODO: we could probably optimize repetition by allocating a block of nodes equal to
-// list.size() * rhs.  We could also remove the extra copy in *= by using an iterator
-// to the end of the list and reusing it for each iteration.
+//////////////////////////
+////    REPETITION    ////
+//////////////////////////
+
+
+// TODO: we could probably optimize repetition by allocating a contiguous block of
+// nodes equal to list.size() * rhs.  We could also remove the extra copy in *= by
+// using an iterator to the end of the list and reusing it for each iteration.
 
 
 /* Allow Python-style repetition for Linked data structures using the * operator. */
@@ -2082,6 +1859,11 @@ inline auto operator*=(Derived& lhs, const PyObject* rhs)
     // delegate to C++ overload
     return lhs *= val;
 }
+
+
+/////////////////////////////////////////
+////    LEXICOGRAPHIC COMPARISONS    ////
+/////////////////////////////////////////
 
 
 /* Allow lexicographic < comparison between Linked data structures and compatible C++
@@ -2380,6 +2162,104 @@ inline auto operator>(const T& lhs, const Derived& rhs)
 {
     return !(lhs <= rhs);
 }
+
+
+//////////////////////
+////    PUBLIC    ////
+//////////////////////
+
+
+template <
+    typename NodeType = DoubleNode,
+    template <typename> class AllocatorPolicy = DynamicAllocator,
+    template <typename> class SortPolicy = MergeSort,
+    typename LockPolicy = BasicLock
+>
+class LinkedList :
+    public LinkedBase<ListView<NodeType, AllocatorPolicy>>,
+    public ListInterface_<
+        LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>,
+        ListView<NodeType, AllocatorPolicy>,
+        SortPolicy<ListView<NodeType, AllocatorPolicy>>
+    >,
+    public ListOps_<
+        LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>
+    >
+{
+public:
+    using View = ListView<NodeType, AllocatorPolicy>;
+    using Node = typename View::Node;
+
+private:
+    using Self = LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>;
+    using Base = LinkedBase<View>;
+    using Sort = SortPolicy<View>;
+    using Lock = LockPolicy;
+    using IList = ListInterface_<Self, View, Sort>;
+    using ListOps = ListOps_<Self>;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct an empty list. */
+    LinkedList(long long max_size = -1, PyObject* spec = nullptr) :
+        Base(max_size, spec), IList(this->view)
+    {}
+
+    /* Construct a list from an input iterable. */
+    LinkedList(
+        PyObject* iterable,
+        bool reverse = false,
+        long long max_size = -1,
+        PyObject* spec = nullptr
+    ) : Base(iterable, reverse, max_size, spec), IList(this->view)
+    {}
+
+    /* Construct a list from a base view. */
+    LinkedList(View&& view) :
+        Base(view), IList(this->view)
+    {}
+
+    /* Copy constructor. */
+    LinkedList(const LinkedList& other) :
+        Base(other.view), IList(this->view)
+    {}
+
+    /* Move constructor. */
+    LinkedList(LinkedList&& other) :
+        Base(std::move(other.view)), IList(this->view)
+    {}
+
+    /* Copy assignment operator. */
+    LinkedList& operator=(const LinkedList& other) {
+        Base::operator=(other);
+        return *this;
+    }
+
+    /* Move assignment operator. */
+    LinkedList& operator=(LinkedList&& other) {
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    /* A functor that allows the list to be locked for thread safety. */
+    const Lock lock;
+    /* BasicLock:
+     * lock()
+     * lock.context()
+     *
+     * DiagnosticLock:
+     * lock()
+     * lock.context()
+     * lock.count()
+     * lock.duration()
+     * lock.contention()
+     * lock.reset_diagnostics()
+     */
+};
 
 
 #endif  // BERTRAND_STRUCTS_LIST_LIST_H include guard

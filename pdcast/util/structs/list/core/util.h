@@ -193,6 +193,75 @@ protected:
 };
 
 
+/* A wrapper around a C++ iterator that can be used from Python. */
+template <typename IteratorType, const char* name>
+struct PyIterator {
+    using Iterator = IteratorType;
+
+    PyObject_HEAD
+    Iterator first;
+    Iterator second;
+
+    /* Construct a Python iterator from an iterator range. */
+    static PyIterator<Iterator, name>* create(Iterator&& begin, Iterator&& end) {
+        using Iter = PyIterator<Iterator, name>;
+
+        // lazily initialize python iterator type
+        static bool initialized = false;
+        if (!initialized) {
+            if (PyType_Ready(&Iter::Type) < 0) {
+                return nullptr;  // propagate error
+            }
+            initialized = true;
+        }
+
+        // create new iterator instance
+        Iter* result = PyObject_New(Iter, &Iter::Type);
+        if (result == nullptr) {
+            return nullptr;  // propagate error
+        }
+
+        // initialize iterator
+        result->first = std::forward<Iterator>(begin);
+        result->second = std::forward<Iterator>(end);
+        return result;
+    }
+
+    /* Construct a Python iterator from a coupled iterator. */
+    static PyIterator<Iterator, name>* create(CoupledIterator<Iterator>&& iter) {
+        return create(iter.begin(), iter.end());
+    }
+
+    /* Call next(iter) from Python. */
+    inline static PyObject* iter_next(PyObject* self) {
+        auto ref = static_cast<PyIterator<Iterator, name>*>(self);
+        if (ref->first == ref->second) {  // terminate the sequence
+            PyErr_SetNone(PyExc_StopIteration);
+            return nullptr;
+        }
+
+        // increment iterator and return current value
+        PyObject* result = *(ref->first);
+        ++(ref->first);
+        return Py_NewRef(result);  // new reference
+    }
+
+    /* C-style Python type declaration. */
+    static constexpr PyTypeObject Type {
+        PyVarObject_HEAD_INIT(nullptr, 0)
+        .tp_name = name,
+        .tp_doc = "Python-compatible wrapper around a C++ iterator.",
+        .tp_basicsize = sizeof(PyIterator<Iterator, name>),
+        .tp_itemsize = 0,
+        .tp_flags = Py_TPFLAGS_DEFAULT,
+        .tp_new = PyType_GenericNew,
+        .tp_iter = PyObject_SelfIter,
+        .tp_iternext = iter_next,
+    };
+
+};
+
+
 /////////////////////////////
 ////    BIDIRECTIONAL    ////
 /////////////////////////////

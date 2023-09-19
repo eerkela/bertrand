@@ -47,7 +47,6 @@ using VariantView = std::variant<
     ListView<SingleNode, FixedAllocator>,
     ListView<DoubleNode, DynamicAllocator>,
     ListView<DoubleNode, FixedAllocator>
-    // LinkedList<DoubleNode, DynamicAllocator, MergeSort, BasicLock>
     // ListView<Hashed<SingleNode>, DynamicAllocator>,
     // ListView<Hashed<SingleNode>, FixedAllocator>,
     // ListView<Hashed<DoubleNode>, DynamicAllocator>,
@@ -60,6 +59,20 @@ using VariantView = std::variant<
     // DictView<SingleNode, FixedAllocator>,
     // DictView<DoubleNode, DynamicAllocator>,
     // DictView<DoubleNode, FixedAllocator>,
+>;
+
+
+/* A std::variant encapsulating all the list types that are constructable from
+Python. */
+using ListAlternative = std::variant<
+    LinkedList<SingleNode, DynamicAllocator, MergeSort, BasicLock>,
+    LinkedList<SingleNode, DynamicAllocator, MergeSort, DiagnosticLock>,
+    LinkedList<SingleNode, FixedAllocator, MergeSort, BasicLock>,
+    LinkedList<SingleNode, FixedAllocator, MergeSort, DiagnosticLock>,
+    LinkedList<DoubleNode, DynamicAllocator, MergeSort, BasicLock>,
+    LinkedList<DoubleNode, DynamicAllocator, MergeSort, DiagnosticLock>,
+    LinkedList<DoubleNode, FixedAllocator, MergeSort, BasicLock>,
+    LinkedList<DoubleNode, FixedAllocator, MergeSort, DiagnosticLock>
 >;
 
 
@@ -391,49 +404,15 @@ public:
         bool reverse,
         Py_ssize_t max_size,
         PyObject* spec
-    ) : slice(*this), lock(*this), weak_ref(*this)
-    {
-        if (doubly_linked) {
-            if (max_size < 0) {
-                view = ListView<DoubleNode, DynamicAllocator>(
-                    iterable, reverse, max_size, spec
-                );
-            } else {
-                view = ListView<DoubleNode, FixedAllocator>(
-                    iterable, reverse, max_size, spec
-                );
-            }
-        } else {
-            if (max_size < 0) {
-                view = ListView<SingleNode, DynamicAllocator>(
-                    iterable, reverse, max_size, spec
-                );
-            } else {
-                view = ListView<SingleNode, FixedAllocator>(
-                    iterable, reverse, max_size, spec
-                );
-            }
-        }
-    }
+    ) : slice(*this), lock(*this), weak_ref(*this),
+        view(select_variant(doubly_linked, max_size, spec, iterable, reverse))
+    {}
 
     /* Implement LinkedList.__init__() for cases where no iterable is given. */
     VariantList(bool doubly_linked, Py_ssize_t max_size, PyObject* spec) :
-        slice(*this), lock(*this), weak_ref(*this)
-    {
-        if (doubly_linked) {
-            if (max_size < 0) {
-                view = ListView<DoubleNode, DynamicAllocator>(max_size, spec);
-            } else {
-                view = ListView<DoubleNode, FixedAllocator>(max_size, spec);
-            }
-        } else {
-            if (max_size < 0) {
-                view = ListView<SingleNode, DynamicAllocator>(max_size, spec);
-            } else {
-                view = ListView<SingleNode, FixedAllocator>(max_size, spec);
-            }
-        }
-    }
+        slice(*this), lock(*this), weak_ref(*this),
+        view(select_variant(doubly_linked, max_size, spec))
+    {}
 
     /* Construct a new VariantList from an existing C++ view. */
     template <typename View>
@@ -698,6 +677,31 @@ public:
             },
             view
         );
+    }
+
+private:
+
+    /* Select a variant based on constructor arguments. */
+    template <typename... Args>
+    static VariantView select_variant(
+        bool doubly_linked,
+        Py_ssize_t max_size,
+        PyObject* spec,
+        Args... args
+    ) {
+        if (doubly_linked) {
+            if (max_size < 0) {
+                return ListView<DoubleNode, DynamicAllocator>(args..., max_size, spec);
+            } else {
+                return ListView<DoubleNode, FixedAllocator>(args..., max_size, spec);
+            }
+        } else {
+            if (max_size < 0) {
+                return ListView<SingleNode, DynamicAllocator>(args..., max_size, spec);
+            } else {
+                return ListView<SingleNode, FixedAllocator>(args..., max_size, spec);
+            }
+        }
     }
 
 protected:

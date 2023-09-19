@@ -667,7 +667,7 @@ public:
                         // QoL - nothing has been allocated, so we don't actually free
                         printf("    -> free: %s\n", repr(item));
                     }
-                    throw std::invalid_argument("could not allocate node");
+                    throw std::runtime_error("could not allocate node");
                 }
 
                 // link the node to the staged list
@@ -678,12 +678,12 @@ public:
                 }
                 if (PyErr_Occurred()) {
                     recycle(curr);  // clean up allocated node
-                    throw std::invalid_argument("could not link node");
+                    throw std::runtime_error("could not link node");
                 }
             }
-        } catch (std::invalid_argument& e) {
-            self_destruct();  // decrements refcount of spec if necessary
-            throw e;
+        } catch (...) {
+            this->~ListView();
+            throw;  // propagate
         }
     }
 
@@ -708,15 +708,15 @@ public:
             return *this;
         }
 
-        // free old nodes
-        self_destruct();
+        // free old nodes/specialization
+        this->~ListView();
 
         // transfer ownership of nodes
         head = other.head;
         tail = other.tail;
         size = other.size;
         max_size = other.max_size;
-        specialization = other.specialization;
+        specialization = other.specialization;  // no need to INCREF/DECREF
         allocator = std::move(other.allocator);
 
         // reset other ListView
@@ -736,7 +736,10 @@ public:
 
     /* Destroy a ListView and free all its nodes. */
     ~ListView() noexcept {
-        self_destruct();
+        this->clear();
+        if (specialization != nullptr) {
+            Py_DECREF(specialization);
+        };
     }
 
     ////////////////////////////////
@@ -749,7 +752,8 @@ public:
     // still be careful to avoid accidental memory leaks and segfaults.
 
     // TODO: node() should be able to accept other nodes as input, in which case we
-    // call Node::init_copy() instead of Node::init().  This would allow us to
+    // call Node::init_copy() instead of Node::init().  This would allow us to eliminate
+    // the node copy() overload.
 
     // -> or perhaps Node::init() can be overloaded to accept either a node or
     // PyObject*.
@@ -792,19 +796,10 @@ public:
         allocator.recycle(node);
     }
 
-    // TODO: the presence of the node copy() method means that we can't lift the
-    // no-arg copy() method out of ListView and into ListInterface.  We should
-    // remove the node copy() and move it into the `node()` factory function.
-
     /* Copy a node in the list. */
     inline Node* copy(Node* node) const {
         return allocator.copy(node);
     }
-
-    // TODO: we should be able to lift the no-arg copy() method out of ListView and
-    // into ListInterface.  This requires us to also delete the node copy() overload,
-    // which requires a refactor of the interface methods at the same time.
-
 
     /* Make a shallow copy of the entire list. */
     std::optional<View> copy() const {
@@ -829,7 +824,7 @@ public:
     }
 
     /* Remove all elements from a list. */
-    void clear() {
+    void clear() noexcept {
         // store temporary reference to head
         Node* curr = head;
 
@@ -991,15 +986,6 @@ public:
 
 protected:
     mutable Allocator allocator;
-
-    /* Release the resources being managed by the ListView. */
-    inline void self_destruct() {
-        this->clear();  // clear all nodes in list
-        if (specialization != nullptr) {
-            Py_DECREF(specialization);
-        }
-    }
-
 };
 
 
