@@ -19,28 +19,15 @@ cdef extern from "list_cython.h":
             double contention()
             void reset_diagnostics()
 
-        cppclass Slice:
-            VariantList* get() except NULL
-            void set(PyObject* items) except *
-            void delete "del" () except *  # del() shadows Cython `delete` keyword
+        cppclass Index:
+            PyObject* get() except +*
+            void set(PyObject* item) except +*
+            void delete "del" () except +*  # del() shadows Cython `delete` keyword
 
-        cppclass SliceFactory:
-            cppclass Indices:
-                long long start, stop, step
-                size_t abs_step, first, last, length
-                bint empty, consistent, backward
-            Slice operator()(PyObject* py_slice)
-            Slice operator()(
-                optional[long long] start = nullopt,
-                optional[long long] stop = nullopt,
-                optional[long long] step = nullopt
-            )
-            Indices* normalize(PyObject* py_slice) except NULL
-            Indices* normalize(
-                optional[long long] start = nullopt,
-                optional[long long] stop = nullopt,
-                optional[long long] step = nullopt
-            ) except NULL
+        cppclass Slice:
+            VariantList* get() except +*
+            void set(PyObject* items) except +*
+            void delete "del" () except +*  # del() shadows Cython `delete` keyword
 
         # constructors
         VariantList(bint doubly_linked, Py_ssize_t max_size, PyObject* spec) except +
@@ -54,36 +41,31 @@ cdef extern from "list_cython.h":
 
         # functors
         const Lock lock  # lock() functor
-        const SliceFactory slice  # slice() functor
 
         # list interface
-        void append(PyObject* item, bint left) except *
-        void insert[T](T index, PyObject* item) except *
-        void extend(PyObject* items, bint left) except *
-        size_t index[T](PyObject* item, T start, T stop) except? MAX_SIZE_T
-        size_t count[T](PyObject* item, T start, T stop) except? MAX_SIZE_T
-        int contains(PyObject* item) except -1
+        void append(PyObject* item, bint left) except +*
+        void insert[T](T index, PyObject* item) except +*
+        void extend(PyObject* items, bint left) except +*
+        size_t index[T](PyObject* item, T start, T stop) except +*
+        size_t count[T](PyObject* item, T start, T stop) except +*
+        int contains(PyObject* item) except +*
         void remove(PyObject*) except *
         PyObject* pop[T](T index) except NULL
         VariantList* copy() except NULL
         void clear()
-        void sort(PyObject* key, bint reverse) except *
+        void sort(PyObject* key, bint reverse) except +*
         void reverse()
         void rotate(ssize_t steps)
-        PyObject* get_index[T](T index) except NULL
-        void set_index[T](T index, PyObject* item) except *
-        void delete_index[T](T index) except *
         size_t size()
+        Index operator[](PyObject* index)
+        Slice slice(PyObject* py_slice)
 
         # extra methods
         PyObject* specialization()
-        void specialize(PyObject* spec) except *
+        void specialize(PyObject* spec) except +*
         size_t nbytes()
-        bint doubly_linked()
-        SingleNode* get_head_single() except +
-        SingleNode* get_tail_single() except +
-        DoubleNode* get_head_double() except +
-        DoubleNode* get_tail_double() except +
+        PyObject* iter() except +*
+        PyObject* riter() except +*
 
 
 cdef class LinkedList:

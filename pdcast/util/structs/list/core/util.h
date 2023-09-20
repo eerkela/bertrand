@@ -118,7 +118,97 @@ exceptions whenever a PyIterable is constructed or iterated over.
 */
 
 
-/* A wrapper around an arbitrary Python iterable that enables for-each style loops. */
+/* A wrapper around a C++ iterator that allows it to be used from Python. */
+template <typename IteratorType, const char* type_name>
+class PyIterator {
+private:
+    /* Initialize a PyTypeObject to represent this iterator. */
+    static PyTypeObject init_type() {
+        PyTypeObject type_obj = {};  // zero-initialize
+        type_obj.tp_name = type_name;
+        type_obj.tp_doc = "Python-compatible wrapper around a C++ iterator.";
+        type_obj.tp_flags = Py_TPFLAGS_DEFAULT;
+        type_obj.tp_new = PyType_GenericNew;
+        type_obj.tp_iter = PyObject_SelfIter;
+        type_obj.tp_iternext = iter_next;
+        type_obj.tp_basicsize = sizeof(Self);
+        type_obj.tp_itemsize = 0;
+        type_obj.tp_dealloc = dealloc;
+
+        // register type with Python
+        if (PyType_Ready(&type_obj) < 0) {
+            throw std::runtime_error("could not initialize PyIterator type");
+        }
+        return type_obj;
+    }
+
+public:
+    using Self = PyIterator<IteratorType, type_name>;
+    using Iterator = IteratorType;
+    using value_type = typename Iterator::value_type;
+
+    // sanity check
+    static_assert(
+        std::is_same_v<value_type, PyObject*>, "Iterator must dereference to PyObject*"
+    );
+
+    /* C-style Python type declaration. */
+    inline static PyTypeObject Type = init_type();
+
+    PyObject_HEAD
+    alignas(Iterator) char first[sizeof(Iterator)];
+    alignas(Iterator) char second[sizeof(Iterator)];
+
+    /* Construct a Python iterator from an iterator range. */
+    static Self* create(Iterator&& begin, Iterator&& end) {
+        // create new iterator instance
+        Self* result = PyObject_New(Self, &Type);
+        if (result == nullptr) {
+            PyErr_SetString(PyExc_RuntimeError, "could not allocate PyIterator");
+            return nullptr;  // propagate error
+        }
+
+        // initialize iterators into raw storage
+        new (&result->first) Iterator(std::forward<Iterator>(begin));
+        new (&result->second) Iterator(std::forward<Iterator>(end));
+        return result;
+    }
+
+    /* Construct a Python iterator from a coupled iterator. */
+    inline static Self* create(CoupledIterator<Iterator>&& iter) {
+        return create(iter.begin(), iter.end());
+    }
+
+    /* Call next(iter) from Python. */
+    inline static PyObject* iter_next(PyObject* self) {
+        Self* ref = reinterpret_cast<Self*>(self);
+        Iterator& begin = reinterpret_cast<Iterator&>(ref->first);
+        Iterator& end = reinterpret_cast<Iterator&>(ref->second);
+
+        if (begin == end) {  // terminate the sequence
+            PyErr_SetNone(PyExc_StopIteration);
+            return nullptr;
+        }
+
+        // increment iterator and return current value
+        PyObject* result = *begin;
+        ++begin;
+        return Py_NewRef(result);  // new reference
+    }
+
+    /* Free the Python iterator when its reference count falls to zero. */
+    inline static void dealloc(PyObject* self) {
+        Self* ref = reinterpret_cast<Self*>(self);
+        reinterpret_cast<Iterator&>(ref->first).~Iterator();
+        reinterpret_cast<Iterator&>(ref->second).~Iterator();
+        Py_TYPE(self)->tp_free(self);
+    }
+
+};
+
+
+/* A wrapper around a Python iterator that manages reference counts and enables
+for-each loop syntax in C++. */
 class PyIterable {
 public:
     class Iterator;
@@ -156,7 +246,7 @@ public:
             Py_DECREF(curr);
             curr = PyIter_Next(py_iter);
             if (curr == nullptr && PyErr_Occurred()) {
-                throw std::invalid_argument("could not get next(iterator)");
+                throw std::runtime_error("could not get next(iterator)");
             }
             return *this;
         }
@@ -179,7 +269,7 @@ public:
             if (py_iter != nullptr) {
                 curr = PyIter_Next(py_iter);
                 if (curr == nullptr && PyErr_Occurred()) {
-                    throw std::invalid_argument("could not get next(iterator)");
+                    throw std::runtime_error("could not get next(iterator)");
                 }
             }
         }
@@ -190,75 +280,6 @@ public:
 
 protected:
     PyObject* py_iter;
-};
-
-
-/* A wrapper around a C++ iterator that can be used from Python. */
-template <typename IteratorType, const char* name>
-struct PyIterator {
-    using Iterator = IteratorType;
-
-    PyObject_HEAD
-    Iterator first;
-    Iterator second;
-
-    /* Construct a Python iterator from an iterator range. */
-    static PyIterator<Iterator, name>* create(Iterator&& begin, Iterator&& end) {
-        using Iter = PyIterator<Iterator, name>;
-
-        // lazily initialize python iterator type
-        static bool initialized = false;
-        if (!initialized) {
-            if (PyType_Ready(&Iter::Type) < 0) {
-                return nullptr;  // propagate error
-            }
-            initialized = true;
-        }
-
-        // create new iterator instance
-        Iter* result = PyObject_New(Iter, &Iter::Type);
-        if (result == nullptr) {
-            return nullptr;  // propagate error
-        }
-
-        // initialize iterator
-        result->first = std::forward<Iterator>(begin);
-        result->second = std::forward<Iterator>(end);
-        return result;
-    }
-
-    /* Construct a Python iterator from a coupled iterator. */
-    static PyIterator<Iterator, name>* create(CoupledIterator<Iterator>&& iter) {
-        return create(iter.begin(), iter.end());
-    }
-
-    /* Call next(iter) from Python. */
-    inline static PyObject* iter_next(PyObject* self) {
-        auto ref = static_cast<PyIterator<Iterator, name>*>(self);
-        if (ref->first == ref->second) {  // terminate the sequence
-            PyErr_SetNone(PyExc_StopIteration);
-            return nullptr;
-        }
-
-        // increment iterator and return current value
-        PyObject* result = *(ref->first);
-        ++(ref->first);
-        return Py_NewRef(result);  // new reference
-    }
-
-    /* C-style Python type declaration. */
-    static constexpr PyTypeObject Type {
-        PyVarObject_HEAD_INIT(nullptr, 0)
-        .tp_name = name,
-        .tp_doc = "Python-compatible wrapper around a C++ iterator.",
-        .tp_basicsize = sizeof(PyIterator<Iterator, name>),
-        .tp_itemsize = 0,
-        .tp_flags = Py_TPFLAGS_DEFAULT,
-        .tp_new = PyType_GenericNew,
-        .tp_iter = PyObject_SelfIter,
-        .tp_iternext = iter_next,
-    };
-
 };
 
 
@@ -294,13 +315,8 @@ enum class Direction {
 
 /* Conditionally-compiled base class for Bidirectional iterators that respects the
 reversability of the associated view. */
-template <template <Direction, typename = void> class Iterator, bool doubly_linked>
-class BidirectionalBase;
-
-
-/* Specialization for singly-linked lists. */
-template <template <Direction, typename = void> class Iterator>
-class BidirectionalBase<Iterator, false> {
+template <template <Direction> class Iterator, bool doubly_linked = false>
+class BidirectionalBase {
 public:
     const bool backward;
 
@@ -334,7 +350,7 @@ protected:
 
 
 /* Specialization for doubly-linked lists. */
-template <template <Direction, typename = void> class Iterator>
+template <template <Direction> class Iterator>
 class BidirectionalBase<Iterator, true> {
 private:
     // delegated constructors for copy/move semantics
@@ -390,7 +406,7 @@ protected:
 
 
 /* A type-erased iterator that can contain either a forward or backward iterator. */
-template <template <Direction, typename = void> class Iterator>
+template <template <Direction> class Iterator>
 class Bidirectional : public BidirectionalBase<
     Iterator,
     has_prev<typename Iterator<Direction::forward>::Node>::value

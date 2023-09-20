@@ -40,44 +40,18 @@
 ///////////////////////
 
 
-/* Using a `std::variant` allows us to expose only a single Cython wrapper for
-all linked lists. */
-using VariantView = std::variant<
-    ListView<SingleNode, DynamicAllocator>,
-    ListView<SingleNode, FixedAllocator>,
-    ListView<DoubleNode, DynamicAllocator>,
-    ListView<DoubleNode, FixedAllocator>
-    // ListView<Hashed<SingleNode>, DynamicAllocator>,
-    // ListView<Hashed<SingleNode>, FixedAllocator>,
-    // ListView<Hashed<DoubleNode>, DynamicAllocator>,
-    // ListView<Hashed<DoubleNode>, FixedAllocator>,
-    // SetView<SingleNode, DynamicAllocator>,
-    // SetView<SingleNode, FixedAllocator>,
-    // SetView<DoubleNode, DynamicAllocator>,
-    // SetView<DoubleNode, FixedAllocator>
-    // DictView<SingleNode, DynamicAllocator>,
-    // DictView<SingleNode, FixedAllocator>,
-    // DictView<DoubleNode, DynamicAllocator>,
-    // DictView<DoubleNode, FixedAllocator>,
->;
-
-
-/* A std::variant encapsulating all the list types that are constructable from
-Python. */
+/* A std::variant encapsulating all the possible list types that are constructable
+from Python. */
 using ListAlternative = std::variant<
     LinkedList<SingleNode, DynamicAllocator, MergeSort, BasicLock>,
-    LinkedList<SingleNode, DynamicAllocator, MergeSort, DiagnosticLock>,
+    // LinkedList<SingleNode, DynamicAllocator, MergeSort, DiagnosticLock>,
     LinkedList<SingleNode, FixedAllocator, MergeSort, BasicLock>,
-    LinkedList<SingleNode, FixedAllocator, MergeSort, DiagnosticLock>,
+    // LinkedList<SingleNode, FixedAllocator, MergeSort, DiagnosticLock>,
     LinkedList<DoubleNode, DynamicAllocator, MergeSort, BasicLock>,
-    LinkedList<DoubleNode, DynamicAllocator, MergeSort, DiagnosticLock>,
-    LinkedList<DoubleNode, FixedAllocator, MergeSort, BasicLock>,
-    LinkedList<DoubleNode, FixedAllocator, MergeSort, DiagnosticLock>
+    // LinkedList<DoubleNode, DynamicAllocator, MergeSort, DiagnosticLock>,
+    LinkedList<DoubleNode, FixedAllocator, MergeSort, BasicLock>
+    // LinkedList<DoubleNode, FixedAllocator, MergeSort, DiagnosticLock>
 >;
-
-
-LinkedList<DoubleNode, DynamicAllocator, MergeSort, BasicLock> list;
-// std::vector<int> test = std::vector<int> {1, 2, 3} + list;
 
 
 ////////////////////////
@@ -86,7 +60,7 @@ LinkedList<DoubleNode, DynamicAllocator, MergeSort, BasicLock> list;
 
 
 /* A functor that generates weak references for the templated object. */
-template <typename SelfType>
+template <typename T>
 class SelfRef {
 public:
 
@@ -101,7 +75,7 @@ public:
 
         /* Follow the weak reference, yielding a pointer to the referenced object if it
         still exists.  Otherwise, sets a Python error and return nullptr.  */
-        SelfType* get() const {
+        T* get() const {
             if (ref.expired()) {
                 PyErr_SetString(
                     PyExc_ReferenceError,
@@ -114,7 +88,7 @@ public:
 
     private:
         friend SelfRef;
-        std::weak_ptr<SelfType> ref;
+        std::weak_ptr<T> ref;
 
         template <typename... Args>
         WeakRef(Args... args) : ref(args...) {}
@@ -126,19 +100,19 @@ public:
     }
 
 private:
-    friend SelfType;
-    const std::shared_ptr<SelfType> _self;
+    friend T;
+    const std::shared_ptr<T> _self;
 
     // NOTE: custom deleter prevents the shared_ptr from trying to delete the object
     // when it goes out of scope, which can cause a segfault due to a double free.
 
-    SelfRef(SelfType& self) : _self(&self, [](auto&) {}) {}
+    SelfRef(T& self) : _self(&self, [](auto&) {}) {}
 };
 
 
 /* A functor that allows the list to be locked for use in a multithreaded
 environment. */
-template <typename VariantType>
+template <typename T>
 class VariantLock {
 public:
     using Guard = std::lock_guard<std::mutex>;
@@ -146,223 +120,68 @@ public:
     /* Return an RAII-style lock guard for the underlying mutex. */
     inline Guard operator()() const {
         return std::visit(
-            [&](auto& view) {
-                return view.lock();
+            [&](auto& obj) {
+                return obj.lock();
             }, 
-            variant.view
+            ref.variant
         );
     }
 
     /* Return a heap-allocated lock guard for the underlying mutex. */
     inline Guard* context() const {
         return std::visit(
-            [&](auto& view) {
-                return view.lock.context();
+            [&](auto& obj) {
+                return obj.lock.context();
             },
-            variant.view
+            ref.variant
         );
     }
 
     /* Get the total number of times the mutex has been locked. */
     inline size_t count() const {
         return std::visit(
-            [&](auto& view) {
-                return view.lock.count();
+            [&](auto& obj) {
+                return obj.lock.count();
             },
-            variant.view
+            ref.variant
         );
     }
 
     /* Get the total length of time spent waiting to acquire the lock. */
     inline size_t duration() const {
         return std::visit(
-            [&](auto& view) {
-                return view.lock.duration();
+            [&](auto& obj) {
+                return obj.lock.duration();
             },
-            variant.view
+            ref.variant
         );
     }
 
     /* Get the average time spent waiting to acquire the lock. */
     inline double contention() const {
         return std::visit(
-            [&](auto& view) {
-                return view.lock.average();
+            [&](auto& obj) {
+                return obj.lock.average();
             },
-            variant.view
+            ref.variant
         );
     }
 
     /* Reset the internal diagnostic counters. */
     inline void reset_diagnostics() const {
         std::visit(
-            [&](auto& view) {
-                view.lock.reset_diagnostics();
+            [&](auto& obj) {
+                obj.lock.reset_diagnostics();
             },
-            variant.view
+            ref.variant
         );
     }
 
 private:
-    friend VariantType;
-    VariantType& variant;
-    VariantLock(VariantType& variant) : variant(variant) {}
-};
+    friend T;
+    T& ref;
 
-
-/* A functor that generates slices for the list. */
-template <typename VariantType>
-class VariantSlice {
-public:
-
-    /* A simple container for normalized slice indices. */
-    struct Indices {
-        long long start, stop, step;
-        size_t abs_step, first, last, length;
-        bool empty, consistent, backward;
-    };
-
-    /* A proxy for a list that allows for efficient operations on slices within
-    the list. */
-    template <typename... Args>
-    class Slice {
-    public:
-
-        /* Implement LinkedList.__getitem__() for all views (slice). */
-        VariantType* get() {
-            VariantType* variant = ref.get();
-            if (variant == nullptr) {
-                return nullptr;  // propagate
-            }
-
-            // dispatch to proxy
-            return std::visit(
-                [&](auto& view) -> VariantType* {
-                    // generate proxy
-                    auto proxy = std::apply(
-                        [&](Args... args) { return view.slice(args...); },
-                        args
-                    );
-                    if (!proxy.has_value()) {
-                        return nullptr;  // propagate
-                    }
-
-                    // extract slice
-                    auto result = SliceOps::get(proxy.value());
-                    if (!result.has_value()) {
-                        return nullptr;  // propagate
-                    }
-
-                    // wrap result in VariantType
-                    return new VariantType(std::move(result.value()));
-                },
-                variant->view
-            );
-        }
-
-        /* Implement LinkedList.__setitem__() for all views (slice). */
-        void set(PyObject* items) {
-            VariantType* variant = ref.get();
-            if (variant == nullptr) {
-                return;  // propagate
-            }
-
-            // dispatch to proxy
-            std::visit(
-                [&](auto& view) {
-                    auto proxy = std::apply(
-                        [&](Args... args) { return view.slice(args...); },
-                        args
-                    );
-                    if (!proxy.has_value()) {
-                        return;  // propagate error
-                    }
-
-                    // replace slice
-                    SliceOps::set(proxy.value(), items);
-                },
-                variant->view
-            );
-        }
-
-        /* Implement LinkedList.__delitem__() for all views (slice). */
-        void del() {
-            VariantType* variant = ref.get();
-            if (variant == nullptr) {
-                return;  // propagate
-            }
-
-            // dispatch to proxy
-            std::visit(
-                [&](auto& view) {
-                    // generate proxy
-                    auto proxy = std::apply(
-                        [&](Args... args) { return view.slice(args...); },
-                        args
-                    );
-                    if (!proxy.has_value()) {
-                        return;  // propagate error
-                    }
-
-                    // drop slice
-                    SliceOps::del(proxy.value());
-                },
-                variant->view
-            );
-        }
-
-    private:
-        friend VariantType;
-        friend VariantSlice;
-        using WeakRef = typename VariantType::WeakRef;
-        WeakRef ref;
-        std::tuple<Args...> args;  // deferred arguments to view.slice()
-
-        /* Create a deferred factory for View::Slice objects. */
-        Slice(WeakRef variant, Args... args) :
-            ref(variant), args(std::make_tuple(args...))
-        {}
-
-    };
-
-    /* Construct a deferred Slice proxy for a list. */
-    template <typename... Args>
-    inline Slice<Args...> operator()(Args... args) const {
-        return Slice<Args...>(variant.weak_ref(), args...);
-    }
-
-    /* Normalize slice indices, applying Python-style wraparound and bounds
-    checking. */
-    template <typename... Args>
-    inline Indices* normalize(Args... args) const {
-        return std::visit(
-            [&](auto& view) -> Indices* {
-                auto result = view.slice.normalize(args...);
-                if (!result.has_value()) {
-                    return nullptr;
-                }
-                auto indices = result.value();
-                return new Indices {
-                    indices.start(),
-                    indices.stop(),
-                    indices.step(),
-                    indices.abs_step(),
-                    indices.first(),
-                    indices.last(),
-                    indices.length(),
-                    indices.empty(),
-                    indices.consistent(),
-                    indices.backward()
-                };
-            },
-            variant.view
-        );
-    }
-
-private:
-    friend VariantType;
-    VariantType& variant;
-    VariantSlice(VariantType& variant) : variant(variant) {}
+    VariantLock(T& variant) : ref(variant) {}
 };
 
 
@@ -384,14 +203,47 @@ private:
 /* A class that binds the appropriate methods for the given view as a std::variant
 of templated `ListView` types. */
 class VariantList {
-public:
+private:
     using Self = SelfRef<VariantList>;
     using WeakRef = Self::WeakRef;
-    using Lock = VariantLock<VariantList>;
-    using SliceFactory = VariantSlice<VariantList>;
 
+    template <typename NodeType>
+    using DynamicList = LinkedList<NodeType, DynamicAllocator, MergeSort, BasicLock>;
+    template <typename NodeType>
+    using FixedList = LinkedList<NodeType, FixedAllocator, MergeSort, BasicLock>;
+
+    /* Select a variant based on constructor arguments. */
     template <typename... Args>
-    using Slice = SliceFactory::Slice<Args...>;
+    static ListAlternative select_variant(
+        bool doubly_linked,
+        Py_ssize_t max_size,
+        PyObject* spec,
+        Args... args
+    ) {
+        if (doubly_linked) {
+            if (max_size < 0) {
+                return DynamicList<DoubleNode>(args..., max_size, spec);
+            } else {
+                return FixedList<DoubleNode>(args..., max_size, spec);
+            }
+        } else {
+            if (max_size < 0) {
+                return DynamicList<SingleNode>(args..., max_size, spec);
+            } else {
+                return FixedList<SingleNode>(args..., max_size, spec);
+            }
+        }
+    }
+
+public:
+    using Lock = VariantLock<VariantList>;
+
+    template <typename T>
+    class Index;
+    template <typename... Args>
+    class Slice;
+
+    ListAlternative variant;
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -404,30 +256,30 @@ public:
         bool reverse,
         Py_ssize_t max_size,
         PyObject* spec
-    ) : slice(*this), lock(*this), weak_ref(*this),
-        view(select_variant(doubly_linked, max_size, spec, iterable, reverse))
+    ) : variant(select_variant(doubly_linked, max_size, spec, iterable, reverse)),
+        lock(*this), weak_ref(*this)
     {}
 
     /* Implement LinkedList.__init__() for cases where no iterable is given. */
     VariantList(bool doubly_linked, Py_ssize_t max_size, PyObject* spec) :
-        slice(*this), lock(*this), weak_ref(*this),
-        view(select_variant(doubly_linked, max_size, spec))
+        variant(select_variant(doubly_linked, max_size, spec)),
+        lock(*this), weak_ref(*this)
     {}
 
     /* Construct a new VariantList from an existing C++ view. */
     template <typename View>
     VariantList(View&& view) :
-        slice(*this), lock(*this), weak_ref(*this), view(std::move(view))
+        variant(std::move(view)), lock(*this), weak_ref(*this)
     {}
 
     /* Move constructor. */
     VariantList(VariantList&& other) :
-        slice(*this), lock(*this), weak_ref(*this), view(std::move(other.view))
+        variant(std::move(other.variant)), lock(*this), weak_ref(*this)
     {}
 
     /* Move assignment operator. */
     VariantList& operator=(VariantList&& other) {
-        view = std::move(other.view);
+        variant = std::move(other.variant);
         return *this;
     }
 
@@ -435,90 +287,71 @@ public:
     ////    LIST INTERFACE    ////
     //////////////////////////////
 
-    const SliceFactory slice;  // slice(), slice.normalize(), etc.
-
-    /* Implement LinkedList.append() for all views. */
+    /* Implement LinkedList.append() for all variants. */
     inline void append(PyObject* item, bool left) {
-        std::visit([&](auto& view) { view.append(item, left); }, view);
+        std::visit([&](auto& list) { list.append(item, left); }, variant);
     }
 
-    /* Implement LinkedList.insert() for all views. */
+    /* Implement LinkedList.insert() for all variants. */
     template <typename T>
     inline void insert(T index, PyObject* item) {
-        std::visit([&](auto& view) { view.insert(index, item); }, view);
+        std::visit([&](auto& list) { list.insert(index, item); }, variant);
     }
 
-    /* Insert LinkedList.extend() for all views. */
+    /* Insert LinkedList.extend() for all variants. */
     inline void extend(PyObject* items, bool left) {
-        std::visit([&](auto& view) { view.extend(items, left); }, view);
+        std::visit([&](auto& list) { list.extend(items, left); }, variant);
     }
 
-    /* Implement LinkedList.index() for all views. */
+    /* Implement LinkedList.index() for all variants. */
     template <typename T>
     inline size_t index(PyObject* item, T start, T stop) {
         return std::visit(
-            [&](auto& view) {
-                auto result = view.index(item, start, stop);
-                if (!result.has_value()) {
-                    return MAX_SIZE_T;  // Cython expects an explicit error code
-                }
-                return result.value();
+            [&](auto& list) {
+                return list.index(item, start, stop);
             },
-            view
+            variant
         );
     }
 
-    /* Implement LinkedList.count() for all views. */
+    /* Implement LinkedList.count() for all variants. */
     template <typename T>
     inline size_t count(PyObject* item, T start, T stop) {
         return std::visit(
-            [&](auto& view) {
-                auto result = view.count(item, start, stop);
-                if (!result.has_value()) {
-                    return MAX_SIZE_T;  // Cython expects an explicit error code
-                }
-                return result.value();
+            [&](auto& list) {
+                return list.count(item, start, stop);
             },
-            view
+            variant
         );
     }
 
-    /* Implement LinkedList.__contains__() for all views. */
-    inline int contains(PyObject* item) {
-        return std::visit(
-            [&](auto& view) {
-                auto result = view.contains(item);
-                if (!result.has_value()) {
-                    return -1;  // Cython expects an explicit error code
-                }
-                return static_cast<int>(result.value());
-            },
-            view
-        );
+    /* Implement LinkedList.__contains__() for all variants. */
+    inline bool contains(PyObject* item) {
+        return std::visit([&](auto& list) { return list.contains(item); }, variant);
     }
 
-    /* Implement LinkedList.remove() for all views. */
+    /* Implement LinkedList.remove() for all variants. */
     inline void remove(PyObject* item) {
-        std::visit([&](auto& view) { view.remove(item); }, view);
+        std::visit([&](auto& list) { list.remove(item); }, variant);
     }
 
-    /* Implement LinkedList.pop() for all views. */
+    /* Implement LinkedList.pop() for all variants. */
     template <typename T>
     inline PyObject* pop(T index) {
-        return std::visit([&](auto& view) { return view.pop(index); }, view);
+        return std::visit([&](auto& list) { return list.pop(index); }, variant);
     }
 
-    /* Implement LinkedList.clear() for all views. */
+    /* Implement LinkedList.clear() for all variants. */
     inline void clear() {
-        std::visit([&](auto& view) { view.clear(); }, view);
+        std::visit([&](auto& list) { list.clear(); }, variant);
     }
 
-    /* Implement LinkedList.copy() for all views. */
+    /* Implement LinkedList.copy() for all variants. */
     inline VariantList* copy() {
         return std::visit(
-            [&](auto& view) -> VariantList* {
-                // copy underlying view
-                auto copied = view.copy();
+            [&](auto& list) -> VariantList* {
+                // copy underlying list
+                auto copied = list.copy();
                 if (!copied.has_value()) {
                     return nullptr;  // propagate Python errors
                 }
@@ -526,52 +359,167 @@ public:
                 // wrap result as VariantList
                 return new VariantList(std::move(copied.value()));
             },
-            view
+            variant
         );
     }
 
-    /* Implement LinkedList.sort() for all views. */
+    /* Implement LinkedList.sort() for all variants. */
     inline void sort(PyObject* key, bool reverse) {
-        std::visit([&](auto& view) { Ops::sort(view, key, reverse); }, view);
+        std::visit([&](auto& list) { list.sort(key, reverse); }, variant);
     }
 
-    /* Implement LinkedList.reverse() for all views. */
+    /* Implement LinkedList.reverse() for all variants. */
     inline void reverse() {
-        std::visit([&](auto& view) { view.reverse(); }, view);
+        std::visit([&](auto& list) { list.reverse(); }, variant);
     }
 
-    /* Implement LinkedList.rotate() for all views. */
+    /* Implement LinkedList.rotate() for all variants. */
     inline void rotate(long long steps) {
-        std::visit([&](auto& view) { view.rotate(steps); }, view);
+        std::visit([&](auto& list) { list.rotate(steps); }, variant);
     }
 
-    /* Implement LinkedList.__len__() for all views. */
+    /* Implement LinkedList.__len__() for all variants. */
     inline size_t size() {
-        return std::visit([&](auto& view) { return view.size; }, view);
+        return std::visit([&](auto& list) { return list.size(); }, variant);
     }
 
-    /* Implement LinkedList.__getitem__() for all views (single index). */
+    /* Implement LinkedList.__getitem__() for all variants (single index). */
     template <typename T>
-    inline PyObject* get_index(T index) {
-        return std::visit(
-            [&](auto& view) {
-                return Ops::get_index(view, index);
-            },
-            view
-        );
+    inline Index<T> operator[](T index) {
+        return Index(weak_ref(), index);
     }
 
-    /* Implement LinkedList.__setitem__() for all views (single index). */
-    template <typename T>
-    inline void set_index(T index, PyObject* value) {
-        std::visit([&](auto& view) { Ops::set_index(view, index, value); }, view);
+    /* Implement LinkedList.__getitem__() for all variants (slice). */
+    template <typename... Args>
+    inline Slice<Args...> slice(Args... args) {
+        return Slice(weak_ref(), args...);
     }
 
-    /* Implement LinkedList.__delitem__() for all views (single index). */
+    /* A proxy that represents a value at a particular index within a VariantList. */
     template <typename T>
-    inline void delete_index(T index) {
-        std::visit([&](auto& view) { Ops::delete_index(view, index); }, view);
-    }
+    class Index {
+    public:
+
+        /* Implement LinkedList.__getitem__() for all variants. */
+        PyObject* get() {
+            VariantList* parent = ref.get();
+            if (parent == nullptr) {
+                return nullptr;  // propagate
+            }
+            return std::visit(
+                [&](auto& list) -> PyObject* {
+                    return list[index].get();
+                },
+                parent->variant
+            );
+        }
+
+        /* Implement LinkedList.__setitem__() for all variants (single index). */
+        void set(PyObject* value) {
+            VariantList* parent = ref.get();
+            if (parent == nullptr) {
+                return;  // propagate
+            }
+            std::visit([&](auto& list) { list[index].set(value); }, parent->variant);
+        }
+
+        /* Implement LinkedList.__delitem__() for all variants (single index). */
+        void del() {
+            VariantList* parent = ref.get();
+            if (parent == nullptr) {
+                return;  // propagate
+            }
+            std::visit([&](auto& list) { list[index].del(); }, parent->variant);
+        }
+
+    private:
+        friend VariantList;
+        WeakRef ref;
+        T index;
+
+        /* Create a deferred index proxy. */
+        Index(WeakRef self, T index) : ref(self), index(index) {}
+    };
+
+    /* A proxy that represents a slice within a VariantList. */
+    template <typename... Args>
+    class Slice {
+    public:
+
+        /* Implement LinkedList.__getitem__() for all variants. */
+        VariantList* get() {
+            VariantList* parent = ref.get();
+            if (parent == nullptr) {
+                return nullptr;  // propagate
+            }
+            return std::visit(
+                [&](auto& list) -> VariantList* {
+                    return new VariantList(
+                        std::apply(
+                            [&](Args... args) { return list.slice(args...).get(); },
+                            args
+                        )
+                    );
+                },
+                parent->variant
+            );
+        }
+
+        /* Implement LinkedList.__setitem__() for all variants (slice). */
+        void set(PyObject* items) {
+            VariantList* parent = ref.get();
+            if (parent == nullptr) {
+                return;  // propagate
+            }
+            std::visit(
+                [&](auto& view) {
+                    // construct proxy using deferred arguments
+                    auto proxy = std::apply(
+                        [&](Args... args) { return view.slice(args...); }, args
+                    );
+ 
+                    // replace slice
+                    proxy.set(items);
+                },
+                parent->variant
+            );
+        }
+
+        /* Implement LinkedList.__delitem__() for all variants (slice). */
+        void del() {
+            VariantList* parent = ref.get();
+            if (parent == nullptr) {
+                return;  // propagate
+            }
+            std::visit(
+                [&](auto& view) {
+                    // generate proxy
+                    auto proxy = std::apply(
+                        [&](Args... args) { return view.slice(args...); }, args
+                    );
+
+                    // drop slice
+                    proxy.del();
+                },
+                parent->variant
+            );
+        }
+
+    private:
+        friend VariantList;
+        WeakRef ref;
+        std::tuple<Args...> args;  // deferred arguments to list.slice()
+
+        /* Create a deferred slice proxy. */
+        Slice(WeakRef self, Args... args) : ref(self), args(std::make_tuple(args...)) {}
+    };
+
+    //////////////////////////////////
+    ////    OPERATOR OVERLOADS    ////
+    //////////////////////////////////
+
+
+
 
     /////////////////////////////
     ////    EXTRA METHODS    ////
@@ -579,138 +527,41 @@ public:
 
     const Lock lock;  // lock(), lock.context(), etc.
 
-    /* Implement LinkedList.specialization() for all views. */
+    /* Implement LinkedList.specialization() for all variants. */
     inline PyObject* specialization() {
         return std::visit(
-            [&](auto& view) {
-                return Py_XNewRef(view.specialization);  // new ref may be NULL
+            [&](auto& list) {
+                return Py_XNewRef(list.specialization());  // ref may be NULL
             },
-            view
+            variant
         );
     }
 
-    /* Implement LinkedList.specialize() for all views. */
+    /* Implement LinkedList.specialize() for all variants. */
     inline void specialize(PyObject* spec) {
-        std::visit([&](auto& view) { view.specialize(spec); }, view);
+        std::visit([&](auto& list) { list.specialize(spec); }, variant);
     }
 
-    /* Implement LinkedList.nbytes() for all views. */
+    /* Implement LinkedList.nbytes() for all variants. */
     inline size_t nbytes() {
-        return std::visit([&](auto& view) { return view.nbytes(); }, view);
+        return std::visit([&](auto& list) { return list.nbytes(); }, variant);
     }
 
-    // NOTE: the following methods are used to implement the __iter__() and
-    // __reversed__() methods in the Cython wrapper.  They are not intended to
-    // be used from C++.
-
-    /* Check if the underlying view is doubly-linked. */
-    inline bool doubly_linked() const {
-        return std::visit(
-            [&](auto& view) -> bool {
-                using View = std::decay_t<decltype(view)>;
-                return has_prev<typename View::Node>::value;
-            },
-            view
-        );
+    /* Implement LinkedList.__iter__() for all variants. */
+    inline PyObject* iter() {
+        return std::visit([&](auto& list) { return list.iter.python(); }, variant);
     }
 
-    /* Get the head node of a singly-linked list. */
-    inline SingleNode* get_head_single() {
-        return std::visit(
-            [&](auto& view) -> SingleNode* {
-                using View = std::decay_t<decltype(view)>;
-
-                // static_cast<> is only safe if the view is singly-linked
-                if constexpr (has_prev<typename View::Node>::value) {
-                    throw std::runtime_error("List is not singly-linked.");
-                } else {
-                    return static_cast<SingleNode*>(view.head);
-                }
-            },
-            view
-        );
-    }
-
-    /* Get the tail node of a singly-linked list. */
-    inline SingleNode* get_tail_single() {
-        return std::visit(
-            [&](auto& view) -> SingleNode* {
-                using View = std::decay_t<decltype(view)>;
-
-                if constexpr (has_prev<typename View::Node>::value) {
-                    throw std::runtime_error("List is not singly-linked.");
-                } else {
-                    return static_cast<SingleNode*>(view.tail);
-                }
-            },
-            view
-        );
-    }
-
-    /* Get the head node of a doubly-linked list. */
-    inline DoubleNode* get_head_double() {
-        return std::visit(
-            [&](auto& view) -> DoubleNode* {
-                using View = std::decay_t<decltype(view)>;
-
-                if constexpr (has_prev<typename View::Node>::value) {
-                    return static_cast<DoubleNode*>(view.head);
-                } else {
-                    throw std::runtime_error("List is not doubly-linked.");
-                }
-            },
-            view
-        );
-    }
-
-    /* Get the tail node of a doubly-linked list. */
-    inline DoubleNode* get_tail_double() {
-        return std::visit(
-            [&](auto& view) -> DoubleNode* {
-                using View = std::decay_t<decltype(view)>;
-
-                if constexpr (has_prev<typename View::Node>::value) {
-                    return static_cast<DoubleNode*>(view.tail);
-                } else {
-                    throw std::runtime_error("List is not doubly-linked.");
-                }
-            },
-            view
-        );
-    }
-
-private:
-
-    /* Select a variant based on constructor arguments. */
-    template <typename... Args>
-    static VariantView select_variant(
-        bool doubly_linked,
-        Py_ssize_t max_size,
-        PyObject* spec,
-        Args... args
-    ) {
-        if (doubly_linked) {
-            if (max_size < 0) {
-                return ListView<DoubleNode, DynamicAllocator>(args..., max_size, spec);
-            } else {
-                return ListView<DoubleNode, FixedAllocator>(args..., max_size, spec);
-            }
-        } else {
-            if (max_size < 0) {
-                return ListView<SingleNode, DynamicAllocator>(args..., max_size, spec);
-            } else {
-                return ListView<SingleNode, FixedAllocator>(args..., max_size, spec);
-            }
-        }
+    /* Implement LinkedList.__reversed__() for all variants. */
+    inline PyObject* riter() {
+        return std::visit([&](auto& list) { return list.iter.rpython(); }, variant);
     }
 
 protected:
     friend Self;
     friend Lock;
-    friend SliceFactory;
 
-    const Self weak_ref;  // weak_ref()
-    VariantView view;
+    const Self weak_ref;  // functor to generate weak references to the variant
 };
 
 

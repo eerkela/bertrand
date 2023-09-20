@@ -2,6 +2,8 @@
 """This module contains a pure Cython/C++ implementation of a linked list data
 structure.
 """
+from cython.operator cimport dereference as deref
+
 from typing import Iterable, Iterator
 
 
@@ -437,27 +439,7 @@ cdef class LinkedList:
         -----
         Iterating through a :class:`LinkedList` is O(n).
         """
-        cdef SingleNode* curr_single
-        cdef DoubleNode* curr_double
-        cdef PyObject* value
-
-        # doubly-linked
-        if self.view.doubly_linked():
-            curr_double = self.view.get_head_double()
-            while curr_double is not NULL:
-                value = curr_double.value
-                Py_INCREF(value)
-                yield <object>value
-                curr_double = curr_double.next
-
-        # singly-linked
-        else:
-            curr_single = self.view.get_head_single()
-            while curr_single is not NULL:
-                value = curr_single.value
-                Py_INCREF(value)
-                yield <object>value
-                curr_single = curr_single.next
+        return <object>(self.view.iter())
 
     def __reversed__(self) -> Iterator[object]:
         """Iterate through the list in reverse order.
@@ -473,34 +455,7 @@ cdef class LinkedList:
         singly-linked lists it is O(2n).  This is because of the need to build a
         temporary stack to store each element, which forces a second iteration.
         """
-        cdef SingleNode* curr_single
-        cdef DoubleNode* curr_double
-        cdef PyObject* value
-        cdef stack[SingleNode*] reverse
-
-        # doubly-linked
-        if self.view.doubly_linked():
-            curr_double = self.view.get_tail_double()
-            while curr_double is not NULL:
-                value = curr_double.value
-                Py_INCREF(value)
-                yield <object>value
-                curr_double = curr_double.prev
-
-        # singly-linked
-        else:
-            # build a temporary stack
-            curr_single = self.view.get_head_single()
-            while curr_single is not NULL:
-                reverse.push(curr_single)
-                curr_single = curr_single.next
-
-            # yield from the stack to reverse the order of iteration
-            while not reverse.empty():
-                curr_single = reverse.top()
-                reverse.pop()
-                Py_INCREF(curr_single.value)
-                yield <object>curr_single.value
+        return <object>(self.view.riter())
 
     def __getitem__(self, key: int | slice) -> object | LinkedList:
         """Index the list for a particular item or slice.
@@ -542,7 +497,7 @@ cdef class LinkedList:
         if isinstance(key, slice):
             return LinkedList.from_view(self.view.slice(<PyObject*>key).get())
 
-        return <object>self.view.get_index(<PyObject*>key)
+        return <object>(deref(self.view)[<PyObject*>key].get())
 
     def __setitem__(self, key: int | slice, value: object | Iterable[object]) -> None:
         """Set the value of an item or slice in the list.
@@ -584,7 +539,7 @@ cdef class LinkedList:
         if isinstance(key, slice):
             self.view.slice(<PyObject*>key).set(<PyObject*>value)
         else:
-            self.view.set_index(<PyObject*>key, <PyObject*>value)
+            deref(self.view)[<PyObject*>key].set(<PyObject*>value)
 
     def __delitem__(self, key: int | slice) -> None:
         """Delete an item or slice from the list.
@@ -620,7 +575,7 @@ cdef class LinkedList:
         if isinstance(key, slice):
             self.view.slice(<PyObject*>key).delete()
         else:
-            self.view.delete_index(<PyObject*>key)
+            deref(self.view)[<PyObject*>key].delete()
 
     def __contains__(self, item: object) -> bool:
         """Check if the item is contained in the list.

@@ -8,6 +8,7 @@
 #include "core/sort.h"
 
 #include <sstream>  // std::ostringstream
+#include <stack>  // std::stack
 #include <typeinfo>  // std::bad_typeid
 
 
@@ -88,23 +89,8 @@ public:
         }
 
         /* Get a coupled reverse iterator over the list. */
-        template <typename = std::enable_if<doubly_linked>>
         inline auto reverse() const {
-            // if list is doubly-linked, then use a normal backwards iterator
-            // if constexpr (doubly_linked) {
             return IteratorPair<Direction::backward>(view.iter.reverse());
-            // }
-
-            // TODO: have to create an iterator class that uses a temporary stack.
-
-            // otherwise, we need to use a temporary stack to reverse the sequence
-            // auto iter = view.iter();  // forward iterator
-            // std::stack<PyObject*> stack;
-            // while (iter != iter.end()) {
-            //     stack.push(*iter);
-            //     ++iter;
-            // }
-
         }
 
         /* Get a forward iterator to the head of the list. */
@@ -118,13 +104,11 @@ public:
         }
 
         /* Get a backward iterator to the tail of the list. */
-        template <typename = std::enable_if<doubly_linked>>
         inline auto rbegin() const {
             return Iterator<Direction::backward>(view.iter.rbegin());
         }
 
         /* Get an empty backward iterator to terminate the sequence. */
-        template <typename = std::enable_if<doubly_linked>>
         inline auto rend() const {
             return Iterator<Direction::backward>(view.iter.rend());
         }
@@ -137,33 +121,30 @@ public:
             Iter* iter = Iter::create(begin(), end());
             if (iter == nullptr) {
                 PyErr_SetString(
-                    PyExc_RuntimeError,
-                    "could not create iterator instance"
+                    PyExc_RuntimeError, "could not create iterator instance"
                 );
                 return nullptr;
             }
 
             // return as PyObject*
-            return static_cast<PyObject*>(iter);
+            return reinterpret_cast<PyObject*>(iter);
         }
 
         /* Get a reverse Python iterator over the list. */
-        template <typename = std::enable_if<doubly_linked>>
         inline PyObject* rpython() const {
             using Iter = PyIterator<Direction::backward>;
 
             // create Python iterator over list
-            Iter iter = Iter::create(rbegin(), rend());
+            Iter* iter = Iter::create(rbegin(), rend());
             if (iter == nullptr) {
                 PyErr_SetString(
-                    PyExc_RuntimeError,
-                    "could not create iterator instance"
+                    PyExc_RuntimeError, "could not create iterator instance"
                 );
                 return nullptr;
             }
 
             // return as PyObject*
-            return static_cast<PyObject*>(iter);
+            return reinterpret_cast<PyObject*>(iter);
         }
 
         /* A wrapper around a view iterator that yields values rather than nodes. */
@@ -199,13 +180,8 @@ public:
             friend IteratorFactory;
             ViewIter iter;
 
-            Iterator(ViewIter iter) : iter(iter) {}
+            Iterator(ViewIter&& iter) : iter(iter) {}
         };
-
-        // TODO: rather than creating a separate StackIterator class, just provide a
-        // specialization of Iterator that is only enabled if the list is singly-linked
-        // and the direction is backward.  This uses a temporary stack to reverse the
-        // order of iteration.
 
     private:
         friend LinkedBase;
@@ -228,13 +204,11 @@ public:
     }
 
     /* Get a reverse iterator to the end of the list. */
-    template <typename = std::enable_if<doubly_linked>>
     inline auto rbegin() const {
         return iter.rbegin();
     }
 
     /* Get a reverse iterator to the start of the list. */
-    template <typename = std::enable_if<doubly_linked>>
     inline auto rend() const {
         return iter.rend();
     }
@@ -306,6 +280,10 @@ class ListInterface_ {
     class SliceIndices;
 
 public:
+
+    // forward declarations
+    class ElementProxy;
+    class SliceProxy;
 
     /* Append an item to the end of a list. */
     void append(PyObject* item, const bool left = false) {
@@ -600,7 +578,7 @@ public:
         if (!view.has_value()) {
             return std::nullopt;  // propagate error
         }
-        return std::make_optional(Derived(view.value()));
+        return std::make_optional(Derived(std::move(view.value())));
     }
 
     /* Reverse a list in-place. */
@@ -695,10 +673,6 @@ public:
         view.tail = new_tail;
     }
 
-    // forward declarations
-    class ElementProxy;
-    class SliceProxy;
-
     /* Get a proxy for a value at a particular index of the list. */
     template <typename T>
     ElementProxy operator[](T index) {
@@ -729,10 +703,7 @@ public:
     template <typename... Args>
     SliceProxy slice(Args&&... args) {
         // can throw std::bad_typeid, std::invalid_argument, std::runtime_error
-        return SliceProxy(
-            self().view,
-            normalize_indices(std::forward<Args>(args)...)
-        );
+        return SliceProxy(self().view, normalize_slice(std::forward<Args>(args)...));
     }
 
     ////////////////////////
@@ -740,7 +711,7 @@ public:
     ////////////////////////
 
     /* A functor that sorts the list in place. */
-    const SortPolicy sort;
+    SortPolicy sort;
     /* sort(PyObject* key = nullptr, bool reverse = false)
      */
 
@@ -836,9 +807,10 @@ public:
     class SliceProxy {
     public:
 
-        //////////////////////
-        ////    PUBLIC    ////
-        //////////////////////
+        template <Direction dir = Direction::forward>
+        class Iterator;
+
+        using IteratorPair = CoupledIterator<Bidirectional<Iterator>>;
 
         /* Extract a slice from a linked list. */
         Derived get() const {
@@ -912,14 +884,14 @@ public:
             }
 
             // loop 1: remove current nodes in slice
-            for (auto iter = iter(); iter != iter.end(); ++iter) {
+            for (auto iter = this->iter(); iter != iter.end(); ++iter) {
                 Node* node = iter.remove();  // remove node from list
                 Node::init_copy(&recovery[iter.index()], node);  // copy to recovery array
                 view.recycle(node);  // recycle original node
             }
 
             // loop 2: insert new nodes from sequence into vacated slice
-            for (auto iter = iter(seq_length); iter != iter.end(); ++iter) {
+            for (auto iter = this->iter(seq_length); iter != iter.end(); ++iter) {
                 // NOTE: PySequence_Fast_GET_ITEM() returns a borrowed reference (no
                 // DECREF required)
                 PyObject* item;
@@ -933,7 +905,7 @@ public:
                 // allocate a new node for the item
                 Node* new_node = view.node(item);
                 if (new_node == nullptr) {
-                    undo_set_slice(slice, recovery, iter.index());
+                    undo_set_slice(recovery, iter.index());
                     Py_DECREF(sequence);
                     return;
                 }
@@ -942,7 +914,7 @@ public:
                 iter.insert(new_node);
                 if (PyErr_Occurred()) {
                     view.recycle(new_node);
-                    undo_set_slice(slice, recovery, iter.index());
+                    undo_set_slice(recovery, iter.index());
                     Py_DECREF(sequence);
                     return;
                 }
@@ -964,24 +936,11 @@ public:
             }
 
             // recycle every node in slice
-            for (auto iter = iter(); iter != iter.end(); ++iter) {
+            for (auto iter = this->iter(); iter != iter.end(); ++iter) {
                 Node* node = iter.remove();
                 view.recycle(node);
             }
         }
-
-        /////////////////////////////////
-        ////    ITERATOR PROTOCOL    ////
-        /////////////////////////////////
-
-        // NOTE: Reverse iterators are only compiled for doubly-linked lists.
-
-        template <
-            Direction dir = Direction::forward,
-            typename = std::enable_if_t<dir == Direction::forward || doubly_linked>
-        >
-        class Iterator;
-        using IteratorPair = CoupledIterator<Bidirectional<Iterator>>;
 
         /* Pass through to SliceIndices. */
         inline long long start() const { return indices.start; }
@@ -994,6 +953,19 @@ public:
         inline bool empty() const { return indices.length == 0; }
         inline bool backward() const { return indices.backward; }
         inline bool inverted() const { return indices.inverted; }
+
+        // TODO: SliceProxy might be better off outside the class and templated on the
+        // variant.  It could also have a full battery of iterators.  The reverse
+        // iterators would all use a stack to traverse the list in reverse order.
+
+        // list.slice().iter()
+        // list.slice().iter.reverse()
+        // list.slice().iter.begin()
+        // list.slice().iter.end()
+        // list.slice().iter.rbegin()
+        // list.slice().iter.rend()
+        // list.slice().iter.python()
+        // list.slice().iter.rpython()
 
         /* Return a coupled pair of iterators with a possible length override. */
         inline IteratorPair iter(std::optional<size_t> length = std::nullopt) const {
@@ -1067,8 +1039,11 @@ public:
             return Bidirectional(Forward(view, indices, length()));
         }
 
+        // TODO: Slice iterators should yield the contents of each node rather than
+        // the nodes themselves, just like the regular iterators.
+
         /* A specialized iterator built for slice traversal. */
-        template <Direction dir, typename>
+        template <Direction dir>
         class Iterator : public ViewIter<dir> {
             using Base = ViewIter<dir>;
 
@@ -1256,13 +1231,13 @@ public:
         /* Undo a call to Slice::replace() in the event of an error. */
         void undo_set_slice(RecoveryArray& recovery, size_t n_staged) {
             // loop 3: remove nodes that have already been added to slice
-            for (auto iter = iter(n_staged); iter != iter.end(); ++iter) {
+            for (auto iter = this->iter(n_staged); iter != iter.end(); ++iter) {
                 Node* node = iter.remove();  // remove node from list
                 view.recycle(node);  // return node to allocator
             }
 
             // loop 4: reinsert original nodes
-            for (auto iter = iter(); iter != iter.end(); ++iter) {
+            for (auto iter = this->iter(); iter != iter.end(); ++iter) {
                 Node* node = view.copy(&recovery[iter.index()]);  // copy from recovery
                 Node::teardown(&recovery[iter.index()]);  // release recovery node
                 iter.insert(node);  // insert into list
@@ -1361,7 +1336,10 @@ private:
         }
 
         /* Swap the start and stop indices based on singly-/doubly-linked status. */
-        std::pair<long long, long long> slice_direction(long long closed, size_t view_size) {
+        std::pair<long long, long long> slice_direction(
+            long long closed,
+            size_t view_size
+        ) {
             // if doubly-linked, start at whichever end is closest to slice boundary
             if constexpr (doubly_linked) {
                 long long size = static_cast<long long>(view_size);
