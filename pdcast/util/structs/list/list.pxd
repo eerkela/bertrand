@@ -60,15 +60,25 @@ cdef extern from "list_cython.h":
         Index operator[](PyObject* index)
         Slice slice(PyObject* py_slice)
 
+        # operator overloads
+        # VariantList* concat(PyObject* rhs) except +
+        # VariantList* rconcat(PyObject* lhs) except +
+        # void iconcat(PyObject* rhs) except +
+        # VariantList* repeat(PyObject* steps) except +
+        # void irepeat(PyObject* steps) except +
+        # bint lexicographic_lt(PyObject* other) except +
+        # bint lexicographic_le(PyObject* other) except +
+        # bint lexicographic_eq(PyObject* other) except +
+        # bint lexicographic_ne(PyObject* other) except +
+        # bint lexicographic_ge(PyObject* other) except +
+        # bint lexicographic_gt(PyObject* other) except +
+
         # extra methods
         PyObject* specialization()
         void specialize(PyObject* spec) except +*
         size_t nbytes()
         PyObject* iter() except +*
         PyObject* riter() except +*
-
-    # operator overloads for VariantList
-    VariantList operator+[T](VariantList lhs, T rhs) except +
 
 
 cdef class LinkedList:

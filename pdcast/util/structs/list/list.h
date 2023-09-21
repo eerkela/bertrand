@@ -84,32 +84,32 @@ public:
 
         /* Invoke the functor to get a coupled iterator over the list. */
         inline auto operator()() const {
-            return IteratorPair<Direction::forward>(view.iter());
+            return IteratorPair<Direction::forward>(parent.view.iter());
         }
 
         /* Get a coupled reverse iterator over the list. */
         inline auto reverse() const {
-            return IteratorPair<Direction::backward>(view.iter.reverse());
+            return IteratorPair<Direction::backward>(parent.view.iter.reverse());
         }
 
         /* Get a forward iterator to the head of the list. */
         inline auto begin() const {
-            return Iterator<Direction::forward>(view.begin());
+            return Iterator<Direction::forward>(parent.view.begin());
         }
 
         /* Get an empty forward iterator to terminate the sequence. */
         inline auto end() const {
-            return Iterator<Direction::forward>(view.end());
+            return Iterator<Direction::forward>(parent.view.end());
         }
 
         /* Get a backward iterator to the tail of the list. */
         inline auto rbegin() const {
-            return Iterator<Direction::backward>(view.rbegin());
+            return Iterator<Direction::backward>(parent.view.rbegin());
         }
 
         /* Get an empty backward iterator to terminate the sequence. */
         inline auto rend() const {
-            return Iterator<Direction::backward>(view.rend());
+            return Iterator<Direction::backward>(parent.view.rend());
         }
 
         /* Get a forward Python iterator over the list. */
@@ -179,14 +179,14 @@ public:
             friend IteratorFactory;
             ViewIter iter;
 
-            Iterator(ViewIter&& iter) : iter(std::forward<ViewIter&&>(iter)) {}
+            Iterator(ViewIter&& iter) : iter(std::move(iter)) {}
         };
 
     private:
         friend LinkedBase;
-        View& view;
+        LinkedBase<View>& parent;
 
-        IteratorFactory(View& view) : view(view) {}
+        IteratorFactory(LinkedBase<View>& parent) : parent(parent) {}
     };
 
     /* Functor to create various kinds of iterators over the list. */
@@ -218,7 +218,7 @@ protected:
 
     /* Construct an empty list. */
     LinkedBase(long long max_size = -1, PyObject* spec = nullptr) :
-        view(max_size, spec), iter(view)
+        view(max_size, spec), iter(*this)
     {}
 
     /* Construct a list from an input iterable. */
@@ -227,22 +227,22 @@ protected:
         bool reverse = false,
         long long max_size = -1,
         PyObject* spec = nullptr
-    ) : view(iterable, reverse, max_size, spec), iter(view)
+    ) : view(iterable, reverse, max_size, spec), iter(*this)
     {}
 
     /* Construct a list from a base view. */
-    LinkedBase(View&& view) : view(std::forward<View&&>(view)), iter(view) {}
+    LinkedBase(View&& view) : view(std::move(view)), iter(*this) {}
 
     // TODO: construct from iterators?
 
     /* Copy constructor. */
     LinkedBase(const LinkedBase& other) :
-        view(other.view), iter(view)
+        view(other.view), iter(*this)
     {}
 
     /* Move constructor. */
     LinkedBase(LinkedBase&& other) :
-        view(std::move(other.view)), iter(view)
+        view(std::move(other.view)), iter(*this)
     {}
 
     /* Copy assignment operator. */
@@ -263,6 +263,9 @@ protected:
 ////////////////////////////
 ////    LIST METHODS    ////
 ////////////////////////////
+
+
+// TODO: sort() seems to not correctly update head/tail pointers
 
 
 /* A mixin that implements the full Python list interface. */
@@ -580,6 +583,11 @@ public:
         return std::make_optional(Derived(std::move(view.value())));
     }
 
+    /* Sort a list in-place. */
+    void sort(PyObject* key = nullptr, bool reverse = false) {
+        SortFunc<SortPolicy>::sort(self().view, key, reverse);
+    }
+
     /* Reverse a list in-place. */
     void reverse() {
         View& view = self().view;
@@ -700,19 +708,10 @@ public:
 
     /* Get a proxy for a slice within the list. */
     template <typename... Args>
-    SliceProxy slice(Args&&... args) {
+    SliceProxy slice(Args... args) {
         // can throw type_error, std::invalid_argument, std::runtime_error
         return SliceProxy(self().view, normalize_slice(std::forward<Args>(args)...));
     }
-
-    ////////////////////////
-    ////    FUNCTORS    ////
-    ////////////////////////
-
-    /* A functor that sorts the list in place. */
-    SortPolicy sort;
-    /* sort(PyObject* key = nullptr, bool reverse = false)
-     */
 
     ///////////////////////
     ////    PROXIES    ////
@@ -1120,7 +1119,7 @@ public:
                 const SliceIndices& indices,
                 size_t length_override
             ) :
-                Base(view, nullptr), idx(0), indices(indices),
+                Base(view), idx(0), indices(indices),
                 length_override(length_override), implicit_skip(0)
             {
                 if constexpr (dir == Direction::backward) {
@@ -1360,8 +1359,6 @@ private:
     };
 
 protected:
-
-    ListInterface_(View& view) : sort(view) {}
 
     /* Normalize a numeric index, applying Python-style wraparound and bounds
     checking. */
@@ -2149,7 +2146,7 @@ inline auto operator>(const T& lhs, const Derived& rhs)
 template <
     typename NodeType = DoubleNode,
     template <typename> class AllocatorPolicy = DynamicAllocator,
-    template <typename> class SortPolicy = MergeSort,
+    typename SortPolicy = MergeSort,
     typename LockPolicy = BasicLock
 >
 class LinkedList :
@@ -2157,7 +2154,7 @@ class LinkedList :
     public ListInterface_<
         LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>,
         ListView<NodeType, AllocatorPolicy>,
-        SortPolicy<ListView<NodeType, AllocatorPolicy>>
+        SortPolicy
     >,
     public ListOps_<
         LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>
@@ -2170,7 +2167,7 @@ public:
 private:
     using Self = LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>;
     using Base = LinkedBase<View>;
-    using Sort = SortPolicy<View>;
+    using Sort = SortPolicy;
     using Lock = LockPolicy;
     using IList = ListInterface_<Self, View, Sort>;
     using ListOps = ListOps_<Self>;
@@ -2183,7 +2180,7 @@ public:
 
     /* Construct an empty list. */
     LinkedList(long long max_size = -1, PyObject* spec = nullptr) :
-        Base(max_size, spec), IList(this->view)
+        Base(max_size, spec)
     {}
 
     /* Construct a list from an input iterable. */
@@ -2192,23 +2189,17 @@ public:
         bool reverse = false,
         long long max_size = -1,
         PyObject* spec = nullptr
-    ) : Base(iterable, reverse, max_size, spec), IList(this->view)
+    ) : Base(iterable, reverse, max_size, spec)
     {}
 
     /* Construct a list from a base view. */
-    LinkedList(View&& view) :
-        Base(std::forward<View&&>(view)), IList(this->view)
-    {}
+    LinkedList(View&& view) : Base(std::move(view)) {}
 
     /* Copy constructor. */
-    LinkedList(const LinkedList& other) :
-        Base(other.view), IList(this->view)
-    {}
+    LinkedList(const LinkedList& other) : Base(other.view) {}
 
     /* Move constructor. */
-    LinkedList(LinkedList&& other) :
-        Base(std::move(other.view)), IList(this->view)
-    {}
+    LinkedList(LinkedList&& other) : Base(std::move(other.view)) {}
 
     /* Copy assignment operator. */
     LinkedList& operator=(const LinkedList& other) {

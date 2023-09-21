@@ -9,6 +9,24 @@
 #include <Python.h>
 
 
+// TODO: implement an ArrayAllocator that uses a geometrically-growing contiguous
+// array to store nodes.  This incurs a copy as the list grows, but it's much simpler
+// to implement and is likely faster for small lists or those that don't change
+// frequently.
+
+
+// TODO: an alternative is a BlockAllocator that allocates nodes in blocks of a fixed
+// size.  This is more complicated, but it avoids the copy when the list grows, and
+// strikes a middle ground when it comes to memory fragmentation.
+
+
+// Both of these should have a `reserve()` method that grows the list to a given size
+// in a single allocation.  They could also accept an optional max_size, which would
+// force both to allocate a single block with a fixed size.
+
+
+
+
 // TODO:
 // DirectAllocator -> HeapAllocator
 // PreAllocator -> PoolAllocator

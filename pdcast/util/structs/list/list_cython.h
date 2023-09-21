@@ -91,7 +91,7 @@ public:
         std::weak_ptr<T> ref;
 
         template <typename... Args>
-        WeakRef(Args... args) : ref(args...) {}
+        WeakRef(Args... args) : ref(std::forward<Args>(args)...) {}
     };
 
     /* Get a weak reference to the associated object. */
@@ -392,7 +392,7 @@ public:
     /* Implement LinkedList.__getitem__() for all variants (slice). */
     template <typename... Args>
     inline Slice<Args...> slice(Args... args) {
-        return Slice(weak_ref(), args...);
+        return Slice(weak_ref(), std::forward<Args>(args)...);
     }
 
     /* A proxy that represents a value at a particular index within a VariantList. */
@@ -456,7 +456,9 @@ public:
                 [&](auto& list) -> VariantList* {
                     return new VariantList(
                         std::apply(
-                            [&](Args... args) { return list.slice(args...).get(); },
+                            [&](Args... args) {
+                                return list.slice(std::forward<Args>(args)...).get();
+                            },
                             args
                         )
                     );
@@ -511,15 +513,34 @@ public:
         std::tuple<Args...> args;  // deferred arguments to list.slice()
 
         /* Create a deferred slice proxy. */
-        Slice(WeakRef self, Args... args) : ref(self), args(std::make_tuple(args...)) {}
+        Slice(WeakRef self, Args... args) :
+            ref(self), args(std::make_tuple(std::forward<Args>(args)...))
+        {}
     };
 
     //////////////////////////////////
     ////    OPERATOR OVERLOADS    ////
     //////////////////////////////////
 
+    // template <typename T>
+    // inline VariantList* concat(VariantList* lhs, T rhs) {
+    //     return std::visit(
+    //         [&](auto& list) {
+    //             return new VariantList(list + rhs);
+    //         },
+    //         lhs->variant
+    //     );
+    // }
 
-
+    // template <typename T>
+    // inline VariantList* concat(T lhs, VariantList* rhs) {
+    //     return std::visit(
+    //         [&](auto& list) {
+    //             return new VariantList(lhs + list);
+    //         },
+    //         rhs->variant
+    //     );
+    // }
 
     /////////////////////////////
     ////    EXTRA METHODS    ////
@@ -563,24 +584,6 @@ protected:
 
     const Self weak_ref;  // functor to generate weak references to the variant
 };
-
-
-//////////////////////////////////
-////    OPERATOR OVERLOADS    ////
-//////////////////////////////////
-
-
-template <typename T>
-VariantList operator+(VariantList&& lhs, T&& rhs) {
-    return std::visit(
-        [&](auto& list) {
-            return VariantList(std::forward<VariantList>(lhs) + std::forward<T>(rhs));
-        },
-        lhs.variant
-    );
-}
-
-
 
 
 #endif  // BERTRAND_STRUCTS_LIST_H include guard

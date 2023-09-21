@@ -631,8 +631,7 @@ public:
     /* Construct an empty ListView. */
     ListView(Py_ssize_t max_size = -1, PyObject* spec = nullptr) :
         head(nullptr), tail(nullptr), size(0), max_size(max_size),
-        specialization(spec), position(*this), slice(*this), iter(*this),
-        allocator(max_size)
+        specialization(spec), iter(*this), allocator(max_size)
     {
         if (spec != nullptr) {
             Py_INCREF(spec);
@@ -646,8 +645,7 @@ public:
         Py_ssize_t max_size = -1,
         PyObject* spec = nullptr
     ) : head(nullptr), tail(nullptr), size(0), max_size(max_size),
-        specialization(spec), position(*this), slice(*this), iter(*this),
-        allocator(max_size)
+        specialization(spec), iter(*this), allocator(max_size)
     {
         if (spec != nullptr) {
             Py_INCREF(spec);
@@ -687,8 +685,8 @@ public:
     /* Move constructor: transfer ownership from one ListView to another. */
     ListView(ListView&& other) noexcept :
         head(other.head), tail(other.tail), size(other.size), max_size(other.max_size),
-        specialization(other.specialization), position(*this), slice(*this),
-        iter(*this), allocator(std::move(other.allocator))
+        specialization(other.specialization), iter(*this),
+        allocator(std::move(other.allocator))
     {
         // reset other ListView
         other.head = nullptr;
@@ -757,17 +755,6 @@ public:
 
     // TODO: we could probably just use normal constructors and placement new instead
     // of using separate init() methods.  This could give nodes copy/move semantics
-
-    // const NodeFactory node;
-    /* node()
-     * node.copy()
-     * node.recycle()
-     * node.specialize()
-     * node.specialization()
-     * node.max_size()
-     * node.nbytes()
-     * node.purge()
-     */
 
     /* Construct a new node for the list. */
     template <typename... Args>
@@ -872,40 +859,9 @@ public:
         }
     }
 
-    //////////////////////////////
-    ////    LIST INTERFACE    ////
-    //////////////////////////////
-
-    /* An IndexFactory functor that produces iterators to a specific index of the
-    list. */
-    const IndexFactory<View> position;
-    /* position()
-     * position.forward()
-     * position.backward()
-     * position.normalize()
-     */
-
-    /* A SliceFactory functor that allows slice proxies to be extracted from the
-    list. */
-    const SliceFactory<View> slice;
-    /* slice()
-     * slice.normalize()
-     */
-
     /////////////////////////////
     ////    EXTRA METHODS    ////
     /////////////////////////////
-
-    /* A Lock functor that allows the list to be locked for thread safety. */
-    const Lock lock;
-    /* lock()
-     * lock.context()
-     * lock.diagnostics()
-     * lock.count()
-     * lock.duration()
-     * lock.contention()
-     * lock.reset_diagnostics()
-     */
 
     /* Enforce strict type checking for elements of this list. */
     void specialize(PyObject* spec) {

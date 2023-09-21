@@ -182,7 +182,7 @@ private:
     for this, but this adds extra allocation overhead.  Using raw data buffers avoids
     this and places the iterators on the stack, where they belong. */
     PyObject_HEAD
-    alignas(Iterator) char first[sizeof(Iterator)];  // use reinterpret_cast to access
+    alignas(Iterator) char first[sizeof(Iterator)];  // access via reinterpret_cast
     alignas(Iterator) char second[sizeof(Iterator)];
 
     /* Force users to use create() factory method. */
@@ -203,7 +203,7 @@ private:
         type_obj.tp_itemsize = 0;
         type_obj.tp_dealloc = dealloc;
 
-        // register type with Python
+        // register iterator type with Python
         if (PyType_Ready(&type_obj) < 0) {
             throw std::runtime_error("could not initialize PyIterator type");
         }
@@ -211,11 +211,10 @@ private:
     }
 
 public:
-
     /* C-style Python type declaration. */
     inline static PyTypeObject Type = init_type();
 
-    /* Construct a Python iterator from an iterator range. */
+    /* Construct a Python iterator from a C++ iterator range. */
     static Self* create(Iterator&& begin, Iterator&& end) {
         // create new iterator instance
         Self* result = PyObject_New(Self, &Type);
@@ -225,14 +224,22 @@ public:
         }
 
         // initialize iterators into raw storage
-        new (&result->first) Iterator(std::forward<Iterator>(begin));
-        new (&result->second) Iterator(std::forward<Iterator>(end));
+        new (&result->first) Iterator(std::move(begin));  // placement new
+        new (&result->second) Iterator(std::move(end));
         return result;
     }
 
     /* Construct a Python iterator from a coupled iterator. */
     inline static Self* create(CoupledIterator<Iterator>&& iter) {
         return create(iter.begin(), iter.end());
+    }
+
+    /* Free the Python iterator when its reference count falls to zero. */
+    inline static void dealloc(PyObject* self) {
+        Self* ref = reinterpret_cast<Self*>(self);
+        reinterpret_cast<Iterator&>(ref->first).~Iterator();
+        reinterpret_cast<Iterator&>(ref->second).~Iterator();
+        Py_TYPE(self)->tp_free(self);
     }
 
     /* Call next(iter) from Python. */
@@ -252,14 +259,6 @@ public:
         return Py_NewRef(result);  // new reference
     }
 
-    /* Free the Python iterator when its reference count falls to zero. */
-    inline static void dealloc(PyObject* self) {
-        Self* ref = reinterpret_cast<Self*>(self);
-        reinterpret_cast<Iterator&>(ref->first).~Iterator();
-        reinterpret_cast<Iterator&>(ref->second).~Iterator();
-        Py_TYPE(self)->tp_free(self);
-    }
-
 };
 
 
@@ -271,18 +270,18 @@ public:
     using IteratorPair = CoupledIterator<Iterator>;
 
     /* Construct a PyIterable from a Python sequence. */
-    PyIterable(PyObject* seq) : py_iter(PyObject_GetIter(seq)) {
-        if (py_iter == nullptr) {
+    PyIterable(PyObject* seq) : py_iterator(PyObject_GetIter(seq)) {
+        if (py_iterator == nullptr) {
             throw std::invalid_argument("could not get iter(sequence)");
         }
     }
 
     /* Release the Python sequence. */
-    ~PyIterable() { Py_XDECREF(py_iter); }
+    ~PyIterable() { Py_XDECREF(py_iterator); }
 
     /* Iterate over the sequence. */
     inline IteratorPair iter() const { return IteratorPair(begin(), end()); }
-    inline Iterator begin() const { return Iterator(py_iter); }
+    inline Iterator begin() const { return Iterator(py_iterator); }
     inline Iterator end() const { return Iterator(); }
 
     class Iterator {
@@ -300,7 +299,7 @@ public:
         /* Advance to next item. */
         Iterator& operator++() {
             Py_DECREF(curr);
-            curr = PyIter_Next(py_iter);
+            curr = PyIter_Next(py_iterator);
             if (curr == nullptr && PyErr_Occurred()) {
                 throw std::runtime_error("could not get next(iterator)");
             }
@@ -317,13 +316,13 @@ public:
     private:
         friend PyIterable;
         friend IteratorPair;
-        PyObject* py_iter;
+        PyObject* py_iterator;
         PyObject* curr;
 
         /* Return an iterator to the start of the sequence. */
-        Iterator(PyObject* py_iter) : py_iter(py_iter), curr(nullptr) {
-            if (py_iter != nullptr) {
-                curr = PyIter_Next(py_iter);
+        Iterator(PyObject* py_iterator) : py_iterator(py_iterator), curr(nullptr) {
+            if (py_iterator != nullptr) {
+                curr = PyIter_Next(py_iterator);
                 if (curr == nullptr && PyErr_Occurred()) {
                     throw std::runtime_error("could not get next(iterator)");
                 }
@@ -331,11 +330,11 @@ public:
         }
 
         /* Return an iterator to the end of the sequence. */
-        Iterator() : py_iter(nullptr), curr(nullptr) {}
+        Iterator() : py_iterator(nullptr), curr(nullptr) {}
     };
 
 protected:
-    PyObject* py_iter;
+    PyObject* py_iterator;
 };
 
 

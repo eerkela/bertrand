@@ -619,7 +619,7 @@ cdef class LinkedList:
         result = self.copy()
         result.extend(other)
         return result
-        # return LinkedList.from_view(deref(self.view) + <PyObject*>other)
+        # return LinkedList.from_view(self.view.concat(self.view, <PyObject*>other))
 
     def __iadd__(self, other: Iterable[object]) -> LinkedList:
         """Concatenate two lists in-place.

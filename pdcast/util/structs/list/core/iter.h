@@ -20,6 +20,17 @@ only keeps track of the neighboring nodes at the current position.
 */
 
 
+/*
+
+All told, we have the following different levels of abstraction for iterators:
+
+ListView.iter <- directly from the view
+LinkedList.iter <- from a C++ list
+
+*/
+
+
+
 /* A functor that produces unidirectional iterators over the templated view. */
 template <typename ViewType, bool allow_stack = true>
 class IteratorFactory {
@@ -45,23 +56,18 @@ public:
 
     /* Return a coupled iterator from the tail of the list. */
     inline auto reverse() const {
-        static_assert(
-            doubly_linked || allow_stack,
-            "Cannot iterate over a singly-linked list in reverse without a temporary "
-            "stack."
-        );
         return IteratorPair<Direction::backward>(rbegin(), rend());
     }
 
     /* Return a forward iterator to the head of the list. */
     inline auto begin() const {
+        // short-circuit if list is empty
+        if (view.head == nullptr) {
+            return end();
+        }
 
-
-        // TODO: remove print statement
-        printf("begin()\n");
-
-
-        return Iterator<Direction::forward>(view, view.head);
+        Node* next = static_cast<Node*>(view.head->next);
+        return Iterator<Direction::forward>(view, nullptr, view.head, next);
     }
 
     /* Return an empty forward iterator to terminate the sequence. */
@@ -71,21 +77,40 @@ public:
 
     /* Return a backward iterator to the tail of the list. */
     inline auto rbegin() const {
+        // sanity check
         static_assert(
             doubly_linked || allow_stack,
-            "Cannot iterate over a singly-linked list in reverse without a temporary "
-            "stack."
+            "Cannot iterate over a singly-linked list in reverse without using a "
+            "temporary stack."
         );
-        return Iterator<Direction::backward>(view, view.tail);
+
+        // short-circuit if list is empty
+        if (view.tail == nullptr) {
+            return rend();
+        }
+
+        // if list is doubly-linked, we can just use the prev pointer to get neighbors
+        if constexpr (doubly_linked) {
+            Node* prev = static_cast<Node*>(view.tail->prev);
+            return Iterator<Direction::backward>(view, prev, view.tail, nullptr);
+
+        // Otherwise, we have to build a stack of prev pointers
+        } else {
+            std::stack<Node*> prev;
+            prev.push(nullptr);
+            Node* temp = view.head;
+            while (temp != view.tail) {
+                prev.push(temp);
+                temp = static_cast<Node*>(temp->next);
+            }
+            return Iterator<Direction::backward>(
+                view, std::move(prev), view.tail, nullptr
+            );
+        }
     }
 
     /* Return an empty backward iterator to terminate the sequence. */
     inline auto rend() const {
-        static_assert(
-            doubly_linked || allow_stack,
-            "Cannot iterate over a singly-linked list in reverse without a temporary "
-            "stack."
-        );
         return Iterator<Direction::backward>(view);
     }
 
@@ -95,7 +120,7 @@ public:
 
     /* Specialization for forward iterators or reverse iterators over doubly-linked
     lists. */
-    template <bool stack_reverse = false, typename = void>
+    template <bool has_stack = false, typename = void>
     class BaseIterator {};
 
     /* Specialization for reverse iterators over singly-linked lists. */
@@ -103,17 +128,22 @@ public:
     class BaseIterator<true, _> {
     protected:
         std::stack<Node*> stack;
+
+        /* Construct an iterator using an optional stack. */
+        BaseIterator() {}
+        BaseIterator(std::stack<Node*>&& stack) : stack(std::move(stack)) {}
     };
 
     /* An iterator that traverses a list and keeps track of each node's neighbors. */
     template <Direction dir>
-    class Iterator : public BaseIterator<dir == Direction::backward && !doubly_linked> {
+    class Iterator : public BaseIterator<!doubly_linked && dir == Direction::backward> {
     public:
         using View = ViewType;
         using Node = typename View::Node;
-        inline static bool constexpr stack_reverse = (
-            dir == Direction::backward && !doubly_linked
+        inline static bool constexpr has_stack = (
+            !doubly_linked && dir == Direction::backward
         );
+        using Base = BaseIterator<has_stack>;
 
         // iterator tags for std::iterator_traits
         using iterator_category     = std::forward_iterator_tag;
@@ -142,7 +172,7 @@ public:
                 next = curr;
                 curr = prev;
                 if (prev != nullptr) {
-                    if constexpr (stack_reverse) {
+                    if constexpr (has_stack) {
                         if (this->stack.empty()) {
                             prev = nullptr;
                         } else {
@@ -187,7 +217,7 @@ public:
 
             // update iterator parameters
             if constexpr (dir == Direction::backward) {
-                if constexpr (stack_reverse) {
+                if constexpr (has_stack) {
                     this->stack.push(prev);
                 }
                 prev = curr;
@@ -204,7 +234,7 @@ public:
             if constexpr (dir == Direction::backward) {
                 curr = prev;
                 if (prev != nullptr) {
-                    if constexpr (stack_reverse) {
+                    if constexpr (has_stack) {
                         if (this->stack.empty()) {
                             prev = nullptr;
                         } else {
@@ -284,34 +314,29 @@ public:
         ////    CONSTRUCTORS    ////
         ////////////////////////////
 
-        /* Construct an iterator to the start or end of the list. */
-        Iterator(View& view, Node* node) :
-            prev(nullptr), curr(node), next(nullptr), view(view)
-        {
-            if (node != nullptr) {
-                if constexpr (dir == Direction::backward) {
-                    if constexpr (doubly_linked) {
-                        prev = static_cast<Node*>(curr->prev);
-                    } else {
-                        // build temporary stack
-                        Node* temp = view.head;
-                        while (temp != node) {
-                            this->stack.push(temp);
-                            temp = static_cast<Node*>(temp->next);
-                        }
-                        prev = this->stack.top();
-                        this->stack.pop();
-                    }
-                } else {
-                    next = static_cast<Node*>(curr->next);
-                }
-            };
-        }
-
         /* Empty iterator. */
         Iterator(View& view) :
             prev(nullptr), curr(nullptr), next(nullptr), view(view)
         {}
+
+        /* Construct an iterator around a particular linkage within the list. */
+        Iterator(View& view, Node* prev, Node* curr, Node* next) :
+            prev(prev), curr(curr), next(next), view(view)
+        {}
+
+        /* Construct an iterator with a stack of `prev` pointers. */
+        template <bool cond = has_stack>  // conditional compilation if has_stack
+        Iterator(
+            View& view,
+            std::enable_if_t<cond, std::stack<Node*>&&> stack,
+            Node* curr,
+            Node* next
+        ) :
+            Base(std::move(stack)), prev(this->stack.top()), curr(curr), next(next),
+            view(view)
+        {
+            this->stack.pop();  // always has at least one element (nullptr)
+        }
 
     };
 
