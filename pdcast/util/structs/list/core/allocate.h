@@ -65,26 +65,6 @@ const char* repr(PyObject* obj) {
 }
 
 
-/* Get the most recent Python error message as a C string. */
-const char* PyErr_msg() {
-    PyObject* exc_type;
-    PyObject* exc_value;
-    PyObject* exc_traceback;
-
-    // Get the most recent Python error
-    PyErr_Fetch(&exc_type, &exc_value, &exc_traceback);
-    PyErr_NormalizeException(&exc_type, &exc_value, &exc_traceback);
-    
-    // Ensure we've got a string and return the message
-    if (exc_value != NULL && PyUnicode_Check(exc_value)) {
-        return PyUnicode_AsUTF8(exc_value);
-    }
-
-    // Return some default message if something went wrong.
-    return "Unknown error";
-}
-
-
 ////////////////////
 ////    BASE    ////
 ////////////////////

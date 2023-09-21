@@ -565,4 +565,22 @@ protected:
 };
 
 
+//////////////////////////////////
+////    OPERATOR OVERLOADS    ////
+//////////////////////////////////
+
+
+template <typename T>
+VariantList operator+(VariantList&& lhs, T&& rhs) {
+    return std::visit(
+        [&](auto& list) {
+            return VariantList(std::forward<VariantList>(lhs) + std::forward<T>(rhs));
+        },
+        lhs.variant
+    );
+}
+
+
+
+
 #endif  // BERTRAND_STRUCTS_LIST_H include guard

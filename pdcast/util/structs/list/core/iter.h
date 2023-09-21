@@ -4,6 +4,7 @@
 
 #include <stack>  // std::stack
 #include <Python.h>  // CPython API
+#include <type_traits>
 #include "util.h"  // CoupledIterator<>
 
 
@@ -37,9 +38,6 @@ public:
     ////    ITERATORS    ////
     /////////////////////////
 
-    // NOTE: reverse iterators may not be supported if the list is singly-linked and
-    // allow_stack is set to false
-
     /* Return a coupled iterator from the head of the list. */
     inline auto operator()() const {
         return IteratorPair<Direction::forward>(begin(), end());
@@ -57,6 +55,12 @@ public:
 
     /* Return a forward iterator to the head of the list. */
     inline auto begin() const {
+
+
+        // TODO: remove print statement
+        printf("begin()\n");
+
+
         return Iterator<Direction::forward>(view, view.head);
     }
 
@@ -284,9 +288,12 @@ public:
         Iterator(View& view, Node* node) :
             prev(nullptr), curr(node), next(nullptr), view(view)
         {
-            if (curr != nullptr) {
+            if (node != nullptr) {
                 if constexpr (dir == Direction::backward) {
-                    if constexpr (stack_reverse) {
+                    if constexpr (doubly_linked) {
+                        prev = static_cast<Node*>(curr->prev);
+                    } else {
+                        // build temporary stack
                         Node* temp = view.head;
                         while (temp != node) {
                             this->stack.push(temp);
@@ -294,13 +301,11 @@ public:
                         }
                         prev = this->stack.top();
                         this->stack.pop();
-                    } else {
-                        prev = static_cast<Node*>(curr->prev);
                     }
                 } else {
                     next = static_cast<Node*>(curr->next);
                 }
-            }
+            };
         }
 
         /* Empty iterator. */

@@ -17,21 +17,22 @@
 
 
 /* Base class for all sort() functors. */
-template <typename ViewType>
+template <typename Derived, typename ViewType>
 class SortPolicy {
 protected:
     using View = ViewType;
     using Node = typename View::Node;
+    using Decorated = ListView<Keyed<Node>, FixedAllocator>;
 
     template <typename T>
-    using AllocatorType = typename View::template AllocatorType<T>;
+    using Allocator = typename View::template AllocatorType<T>;
 
     View& view;
 
     /* Apply a key function to a list, decorating it with the computed result. */
-    std::optional<ListView<Keyed<Node>, FixedAllocator>> decorate(PyObject* key) {
+    std::optional<Decorated> decorate(PyObject* key) const {
         // initialize an empty ListView to hold the decorated list
-        ListView<Keyed<Node>, FixedAllocator> decorated(view.size);  // preallocated
+        Decorated decorated(view.size);  // preallocated
 
         // decorate each node in list with precomputed key
         for (Node* node : view) {
@@ -55,7 +56,7 @@ protected:
     }
 
     /* Rearrange the underlying list in-place to reflect changes from a keyed sort. */
-    void undecorate(ListView<Keyed<Node>, AllocatorType>& decorated) {
+    void undecorate(Decorated& decorated) {
         Node* new_head = nullptr;
         Node* new_tail = nullptr;
 
@@ -92,20 +93,20 @@ public:
         }
 
         // if the view is a subclass of ListView, we can sort it directly
-        if constexpr (std::is_same_v<View, ListView<Node, AllocatorType>>) {
-            execute(view, key, reverse);
+        if constexpr (std::is_same_v<View, ListView<Node, Allocator>>) {
+            static_cast<Derived*>(this)->execute(view, key, reverse);
             return;
         }
 
         // otherwise, we create a temporary ListView into the view and sort that
         // instead.
-        ListView<Node, AllocatorType> list_view(view.max_size);
+        ListView<Node, Allocator> list_view(view.max_size);
         list_view.head = view.head;
         list_view.tail = view.tail;
         list_view.size = view.size;
 
         // sort the viewed list in place
-        execute(list_view, key, reverse);
+        static_cast<Derived*>(this)->execute(list_view, key, reverse);
 
         // free the temporary ListView
         list_view.head = nullptr;  // avoids calling destructor on nodes
@@ -115,7 +116,7 @@ public:
 
     /* Execute the sorting algorithm for a particular view.  All SortPolicies must
     implement this method. */
-    void execute(ListView<Node, AllocatorType>& view, PyObject* key, bool reverse);
+    void execute(ListView<Node, Allocator>& view, PyObject* key, bool reverse);
 
 };
 
@@ -127,17 +128,17 @@ public:
 
 /* An iterative merge sort algorithm with error recovery. */
 template <typename ViewType>
-class MergeSort : public SortPolicy<ViewType> {
+class MergeSort : public SortPolicy<MergeSort<ViewType>, ViewType> {
 protected:
-    using Base = SortPolicy<ViewType>;
+    using Self = MergeSort<ViewType>;
+    using Base = SortPolicy<Self, ViewType>;
     using View = typename Base::View;
     using Node = typename Base::Node;
-
-    template <typename T>
-    using AllocatorType = typename Base::template AllocatorType<T>;
+    using Decorated = typename Base::Decorated;
 
     /* Sort a linked list in-place using an iterative merge sort algorithm. */
-    void merge_sort(ListView<Node, AllocatorType>& view, bool reverse) {
+    template <typename Node, template <typename> class Allocator>
+    void merge_sort(ListView<Node, Allocator>& view, bool reverse) {
         // NOTE: we need a temporary node to act as the head of the merged sublists.
         // If we allocate it here, we can pass it to `merge()` as an argument and
         // reuse it for every sublist.  This avoids an extra malloc/free cycle in
@@ -161,7 +162,7 @@ protected:
         std::pair<Node*, Node*> sorted = std::make_pair(nullptr, nullptr);
         std::pair<Node*, Node*> left = std::make_pair(nullptr, nullptr);
         std::pair<Node*, Node*> right = std::make_pair(nullptr, nullptr);
-        std::pair<Node*, Node*> merged;
+        std::optional<std::pair<Node*, Node*>> merged;
 
         // NOTE: as a refresher, the general merge sort algorithm is as follows:
         //  1) divide the list into sublists of length 1 (bottom-up)
@@ -207,11 +208,11 @@ protected:
 
                 // link merged sublist to sorted
                 if (sorted.first == nullptr) {
-                    sorted.first = merged.first;
+                    sorted.first = merged.value().first;
                 } else {
-                    Node::join(sorted.second, merged.first);
+                    Node::join(sorted.second, merged.value().first);
                 }
-                sorted.second = merged.second;  // update tail of sorted list
+                sorted.second = merged.value().second;  // update tail of sorted list
             }
 
             // partially-sorted list becomes new unsorted list for next iteration
@@ -232,6 +233,7 @@ protected:
     }
 
     /* Walk along the list by the specified number of nodes. */
+    template <typename Node>
     inline Node* walk(Node* curr, size_t length) {
         // if we're at the end of the list, there's nothing left to traverse
         if (curr == nullptr) {
@@ -249,6 +251,7 @@ protected:
     }
 
     /* Merge two sublists in sorted order. */
+    template <typename Node>
     std::optional<std::pair<Node*, Node*>> merge(
         std::pair<Node*, Node*> left,
         std::pair<Node*, Node*> right,
@@ -296,6 +299,7 @@ protected:
     }
 
     /* Undo the split() step to recover a valid list in case of an error. */
+    template <typename Node>
     std::pair<Node*, Node*> recover(
         std::pair<Node*, Node*> sorted,
         std::pair<Node*, Node*> left,
@@ -314,10 +318,11 @@ protected:
 public:
 
     /* Inherit constructors from base class */
-    using SortPolicy<ViewType>::SortPolicy;
+    using Base::Base;
 
     /* Execute the sorting algorithm. */
-    void execute(ListView<Node, AllocatorType>& view, PyObject* key, bool reverse) {
+    template <typename Node, template <typename> class Allocator>
+    void execute(ListView<Node, Allocator>& view, PyObject* key, bool reverse) {
         // if no key function is given, sort the list in-place
         if (key == nullptr) {
             merge_sort(view, reverse);
@@ -325,7 +330,6 @@ public:
         }
 
         // otherwise, decorate the list with precomputed keys and sort that instead
-        using Decorated = ListView<Keyed<Node>, FixedAllocator>;
         std::optional<Decorated> decorated = this->decorate(key);
         if (!decorated.has_value()) {
             return;  // propagate

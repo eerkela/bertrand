@@ -67,6 +67,9 @@ cdef extern from "list_cython.h":
         PyObject* iter() except +*
         PyObject* riter() except +*
 
+    # operator overloads for VariantList
+    VariantList operator+[T](VariantList lhs, T rhs) except +
+
 
 cdef class LinkedList:
     cdef VariantList* view

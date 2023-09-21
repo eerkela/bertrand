@@ -147,10 +147,7 @@ bertrand/
 //////////////////////
 
 
-/*
-NOTE: The Python list interface is implemented as a mixin class so that it can be
-shared amongst any view.
-*/
+// TODO: delete this as soon as the C++ LinkedList implementation is debugged.
 
 
 /* A mixin class that implements the full Python list interface. */
@@ -602,8 +599,11 @@ template <
     typename NodeType = DoubleNode,
     template <typename> class AllocatorPolicy = DynamicAllocator
 >
-class ListView : public ListInterface<ListView, NodeType, AllocatorPolicy> {
+class ListView {
 public:
+    template <typename T>
+    using AllocatorType = AllocatorPolicy<T>;  // in case we need to change it later
+
     using View = ListView<NodeType, AllocatorPolicy>;
     using Node = NodeType;
     using Allocator = AllocatorPolicy<Node>;
@@ -611,9 +611,6 @@ public:
     using Lock = BasicLock;  // TODO: move this to LinkedList
     using Slice = SliceProxy<View>;  // TODO: move this to LinkedList
     inline static constexpr bool doubly_linked = has_prev<Node>::value;
-
-    template <typename T>
-    using AllocatorType = AllocatorPolicy<T>;  // in case we need to change it later
 
     template <Direction dir>
     using Iterator = typename Iter::template Iterator<dir>;
@@ -970,18 +967,12 @@ public:
 
     /* Create a reverse iterator to the end of the list. */
     inline auto rbegin() const {
-        if constexpr (doubly_linked) {
-            return iter.rbegin();
-        }
-        static_assert("singly-linked lists do not support reverse iteration");
+        return iter.rbegin();
     }
 
     /* Create a reverse iterator to the start of the list. */
     inline auto rend() const {
-        if constexpr (doubly_linked) {
-            return iter.rend();
-        }
-        static_assert("singly-linked lists do not support reverse iteration");
+        return iter.rend();
     }
 
 protected:

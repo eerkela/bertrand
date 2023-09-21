@@ -9,7 +9,6 @@
 
 #include <sstream>  // std::ostringstream
 #include <stack>  // std::stack
-#include <typeinfo>  // std::bad_typeid
 
 
 // TODO: should migrate over to using C++ exceptions instead of Python exceptions
@@ -95,22 +94,22 @@ public:
 
         /* Get a forward iterator to the head of the list. */
         inline auto begin() const {
-            return Iterator<Direction::forward>(view.iter.begin());
+            return Iterator<Direction::forward>(view.begin());
         }
 
         /* Get an empty forward iterator to terminate the sequence. */
         inline auto end() const {
-            return Iterator<Direction::forward>(view.iter.end());
+            return Iterator<Direction::forward>(view.end());
         }
 
         /* Get a backward iterator to the tail of the list. */
         inline auto rbegin() const {
-            return Iterator<Direction::backward>(view.iter.rbegin());
+            return Iterator<Direction::backward>(view.rbegin());
         }
 
         /* Get an empty backward iterator to terminate the sequence. */
         inline auto rend() const {
-            return Iterator<Direction::backward>(view.iter.rend());
+            return Iterator<Direction::backward>(view.rend());
         }
 
         /* Get a forward Python iterator over the list. */
@@ -180,7 +179,7 @@ public:
             friend IteratorFactory;
             ViewIter iter;
 
-            Iterator(ViewIter&& iter) : iter(iter) {}
+            Iterator(ViewIter&& iter) : iter(std::forward<ViewIter&&>(iter)) {}
         };
 
     private:
@@ -232,7 +231,7 @@ protected:
     {}
 
     /* Construct a list from a base view. */
-    LinkedBase(View&& view) : view(view), iter(view) {}
+    LinkedBase(View&& view) : view(std::forward<View&&>(view)), iter(view) {}
 
     // TODO: construct from iterators?
 
@@ -676,7 +675,7 @@ public:
     /* Get a proxy for a value at a particular index of the list. */
     template <typename T>
     ElementProxy operator[](T index) {
-        // normalize index (can throw std::out_of_range, std::bad_typeid)
+        // normalize index (can throw std::out_of_range, type_error)
         size_t norm_index = normalize_index(index);
 
         // get iterator to index
@@ -687,7 +686,7 @@ public:
                 for (size_t i = view.size - 1; i > norm_index; --i) {
                     ++iter;
                 }
-                return ElementProxy(view, Bidirectional(iter));
+                return ElementProxy(view, iter);
             }
         }
 
@@ -696,13 +695,13 @@ public:
         for (size_t i = 0; i < norm_index; ++i) {
             ++iter;
         }
-        return ElementProxy(view, Bidirectional(iter));
+        return ElementProxy(view, iter);
     }
 
     /* Get a proxy for a slice within the list. */
     template <typename... Args>
     SliceProxy slice(Args&&... args) {
-        // can throw std::bad_typeid, std::invalid_argument, std::runtime_error
+        // can throw type_error, std::invalid_argument, std::runtime_error
         return SliceProxy(self().view, normalize_slice(std::forward<Args>(args)...));
     }
 
@@ -759,7 +758,7 @@ public:
 
         /* Delete the value at the current index. */
         inline void del() {
-            iter.drop();
+            iter.remove();
         }
 
         /* Remove the node at the current index and return its value. */
@@ -1056,13 +1055,13 @@ public:
                 }
 
                 if constexpr (dir == Direction::backward) {
-                    for (size_t i = implicit_skip; i < indices.abs_step(); ++i) {
+                    for (size_t i = implicit_skip; i < indices.abs_step; ++i) {
                         this->next = this->curr;
                         this->curr = this->prev;
                         this->prev = static_cast<Node*>(this->curr->prev);
                     }
                 } else {
-                    for (size_t i = implicit_skip; i < indices.abs_step(); ++i) {
+                    for (size_t i = implicit_skip; i < indices.abs_step; ++i) {
                         this->prev = this->curr;
                         this->curr = this->next;
                         this->next = static_cast<Node*>(this->curr->next);
@@ -1121,8 +1120,8 @@ public:
                 const SliceIndices& indices,
                 size_t length_override
             ) :
-                Base(view, nullptr, 0), indices(indices), length_override(length_override),
-                implicit_skip(0)
+                Base(view, nullptr), idx(0), indices(indices),
+                length_override(length_override), implicit_skip(0)
             {
                 if constexpr (dir == Direction::backward) {
                     this->next = origin;
@@ -1149,7 +1148,7 @@ public:
 
             /* Get an iterator to terminate the slice. */
             Iterator(View& view, const SliceIndices& indices, size_t length_override) :
-                Base(view, length_override), indices(indices),
+                Base(view), idx(length_override), indices(indices),
                 length_override(length_override), implicit_skip(0)
             {}
 
@@ -1192,7 +1191,7 @@ public:
 
         /* Construct a SliceProxy with at least one element. */
         SliceProxy(View& view, SliceIndices&& indices) :
-            view(view), indices(indices), _origin(nullptr), found(false)
+            view(view), indices(indices), found(false), _origin(nullptr)
         {}
 
         /* Find and cache the origin node for the slice. */
@@ -1396,7 +1395,7 @@ protected:
     size_t normalize_index(PyObject* index, bool truncate = false) const {
         // check that index is a Python integer
         if (!PyLong_Check(index)) {
-            throw std::bad_typeid("index must be a Python integer");
+            throw type_error("index must be a Python integer");
         }
 
         const View& view = self().view;
@@ -1503,7 +1502,7 @@ protected:
     SliceIndices normalize_slice(PyObject* py_slice) const {
         // check that input is a Python slice object
         if (!PySlice_Check(py_slice)) {
-            throw std::bad_typeid("index must be a Python slice");
+            throw type_error("index must be a Python slice");
         }
 
         size_t size = self().size();
@@ -1686,7 +1685,7 @@ inline auto operator+(const PyObject* lhs, const Derived& rhs)
         std::ostringstream msg;
         msg << "can only concatenate sequence (not '";
         msg << lhs->ob_type->tp_name << "') to sequence";
-        throw std::bad_typeid(msg.str());
+        throw type_error(msg.str());
     }
 
     // unpack list into Python sequence
@@ -1767,7 +1766,7 @@ auto operator*(const Derived& lhs, const PyObject* rhs)
         std::ostringstream msg;
         msg << "can't multiply sequence by non-int of type '";
         msg << rhs->ob_type->tp_name << "'";
-        throw std::bad_typeid(msg.str());
+        throw type_error(msg.str());
     }
 
     // convert to C++ integer
@@ -1825,7 +1824,7 @@ inline auto operator*=(Derived& lhs, const PyObject* rhs)
         std::ostringstream msg;
         msg << "can't multiply sequence by non-int of type '";
         msg << rhs->ob_type->tp_name << "'";
-        throw std::bad_typeid(msg.str());
+        throw type_error(msg.str());
     }
 
     // convert to C++ integer
@@ -1880,7 +1879,7 @@ auto operator<(const Derived& lhs, const PyObject* rhs)
         std::ostringstream msg;
         msg << "can only compare list to sequence (not '";
         msg << rhs->ob_type->tp_name << "')";
-        throw std::bad_typeid(msg.str());
+        throw type_error(msg.str());
     }
 
     // get coupled iterators
@@ -1964,7 +1963,7 @@ auto operator<=(const Derived& lhs, const PyObject* rhs)
         std::ostringstream msg;
         msg << "can only compare list to sequence (not '";
         msg << rhs->ob_type->tp_name << "')";
-        throw std::bad_typeid(msg.str());
+        throw type_error(msg.str());
     }
 
     // get coupled iterators
@@ -2044,7 +2043,7 @@ auto operator==(const Derived& lhs, const PyObject* rhs)
         std::ostringstream msg;
         msg << "can only compare list to sequence (not '";
         msg << rhs->ob_type->tp_name << "')";
-        throw std::bad_typeid(msg.str());
+        throw type_error(msg.str());
     }
 
     // check that lhs and rhs have the same length
@@ -2053,7 +2052,7 @@ auto operator==(const Derived& lhs, const PyObject* rhs)
         std::ostringstream msg;
         msg << "could not get length of sequence (of type '";
         msg << rhs->ob_type->tp_name << "')";
-        throw std::bad_typeid(msg.str());
+        throw type_error(msg.str());
     } else if (lhs.size() != static_cast<size_t>(len)) {
         return false;
     }
@@ -2198,7 +2197,7 @@ public:
 
     /* Construct a list from a base view. */
     LinkedList(View&& view) :
-        Base(view), IList(this->view)
+        Base(std::forward<View&&>(view)), IList(this->view)
     {}
 
     /* Copy constructor. */

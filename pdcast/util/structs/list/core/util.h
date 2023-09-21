@@ -2,9 +2,53 @@
 #ifndef BERTRAND_STRUCTS_CORE_UTIL_H
 #define BERTRAND_STRUCTS_CORE_UTIL_H
 
+#include <string>  // std::string
+#include <typeinfo>  // std::bad_typeid
 #include <type_traits>  // std::decay_t<>
 #include <Python.h>  // CPython API
 #include "node.h"  // has_prev<>
+
+
+//////////////////////
+////    ERRORS    ////
+//////////////////////
+
+
+/* Get the most recent Python error message as a C string. */
+const char* PyErr_msg() {
+    PyObject* exc_type;
+    PyObject* exc_value;
+    PyObject* exc_traceback;
+
+    // Get the most recent Python error
+    PyErr_Fetch(&exc_type, &exc_value, &exc_traceback);
+    PyErr_NormalizeException(&exc_type, &exc_value, &exc_traceback);
+    
+    // Ensure we've got a string and return the message
+    if (exc_value != NULL && PyUnicode_Check(exc_value)) {
+        return PyUnicode_AsUTF8(exc_value);
+    }
+
+    // Return some default message if something went wrong.
+    return "Unknown error";
+}
+
+
+/* Subclass std::bad_typeid() to allow automatic conversion to Python TypeError by
+Cython. */
+class type_error : public std::bad_typeid {
+private:
+    std::string message;
+
+public:
+    using std::bad_typeid::bad_typeid;  // inherit default constructors
+
+    /* Allow construction from a custom error message. */
+    type_error(const std::string& what) : message(what) {}
+    type_error(const char* what) : message(what) {}
+
+    const char* what() const noexcept override { return message.c_str(); }
+};
 
 
 /////////////////////////////////
@@ -119,10 +163,34 @@ exceptions whenever a PyIterable is constructed or iterated over.
 
 
 /* A wrapper around a C++ iterator that allows it to be used from Python. */
-template <typename IteratorType, const char* type_name>
+template <typename Iterator, const char* type_name>
 class PyIterator {
 private:
-    /* Initialize a PyTypeObject to represent this iterator. */
+    using Self = PyIterator<Iterator, type_name>;
+
+    // sanity check
+    static_assert(
+        std::is_same_v<typename Iterator::value_type, PyObject*>,
+        "Iterator must dereference to PyObject*"
+    );
+
+    /* Store coupled iterators as raw data buffers.
+    
+    NOTE: PyObject_New() does not allow for traditional stack allocation like we would
+    normally use to store the wrapped iterators.  Instead, we have to be able to assign
+    the iterators after construction.  We could use pointers to heap-allocated memory
+    for this, but this adds extra allocation overhead.  Using raw data buffers avoids
+    this and places the iterators on the stack, where they belong. */
+    PyObject_HEAD
+    alignas(Iterator) char first[sizeof(Iterator)];  // use reinterpret_cast to access
+    alignas(Iterator) char second[sizeof(Iterator)];
+
+    /* Force users to use create() factory method. */
+    PyIterator() = delete;
+    PyIterator(const Self&) = delete;
+    PyIterator(Self&&) = delete;
+
+    /* Initialize a PyTypeObject to represent this iterator from Python. */
     static PyTypeObject init_type() {
         PyTypeObject type_obj = {};  // zero-initialize
         type_obj.tp_name = type_name;
@@ -143,21 +211,9 @@ private:
     }
 
 public:
-    using Self = PyIterator<IteratorType, type_name>;
-    using Iterator = IteratorType;
-    using value_type = typename Iterator::value_type;
-
-    // sanity check
-    static_assert(
-        std::is_same_v<value_type, PyObject*>, "Iterator must dereference to PyObject*"
-    );
 
     /* C-style Python type declaration. */
     inline static PyTypeObject Type = init_type();
-
-    PyObject_HEAD
-    alignas(Iterator) char first[sizeof(Iterator)];
-    alignas(Iterator) char second[sizeof(Iterator)];
 
     /* Construct a Python iterator from an iterator range. */
     static Self* create(Iterator&& begin, Iterator&& end) {
@@ -185,7 +241,7 @@ public:
         Iterator& begin = reinterpret_cast<Iterator&>(ref->first);
         Iterator& end = reinterpret_cast<Iterator&>(ref->second);
 
-        if (begin == end) {  // terminate the sequence
+        if (!(begin != end)) {  // terminate the sequence
             PyErr_SetNone(PyExc_StopIteration);
             return nullptr;
         }
