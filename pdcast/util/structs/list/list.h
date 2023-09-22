@@ -11,6 +11,9 @@
 #include <stack>  // std::stack
 
 
+#include <iostream>  // std::cout, std::endl
+
+
 // TODO: should migrate over to using C++ exceptions instead of Python exceptions
 // or std::optional.  This will be more consistent with constructor/operator errors.
 
@@ -825,7 +828,7 @@ public:
             }
 
             // copy nodes from original view into result
-            for (auto node : *this) {
+            for (Node* node : *this) {
                 Node* copy = result.copy(node);
                 if (copy == nullptr) {
                     throw std::runtime_error("could not copy node");
@@ -842,7 +845,6 @@ public:
                     throw std::runtime_error("could not link node");
                 }
             }
-
             return Derived(std::move(result));
         }
 
@@ -1085,11 +1087,14 @@ public:
             }
 
             /* Remove the node at the current position. */
-            inline Node* remove() { ++implicit_skip; return Base::remove(); }
+            inline Node* remove() {
+                ++implicit_skip;
+                return Base::remove();
+            }
 
             /* Copy constructor. */
             Iterator(const Iterator& other) :
-                Base(other), indices(other.indices),
+                Base(other), indices(other.indices), idx(other.idx),
                 length_override(other.length_override),
                 implicit_skip(other.implicit_skip)
             {}
@@ -1097,14 +1102,14 @@ public:
             /* Move constructor. */
             Iterator(Iterator&& other) :
                 Base(std::move(other)), indices(std::move(other.indices)),
-                length_override(other.length_override),
+                idx(other.idx), length_override(other.length_override),
                 implicit_skip(other.implicit_skip)
             {}
 
         protected:
             friend SliceProxy;
-            size_t idx;
             const SliceIndices& indices;
+            size_t idx;
             size_t length_override;
             size_t implicit_skip;
 
@@ -1119,8 +1124,8 @@ public:
                 const SliceIndices& indices,
                 size_t length_override
             ) :
-                Base(view), idx(0), indices(indices),
-                length_override(length_override), implicit_skip(0)
+                Base(view), indices(indices), idx(0), length_override(length_override),
+                implicit_skip(0)
             {
                 if constexpr (dir == Direction::backward) {
                     this->next = origin;
@@ -1147,7 +1152,7 @@ public:
 
             /* Get an iterator to terminate the slice. */
             Iterator(View& view, const SliceIndices& indices, size_t length_override) :
-                Base(view), idx(length_override), indices(indices),
+                Base(view), indices(indices), idx(length_override),
                 length_override(length_override), implicit_skip(0)
             {}
 
@@ -1191,7 +1196,11 @@ public:
         /* Construct a SliceProxy with at least one element. */
         SliceProxy(View& view, SliceIndices&& indices) :
             view(view), indices(indices), found(false), _origin(nullptr)
-        {}
+        {
+            // std::cout << "start: " << start() << ", stop: " << stop() << ", step: " << step() << std::endl;
+            // std::cout << "first: " << first() << ", last: " << last() << ", length: " << length() << std::endl;
+            // std::cout << "backward: " << backward() << ", inverted: " << inverted() << std::endl;
+        }
 
         /* Find and cache the origin node for the slice. */
         Node* origin() const {
