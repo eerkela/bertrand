@@ -4,6 +4,7 @@
 
 #include <cstddef>  // size_t
 #include <optional>  // std::optional
+#include <sstream>
 #include <stdexcept>  // std::invalid_argument
 #include <tuple>  // std::tuple
 #include <Python.h>  // CPython API
@@ -608,8 +609,6 @@ public:
     using Node = NodeType;
     using Allocator = AllocatorPolicy<Node>;
     using Iter = IteratorFactory<View>;
-    using Lock = BasicLock;  // TODO: move this to LinkedList
-    using Slice = SliceProxy<View>;  // TODO: move this to LinkedList
     inline static constexpr bool doubly_linked = has_prev<Node>::value;
 
     template <Direction dir>
@@ -617,6 +616,241 @@ public:
 
     template <Direction dir>
     using IteratorPair = typename Iter::template IteratorPair<dir>;
+
+
+
+    /* A custom allocator that uses a dynamic array to manage memory for each node. */
+    class ArrayAllocator {        
+    protected:
+        friend ListView;
+        Node* head;  // head of the list
+        Node* tail;  // tail of the list
+        size_t capacity;  // number of nodes in the array
+        size_t occupied;  // number of nodes currently in use
+        const bool frozen;  // indicates if the array is frozen at its current capacity
+        Node* array;  // dynamic array of nodes
+        std::pair<Node*, Node*> free_list;  // singly-linked list of open nodes
+
+        /* When we allocate new nodes, we fill the dynamic array from left to right.
+        If a node is removed from the middle of the array, then we add it to the free
+        list.  The next time a node is allocated, we check the free list and reuse a
+        node if possible.  Otherwise, we initialize a new node at the end of the
+        occupied section.  If this causes the array to exceed its capacity, then we
+        allocate a new array with twice the length and copy all nodes in the same order
+        as they appear in the list. */
+
+        /* Allocate a raw array of uninitialized nodes with the specified size. */
+        inline static Node* allocate_array(size_t capacity) {
+            Node* result = static_cast<Node*>(malloc(capacity * sizeof(Node)));
+            if (result == nullptr) {
+                throw std::bad_alloc();
+            }
+            return result;
+        }
+
+        /* Copy the contents of the list into a new array in list order. */
+        void resize(size_t new_capacity) {
+            Node* new_array = allocate_array(new_capacity);
+
+            // copy over existing nodes in correct list order (head -> tail)
+            Node* new_prev = nullptr;  // previous node in new array
+            Node* curr = head;  // current node in old array
+            for (size_t i = 0; i < occupied; i++) {
+                // move node into new array
+                Node* new_curr = &new_array[i];
+                new (new_curr) Node(std::move(curr));  // placement new
+
+                // link to previous node
+                Node::join(new_prev, new_curr);
+                new_prev = new_curr;
+                curr = static_cast<Node*>(curr->next);
+            }
+
+            // replace old array
+            free(array);  // does not call destructors
+            array = new_array;
+            capacity = new_capacity;
+            free_list.first = nullptr;  // clear free list
+            free_list.second = nullptr;
+
+            // update head/tail pointers
+            if (occupied == 0) {
+                head = nullptr;
+                tail = nullptr;
+            } else {
+                head = &array[0];
+                tail = &array[occupied - 1];
+            }
+        }
+
+    public:
+        static const size_t DEFAULT_CAPACITY = 8;
+
+        /* Create an allocator with an optional fixed size. */
+        ArrayAllocator(size_t capacity = DEFAULT_CAPACITY, const bool frozen = false) :
+            head(nullptr), tail(nullptr), capacity(capacity), occupied(0),
+            frozen(frozen), array(allocate_array(capacity)),
+            free_list(std::make_pair(nullptr, nullptr))
+        {
+            if constexpr (DEBUG) {
+                printf("    -> preallocate: %zu nodes\n", capacity);
+            }
+        }
+
+        /* Copy constructor. */
+        ArrayAllocator(const ArrayAllocator& other) :
+            head(nullptr), tail(nullptr), capacity(other.capacity),
+            occupied(other.occupied), frozen(other.frozen),
+            array(allocate_array(capacity)),
+            free_list(std::make_pair(nullptr, nullptr))
+        {
+            if constexpr (DEBUG) {
+                printf("    -> preallocate: %zu nodes\n", capacity);
+            }
+
+            // copy over existing nodes in correct list order (head -> tail)
+            if (occupied != 0) {
+                Node* new_prev = nullptr;  // previous node in new array
+                Node* curr = other.head;  // current node in old array
+                for (size_t i = 0; i < occupied; i++) {
+                    // move node into new array
+                    Node* new_curr = &array[i];
+                    new (new_curr) Node(*curr);  // placement new
+
+                    // link to previous node
+                    Node::join(new_prev, new_curr);
+                    new_prev = new_curr;
+                    curr = static_cast<Node*>(curr->next);
+                }
+
+                // update head/tail pointers
+                head = &array[0];
+                tail = &array[occupied - 1];
+            }
+        }
+
+        /* Move constructor. */
+        ArrayAllocator(ArrayAllocator&& other) noexcept :
+            head(other.head), tail(other.tail), capacity(other.capacity),
+            occupied(other.occupied), frozen(other.frozen), array(other.array),
+            free_list(other.free_list)
+        {
+            // reset other allocator
+            other.head = nullptr;
+            other.tail = nullptr;
+            other.capacity = 0;
+            other.occupied = 0;
+            other.frozen = false;
+            other.array = nullptr;
+            other.free_list.first = nullptr;
+            other.free_list.second = nullptr;
+        }
+
+        /* Release the allocated nodes. */
+        ~ArrayAllocator() {
+            if constexpr (DEBUG) {
+                printf("    -> deallocate: %zu nodes\n", capacity);
+            }
+            free(array);  // does not call destructors
+        }
+
+        /* Construct a new node for the list. */
+        template <typename... Args>
+        Node* create(Args... args) {
+            // check free list
+            if (free_list.first != nullptr) {
+                Node* node = free_list.first;
+                Node* temp = static_cast<Node*>(node->next);
+                try {
+                    new (node) Node(std::forward<Args>(args)...);  // placement new
+                } catch (...) {
+                    node->next = temp;  // restore free list
+                    throw;  // propagate
+                }
+                free_list.first = temp;
+                if (temp == nullptr) {
+                    free_list.second = nullptr;
+                }
+                if constexpr (DEBUG) {
+                    printf("    -> create: %s\n", repr(node->value));
+                }
+                ++occupied;
+                return node;
+            }
+
+            // check if we need to grow the array
+            if (occupied == capacity) {
+                if (frozen) {
+                    std::ostringstream msg;
+                    msg << "array cannot grow beyond size " << capacity;
+                    throw std::runtime_error(msg.str());
+                }
+                resize(capacity * 2);
+            }
+
+            // append to end of allocated section
+            Node* node = &array[occupied++];
+            new (node) Node(std::forward<Args>(args)...);  // placement new
+            if constexpr (DEBUG) {
+                printf("    -> create: %s\n", repr(node->value));
+            }
+            return node;
+        }
+
+        /* Release a node from the list. */
+        void recycle(Node* node) {
+            if constexpr (DEBUG) {
+                printf("    -> recycle: %s\n", repr(node->value));
+            }
+
+            // manually call destructor
+            node->~Node();
+
+            // check if we need to shrink the array
+            if (!frozen && capacity != DEFAULT_CAPACITY && occupied == capacity / 4) {
+                resize(capacity / 2);
+            } else {
+                if (free_list.first == nullptr) {
+                    free_list.first = node;
+                    free_list.second = node;
+                } else {
+                    free_list.second->next = node;
+                    free_list.second = node;
+                }
+            }
+            --occupied;
+        }
+
+        /* Consolidate the nodes within the array, arranging them in the same order as
+        they appear within the list. */
+        inline void consolidate() {
+            resize(capacity);  // in-place resize
+        }
+
+        /* Check whether the referenced node is being managed by this allocator. */
+        inline bool owns(Node* node) const {
+            return node >= array && node < array + capacity;  // pointer arithmetic
+        }
+
+    };
+
+
+    // TODO: view.size() should get the private view.occupied field.
+
+    // TODO: nbytes() should do the calculation internally.
+
+    // /* Get the overall memory usage of the allocator. */
+    // inline size_t nbytes() const { return sizeof(*this) + capacity * sizeof(Node); }
+
+
+    // TODO: head/tail should be tracked in the allocator itself?
+    // -> this would require us to expose head() and tail() methods on the view, but
+    // would avoid the need to provide a view to the allocator and remove a reference.
+
+
+    // TODO: we could probably bake the specialization into the allocator.create()
+    // method.
+
 
     Node* head;
     Node* tail;
@@ -736,25 +970,6 @@ public:
             Py_DECREF(specialization);
         };
     }
-
-    ////////////////////////////////
-    ////    LOW-LEVEL ACCESS    ////
-    ////////////////////////////////
-
-    // NOTE: these methods allow for the direct manipulation of the underlying linked
-    // list, including the allocation/deallocation and links between individual nodes.
-    // They are quite user friendly given their low-level nature, but users should
-    // still be careful to avoid accidental memory leaks and segfaults.
-
-    // TODO: node() should be able to accept other nodes as input, in which case we
-    // call Node::init_copy() instead of Node::init().  This would allow us to eliminate
-    // the node copy() overload.
-
-    // -> or perhaps Node::init() can be overloaded to accept either a node or
-    // PyObject*.
-
-    // TODO: we could probably just use normal constructors and placement new instead
-    // of using separate init() methods.  This could give nodes copy/move semantics
 
     /* Construct a new node for the list. */
     template <typename... Args>
