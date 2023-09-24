@@ -30,12 +30,16 @@ cdef extern from "list_cython.h":
             void delete "del" () except +*  # del() shadows Cython `delete` keyword
 
         # constructors
-        VariantList(bint doubly_linked, Py_ssize_t max_size, PyObject* spec) except +
+        VariantList(
+            bint doubly_linked,
+            optional[size_t] max_size,
+            PyObject* spec
+        ) except +
         VariantList(
             PyObject* iterable,
             bint doubly_linked,
             bint reverse,
-            Py_ssize_t max_size,
+            optional[size_t] max_size,
             PyObject* spec
         ) except +
 

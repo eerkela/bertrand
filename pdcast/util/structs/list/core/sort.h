@@ -24,13 +24,10 @@ class SortFunc {
 private:
 
     /* Apply a key function to a list, decorating it with the computed result. */
-    template <typename Node, template <typename> class Allocator>
-    static ListView<Keyed<Node>, FixedAllocator> decorate(
-        ListView<Node, Allocator>& view,
-        PyObject* key
-    ) {
+    template <typename Node>
+    static ListView<Keyed<Node>> decorate(ListView<Node>& view, PyObject* key) {
         // initialize an empty ListView to hold the decorated list
-        ListView<Keyed<Node>, FixedAllocator> decorated(view.size, nullptr);
+        ListView<Keyed<Node>> decorated(view.size(), nullptr);
 
         // decorate each node in list with precomputed key
         for (Node* node : view) {
@@ -47,18 +44,15 @@ private:
             }
 
             // link the keyed node to the decorated list
-            decorated.link(decorated.tail, keyed, nullptr);
+            decorated.link(decorated.tail(), keyed, nullptr);
         }
 
         return decorated;
     }
 
     /* Rearrange the underlying list in-place to reflect changes from a keyed sort. */
-    template <typename Node, template <typename> class Allocator>
-    static void undecorate(
-        ListView<Keyed<Node>, FixedAllocator>& decorated,
-        ListView<Node, Allocator>& view
-    ) {
+    template <typename Node>
+    static void undecorate(ListView<Keyed<Node>>& decorated, ListView<Node>& view) {
         Node* new_head = nullptr;
         Node* new_tail = nullptr;
 
@@ -79,13 +73,13 @@ private:
         }
 
         // update head/tail of sorted list
-        view.head = new_head;
-        view.tail = new_tail;
+        view.head(new_head);
+        view.tail(new_tail);
     }
 
     /* Execute the sorting algorithm. */
-    template <typename Node, template <typename> class Allocator>
-    static void execute(ListView<Node, Allocator>& view, PyObject* key, bool reverse) {
+    template <typename Node>
+    static void execute(ListView<Node>& view, PyObject* key, bool reverse) {
         // if no key function is given, sort the list in-place
         if (key == nullptr) {
             SortPolicy::sort(view, reverse);
@@ -93,7 +87,7 @@ private:
         }
 
         // apply key function to each node in list
-        ListView<Keyed<Node>, FixedAllocator> decorated = decorate(view, key);
+        ListView<Keyed<Node>> decorated = decorate(view, key);
 
         // sort decorated list
         SortPolicy::sort(decorated, reverse);
@@ -108,17 +102,13 @@ private:
 public:
 
     /* Invoke the functor, decorating and sorting the view in-place. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename Node,
-        template <typename> class Allocator
-    >
-    static void sort(ViewType<Node, Allocator>& view, PyObject* key, bool reverse) {
-        using View = ViewType<Node, Allocator>;
-        using List = ListView<Node, Allocator>;
+    template <template <typename> class ViewType, typename Node>
+    static void sort(ViewType<Node>& view, PyObject* key, bool reverse) {
+        using View = ViewType<Node>;
+        using List = ListView<Node>;
 
         // trivial case: empty view
-        if (view.size == 0) {
+        if (view.size() == 0) {
             return;
         }
 
@@ -128,20 +118,25 @@ public:
             return;
         }
 
+        // TODO: we might just move the view into a ListView, but that would
+        // require a converting move constructor, which is a bit of a pain.  It might
+        // be what we need to do, though.
+
+
         // otherwise, we create a temporary ListView into the view and sort that
         // instead.
-        List list_view(view.max_size);
-        list_view.head = view.head;
-        list_view.tail = view.tail;
-        list_view.size = view.size;
+        List list_view(view.size());  // preallocated to current size
+        list_view.head(view.head());
+        list_view.tail(view.tail());
+        // list_view.size = view.size();  // TODO: size is now private to allocator
 
         // sort the viewed list in place
         execute(list_view, key, reverse);
 
         // free the temporary ListView
-        list_view.head = nullptr;  // avoids calling destructor on nodes
-        list_view.tail = nullptr;
-        list_view.size = 0;
+        list_view.head(nullptr);  // avoids calling destructor on nodes
+        list_view.tail(nullptr);
+        // list_view.size = 0;
     }
 
 };
@@ -247,8 +242,8 @@ protected:
 public:
 
     /* Sort a linked list in-place using an iterative merge sort algorithm. */
-    template <typename Node, template <typename> class Allocator>
-    static void sort(ListView<Node, Allocator>& view, bool reverse) {
+    template <typename Node>
+    static void sort(ListView<Node>& view, bool reverse) {
         // NOTE: we need a temporary node to act as the head of the merged sublists.
         // If we allocate it here, we can pass it to `merge()` as an argument and
         // reuse it for every sublist.  This avoids an extra malloc/free cycle in
@@ -268,7 +263,7 @@ public:
         // those that have already been sorted.  The `left`, `right`, and `merged`
         // pairs are used to keep track of the sublists that are used in each
         // iteration of the merge loop.
-        std::pair<Node*, Node*> unsorted = std::make_pair(view.head, view.tail);
+        std::pair<Node*, Node*> unsorted = std::make_pair(view.head(), view.tail());
         std::pair<Node*, Node*> sorted = std::make_pair(nullptr, nullptr);
         std::pair<Node*, Node*> left = std::make_pair(nullptr, nullptr);
         std::pair<Node*, Node*> right = std::make_pair(nullptr, nullptr);
@@ -279,7 +274,7 @@ public:
         //  2) merge adjacent sublists into sorted mixtures with twice the length
         //  3) repeat step 2 until the entire list is sorted
         size_t length = 1;  // length of sublists for current iteration
-        while (length <= view.size) {
+        while (length <= view.size()) {
             // reset head and tail of sorted list
             sorted.first = nullptr;
             sorted.second = nullptr;
@@ -308,8 +303,8 @@ public:
                 } catch (...) {
                     // undo the splits to recover a coherent list
                     merged = recover(sorted, left, right, unsorted);
-                    view.head = merged.first;  // view is partially sorted, but valid
-                    view.tail = merged.second;
+                    view.head(merged.first);  // view is partially sorted, but valid
+                    view.tail(merged.second);
                     if constexpr (DEBUG) {
                         printf("    -> free: temp node\n");
                     }
@@ -339,8 +334,8 @@ public:
         free(temp);
 
         // update view parameters in-place
-        view.head = sorted.first;
-        view.tail = sorted.second;
+        view.head(sorted.first);
+        view.tail(sorted.second);
     }
 
 };

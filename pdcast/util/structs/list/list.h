@@ -4,18 +4,12 @@
 
 // TODO: additional includes as necessary
 
+#include "core/util.h"
 #include "core/view.h"
 #include "core/sort.h"
 
 #include <sstream>  // std::ostringstream
 #include <stack>  // std::stack
-
-
-#include <iostream>  // std::cout, std::endl
-
-
-// TODO: should migrate over to using C++ exceptions instead of Python exceptions
-// or std::optional.  This will be more consistent with constructor/operator errors.
 
 
 ////////////////////////////
@@ -35,22 +29,22 @@ public:
 
     /* Check if the list contains any elements. */
     inline bool empty() const {
-        return view.size == 0;
+        return view.size() == 0;
     }
 
     /* Get the current size of the list. */
     inline size_t size() const {
-        return view.size;
+        return view.size();
     }
 
     /* Get the maximum size of the list. */
-    inline long long max_size() const {
-        return view.max_size;
+    inline std::optional<size_t> max_size() const {
+        return view.max_size();
     }
 
     /* Get the current specialization for elements of this list. */
     inline PyObject* specialization() const {
-        return view.specialization;  // TODO: reference counting?
+        return view.specialization();  // TODO: reference counting?
     }
 
     /* Enforce strict type checking for elements of the list. */
@@ -122,10 +116,7 @@ public:
             // create Python iterator over list
             Iter* iter = Iter::create(begin(), end());
             if (iter == nullptr) {
-                PyErr_SetString(
-                    PyExc_RuntimeError, "could not create iterator instance"
-                );
-                return nullptr;
+                throw std::runtime_error("could not create iterator instance");
             }
 
             // return as PyObject*
@@ -139,10 +130,7 @@ public:
             // create Python iterator over list
             Iter* iter = Iter::create(rbegin(), rend());
             if (iter == nullptr) {
-                PyErr_SetString(
-                    PyExc_RuntimeError, "could not create iterator instance"
-                );
-                return nullptr;
+                throw std::runtime_error("could not create iterator instance");
             }
 
             // return as PyObject*
@@ -217,18 +205,18 @@ public:
 
 protected:
 
-    // TODO: max_size should be std::optional<size_t> = std::nullopt
-
     /* Construct an empty list. */
-    LinkedBase(long long max_size = -1, PyObject* spec = nullptr) :
-        view(max_size, spec), iter(*this)
+    LinkedBase(
+        std::optional<size_t> max_size = std::nullopt,
+        PyObject* spec = nullptr
+    ) : view(max_size, spec), iter(*this)
     {}
 
     /* Construct a list from an input iterable. */
     LinkedBase(
         PyObject* iterable,
         bool reverse = false,
-        long long max_size = -1,
+        std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr
     ) : view(iterable, reverse, max_size, spec), iter(*this)
     {}
@@ -268,9 +256,6 @@ protected:
 ////////////////////////////
 
 
-// TODO: sort() seems to not correctly update head/tail pointers
-
-
 /* A mixin that implements the full Python list interface. */
 template <typename Derived, typename ViewType, typename SortPolicy>
 class ListInterface_ {
@@ -291,72 +276,47 @@ public:
     class SliceProxy;
 
     /* Append an item to the end of a list. */
-    void append(PyObject* item, const bool left = false) {
+    inline void append(PyObject* item, bool left = false) {
         View& view = self().view;
-
-        // allocate a new node
-        Node* node = view.node(item);
-        if (node == nullptr) {
-            return;  // propagate error
-        }
-
-        // link to beginning/end of list
+        Node* node = view.node(item);  // allocate a new node
         if (left) {
-            view.link(nullptr, node, view.head);
+            view.link(nullptr, node, view.head());
         } else {
-            view.link(view.tail, node, nullptr);
-        }
-        if (PyErr_Occurred()) {
-            view.recycle(node);  // clean up allocated node
+            view.link(view.tail(), node, nullptr);
         }
     }
 
     /* Insert an item into a list at the specified index. */
     template <typename T>
-    void insert(T index, PyObject* item) {
+    inline void insert(T index, PyObject* item) {
         (*this)[index].insert(item);
     }
 
     /* Extend a list by appending elements from the iterable. */
-    void extend(PyObject* items, const bool left = false) {
+    void extend(PyObject* items, bool left = false) {
         View& view = self().view;
 
         // note original head/tail in case of error
         Node* original;
         if (left) {
-            original = view.head;
+            original = view.head();
         } else {
-            original = view.tail;
+            original = view.tail();
         }
 
         // proceed with extend
         try {
             PyIterable sequence(items);
             for (PyObject* item : sequence) {
-                // allocate a new node
-                Node* node = view.node(item);
-                if (node == nullptr) {
-                    throw std::invalid_argument("could not allocate node");
-                }
-
-                // link to beginning/end of list
-                if (left) {
-                    view.link(nullptr, node, view.head);
-                } else {
-                    view.link(view.tail, node, nullptr);
-                }
-                if (PyErr_Occurred()) {
-                    view.recycle(node);  // clean up allocated node
-                    throw std::invalid_argument("could not link node");
-                }
+                append(item, left);
             }
-        } catch (std::invalid_argument&) {
-            // NOTE: this branch can also be triggered if the iterator raises an
-            // exception during `iter()` or `next()`.
+
+        // if an error occurs, clean up any nodes that were added to the list
+        } catch (...) {
             if (left) {
-                // if we added nodes to the left, then we just remove until we reach
-                // the original head
-                Node* curr = view.head;
+                // if we appended to the left, then just remove until we reach the
+                // original head
+                Node* curr = view.head();
                 while (curr != original) {
                     Node* next = static_cast<Node*>(curr->next);
                     view.unlink(nullptr, curr, curr->next);
@@ -364,7 +324,7 @@ public:
                     curr = next;
                 }
             } else {
-                // otherwise, we start from the original tail and remove until we reach
+                // otherwise, start from the original tail and remove until we reach
                 // the end of the list
                 Node* curr = static_cast<Node*>(original->next);
                 while (curr != nullptr) {
@@ -374,7 +334,7 @@ public:
                     curr = next;
                 }
             }
-            return;  // propagate Python error
+            throw;  // propagate error
         }
     }
 
@@ -384,7 +344,7 @@ public:
         const View& view = self().view;
 
         // trivial case: empty list
-        if (view.size == 0) {
+        if (view.size() == 0) {
             std::ostringstream msg;
             msg << repr(item) << " is not in list";
             throw std::invalid_argument(msg.str());
@@ -402,10 +362,10 @@ public:
         // if list is doubly-linked and stop is closer to tail than start is to head,
         // then we iterate backward from the tail
         if constexpr (doubly_linked) {
-            if ((view.size - 1 - norm_stop) < norm_start) {
+            if ((view.size() - 1 - norm_stop) < norm_start) {
                 // get backwards iterator to stop index
                 auto iter = view.rbegin();
-                size_t idx = view.size - 1;
+                size_t idx = view.size() - 1;
                 while (idx >= norm_stop) {
                     ++iter;
                     --idx;
@@ -417,7 +377,7 @@ public:
                 while (idx >= norm_start) {
                     int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
                     if (comp == -1) {
-                        throw std::runtime_error("could not compare item");
+                        throw catch_python<type_error>();
                     } else if (comp == 1) {
                         found = true;
                         last_observed = idx;
@@ -428,6 +388,8 @@ public:
                 if (found) {
                     return last_observed;
                 }
+
+                // item not found
                 std::ostringstream msg;
                 msg << repr(item) << " is not in list";
                 throw std::invalid_argument(msg.str());
@@ -446,13 +408,15 @@ public:
         while (idx < norm_stop) {
             int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
             if (comp == -1) {
-                throw std::runtime_error("could not compare item");
+                throw catch_python<type_error>();
             } else if (comp == 1) {
                 return idx;
             }
             ++iter;
             ++idx;
         }
+
+        // item not found
         std::ostringstream msg;
         msg << repr(item) << " is not in list";
         throw std::invalid_argument(msg.str());
@@ -464,7 +428,7 @@ public:
         const View& view = self().view;
 
         // trivial case: empty list
-        if (view.size == 0) {
+        if (view.size() == 0) {
             return 0;
         }
 
@@ -480,10 +444,10 @@ public:
         // if list is doubly-linked and stop is closer to tail than start is to head,
         // then we iterate backward from the tail
         if constexpr (doubly_linked) {
-            if ((view.size - 1 - norm_stop) < norm_start) {
+            if ((view.size() - 1 - norm_stop) < norm_start) {
                 // get backwards iterator to stop index
                 auto iter = view.iter.reverse();
-                size_t idx = view.size - 1;
+                size_t idx = view.size() - 1;
                 while (idx > norm_stop) {
                     ++iter;
                     --idx;
@@ -494,7 +458,7 @@ public:
                 while (idx >= norm_start) {
                     int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
                     if (comp == -1) {
-                        throw std::runtime_error("could not compare item");
+                        throw catch_python<type_error>();
                     } else if (comp == 1) {
                         ++count;
                     }
@@ -506,7 +470,7 @@ public:
         }
 
         // otherwise, we iterate forward from the head
-        auto iter = view.iter();
+        auto iter = view.begin();
         size_t idx = 0;
         while (idx < norm_start) {
             ++iter;
@@ -518,7 +482,7 @@ public:
         while (idx < norm_stop) {
             int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
             if (comp == -1) {
-                throw std::runtime_error("could not compare item");
+                throw catch_python<type_error>();
             } else if (comp == 1) {
                 ++count;
             }
@@ -536,7 +500,7 @@ public:
             // C API equivalent of the == operator
             int comp = PyObject_RichCompareBool(node->value, item, Py_EQ);
             if (comp == -1) {  // == comparison raised an exception
-                throw std::runtime_error("could not compare item");
+                throw catch_python<type_error>();
             } else if (comp == 1) {  // found a match
                 return true;
             }
@@ -555,7 +519,7 @@ public:
             // C API equivalent of the == operator
             int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
             if (comp == -1) {  // == comparison raised an exception
-                return;  // propagate error
+                throw catch_python<type_error>();
             } else if (comp == 1) {  // found a match
                 view.recycle(iter.remove());
                 return;
@@ -563,7 +527,9 @@ public:
         }
 
         // item not found
-        PyErr_Format(PyExc_ValueError, "%R is not in list", item);        
+        std::ostringstream msg;
+        msg << repr(item) << " is not in list";
+        throw std::invalid_argument(msg.str());     
     }
 
     /* Remove an item from a list and return its value. */
@@ -578,12 +544,8 @@ public:
     }
 
     /* Return a shallow copy of the list. */
-    std::optional<Derived> copy() const {
-        std::optional<View> view = self().view.copy();
-        if (!view.has_value()) {
-            return std::nullopt;  // propagate error
-        }
-        return std::make_optional(Derived(std::move(view.value())));
+    Derived copy() const {
+        return Derived(self().view.copy());
     }
 
     /* Sort a list in-place. */
@@ -596,7 +558,7 @@ public:
         View& view = self().view;
 
         // save original `head` pointer
-        Node* head = view.head;
+        Node* head = view.head();
         Node* curr = head;
         
         if constexpr (doubly_linked) {
@@ -619,8 +581,8 @@ public:
         }
 
         // swap `head`/`tail` pointers
-        view.head = view.tail;
-        view.tail = head;
+        view.head(view.tail());
+        view.tail(head);
     }
 
     /* Rotate a list to the right by the specified number of steps. */
@@ -628,7 +590,7 @@ public:
         View& view = self().view;
 
         // normalize steps
-        size_t norm_steps = llabs(steps) % view.size;
+        size_t norm_steps = llabs(steps) % view.size();
         if (norm_steps == 0) {
             return;  // rotated list is identical to original
         }
@@ -639,7 +601,7 @@ public:
         if (rotate_left) {  // count from head
             index = norm_steps;
         } else {  // count from tail
-            index = view.size - norm_steps;
+            index = view.size() - norm_steps;
         }
 
         Node* new_head;
@@ -649,26 +611,26 @@ public:
         if constexpr (doubly_linked) {
             // NOTE: if the list is doubly-linked, then we can iterate in either
             // direction to find the junction point.
-            if (index > view.size / 2) {  // backward traversal
-                new_head = view.tail;
-                for (size_t i = view.size - 1; i > index; i--) {
+            if (index > view.size() / 2) {  // backward traversal
+                new_head = view.tail();
+                for (size_t i = view.size() - 1; i > index; i--) {
                     new_head = static_cast<Node*>(new_head->prev);
                 }
                 new_tail = static_cast<Node*>(new_head->prev);
 
-                // split list at junction and join previous head/tail
+                // join previous head/tail and split at new junction 
+                Node::join(view.tail(), view.head());
                 Node::split(new_tail, new_head);
-                Node::join(view.tail, view.head);
 
                 // update head/tail pointers
-                view.head = new_head;
-                view.tail = new_tail;
+                view.head(new_head);
+                view.tail(new_tail);
                 return;
             }
         }
 
         // forward traversal
-        new_tail = view.head;
+        new_tail = view.head();
         for (size_t i = 1; i < index; i++) {
             new_tail = static_cast<Node*>(new_tail->next);
         }
@@ -676,11 +638,11 @@ public:
 
         // split at junction and join previous head/tail
         Node::split(new_tail, new_head);
-        Node::join(view.tail, view.head);
+        Node::join(view.tail(), view.head());
 
         // update head/tail pointers
-        view.head = new_head;
-        view.tail = new_tail;
+        view.head(new_head);
+        view.tail(new_tail);
     }
 
     /* Get a proxy for a value at a particular index of the list. */
@@ -692,9 +654,10 @@ public:
         // get iterator to index
         View& view = self().view;
         if constexpr (doubly_linked) {
-            if (norm_index > (view.size - (view.size > 0)) / 2) {  // backward traversal
+            size_t threshold = (view.size() - (view.size() > 0)) / 2;
+            if (norm_index > threshold) {  // backward traversal
                 ViewIter<Direction::backward> iter = view.rbegin();
-                for (size_t i = view.size - 1; i > norm_index; --i) {
+                for (size_t i = view.size() - 1; i > norm_index; --i) {
                     ++iter;
                 }
                 return ElementProxy(view, iter);
@@ -725,10 +688,6 @@ public:
     class ElementProxy {
     public:
 
-        //////////////////////
-        ////    PUBLIC    ////
-        //////////////////////
-
         /* Get the value at the current index. */
         inline ValueType& get() const {
             return (*iter)->value;
@@ -737,25 +696,13 @@ public:
         /* Set the value at the current index. */
         inline void set(const ValueType& value) {
             Node* node = view.node(value);
-            if (node == nullptr) {
-                return;  // propagate error
-            }
             iter.replace(node);
         }
 
         /* Insert a value at the current index. */
         inline void insert(const ValueType& value) {
-            // allocate a new node
             Node* node = view.node(value);
-            if (node == nullptr) {
-                return;  // propagate error
-            }
-
-            // insert node at current index
             iter.insert(node);
-            if (PyErr_Occurred()) {
-                view.recycle(node);  // clean up allocated node
-            }
         }
 
         /* Delete the value at the current index. */
@@ -771,10 +718,6 @@ public:
             view.recycle(node);
             return result;
         }
-
-        /////////////////////////////
-        ////    PROXY PATTERN    ////
-        /////////////////////////////
 
         /* Implicitly convert the proxy to the value where applicable.
 
@@ -816,11 +759,11 @@ public:
         /* Extract a slice from a linked list. */
         Derived get() const {
             // allocate a new list to hold the slice
-            Py_ssize_t max_size = view.max_size; 
-            if (max_size >= 0) {
-                max_size = static_cast<Py_ssize_t>(length());
+            std::optional<size_t> max_size = view.max_size(); 
+            if (max_size.has_value()) {
+                max_size = static_cast<size_t>(length());  // adjust to slice length
             }
-            View result(max_size, view.specialization);
+            View result(max_size, view.specialization());
 
             // if slice is empty, return empty view
             if (empty()) {
@@ -829,20 +772,11 @@ public:
 
             // copy nodes from original view into result
             for (Node* node : *this) {
-                Node* copy = result.copy(node);
-                if (copy == nullptr) {
-                    throw std::runtime_error("could not copy node");
-                }
-
-                // link to slice
+                Node* copy = result.node(node);
                 if (inverted()) {
-                    result.link(nullptr, copy, result.head);
+                    result.link(nullptr, copy, result.head());
                 } else {
-                    result.link(result.tail, copy, nullptr);
-                }
-                if (PyErr_Occurred()) {
-                    result.recycle(copy);  // clean up staged node
-                    throw std::runtime_error("could not link node");
+                    result.link(result.tail(), copy, nullptr);
                 }
             }
             return Derived(std::move(result));
@@ -851,93 +785,98 @@ public:
         /* Replace a slice within a linked list. */
         void set(PyObject* items) {
             // unpack iterable into reversible sequence
-            PyObject* sequence = PySequence_Fast(items, "can only assign an iterable");
-            if (sequence == nullptr) {
-                return;  // propagate TypeError: can only assign an iterable
-            }
+            PySequence sequence(items, "can only assign an iterable");
 
-            // check for no-op
-            size_t seq_length = static_cast<size_t>(PySequence_Fast_GET_SIZE(sequence));
-            if (empty() && seq_length == 0) {
-                Py_DECREF(sequence);
+            // trvial case: both slice and sequence are empty
+            if (empty() && sequence.size() == 0) {
                 return;
             }
 
             // check slice length matches sequence length
-            if (length() != seq_length && step() != 1) {
+            if (length() != sequence.size() && step() != 1) {
                 // NOTE: Python allows forced insertion if and only if the step size is 1
-                PyErr_Format(
-                    PyExc_ValueError,
-                    "attempt to assign sequence of size %zu to extended slice of size %zu",
-                    seq_length,
-                    length()
-                );
-                Py_DECREF(sequence);
-                return;
+                std::ostringstream msg;
+                msg << "attempt to assign sequence of size " << sequence.size();
+                msg << " to extended slice of size " << length();
+                throw std::invalid_argument(msg.str());
             }
+
+            // helper struct to undo changes in case of error
+            struct RecoveryArray {
+                Node* nodes;
+                size_t length;
+
+                RecoveryArray(size_t length) : length(length) {
+                    nodes = static_cast<Node*>(malloc(sizeof(Node) * length));
+                    if (nodes == nullptr) {
+                        throw std::bad_alloc();
+                    }
+                }
+
+                ~RecoveryArray() { free(nodes); }
+
+                Node& operator[](size_t index) { return nodes[index]; }
+            };
 
             // allocate recovery array
             RecoveryArray recovery(length());
-            if (PyErr_Occurred()) {  // error during array allocation
-                Py_DECREF(sequence);
-                return;
-            }
 
             // loop 1: remove current nodes in slice
             for (auto iter = this->iter(); iter != iter.end(); ++iter) {
                 Node* node = iter.remove();  // remove node from list
-                Node::init_copy(&recovery[iter.index()], node);  // copy to recovery array
+                new (&recovery[iter.index()]) Node(*node);  // copy into recovery array
                 view.recycle(node);  // recycle original node
             }
 
             // loop 2: insert new nodes from sequence into vacated slice
-            for (auto iter = this->iter(seq_length); iter != iter.end(); ++iter) {
-                // NOTE: PySequence_Fast_GET_ITEM() returns a borrowed reference (no
-                // DECREF required)
+            for (auto iter = this->iter(sequence.size()); iter != iter.end(); ++iter) {
                 PyObject* item;
-                if (inverted()) {  // count from the back
-                    size_t idx = seq_length - 1 - iter.index();
-                    item = PySequence_Fast_GET_ITEM(sequence, idx);
-                } else {  // count from the front
-                    item = PySequence_Fast_GET_ITEM(sequence, iter.index());
+                if (inverted()) {  // count from back
+                    item = sequence[sequence.size() - 1 - iter.index()];
+                } else {  // count from front
+                    item = sequence[iter.index()];
                 }
 
-                // allocate a new node for the item
-                Node* new_node = view.node(item);
-                if (new_node == nullptr) {
-                    undo_set_slice(recovery, iter.index());
-                    Py_DECREF(sequence);
-                    return;
-                }
+                // allocate a new node for the list
+                try {
+                    Node* node = view.node(item);
+                    iter.insert(node);
 
-                // insert node into slice at current index
-                iter.insert(new_node);
-                if (PyErr_Occurred()) {
-                    view.recycle(new_node);
-                    undo_set_slice(recovery, iter.index());
-                    Py_DECREF(sequence);
-                    return;
+                // rewind if an error occurs
+                } catch (...) {
+                    // loop 3: remove nodes that have already been added to list
+                    for (auto i = this->iter(iter.index()); i != i.end(); ++i) {
+                        Node* node = i.remove();  // remove from list
+                        view.recycle(node);
+                    }
+
+                    // loop 4: reinsert original nodes from recovery array
+                    for (auto i = this->iter(); i != i.end(); ++i) {
+                        Node* recovery_node = &recovery[i.index()];
+                        i.insert(view.node(recovery_node));  // copy into list
+                        recovery_node->~Node();  // destroy recovery node
+                    }
+
+                    throw;  // propagate
                 }
             }
 
             // loop 3: deallocate removed nodes
             for (size_t i = 0; i < length(); i++) {
-                Node::teardown(&recovery[i]);
+                (&recovery[i])->~Node();  // release recovery node
             }
-
-            Py_DECREF(sequence);
         }
 
         /* Delete a slice within a linked list. */
         void del() {
-            // check for no-op
+            // trivial case: slice is empty
             if (empty()) {
                 return;
             }
 
             // recycle every node in slice
             for (auto iter = this->iter(); iter != iter.end(); ++iter) {
-                Node* node = iter.remove();
+                Node* node = iter.remove();  // remove from list
                 view.recycle(node);
             }
         }
@@ -1123,14 +1062,13 @@ public:
                 Node* origin,
                 const SliceIndices& indices,
                 size_t length_override
-            ) :
-                Base(view), indices(indices), idx(0), length_override(length_override),
+            ) : Base(view), indices(indices), idx(0), length_override(length_override),
                 implicit_skip(0)
             {
                 if constexpr (dir == Direction::backward) {
                     this->next = origin;
                     if (this->next == nullptr) {
-                        this->curr = this->view.tail;
+                        this->curr = this->view.tail();
                     } else {
                         this->curr = static_cast<Node*>(this->next->prev);
                     }
@@ -1140,7 +1078,7 @@ public:
                 } else {
                     this->prev = origin;
                     if (this->prev == nullptr) {
-                        this->curr = this->view.head;
+                        this->curr = this->view.head();
                     } else {
                         this->curr = static_cast<Node*>(this->prev->next);
                     }
@@ -1165,42 +1103,10 @@ public:
         mutable bool found;  // indicates whether we've cached the origin node
         mutable Node* _origin;  // node that immediately precedes slice (can be NULL)
 
-        /* A raw, contiguous memory block that nodes can be copied into and out of in case
-        of an error. */
-        struct RecoveryArray {
-            Node* nodes;
-            size_t length;
-
-            /* Allocate a contiguous array of nodes. */
-            RecoveryArray(size_t length) : length(length) {
-                nodes = static_cast<Node*>(malloc(sizeof(Node) * length));
-                if (nodes == nullptr) {
-                    throw std::bad_alloc();
-                }
-            }
-
-            /* Tear down all nodes and free the recovery array. */
-            ~RecoveryArray() {
-                if (nodes != nullptr) {
-                    free(nodes);
-                }
-            }
-
-            /* Index the array to access a particular node. */
-            Node& operator[](size_t index) {
-                return nodes[index];
-            }
-
-        };
-
         /* Construct a SliceProxy with at least one element. */
         SliceProxy(View& view, SliceIndices&& indices) :
             view(view), indices(indices), found(false), _origin(nullptr)
-        {
-            // std::cout << "start: " << start() << ", stop: " << stop() << ", step: " << step() << std::endl;
-            // std::cout << "first: " << first() << ", last: " << last() << ", length: " << length() << std::endl;
-            // std::cout << "backward: " << backward() << ", inverted: " << inverted() << std::endl;
-        }
+        {}
 
         /* Find and cache the origin node for the slice. */
         Node* origin() const {
@@ -1212,8 +1118,8 @@ public:
             if constexpr (doubly_linked) {
                 if (backward()) {  // backward traversal
                     Node* next = nullptr;
-                    Node* curr = view.tail;
-                    for (size_t i = view.size - 1; i > first(); i--) {
+                    Node* curr = view.tail();
+                    for (size_t i = view.size() - 1; i > first(); i--) {
                         next = curr;
                         curr = static_cast<Node*>(curr->prev);
                     }
@@ -1225,7 +1131,7 @@ public:
 
             // forward traversal
             Node* prev = nullptr;
-            Node* curr = view.head;
+            Node* curr = view.head();
             for (size_t i = 0; i < first(); i++) {
                 prev = curr;
                 curr = static_cast<Node*>(curr->next);
@@ -1233,22 +1139,6 @@ public:
             found = true;
             _origin = prev;
             return _origin;
-        }
-
-        /* Undo a call to Slice::replace() in the event of an error. */
-        void undo_set_slice(RecoveryArray& recovery, size_t n_staged) {
-            // loop 3: remove nodes that have already been added to slice
-            for (auto iter = this->iter(n_staged); iter != iter.end(); ++iter) {
-                Node* node = iter.remove();  // remove node from list
-                view.recycle(node);  // return node to allocator
-            }
-
-            // loop 4: reinsert original nodes
-            for (auto iter = this->iter(); iter != iter.end(); ++iter) {
-                Node* node = view.copy(&recovery[iter.index()]);  // copy from recovery
-                Node::teardown(&recovery[iter.index()]);  // release recovery node
-                iter.insert(node);  // insert into list
-            }
         }
 
     };
@@ -1378,17 +1268,17 @@ protected:
         // wraparound negative indices
         bool lt_zero = index < 0;
         if (lt_zero) {
-            index += view.size;
+            index += view.size();
             lt_zero = index < 0;
         }
 
         // boundscheck
-        if (lt_zero || index >= static_cast<T>(view.size)) {
+        if (lt_zero || index >= static_cast<T>(view.size())) {
             if (truncate) {
                 if (lt_zero) {
                     return 0;
                 }
-                return view.size - 1;
+                return view.size() - 1;
             }
             throw std::out_of_range("list index out of range");
         }
@@ -1408,7 +1298,7 @@ protected:
 
         // comparisons are kept at the python level until we're ready to return
         PyObject* py_zero = PyLong_FromSize_t(0);  // new reference
-        PyObject* py_size = PyLong_FromSize_t(view.size);  // new reference
+        PyObject* py_size = PyLong_FromSize_t(view.size());  // new reference
         int lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
 
         // wraparound negative indices
@@ -1432,7 +1322,7 @@ protected:
                 if (lt_zero) {
                     return 0;
                 }
-                return view.size - 1;
+                return view.size() - 1;
             }
 
             // raise IndexError
@@ -1460,7 +1350,7 @@ protected:
         std::optional<long long> step = std::nullopt
     ) const {
         // normalize slice indices
-        long long size = static_cast<long long>(self().size());
+        long long size = static_cast<long long>(self().view.size());
         long long default_start = (step.value_or(0) < 0) ? (size - 1) : (0);
         long long default_stop = (step.value_or(0) < 0) ? (-1) : (size);
         long long default_step = 1;
@@ -1778,7 +1668,7 @@ auto operator*(const Derived& lhs, const PyObject* rhs)
     // convert to C++ integer
     ssize_t val = PyLong_AsSsize_t(rhs);
     if (val == -1 && PyErr_Occurred()) {
-        throw std::runtime_error("could not convert Python integer to C++ integer");
+        throw catch_python<type_error>();
     }
 
     // delegate to C++ overload
@@ -1836,7 +1726,7 @@ inline auto operator*=(Derived& lhs, const PyObject* rhs)
     // convert to C++ integer
     ssize_t val = PyLong_AsSsize_t(rhs);
     if (val == -1 && PyErr_Occurred()) {
-        throw std::runtime_error("could not convert Python integer to C++ integer");
+        throw catch_python<type_error>();
     }
 
     // delegate to C++ overload
@@ -2154,27 +2044,26 @@ inline auto operator>(const T& lhs, const Derived& rhs)
 
 template <
     typename NodeType = DoubleNode,
-    template <typename> class AllocatorPolicy = DynamicAllocator,
     typename SortPolicy = MergeSort,
     typename LockPolicy = BasicLock
 >
 class LinkedList :
-    public LinkedBase<ListView<NodeType, AllocatorPolicy>>,
+    public LinkedBase<ListView<NodeType>>,
     public ListInterface_<
-        LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>,
-        ListView<NodeType, AllocatorPolicy>,
+        LinkedList<NodeType, SortPolicy, LockPolicy>,
+        ListView<NodeType>,
         SortPolicy
     >,
     public ListOps_<
-        LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>
+        LinkedList<NodeType, SortPolicy, LockPolicy>
     >
 {
 public:
-    using View = ListView<NodeType, AllocatorPolicy>;
+    using View = ListView<NodeType>;
     using Node = typename View::Node;
 
 private:
-    using Self = LinkedList<NodeType, AllocatorPolicy, SortPolicy, LockPolicy>;
+    using Self = LinkedList<NodeType, SortPolicy, LockPolicy>;
     using Base = LinkedBase<View>;
     using Sort = SortPolicy;
     using Lock = LockPolicy;
@@ -2188,7 +2077,7 @@ public:
     ////////////////////////////
 
     /* Construct an empty list. */
-    LinkedList(long long max_size = -1, PyObject* spec = nullptr) :
+    LinkedList(std::optional<size_t> max_size = std::nullopt, PyObject* spec = nullptr) :
         Base(max_size, spec)
     {}
 
@@ -2196,7 +2085,7 @@ public:
     LinkedList(
         PyObject* iterable,
         bool reverse = false,
-        long long max_size = -1,
+        std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr
     ) : Base(iterable, reverse, max_size, spec)
     {}

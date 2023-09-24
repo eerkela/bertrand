@@ -2,29 +2,13 @@
 #ifndef BERTRAND_STRUCTS_LIST_H
 #define BERTRAND_STRUCTS_LIST_H
 
-#include <cstddef>  // for size_t
+#include <cstddef>  // size_t
 #include <memory>  // std::shared_ptr, std::weak_ptr
 #include <optional>  // std::optional
 #include <stdexcept>  // std::runtime_error
 #include <utility>  // std::pair
 #include <variant>  // std::variant
 #include <Python.h>  // CPython API
-
-// Algorithms
-// #include "algorithms/append.h"
-// #include "algorithms/contains.h"
-// #include "algorithms/count.h"
-#include "algorithms/delete.h"
-// #include "algorithms/extend.h"
-#include "algorithms/get.h"
-// #include "algorithms/index.h"
-// #include "algorithms/insert.h"
-// #include "algorithms/pop.h"
-// #include "algorithms/remove.h"
-// #include "algorithms/reverse.h"
-// #include "algorithms/rotate.h"
-#include "algorithms/set.h"
-#include "algorithms/sort.h"
 
 // Core
 #include "core/allocate.h"  // Allocator policies
@@ -43,14 +27,10 @@
 /* A std::variant encapsulating all the possible list types that are constructable
 from Python. */
 using ListAlternative = std::variant<
-    LinkedList<SingleNode, DynamicAllocator, MergeSort, BasicLock>,
-    // LinkedList<SingleNode, DynamicAllocator, MergeSort, DiagnosticLock>,
-    LinkedList<SingleNode, FixedAllocator, MergeSort, BasicLock>,
-    // LinkedList<SingleNode, FixedAllocator, MergeSort, DiagnosticLock>,
-    LinkedList<DoubleNode, DynamicAllocator, MergeSort, BasicLock>,
-    // LinkedList<DoubleNode, DynamicAllocator, MergeSort, DiagnosticLock>,
-    LinkedList<DoubleNode, FixedAllocator, MergeSort, BasicLock>
-    // LinkedList<DoubleNode, FixedAllocator, MergeSort, DiagnosticLock>
+    LinkedList<SingleNode, MergeSort, BasicLock>,
+    // LinkedList<SingleNode, MergeSort, DiagnosticLock>,
+    LinkedList<DoubleNode, MergeSort, BasicLock>
+    // LinkedList<DoubleNode, MergeSort, DiagnosticLock>,
 >;
 
 
@@ -208,31 +188,15 @@ private:
     using WeakRef = Self::WeakRef;
 
     template <typename NodeType>
-    using DynamicList = LinkedList<NodeType, DynamicAllocator, MergeSort, BasicLock>;
-    template <typename NodeType>
-    using FixedList = LinkedList<NodeType, FixedAllocator, MergeSort, BasicLock>;
+    using DefaultList = LinkedList<NodeType, MergeSort, BasicLock>;
 
     /* Select a variant based on constructor arguments. */
     template <typename... Args>
-    static ListAlternative select_variant(
-        bool doubly_linked,
-        Py_ssize_t max_size,
-        PyObject* spec,
-        Args... args
-    ) {
+    inline static ListAlternative select_variant(bool doubly_linked, Args... args) {
         if (doubly_linked) {
-            if (max_size < 0) {
-                return DynamicList<DoubleNode>(args..., max_size, spec);
-            } else {
-                return FixedList<DoubleNode>(args..., max_size, spec);
-            }
-        } else {
-            if (max_size < 0) {
-                return DynamicList<SingleNode>(args..., max_size, spec);
-            } else {
-                return FixedList<SingleNode>(args..., max_size, spec);
-            }
+            return DefaultList<DoubleNode>(std::forward<Args>(args)...); 
         }
+        return DefaultList<SingleNode>(std::forward<Args>(args)...);
     }
 
 public:
@@ -254,14 +218,14 @@ public:
         PyObject* iterable,
         bool doubly_linked,
         bool reverse,
-        Py_ssize_t max_size,
+        std::optional<size_t> max_size,
         PyObject* spec
-    ) : variant(select_variant(doubly_linked, max_size, spec, iterable, reverse)),
+    ) : variant(select_variant(doubly_linked, iterable, reverse, max_size, spec)),
         lock(*this), weak_ref(*this)
     {}
 
     /* Implement LinkedList.__init__() for cases where no iterable is given. */
-    VariantList(bool doubly_linked, Py_ssize_t max_size, PyObject* spec) :
+    VariantList(bool doubly_linked, std::optional<size_t> max_size, PyObject* spec) :
         variant(select_variant(doubly_linked, max_size, spec)),
         lock(*this), weak_ref(*this)
     {}
@@ -351,13 +315,12 @@ public:
         return std::visit(
             [&](auto& list) -> VariantList* {
                 // copy underlying list
-                auto copied = list.copy();
-                if (!copied.has_value()) {
-                    return nullptr;  // propagate Python errors
+                try {
+                    return new VariantList(list.copy());
+                } catch (const std::exception& e) {
+                    PyErr_SetString(PyExc_RuntimeError, e.what());
+                    return nullptr;  // propagate C++ errors
                 }
-
-                // wrap result as VariantList
-                return new VariantList(std::move(copied.value()));
             },
             variant
         );
@@ -474,10 +437,10 @@ public:
                 return;  // propagate
             }
             std::visit(
-                [&](auto& view) {
+                [&](auto& list) {
                     // construct proxy using deferred arguments
                     auto proxy = std::apply(
-                        [&](Args... args) { return view.slice(args...); }, args
+                        [&](Args... args) { return list.slice(args...); }, args
                     );
  
                     // replace slice
@@ -494,10 +457,10 @@ public:
                 return;  // propagate
             }
             std::visit(
-                [&](auto& view) {
+                [&](auto& list) {
                     // generate proxy
                     auto proxy = std::apply(
-                        [&](Args... args) { return view.slice(args...); }, args
+                        [&](Args... args) { return list.slice(args...); }, args
                     );
 
                     // drop slice

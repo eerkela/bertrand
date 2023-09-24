@@ -62,12 +62,12 @@ public:
     /* Return a forward iterator to the head of the list. */
     inline auto begin() const {
         // short-circuit if list is empty
-        if (view.head == nullptr) {
+        if (view.head() == nullptr) {
             return end();
         }
 
-        Node* next = static_cast<Node*>(view.head->next);
-        return Iterator<Direction::forward>(view, nullptr, view.head, next);
+        Node* next = static_cast<Node*>(view.head()->next);
+        return Iterator<Direction::forward>(view, nullptr, view.head(), next);
     }
 
     /* Return an empty forward iterator to terminate the sequence. */
@@ -85,26 +85,26 @@ public:
         );
 
         // short-circuit if list is empty
-        if (view.tail == nullptr) {
+        if (view.tail() == nullptr) {
             return rend();
         }
 
         // if list is doubly-linked, we can just use the prev pointer to get neighbors
         if constexpr (doubly_linked) {
-            Node* prev = static_cast<Node*>(view.tail->prev);
-            return Iterator<Direction::backward>(view, prev, view.tail, nullptr);
+            Node* prev = static_cast<Node*>(view.tail()->prev);
+            return Iterator<Direction::backward>(view, prev, view.tail(), nullptr);
 
         // Otherwise, we have to build a stack of prev pointers
         } else {
             std::stack<Node*> prev;
             prev.push(nullptr);
-            Node* temp = view.head;
-            while (temp != view.tail) {
+            Node* temp = view.head();
+            while (temp != view.tail()) {
                 prev.push(temp);
                 temp = static_cast<Node*>(temp->next);
             }
             return Iterator<Direction::backward>(
-                view, std::move(prev), view.tail, nullptr
+                view, std::move(prev), view.tail(), nullptr
             );
         }
     }
@@ -210,9 +210,6 @@ public:
                 view.link(curr, node, next);
             } else {
                 view.link(prev, node, curr);
-            }
-            if (PyErr_Occurred()) {
-                return;  // propagate
             }
 
             // update iterator parameters

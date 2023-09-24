@@ -9,28 +9,71 @@
 #include "node.h"  // has_prev<>
 
 
+/////////////////////////
+////    UTILITIES    ////
+/////////////////////////
+
+
+/* Round a number up to the nearest power of two. */
+template <typename T, std::enable_if_t<std::is_unsigned_v<T>, int> = 0>
+inline T next_power_of_two(T n) {
+    constexpr size_t bits = sizeof(T) * 8;
+    --n;
+    for (size_t i = 1; i < bits; i <<= 2) {
+        n |= (n >> i);
+    }
+    return ++n;
+}
+
+
 //////////////////////
 ////    ERRORS    ////
 //////////////////////
 
 
-/* Get the most recent Python error message as a C string. */
-const char* PyErr_msg() {
-    PyObject* exc_type;
+/* Convert the most recent Python error into a C++ exception. */
+template <typename Exception>
+Exception catch_python() {
+    // sanity check
+    static_assert(
+        std::is_constructible_v<Exception, std::string>,
+        "Exception type must be constructible from std::string"
+    );
+
+    PyObject* exc_type;  // PyErr_Fetch() initializes these for us
     PyObject* exc_value;
     PyObject* exc_traceback;
 
     // Get the most recent Python error
-    PyErr_Fetch(&exc_type, &exc_value, &exc_traceback);
+    PyErr_Fetch(&exc_type, &exc_value, &exc_traceback);  // clears error indicator
     PyErr_NormalizeException(&exc_type, &exc_value, &exc_traceback);
-    
-    // Ensure we've got a string and return the message
-    if (exc_value != NULL && PyUnicode_Check(exc_value)) {
-        return PyUnicode_AsUTF8(exc_value);
+
+    // Get the error message from the exception if one exists
+    std::string msg("Unknown error");
+    if (exc_type != nullptr) {
+        // Get msg from exc_value.__str__()
+        PyObject* str = PyObject_Str(exc_value);
+        if (str == nullptr) {
+            msg = "Unknown error (could not get exception message)";
+        } else if (!PyUnicode_Check(str)) {
+            msg = "Unknown error (exception message is not a string)";
+        } else {
+            const char* utf8_str = PyUnicode_AsUTF8(str);
+            if (utf8_str == nullptr) {
+                msg = "Unknown error (exception message failed UTF-8 conversion)";
+            } else {
+                msg = utf8_str;
+            }
+        }
+        Py_XDECREF(str);  // release python string
     }
 
-    // Return some default message if something went wrong.
-    return "Unknown error";
+    // Decrement reference counts
+    Py_XDECREF(exc_type);
+    Py_XDECREF(exc_value);
+    Py_XDECREF(exc_traceback);
+
+    return Exception(msg);
 }
 
 
@@ -277,7 +320,7 @@ public:
     }
 
     /* Release the Python sequence. */
-    ~PyIterable() { Py_XDECREF(py_iterator); }
+    ~PyIterable() { Py_DECREF(py_iterator); }
 
     /* Iterate over the sequence. */
     inline IteratorPair iter() const { return IteratorPair(begin(), end()); }
@@ -335,6 +378,47 @@ public:
 
 protected:
     PyObject* py_iterator;
+};
+
+
+/* A wrapper around a fast Python sequence (list or tuple) that manages reference
+counts and simplifies access. */
+class PySequence {
+public:
+
+    /* Construct a PySequence from an iterable or other sequence. */
+    PySequence(PyObject* items, const char* err_msg = "could not get sequence") :
+        sequence(PySequence_Fast(items, err_msg)),
+        length(static_cast<size_t>(PySequence_Fast_GET_SIZE(sequence)))
+    {
+        if (sequence == nullptr) {
+            throw catch_python<type_error>();  // propagate error
+        }
+    }
+
+    /* Release the Python sequence on destruction. */
+    ~PySequence() { Py_DECREF(sequence); }
+
+    /* Get the length of the sequence. */
+    inline size_t size() const { return length; }
+
+    /* Iterate over the sequence. */
+    inline PyIterable iter() const { return PyIterable(sequence); }
+
+    /* Get underlying PyObject* array. */
+    inline PyObject** array() const { return PySequence_Fast_ITEMS(sequence); }
+
+    /* Get the value at a particular index of the sequence. */
+    inline PyObject* operator[](size_t index) const {
+        if (index >= length) {
+            throw std::out_of_range("index out of range");
+        }
+        return PySequence_Fast_GET_ITEM(sequence, index);  // borrowed reference
+    }
+
+protected:
+    PyObject* sequence;
+    size_t length;
 };
 
 

@@ -127,10 +127,17 @@ cdef class LinkedList:
         items: Iterable[object] | None = None,
         doubly_linked: bool = True,
         reverse: bool = False,
-        max_size: int = -1,
+        max_size: int = None,
         spec: object | None = None,
     ):
+        cdef optional[size_t] c_max_size
         cdef PyObject* c_spec
+
+        # make max_size C-compatible
+        if max_size is None:
+            c_max_size = nullopt
+        else:
+            c_max_size = <size_t>max_size
 
         # make specialization C-compatible
         if spec is None:
@@ -138,14 +145,12 @@ cdef class LinkedList:
         else:
             c_spec = <PyObject*>spec  # borrowed reference
 
-        # init empty
-        if items is None:
-            self.view = new VariantList(doubly_linked, max_size, c_spec)
-
-        # unpack iterable
-        else:
+        # init variant
+        if items is None:  # empty
+            self.view = new VariantList(doubly_linked, c_max_size, c_spec)
+        else:  # unpack iterable
             self.view = new VariantList(
-                <PyObject*>items, doubly_linked, reverse, max_size, c_spec
+                <PyObject*>items, doubly_linked, reverse, c_max_size, c_spec
             )
 
     def __dealloc__(self):
@@ -1104,7 +1109,7 @@ cdef class LinkedList:
             items: Iterable[object] | None = None,
             doubly_linked: bool = False,
             reverse: bool = False,
-            max_size: int = -1,
+            max_size: int = None,
         ) -> None:
             """Disable the `spec` argument for strictly-typed lists."""
             cls.__init__(
