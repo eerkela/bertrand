@@ -66,7 +66,7 @@ public:
             return end();
         }
 
-        Node* next = static_cast<Node*>(view.head()->next);
+        Node* next = view.head()->next();
         return Iterator<Direction::forward>(view, nullptr, view.head(), next);
     }
 
@@ -91,7 +91,7 @@ public:
 
         // if list is doubly-linked, we can just use the prev pointer to get neighbors
         if constexpr (doubly_linked) {
-            Node* prev = static_cast<Node*>(view.tail()->prev);
+            Node* prev = view.tail()->prev();
             return Iterator<Direction::backward>(view, prev, view.tail(), nullptr);
 
         // Otherwise, we have to build a stack of prev pointers
@@ -101,7 +101,7 @@ public:
             Node* temp = view.head();
             while (temp != view.tail()) {
                 prev.push(temp);
-                temp = static_cast<Node*>(temp->next);
+                temp = temp->next();
             }
             return Iterator<Direction::backward>(
                 view, std::move(prev), view.tail(), nullptr
@@ -180,14 +180,14 @@ public:
                             this->stack.pop();
                         }
                     } else {
-                        prev = static_cast<Node*>(prev->prev);
+                        prev = prev->prev();
                     }
                 }
             } else {
                 prev = curr;
                 curr = next;
                 if (next != nullptr) {
-                    next = static_cast<Node*>(next->next);
+                    next = next->next();
                 }
             }
             return *this;
@@ -239,13 +239,13 @@ public:
                             this->stack.pop();
                         }
                     } else {
-                        prev = static_cast<Node*>(prev->prev);
+                        prev = prev->prev();
                     }
                 }
             } else {
                 curr = next;
                 if (next != nullptr) {
-                    next = static_cast<Node*>(next->next);
+                    next = next->next();
                 }
             }
             return removed;

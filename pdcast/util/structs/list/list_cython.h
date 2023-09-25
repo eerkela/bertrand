@@ -27,9 +27,9 @@
 /* A std::variant encapsulating all the possible list types that are constructable
 from Python. */
 using ListAlternative = std::variant<
-    LinkedList<SingleNode, MergeSort, BasicLock>,
+    LinkedList<SingleNode<PyObject*>, MergeSort, BasicLock>,
     // LinkedList<SingleNode, MergeSort, DiagnosticLock>,
-    LinkedList<DoubleNode, MergeSort, BasicLock>
+    LinkedList<DoubleNode<PyObject*>, MergeSort, BasicLock>
     // LinkedList<DoubleNode, MergeSort, DiagnosticLock>,
 >;
 
@@ -186,17 +186,18 @@ class VariantList {
 private:
     using Self = SelfRef<VariantList>;
     using WeakRef = Self::WeakRef;
+    using SingleList = LinkedList<SingleNode<PyObject*>, MergeSort, BasicLock>;
+    using DoubleList = LinkedList<DoubleNode<PyObject*>, MergeSort, BasicLock>;
 
-    template <typename NodeType>
-    using DefaultList = LinkedList<NodeType, MergeSort, BasicLock>;
+    // TODO: somehow these lists are being destroyed twice, which causes a segfault
 
     /* Select a variant based on constructor arguments. */
     template <typename... Args>
     inline static ListAlternative select_variant(bool doubly_linked, Args... args) {
         if (doubly_linked) {
-            return DefaultList<DoubleNode>(std::forward<Args>(args)...); 
+            return DoubleList(std::forward<Args>(args)...); 
         }
-        return DefaultList<SingleNode>(std::forward<Args>(args)...);
+        return SingleList(std::forward<Args>(args)...);
     }
 
 public:

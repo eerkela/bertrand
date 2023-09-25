@@ -8,6 +8,8 @@
 #include <type_traits>  // for std::integral_constant, std::is_base_of_v
 #include <Python.h>  // for CPython API
 
+#include "util.h"  // for catch_python, type_error
+
 
 //////////////////////////
 ////    BASE CLASS    ////
@@ -183,6 +185,25 @@ protected:
 };
 
 
+/* A conditional value type that infers the return type of a C++ function pointer. */
+template <typename T, typename Func, typename = void>
+struct _ConditionalType {
+    using type = std::invoke_result_t<Func, T>;
+};
+
+
+/* A conditional valute type that represents the return type of a python callable. */
+template <typename T, typename Func>
+struct _ConditionalType<T, Func, std::enable_if_t<std::is_same_v<Func, PyObject*>>> {
+    using type = PyObject*;
+};
+
+
+/* An accessor that returns the type deduced by a ConditionalValue trait. */
+template <typename Func, typename NodeType, typename Value = typename NodeType::Value>
+using ConditionalType = typename _ConditionalType<Value, Func>::type;
+
+
 //////////////////////////
 ////    ROOT NODES    ////
 //////////////////////////
@@ -196,7 +217,7 @@ class SingleNode : public BaseNode<ValueType> {
 
 public:
     using Value = ValueType;
-    inline static constexpr bool doubly_linked = false;
+    static constexpr bool doubly_linked = false;
 
     /* Initialize a singly-linked node with a given value. */
     SingleNode(Value value) noexcept : Base(value), _next(nullptr) {}
@@ -306,7 +327,7 @@ class DoubleNode : public SingleNode<ValueType> {
 
 public:
     using Value = ValueType;
-    inline static constexpr bool doubly_linked = true;
+    static constexpr bool doubly_linked = true;
 
     /* Initialize a doubly-linked node with a given value. */
     DoubleNode(Value value) noexcept : Base(value), _prev(nullptr) {}
@@ -430,41 +451,21 @@ public:
 };
 
 
-// TODO: For Keyed nodes, ValueType may or may not match the original node's value type
-
-
-// TODO: Deduce KeyType from Func and ensure that it accepts a single argument of type
-// ValueType.  If not, throw a static_assert() error.
-
-
-
-
 /* A node decorator that computes a key function on a node's underlying value
 for use in sorting algorithms. */
 template <typename NodeType, typename Func>
-class Keyed : public BaseNode<
-    std::conditional_t<
-        std::is_same_v<Func, PyObject*>,
-        PyObject*,
-        std::invoke_result_t<Func, NodeType::Value>
-    >
-> {
+class Keyed : public SingleNode<ConditionalType<Func, NodeType>> {
 public:
     // NOTE: this is a special case of node used in the `sort()` method to apply a key
     // function to each node's value.  It is not meant to be used in any other context.
-    using Value = std::conditional_t<
-        std::is_same_v<Func, PyObject*>,
-        PyObject*,
-        std::invoke_result_t<Func, NodeType::Value>
-    >;
+    using Value = ConditionalType<Func, NodeType>;
 
 private:
-    using Base = BaseNode<Value>;  // this node stores the result of the key function
+    using Base = SingleNode<Value>;  // stores the result of the key function
     NodeType* _node;  // reference to decorated node
-    Keyed<NodeType>* _next;  // singly-linked
 
     /* Invoke the key function on the specified value and return the computed result. */
-    Value invoke(Func func, NodeType::Value arg) {
+    Value invoke(Func func, typename NodeType::Value arg) {
         // Python key
         if constexpr (std::is_same_v<Func, PyObject*>) {
             static_assert(
@@ -477,7 +478,7 @@ private:
             if (val == nullptr) {
                 throw catch_python<type_error>();
             }
-            return val;
+            return val;  // new reference
 
         // C++ key
         } else {
@@ -486,77 +487,77 @@ private:
     }
 
 public:
-    inline static constexpr bool doubly_linked = false;
+    static constexpr bool doubly_linked = false;
 
     /* Initialize a keyed node by applying a Python callable to an existing node. */
     Keyed(NodeType* node, Func func) :
-        Base(invoke(func, node->value())), _node(node), _next(nullptr)
+        Base(invoke(func, node->value())), _node(node)
     {}
 
+    /* Copy constructor/assignment disabled due to presence of raw Node* pointer and as
+    a safeguard against unnecessary copies in sort algorithms. */
+    Keyed(const Keyed& other) = delete;
+    Keyed& operator=(const Keyed& other) = delete;
 
-
-
-    /* Initialize a newly-allocated node. */
-    inline static Keyed<NodeType>* init(
-        Keyed<NodeType>* node,
-        PyObject* key_value,
-        NodeType* wrapped
-    ) {
-        // NOTE: We mask the node's original value with the precomputed key,
-        // allowing us to use the exact same sorting algorithms in both cases.
-        Py_INCREF(key_value);
-        node->value = key_value;
-        node->node = wrapped;
-        node->next = nullptr;
-        return node;
+    /* Move constructor. */
+    Keyed(Keyed&& other) noexcept : Base(std::move(other)), _node(other._node) {
+        other._node = nullptr;
     }
 
-    // NOTE: we do not provide an init_copy() method because we're storing a
-    // direct reference to another node.  We shouldn't ever be copying a
-    // Keyed<> node anyways, since they're only meant to be used during sort().
-    // This omission just makes it explicit.
+    /* Move assignment operator. */
+    Keyed& operator=(Keyed&& other) noexcept {
+        // check for self-assignment
+        if (this == &other) {
+            return *this;
+        }
 
-    /* Tear down a node before freeing it. */
-    inline static void teardown(Keyed<NodeType>* node) {
-        Py_DECREF(node->value);  // release reference on precomputed key
+        // move value from other node
+        Base::operator=(other);
+
+        // move node pointer from other node
+        _node = other._node;
+        other._node = nullptr;
+        return *this;
+    }
+
+    /* Destroy a keyed decorator and release its resources. */
+    ~Keyed() noexcept {
+        _node = nullptr;  // Base::~Base() releases _value/_next
+    }
+
+    /* Get the decorated node. */
+    inline NodeType* node() const noexcept {
+        return _node;
+    }
+
+    /* Get the next node in the list. */
+    inline Keyed* next() const noexcept {
+        return static_cast<Keyed*>(Base::next());
+    }
+
+    /* Set the next node in the list. */
+    inline void next(Keyed* next) noexcept {
+        Base::next(next);
     }
 
     /* Link the node to its neighbors to form a singly-linked list. */
-    inline static void link(
-        Keyed<NodeType>* prev,
-        Keyed<NodeType>* curr,
-        Keyed<NodeType>* next
-    ) {
-        if (prev != nullptr) {
-            prev->next = curr;
-        }
-        curr->next = next;
+    inline static void link(Keyed* prev, Keyed* curr, Keyed* next) noexcept {
+        Base::link(prev, curr, next);
     }
 
     /* Unlink the node from its neighbors. */
-    inline static void unlink(
-        Keyed<NodeType>* prev,
-        Keyed<NodeType>* curr,
-        Keyed<NodeType>* next
-    ) {
-        if (prev != nullptr) {
-            prev->next = next;
-        }
-        curr->next = nullptr;
+    inline static void unlink(Keyed* prev, Keyed* curr, Keyed* next) noexcept {
+        Base::unlink(prev, curr, next);
     }
 
     /* Break a linked list at the specified nodes. */
-    inline static void split(Keyed<NodeType>* prev, Keyed<NodeType>* curr) {
-        if (prev != nullptr) {
-            prev->next = nullptr;
-        }
+    inline static void split(Keyed* prev, Keyed* curr) noexcept {
+        Base::split(prev, curr);
     }
 
     /* Join the list at the specified nodes. */
-    inline static void join(Keyed<NodeType>* prev, Keyed<NodeType>* curr) {
-        if (prev != nullptr) {
-            prev->next = curr;
-        }
+    inline static void join(Keyed* prev, Keyed* curr) noexcept {
+        Base::join(prev, curr);
     }
 
 };

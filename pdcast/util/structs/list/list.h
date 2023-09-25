@@ -152,7 +152,7 @@ public:
 
             /* Dereference the iterator to get the value at the current node. */
             inline PyObject* operator*() const {
-                return (*iter)->value;
+                return (*iter)->value();
             }
 
             /* Advance the iterator to the next node. */
@@ -261,7 +261,7 @@ template <typename Derived, typename ViewType, typename SortPolicy>
 class ListInterface_ {
     using View = ViewType;
     using Node = typename View::Node;
-    using ValueType = PyObject*;
+    using Value = typename Node::Value;
     inline static constexpr bool doubly_linked = View::doubly_linked;
 
     template <Direction dir, typename = void>
@@ -318,17 +318,17 @@ public:
                 // original head
                 Node* curr = view.head();
                 while (curr != original) {
-                    Node* next = static_cast<Node*>(curr->next);
-                    view.unlink(nullptr, curr, curr->next);
+                    Node* next = curr->next();
+                    view.unlink(nullptr, curr, next);
                     view.recycle(curr);
                     curr = next;
                 }
             } else {
                 // otherwise, start from the original tail and remove until we reach
                 // the end of the list
-                Node* curr = static_cast<Node*>(original->next);
+                Node* curr = original->next();
                 while (curr != nullptr) {
-                    Node* next = static_cast<Node*>(curr->next);
+                    Node* next = curr->next();
                     view.unlink(original, curr, next);
                     view.recycle(curr);
                     curr = next;
@@ -375,10 +375,8 @@ public:
                 bool found = false;
                 size_t last_observed;
                 while (idx >= norm_start) {
-                    int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
-                    if (comp == -1) {
-                        throw catch_python<type_error>();
-                    } else if (comp == 1) {
+                    Node* node = *iter;
+                    if (node->eq(item)) {
                         found = true;
                         last_observed = idx;
                     }
@@ -406,10 +404,8 @@ public:
 
         // search until we hit item or stop index
         while (idx < norm_stop) {
-            int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
-            if (comp == -1) {
-                throw catch_python<type_error>();
-            } else if (comp == 1) {
+            Node* node = *iter;
+            if (node->eq(item)) {
                 return idx;
             }
             ++iter;
@@ -456,12 +452,8 @@ public:
                 // search until we hit start index
                 size_t count = 0;
                 while (idx >= norm_start) {
-                    int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
-                    if (comp == -1) {
-                        throw catch_python<type_error>();
-                    } else if (comp == 1) {
-                        ++count;
-                    }
+                    Node* node = *iter;
+                    count += node->eq(item);  // branchless
                     ++iter;
                     --idx;
                 }
@@ -480,12 +472,8 @@ public:
         // search until we hit item or stop index
         size_t count = 0;
         while (idx < norm_stop) {
-            int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
-            if (comp == -1) {
-                throw catch_python<type_error>();
-            } else if (comp == 1) {
-                ++count;
-            }
+            Node* node = *iter;
+            count += node->eq(item);  // branchless
             ++iter;
             ++idx;
         }
@@ -496,12 +484,8 @@ public:
     bool contains(PyObject* item) const {
         const View& view = self().view;
 
-        for (auto node : view) {
-            // C API equivalent of the == operator
-            int comp = PyObject_RichCompareBool(node->value, item, Py_EQ);
-            if (comp == -1) {  // == comparison raised an exception
-                throw catch_python<type_error>();
-            } else if (comp == 1) {  // found a match
+        for (Node* node : view) {
+            if (node->eq(item)) {
                 return true;
             }
         }
@@ -516,11 +500,8 @@ public:
 
         // find item in list
         for (auto iter = view.iter(); iter != iter.end(); ++iter) {
-            // C API equivalent of the == operator
-            int comp = PyObject_RichCompareBool((*iter)->value, item, Py_EQ);
-            if (comp == -1) {  // == comparison raised an exception
-                throw catch_python<type_error>();
-            } else if (comp == 1) {  // found a match
+            Node* node = *iter;
+            if (node->eq(item)) {
                 view.recycle(iter.remove());
                 return;
             }
@@ -549,8 +530,9 @@ public:
     }
 
     /* Sort a list in-place. */
-    void sort(PyObject* key = nullptr, bool reverse = false) {
-        SortFunc<SortPolicy>::sort(self().view, key, reverse);
+    template <typename Func>
+    void sort(Func key = nullptr, bool reverse = false) {
+        SortFunc<SortPolicy, Func>::sort(self().view, key, reverse);
     }
 
     /* Reverse a list in-place. */
@@ -564,17 +546,17 @@ public:
         if constexpr (doubly_linked) {
             // swap all `next`/`prev` pointers
             while (curr != nullptr) {
-                Node* next = static_cast<Node*>(curr->next);
-                curr->next = static_cast<Node*>(curr->prev);
-                curr->prev = next;
+                Node* next = curr->next();
+                curr->next(curr->prev());
+                curr->prev(next);
                 curr = next;
             }
         } else {
             // swap all `next` pointers
             Node* prev = nullptr;
             while (curr != nullptr) {
-                Node* next = static_cast<Node*>(curr->next);
-                curr->next = prev;
+                Node* next = curr->next();
+                curr->next(prev);
                 prev = curr;
                 curr = next;
             }
@@ -614,9 +596,9 @@ public:
             if (index > view.size() / 2) {  // backward traversal
                 new_head = view.tail();
                 for (size_t i = view.size() - 1; i > index; i--) {
-                    new_head = static_cast<Node*>(new_head->prev);
+                    new_head = new_head->prev();
                 }
-                new_tail = static_cast<Node*>(new_head->prev);
+                new_tail = new_head->prev();
 
                 // join previous head/tail and split at new junction 
                 Node::join(view.tail(), view.head());
@@ -632,9 +614,9 @@ public:
         // forward traversal
         new_tail = view.head();
         for (size_t i = 1; i < index; i++) {
-            new_tail = static_cast<Node*>(new_tail->next);
+            new_tail = new_tail->next();
         }
-        new_head = static_cast<Node*>(new_tail->next);
+        new_head = new_tail->next();
 
         // split at junction and join previous head/tail
         Node::split(new_tail, new_head);
@@ -689,18 +671,18 @@ public:
     public:
 
         /* Get the value at the current index. */
-        inline ValueType& get() const {
-            return (*iter)->value;
+        inline Value get() const {
+            return (*iter)->value();
         }
 
         /* Set the value at the current index. */
-        inline void set(const ValueType& value) {
+        inline void set(const Value value) {
             Node* node = view.node(value);
             iter.replace(node);
         }
 
         /* Insert a value at the current index. */
-        inline void insert(const ValueType& value) {
+        inline void insert(const Value value) {
             Node* node = view.node(value);
             iter.insert(node);
         }
@@ -711,9 +693,9 @@ public:
         }
 
         /* Remove the node at the current index and return its value. */
-        inline ValueType pop() {
+        inline Value pop() {
             Node* node = iter.remove();
-            ValueType result = node->value;
+            Value result = node->value();
             Py_INCREF(result);  // ensure value is not garbage collected during recycle()
             view.recycle(node);
             return result;
@@ -721,11 +703,11 @@ public:
 
         /* Implicitly convert the proxy to the value where applicable.
 
-        This is syntactic sugar for get() such that `ValueType value = list[i]` is
-        equivalent to `ValueType value = list[i].get()`.  The same implicit conversion
+        This is syntactic sugar for get() such that `Value value = list[i]` is
+        equivalent to `Value value = list[i].get()`.  The same implicit conversion
         is also applied if the proxy is passed to a function that expects a value,
         unless that function is marked as `explicit`. */
-        inline operator ValueType() const {
+        inline operator Value() const {
             return get();
         }
 
@@ -733,7 +715,7 @@ public:
 
         This is syntactic sugar for set() such that `list[i] = value` is equivalent to
         `list[i].set(value)`. */
-        inline ElementProxy& operator=(const ValueType& value) {
+        inline ElementProxy& operator=(const Value& value) {
             set(value);
             return *this;
         }
@@ -772,7 +754,7 @@ public:
 
             // copy nodes from original view into result
             for (Node* node : *this) {
-                Node* copy = result.node(node);
+                Node* copy = result.node(*node);
                 if (inverted()) {
                     result.link(nullptr, copy, result.head());
                 } else {
@@ -853,7 +835,7 @@ public:
                     // loop 4: reinsert original nodes from recovery array
                     for (auto i = this->iter(); i != i.end(); ++i) {
                         Node* recovery_node = &recovery[i.index()];
-                        i.insert(view.node(recovery_node));  // copy into list
+                        i.insert(view.node(*recovery_node));  // copy into list
                         recovery_node->~Node();  // destroy recovery node
                     }
 
@@ -998,13 +980,13 @@ public:
                     for (size_t i = implicit_skip; i < indices.abs_step; ++i) {
                         this->next = this->curr;
                         this->curr = this->prev;
-                        this->prev = static_cast<Node*>(this->curr->prev);
+                        this->prev = this->curr->prev();
                     }
                 } else {
                     for (size_t i = implicit_skip; i < indices.abs_step; ++i) {
                         this->prev = this->curr;
                         this->curr = this->next;
-                        this->next = static_cast<Node*>(this->curr->next);
+                        this->next = this->curr->next();
                     }
                 }
                 return *this;
@@ -1070,20 +1052,20 @@ public:
                     if (this->next == nullptr) {
                         this->curr = this->view.tail();
                     } else {
-                        this->curr = static_cast<Node*>(this->next->prev);
+                        this->curr = this->next->prev();
                     }
                     if (this->curr != nullptr) {
-                        this->prev = static_cast<Node*>(this->curr->prev);
+                        this->prev = this->curr->prev();
                     }
                 } else {
                     this->prev = origin;
                     if (this->prev == nullptr) {
                         this->curr = this->view.head();
                     } else {
-                        this->curr = static_cast<Node*>(this->prev->next);
+                        this->curr = this->prev->next();
                     }
                     if (this->curr != nullptr) {
-                        this->next = static_cast<Node*>(this->curr->next);
+                        this->next = this->curr->next();
                     }
                 }
             }
@@ -1121,7 +1103,7 @@ public:
                     Node* curr = view.tail();
                     for (size_t i = view.size() - 1; i > first(); i--) {
                         next = curr;
-                        curr = static_cast<Node*>(curr->prev);
+                        curr = curr->prev();
                     }
                     found = true;
                     _origin = next;
@@ -1134,7 +1116,7 @@ public:
             Node* curr = view.head();
             for (size_t i = 0; i < first(); i++) {
                 prev = curr;
-                curr = static_cast<Node*>(curr->next);
+                curr = curr->next();
             }
             found = true;
             _origin = prev;
@@ -1753,8 +1735,8 @@ auto operator<(const Derived& lhs, const T& rhs)
 
     // loop until one of the sequences is exhausted
     while (iter_lhs != end_lhs && iter_rhs != end_rhs) {
-        if ((*iter_lhs)->value < *iter_rhs) return true;
-        if (*iter_rhs < (*iter_lhs)->value) return false;
+        if ((*iter_lhs)->value() < *iter_rhs) return true;
+        if (*iter_rhs < (*iter_lhs)->value()) return false;
         ++iter_lhs;
         ++iter_rhs;
     }
@@ -1770,6 +1752,8 @@ template <typename Derived>
 auto operator<(const Derived& lhs, const PyObject* rhs)
     -> enable_list_ops<Derived, bool>
 {
+    using Node = typename Derived::Node;
+
     // check that rhs is a Python sequence
     if (!PySequence_Check(rhs)) {
         std::ostringstream msg;
@@ -1787,18 +1771,15 @@ auto operator<(const Derived& lhs, const PyObject* rhs)
 
     // loop until one of the sequences is exhausted
     while (iter_lhs != end_lhs && iter_rhs != end_rhs) {
-        // compare lhs < rhs
-        int comp = PyObject_RichCompareBool((*iter_lhs)->value, *iter_rhs, Py_LT);
-        if (comp == -1) {
-            throw std::runtime_error("could not compare list elements");
-        } else if (comp == 1) {
+        Node* node = *iter_lhs;
+        if (node->lt(*iter_rhs)) {
             return true;
         }
 
         // compare rhs < lhs
-        comp = PyObject_RichCompareBool(*iter_rhs, (*iter_lhs)->value, Py_LT);
+        int comp = PyObject_RichCompareBool(*iter_rhs, node->value(), Py_LT);
         if (comp == -1) {
-            throw std::runtime_error("could not compare list elements");
+            throw catch_python<type_error>();
         } else if (comp == 1) {
             return false;
         }
@@ -1837,8 +1818,8 @@ auto operator<=(const Derived& lhs, const T& rhs)
 
     // loop until one of the sequences is exhausted
     while (iter_lhs != end_lhs && iter_rhs != end_rhs) {
-        if ((*iter_lhs)->value < *iter_rhs) return true;
-        if (*iter_rhs < (*iter_lhs)->value) return false;
+        if ((*iter_lhs)->value() < *iter_rhs) return true;
+        if (*iter_rhs < (*iter_lhs)->value()) return false;
         ++iter_lhs;
         ++iter_rhs;
     }
@@ -1854,6 +1835,8 @@ template <typename Derived>
 auto operator<=(const Derived& lhs, const PyObject* rhs)
     -> enable_list_ops<Derived, bool>
 {
+    using Node = typename Derived::Node;
+
     // check that rhs is a Python sequence
     if (!PySequence_Check(rhs)) {
         std::ostringstream msg;
@@ -1871,16 +1854,13 @@ auto operator<=(const Derived& lhs, const PyObject* rhs)
 
     // loop until one of the sequences is exhausted
     while (iter_lhs != end_lhs && iter_rhs != end_rhs) {
-        // compare lhs < rhs
-        int comp = PyObject_RichCompareBool((*iter_lhs)->value, *iter_rhs, Py_LT);
-        if (comp == -1) {
-            throw std::runtime_error("could not compare list elements");
-        } else if (comp == 1) {
+        Node* node = *iter_lhs;
+        if (node->lt(*iter_rhs)) {
             return true;
         }
 
         // compare rhs < lhs
-        comp = PyObject_RichCompareBool(*iter_rhs, (*iter_lhs)->value, Py_LT);
+        int comp = PyObject_RichCompareBool(*iter_rhs, node->value(), Py_LT);
         if (comp == -1) {
             throw std::runtime_error("could not compare list elements");
         } else if (comp == 1) {
@@ -1912,14 +1892,16 @@ template <typename T, typename Derived>
 auto operator==(const Derived& lhs, const T& rhs)
     -> enable_list_ops<Derived, bool>
 {
+    using Node = typename Derived::Node;
+
     if (lhs.size() != rhs.size()) {
         return false;
     }
 
     // compare elements in order
     auto iter_rhs = std::begin(rhs);
-    for (const auto& item : lhs) {
-        if (item->value != *iter_rhs) {
+    for (const Node& item : lhs) {
+        if (item->value() != *iter_rhs) {
             return false;
         }
         ++iter_rhs;
@@ -1934,6 +1916,8 @@ template <typename Derived>
 auto operator==(const Derived& lhs, const PyObject* rhs)
     -> enable_list_ops<Derived, bool>
 {
+    using Node = typename Derived::Node;
+
     // check that rhs is a Python sequence
     if (!PySequence_Check(rhs)) {
         std::ostringstream msg;
@@ -1956,11 +1940,8 @@ auto operator==(const Derived& lhs, const PyObject* rhs)
     // compare elements in order
     PyIterable pyiter_rhs(rhs);  // handles reference counts
     auto iter_rhs = pyiter_rhs.begin();
-    for (const auto& item : lhs) {
-        int comp = PyObject_RichCompareBool(item->value, *iter_rhs, Py_EQ);
-        if (comp == -1) {
-            throw std::runtime_error("could not compare list elements");
-        } else if (comp == 0) {
+    for (const Node& item : lhs) {
+        if (item->ne(*iter_rhs)) {
             return false;
         }
         ++iter_rhs;
@@ -2043,7 +2024,7 @@ inline auto operator>(const T& lhs, const Derived& rhs)
 
 
 template <
-    typename NodeType = DoubleNode,
+    typename NodeType = DoubleNode<PyObject*>,
     typename SortPolicy = MergeSort,
     typename LockPolicy = BasicLock
 >

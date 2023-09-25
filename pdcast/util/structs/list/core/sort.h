@@ -11,6 +11,10 @@
 #include "../core/view.h"  // views
 
 
+// TODO: since SortFunc is created whenever we call sort(), we can template it on the
+// Func type, which makes type declarations easier to write.
+
+
 //////////////////////
 ////    PUBLIC    ////
 //////////////////////
@@ -19,46 +23,35 @@
 /* A wrapper around a SortPolicy that handles casting to ListView and
 decorating/undecorating according to key functions.  All the SortPolicy has to
 implement is the actual sorting algorithm itself. */
-template <typename SortPolicy>
+template <typename SortPolicy, typename Func>
 class SortFunc {
 private:
+    template <typename Node>
+    using Decorated = Keyed<Node, Func>;
 
     /* Apply a key function to a list, decorating it with the computed result. */
     template <typename Node>
-    static ListView<Keyed<Node>> decorate(ListView<Node>& view, PyObject* key) {
-        // initialize an empty ListView to hold the decorated list
-        ListView<Keyed<Node>> decorated(view.size(), nullptr);
+    inline static ListView<Decorated<Node>> decorate(ListView<Node>& view, Func func) {
+        // create temporary ListView to hold the keyed list (preallocated to exact size)
+        ListView<Decorated<Node>> decorated(view.size(), nullptr);
 
-        // decorate each node in list with precomputed key
+        // decorate each node in original list
         for (Node* node : view) {
-            PyObject* key_val = PyObject_CallFunctionObjArgs(key, node->value, nullptr);
-            if (key_val == nullptr) {
-                throw std::runtime_error("error during key function call");
-            }
-
-            // initialize a new keyed decorator
-            Keyed<Node>* keyed = decorated.node(key_val, node);
-            if (keyed == nullptr) {
-                Py_DECREF(key_val);
-                throw std::runtime_error("error during decorator allocation");
-            }
-
-            // link the keyed node to the decorated list
+            Decorated<Node>* keyed = decorated.node(node, func);
             decorated.link(decorated.tail(), keyed, nullptr);
         }
-
         return decorated;
     }
 
     /* Rearrange the underlying list in-place to reflect changes from a keyed sort. */
     template <typename Node>
-    static void undecorate(ListView<Keyed<Node>>& decorated, ListView<Node>& view) {
+    static void undecorate(ListView<Decorated<Node>>& decorated, ListView<Node>& view) {
         Node* new_head = nullptr;
         Node* new_tail = nullptr;
 
         // NOTE: we recycle the decorators as we go in order to avoid a second loop
         for (auto iter = decorated.iter(); iter != iter.end(); ++iter) {
-            Node* unwrapped = (*iter)->node;
+            Node* unwrapped = (*iter)->node();
 
             // link the wrapped node to the undecorated list
             if (new_head == nullptr) {
@@ -87,7 +80,7 @@ private:
         }
 
         // apply key function to each node in list
-        ListView<Keyed<Node>> decorated = decorate(view, key);
+        ListView<Decorated<Node>> decorated = decorate(view, key);
 
         // sort decorated list
         SortPolicy::sort(decorated, reverse);
@@ -164,10 +157,10 @@ protected:
 
         // walk forward `length` nodes from `curr`
         for (size_t i = 0; i < length; i++) {
-            if (curr->next == nullptr) {  // list terminates before `length`
+            if (curr->next() == nullptr) {  // list terminates before `length`
                 break;
             }
-            curr = static_cast<Node*>(curr->next);
+            curr = curr->next();
         }
         return curr;
     }
@@ -187,22 +180,17 @@ protected:
         // repeat this process until one of the sublists has been exhausted, giving us
         // a sorted list of size `length * 2`.
         while (left.first != nullptr && right.first != nullptr) {
-            int comp = PyObject_RichCompareBool(
-                left.first->value, right.first->value, Py_LT
-            );
-            if (comp == -1) {
-                throw std::runtime_error("error during `<` comparison");
-            }
+            bool comp = left.first->lt(right.first->value());  // left < right
 
             // append the smaller of the two candidates to the merged list
-            if (comp ^ reverse) {  // [not] left < right
+            if (reverse ^ comp) {  // [not] left < right
                 Node::join(curr, left.first);
-                left.first = static_cast<Node*>(left.first->next);
+                left.first = left.first->next();
             } else {
                 Node::join(curr, right.first);
-                right.first = static_cast<Node*>(right.first->next);
+                right.first = right.first->next();
             }
-            curr = static_cast<Node*>(curr->next);
+            curr = curr->next();
         }
 
         // NOTE: at this point, one of the sublists has been exhausted, so we can
@@ -217,7 +205,7 @@ protected:
         }
 
         // unlink temporary head from list and return the proper head and tail
-        curr = static_cast<Node*>(temp->next);
+        curr = temp->next();
         Node::split(temp, curr);  // `temp` can be reused
         return std::make_pair(curr, tail);
     }
@@ -284,12 +272,12 @@ public:
                 // split the list into two sublists of size `length`
                 left.first = unsorted.first;
                 left.second = walk(left.first, length - 1);
-                right.first = static_cast<Node*>(left.second->next);  // may be NULL
+                right.first = left.second->next();
                 right.second = walk(right.first, length - 1);
                 if (right.second == nullptr) {  // right sublist is empty
                     unsorted.first = nullptr;  // terminate the loop
                 } else {
-                    unsorted.first = static_cast<Node*>(right.second->next);
+                    unsorted.first = right.second->next();
                 }
 
                 // unlink the sublists from the original list

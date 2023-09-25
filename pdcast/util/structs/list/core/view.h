@@ -599,7 +599,7 @@ static const size_t DEFAULT_CAPACITY = 8;
 
 /* A pure C++ linked list data structure with customizable node types and allocation
 strategies. */
-template <typename NodeType = DoubleNode>
+template <typename NodeType = DoubleNode<PyObject*>>
 class ListView {
 public:
     using View = ListView<NodeType>;
@@ -665,6 +665,12 @@ public:
         iter(*this), allocator(std::move(other.allocator))
     {}
 
+
+    /* TODO: allocator is fully responsible for managing reference counts/node
+    destruction during copies/moves  All these methods have to do is delegate to the
+    allocator. Views wouldn't need constructors. */
+
+
     /* Move assignment: transfer ownership from one ListView to another. */
     ListView& operator=(ListView&& other) noexcept {
         // check for self-assignment
@@ -672,10 +678,8 @@ public:
             return *this;
         }
 
-        // clear current list
-        this->~ListView();
-
         // transfer ownership of nodes
+        clear();
         allocator = std::move(other.allocator);
         return *this;
     }
@@ -684,11 +688,6 @@ public:
     from unintentionally copying data.  Use the explicit copy() method instead. */
     ListView(const ListView& other) = delete;
     ListView& operator=(const ListView&) = delete;
-
-    /* Destroy a ListView and free all its nodes. */
-    ~ListView() noexcept {
-        clear();  // NOTE: ~Allocator() is called immediately after this destructor
-    }
 
     /* Get the head of the list. */
     inline Node* head() const {
@@ -766,7 +765,8 @@ public:
     inline View copy() const {
         View result(max_size(), specialization());
         for (Node* node : *this) {
-            result.link(result.tail(), result.node(node), nullptr);
+            Node* copied = result.node(*node);
+            result.link(result.tail(), copied, nullptr);
         }
         return result;
     }
@@ -857,6 +857,37 @@ protected:
             return result;
         }
 
+        /* Copy/move the nodes from one allocator into another. */
+        template <bool copy>
+        inline void transfer_nodes(Allocator other) {
+            Node* new_prev = nullptr;  // previous node in this array
+            Node* curr = other.head;  // current node in other array
+
+            // copy over existing nodes in correct list order (head -> tail)
+            size_t idx = 0;
+            while (curr != nullptr) {
+                Node* new_curr = &array[idx];
+                if constexpr (copy) {
+                    new (new_curr) Node(*curr);  // placement new
+                } else {
+                    new (new_curr) Node(std::move(*curr));  // placement new
+                }
+
+                // link to previous node in this list
+                Node::join(new_prev, new_curr);
+
+                // advance to next node in other list
+                new_prev = new_curr;
+                curr = curr->next();
+            }
+
+            // TODO: if other contains no nodes, then we don't update head/tail
+
+            // update head/tail pointers
+            head = &array[0];
+            tail = &array[occupied - 1];
+        }
+
         /* Copy the contents of the list into a new array in list order. */
         void resize(size_t new_capacity) {
             Node* new_array = allocate_array(new_capacity);
@@ -867,12 +898,26 @@ protected:
             for (size_t i = 0; i < occupied; i++) {
                 // move node into new array
                 Node* new_curr = &new_array[i];
-                new (new_curr) Node(std::move(curr));  // placement new
+                try {
+                    new (new_curr) Node(std::move(*curr));  // placement new
+                } catch (...) {
+                    // clean up nodes that have already been moved
+                    for (size_t j = 0; j < i; j++) {
+                        new_array[j].~Node();
+                    }
+
+
+                    // TODO: move nodes back into old array?
+
+
+                    free(new_array);
+                    throw;  // propagate
+                }
 
                 // link to previous node
                 Node::join(new_prev, new_curr);
                 new_prev = new_curr;
-                curr = static_cast<Node*>(curr->next);
+                curr = curr->next();
             }
 
             // replace old array
@@ -892,37 +937,34 @@ protected:
             }
         }
 
-        /* Reset all the internal fields within this allocator. */
-        inline void reset() {
-            head = nullptr;
-            tail = nullptr;
-            capacity = 0;
-            occupied = 0;
-            array = nullptr;
-            free_list.first = nullptr;
-            free_list.second = nullptr;
-        }
-
         /* Initialize a node from the array. */
         template <typename... Args>
         inline void init_node(Node* node, Args... args) {
             // print debug message if enabled
             if constexpr (DEBUG) {
-                printf("    -> create: %s\n", repr(node->value));
+                printf("    -> create: %s\n", repr(node->value()));
             }
 
             // initialize node
             new (node) Node(std::forward<Args>(args)...);  // placement new
 
-            // check specialization if enabled
-            if (specialization != nullptr) {
-                if (!node.typecheck(specialization)) {
-                    std::ostringstream msg;
-                    msg << repr(node->value()) << " is not of type ";
-                    msg << repr(specialization);
-                    node->~Node();
-                    throw type_error(msg.str());
-                }
+            // check python specialization if enabled
+            if (specialization != nullptr && !node->typecheck(specialization)) {
+                std::ostringstream msg;
+                msg << repr(node->value()) << " is not of type ";
+                msg << repr(specialization);
+                node->~Node();  // in-place destructor
+                throw type_error(msg.str());
+            }
+        }
+
+        /* Destroy all nodes contained in the list. */
+        inline void destroy_list() {
+            Node* curr = head;
+            while (curr != nullptr) {
+                Node* next = curr->next();
+                curr->~Node();  // in-place destructor
+                curr = next;
             }
         }
 
@@ -955,27 +997,12 @@ protected:
             }
 
             // copy over existing nodes in correct list order (head -> tail)
-            if (occupied != 0) {
-                Node* new_prev = nullptr;  // previous node in new array
-                Node* curr = other.head;  // current node in old array
-                for (size_t i = 0; i < occupied; i++) {
-                    // move node into new array
-                    Node* new_curr = &array[i];
-                    new (new_curr) Node(*curr);  // placement new
-
-                    // link to previous node
-                    Node::join(new_prev, new_curr);
-                    new_prev = new_curr;
-                    curr = static_cast<Node*>(curr->next);
-                }
-
-                // update head/tail pointers
-                head = &array[0];
-                tail = &array[occupied - 1];
+            if (other.occupied != 0) {
+                transfer_nodes<true>(other);
             }
 
             // increment reference count on specialization
-            if (specialization != nullptr) {
+            if (other.specialization != nullptr) {
                 Py_INCREF(specialization);
             }
         }
@@ -984,9 +1011,17 @@ protected:
         Allocator(Allocator&& other) noexcept :
             head(other.head), tail(other.tail), capacity(other.capacity),
             occupied(other.occupied), frozen(other.frozen), array(other.array),
-            free_list(other.free_list)
+            free_list(std::move(other.free_list)), specialization(other.specialization)
         {
-            other.reset();  // reset other allocator
+            other.head = nullptr;
+            other.tail = nullptr;
+            other.capacity = 0;
+            other.occupied = 0;
+            other.frozen = false;
+            other.array = nullptr;
+            other.free_list.first = nullptr;
+            other.free_list.second = nullptr;
+            other.specialization = nullptr;
         }
 
         /* Copy assignment operator. */
@@ -996,37 +1031,29 @@ protected:
                 return *this;
             }
 
-            // clear current list
-            this->~Allocator();
-
-            // copy over existing nodes in correct list order (head -> tail)
+            // acquire array parameters
             occupied = other.occupied;
             capacity = other.capacity;
             frozen = other.frozen;
-            array = allocate_array(capacity);
-            if (occupied != 0) {
-                Node* new_prev = nullptr;  // previous node in new array
-                Node* curr = other.head;  // current node in old array
-                for (size_t i = 0; i < occupied; i++) {
-                    // move node into new array
-                    Node* new_curr = &array[i];
-                    new (new_curr) Node(*curr);  // placement new
-
-                    // link to previous node
-                    Node::join(new_prev, new_curr);
-                    new_prev = new_curr;
-                    curr = static_cast<Node*>(curr->next);
+            if (array != nullptr) {
+                free(array);  // dump previous array (does not call destructors)
+                if constexpr (DEBUG) {
+                    printf("    -> deallocate: %zu nodes\n", capacity);
                 }
+            }
+            array = allocate_array(capacity);
+            free_list = std::make_pair(nullptr, nullptr);
 
-                // update head/tail pointers
-                head = &array[0];
-                tail = &array[occupied - 1];
+            // copy over existing nodes in correct list order (head -> tail)
+            head = nullptr;
+            tail = nullptr;
+            if (occupied != 0) {
+                transfer_nodes<true>(other);
             }
 
-            // increment reference count on specialization
-            if (specialization != nullptr) {
-                Py_INCREF(specialization);
-            }
+            // acquire specialization
+            Py_XDECREF(specialization);
+            specialization = Py_XNewRef(other.specialization);
             return *this;
         }
 
@@ -1037,31 +1064,50 @@ protected:
                 return *this;
             }
 
-            // clear current list
-            this->~Allocator();
+            // clear current allocator
+            if (head != nullptr) {
+                destroy_list();  // destroy all nodes
+                free(array);  // dump previous array (does not call destructors)
+                if constexpr (DEBUG) {
+                    printf("    -> deallocate: %zu nodes\n", capacity);
+                }
+            }
+            Py_XDECREF(specialization);  // release specialization
 
-            // transfer ownership of nodes
+            // transfer ownership
             head = other.head;
             tail = other.tail;
             capacity = other.capacity;
             occupied = other.occupied;
             frozen = other.frozen;
             array = other.array;
-            free_list = other.free_list;
+            free_list.first = other.free_list.first;
+            free_list.second = other.free_list.second;
+            specialization = other.specialization;
 
             // reset other allocator
-            other.reset();
+            other.head = nullptr;
+            other.tail = nullptr;
+            other.capacity = 0;
+            other.occupied = 0;
+            other.frozen = false;
+            other.array = nullptr;
+            other.free_list.first = nullptr;
+            other.free_list.second = nullptr;
+            other.specialization = nullptr;
             return *this;
         }
 
         /* Destroy an allocator and release its resources. */
         ~Allocator() noexcept {
-            if constexpr (DEBUG) {
-                printf("    -> deallocate: %zu nodes\n", capacity);
+            if (head != nullptr) {
+                destroy_list();  // destroy all nodes
+                free(array);  // free dynamic array (does not call destructors)
+                if constexpr (DEBUG) {
+                    printf("    -> deallocate: %zu nodes\n", capacity);
+                }
             }
-            free(array);  // free dynamic array (does not call destructors)
             Py_XDECREF(specialization);  // release specialization
-            reset();  // reset internal state
         }
 
         /* Construct a new node for the list. */
@@ -1070,11 +1116,11 @@ protected:
             // check free list
             if (free_list.first != nullptr) {
                 Node* node = free_list.first;
-                Node* temp = static_cast<Node*>(node->next);
+                Node* temp = node->next();
                 try {
                     init_node(node, std::forward<Args>(args)...);
                 } catch (...) {
-                    node->next = temp;  // restore free list
+                    node->next(temp);  // restore free list
                     throw;  // propagate
                 }
                 free_list.first = temp;
@@ -1103,12 +1149,11 @@ protected:
 
         /* Release a node from the list. */
         void recycle(Node* node) {
-            if constexpr (DEBUG) {
-                printf("    -> recycle: %s\n", repr(node->value));
-            }
-
             // manually call destructor
             node->~Node();
+            if constexpr (DEBUG) {
+                printf("    -> recycle: %s\n", repr(node->value()));
+            }
 
             // check if we need to shrink the array
             if (!frozen && capacity != DEFAULT_CAPACITY && occupied == capacity / 4) {
@@ -1118,7 +1163,7 @@ protected:
                     free_list.first = node;
                     free_list.second = node;
                 } else {
-                    free_list.second->next = node;
+                    free_list.second->next(node);
                     free_list.second = node;
                 }
             }
@@ -1127,8 +1172,8 @@ protected:
 
         /* Remove all elements from a list. */
         void clear() noexcept {
-            // store temporary reference to head
-            Node* curr = head;
+            // destroy all nodes
+            destroy_list();
 
             // reset list parameters
             head = nullptr;
@@ -1136,15 +1181,6 @@ protected:
             occupied = 0;
             free_list.first = nullptr;
             free_list.second = nullptr;
-
-            // recycle all nodes
-            while (curr != nullptr) {
-                Node* next = static_cast<Node*>(curr->next);
-                curr->~Node();  // manually call destructor
-                curr = next;
-            }
-
-            // reset array if necessary
             if (!frozen) {
                 capacity = DEFAULT_CAPACITY;
                 free(array);
@@ -1218,15 +1254,13 @@ protected:
                 }
             }
 
-            // TODO: typecheck() should throw a C++ exception rather than Python
-
             // check the contents of the list
             Node* curr = head;
             while (curr != nullptr) {
-                if (!Node::typecheck(curr, spec)) {
+                if (!curr->typecheck(spec)) {
                     throw type_error("node type does not match specialization");
                 }
-                curr = static_cast<Node*>(curr->next);
+                curr = curr->next();
             }
 
             // replace old specialization
