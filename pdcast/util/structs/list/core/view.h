@@ -4,7 +4,7 @@
 
 #include <cstddef>  // size_t
 #include <optional>  // std::optional
-#include <sstream>
+#include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
 #include <tuple>  // std::tuple
 #include <Python.h>  // CPython API
@@ -16,6 +16,9 @@
 #include "table.h"  // HashTable
 #include "thread.h"  // BasicLock/DiagnosticLock
 #include "util.h"  // CoupledIterator<>, Bidirectional<>, PyIterable
+
+
+#include <iostream>  // std::cout, std::endl
 
 
 // TODO: importing core/sort.h causes a circular import error.  We need to separate
@@ -623,6 +626,9 @@ public:
     // -> figure out how to access the allocator from a view of a different type.
     // We probably need to make it a public member at the view level.
 
+    // TODO: or we can abandon the idea of a separate allocator and just move all the
+    // allocation logic into the base view.
+
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -644,19 +650,17 @@ public:
         allocator(max_size.value_or(DEFAULT_CAPACITY), max_size.has_value(), spec)
     {
         // unpack Python iterable into ListView
-        try {
-            PyIterable sequence(iterable);
-            for (PyObject* item : sequence) {
-                Node* curr = node(item);
-                if (reverse) {
-                    link(nullptr, curr, head());
-                } else {
-                    link(tail(), curr, nullptr);
-                }
+        PyIterable sequence(iterable);
+        for (PyObject* item : sequence) {
+            // NOTE: node() constructor is fallible, but because all memory is managed
+            // by the encapsulated allocator, we don't need to worry about cleaning up
+            // the list in the event of an exception.
+            Node* curr = node(item);
+            if (reverse) {
+                link(nullptr, curr, head());
+            } else {
+                link(tail(), curr, nullptr);
             }
-        } catch (...) {
-            clear();  // deallocate existing nodes
-            throw;  // propagate
         }
     }
 
@@ -679,7 +683,6 @@ public:
         }
 
         // transfer ownership of nodes
-        clear();
         allocator = std::move(other.allocator);
         return *this;
     }
@@ -690,7 +693,7 @@ public:
     ListView& operator=(const ListView&) = delete;
 
     /* Get the head of the list. */
-    inline Node* head() const {
+    inline Node* head() const noexcept {
         return allocator.head;
     }
 
@@ -703,51 +706,16 @@ public:
     }
 
     /* Get the tail of the list. */
-    inline Node* tail() const {
+    inline Node* tail() const noexcept {
         return allocator.tail;
     }
-
+ 
     /* Set the tail of the list to another node. */
     inline void tail(Node* node) {
         if (node != nullptr && !allocator.owns(node)) {
             throw std::invalid_argument("node must be owned by this allocator");
         }
         allocator.tail = node;
-    }
-
-    /* Get the current size of the list. */
-    inline size_t size() const {
-        return allocator.occupied;
-    }
-
-    /* Get the current capacity of the allocator array. */
-    inline size_t capacity() const {
-        return allocator.capacity;
-    }
-
-    /* Get the maximum size of the list. */
-    inline std::optional<size_t> max_size() const {
-        return allocator.frozen ? std::make_optional(allocator.capacity) : std::nullopt;
-    }
-
-    /* Reserve memory for a given number of nodes ahead of time. */
-    inline void reserve(size_t capacity) {
-        allocator.reserve(capacity);
-    }
-
-    /* Rearrange the nodes in memory to match their positions within the list. */
-    inline void consolidate() {
-        allocator.consolidate();
-    }
-
-    /* Enforce strict type checking for elements of this list. */
-    inline void specialize(PyObject* spec) {
-        allocator.specialize(spec);
-    }
-
-    /* Get the current specialization for Python objects within the list. */
-    inline PyObject* specialization() const {
-        return allocator.specialization;
     }
 
     /* Construct a new node for the list. */
@@ -798,6 +766,41 @@ public:
         if (next == nullptr) {
             tail(prev);
         }
+    }
+
+    /* Get the current size of the list. */
+    inline size_t size() const {
+        return allocator.occupied;
+    }
+
+    /* Get the current capacity of the allocator array. */
+    inline size_t capacity() const {
+        return allocator.capacity;
+    }
+
+    /* Get the maximum size of the list. */
+    inline std::optional<size_t> max_size() const {
+        return allocator.frozen ? std::make_optional(allocator.capacity) : std::nullopt;
+    }
+
+    /* Reserve memory for a given number of nodes ahead of time. */
+    inline void reserve(size_t capacity) {
+        allocator.reserve(capacity);
+    }
+
+    /* Rearrange the nodes in memory to match their positions within the list. */
+    inline void consolidate() {
+        allocator.consolidate();
+    }
+
+    /* Enforce strict type checking for elements of this list. */
+    inline void specialize(PyObject* spec) {
+        allocator.specialize(spec);
+    }
+
+    /* Get the current specialization for Python objects within the list. */
+    inline PyObject* specialization() const {
+        return allocator.specialization;
     }
 
     /* Get the total memory consumed by the list (in bytes). */
@@ -859,94 +862,72 @@ protected:
 
         /* Copy/move the nodes from one allocator into another. */
         template <bool copy>
-        inline void transfer_nodes(Allocator other) {
-            Node* new_prev = nullptr;  // previous node in this array
-            Node* curr = other.head;  // current node in other array
+        static void transfer_nodes(Node* head, Node* array) {
+            // NOTE: nodes are always transferred in list order, with the head at the
+            // front of the array.  This is done to aid cache locality, ensuring that
+            // every subsequent node immediately follows its predecessor in memory.
 
-            // copy over existing nodes in correct list order (head -> tail)
+            // keep track of previous node to maintain correct order
+            Node* new_prev = nullptr;
+
+            // copy over existing nodes from head -> tail
+            Node* curr = head;
             size_t idx = 0;
             while (curr != nullptr) {
+                // remember next node in original list
+                Node* next = curr->next();
+
+                // initialize new node in array
                 Node* new_curr = &array[idx];
                 if constexpr (copy) {
-                    new (new_curr) Node(*curr);  // placement new
+                    new (new_curr) Node(*curr);
                 } else {
-                    new (new_curr) Node(std::move(*curr));  // placement new
+                    new (new_curr) Node(std::move(*curr));
                 }
 
-                // link to previous node in this list
+                // link to previous node in array
                 Node::join(new_prev, new_curr);
 
-                // advance to next node in other list
+                // advance
                 new_prev = new_curr;
-                curr = curr->next();
+                curr = next;
+                ++idx;
             }
-
-            // TODO: if other contains no nodes, then we don't update head/tail
-
-            // update head/tail pointers
-            head = &array[0];
-            tail = &array[occupied - 1];
         }
 
-        /* Copy the contents of the list into a new array in list order. */
+        /* Allocate a new array of a given size and transfer the contents of the list. */
         void resize(size_t new_capacity) {
+            // allocate new array
             Node* new_array = allocate_array(new_capacity);
-
-            // copy over existing nodes in correct list order (head -> tail)
-            Node* new_prev = nullptr;  // previous node in new array
-            Node* curr = head;  // current node in old array
-            for (size_t i = 0; i < occupied; i++) {
-                // move node into new array
-                Node* new_curr = &new_array[i];
-                try {
-                    new (new_curr) Node(std::move(*curr));  // placement new
-                } catch (...) {
-                    // clean up nodes that have already been moved
-                    for (size_t j = 0; j < i; j++) {
-                        new_array[j].~Node();
-                    }
-
-
-                    // TODO: move nodes back into old array?
-
-
-                    free(new_array);
-                    throw;  // propagate
-                }
-
-                // link to previous node
-                Node::join(new_prev, new_curr);
-                new_prev = new_curr;
-                curr = curr->next();
+            if constexpr (DEBUG) {
+                printf("    -> allocate: %zu nodes\n", new_capacity);
             }
 
+            // move nodes into new array
+            transfer_nodes<false>(head, new_array);
+
             // replace old array
-            free(array);  // does not call destructors
+            free(array);  // bypasses destructors
+            if constexpr (DEBUG) {
+                printf("    -> deallocate: %zu nodes\n", capacity);
+            }
             array = new_array;
             capacity = new_capacity;
-            free_list.first = nullptr;  // clear free list
+            free_list.first = nullptr;
             free_list.second = nullptr;
 
             // update head/tail pointers
-            if (occupied == 0) {
-                head = nullptr;
-                tail = nullptr;
-            } else {
-                head = &array[0];
-                tail = &array[occupied - 1];
+            if (occupied != 0) {
+                head = &(new_array[0]);
+                tail = &(new_array[occupied - 1]);
             }
         }
 
-        /* Initialize a node from the array. */
+        /* Initialize a node from the array to use in a list. */
         template <typename... Args>
         inline void init_node(Node* node, Args... args) {
-            // print debug message if enabled
-            if constexpr (DEBUG) {
-                printf("    -> create: %s\n", repr(node->value()));
-            }
-
-            // initialize node
-            new (node) Node(std::forward<Args>(args)...);  // placement new
+            // variadic dispatch to node constructor
+            new (node) Node(std::forward<Args>(args)...);
 
             // check python specialization if enabled
             if (specialization != nullptr && !node->typecheck(specialization)) {
@@ -956,13 +937,20 @@ protected:
                 node->~Node();  // in-place destructor
                 throw type_error(msg.str());
             }
+
+            if constexpr (DEBUG) {
+                printf("    -> create: %s\n", repr(node->value()));
+            }
         }
 
         /* Destroy all nodes contained in the list. */
-        inline void destroy_list() {
+        inline void destroy_list() noexcept {
             Node* curr = head;
             while (curr != nullptr) {
                 Node* next = curr->next();
+                if constexpr (DEBUG) {
+                    printf("    -> recycle: %s\n", repr(curr->value()));
+                }
                 curr->~Node();  // in-place destructor
                 curr = next;
             }
@@ -975,7 +963,7 @@ protected:
             free_list(std::make_pair(nullptr, nullptr)), specialization(specialization)
         {
             if constexpr (DEBUG) {
-                printf("    -> preallocate: %zu nodes\n", capacity);
+                printf("    -> allocate: %zu nodes\n", capacity);
             }
 
             // increment reference count on specialization
@@ -993,17 +981,17 @@ protected:
             specialization(other.specialization)
         {
             if constexpr (DEBUG) {
-                printf("    -> preallocate: %zu nodes\n", capacity);
-            }
-
-            // copy over existing nodes in correct list order (head -> tail)
-            if (other.occupied != 0) {
-                transfer_nodes<true>(other);
+                printf("    -> allocate: %zu nodes\n", capacity);
             }
 
             // increment reference count on specialization
-            if (other.specialization != nullptr) {
-                Py_INCREF(specialization);
+            Py_XINCREF(specialization);
+
+            // copy over existing nodes in correct list order (head -> tail)
+            if (occupied != 0) {
+                transfer_nodes<true>(other.head, array);
+                head = &array[0];
+                tail = &array[occupied - 1];
             }
         }
 
@@ -1031,29 +1019,36 @@ protected:
                 return *this;
             }
 
-            // acquire array parameters
-            occupied = other.occupied;
-            capacity = other.capacity;
-            frozen = other.frozen;
+            // deallocate current list
+            Py_XDECREF(specialization);
+            free_list.first = nullptr;
+            free_list.second = nullptr;
+            if (head != nullptr) {
+                destroy_list();  // calls destructors
+                head = nullptr;
+                tail = nullptr;
+            }
             if (array != nullptr) {
-                free(array);  // dump previous array (does not call destructors)
+                free(array);
                 if constexpr (DEBUG) {
                     printf("    -> deallocate: %zu nodes\n", capacity);
                 }
             }
-            array = allocate_array(capacity);
-            free_list = std::make_pair(nullptr, nullptr);
 
-            // copy over existing nodes in correct list order (head -> tail)
-            head = nullptr;
-            tail = nullptr;
+            // transfer metadata
+            capacity = other.capacity;
+            occupied = other.occupied;
+            frozen = other.frozen;
+            specialization = Py_XNewRef(other.specialization);
+
+            // copy nodes
+            array = allocate_array(capacity);
             if (occupied != 0) {
-                transfer_nodes<true>(other);
+                transfer_nodes<true>(other.head, array);
+                head = &array[0];
+                tail = &array[occupied - 1];
             }
 
-            // acquire specialization
-            Py_XDECREF(specialization);
-            specialization = Py_XNewRef(other.specialization);
             return *this;
         }
 
@@ -1065,14 +1060,16 @@ protected:
             }
 
             // clear current allocator
+            Py_XDECREF(specialization);
             if (head != nullptr) {
-                destroy_list();  // destroy all nodes
-                free(array);  // dump previous array (does not call destructors)
+                destroy_list();  // calls destructors
+            }
+            if (array != nullptr) {
+                free(array);
                 if constexpr (DEBUG) {
                     printf("    -> deallocate: %zu nodes\n", capacity);
                 }
             }
-            Py_XDECREF(specialization);  // release specialization
 
             // transfer ownership
             head = other.head;
@@ -1100,14 +1097,16 @@ protected:
 
         /* Destroy an allocator and release its resources. */
         ~Allocator() noexcept {
+            Py_XDECREF(specialization);
             if (head != nullptr) {
-                destroy_list();  // destroy all nodes
-                free(array);  // free dynamic array (does not call destructors)
+                destroy_list();  // calls destructors
+            }
+            if (array != nullptr) {
+                free(array);
                 if constexpr (DEBUG) {
                     printf("    -> deallocate: %zu nodes\n", capacity);
                 }
             }
-            Py_XDECREF(specialization);  // release specialization
         }
 
         /* Construct a new node for the list. */
@@ -1150,10 +1149,10 @@ protected:
         /* Release a node from the list. */
         void recycle(Node* node) {
             // manually call destructor
-            node->~Node();
             if constexpr (DEBUG) {
                 printf("    -> recycle: %s\n", repr(node->value()));
             }
+            node->~Node();
 
             // check if we need to shrink the array
             if (!frozen && capacity != DEFAULT_CAPACITY && occupied == capacity / 4) {
@@ -1229,7 +1228,7 @@ protected:
         }
 
         /* Check whether the referenced node is being managed by this allocator. */
-        inline bool owns(Node* node) const {
+        inline bool owns(Node* node) const noexcept {
             return node >= array && node < array + capacity;  // pointer arithmetic
         }
 

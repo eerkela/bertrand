@@ -14,21 +14,27 @@
 /////////////////////////
 
 
-/* Round a number up to the nearest power of two. */
-template <typename T, std::enable_if_t<std::is_unsigned_v<T>, int> = 0>
-inline T next_power_of_two(T n) {
-    constexpr size_t bits = sizeof(T) * 8;
-    --n;
-    for (size_t i = 1; i < bits; i <<= 2) {
-        n |= (n >> i);
-    }
-    return ++n;
-}
+// /* Get the Python repr() of an arbitrary PyObject* as a C string. */
+// const char* repr(PyObject* obj) {
+//     if (obj == nullptr) {
+//         return "NULL";
+//     }
 
+//     // call repr()
+//     PyObject* py_repr = PyObject_Repr(obj);
+//     if (py_repr == nullptr) {
+//         return "NULL";
+//     }
 
-//////////////////////
-////    ERRORS    ////
-//////////////////////
+//     // convert to UTF-8
+//     const char* c_repr = PyUnicode_AsUTF8(py_repr);
+//     if (c_repr == nullptr) {
+//         return "NULL";
+//     }
+
+//     Py_DECREF(py_repr);
+//     return c_repr;
+// }
 
 
 /* Convert the most recent Python error into a C++ exception. */
@@ -92,6 +98,18 @@ public:
 
     const char* what() const noexcept override { return message.c_str(); }
 };
+
+
+/* Round a number up to the nearest power of two. */
+template <typename T, std::enable_if_t<std::is_unsigned_v<T>, int> = 0>
+inline T next_power_of_two(T n) {
+    constexpr size_t bits = sizeof(T) * 8;
+    --n;
+    for (size_t i = 1; i < bits; i <<= 2) {
+        n |= (n >> i);
+    }
+    return ++n;
+}
 
 
 /////////////////////////////////

@@ -180,6 +180,9 @@ protected:
         if constexpr (has_pyobject) {
             Py_XDECREF(_value);
         }
+        if constexpr (std::is_pointer_v<Value>) {
+            _value = nullptr;
+        }
     }
 
 };
