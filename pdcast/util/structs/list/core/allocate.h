@@ -4,40 +4,11 @@
 
 #include <cstddef>  // size_t
 #include <cstdlib>  // malloc(), free()
-#include <queue>  // std::queue
+#include <optional>  // std::optional
+#include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
-#include <Python.h>
-
-
-// TODO: implement an ArrayAllocator that uses a geometrically-growing contiguous
-// array to store nodes.  This incurs a copy as the list grows, but it's much simpler
-// to implement and is likely faster for small lists or those that don't change
-// frequently.
-
-
-// TODO: an alternative is a BlockAllocator that allocates nodes in blocks of a fixed
-// size.  This is more complicated, but it avoids the copy when the list grows, and
-// strikes a middle ground when it comes to memory fragmentation.
-
-
-// Both of these should have a `reserve()` method that grows the list to a given size
-// in a single allocation.  They could also accept an optional max_size, which would
-// force both to allocate a single block with a fixed size.
-
-
-
-
-// TODO:
-// DirectAllocator -> HeapAllocator
-// PreAllocator -> PoolAllocator
-
-
-// In the future, we could look into dynamically allocating blocks of nodes
-// using block allocation, but then we'd need to keep track of which blocks are
-// full and which are empty, and allocate/remove them as needed.  This would
-// be particularly complicated if nodes are removed from the middle of a block,
-// which could lead to the blocks becoming sparse.  We'd need to figure out a
-// way to consolidate these blocks, which would be a lot of work.
+#include <Python.h>  // CPython API
+#include "util.h"  // repr(), next_power_of_two()
 
 
 /////////////////////////
@@ -50,493 +21,479 @@ to help catch memory leaks. */
 const bool DEBUG = true;
 
 
-/* Every View maintains a freelist of blank nodes that can be reused for fast
-allocation/deallocation. */
-const unsigned int FREELIST_SIZE = 32;  // max size of each View's freelist
-
-
-////////////////////////////////
-////    HELPER FUNCTIONS    ////
-////////////////////////////////
-
-
-/* Get the Python repr() of an arbitrary PyObject* as a C string. */
-const char* repr(PyObject* obj) {
-    if (obj == nullptr) {
-        return "NULL";
-    }
-
-    // call repr()
-    PyObject* py_repr = PyObject_Repr(obj);
-    if (py_repr == nullptr) {
-        return "NULL";
-    }
-
-    // convert to UTF-8
-    const char* c_repr = PyUnicode_AsUTF8(py_repr);
-    if (c_repr == nullptr) {
-        return "NULL";
-    }
-
-    Py_DECREF(py_repr);
-    return c_repr;
-}
-
-
 ////////////////////
 ////    BASE    ////
 ////////////////////
 
 
-/* Common interface for all node allocators. */
-template <typename Node>
-class BaseAllocator {
-protected:
-    size_t alive;  // number of currently-alive nodes
-
-    /* A wrapper around malloc() that can help catch memory leaks. */
-    inline Node* malloc_node(PyObject* value) {
-        // print allocation/deallocation messages if DEBUG=TRUE
-        if constexpr (DEBUG) {
-            printf("    -> malloc: %s\n", repr(value));
-        }
-
-        // malloc()
-        ++alive;
-        return static_cast<Node*>(malloc(sizeof(Node)));  // may be NULL
-    }
-
-    /* A wrapper around free() that can help catch memory leaks. */
-    inline void free_node(Node* node) {
-        // print allocation/deallocation messages if DEBUG=TRUE
-        if constexpr (DEBUG) {
-            printf("    -> free: %s\n", repr(node->value));
-        }
-
-        // free()
-        --alive;
-        free(node);
-    }
-
-public:
-    // TODO: include a temp node that gets stack allocated with the allocator itself.
-    // This is reused for __setitem__() and sort(), as well as lru lookups/appends
-    // the node may be present in the set/dictionary, so we need to avoid allocating
-    // a new node.
-
-
-    /* Copy constructors. These are disabled for the sake of efficiency,
-    forcing us not to copy data unnecessarily. */
-    BaseAllocator(const BaseAllocator& other) = delete;         // copy constructor
-    BaseAllocator& operator=(const BaseAllocator&) = delete;    // copy assignment
-
-    /* Empty constructor.  This just initializes the `alive` field to zero. */
-    BaseAllocator() : alive(0) {};
-
-    /* Move ownership from one Allocator to another (move constructor). */
-    BaseAllocator(BaseAllocator&& other) : alive(other.alive) {
-        other.alive = 0;
-    }
-
-    /* Move ownership from one Allocator to another (move assignment). */
-    BaseAllocator& operator=(BaseAllocator&& other) {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
-        }
-
-        this->alive = other.alive;
-        other.alive = 0;
-        return *this;
-    }
-
-    /* Allocator interface.  Every subclass must implement these 3 methods. */
-    template <typename... Args>
-    Node* create(Args... args);
-    Node* copy(Node* node);
-    void recycle(Node* node);
-
-    /* Return the number of currently-allocated nodes. */
-    inline size_t allocated() {
-        return alive;
-    };
-
-    /* Return the total amount of memory being managed by this allocator. */
-    inline size_t nbytes() {
-        return alive * sizeof(Node) + sizeof(*this);
-    };
-
-};
-
-
-//////////////////////
-////    DIRECT    ////
-//////////////////////
-
-
-/* A factory for the templated node that directly allocates and frees each node. */
-template <typename Node>
-class DirectAllocator : public BaseAllocator<Node> {
-public:
-
-    /* Create a DirectAllocator for the given node. */
-    DirectAllocator(ssize_t max_size) : BaseAllocator<Node>() {}
-
-    /* Initialize a new node for the list. */
-    template <typename... Args>
-    Node* create(PyObject* value, Args... args) {
-        // allocate a blank node
-        Node* node = this->malloc_node(value);
-        if (node == nullptr) {  // malloc() failed
-            PyErr_NoMemory();
-            return nullptr;  // propagate
-        }
-
-        // variadic dispatch to one of the node's init() methods
-        Node* initialized = Node::init(node, value, args...);
-        if (initialized == nullptr) {  // Error during init()
-            this->free_node(node);
-        }
-
-        // return initialized node
-        return initialized;
-    }
-
-    /* Copy an existing node. */
-    Node* copy(Node* node) {
-        Node* copied = this->malloc_node(node->value);
-        if (copied == nullptr) {  // malloc() failed
-            PyErr_NoMemory();
-            return nullptr;  // propagate
-        }
-
-        // dispatch to node's init_copy() method
-        Node* initialized = Node::init_copy(copied, node);
-        if (initialized == nullptr) {  // Error during init_copy()
-            this->free_node(copied);
-        }
-
-        // return initialized node
-        return initialized;
-    }
-
-    /* Free a node, returning its resources to the allocator. */
-    inline void recycle(Node* node) {
-        Node::teardown(node);
-        this->free_node(node);
-    }
-
-};
-
-
-/////////////////////////
-////    FREE LIST    ////
-/////////////////////////
-
-
-/* A factory for the templated node that uses a freelist to manage life cycles. */
-template <typename Node>
-class FreeListAllocator : public BaseAllocator<Node> {
-private:
-    std::queue<Node*> freelist;
-
-    /* Pop a node from the freelist or allocate a new one directly. */
-    inline Node* pop_node(PyObject* value) {
-        Node* node;
-        if (!freelist.empty()) {
-            node = freelist.front();  // pop from freelist
-            freelist.pop();
-        } else {
-            node = this->malloc_node(value);  // malloc()
-        }
-        return node;  // may be NULL
-    }
-
-    /* Push a node to the freelist or free it directly. */
-    inline void push_node(Node* node) {
-        if (freelist.size() < FREELIST_SIZE) {
-            freelist.push(node);  // push to freelist
-        } else {
-            this->free_node(node);  // free()
-        }
-    }
-
-public:
-
-    /* Create a freelist allocator for the given node. */
-    FreeListAllocator(ssize_t max_size) : BaseAllocator<Node>() {}
-
-    /* Move ownership from one FreeListAllocator to another (move constructor). */
-    FreeListAllocator(FreeListAllocator&& other) :
-        BaseAllocator<Node>(std::move(other)), freelist(std::move(other.freelist))
-    {
-        other.freelist = std::queue<Node*>();
-    }
-
-    /* Move ownership from one FreeListAllocator to another (move assignment). */
-    FreeListAllocator& operator=(FreeListAllocator&& other) {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
-        }
-
-        // call base class's move assignment operator
-        BaseAllocator<Node>::operator=(std::move(other));
-
-        // clear current freelist
-        this->purge();
-
-        // move other into self
-        freelist = std::move(other.freelist);
-
-        // reset other
-        other.freelist = std::queue<Node*>();
-        return *this;
-    }
-
-    /* Destroy the freelist and release all nodes within it. */
-    ~FreeListAllocator() {
-        purge();
-    }
-
-    /* Initialize a new node for the list. */
-    template <typename... Args>
-    Node* create(PyObject* value, Args... args) {
-        // get blank node
-        Node* node = pop_node(value);
-        if (node == nullptr) {  // malloc() failed
-            PyErr_NoMemory();  // set MemoryError
-            return nullptr;
-        }
-
-        // NOTE: variadic dispatch to one of the node's init() methods
-        node = Node::init(node, value, args...);
-        if (node == nullptr) {
-            push_node(node);  // init failed, push to freelist
-        }
-
-        // return initialized node
-        return node;
-    }
-
-    /* Copy an existing node. */
-    Node* copy(Node* old_node) {
-        // get blank node
-        Node* new_node = pop_node(old_node->value);
-        if (new_node == nullptr) {  // malloc() failed
-            PyErr_NoMemory();  // set MemoryError
-            return nullptr;
-        }
-
-        // dispatch to node's init_copy() method
-        new_node = Node::init_copy(new_node, old_node);
-        if (new_node == nullptr) {
-            push_node(new_node);  // init failed, push to freelist
-        }
-
-        // return initialized node
-        return new_node;
-    }
-
-    /* Free a node, returning its resources to the allocator. */
-    inline void recycle(Node* node) {
-        Node::teardown(node);  // release references
-        push_node(node);  // push to freelist
-    }
-
-    /* Release all nodes the freelist. */
-    inline void purge() {
-        while (!freelist.empty()) {
-            Node* node = freelist.front();
-            freelist.pop();
-            this->free_node(node);
-        }
-    }
-
-    /* Get the number of nodes stored in the freelist. */
-    inline size_t reserved() const {
-        return freelist.size();
-    }
-
-};
-
 
 ////////////////////
-////    POOL    ////
+////    LIST    ////
 ////////////////////
 
 
-/* A factory for the templated node that preallocates a contiguous block of nodes. */
+/* A custom allocator that uses a dynamic array to manage memory for each node. */
 template <typename Node>
-class PreAllocator : public BaseAllocator<Node> {
+class ListAllocator {
 private:
-    size_t max_size;  // length of block
-    Node* block;  // contiguous block of nodes
-    std::queue<Node*> available;  // stack of open node addresses
+    static const size_t DEFAULT_CAPACITY = 8;  // minimum array size
 
-public:
+    /* When we allocate new nodes, we fill the dynamic array from left to right.
+    If a node is removed from the middle of the array, then we add it to the free
+    list.  The next time a node is allocated, we check the free list and reuse a
+    node if possible.  Otherwise, we initialize a new node at the end of the
+    occupied section.  If this causes the array to exceed its capacity, then we
+    allocate a new array with twice the length and copy all nodes in the same order
+    as they appear in the list. */
 
-    /* Pre-allocate the given number of nodes as a contiguous block. */
-    PreAllocator(ssize_t size) {
-        // check for invalid size
-        if (size < 0) {
-            throw std::invalid_argument("PreAllocator size must be >= 0");
-        }
-        max_size = static_cast<size_t>(size);
-
-        // print allocation/deallocation messages if DEBUG=TRUE
-        if constexpr (DEBUG) {
-            printf("    -> malloc: %zu preallocated nodes\n", max_size);
-        }
-
-        // allocate a contiguous block of nodes
-        block = static_cast<Node*>(malloc(max_size * sizeof(Node)));
-        if (block == nullptr) {  // malloc() failed
+    /* Allocate a raw array of uninitialized nodes with the specified size. */
+    inline static Node* allocate_array(size_t capacity) {
+        Node* result = static_cast<Node*>(malloc(capacity * sizeof(Node)));
+        if (result == nullptr) {
             throw std::bad_alloc();
         }
+        return result;
+    }
 
-        // build stack of open node addresses
-        for (size_t i = 0; i < max_size; ++i) {
-            available.push(&block[i]);
+    /* Copy/move the nodes from one allocator into another. */
+    template <bool copy>
+    static void transfer_nodes(Node* head, Node* array) {
+        // NOTE: nodes are always transferred in list order, with the head at the
+        // front of the array.  This is done to aid cache locality, ensuring that
+        // every subsequent node immediately follows its predecessor in memory.
+
+        // keep track of previous node to maintain correct order
+        Node* new_prev = nullptr;
+
+        // copy over existing nodes from head -> tail
+        Node* curr = head;
+        size_t idx = 0;
+        while (curr != nullptr) {
+            // remember next node in original list
+            Node* next = curr->next();
+
+            // initialize new node in array
+            Node* new_curr = &array[idx];
+            if constexpr (copy) {
+                new (new_curr) Node(*curr);
+            } else {
+                new (new_curr) Node(std::move(*curr));
+            }
+
+            // link to previous node in array
+            Node::join(new_prev, new_curr);
+
+            // advance
+            new_prev = new_curr;
+            curr = next;
+            ++idx;
         }
-        this->alive = max_size;
     }
 
-    /* Move ownership from one PreAllocator to another (move constructor). */
-    PreAllocator(PreAllocator&& other) :
-        BaseAllocator<Node>(std::move(other)), max_size(other.max_size),
-        block(other.block), available(std::move(other.available))
+    /* Allocate a new array of a given size and transfer the contents of the list. */
+    void resize(size_t new_capacity) {
+        // allocate new array
+        Node* new_array = allocate_array(new_capacity);
+        if constexpr (DEBUG) {
+            printf("    -> allocate: %zu nodes\n", new_capacity);
+        }
+
+        // move nodes into new array
+        transfer_nodes<false>(head, new_array);
+
+        // replace old array
+        free(array);  // bypasses destructors
+        if constexpr (DEBUG) {
+            printf("    -> deallocate: %zu nodes\n", capacity);
+        }
+        array = new_array;
+        capacity = new_capacity;
+        free_list.first = nullptr;
+        free_list.second = nullptr;
+
+        // update head/tail pointers
+        if (occupied != 0) {
+            head = &(new_array[0]);
+            tail = &(new_array[occupied - 1]);
+        }
+    }
+
+    /* Initialize a node from the array to use in a list. */
+    template <typename... Args>
+    inline void init_node(Node* node, Args... args) {
+        // variadic dispatch to node constructor
+        new (node) Node(std::forward<Args>(args)...);
+
+        // check python specialization if enabled
+        if (specialization != nullptr && !node->typecheck(specialization)) {
+            std::ostringstream msg;
+            msg << repr(node->value()) << " is not of type ";
+            msg << repr(specialization);
+            node->~Node();  // in-place destructor
+            throw type_error(msg.str());
+        }
+
+        if constexpr (DEBUG) {
+            printf("    -> create: %s\n", repr(node->value()));
+        }
+    }
+
+    /* Destroy all nodes contained in the list. */
+    inline void destroy_list() noexcept {
+        Node* curr = head;
+        while (curr != nullptr) {
+            Node* next = curr->next();
+            if constexpr (DEBUG) {
+                printf("    -> recycle: %s\n", repr(curr->value()));
+            }
+            curr->~Node();  // in-place destructor
+            curr = next;
+        }
+    }
+
+public:
+    Node* head;  // head of the list
+    Node* tail;  // tail of the list
+    size_t capacity;  // number of nodes in the array
+    size_t occupied;  // number of nodes currently in use
+    bool frozen;  // indicates if the array is frozen at its current capacity
+    Node* array;  // dynamic array of nodes
+    std::pair<Node*, Node*> free_list;  // singly-linked list of open nodes
+    PyObject* specialization;  // type specialization for PyObject* values
+
+    /* Create an allocator with an optional fixed size. */
+    ListAllocator(std::optional<size_t> capacity, PyObject* specialization) :
+        head(nullptr),
+        tail(nullptr),
+        capacity(capacity.value_or(DEFAULT_CAPACITY)),
+        occupied(0),
+        frozen(capacity.has_value()),
+        array(allocate_array(this->capacity)),
+        free_list(std::make_pair(nullptr, nullptr)),
+        specialization(specialization)
     {
-        // reset other
-        other.max_size = 0;
-        other.block = nullptr;
-        other.available = std::queue<Node*>();
+        if constexpr (DEBUG) {
+            printf("    -> allocate: %zu nodes\n", this->capacity);
+        }
+
+        // increment reference count on specialization
+        if (specialization != nullptr) {
+            Py_INCREF(specialization);
+        }
     }
 
-    /* Move ownership from one PreAllocator to another (move assignment). */
-    PreAllocator& operator=(PreAllocator&& other) {
+    /* Copy constructor. */
+    ListAllocator(const ListAllocator& other) :
+        head(nullptr),
+        tail(nullptr),
+        capacity(other.capacity),
+        occupied(other.occupied),
+        frozen(other.frozen),
+        array(allocate_array(capacity)),
+        free_list(std::make_pair(nullptr, nullptr)),
+        specialization(other.specialization)
+    {
+        if constexpr (DEBUG) {
+            printf("    -> allocate: %zu nodes\n", capacity);
+        }
+
+        // increment reference count on specialization
+        Py_XINCREF(specialization);
+
+        // copy over existing nodes in correct list order (head -> tail)
+        if (occupied != 0) {
+            transfer_nodes<true>(other.head, array);
+            head = &array[0];
+            tail = &array[occupied - 1];
+        }
+    }
+
+    /* Move constructor. */
+    ListAllocator(ListAllocator&& other) noexcept :
+        head(other.head),
+        tail(other.tail),
+        capacity(other.capacity),
+        occupied(other.occupied),
+        frozen(other.frozen),
+        array(other.array),
+        free_list(std::move(other.free_list)),
+        specialization(other.specialization)
+    {
+        other.head = nullptr;
+        other.tail = nullptr;
+        other.capacity = 0;
+        other.occupied = 0;
+        other.frozen = false;
+        other.array = nullptr;
+        other.free_list.first = nullptr;
+        other.free_list.second = nullptr;
+        other.specialization = nullptr;
+    }
+
+    /* Copy assignment operator. */
+    ListAllocator& operator=(const ListAllocator& other) {
         // check for self-assignment
         if (this == &other) {
             return *this;
         }
 
-        // call base class's move assignment operator
-        BaseAllocator<Node>::operator=(std::move(other));
+        // deallocate current list
+        Py_XDECREF(specialization);
+        free_list.first = nullptr;
+        free_list.second = nullptr;
+        if (head != nullptr) {
+            destroy_list();  // calls destructors
+            head = nullptr;
+            tail = nullptr;
+        }
+        if (array != nullptr) {
+            free(array);
+            if constexpr (DEBUG) {
+                printf("    -> deallocate: %zu nodes\n", capacity);
+            }
+        }
 
-        // clear current block
-        free(block);
+        // transfer metadata
+        capacity = other.capacity;
+        occupied = other.occupied;
+        frozen = other.frozen;
+        specialization = Py_XNewRef(other.specialization);
 
-        // move other into self
-        max_size = other.max_size;
-        block = other.block;
-        available = std::move(other.available);
+        // copy nodes
+        array = allocate_array(capacity);
+        if (occupied != 0) {
+            transfer_nodes<true>(other.head, array);
+            head = &array[0];
+            tail = &array[occupied - 1];
+        }
 
-        // reset other
-        other.max_size = 0;
-        other.block = nullptr;
-        other.available = std::queue<Node*>();
         return *this;
     }
 
-    /* Free the pre-allocated nodes as a contiguous block. */
-    ~PreAllocator() {
-        // print allocation/deallocation messages if DEBUG=TRUE
-        if constexpr (DEBUG) {
-            printf("    -> free: %zu preallocated nodes\n", max_size);
+    /* Move assignment operator. */
+    ListAllocator& operator=(ListAllocator&& other) noexcept {
+        // check for self-assignment
+        if (this == &other) {
+            return *this;
         }
 
-        free(block);
+        // clear current allocator
+        Py_XDECREF(specialization);
+        if (head != nullptr) {
+            destroy_list();  // calls destructors
+        }
+        if (array != nullptr) {
+            free(array);
+            if constexpr (DEBUG) {
+                printf("    -> deallocate: %zu nodes\n", capacity);
+            }
+        }
+
+        // transfer ownership
+        head = other.head;
+        tail = other.tail;
+        capacity = other.capacity;
+        occupied = other.occupied;
+        frozen = other.frozen;
+        array = other.array;
+        free_list.first = other.free_list.first;
+        free_list.second = other.free_list.second;
+        specialization = other.specialization;
+
+        // reset other allocator
+        other.head = nullptr;
+        other.tail = nullptr;
+        other.capacity = 0;
+        other.occupied = 0;
+        other.frozen = false;
+        other.array = nullptr;
+        other.free_list.first = nullptr;
+        other.free_list.second = nullptr;
+        other.specialization = nullptr;
+        return *this;
     }
 
-    /* Initialize a new node for the list. */
+    /* Destroy an allocator and release its resources. */
+    ~ListAllocator() noexcept {
+        Py_XDECREF(specialization);
+        if (head != nullptr) {
+            destroy_list();  // calls destructors
+        }
+        if (array != nullptr) {
+            free(array);
+            if constexpr (DEBUG) {
+                printf("    -> deallocate: %zu nodes\n", capacity);
+            }
+        }
+    }
+
+    /* Construct a new node for the list. */
     template <typename... Args>
-    Node* create(PyObject* value, Args... args) {
-        // check if block is full
-        if (available.empty()) {
-            PyErr_Format(
-                PyExc_IndexError,
-                "Could not allocate a new node: list exceeded its maximum size (%zu)",
-                max_size
-            );
-            return nullptr;  // propagate
+    Node* create(Args... args) {
+        // check free list
+        if (free_list.first != nullptr) {
+            Node* node = free_list.first;
+            Node* temp = node->next();
+            try {
+                init_node(node, std::forward<Args>(args)...);
+            } catch (...) {
+                node->next(temp);  // restore free list
+                throw;  // propagate
+            }
+            free_list.first = temp;
+            if (temp == nullptr) {
+                free_list.second = nullptr;
+            }
+            ++occupied;
+            return node;
         }
 
-        // get blank node
-        Node* node = available.front();
-        available.pop();
-
-        // NOTE: variadic dispatch to one of the node's init() methods
-        node = Node::init(node, value, args...);
-        if (node == nullptr) {
-            available.push(node);  // init failed, return to block
+        // check if we need to grow the array
+        if (occupied == capacity) {
+            if (frozen) {
+                std::ostringstream msg;
+                msg << "array cannot grow beyond size " << capacity;
+                throw std::runtime_error(msg.str());
+            }
+            resize(capacity * 2);
         }
 
-        // return initialized node
+        // append to end of allocated section
+        Node* node = &array[occupied++];
+        init_node(node, std::forward<Args>(args)...);
         return node;
     }
 
-    /* Copy an existing node. */
-    Node* copy(Node* old_node) {
-        // check if block is full
-        if (available.empty()) {
-            PyErr_Format(
-                PyExc_IndexError,
-                "Could not allocate a new node: list exceeded its maximum size (%zu)",
-                max_size
+    /* Release a node from the list. */
+    void recycle(Node* node) {
+        // manually call destructor
+        if constexpr (DEBUG) {
+            printf("    -> recycle: %s\n", repr(node->value()));
+        }
+        node->~Node();
+
+        // check if we need to shrink the array
+        if (!frozen && capacity != DEFAULT_CAPACITY && occupied == capacity / 4) {
+            resize(capacity / 2);
+        } else {
+            if (free_list.first == nullptr) {
+                free_list.first = node;
+                free_list.second = node;
+            } else {
+                free_list.second->next(node);
+                free_list.second = node;
+            }
+        }
+        --occupied;
+    }
+
+    /* Remove all elements from a list. */
+    void clear() noexcept {
+        // destroy all nodes
+        destroy_list();
+
+        // reset list parameters
+        head = nullptr;
+        tail = nullptr;
+        occupied = 0;
+        free_list.first = nullptr;
+        free_list.second = nullptr;
+        if (!frozen) {
+            capacity = DEFAULT_CAPACITY;
+            free(array);
+            array = allocate_array(capacity);
+        }
+    }
+
+    /* Resize the array to house a specific number of nodes. */
+    void reserve(size_t new_capacity) {
+        // ensure new capacity is large enough to store all nodes
+        if (new_capacity < occupied) {
+            throw std::invalid_argument(
+                "new capacity must not be smaller than current size"
             );
-            return nullptr;  // propagate
         }
 
-        // get blank node
-        Node* new_node = available.front();
-        available.pop();
-
-        // dispatch to node's init_copy() method
-        new_node = Node::init_copy(new_node, old_node);
-        if (new_node == nullptr) {
-            available.push(new_node);  // init failed, return to block
+        // handle frozen arrays
+        if (frozen) {
+            if (new_capacity <= capacity) {
+                return;  // do nothing
+            }
+            std::ostringstream msg;
+            msg << "array cannot grow beyond size " << capacity;
+            throw std::runtime_error(msg.str());
         }
 
-        // return initialized node
-        return new_node;
+        // ensure array does not shrink below default capacity
+        if (new_capacity <= DEFAULT_CAPACITY) {
+            if (capacity != DEFAULT_CAPACITY) {
+                resize(DEFAULT_CAPACITY);
+            }
+            return;
+        }
+
+        // resize to the next power of two
+        size_t rounded = next_power_of_two(new_capacity);
+        if (rounded != capacity) {
+            resize(rounded);
+        }
     }
 
-    /* Free a node, returning its resources to the allocator. */
-    inline void recycle(Node* node) {
-        Node::teardown(node);  // release references
-        available.push(node);  // return to block
+    /* Consolidate the nodes within the array, arranging them in the same order as
+    they appear within the list. */
+    inline void consolidate() {
+        resize(capacity);  // in-place resize
     }
 
-    /* Get the number of nodes waiting to be allocated. */
-    inline size_t reserved() const {
-        return available.size();
+    /* Check whether the referenced node is being managed by this allocator. */
+    inline bool owns(Node* node) const noexcept {
+        return node >= array && node < array + capacity;  // pointer arithmetic
+    }
+
+    /* Enforce strict type checking for python values within a list. */
+    void specialize(PyObject* spec) {
+        // handle null assignment
+        if (spec == nullptr) {
+            if (specialization != nullptr) {
+                Py_DECREF(specialization);  // release old spec
+                specialization = nullptr;
+            }
+            return;
+        }
+
+        // early return if new spec is same as old spec
+        if (specialization != nullptr) {
+            int comp = PyObject_RichCompareBool(spec, specialization, Py_EQ);
+            if (comp == -1) {  // comparison raised an exception
+                throw catch_python<type_error>();
+            } else if (comp == 1) {
+                return;
+            }
+        }
+
+        // check the contents of the list
+        Node* curr = head;
+        while (curr != nullptr) {
+            if (!curr->typecheck(spec)) {
+                throw type_error("node type does not match specialization");
+            }
+            curr = curr->next();
+        }
+
+        // replace old specialization
+        Py_INCREF(spec);
+        if (specialization != nullptr) {
+            Py_DECREF(specialization);
+        }
+        specialization = spec;
     }
 
 };
 
 
-///////////////////////
-////    ALIASES    ////
-///////////////////////
-
-
-// NOTE: views are normally packaged into Variants whose allocators are determined
-// by the `max_size` argument to the variant's constructor.  These only come in 2
-// flavors, FixedAllocator and DynamicAllocator, which are themselves aliases for
-// one of the above allocator classes.  These aliases can be reassigned to change
-// these default allocators on a global basis for all views.
-
-
-/* FixedAllocators are used whenever a positive (or zero) `max_size` is given to a
-variant constructor. */
-template <typename Node>
-using FixedAllocator = PreAllocator<Node>;
-
-
-/* DynamicAllocators are used whenever a negative `max_size` is given to a variant
-constructor. */
-template <typename Node>
-using DynamicAllocator = FreeListAllocator<Node>;
+//////////////////////
+////    HASHED    ////
+//////////////////////
 
 
 #endif  // BERTRAND_STRUCTS_CORE_ALLOCATE_H include guard

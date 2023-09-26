@@ -11,8 +11,10 @@
 #include "../core/view.h"  // views
 
 
-// TODO: since SortFunc is created whenever we call sort(), we can template it on the
-// Func type, which makes type declarations easier to write.
+// TODO: sort() with key function fails.
+
+// TODO: we also need to figure out how to transfer ownership temporarily to a list
+// to apply the sorting algorithm.
 
 
 //////////////////////
@@ -50,7 +52,8 @@ private:
         Node* new_tail = nullptr;
 
         // NOTE: we recycle the decorators as we go in order to avoid a second loop
-        for (auto iter = decorated.iter(); iter != iter.end(); ++iter) {
+        auto iter = decorated.iter();
+        while (iter != iter.end()) {
             Node* unwrapped = (*iter)->node();
 
             // link the wrapped node to the undecorated list
@@ -62,7 +65,7 @@ private:
             new_tail = unwrapped;
 
             // remove and recycle the decorator
-            decorated.recycle(iter.remove());
+            decorated.recycle(iter.remove());  // NOTE: implicitly advances iter
         }
 
         // update head/tail of sorted list
@@ -114,6 +117,22 @@ public:
         // TODO: we might just move the view into a ListView, but that would
         // require a converting move constructor, which is a bit of a pain.  It might
         // be what we need to do, though.
+        // TODO: we could also template the ListView on the allocator, and then offer
+        // a move constructor that takes a naked allocator.  That would allow us to
+        // view the list without copying it, transferring ownership from one view to
+        // another.
+        // TODO: Alternatively, we could build really robust copy/move semantics
+        // into the View constructor itself.  This would allow us to keep the
+        // the allocators internal to the view.  We would just assume that they have
+        // the correct structure.  This could possibly be accomplished via
+        // static_assert statements in the templated constructors.
+
+        // TODO: we should probably use both approaches.  We should template the
+        // ListView on the allocator, but default to ListAllocator.  Then we can
+        // provide a copy/move constructor that constructs a ListView around another
+        // view's allocator.  This is not safe, but if used correctly, it should allow
+        // us to sort a view without copying it.  As long as the methods that are used
+        // are valid for the new allocator, everything will compile just fine.
 
 
         // otherwise, we create a temporary ListView into the view and sort that

@@ -4,265 +4,157 @@
 
 // TODO: additional includes as necessary
 
+#include <sstream>  // std::ostringstream
+#include <stack>  // std::stack
+
 #include "core/util.h"
 #include "core/view.h"
 #include "core/sort.h"
 
-#include <sstream>  // std::ostringstream
-#include <stack>  // std::stack
+#include "base.h"  // LinkedBase
 
 
-////////////////////////////
-////    BASE CLASSES    ////
-////////////////////////////
+// TODO: ListInterface can be further broken into mixins
+
+// Indexable  // problem: used internally within pop(), insert(), etc.
+// Sliceable
+
+// This would help with composability and code reuse.
 
 
-/* Base class that forwards the public members of the underlying view. */
-template <typename View>
-class LinkedBase {
+// TODO: might just reimplement pop(), insert() in ListInterface.  This would decouple
+// it from indexing and allow us to customize the two independently.
+
+
+////////////////////////////////////
+////    FORWARD DECLARATIONS    ////
+////////////////////////////////////
+
+
+template <typename Derived, typename ViewType, typename SortPolicy>
+class ListInterface;
+
+
+template <typename Derived>
+class Concatenateable;
+
+
+template <typename Derived>
+class Repeatable;
+
+
+template <typename Derived>
+class Lexicographic;
+
+
+//////////////////////
+////    PUBLIC    ////
+//////////////////////
+
+
+/* Name of the equivalent Python class, to form dotted names for Python iterators. */
+inline constexpr std::string_view linked_list_name { "LinkedList" };
+
+
+/* A modular linked list class that mimics the Python list interface in C++. */
+template <
+    typename NodeType = DoubleNode<PyObject*>,
+    typename SortPolicy = MergeSort,
+    typename LockPolicy = BasicLock
+>
+class LinkedList :
+    public LinkedBase<ListView<NodeType>, linked_list_name>,
+    public ListInterface<
+        LinkedList<NodeType, SortPolicy, LockPolicy>,
+        ListView<NodeType>,
+        SortPolicy
+    >,
+    public Concatenateable<LinkedList<NodeType, SortPolicy, LockPolicy>>,
+    public Repeatable<LinkedList<NodeType, SortPolicy, LockPolicy>>,
+    public Lexicographic<LinkedList<NodeType, SortPolicy, LockPolicy>>
+{
 public:
-    inline static constexpr bool doubly_linked = View::doubly_linked;
+    using View = ListView<NodeType>;
+    using Node = typename View::Node;
+    using Value = typename Node::Value;
+    using Base = LinkedBase<View, linked_list_name>;
+    static constexpr std::string_view name { linked_list_name };
 
-    /* Every LinkedList contains a view that manages low-level node
-    allocation/deallocation and links between nodes. */
-    View view;
+    // TODO: type aliases for Iterator, doubly_linked, etc.
 
-    /* Check if the list contains any elements. */
-    inline bool empty() const {
-        return view.size() == 0;
-    }
-
-    /* Get the current size of the list. */
-    inline size_t size() const {
-        return view.size();
-    }
-
-    /* Get the maximum size of the list. */
-    inline std::optional<size_t> max_size() const {
-        return view.max_size();
-    }
-
-    /* Get the current specialization for elements of this list. */
-    inline PyObject* specialization() const {
-        return view.specialization();  // TODO: reference counting?
-    }
-
-    /* Enforce strict type checking for elements of the list. */
-    inline void specialize(PyObject* spec) {
-        view.specialize(spec);
-    }
-
-    /* Get the total amount of memory consumed by the list. */
-    inline size_t nbytes() const {
-        return view.nbytes();
-    }
-
-    /////////////////////////////////
-    ////    ITERATOR PROTOCOL    ////
-    /////////////////////////////////
-
-    /* Forward the view.iter() functor. */
-    class IteratorFactory {
-    public:
-        inline static constexpr const char forward_name[] = "LinkedList.iter";
-        inline static constexpr const char backward_name[] = "LinkedList.reverse_iter";
-
-        template <Direction dir>
-        class Iterator;
-
-        template <Direction dir>
-        using IteratorPair = CoupledIterator<Iterator<dir>>;
-
-        template <Direction dir>
-        using PyIterator = PyIterator<
-            Iterator<dir>,
-            (dir == Direction::forward) ? (forward_name) : (backward_name)
-        >;
-
-        /* Invoke the functor to get a coupled iterator over the list. */
-        inline auto operator()() const {
-            return IteratorPair<Direction::forward>(parent.view.iter());
-        }
-
-        /* Get a coupled reverse iterator over the list. */
-        inline auto reverse() const {
-            return IteratorPair<Direction::backward>(parent.view.iter.reverse());
-        }
-
-        /* Get a forward iterator to the head of the list. */
-        inline auto begin() const {
-            return Iterator<Direction::forward>(parent.view.begin());
-        }
-
-        /* Get an empty forward iterator to terminate the sequence. */
-        inline auto end() const {
-            return Iterator<Direction::forward>(parent.view.end());
-        }
-
-        /* Get a backward iterator to the tail of the list. */
-        inline auto rbegin() const {
-            return Iterator<Direction::backward>(parent.view.rbegin());
-        }
-
-        /* Get an empty backward iterator to terminate the sequence. */
-        inline auto rend() const {
-            return Iterator<Direction::backward>(parent.view.rend());
-        }
-
-        /* Get a forward Python iterator over the list. */
-        inline PyObject* python() const {
-            using Iter = PyIterator<Direction::forward>;
-
-            // create Python iterator over list
-            Iter* iter = Iter::create(begin(), end());
-            if (iter == nullptr) {
-                throw std::runtime_error("could not create iterator instance");
-            }
-
-            // return as PyObject*
-            return reinterpret_cast<PyObject*>(iter);
-        }
-
-        /* Get a reverse Python iterator over the list. */
-        inline PyObject* rpython() const {
-            using Iter = PyIterator<Direction::backward>;
-
-            // create Python iterator over list
-            Iter* iter = Iter::create(rbegin(), rend());
-            if (iter == nullptr) {
-                throw std::runtime_error("could not create iterator instance");
-            }
-
-            // return as PyObject*
-            return reinterpret_cast<PyObject*>(iter);
-        }
-
-        /* A wrapper around a view iterator that yields values rather than nodes. */
-        template <Direction dir>
-        class Iterator {
-            using ViewIter = typename View::template Iterator<dir>;
-
-        public:
-            /* iterator tags for std::iterator_traits */
-            using iterator_category     = typename ViewIter::iterator_category;
-            using difference_type       = typename ViewIter::difference_type;
-            using value_type            = PyObject*;
-            using pointer               = PyObject**;
-            using reference             = PyObject*&;
-
-            /* Dereference the iterator to get the value at the current node. */
-            inline PyObject* operator*() const {
-                return (*iter)->value();
-            }
-
-            /* Advance the iterator to the next node. */
-            inline Iterator& operator++() {
-                ++iter;
-                return *this;
-            }
-
-            /* Inequality comparison to terminate the loop. */
-            inline bool operator!=(const Iterator& other) const {
-                return iter != other.iter;
-            }
-
-        private:
-            friend IteratorFactory;
-            ViewIter iter;
-
-            Iterator(ViewIter&& iter) : iter(std::move(iter)) {}
-        };
-
-    private:
-        friend LinkedBase;
-        LinkedBase<View>& parent;
-
-        IteratorFactory(LinkedBase<View>& parent) : parent(parent) {}
-    };
-
-    /* Functor to create various kinds of iterators over the list. */
-    const IteratorFactory iter;
-
-    /* Get a forward iterator to the start of the list. */
-    inline auto begin() const {
-        return iter.begin();
-    }
-
-    /* Get a forward iterator to the end of the list. */
-    inline auto end() const {
-        return iter.end();
-    }
-
-    /* Get a reverse iterator to the end of the list. */
-    inline auto rbegin() const {
-        return iter.rbegin();
-    }
-
-    /* Get a reverse iterator to the start of the list. */
-    inline auto rend() const {
-        return iter.rend();
-    }
-
-protected:
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
 
     /* Construct an empty list. */
-    LinkedBase(
+    LinkedList(
         std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr
-    ) : view(max_size, spec), iter(*this)
+    ) : Base(max_size, spec)
     {}
 
     /* Construct a list from an input iterable. */
-    LinkedBase(
+    LinkedList(
         PyObject* iterable,
         bool reverse = false,
         std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr
-    ) : view(iterable, reverse, max_size, spec), iter(*this)
+    ) : Base(iterable, reverse, max_size, spec)
     {}
 
     /* Construct a list from a base view. */
-    LinkedBase(View&& view) : view(std::move(view)), iter(*this) {}
-
-    // TODO: construct from iterators?
+    LinkedList(View&& view) : Base(std::move(view)) {}
 
     /* Copy constructor. */
-    LinkedBase(const LinkedBase& other) :
-        view(other.view), iter(*this)
-    {}
+    LinkedList(const LinkedList& other) : Base(other.view) {}
 
     /* Move constructor. */
-    LinkedBase(LinkedBase&& other) :
-        view(std::move(other.view)), iter(*this)
-    {}
+    LinkedList(LinkedList&& other) : Base(std::move(other.view)) {}
 
     /* Copy assignment operator. */
-    LinkedBase& operator=(const LinkedBase& other) {
-        view = other.view;
+    LinkedList& operator=(const LinkedList& other) {
+        Base::operator=(other);
         return *this;
     }
 
     /* Move assignment operator. */
-    LinkedBase& operator=(LinkedBase&& other) {
-        view = std::move(other.view);
+    LinkedList& operator=(LinkedList&& other) {
+        Base::operator=(std::move(other));
         return *this;
     }
 
+    /* A functor that allows the list to be locked for thread safety. */
+    const LockPolicy lock;
+    /* BasicLock:
+     * lock()
+     * lock.context()
+     *
+     * DiagnosticLock:
+     * lock()
+     * lock.context()
+     * lock.count()
+     * lock.duration()
+     * lock.contention()
+     * lock.reset_diagnostics()
+     */
 };
 
 
-////////////////////////////
-////    LIST METHODS    ////
-////////////////////////////
+///////////////////////
+////    METHODS    ////
+///////////////////////
+
+
+// NOTE: ListInterface is implemented as a mixin to allow code reuse with other Linked
+// data structures.
 
 
 /* A mixin that implements the full Python list interface. */
 template <typename Derived, typename ViewType, typename SortPolicy>
-class ListInterface_ {
+class ListInterface {
     using View = ViewType;
     using Node = typename View::Node;
     using Value = typename Node::Value;
-    inline static constexpr bool doubly_linked = View::doubly_linked;
 
     template <Direction dir, typename = void>
     using ViewIter = typename View::template Iterator<dir>;
@@ -361,7 +253,7 @@ public:
 
         // if list is doubly-linked and stop is closer to tail than start is to head,
         // then we iterate backward from the tail
-        if constexpr (doubly_linked) {
+        if constexpr (Node::doubly_linked) {
             if ((view.size() - 1 - norm_stop) < norm_start) {
                 // get backwards iterator to stop index
                 auto iter = view.rbegin();
@@ -439,7 +331,7 @@ public:
 
         // if list is doubly-linked and stop is closer to tail than start is to head,
         // then we iterate backward from the tail
-        if constexpr (doubly_linked) {
+        if constexpr (Node::doubly_linked) {
             if ((view.size() - 1 - norm_stop) < norm_start) {
                 // get backwards iterator to stop index
                 auto iter = view.iter.reverse();
@@ -482,15 +374,11 @@ public:
 
     /* Check if the list contains a certain item. */
     bool contains(PyObject* item) const {
-        const View& view = self().view;
-
-        for (Node* node : view) {
+        for (Node* node : self().view) {
             if (node->eq(item)) {
                 return true;
             }
         }
-
-        // item not found
         return false;
     }
 
@@ -543,7 +431,7 @@ public:
         Node* head = view.head();
         Node* curr = head;
         
-        if constexpr (doubly_linked) {
+        if constexpr (Node::doubly_linked) {
             // swap all `next`/`prev` pointers
             while (curr != nullptr) {
                 Node* next = curr->next();
@@ -590,7 +478,7 @@ public:
         Node* new_tail;
 
         // identify new head and tail of rotated list
-        if constexpr (doubly_linked) {
+        if constexpr (Node::doubly_linked) {
             // NOTE: if the list is doubly-linked, then we can iterate in either
             // direction to find the junction point.
             if (index > view.size() / 2) {  // backward traversal
@@ -635,7 +523,7 @@ public:
 
         // get iterator to index
         View& view = self().view;
-        if constexpr (doubly_linked) {
+        if constexpr (Node::doubly_linked) {
             size_t threshold = (view.size() - (view.size() > 0)) / 2;
             if (norm_index > threshold) {  // backward traversal
                 ViewIter<Direction::backward> iter = view.rbegin();
@@ -721,7 +609,7 @@ public:
         }
 
     private:
-        friend ListInterface_;
+        friend ListInterface;
         View& view;
         Bidirectional<ViewIter> iter;
 
@@ -735,8 +623,6 @@ public:
 
         template <Direction dir = Direction::forward>
         class Iterator;
-
-        using IteratorPair = CoupledIterator<Bidirectional<Iterator>>;
 
         /* Extract a slice from a linked list. */
         Derived get() const {
@@ -763,6 +649,11 @@ public:
             }
             return Derived(std::move(result));
         }
+
+        // TODO:
+        // l = LinkedList("abcdef")
+        // l[2:2] = "xyz"
+        // LinkedList(['a', 'b', 'x', 'y', 'c', 'd', 'e', 'f'])  // missing 'z'
 
         /* Replace a slice within a linked list. */
         void set(PyObject* items) {
@@ -889,22 +780,22 @@ public:
         // list.slice().iter.rpython()
 
         /* Return a coupled pair of iterators with a possible length override. */
-        inline IteratorPair iter(std::optional<size_t> length = std::nullopt) const {
+        inline auto iter(std::optional<size_t> length = std::nullopt) const {
             using Forward = Iterator<Direction::forward>;
 
             // default to length of slice
             if (!length.has_value()) {
-                return IteratorPair(begin(), end());  
+                return CoupledIterator<Bidirectional<Iterator>>(begin(), end());  
             }
 
             // use length override if given
             size_t len = length.value();
 
             // backward traversal
-            if constexpr (doubly_linked) {
+            if constexpr (Node::doubly_linked) {
                 using Backward = Iterator<Direction::backward>;
                 if (backward()) {
-                    return IteratorPair(
+                    return CoupledIterator<Bidirectional<Iterator>>(
                         Bidirectional(Backward(view, origin(), indices, len)),
                         Bidirectional(Backward(view, indices, len))
                     );
@@ -912,14 +803,14 @@ public:
             }
 
             // forward traversal
-            return IteratorPair(
+            return CoupledIterator<Bidirectional<Iterator>>(
                 Bidirectional(Forward(view, origin(), indices, len)),
                 Bidirectional(Forward(view, indices, len))
             );
         }
 
         /* Return an iterator to the start of the slice. */
-        inline Bidirectional<Iterator> begin() const {
+        inline auto begin() const {
             using Forward = Iterator<Direction::forward>;
 
             // account for empty sequence
@@ -928,7 +819,7 @@ public:
             }
 
             // backward traversal
-            if constexpr (doubly_linked) {
+            if constexpr (Node::doubly_linked) {
                 using Backward = Iterator<Direction::backward>;
                 if (backward()) {
                     return Bidirectional(Backward(view, origin(), indices, length()));
@@ -940,7 +831,7 @@ public:
         }
 
         /* Return an iterator to the end of the slice. */
-        inline Bidirectional<Iterator> end() const {
+        inline auto end() const {
             using Forward = Iterator<Direction::forward>;
 
             // return same orientation as begin()
@@ -949,7 +840,7 @@ public:
             }
 
             // backward traversal
-            if constexpr (doubly_linked) {
+            if constexpr (Node::doubly_linked) {
                 using Backward = Iterator<Direction::backward>;
                 if (backward()) {
                     return Bidirectional(Backward(view, indices, length()));
@@ -1079,7 +970,7 @@ public:
         };
 
     private:
-        friend ListInterface_;
+        friend ListInterface;
         View& view;
         const SliceIndices indices;
         mutable bool found;  // indicates whether we've cached the origin node
@@ -1097,7 +988,7 @@ public:
             }
 
             // find origin node
-            if constexpr (doubly_linked) {
+            if constexpr (Node::doubly_linked) {
                 if (backward()) {  // backward traversal
                     Node* next = nullptr;
                     Node* curr = view.tail();
@@ -1178,7 +1069,7 @@ private:
         SliceIndices& operator=(SliceIndices&& other) = delete;
 
     private:
-        friend ListInterface_;
+        friend ListInterface;
 
         SliceIndices(
             const long long start,
@@ -1220,7 +1111,7 @@ private:
             size_t view_size
         ) {
             // if doubly-linked, start at whichever end is closest to slice boundary
-            if constexpr (doubly_linked) {
+            if constexpr (Node::doubly_linked) {
                 long long size = static_cast<long long>(view_size);
                 if (
                     (step > 0 && start <= size - closed) ||
@@ -1407,19 +1298,16 @@ protected:
 };
 
 
-//////////////////////////////////
-////    OPERATOR OVERLOADS    ////
-//////////////////////////////////
+/////////////////////////////
+////    CONCATENATION    ////
+/////////////////////////////
 
 
 /* A mixin that adds operator overloads that mimic the behavior of Python lists with
 respect to concatenation, repetition, and lexicographic comparison. */
 template <typename Derived>
-class ListOps_ {
-public:
-
-    // NOTE: operator overloads are defined as non-member functions to allow for
-    // symmetric operation between lists and other iterables.
+struct Concatenateable {
+    static constexpr bool enable = std::is_base_of_v<Concatenateable<Derived>, Derived>;
 
     /* Overload the + operator to allow concatenation of Derived types from both
     Python and C++. */
@@ -1432,6 +1320,104 @@ public:
     both Python and C++. */
     template <typename T>
     friend Derived& operator+=(Derived& lhs, const T& rhs);
+
+};
+
+
+/* Allow Python-style concatenation between Linked data structures and arbitrary
+Python/C++ containers. */
+template <typename T, typename Derived>
+inline auto operator+(const Derived& lhs, const T& rhs)
+    -> std::enable_if_t<Concatenateable<Derived>::enable, Derived>
+{
+    std::optional<Derived> result = lhs.copy();
+    if (!result.has_value()) {
+        throw std::runtime_error("could not copy list");
+    }
+    result.value().extend(rhs);  // must be specialized for T
+    return Derived(std::move(result.value()));
+}
+
+
+/* Allow Python-style concatenation between list-like C++ containers and Linked data
+structures. */
+template <typename T, typename Derived>
+inline auto operator+(const T& lhs, const Derived& rhs)
+    -> std::enable_if_t<
+        // first, check that T is a list-like container with a range-based insert
+        // method that returns an iterator.  This is true for all STL containers.
+        std::is_same_v<
+            decltype(
+                std::declval<T>().insert(
+                    std::declval<T>().end(),
+                    std::declval<Derived>().begin(),
+                    std::declval<Derived>().end()
+                )
+            ),
+            typename T::iterator
+        >,
+        // next, check that Derived inherits from Concatenateable
+        std::enable_if_t<Concatenateable<Derived>::enable, T>
+    >
+{
+    T result = lhs;
+    result.insert(result.end(), rhs.begin(), rhs.end());  // STL compliant
+    return result;
+}
+
+
+/* Allow Python-style concatenation between Python sequences and Linked data
+structures. */
+template <typename T, typename Derived>
+inline auto operator+(const PyObject* lhs, const Derived& rhs)
+    -> std::enable_if_t<Concatenateable<Derived>::enable, PyObject*>
+{
+    // Check that lhs is a Python sequence
+    if (!PySequence_Check(lhs)) {
+        std::ostringstream msg;
+        msg << "can only concatenate sequence (not '";
+        msg << lhs->ob_type->tp_name << "') to sequence";
+        throw type_error(msg.str());
+    }
+
+    // unpack list into Python sequence
+    PyObject* seq = PySequence_List(rhs.iter.python());  // new ref
+    if (seq == nullptr) {
+        return nullptr;  // propagate error
+    }
+
+    // concatenate using Python API
+    PyObject* concat = PySequence_Concat(lhs, seq);
+    Py_DECREF(seq);
+    return concat;
+}
+
+
+/* Allow in-place concatenation for Linked data structures using the += operator. */
+template <typename T, typename Derived>
+inline auto operator+=(Derived& lhs, const T& rhs)
+    -> std::enable_if_t<Concatenateable<Derived>::enable, Derived&>
+{
+    lhs.extend(rhs);  // must be specialized for T
+    return lhs;
+}
+
+
+//////////////////////////
+////    REPETITION    ////
+//////////////////////////
+
+
+// TODO: we could probably optimize repetition by allocating a contiguous block of
+// nodes equal to list.size() * rhs.  We could also remove the extra copy in *= by
+// using an iterator to the end of the list and reusing it for each iteration.
+
+
+/* A mixin that adds operator overloads that mimic the behavior of Python lists with
+respect to concatenation, repetition, and lexicographic comparison. */
+template <typename Derived>
+struct Repeatable {
+    static constexpr bool enable = std::is_base_of_v<Repeatable<Derived>, Derived>;
 
     // NOTE: We use a dummy typename to avoid forward declarations of operator* and
     // operator*=.  It doesn't actually affect the implementation of either overload.
@@ -1453,6 +1439,137 @@ public:
     friend Derived& operator*=(Derived& lhs, const ssize_t rhs);
     template <typename>
     friend Derived& operator*=(Derived& lhs, const PyObject* rhs);
+
+};
+
+
+/* Allow Python-style repetition for Linked data structures using the * operator. */
+template <typename = void, typename Derived>
+auto operator*(const Derived& lhs, const ssize_t rhs)
+    -> std::enable_if_t<Repeatable<Derived>::enable, Derived>
+{
+    // handle empty repitition
+    if (rhs <= 0 || lhs.size() == 0) {
+        return Derived(lhs.max_size(), lhs.specialization());
+    }
+
+    // copy lhs
+    std::optional<Derived> result = lhs.copy();
+    if (!result.has_value()) {
+        throw std::runtime_error("could not copy list");
+    }
+
+    // extend copy rhs - 1 times
+    for (ssize_t i = 1; i < rhs; ++i) {
+        result.value().extend(lhs);
+    }
+
+    // move result into return value
+    return Derived(std::move(result.value()));
+}
+
+
+/* Allow Python-style repetition for Linked data structures using the * operator. */
+template <typename = void, typename Derived>
+inline auto operator*(const ssize_t lhs, const Derived& rhs)
+    -> std::enable_if_t<Repeatable<Derived>::enable, Derived>
+{
+    return rhs * lhs;  // symmetric
+}
+
+
+/* Allow Python-style repetition for Linked data structures using the * operator. */
+template <typename = void, typename Derived>
+auto operator*(const Derived& lhs, const PyObject* rhs)
+    -> std::enable_if_t<Repeatable<Derived>::enable, Derived>
+{
+    // Check that rhs is a Python integer
+    if (!PyLong_Check(rhs)) {
+        std::ostringstream msg;
+        msg << "can't multiply sequence by non-int of type '";
+        msg << rhs->ob_type->tp_name << "'";
+        throw type_error(msg.str());
+    }
+
+    // convert to C++ integer
+    ssize_t val = PyLong_AsSsize_t(rhs);
+    if (val == -1 && PyErr_Occurred()) {
+        throw catch_python<type_error>();
+    }
+
+    // delegate to C++ overload
+    return lhs * val;
+}
+
+
+/* Allow Python-style repetition for Linked data structures using the * operator. */
+template <typename = void, typename Derived>
+inline auto operator*(const PyObject* lhs, const Derived& rhs)
+    -> std::enable_if_t<Repeatable<Derived>::enable, Derived>
+{
+    return rhs * lhs;  // symmetric
+}
+
+
+/* Allow in-place repetition for Linked data structures using the *= operator. */
+template <typename = void, typename Derived>
+auto operator*=(Derived& lhs, const ssize_t rhs)
+    -> std::enable_if_t<Repeatable<Derived>::enable, Derived&>
+{
+    // handle empty repitition
+    if (rhs <= 0 || lhs.size() == 0) {
+        lhs.clear();
+        return lhs;
+    }
+
+    // copy lhs
+    std::optional<Derived> copy = lhs.copy();
+    if (!copy.has_value()) {
+        throw std::runtime_error("could not copy list");
+    }
+
+    // extend lhs rhs - 1 times
+    for (ssize_t i = 1; i < rhs; ++i) {
+        lhs.extend(copy.value());
+    }
+    return lhs;
+}
+
+
+/* Allow in-place repetition for Linked data structures using the *= operator. */
+template <typename = void, typename Derived>
+inline auto operator*=(Derived& lhs, const PyObject* rhs)
+    -> std::enable_if_t<Repeatable<Derived>::enable, Derived&>
+{
+    // Check that rhs is a Python integer
+    if (!PyLong_Check(rhs)) {
+        std::ostringstream msg;
+        msg << "can't multiply sequence by non-int of type '";
+        msg << rhs->ob_type->tp_name << "'";
+        throw type_error(msg.str());
+    }
+
+    // convert to C++ integer
+    ssize_t val = PyLong_AsSsize_t(rhs);
+    if (val == -1 && PyErr_Occurred()) {
+        throw catch_python<type_error>();
+    }
+
+    // delegate to C++ overload
+    return lhs *= val;
+}
+
+
+/////////////////////////////////////////
+////    LEXICOGRAPHIC COMPARISONS    ////
+/////////////////////////////////////////
+
+
+/* A mixin that adds operator overloads that mimic the behavior of Python lists with
+respect to concatenation, repetition, and lexicographic comparison. */
+template <typename Derived>
+struct Lexicographic {
+    static constexpr bool enable = std::is_base_of_v<Lexicographic<Derived>, Derived>;
 
     /* Overload the < operator to allow lexicographic comparison between Derived types
     and arbitrary C++ containers/Python sequences. */
@@ -1495,237 +1612,15 @@ public:
     friend bool operator>=(const Derived& lhs, const T& rhs);
     template <typename T>
     friend bool operator>=(const T& lhs, const Derived& rhs);
+
 };
-
-
-/* NOTE: because the operator overloads are fully generic and defined outside the
-mixin, we need to explicitly disable them for types where they are not valid, otherwise
-the compiler will attempt to use them wherever a comparison is made anywhere in the
-codebase, regardless of the actual types of the operands. */
-template <typename Derived, typename ReturnType>
-using enable_list_ops = std::enable_if_t<
-    std::is_base_of_v<ListOps_<Derived>, Derived>, ReturnType
->;
-
-
-/////////////////////////////
-////    CONCATENATION    ////
-/////////////////////////////
-
-
-/* Allow Python-style concatenation between Linked data structures and arbitrary
-Python/C++ containers. */
-template <typename T, typename Derived>
-inline auto operator+(const Derived& lhs, const T& rhs)
-    -> enable_list_ops<Derived, Derived>
-{
-    std::optional<Derived> result = lhs.copy();
-    if (!result.has_value()) {
-        throw std::runtime_error("could not copy list");
-    }
-    result.value().extend(rhs);  // must be specialized for T
-    return Derived(std::move(result.value()));
-}
-
-
-/* Allow Python-style concatenation between list-like C++ containers and Linked data
-structures. */
-template <typename T, typename Derived>
-inline auto operator+(const T& lhs, const Derived& rhs)
-    -> std::enable_if_t<
-        std::is_same_v<
-            decltype(
-                std::declval<T>().insert(
-                    std::declval<T>().end(),
-                    std::declval<Derived>().begin(),
-                    std::declval<Derived>().end()
-                )
-            ),
-            typename T::iterator
-        >,
-        enable_list_ops<Derived, T>
-    >
-{
-    T result = lhs;
-    result.insert(result.end(), rhs.begin(), rhs.end());  // STL compliant
-    return result;
-}
-
-
-/* Allow Python-style concatenation between Python sequences and Linked data
-structures. */
-template <typename T, typename Derived>
-inline auto operator+(const PyObject* lhs, const Derived& rhs)
-    -> enable_list_ops<Derived, PyObject*>
-{
-    // Check that lhs is a Python sequence
-    if (!PySequence_Check(lhs)) {
-        std::ostringstream msg;
-        msg << "can only concatenate sequence (not '";
-        msg << lhs->ob_type->tp_name << "') to sequence";
-        throw type_error(msg.str());
-    }
-
-    // unpack list into Python sequence
-    PyObject* seq = PySequence_List(rhs.iter.python());  // new ref
-    if (seq == nullptr) {
-        return nullptr;  // propagate error
-    }
-
-    // concatenate using Python API
-    PyObject* concat = PySequence_Concat(lhs, seq);
-    Py_DECREF(seq);
-    return concat;
-}
-
-
-/* Allow in-place concatenation for Linked data structures using the += operator. */
-template <typename T, typename Derived>
-inline auto operator+=(Derived& lhs, const T& rhs)
-    -> enable_list_ops<Derived, Derived&>
-{
-    lhs.extend(rhs);  // must be specialized for T
-    return lhs;
-}
-
-
-//////////////////////////
-////    REPETITION    ////
-//////////////////////////
-
-
-// TODO: we could probably optimize repetition by allocating a contiguous block of
-// nodes equal to list.size() * rhs.  We could also remove the extra copy in *= by
-// using an iterator to the end of the list and reusing it for each iteration.
-
-
-/* Allow Python-style repetition for Linked data structures using the * operator. */
-template <typename = void, typename Derived>
-auto operator*(const Derived& lhs, const ssize_t rhs)
-    -> enable_list_ops<Derived, Derived>
-{
-    // handle empty repitition
-    if (rhs <= 0 || lhs.size() == 0) {
-        return Derived(lhs.max_size(), lhs.specialization());
-    }
-
-    // copy lhs
-    std::optional<Derived> result = lhs.copy();
-    if (!result.has_value()) {
-        throw std::runtime_error("could not copy list");
-    }
-
-    // extend copy rhs - 1 times
-    for (ssize_t i = 1; i < rhs; ++i) {
-        result.value().extend(lhs);
-    }
-
-    // move result into return value
-    return Derived(std::move(result.value()));
-}
-
-
-/* Allow Python-style repetition for Linked data structures using the * operator. */
-template <typename = void, typename Derived>
-inline auto operator*(const ssize_t lhs, const Derived& rhs)
-    -> enable_list_ops<Derived, Derived>
-{
-    return rhs * lhs;  // symmetric
-}
-
-
-/* Allow Python-style repetition for Linked data structures using the * operator. */
-template <typename = void, typename Derived>
-auto operator*(const Derived& lhs, const PyObject* rhs)
-    -> enable_list_ops<Derived, Derived>
-{
-    // Check that rhs is a Python integer
-    if (!PyLong_Check(rhs)) {
-        std::ostringstream msg;
-        msg << "can't multiply sequence by non-int of type '";
-        msg << rhs->ob_type->tp_name << "'";
-        throw type_error(msg.str());
-    }
-
-    // convert to C++ integer
-    ssize_t val = PyLong_AsSsize_t(rhs);
-    if (val == -1 && PyErr_Occurred()) {
-        throw catch_python<type_error>();
-    }
-
-    // delegate to C++ overload
-    return lhs * val;
-}
-
-
-/* Allow Python-style repetition for Linked data structures using the * operator. */
-template <typename = void, typename Derived>
-inline auto operator*(const PyObject* lhs, const Derived& rhs)
-    -> enable_list_ops<Derived, Derived>
-{
-    return rhs * lhs;  // symmetric
-}
-
-
-/* Allow in-place repetition for Linked data structures using the *= operator. */
-template <typename = void, typename Derived>
-auto operator*=(Derived& lhs, const ssize_t rhs)
-    -> enable_list_ops<Derived, Derived&>
-{
-    // handle empty repitition
-    if (rhs <= 0 || lhs.size() == 0) {
-        lhs.clear();
-        return lhs;
-    }
-
-    // copy lhs
-    std::optional<Derived> copy = lhs.copy();
-    if (!copy.has_value()) {
-        throw std::runtime_error("could not copy list");
-    }
-
-    // extend lhs rhs - 1 times
-    for (ssize_t i = 1; i < rhs; ++i) {
-        lhs.extend(copy.value());
-    }
-    return lhs;
-}
-
-
-/* Allow in-place repetition for Linked data structures using the *= operator. */
-template <typename = void, typename Derived>
-inline auto operator*=(Derived& lhs, const PyObject* rhs)
-    -> enable_list_ops<Derived, Derived&>
-{
-    // Check that rhs is a Python integer
-    if (!PyLong_Check(rhs)) {
-        std::ostringstream msg;
-        msg << "can't multiply sequence by non-int of type '";
-        msg << rhs->ob_type->tp_name << "'";
-        throw type_error(msg.str());
-    }
-
-    // convert to C++ integer
-    ssize_t val = PyLong_AsSsize_t(rhs);
-    if (val == -1 && PyErr_Occurred()) {
-        throw catch_python<type_error>();
-    }
-
-    // delegate to C++ overload
-    return lhs *= val;
-}
-
-
-/////////////////////////////////////////
-////    LEXICOGRAPHIC COMPARISONS    ////
-/////////////////////////////////////////
 
 
 /* Allow lexicographic < comparison between Linked data structures and compatible C++
 containers. */
 template <typename T, typename Derived>
 auto operator<(const Derived& lhs, const T& rhs)
-    -> enable_list_ops<Derived, bool>
+    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
 {
     // get coupled iterators
     auto iter_lhs = std::begin(lhs);
@@ -1750,7 +1645,7 @@ auto operator<(const Derived& lhs, const T& rhs)
 sequences. */
 template <typename Derived>
 auto operator<(const Derived& lhs, const PyObject* rhs)
-    -> enable_list_ops<Derived, bool>
+    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
 {
     using Node = typename Derived::Node;
 
@@ -1798,7 +1693,7 @@ auto operator<(const Derived& lhs, const PyObject* rhs)
 structures. */
 template <typename T, typename Derived>
 inline auto operator<(const T& lhs, const Derived& rhs)
-    -> enable_list_ops<Derived, bool>
+    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
 {
     return rhs > lhs;  // implies lhs < rhs
 }
@@ -1808,7 +1703,7 @@ inline auto operator<(const T& lhs, const Derived& rhs)
 containers. */
 template <typename T, typename Derived>
 auto operator<=(const Derived& lhs, const T& rhs)
-    -> enable_list_ops<Derived, bool>
+    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
 {
     // get coupled iterators
     auto iter_lhs = std::begin(lhs);
@@ -1833,7 +1728,7 @@ auto operator<=(const Derived& lhs, const T& rhs)
 sequences. */
 template <typename Derived>
 auto operator<=(const Derived& lhs, const PyObject* rhs)
-    -> enable_list_ops<Derived, bool>
+    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
 {
     using Node = typename Derived::Node;
 
@@ -1881,7 +1776,7 @@ auto operator<=(const Derived& lhs, const PyObject* rhs)
 structures. */
 template <typename T, typename Derived>
 inline auto operator<=(const T& lhs, const Derived& rhs)
-    -> enable_list_ops<Derived, bool>
+    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
 {
     return rhs >= lhs;  // implies lhs <= rhs
 }
@@ -1890,7 +1785,7 @@ inline auto operator<=(const T& lhs, const Derived& rhs)
 /* Allow == comparison between Linked data structures and compatible C++ containers. */
 template <typename T, typename Derived>
 auto operator==(const Derived& lhs, const T& rhs)
-    -> enable_list_ops<Derived, bool>
+    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
 {
     using Node = typename Derived::Node;
 
@@ -1914,7 +1809,7 @@ auto operator==(const Derived& lhs, const T& rhs)
 /* Allow == comparison betwen Linked data structures and Python sequences. */
 template <typename Derived>
 auto operator==(const Derived& lhs, const PyObject* rhs)
-    -> enable_list_ops<Derived, bool>
+    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
 {
     using Node = typename Derived::Node;
 
@@ -1954,7 +1849,7 @@ auto operator==(const Derived& lhs, const PyObject* rhs)
 /* Allow == comparison between compatible C++ containers and Linked data structures. */
 template <typename T, typename Derived>
 inline auto operator==(const T& lhs, const Derived& rhs)
-    -> enable_list_ops<Derived, bool>
+    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
 {
     return rhs == lhs;
 }
@@ -1963,7 +1858,7 @@ inline auto operator==(const T& lhs, const Derived& rhs)
 /* Allow != comparison between Linked data structures and compatible C++ containers. */
 template <typename T, typename Derived>
 inline auto operator!=(const Derived& lhs, const T& rhs)
-    -> enable_list_ops<Derived, bool>
+    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
 {
     return !(lhs == rhs);
 }
@@ -1972,7 +1867,7 @@ inline auto operator!=(const Derived& lhs, const T& rhs)
 /* Allow != comparison between compatible C++ containers Linked data structures. */
 template <typename T, typename Derived>
 inline auto operator!=(const T& lhs, const Derived& rhs)
-    -> enable_list_ops<Derived, bool>
+    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
 {
     return !(lhs == rhs);
 }
@@ -1982,7 +1877,7 @@ inline auto operator!=(const T& lhs, const Derived& rhs)
 containers. */
 template <typename T, typename Derived>
 inline auto operator>=(const Derived& lhs, const T& rhs)
-    -> enable_list_ops<Derived, bool>
+    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
 {
     return !(lhs < rhs);
 }
@@ -1992,7 +1887,7 @@ inline auto operator>=(const Derived& lhs, const T& rhs)
 structures. */
 template <typename T, typename Derived>
 inline auto operator>=(const T& lhs, const Derived& rhs)
-    -> enable_list_ops<Derived, bool>
+    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
 {
     return !(lhs < rhs);
 }
@@ -2002,7 +1897,7 @@ inline auto operator>=(const T& lhs, const Derived& rhs)
 containers. */
 template <typename T, typename Derived>
 inline auto operator>(const Derived& lhs, const T& rhs)
-    -> enable_list_ops<Derived, bool>
+    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
 {
     return !(lhs <= rhs);
 }
@@ -2012,101 +1907,10 @@ inline auto operator>(const Derived& lhs, const T& rhs)
 structures. */
 template <typename T, typename Derived>
 inline auto operator>(const T& lhs, const Derived& rhs)
-    -> enable_list_ops<Derived, bool>
+    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
 {
     return !(lhs <= rhs);
 }
-
-
-//////////////////////
-////    PUBLIC    ////
-//////////////////////
-
-
-template <
-    typename NodeType = DoubleNode<PyObject*>,
-    typename SortPolicy = MergeSort,
-    typename LockPolicy = BasicLock
->
-class LinkedList :
-    public LinkedBase<ListView<NodeType>>,
-    public ListInterface_<
-        LinkedList<NodeType, SortPolicy, LockPolicy>,
-        ListView<NodeType>,
-        SortPolicy
-    >,
-    public ListOps_<
-        LinkedList<NodeType, SortPolicy, LockPolicy>
-    >
-{
-public:
-    using View = ListView<NodeType>;
-    using Node = typename View::Node;
-
-private:
-    using Self = LinkedList<NodeType, SortPolicy, LockPolicy>;
-    using Base = LinkedBase<View>;
-    using Sort = SortPolicy;
-    using Lock = LockPolicy;
-    using IList = ListInterface_<Self, View, Sort>;
-    using ListOps = ListOps_<Self>;
-
-public:
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Construct an empty list. */
-    LinkedList(std::optional<size_t> max_size = std::nullopt, PyObject* spec = nullptr) :
-        Base(max_size, spec)
-    {}
-
-    /* Construct a list from an input iterable. */
-    LinkedList(
-        PyObject* iterable,
-        bool reverse = false,
-        std::optional<size_t> max_size = std::nullopt,
-        PyObject* spec = nullptr
-    ) : Base(iterable, reverse, max_size, spec)
-    {}
-
-    /* Construct a list from a base view. */
-    LinkedList(View&& view) : Base(std::move(view)) {}
-
-    /* Copy constructor. */
-    LinkedList(const LinkedList& other) : Base(other.view) {}
-
-    /* Move constructor. */
-    LinkedList(LinkedList&& other) : Base(std::move(other.view)) {}
-
-    /* Copy assignment operator. */
-    LinkedList& operator=(const LinkedList& other) {
-        Base::operator=(other);
-        return *this;
-    }
-
-    /* Move assignment operator. */
-    LinkedList& operator=(LinkedList&& other) {
-        Base::operator=(std::move(other));
-        return *this;
-    }
-
-    /* A functor that allows the list to be locked for thread safety. */
-    const Lock lock;
-    /* BasicLock:
-     * lock()
-     * lock.context()
-     *
-     * DiagnosticLock:
-     * lock()
-     * lock.context()
-     * lock.count()
-     * lock.duration()
-     * lock.contention()
-     * lock.reset_diagnostics()
-     */
-};
 
 
 #endif  // BERTRAND_STRUCTS_LIST_LIST_H include guard

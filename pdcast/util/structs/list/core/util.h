@@ -2,11 +2,12 @@
 #ifndef BERTRAND_STRUCTS_CORE_UTIL_H
 #define BERTRAND_STRUCTS_CORE_UTIL_H
 
+#include <array>  // std::array
 #include <string>  // std::string
+#include <string_view>  // std::string_view
 #include <typeinfo>  // std::bad_typeid
 #include <type_traits>  // std::decay_t<>
 #include <Python.h>  // CPython API
-#include "node.h"  // has_prev<>
 
 
 /////////////////////////
@@ -14,27 +15,60 @@
 /////////////////////////
 
 
-// /* Get the Python repr() of an arbitrary PyObject* as a C string. */
-// const char* repr(PyObject* obj) {
-//     if (obj == nullptr) {
-//         return "NULL";
-//     }
+/* Compile-time string concatenation for Python-style dotted type names. */
+namespace String {
 
-//     // call repr()
-//     PyObject* py_repr = PyObject_Repr(obj);
-//     if (py_repr == nullptr) {
-//         return "NULL";
-//     }
+    /* Concatenate multiple std::string_views at compile-time. */
+    template <const std::string_view&... Strings>
+    struct concat {
 
-//     // convert to UTF-8
-//     const char* c_repr = PyUnicode_AsUTF8(py_repr);
-//     if (c_repr == nullptr) {
-//         return "NULL";
-//     }
+        // Join all strings into a single std::array of chars with static storage
+        static constexpr auto array = [] {
+            // Get array with size equal to total length of strings 
+            constexpr size_t len = (Strings.size() + ... + 0);
+            std::array<char, len + 1> array{};
 
-//     Py_DECREF(py_repr);
-//     return c_repr;
-// }
+            // Append each string to the array
+            auto append = [i = 0, &array](const auto& s) mutable {
+                for (auto c : s) array[i++] = c;
+            };
+            (append(Strings), ...);
+            array[len] = 0;  // null-terminate
+            return array;
+        }();
+
+        // View as std::string_view
+        static constexpr std::string_view value {array.data(), array.size() - 1};
+    };
+
+    // Syntactic sugar for concat<...>::value
+    template <const std::string_view&... Strings>
+    static constexpr auto concat_v = concat<Strings...>::value;
+
+}
+
+
+/* Get the Python repr() of an arbitrary PyObject* as a C string. */
+const char* repr(PyObject* obj) {
+    if (obj == nullptr) {
+        return "NULL";
+    }
+
+    // call repr()
+    PyObject* py_repr = PyObject_Repr(obj);
+    if (py_repr == nullptr) {
+        return "NULL";
+    }
+
+    // convert to UTF-8
+    const char* c_repr = PyUnicode_AsUTF8(py_repr);
+    if (c_repr == nullptr) {
+        return "NULL";
+    }
+
+    Py_DECREF(py_repr);
+    return c_repr;
+}
 
 
 /* Convert the most recent Python error into a C++ exception. */
@@ -224,10 +258,10 @@ exceptions whenever a PyIterable is constructed or iterated over.
 
 
 /* A wrapper around a C++ iterator that allows it to be used from Python. */
-template <typename Iterator, const char* type_name>
+template <typename Iterator, const std::string_view& name>
 class PyIterator {
 private:
-    using Self = PyIterator<Iterator, type_name>;
+    using Self = PyIterator<Iterator, name>;
 
     // sanity check
     static_assert(
@@ -254,7 +288,7 @@ private:
     /* Initialize a PyTypeObject to represent this iterator from Python. */
     static PyTypeObject init_type() {
         PyTypeObject type_obj = {};  // zero-initialize
-        type_obj.tp_name = type_name;
+        type_obj.tp_name = name.data();
         type_obj.tp_doc = "Python-compatible wrapper around a C++ iterator.";
         type_obj.tp_flags = Py_TPFLAGS_DEFAULT;
         type_obj.tp_new = PyType_GenericNew;
@@ -475,7 +509,7 @@ reversability of the associated view. */
 template <template <Direction> class Iterator, bool doubly_linked = false>
 class BidirectionalBase {
 public:
-    const Direction direction = Direction::forward;
+    Direction direction = Direction::forward;
 
 protected:
     union {
@@ -497,9 +531,19 @@ protected:
         new (&forward) Iterator<Direction::forward>(std::move(other.forward));
     }
 
-    /* Assignment operators.  These are deleted due to const members. */
-    BidirectionalBase& operator=(const BidirectionalBase&) = delete;
-    BidirectionalBase& operator=(BidirectionalBase&&) = delete;
+    /* Copy assignment operator. */
+    BidirectionalBase& operator=(const BidirectionalBase& other) {
+        direction = other.direction;
+        forward = other.forward;
+        return *this;
+    }
+
+    /* Move assignment operator. */
+    BidirectionalBase& operator=(BidirectionalBase&& other) {
+        direction = other.direction;
+        forward = std::move(other.forward);
+        return *this;
+    }
 
     /* Call the contained type's destructor. */
     ~BidirectionalBase() { forward.~Iterator(); }
@@ -510,7 +554,7 @@ protected:
 template <template <Direction> class Iterator>
 class BidirectionalBase<Iterator, true> {
 public:
-    const Direction direction;
+    Direction direction;
 
 protected:
     union {
@@ -556,9 +600,33 @@ protected:
         }
     }
 
-    /* Assignment operators.  These are deleted due to const members. */
-    BidirectionalBase& operator=(const BidirectionalBase&) = delete;
-    BidirectionalBase& operator=(BidirectionalBase&&) = delete;
+    /* Copy assignment operator. */
+    BidirectionalBase& operator=(const BidirectionalBase& other) {
+        direction = other.direction;
+        switch (other.direction) {
+            case Direction::backward:
+                backward = other.backward;
+                break;
+            case Direction::forward:
+                forward = other.forward;
+                break;
+        }
+        return *this;
+    }
+
+    /* Move assignment operator. */
+    BidirectionalBase& operator=(BidirectionalBase&& other) {
+        direction = other.direction;
+        switch (other.direction) {
+            case Direction::backward:
+                backward = std::move(other.backward);
+                break;
+            case Direction::forward:
+                forward = std::move(other.forward);
+                break;
+        }
+        return *this;
+    }
 
     /* Call the contained type's destructor. */
     ~BidirectionalBase() {
@@ -583,8 +651,7 @@ class Bidirectional : public BidirectionalBase<
 public:
     using ForwardIterator = Iterator<Direction::forward>;
     using Node = typename ForwardIterator::Node;
-    inline static constexpr bool doubly_linked = Node::doubly_linked;
-    using Base = BidirectionalBase<Iterator, doubly_linked>;
+    using Base = BidirectionalBase<Iterator, Node::doubly_linked>;
 
     // iterator tags for std::iterator_traits
     using iterator_category     = typename ForwardIterator::iterator_category;
@@ -629,7 +696,7 @@ public:
         return *(this->forward);
 
         /* 
-         * if constexpr (doubly_linked) {
+         * if constexpr (Node::doubly_linked) {
          *     if (this->direction == Direction::backward) {
          *         return *(this->backward);
          *     }
@@ -640,7 +707,7 @@ public:
 
     /* Prefix increment to advance the iterator to the next node in the slice. */
     inline Bidirectional& operator++() {
-        if constexpr (doubly_linked) {
+        if constexpr (Node::doubly_linked) {
             if (this->direction == Direction::backward) {
                 ++(this->backward);
                 return *this;
@@ -674,9 +741,9 @@ public:
         /*
          * using OtherNode = typename std::decay_t<decltype(other)>::Node;
          *
-         * if constexpr (doubly_linked) {
+         * if constexpr (Node::doubly_linked) {
          *     if (this->direction == Direction::backward) {
-         *         if constexpr (has_prev<OtherNode>::value) {
+         *         if constexpr (OtherNode::doubly_linked) {
          *             if (other.direction == Direction::backward) {
          *                 return this->backward != other.backward;
          *             }
@@ -685,7 +752,7 @@ public:
          *     }
          * }
          *
-         * if constexpr (has_prev<OtherNode>::value) {
+         * if constexpr (OtherNode::doubly_linked) {
          *     if (other.direction == Direction::backward) {
          *         return this->forward != other.backward;
          *     }
@@ -708,7 +775,7 @@ public:
     /* Insert a node at the current position. */
     template <typename T = ForwardIterator>
     inline auto insert(value_type value) -> decltype(std::declval<T>().insert(value)) {
-        if constexpr (doubly_linked) {
+        if constexpr (Node::doubly_linked) {
             if (this->direction == Direction::backward) {
                 return this->backward.insert(value);
             }
@@ -719,7 +786,7 @@ public:
     /* Remove the node at the current position. */
     template <typename T = ForwardIterator>
     inline auto remove() -> decltype(std::declval<T>().remove()) {
-        if constexpr (doubly_linked) {
+        if constexpr (Node::doubly_linked) {
             if (this->direction == Direction::backward) {
                 return this->backward.remove();
             }
@@ -730,7 +797,7 @@ public:
     /* Replace the node at the current position. */
     template <typename T = ForwardIterator>
     inline auto replace(value_type value) -> decltype(std::declval<T>().replace(value)) {
-        if constexpr (doubly_linked) {
+        if constexpr (Node::doubly_linked) {
             if (this->direction == Direction::backward) {
                 return this->backward.replace(value);
             }
@@ -741,7 +808,7 @@ public:
     /* Get the index of the current position. */
     template <typename T = ForwardIterator>
     inline auto index() -> decltype(std::declval<T>().index()) const {
-        if constexpr (doubly_linked) {
+        if constexpr (Node::doubly_linked) {
             if (this->direction == Direction::backward) {
                 return this->backward.index();
             }
@@ -752,7 +819,7 @@ public:
     /* Check whether the iterator direction is consistent with a slice's step size. */
     template <typename T = ForwardIterator>
     inline auto inverted() -> decltype(std::declval<T>().inverted()) const {
-        if constexpr (doubly_linked) {
+        if constexpr (Node::doubly_linked) {
             if (this->direction == Direction::backward) {
                 return this->backward.inverted();
             }
