@@ -238,7 +238,7 @@ public:
         // trivial case: empty list
         if (view.size() == 0) {
             std::ostringstream msg;
-            msg << repr(item) << " is not in list";
+            msg << String::repr(item) << " is not in list";
             throw std::invalid_argument(msg.str());
         }
 
@@ -281,7 +281,7 @@ public:
 
                 // item not found
                 std::ostringstream msg;
-                msg << repr(item) << " is not in list";
+                msg << String::repr(item) << " is not in list";
                 throw std::invalid_argument(msg.str());
             }
         }
@@ -306,7 +306,7 @@ public:
 
         // item not found
         std::ostringstream msg;
-        msg << repr(item) << " is not in list";
+        msg << String::repr(item) << " is not in list";
         throw std::invalid_argument(msg.str());
     }
 
@@ -397,7 +397,7 @@ public:
 
         // item not found
         std::ostringstream msg;
-        msg << repr(item) << " is not in list";
+        msg << String::repr(item) << " is not in list";
         throw std::invalid_argument(msg.str());     
     }
 

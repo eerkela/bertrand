@@ -4,11 +4,12 @@
 
 #include <cstddef>  // size_t
 #include <cstdlib>  // malloc(), free()
+#include <iostream>  // std::cout, std::endl
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
 #include <Python.h>  // CPython API
-#include "util.h"  // repr(), next_power_of_two()
+#include "util.h"  // String::repr(), next_power_of_two()
 
 
 /////////////////////////
@@ -95,7 +96,7 @@ private:
         // allocate new array
         Node* new_array = allocate_array(new_capacity);
         if constexpr (DEBUG) {
-            printf("    -> allocate: %zu nodes\n", new_capacity);
+            std::cout << "    -> allocate: " << new_capacity << " nodes" << std::endl;
         }
 
         // move nodes into new array
@@ -104,7 +105,7 @@ private:
         // replace old array
         free(array);  // bypasses destructors
         if constexpr (DEBUG) {
-            printf("    -> deallocate: %zu nodes\n", capacity);
+            std::cout << "    -> deallocate: " << capacity << " nodes" << std::endl;
         }
         array = new_array;
         capacity = new_capacity;
@@ -127,14 +128,14 @@ private:
         // check python specialization if enabled
         if (specialization != nullptr && !node->typecheck(specialization)) {
             std::ostringstream msg;
-            msg << repr(node->value()) << " is not of type ";
-            msg << repr(specialization);
+            msg << String::repr(node->value()) << " is not of type ";
+            msg << String::repr(specialization);
             node->~Node();  // in-place destructor
             throw type_error(msg.str());
         }
 
         if constexpr (DEBUG) {
-            printf("    -> create: %s\n", repr(node->value()));
+            std::cout << "    -> create: " << String::repr(node->value()) << std::endl;
         }
     }
 
@@ -144,7 +145,7 @@ private:
         while (curr != nullptr) {
             Node* next = curr->next();
             if constexpr (DEBUG) {
-                printf("    -> recycle: %s\n", repr(curr->value()));
+                std::cout << "    -> recycle: " << String::repr(curr->value()) << std::endl;
             }
             curr->~Node();  // in-place destructor
             curr = next;
@@ -173,7 +174,7 @@ public:
         specialization(specialization)
     {
         if constexpr (DEBUG) {
-            printf("    -> allocate: %zu nodes\n", this->capacity);
+            std::cout << "    -> allocate: " << this->capacity << " nodes" << std::endl;
         }
 
         // increment reference count on specialization
@@ -194,7 +195,7 @@ public:
         specialization(other.specialization)
     {
         if constexpr (DEBUG) {
-            printf("    -> allocate: %zu nodes\n", capacity);
+            std::cout << "    -> allocate: " << capacity << " nodes" << std::endl;
         }
 
         // increment reference count on specialization
@@ -249,7 +250,7 @@ public:
         if (array != nullptr) {
             free(array);
             if constexpr (DEBUG) {
-                printf("    -> deallocate: %zu nodes\n", capacity);
+                std::cout << "    -> deallocate: " << capacity << " nodes" << std::endl;
             }
         }
 
@@ -285,7 +286,7 @@ public:
         if (array != nullptr) {
             free(array);
             if constexpr (DEBUG) {
-                printf("    -> deallocate: %zu nodes\n", capacity);
+                std::cout << "    -> deallocate: " << capacity << " nodes" << std::endl;
             }
         }
 
@@ -322,7 +323,7 @@ public:
         if (array != nullptr) {
             free(array);
             if constexpr (DEBUG) {
-                printf("    -> deallocate: %zu nodes\n", capacity);
+                std::cout << "    -> deallocate: " << capacity << " nodes" << std::endl;
             }
         }
     }
@@ -368,7 +369,7 @@ public:
     void recycle(Node* node) {
         // manually call destructor
         if constexpr (DEBUG) {
-            printf("    -> recycle: %s\n", repr(node->value()));
+            std::cout << "    -> recycle: " << String::repr(node->value()) << std::endl;
         }
         node->~Node();
 

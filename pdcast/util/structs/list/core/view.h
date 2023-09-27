@@ -4,6 +4,7 @@
 
 #include <cstddef>  // size_t
 #include <optional>  // std::optional
+#include <iostream>  // std::cout, std::endl
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
 #include <tuple>  // std::tuple
@@ -682,7 +683,7 @@ protected:
         if (curr == nullptr) {  // error during node initialization
             if constexpr (DEBUG) {
                 // QoL - nothing has been allocated, so we don't actually free
-                printf("    -> free: %s\n", repr(item));
+                std::cout << "    -> free: " << String::repr(item) << std::endl;
             }
             return;
         }
@@ -995,7 +996,7 @@ private:
         if (PyErr_Occurred()) {
             // QoL - nothing has been allocated, so we don't actually free anything
             if constexpr (DEBUG) {
-                printf("    -> free: %s\n", repr(item));
+                std::cout << "    -> free: " << String::repr(item) << std::endl;
             }
             return;
         }

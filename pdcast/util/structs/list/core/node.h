@@ -212,8 +212,19 @@ using ConditionalType = typename _ConditionalType<Value, Func>::type;
 //////////////////////////
 
 
+// NOTE: at some point in the future, we could try to implement an XOR linked list
+// using an XORNode with identical semantics to DoubleNode.  This would only use a
+// single pointer to store both the next and previous nodes, which it would XOR in
+// order to traverse the list.  This would require some care when accessing neighboring
+// nodes, since we would have to keep track of the previous node in order to compute
+// the next node's address and vice versa.  This would also complicate the
+// insertion/removal of nodes, since we would have to XOR the next/previous nodes in
+// order to update their pointers.  But, it would be a fun exercise in pointer
+// arithmetic with some interesting tradeoffs.  It would make for a neat benchmark too.
+
+
 /* A singly-linked list node around an arbitrary value. */
-template <typename ValueType = PyObject*>
+template <typename ValueType>
 class SingleNode : public BaseNode<ValueType> {
     using Base = BaseNode<ValueType>;
     SingleNode* _next;
@@ -323,7 +334,7 @@ public:
 
 
 /* A doubly-linked list node around an arbitrary value. */
-template <typename ValueType = PyObject*>
+template <typename ValueType>
 class DoubleNode : public SingleNode<ValueType> {
     using Base = SingleNode<ValueType>;
     DoubleNode* _prev;
@@ -455,13 +466,15 @@ public:
 
 
 /* A node decorator that computes a key function on a node's underlying value
-for use in sorting algorithms. */
+for use in sorting algorithms.
+
+NOTE: this is a special case of node used in the `sort()` method to apply a key
+function to each node's value.  It is not meant to be used in any other context. */
 template <typename NodeType, typename Func>
 class Keyed : public SingleNode<ConditionalType<Func, NodeType>> {
 public:
-    // NOTE: this is a special case of node used in the `sort()` method to apply a key
-    // function to each node's value.  It is not meant to be used in any other context.
     using Value = ConditionalType<Func, NodeType>;
+    static constexpr bool doubly_linked = false;
 
 private:
     using Base = SingleNode<Value>;  // stores the result of the key function
@@ -490,8 +503,6 @@ private:
     }
 
 public:
-    static constexpr bool doubly_linked = false;
-
     /* Initialize a keyed node by applying a Python callable to an existing node. */
     Keyed(NodeType* node, Func func) :
         Base(invoke(func, node->value())), _node(node)
@@ -574,39 +585,146 @@ public:
 /* A node decorator that computes the hash of the underlying PyObject* and
 caches it alongside the node's original fields. */
 template <typename NodeType>
-struct Hashed : public NodeType {
+class Hashed : public NodeType {
     using Node = Hashed<NodeType>;
+    using Value = typename Node::Value;
+    size_t _hash;
 
-    Py_hash_t hash;
-
-    /* Initialize a newly-allocated node. */
-    inline static Node* init(Node* node, PyObject* value) {
-        node = static_cast<Node*>(NodeType::init(node, value));
-        if (node == nullptr) {  // Error during decorated init()
-            return nullptr;  // propagate
+    /* Compute the hash of the underlying node value. */
+    inline static size_t compute_hash(Node* node) {
+        if constexpr (Node::has_pyobject) {
+            Py_hash_t hash_val = PyObject_Hash(node->value());
+            if (hash_val == -1 && PyErr_Occurred()) {
+                // NOTE: we have to make sure to release any resources that were
+                // acquired during the wrapped constructor
+                node->~Node();
+                throw catch_python<type_error>();
+            }
+            return static_cast<size_t>(hash_val);  // for compatibility with std::hash
+        } else {
+            return std::hash<Value>()(node->value());
         }
-
-        // compute hash
-        node->hash = PyObject_Hash(value);
-        if (node->hash == -1 && PyErr_Occurred()) {
-            NodeType::teardown(node);  // free any resources allocated during init()
-            return nullptr;  // propagate TypeError()
-        }
-
-        // return initialized node
-        return node;
     }
 
-    /* Initialize a copied node. */
-    inline static Node* init_copy(Node* new_node, Node* old_node) {
-        new_node = static_cast<Node*>(NodeType::init_copy(new_node, old_node));
-        if (new_node == nullptr) {  // Error during decorated init_copy()
-            return nullptr;  // propagate
+public:
+
+    /* Delegate to the wrapped node constructor. */
+    template <typename... Args>
+    Hashed(Args... args) noexcept :
+        NodeType(std::forward<Args>(args)...), _hash(compute_hash(this))
+    {}
+
+    /* Copy constructor. */
+    Hashed(const Hashed& other) noexcept :
+        NodeType(other), _hash(compute_hash(this))
+    {}
+
+    /* Move constructor. */
+    Hashed(Hashed&& other) noexcept :
+        NodeType(std::move(other)), _hash(compute_hash(this))
+    {
+        other._prev = nullptr;
+    }
+
+    /* Copy assignment operator. */
+    Hashed& operator=(const Hashed& other) {
+        // check for self-assignment
+        if (this == &other) {
+            return *this;
         }
 
-        // reuse the pre-computed hash
-        new_node->hash = old_node->hash;
-        return new_node;
+        // copy wrapped node
+        NodeType::operator=(other);
+
+        // copy hash
+        _hash = other.hash;
+        return *this;
+    }
+
+    /* Move assignment operator. */
+    Hashed& operator=(Hashed&& other) {
+        // check for self-assignment
+        if (this == &other) {
+            return *this;
+        }
+
+        // move wrapped node
+        NodeType::operator=(other);
+
+        // move hash
+        _hash = other.hash;
+        return *this;
+    }
+
+    /* Get the hash of the node's value. */
+    inline size_t hash() const noexcept {
+        return _hash;
+    }
+
+    /* Get the next node in the list. */
+    inline Node* next() {
+        return static_cast<Node*>(NodeType::next());
+    }
+
+    /* Set the next node in the list. */
+    inline void next(Node* next) {
+        NodeType::next(next);
+    }
+
+    /* Get the previous node in the list. */
+    inline auto prev() -> std::enable_if_t<
+        std::is_same_v<decltype(std::declval<NodeType>().prev()), NodeType*>, Node*
+    > {
+        return static_cast<Node*>(NodeType::prev());
+    }
+
+    /* Set the previous node in the list. */
+    inline auto prev(Node* prev) -> std::enable_if_t<
+        std::is_same_v<decltype(std::declval<NodeType>().prev()), NodeType*>
+    > {
+        NodeType::prev(prev);
+    }
+
+    /* Link the node to its neighbors to form a doubly-linked list. */
+    inline static void link(Node* prev, Node* curr, Node* next) noexcept {
+        if (prev != nullptr) {
+            prev->next(curr);
+        }
+        curr->prev(prev);
+        curr->next(next);
+        if (next != nullptr) {
+            next->prev(curr);
+        }
+    }
+
+    /* Unlink the node from its neighbors. */
+    inline static void unlink(Node* prev, Node* curr, Node* next) noexcept {
+        if (prev != nullptr) {
+            prev->next(next);
+        }
+        if (next != nullptr) {
+            next->prev(prev);
+        }
+    }
+
+    /* Break a linked list at the specified nodes. */
+    inline static void split(Node* prev, Node* curr) noexcept {
+        if (prev != nullptr) {
+            prev->next(nullptr);
+        }
+        if (curr != nullptr) {
+            curr->prev(nullptr);
+        }
+    }
+
+    /* Join the list at the specified nodes. */
+    inline static void join(Node* prev, Node* curr) noexcept {
+        if (prev != nullptr) {
+            prev->next(curr);
+        }
+        if (curr != nullptr) {
+            curr->prev(prev);
+        }
     }
 
 };

@@ -3,6 +3,7 @@
 #define BERTRAND_STRUCTS_CORE_SORT_H
 
 #include <cstddef>  // size_t
+#include <iostream>  // std::cout, std::endl
 #include <queue>  // std::queue
 #include <optional>  // std::optional
 #include <utility>  // std::pair
@@ -56,15 +57,15 @@ private:
         while (iter != iter.end()) {
             Node* unwrapped = (*iter)->node();
 
-            // link the wrapped node to the undecorated list
+            // link to sorted list
             if (new_head == nullptr) {
                 new_head = unwrapped;
             } else {
-                Node::link(new_tail, unwrapped, nullptr);  // low-level link()
+                Node::link(new_tail, unwrapped, nullptr);
             }
             new_tail = unwrapped;
 
-            // remove and recycle the decorator
+            // remove and recycle wrapper
             decorated.recycle(iter.remove());  // NOTE: implicitly advances iter
         }
 
@@ -256,7 +257,7 @@ public:
         // reuse it for every sublist.  This avoids an extra malloc/free cycle in
         // each iteration.
         if constexpr (DEBUG) {
-            printf("    -> malloc: temp node\n");
+            std::cout << "    -> malloc: temp node" << std::endl;
         }
         Node* temp = static_cast<Node*>(malloc(sizeof(Node)));
         if (temp == nullptr) {
@@ -313,7 +314,7 @@ public:
                     view.head(merged.first);  // view is partially sorted, but valid
                     view.tail(merged.second);
                     if constexpr (DEBUG) {
-                        printf("    -> free: temp node\n");
+                        std::cout << "    -> free: temp node" << std::endl;
                     }
                     free(temp);  // clean up temporary node
                     throw;  // propagate the error
@@ -336,7 +337,7 @@ public:
 
         // clean up temporary node
         if constexpr (DEBUG) {
-            printf("    -> free: temp node\n");
+            std::cout << "    -> free: temp node" << std::endl;
         }
         free(temp);
 
