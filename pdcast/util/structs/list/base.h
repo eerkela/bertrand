@@ -70,7 +70,7 @@ public:
     /////////////////////////////////
 
     /* Forward the view.iter() functor. */
-    class IterFactory {
+    class IteratorFactory {
     public:
         /* A wrapper around a view iterator that yields values rather than nodes. */
         template <Direction dir>
@@ -102,7 +102,7 @@ public:
             }
 
         private:
-            friend IterFactory;
+            friend IteratorFactory;
             Wrapped iter;
 
             Iterator(Wrapped&& iter) : iter(std::move(iter)) {}
@@ -176,11 +176,11 @@ public:
         friend LinkedBase;
         LinkedBase<View, name>& parent;
 
-        IterFactory(LinkedBase<View, name>& parent) : parent(parent) {}
+        IteratorFactory(LinkedBase<View, name>& parent) : parent(parent) {}
     };
 
     /* Functor to create various kinds of iterators over the list. */
-    const IterFactory iter;
+    const IteratorFactory iter;
 
     /* Get a forward iterator to the start of the list. */
     inline auto begin() const {

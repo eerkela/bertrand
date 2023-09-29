@@ -3,8 +3,17 @@
 #define BERTRAND_STRUCTS_CORE_THREAD_H
 
 #include <chrono>  // std::chrono
-#include <mutex>  // std::mutex, std::lock_guard
+#include <memory>  // std::shared_ptr, std::weak_ptr
+#include <mutex>  // std::mutex, std::lock_guard, std::unique_lock
 #include <optional>  // std::optional
+#include <shared_mutex>  // std::shared_mutex, std::shared_lock
+// #include <thread>  // std::thread
+#include <unordered_map>  // std::unordered_map
+
+
+// TODO: implement a ReadWriteLock that allows concurrent reads and exclusive writes.
+// This needs to handle recursive locking, wherein a thread locks the mutex multiple
+// times within a nested scope.
 
 
 ////////////////////////
@@ -27,15 +36,13 @@ profiling the performance of threaded code and identifying potential bottlenecks
 /* A functor that produces threading locks for an internal mutex. */
 class BasicLock {
 public:
-    using Guard = std::lock_guard<std::mutex>;
-    using Clock = std::chrono::high_resolution_clock;
-    using Resolution = std::chrono::nanoseconds;
+    using Lock = std::lock_guard<std::recursive_mutex>;
 
     /* Return a std::lock_guard for the internal mutex using RAII semantics.  The mutex
     is automatically acquired when the guard is constructed and released when it goes
     out of scope.  Any operations in between are guaranteed to be atomic. */
-    inline Guard operator()() const {
-        return Guard(mtx);
+    inline Lock operator()() const {
+        return Lock(mtx);
     }
 
     /* Return a heap-allocated std::lock_guard for the internal mutex.  The mutex is
@@ -44,24 +51,125 @@ public:
 
     NOTE: this method is generally less safe than using the standard functor operator,
     but can be used for compatibility with Python's context manager protocol. */
-    inline Guard* context() const {
-        return new Guard(mtx);
+    inline Lock* context() const {
+        return new Lock(mtx);
     }
 
 protected:
-    mutable std::mutex mtx;
+    mutable std::recursive_mutex mtx;
 };
+
+
+
+
+
+
+/* A functor that produces read/write thread locks for an internal mutex. */
+class ReadWriteLock {
+public:
+    using SharedLock = std::shared_lock<std::shared_mutex>;
+    using UniqueLock = std::unique_lock<std::shared_mutex>;
+
+    /* Return a std::unique_lock for the internal mutex.
+
+    NOTE: The lock is shared amongst all references within a single thread, and is
+    automatically released when the last reference goes out of scope.  If a lock has
+    already been generated for the current thread, we simple return a new shared_ptr
+    to the existing lock.  This avoids contention within a thread while still blocking
+    the mutex against concurrent access between threads. */
+    inline std::shared_ptr<UniqueLock> operator()() const {
+        // check for existing lock
+        auto iter = unique_lock.find(instance_id);
+        if (iter != unique_lock.end()) {
+            return iter->second;
+        }
+
+        // create a new lock
+        auto lock = std::shared_ptr<UniqueLock>(
+            new UniqueLock(mtx), 
+            [this](UniqueLock* lock) {
+                unique_lock.erase(instance_id);
+                delete lock;
+            }
+        );
+
+        // store the lock in the thread-local map
+        unique_lock[instance_id] = lock;
+        return lock;
+    }
+
+    /* Return a std::shared_lock for the internal mutex.
+
+    NOTE: These locks allow concurrent access to the object as long as no UniqueLocks
+    have been requested.  This is useful for read-only operations that do not modify
+    the underlying data structure. They have the save RAII semantics as the unique
+    locks. */
+    inline std::shared_ptr<SharedLock> shared() const {
+        // check for existing lock
+        auto iter = shared_lock.find(instance_id);
+        if (iter != shared_lock.end()) {
+            return iter->second;
+        }
+
+        // create a new lock
+        auto lock = std::shared_ptr<SharedLock>(
+            new SharedLock(mtx), 
+            [this](SharedLock* lock) {
+                shared_lock.erase(instance_id);
+                delete lock;
+            }
+        );
+
+        // store the lock in the thread-local map
+        shared_lock[instance_id] = lock;
+        return lock;
+    }
+
+
+    // TODO: Python context managers should use a shared_ptr to a lock
+
+
+
+    /* Return a heap-allocated std::unique_lock for the internal mutex, which must be
+    manually deleted to release the lock.
+
+    NOTE: this method is generally less safe than using the standard functor operator,
+    but can be used for compatibility with Python's context manager protocol. */
+    inline UniqueLock* context() const {
+        return new UniqueLock(mtx);
+    }
+
+    /* Return a heap-allocated std::shared_lock for the internal mutex, which must be
+    manually deleted to release the lock.
+
+    NOTE: the same caveats apply as for the ordinary context() method. */
+    inline SharedLock* shared_context() const {
+        return new SharedLock(mtx);
+    }
+
+protected:
+    const uintptr_t instance_id = reinterpret_cast<uintptr_t>(this);
+    mutable std::shared_mutex mtx;
+
+    template <typename LockType>
+    using Locks = std::unordered_map<uintptr_t, std::shared_ptr<LockType>>;
+
+    static thread_local Locks<UniqueLock> unique_lock;
+    static thread_local Locks<SharedLock> shared_lock;
+};
+
+
 
 
 /* A functor that also tracks performance diagnostics for the lock. */
 class DiagnosticLock : public BasicLock {
 public:
-    using Guard = typename BasicLock::Guard;
-    using Clock = typename BasicLock::Clock;
-    using Resolution = typename BasicLock::Resolution;
+    using Lock = typename BasicLock::Lock;
+    using Clock = std::chrono::high_resolution_clock;
+    using Resolution = std::chrono::nanoseconds;
 
     /* Track the elapsed time to acquire a lock guard for the mutex. */
-    inline Guard operator()() const {
+    inline Lock operator()() const {
         auto start = Clock::now();
 
         // acquire lock
@@ -72,15 +180,15 @@ public:
         ++lock_count;
 
         // create a guard using the acquired lock
-        return Guard(this->mtx, std::adopt_lock);
+        return Lock(this->mtx, std::adopt_lock);
     }
 
     /* Track the elapsed time to acquire a heap-allocated lock guard for the mutex. */
-    inline Guard* context() const {
+    inline Lock* context() const {
         auto start = Clock::now();
 
         // acquire lock
-        Guard* lock = new Guard(this->mtx);
+        Lock* lock = new Lock(this->mtx);
 
         auto end = Clock::now();
         lock_time += std::chrono::duration_cast<Resolution>(end - start).count();

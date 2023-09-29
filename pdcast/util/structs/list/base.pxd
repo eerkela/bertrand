@@ -1,5 +1,6 @@
 """Cython headers for pdcast/util/structs/base.h"""
 from cpython.ref cimport PyObject
+from libcpp.optional cimport optional
 from libcpp.utility cimport pair
 
 
@@ -11,82 +12,51 @@ from libcpp.utility cimport pair
 # and static polymorphism.
 
 
-cdef extern from "Python.h":
-    void Py_INCREF(PyObject* obj)
-    void Py_DECREF(PyObject* obj)
-
-
-cdef extern from "core/allocate.h":
-    cdef cppclass BaseAllocator:
-        size_t allocated()
-        size_t nbytes()
-
-    cdef cppclass DirectAllocator(BaseAllocator):
-        pass
-
-    cdef cppclass FreeListAllocator(BaseAllocator):
-        size_t reserved()
-
-    cdef cppclass PreAllocator(BaseAllocator):
-        size_t reserved()
-
-
-cdef extern from "core/bounds.h":
-    const size_t MAX_SIZE_T
-    const pair[size_t, size_t] MAX_SIZE_T_PAIR
-
-    size_t normalize_index[T](T index, size_t size, bint truncate) except? MAX_SIZE_T
-    pair[size_t, size_t] normalize_bounds[T](
-        T start, T stop, size_t size, bint truncate
-    ) except? MAX_SIZE_T_PAIR
-
-
 cdef extern from "core/node.h":
-    struct SingleNode:
-        PyObject* value
-        SingleNode* next
+    cdef cppclass BaseNode[T]:
+        T value()
+        bint lt(T other) except +
+        bint le(T other) except +
+        bint eq(T other) except +
+        bint ne(T other) except +
+        bint ge(T other) except +
+        bint gt(T other) except +
+        bint typecheck(PyObject* specialization) except +
 
-    struct DoubleNode:
-        PyObject* value
-        DoubleNode* next
-        DoubleNode* prev
+    cdef cppclass SingleNode[T](BaseNode[T]):
+        SingleNode(T value)
+        SingleNode(const SingleNode& other)
+        SingleNode& operator=(const SingleNode& other)
+        SingleNode* next()
+        void next(SingleNode* next)
+        @staticmethod
+        void link(SingleNode* prev, SingleNode* curr, SingleNode* next)
+        @staticmethod
+        void unlink(SingleNode* prev, SingleNode* curr, SingleNode* next)
+        @staticmethod
+        void split(SingleNode* prev, SingleNode* curr)
+        @staticmethod
+        void join(SingleNode* prev, SingleNode* curr)
 
-
-cdef extern from "core/table.h":
-    cdef cppclass HashTable[T]:
-        HashTable() except +
-        int remember(T* node) except -1
-        int forget(T* node) except -1
-        void reset() except *
-        T* search(PyObject* value) except? NULL
-        T* search_node(T* node) except? NULL
-        void clear_tombstones() except +
-        size_t nbytes()
+    cdef cppclass DoubleNode[T](BaseNode[T]):
+        DoubleNode(T value)
+        DoubleNode(const DoubleNode& other)
+        DoubleNode& operator=(const DoubleNode& other)
+        DoubleNode* next()
+        void next(DoubleNode* next)
+        DoubleNode* prev()
+        void prev(DoubleNode* prev)
+        @staticmethod
+        void link(DoubleNode* prev, DoubleNode* curr, DoubleNode* next)
+        @staticmethod
+        void unlink(DoubleNode* prev, DoubleNode* curr, DoubleNode* next)
+        @staticmethod
+        void split(DoubleNode* prev, DoubleNode* curr)
+        @staticmethod
+        void join(DoubleNode* prev, DoubleNode* curr)
 
 
 cdef extern from "core/view.h":
-    cdef cppclass ListView[T, U]:
-        size_t size
-        T* head
-        T* tail
-        ListView(ssize_t max_size) except +
-        ListView(
-            PyObject* iterable,
-            bint reverse,
-            Py_ssize_t max_size,
-            PyObject* spec
-        ) except +
-        T* node(PyObject* value) except NULL
-        void recycle(T* node)
-        void link(T* prev, T* curr, T* next)
-        void unlink(T* prev, T* curr, T* next)
-        void clear()
-        void specialize(PyObject* spec) except *
-        PyObject* get_specialization()
-        T* copy(T* curr) except NULL
-        ListView[T, U]* copy() except NULL
-        size_t nbytes()
-
     cdef cppclass SetView[T, U]:
         cppclass Node:
             Py_hash_t hash

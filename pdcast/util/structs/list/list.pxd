@@ -3,7 +3,134 @@ from cpython.ref cimport PyObject
 from libcpp.optional cimport optional, nullopt
 from libcpp.stack cimport stack
 
-from .base cimport MAX_SIZE_T, SingleNode, DoubleNode, Py_INCREF, Py_DECREF
+from .base cimport SingleNode, DoubleNode
+
+
+###################
+####    C++    ####
+###################
+
+
+cdef extern from "core/allocate.h":
+    cdef cppclass ListAllocator[Node]:
+        ListAllocator(optional[size_t] capacity, PyObject* specialization) except +
+        ListAllocator(const ListAllocator& other) except +
+        ListAllocator& operator=(const ListAllocator& other) except +
+        Node* create(...) except +
+        void recycle(Node* node) except +
+        void clear()
+        void reserve(size_t new_capacity) except +
+        void consolidate() except +
+        bint owns(Node* node)
+        void specialize(PyObject* spec) except +
+
+
+cdef extern from "core/view.h":
+    cdef cppclass ListView[Node = *, Allocator = *]:
+        cppclass IteratorFactory:
+            cppclass Iterator:
+                Node* prev
+                Node* curr
+                Node* next
+                Node* operator*()
+                Iterator& operator++()
+                bint operator!=(const Iterator& other)
+                void insert(Node* node) except +
+                Node* drop() except +
+                void replace(Node* node) except +
+            Iterator operator()()
+            Iterator reverse()
+            Iterator begin()
+            Iterator end()
+            Iterator rbegin()
+            Iterator rend()
+
+        ListView(optional[size_t] max_size = nullopt, PyObject* spec = NULL) except +
+        ListView(
+            PyObject* iterable,
+            bint reverse = False,
+            optional[size_t] max_size = nullopt,
+            PyObject* spec = NULL
+        ) except +
+        Node* head()
+        void head(Node* node) except +
+        Node* tail()
+        void tail(Node* node) except +
+        Node* node(...) except +
+        void recycle(Node* node) except +
+        ListView copy() except +
+        void clear()
+        void link(Node* prev, Node* curr, Node* next)
+        void unlink(Node* prev, Node* curr, Node* next)
+        size_t size()
+        size_t capacity()
+        optional[size_t] max_size()
+        void reserve(size_t capacity)
+        void consolidate()
+        void specialize(PyObject* spec) except +
+        PyObject* specialization()
+        size_t nbytes()
+        IteratorFactory iter
+        IteratorFactory.Iterator begin()
+        IteratorFactory.Iterator end()
+        IteratorFactory.Iterator rbegin()
+        IteratorFactory.Iterator rend()
+
+
+cdef extern from "list.h":
+    cdef cppclass CppLinkedList "LinkedList"[Node = *, Sort = *, Lock = *]:
+        # NOTE: renamed to avoid conflict with Cython equivalent.  The two are almost
+        # identical, but the C++ version can store non-Python values and has slightly
+        # higher performance.  Otherwise, they are exactly the same, and can be easily
+        # ported from one to another.  In fact, the Cython class is just a thin wrapper
+        # around a CppLinkedList that just casts its inputs to and from Python.
+        cppclass IteratorFactory:
+            cppclass Iterator:
+                Node* operator*()
+                Iterator& operator++()
+                bint operator!=(const Iterator& other)
+            Iterator operator()()
+            Iterator reverse()
+            Iterator begin()
+            Iterator end()
+            Iterator rbegin()
+            Iterator rend()
+            PyObject* python()
+            PyObject* rpython()
+
+        CppLinkedList(
+            optional[size_t] max_size = nullopt,
+            PyObject* spec = NULL
+        ) except +
+        CppLinkedList(
+            PyObject* iterable,
+            bint reverse = False,
+            optional[size_t] max_size = nullopt,
+            PyObject* spec = NULL
+        ) except +
+        CppLinkedList(const CppLinkedList& other) except +
+        CppLinkedList& operator=(const CppLinkedList& other) except +
+
+        bint empty()
+        size_t size()
+        size_t capacity
+        optional[size_t] max_size()
+        void reserve() except +
+        void consolidate() except +
+        PyObject* specialization()
+        void specialize(PyObject* spec) except +
+        size_t nbytes()
+        IteratorFactory iter
+        IteratorFactory.Iterator begin()
+        IteratorFactory.Iterator end()
+        IteratorFactory.Iterator rbegin()
+        IteratorFactory.Iterator rend()
+
+
+
+######################
+####    CYTHON    ####
+######################
 
 
 cdef extern from "list_cython.h":
@@ -86,10 +213,12 @@ cdef extern from "list_cython.h":
 
 
 cdef class LinkedList:
-    cdef VariantList* view
+    cdef:
+        VariantList* variant
+        object __weakref__  # allows LinkedList to be weak-referenced from Python
 
     @staticmethod
-    cdef LinkedList from_view(VariantList* view)
+    cdef LinkedList from_variant(VariantList* variant)
 
 
 cdef class ThreadGuard:

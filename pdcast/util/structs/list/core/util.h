@@ -4,6 +4,7 @@
 
 #include <array>  // std::array
 #include <iostream>  // std::cout, std::endl
+#include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
 #include <string>  // std::string
 #include <string_view>  // std::string_view
@@ -19,10 +20,6 @@
 
 /* Compile-time string concatenation for Python-style dotted type names. */
 namespace String {
-
-    //////////////////////////////////////////
-    ////    COMPILE-TIME CONCATENATION    ////
-    //////////////////////////////////////////
 
     /* Concatenate multiple std::string_views at compile-time. */
     template <const std::string_view&... Strings>
@@ -51,10 +48,6 @@ namespace String {
     /* Syntactic sugar for concat<...>::value */
     template <const std::string_view&... Strings>
     static constexpr auto concat_v = concat<Strings...>::value;
-
-    /////////////////////////////////////
-    ////    STRING REPRESENTATION    ////
-    /////////////////////////////////////
 
     /* A metadata trait that determines which specialization of repr() is appropriate
     for a given type. */
@@ -123,65 +116,65 @@ namespace String {
         static constexpr bool type_id = (category == Strategy::type_id);
     };
 
-    /* Use PyObject_Repr() for PyObject* inputs. */
-    template <typename T, std::enable_if_t<Repr<T>::python, int> = 0>
-    std::string repr(const T& obj) {
-        if (obj == nullptr) {
-            return "NULL";
-        }
-
-        // call repr()
-        PyObject* py_repr = PyObject_Repr(obj);
-        if (py_repr == nullptr) {
-            return "NULL";
-        }
-
-        // convert to UTF-8
-        const char* c_repr = PyUnicode_AsUTF8(py_repr);
-        if (c_repr == nullptr) {
-            return "NULL";
-        }
-
-        Py_DECREF(py_repr);
-        return std::string(c_repr);
-    }
-
-    /* Use std::to_string if it is well-formed. */
-    template <typename T, std::enable_if_t<Repr<T>::to_string, int> = 0>
-    std::string repr(const T& obj) {
-        return std::to_string(obj);
-    }
-
-    /* Stream into a std::ostringstream if it is available. */
-    template <typename T, std::enable_if_t<Repr<T>::streamable, int> = 0>
-    std::string repr(const T& obj) {
-        std::ostringstream stream;
-        stream << obj;
-        return stream.str();
-    }
-
-    /* Unpack iterables where possible. */
-    template <typename T, std::enable_if_t<Repr<T>::iterable, int> = 0>
-    std::string repr(const T& obj) {
-        std::ostringstream stream;
-        stream << '[';
-        for (auto iter = std::begin(obj); iter != std::end(obj);) {
-            stream << repr(*iter);
-            if (++iter != std::end(obj)) {
-                stream << ", ";
-            }
-        }
-        stream << ']';
-        return stream.str();
-    }
-
-    /* Default to the mangled typeid if no specializations can be found. */
-    template <typename T, std::enable_if_t<Repr<T>::type_id, int> = 0>
-    std::string repr(const T& obj) {
-        return std::string(typeid(obj).name());
-    }
-
 }
+
+
+/* A type trait that infers the return type of a C++ function pointer that accepts the
+given arguments. */
+template <typename Func, typename Enable = void, typename... Args>
+struct _ReturnType {
+    using type = std::invoke_result_t<Func, Args...>;
+};
+
+
+/* A type trait that represents the return type of a python callable. */
+template <typename Func, typename... Args>
+struct _ReturnType<
+    Func,
+    std::enable_if_t<std::is_convertible_v<Func, PyObject*>>,
+    Args...
+> {
+    using type = PyObject*;
+};
+
+
+/* Infer the return type of a C++ function with the given arguments or a Python
+callable. */
+template <typename Func, typename... Args>
+using ReturnType = typename _ReturnType<Func, void, Args...>::type;
+
+
+/* A modified `std::optional` subclass that facilitates stack allocation in Cython. */
+template <typename T>
+class Slot : public std::optional<T> {
+public:
+    using std::optional<T>::optional;  // inherit constructors
+
+    /* Move a value into the optional from Cython. */
+    inline void move(T* ptr) {
+        // NOTE: Cython does not natively support move semantics or rvalue references,
+        // but we can bypass this by providing a pointer and handling the move from C++.
+        *this = std::move(*ptr);
+    }
+
+};
+
+
+/* Subclass of std::bad_typeid() to allow automatic conversion to Python TypeError by
+Cython. */
+class type_error : public std::bad_typeid {
+private:
+    std::string message;
+
+public:
+    using std::bad_typeid::bad_typeid;  // inherit default constructors
+
+    /* Allow construction from a custom error message. */
+    type_error(const std::string& what) : message(what) {}
+    type_error(const char* what) : message(what) {}
+
+    const char* what() const noexcept override { return message.c_str(); }
+};
 
 
 /* Convert the most recent Python error into a C++ exception. */
@@ -230,24 +223,68 @@ Exception catch_python() {
 }
 
 
-/* Subclass std::bad_typeid() to allow automatic conversion to Python TypeError by
-Cython. */
-class type_error : public std::bad_typeid {
-private:
-    std::string message;
+/* Get a string representation of a Python object using PyObject_Repr(). */
+template <typename T, std::enable_if_t<String::Repr<T>::python, int> = 0>
+std::string repr(const T& obj) {
+    if (obj == nullptr) {
+        return std::string("NULL");
+    }
+    PyObject* py_repr = PyObject_Repr(obj);
+    if (py_repr == nullptr) {
+        throw catch_python<std::runtime_error>();
+    }
+    const char* c_repr = PyUnicode_AsUTF8(py_repr);
+    if (c_repr == nullptr) {
+        throw catch_python<std::runtime_error>();
+    }
+    Py_DECREF(py_repr);
+    return std::string(c_repr);
+}
 
-public:
-    using std::bad_typeid::bad_typeid;  // inherit default constructors
 
-    /* Allow construction from a custom error message. */
-    type_error(const std::string& what) : message(what) {}
-    type_error(const char* what) : message(what) {}
-
-    const char* what() const noexcept override { return message.c_str(); }
-};
+/* Get a string representation of a C++ object using `std::to_string()`. */
+template <typename T, std::enable_if_t<String::Repr<T>::to_string, int> = 0>
+std::string repr(const T& obj) {
+    return std::to_string(obj);
+}
 
 
-/* Round a number up to the nearest power of two. */
+/* Get a string representation of a C++ object by streaming it into a
+`std::ostringstream`. */
+template <typename T, std::enable_if_t<String::Repr<T>::streamable, int> = 0>
+std::string repr(const T& obj) {
+    std::ostringstream stream;
+    stream << obj;
+    return stream.str();
+}
+
+
+/* Get a string representation of an iterable C++ object by recursively unpacking
+it. */
+template <typename T, std::enable_if_t<String::Repr<T>::iterable, int> = 0>
+std::string repr(const T& obj) {
+    std::ostringstream stream;
+    stream << '[';
+    for (auto iter = std::begin(obj); iter != std::end(obj);) {
+        stream << repr(*iter);
+        if (++iter != std::end(obj)) {
+            stream << ", ";
+        }
+    }
+    stream << ']';
+    return stream.str();
+}
+
+
+/* Get a string representation of an arbitrary C++ object by getting its mangled type
+name.  NOTE: this is the default implementation if no specialization can be found. */
+template <typename T, std::enable_if_t<String::Repr<T>::type_id, int> = 0>
+std::string repr(const T& obj) {
+    return std::string(typeid(obj).name());
+}
+
+
+/* Round a number up to the next power of two. */
 template <typename T, std::enable_if_t<std::is_unsigned_v<T>, int> = 0>
 inline T next_power_of_two(T n) {
     constexpr size_t bits = sizeof(T) * 8;

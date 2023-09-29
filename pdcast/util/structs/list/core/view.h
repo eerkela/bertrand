@@ -186,22 +186,22 @@ public:
     }
 
     /* Get the current size of the list. */
-    inline size_t size() const {
+    inline size_t size() const noexcept {
         return allocator.occupied;
     }
 
     /* Get the current capacity of the allocator array. */
-    inline size_t capacity() const {
+    inline size_t capacity() const noexcept {
         return allocator.capacity;
     }
 
     /* Get the maximum size of the list. */
-    inline std::optional<size_t> max_size() const {
+    inline std::optional<size_t> max_size() const noexcept {
         return allocator.frozen ? std::make_optional(allocator.capacity) : std::nullopt;
     }
 
     /* Reserve memory for a given number of nodes ahead of time. */
-    inline void reserve(size_t capacity) {
+    inline void reserve(size_t capacity) const {
         allocator.reserve(capacity);
     }
 
@@ -683,7 +683,7 @@ protected:
         if (curr == nullptr) {  // error during node initialization
             if constexpr (DEBUG) {
                 // QoL - nothing has been allocated, so we don't actually free
-                std::cout << "    -> free: " << String::repr(item) << std::endl;
+                std::cout << "    -> free: " << repr(item) << std::endl;
             }
             return;
         }
@@ -996,7 +996,7 @@ private:
         if (PyErr_Occurred()) {
             // QoL - nothing has been allocated, so we don't actually free anything
             if constexpr (DEBUG) {
-                std::cout << "    -> free: " << String::repr(item) << std::endl;
+                std::cout << "    -> free: " << repr(item) << std::endl;
             }
             return;
         }

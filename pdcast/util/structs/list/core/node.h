@@ -11,19 +11,19 @@
 #include "util.h"  // for catch_python, type_error
 
 
-//////////////////////////
-////    BASE CLASS    ////
-//////////////////////////
+////////////////////
+////    BASE    ////
+////////////////////
 
 
 /* Base class containing common functionality across all nodes. */
 template <typename ValueType>
 class BaseNode {
+    inline static constexpr bool py_val = std::is_convertible_v<ValueType, PyObject*>;
     ValueType _value;
 
 public:
     using Value = ValueType;
-    inline static constexpr bool has_pyobject = std::is_same_v<Value, PyObject*>;
 
     /* Get the value within the node. */
     inline Value value() const noexcept {
@@ -32,7 +32,7 @@ public:
 
     /* Apply a less-than comparison to the wrapped value. */
     inline bool lt(Value other) const {
-        if constexpr (has_pyobject) {
+        if constexpr (py_val) {
             int comp = PyObject_RichCompareBool(_value, other, Py_LT);
             if (comp == -1) {  // error during comparison
                 throw catch_python<type_error>();
@@ -44,7 +44,7 @@ public:
 
     /* Apply a less-than-or-equal comparison to the wrapped value. */
     inline bool le(Value other) const {
-        if constexpr (has_pyobject) {
+        if constexpr (py_val) {
             int comp = PyObject_RichCompareBool(_value, other, Py_LE);
             if (comp == -1) {  // error during comparison
                 throw catch_python<type_error>();
@@ -56,7 +56,7 @@ public:
 
     /* Apply an equality comparison to the wrapped value. */
     inline bool eq(Value other) const {
-        if constexpr (has_pyobject) {
+        if constexpr (py_val) {
             int comp = PyObject_RichCompareBool(_value, other, Py_EQ);
             if (comp == -1) {  // error during comparison
                 throw catch_python<type_error>();
@@ -68,7 +68,7 @@ public:
 
     /* Apply an inequality comparison to the wrapped value. */
     inline bool ne(Value other) const {
-        if constexpr (has_pyobject) {
+        if constexpr (py_val) {
             int comp = PyObject_RichCompareBool(_value, other, Py_NE);
             if (comp == -1) {  // error during comparison
                 throw catch_python<type_error>();
@@ -79,20 +79,8 @@ public:
     }
 
     /* Apply a greater-than-or-equal comparison to the wrapped value. */
-    inline bool gt(Value other) const {
-        if constexpr (has_pyobject) {
-            int comp = PyObject_RichCompareBool(_value, other, Py_GT);
-            if (comp == -1) {  // error during comparison
-                throw catch_python<type_error>();
-            }
-            return static_cast<bool>(comp);
-        }
-        return _value > other;
-    }
-
-    /* Apply a greater-than comparison to the wrapped value. */
     inline bool ge(Value other) const {
-        if constexpr (has_pyobject) {
+        if constexpr (py_val) {
             int comp = PyObject_RichCompareBool(_value, other, Py_GE);
             if (comp == -1) {  // error during comparison
                 throw catch_python<type_error>();
@@ -102,8 +90,20 @@ public:
         return _value >= other;
     }
 
+    /* Apply a greater-than comparison to the wrapped value. */
+    inline bool gt(Value other) const {
+        if constexpr (py_val) {
+            int comp = PyObject_RichCompareBool(_value, other, Py_GT);
+            if (comp == -1) {  // error during comparison
+                throw catch_python<type_error>();
+            }
+            return static_cast<bool>(comp);
+        }
+        return _value > other;
+    }
+
     /* Apply an explicit type check to the wrapped value if it is a Python object. */
-    template <bool cond = has_pyobject>
+    template <bool cond = py_val>
     inline std::enable_if_t<cond, bool> typecheck(PyObject* specialization) const {
         int comp = PyObject_IsInstance(_value, specialization);
         if (comp == -1) {
@@ -116,14 +116,14 @@ protected:
 
     /* Initialize a node with a given value. */
     BaseNode(Value value) noexcept : _value(value) {
-        if constexpr (has_pyobject) {
+        if constexpr (py_val) {
             Py_XINCREF(value);
         }
     }
 
     /* Copy constructor. */
     BaseNode(const BaseNode& other) noexcept : _value(other._value) {
-        if constexpr (has_pyobject) {
+        if constexpr (py_val) {
             Py_XINCREF(_value);
         }
     }
@@ -143,13 +143,13 @@ protected:
         }
 
         // clear current node
-        if constexpr (has_pyobject) {
+        if constexpr (py_val) {
             Py_XDECREF(_value);
         }
 
         // copy other node
         _value = other._value;
-        if constexpr (has_pyobject) {
+        if constexpr (py_val) {
             Py_XINCREF(_value);
         }
         return *this;
@@ -163,7 +163,7 @@ protected:
         }
 
         // clear current node
-        if constexpr (has_pyobject) {
+        if constexpr (py_val) {
             Py_XDECREF(_value);
         }
 
@@ -177,7 +177,7 @@ protected:
 
     /* Destroy a node and release its resources. */
     ~BaseNode() noexcept {
-        if constexpr (has_pyobject) {
+        if constexpr (py_val) {
             Py_XDECREF(_value);
         }
         if constexpr (std::is_pointer_v<Value>) {
@@ -186,25 +186,6 @@ protected:
     }
 
 };
-
-
-/* A conditional value type that infers the return type of a C++ function pointer. */
-template <typename T, typename Func, typename = void>
-struct _ConditionalType {
-    using type = std::invoke_result_t<Func, T>;
-};
-
-
-/* A conditional valute type that represents the return type of a python callable. */
-template <typename T, typename Func>
-struct _ConditionalType<T, Func, std::enable_if_t<std::is_same_v<Func, PyObject*>>> {
-    using type = PyObject*;
-};
-
-
-/* An accessor that returns the type deduced by a ConditionalValue trait. */
-template <typename Func, typename NodeType, typename Value = typename NodeType::Value>
-using ConditionalType = typename _ConditionalType<Value, Func>::type;
 
 
 //////////////////////////
@@ -469,23 +450,23 @@ public:
 for use in sorting algorithms.
 
 NOTE: this is a special case of node used in the `sort()` method to apply a key
-function to each node's value.  It is not meant to be used in any other context. */
-template <typename NodeType, typename Func>
-class Keyed : public SingleNode<ConditionalType<Func, NodeType>> {
-public:
-    using Value = ConditionalType<Func, NodeType>;
-    static constexpr bool doubly_linked = false;
-
+function to each value in a list.  It is not meant to be used in any other context. */
+template <
+    typename Wrapped,
+    typename Func,
+    typename _Value = ReturnType<Func, typename Wrapped::Value>
+>
+class Keyed : public SingleNode<_Value> {
 private:
-    using Base = SingleNode<Value>;  // stores the result of the key function
-    NodeType* _node;  // reference to decorated node
+    using Base = SingleNode<_Value>;
+    Wrapped* _node;  // reference to decorated node
 
     /* Invoke the key function on the specified value and return the computed result. */
-    Value invoke(Func func, typename NodeType::Value arg) {
+    _Value invoke(Func func, typename Wrapped::Value arg) {
         // Python key
-        if constexpr (std::is_same_v<Func, PyObject*>) {
+        if constexpr (std::is_convertible_v<Func, PyObject*>) {
             static_assert(
-                Base::has_pyobject,
+                std::is_convertible_v<typename Base::Value, PyObject*>,
                 "Python functions can only be applied to PyObject* nodes"
             );
 
@@ -503,8 +484,11 @@ private:
     }
 
 public:
+    using Value = _Value;
+    static constexpr bool doubly_linked = false;
+
     /* Initialize a keyed node by applying a Python callable to an existing node. */
-    Keyed(NodeType* node, Func func) :
+    Keyed(Wrapped* node, Func func) :
         Base(invoke(func, node->value())), _node(node)
     {}
 
@@ -540,7 +524,7 @@ public:
     }
 
     /* Get the decorated node. */
-    inline NodeType* node() const noexcept {
+    inline Wrapped* node() const noexcept {
         return _node;
     }
 
@@ -554,7 +538,7 @@ public:
         Base::next(next);
     }
 
-    /* Link the node to its neighbors to form a singly-linked list. */
+    /* Link the node to its neighbors to form a doubly-linked list. */
     inline static void link(Keyed* prev, Keyed* curr, Keyed* next) noexcept {
         Base::link(prev, curr, next);
     }
@@ -584,20 +568,20 @@ public:
 
 /* A node decorator that computes the hash of the underlying PyObject* and
 caches it alongside the node's original fields. */
-template <typename NodeType>
-class Hashed : public NodeType {
-    using Node = Hashed<NodeType>;
-    using Value = typename Node::Value;
+template <typename Wrapped>
+class Hashed : public Wrapped {
     size_t _hash;
 
     /* Compute the hash of the underlying node value. */
-    inline static size_t compute_hash(Node* node) {
-        if constexpr (Node::has_pyobject) {
+    inline static size_t compute_hash(Hashed* node) {
+        using Value = typename Wrapped::Value;
+
+        if constexpr (std::is_convertible_v<Value, PyObject*>) {
             Py_hash_t hash_val = PyObject_Hash(node->value());
             if (hash_val == -1 && PyErr_Occurred()) {
                 // NOTE: we have to make sure to release any resources that were
                 // acquired during the wrapped constructor
-                node->~Node();
+                node->~Hashed();
                 throw catch_python<type_error>();
             }
             return static_cast<size_t>(hash_val);  // for compatibility with std::hash
@@ -610,21 +594,15 @@ public:
 
     /* Delegate to the wrapped node constructor. */
     template <typename... Args>
-    Hashed(Args... args) noexcept :
-        NodeType(std::forward<Args>(args)...), _hash(compute_hash(this))
+    Hashed(Args... args) :
+        Wrapped(std::forward<Args>(args)...), _hash(compute_hash(this))
     {}
 
     /* Copy constructor. */
-    Hashed(const Hashed& other) noexcept :
-        NodeType(other), _hash(compute_hash(this))
-    {}
+    Hashed(const Hashed& other) noexcept : Wrapped(other), _hash(other._hash) {}
 
     /* Move constructor. */
-    Hashed(Hashed&& other) noexcept :
-        NodeType(std::move(other)), _hash(compute_hash(this))
-    {
-        other._prev = nullptr;
-    }
+    Hashed(Hashed&& other) noexcept : Wrapped(std::move(other)), _hash(other._hash) {}
 
     /* Copy assignment operator. */
     Hashed& operator=(const Hashed& other) {
@@ -634,10 +612,10 @@ public:
         }
 
         // copy wrapped node
-        NodeType::operator=(other);
+        Wrapped::operator=(other);
 
         // copy hash
-        _hash = other.hash;
+        _hash = other._hash;
         return *this;
     }
 
@@ -649,10 +627,10 @@ public:
         }
 
         // move wrapped node
-        NodeType::operator=(other);
+        Wrapped::operator=(other);
 
         // move hash
-        _hash = other.hash;
+        _hash = other._hash;
         return *this;
     }
 
@@ -662,155 +640,217 @@ public:
     }
 
     /* Get the next node in the list. */
-    inline Node* next() {
-        return static_cast<Node*>(NodeType::next());
+    inline Hashed* next() const noexcept {
+        return static_cast<Hashed*>(Wrapped::next());
     }
 
     /* Set the next node in the list. */
-    inline void next(Node* next) {
-        NodeType::next(next);
+    inline void next(Hashed* next) noexcept {
+        Wrapped::next(next);
     }
 
     /* Get the previous node in the list. */
-    inline auto prev() -> std::enable_if_t<
-        std::is_same_v<decltype(std::declval<NodeType>().prev()), NodeType*>, Node*
-    > {
-        return static_cast<Node*>(NodeType::prev());
+    template <typename T = Wrapped, std::enable_if_t<T::doubly_linked, int> = 0>
+    inline Hashed* prev() const noexcept {
+        return static_cast<Hashed*>(T::prev());
     }
 
     /* Set the previous node in the list. */
-    inline auto prev(Node* prev) -> std::enable_if_t<
-        std::is_same_v<decltype(std::declval<NodeType>().prev()), NodeType*>
-    > {
-        NodeType::prev(prev);
+    template <typename T = Wrapped, std::enable_if_t<T::doubly_linked, int> = 0>
+    inline void prev(Hashed* prev) noexcept {
+        T::prev(prev);
     }
 
     /* Link the node to its neighbors to form a doubly-linked list. */
-    inline static void link(Node* prev, Node* curr, Node* next) noexcept {
-        if (prev != nullptr) {
-            prev->next(curr);
-        }
-        curr->prev(prev);
-        curr->next(next);
-        if (next != nullptr) {
-            next->prev(curr);
-        }
+    inline static void link(Hashed* prev, Hashed* curr, Hashed* next) noexcept {
+        Wrapped::link(prev, curr, next);
     }
 
     /* Unlink the node from its neighbors. */
-    inline static void unlink(Node* prev, Node* curr, Node* next) noexcept {
-        if (prev != nullptr) {
-            prev->next(next);
-        }
-        if (next != nullptr) {
-            next->prev(prev);
-        }
+    inline static void unlink(Hashed* prev, Hashed* curr, Hashed* next) noexcept {
+        Wrapped::unlink(prev, curr, next);
     }
 
     /* Break a linked list at the specified nodes. */
-    inline static void split(Node* prev, Node* curr) noexcept {
-        if (prev != nullptr) {
-            prev->next(nullptr);
-        }
-        if (curr != nullptr) {
-            curr->prev(nullptr);
-        }
+    inline static void split(Hashed* prev, Hashed* curr) noexcept {
+        Wrapped::split(prev, curr);
     }
 
     /* Join the list at the specified nodes. */
-    inline static void join(Node* prev, Node* curr) noexcept {
-        if (prev != nullptr) {
-            prev->next(curr);
-        }
-        if (curr != nullptr) {
-            curr->prev(prev);
-        }
+    inline static void join(Hashed* prev, Hashed* curr) noexcept {
+        Wrapped::join(prev, curr);
     }
 
 };
 
 
-/* A node decorator that hashes the underlying object and adds a second
-PyObject* reference, allowing the list to act as a dictionary. */
-template <typename NodeType>
-struct Mapped : public NodeType {
-    using Node = Mapped<NodeType>;
+/* A node decorator that attaches a second value to each node, allowing the list to act
+as a dictionary. */
+template <typename Wrapped, typename MappedType = PyObject*>
+class Mapped : public Wrapped {
+    using KeyType = typename Wrapped::Value;
+    static constexpr bool py_mapped = std::is_convertible_v<MappedType, PyObject*>;
+    MappedType _mapped;
 
-    Py_hash_t hash;
-    PyObject* mapped;
+    /* Unpack a python tuple containing a key and value. */
+    inline static std::pair<PyObject*, PyObject*> unpack_python(PyObject* tuple) {
+        static constexpr bool py_key = std::is_convertible_v<KeyType, PyObject*>;
+        static constexpr bool py_value = std::is_convertible_v<MappedType, PyObject*>;
+        static_assert(
+            py_key && py_value,
+            "Python tuples can only be unpacked by PyObject* nodes"
+        );
 
-    /* Initialize a newly-allocated node (1-argument version). */
-    inline static Node* init(Node* node, PyObject* value) {
         // Check that item is a tuple of size 2 (key-value pair)
-        if (!PyTuple_Check(value) || PyTuple_Size(value) != 2) {
-            PyErr_Format(
-                PyExc_TypeError,
-                "Expected tuple of size 2 (key, value), not: %R",
-                value
-            );
-            return nullptr;  // propagate TypeError()
+        if (!PyTuple_Check(tuple) || PyTuple_Size(tuple) != 2) {
+            std::ostringstream msg;
+            msg << "Expected tuple of size 2 (key, value), not: " << repr(tuple);
+            throw type_error(msg.str());
         }
 
-        // unpack tuple and pass to 2-argument version
-        PyObject* key = PyTuple_GetItem(value, 0);
-        PyObject* mapped = PyTuple_GetItem(value, 1);
-        return init(node, key, mapped);
+        // unpack tuple and return pair
+        PyObject* key = PyTuple_GetItem(tuple, 0);
+        PyObject* mapped = PyTuple_GetItem(tuple, 1);
+        return std::make_pair(key, mapped);
     }
 
-    /* Initialize a newly-allocated node (2-argument version). */
-    inline static Node* init(Node* node, PyObject* value, PyObject* mapped) {
-        node = static_cast<Node*>(NodeType::init(node, value));
-        if (node == nullptr) {  // Error during decorated init()
-            return nullptr;  // propagate
+public:
+    using MappedValue = MappedType;
+
+    /* Initialize a mapped node with a separate key and value. */
+    Mapped(KeyType key, MappedValue value) : Wrapped(key), _mapped(value) {
+        if constexpr (py_mapped) {
+            Py_INCREF(value);
         }
-
-        // compute hash
-        node->hash = PyObject_Hash(value);
-        if (node->hash == -1 && PyErr_Occurred()) {
-            NodeType::teardown(node);  // free any resources allocated during init()
-            return nullptr;  // propagate TypeError()
-        }
-
-        // store a reference to the mapped value
-        Py_INCREF(mapped);
-        node->mapped = mapped;
-
-        // return initialized node
-        return node;
     }
 
-    /* Initialize a copied node. */
-    inline static Node* init_copy(Node* new_node, Node* old_node) {
-        new_node = static_cast<Node*>(NodeType::init_copy(new_node, old_node));
-        if (new_node == nullptr) {  // Error during decrated init_copy()
-            return nullptr;  // propagate
+    /* Initialize a mapped node with a coupled key and value. */
+    Mapped(std::pair<KeyType, MappedValue> pair) : Mapped(pair.first, pair.second) {}
+    Mapped(std::tuple<KeyType, MappedValue> tuple) :
+        Mapped(std::get<0>(tuple), std::get<1>(tuple))
+    {}
+    Mapped(PyObject* tuple) : Mapped(unpack_python(tuple)) {}
+
+    /* Copy constructor. */
+    Mapped(const Mapped& other) noexcept : Wrapped(other), _mapped(other._mapped) {
+        if constexpr (py_mapped) {
+            Py_INCREF(_mapped);
         }
-
-        // reuse the pre-computed hash
-        new_node->hash = old_node->hash;
-
-        // store a new reference to mapped value
-        Py_INCREF(old_node->mapped);
-        new_node->mapped = old_node->mapped;
-
-        // return initialized node
-        return new_node;
     }
 
-    /* Tear down a node before freeing it. */
-    inline static void teardown(Node* node) {
-        Py_DECREF(node->mapped);  // release mapped value
-        NodeType::teardown(node);
+    /* Move constructor. */
+    Mapped(Mapped&& other) noexcept :
+        Wrapped(std::move(other)), _mapped(std::move(other._mapped))
+    {
+        if constexpr (std::is_pointer_v<MappedValue>) {
+            other._mapped = nullptr;
+        }
+    }
+
+    /* Copy assignment operator. */
+    Mapped& operator=(const Mapped& other) noexcept {
+        // check for self-assignment
+        if (this == &other) {
+            return *this;
+        }
+
+        // copy wrapped node
+        Wrapped::operator=(other);
+
+        // copy mapped value
+        _mapped = other._mapped;
+        if constexpr (py_mapped) {
+            Py_XINCREF(_mapped);
+        }
+        return *this;
+    }
+
+    /* Move assignment operator. */
+    Mapped& operator=(Mapped&& other) noexcept {
+        // check for self-assignment
+        if (this == &other) {
+            return *this;
+        }
+
+        // move wrapped node
+        Wrapped::operator=(other);
+
+        // move mapped value
+        _mapped = std::move(other._mapped);
+        if constexpr (std::is_pointer_v<MappedValue>) {
+            other._mapped = nullptr;
+        }
+        return *this;
+    }
+
+    /* Destroy a mapped node and release its resources. */
+    ~Mapped() noexcept {
+        if constexpr (py_mapped) {
+            Py_XDECREF(_mapped);
+        }
+    }
+
+    /* Get the mapped value. */
+    inline MappedValue mapped() const noexcept {
+        return _mapped;
+    }
+
+    /* Get the next node in the list. */
+    inline Mapped* next() const noexcept {
+        return static_cast<Mapped*>(Wrapped::next());
+    }
+
+    /* Set the next node in the list. */
+    inline void next(Mapped* next) noexcept {
+        Wrapped::next(next);
+    }
+
+    /* Get the previous node in the list. */
+    template <typename T = Wrapped, std::enable_if_t<T::doubly_linked, int> = 0>
+    inline Mapped* prev() const noexcept {
+        return static_cast<Mapped*>(T::prev());
+    }
+
+    /* Set the previous node in the list. */
+    template <typename T = Wrapped, std::enable_if_t<T::doubly_linked, int> = 0>
+    inline void prev(Mapped* prev) noexcept {
+        T::prev(prev);
+    }
+
+    /* Link the node to its neighbors to form a doubly-linked list. */
+    inline static void link(Mapped* prev, Mapped* curr, Mapped* next) noexcept {
+        Wrapped::link(prev, curr, next);
+    }
+
+    /* Unlink the node from its neighbors. */
+    inline static void unlink(Mapped* prev, Mapped* curr, Mapped* next) noexcept {
+        Wrapped::unlink(prev, curr, next);
+    }
+
+    /* Break a linked list at the specified nodes. */
+    inline static void split(Mapped* prev, Mapped* curr) noexcept {
+        Wrapped::split(prev, curr);
+    }
+
+    /* Join the list at the specified nodes. */
+    inline static void join(Mapped* prev, Mapped* curr) noexcept {
+        Wrapped::join(prev, curr);
     }
 
 };
+
+
+
+
+// TODO: Threaded nodes are more trouble than they're worth.  Just add a different
+// LockPolicy that uses a shared_mutex instead.
 
 
 /* A node decorator that adds a separate mutex to each node, for use in heavily
 multithreaded contexts. */
-template <typename NodeType>
-struct Threaded : public NodeType {
-    using Node = Threaded<NodeType>;
+template <typename Wrapped>
+struct Threaded : public Wrapped {
+    using Node = Threaded<Wrapped>;
 
     mutable std::mutex mutex;
 
@@ -845,7 +885,7 @@ struct Threaded : public NodeType {
 
     /* Access the next node in the list. */
     inline Node* next() {
-        Node* result = static_cast<Node*>(NodeType::next());
+        Node* result = static_cast<Node*>(Wrapped::next());
         if (result != nullptr) {
             result->mutex.lock();  // lock the next node's mutex on access
         }
@@ -857,10 +897,10 @@ struct Threaded : public NodeType {
 
     /* Access the previous node in the list. */
     inline auto prev() -> std::enable_if_t<
-        std::is_same_v<decltype(std::declval<NodeType>().prev()), NodeType*>,
+        std::is_same_v<decltype(std::declval<Wrapped>().prev()), Wrapped*>,
         Node*
     > {
-        Node* result = static_cast<Node*>(NodeType::prev());
+        Node* result = static_cast<Node*>(Wrapped::prev());
         if (result != nullptr) {
             result->mutex.lock();  // lock the previous node's mutex on access
         }
@@ -876,13 +916,13 @@ struct Threaded : public NodeType {
 
 
 /* A node decorator that adds a frequency count to the underyling node type. */
-template <typename NodeType>
-struct Counted : public NodeType {
+template <typename Wrapped>
+struct Counted : public Wrapped {
     size_t frequency;
 
     /* Initialize a newly-allocated node. */
-    inline static Counted<NodeType>* init(Counted<NodeType>* node, PyObject* value) {
-        node = (Counted<NodeType>*)NodeType::init(node, value);
+    inline static Counted<Wrapped>* init(Counted<Wrapped>* node, PyObject* value) {
+        node = (Counted<Wrapped>*)Wrapped::init(node, value);
         if (node == nullptr) {  // Error during decorated init()
             return nullptr;  // propagate
         }
@@ -895,12 +935,12 @@ struct Counted : public NodeType {
     }
 
     /* Initialize a copied node. */
-    inline static Counted<NodeType>* init_copy(
-        Counted<NodeType>* new_node,
-        Counted<NodeType>* old_node
+    inline static Counted<Wrapped>* init_copy(
+        Counted<Wrapped>* new_node,
+        Counted<Wrapped>* old_node
     ) {
         // delegate to templated init_copy() method
-        new_node = (Counted<NodeType>*)NodeType::init_copy(new_node, old_node);
+        new_node = (Counted<Wrapped>*)Wrapped::init_copy(new_node, old_node);
         if (new_node == nullptr) {  // Error during templated init_copy()
             return nullptr;  // propagate
         }
@@ -911,9 +951,9 @@ struct Counted : public NodeType {
     }
 
     /* Tear down a node before freeing it. */
-    inline static void teardown(Counted<NodeType>* node) {
+    inline static void teardown(Counted<Wrapped>* node) {
         node->frequency = 0; // reset frequency
-        NodeType::teardown(node);
+        Wrapped::teardown(node);
     }
 };
 

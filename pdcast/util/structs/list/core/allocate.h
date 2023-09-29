@@ -9,7 +9,7 @@
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
 #include <Python.h>  // CPython API
-#include "util.h"  // String::repr(), next_power_of_two()
+#include "util.h"  // repr(), next_power_of_two()
 
 
 /////////////////////////
@@ -128,14 +128,14 @@ private:
         // check python specialization if enabled
         if (specialization != nullptr && !node->typecheck(specialization)) {
             std::ostringstream msg;
-            msg << String::repr(node->value()) << " is not of type ";
-            msg << String::repr(specialization);
+            msg << repr(node->value()) << " is not of type ";
+            msg << repr(specialization);
             node->~Node();  // in-place destructor
             throw type_error(msg.str());
         }
 
         if constexpr (DEBUG) {
-            std::cout << "    -> create: " << String::repr(node->value()) << std::endl;
+            std::cout << "    -> create: " << repr(node->value()) << std::endl;
         }
     }
 
@@ -145,7 +145,7 @@ private:
         while (curr != nullptr) {
             Node* next = curr->next();
             if constexpr (DEBUG) {
-                std::cout << "    -> recycle: " << String::repr(curr->value()) << std::endl;
+                std::cout << "    -> recycle: " << repr(curr->value()) << std::endl;
             }
             curr->~Node();  // in-place destructor
             curr = next;
@@ -369,7 +369,7 @@ public:
     void recycle(Node* node) {
         // manually call destructor
         if constexpr (DEBUG) {
-            std::cout << "    -> recycle: " << String::repr(node->value()) << std::endl;
+            std::cout << "    -> recycle: " << repr(node->value()) << std::endl;
         }
         node->~Node();
 

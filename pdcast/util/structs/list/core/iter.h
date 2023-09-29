@@ -84,12 +84,12 @@ public:
         /////////////////////////////////
 
         /* Dereference the iterator to get the node at the current position. */
-        inline Node* operator*() const {
+        inline Node* operator*() const noexcept {
             return curr;
         }
 
         /* Prefix increment to advance the iterator to the next node in the slice. */
-        inline Iterator& operator++() {
+        inline Iterator& operator++() noexcept {
             if constexpr (dir == Direction::backward) {
                 next = curr;
                 curr = prev;
@@ -117,7 +117,7 @@ public:
 
         /* Inequality comparison to terminate the slice. */
         template <Direction T>
-        inline bool operator!=(const Iterator<T>& other) const {
+        inline bool operator!=(const Iterator<T>& other) const noexcept {
             return curr != other.curr;
         }
 
