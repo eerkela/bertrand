@@ -11,20 +11,26 @@ from libcpp.utility cimport pair
 # easier to interact with directly from C++, due to the heavy use of templates
 # and static polymorphism.
 
+cdef extern from "core/util.h":
+    cdef cppclass Slot[T](optional[T]):  # facilitates stack allocation in Cython
+        void move(T* ptr) except +
+
 
 cdef extern from "core/node.h":
     cdef cppclass BaseNode[T]:
-        T value()
-        bint lt(T other) except +
-        bint le(T other) except +
-        bint eq(T other) except +
-        bint ne(T other) except +
-        bint ge(T other) except +
-        bint gt(T other) except +
+        ctypedef T Value
+        Value value()
+        bint lt(Value other) except +
+        bint le(Value other) except +
+        bint eq(Value other) except +
+        bint ne(Value other) except +
+        bint ge(Value other) except +
+        bint gt(Value other) except +
         bint typecheck(PyObject* specialization) except +
 
     cdef cppclass SingleNode[T](BaseNode[T]):
-        SingleNode(T value)
+        ctypedef BaseNode[T].Value Value
+        SingleNode(Value value)
         SingleNode(const SingleNode& other)
         SingleNode& operator=(const SingleNode& other)
         SingleNode* next()
@@ -39,7 +45,8 @@ cdef extern from "core/node.h":
         void join(SingleNode* prev, SingleNode* curr)
 
     cdef cppclass DoubleNode[T](BaseNode[T]):
-        DoubleNode(T value)
+        ctypedef BaseNode[T].Value Value
+        DoubleNode(Value value)
         DoubleNode(const DoubleNode& other)
         DoubleNode& operator=(const DoubleNode& other)
         DoubleNode* next()

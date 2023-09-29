@@ -19,7 +19,7 @@
 
 /* DEBUG=TRUE adds print statements for every call to malloc()/free() in order
 to help catch memory leaks. */
-const bool DEBUG = true;
+const bool DEBUG = false;
 
 
 ////////////////////
