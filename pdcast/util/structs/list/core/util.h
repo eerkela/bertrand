@@ -144,17 +144,63 @@ template <typename Func, typename... Args>
 using ReturnType = typename _ReturnType<Func, void, Args...>::type;
 
 
-/* A modified `std::optional` subclass that facilitates stack allocation in Cython. */
+/* A raw memory buffer */
 template <typename T>
-class Slot : public std::optional<T> {
-public:
-    using std::optional<T>::optional;  // inherit constructors
+class Slot {
+private:
+    bool constructed = false;
+    alignas(T) char data[sizeof(T)];  // access via reinterpret_cast
 
-    /* Move a value into the optional from Cython. */
-    inline void move(T* ptr) {
-        // NOTE: Cython does not natively support move semantics or rvalue references,
-        // but we can bypass this by providing a pointer and handling the move from C++.
-        *this = std::move(*ptr);
+public:
+
+    /* Trivial constructor for delayed construction. */
+    Slot() {}
+
+    /* Destroy the value within the memory buffer. */
+    ~Slot() {
+        if (constructed) {
+            reinterpret_cast<T&>(data).~T();
+            constructed = false;
+        }
+    }
+
+    /* Construct the value within the memory buffer using the given arguments,
+    replacing any previous value it may have held. */
+    template <typename... Args>
+    inline void construct(Args&&... args) {
+        if (constructed) {
+            this->operator*().~T();
+        }
+        new (data) T(std::forward<Args>(args)...);
+        constructed = true;
+    }
+
+    /* Assign a new value to the memory buffer using ordinary C++ move semantics. */
+    inline Slot& operator=(T&& val) {
+        this->construct(std::move(val));
+        return *this;
+    }
+
+    /* Assign a new value into the memory buffer using Cython-compatible move semantics.
+
+    NOTE: this has to accept an lvalue reference to a temporary object because Cython
+    does not support rvalue references.  This means that the referenced instance will
+    be in an undefined state after this method is called, as if it had been moved
+    from. */
+    inline Slot& operator=(T& val) {
+        *this = std::move(val);  // forward to rvalue overload
+        return *this;
+    }
+
+    /* Move the contents of one Slot to another. */
+    inline Slot& operator=(Slot&& other) {
+        *this = std::move(*other);  // forward to rvalue overload
+        return *this;
+    }
+
+    /* Dereference to get the value currently stored in the memory buffer. */
+    inline T& operator*() {
+        return reinterpret_cast<T&>(data);
     }
 
 };

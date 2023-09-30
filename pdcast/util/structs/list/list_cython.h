@@ -88,11 +88,7 @@ public:
         still exists.  Otherwise, sets a Python error and return nullptr.  */
         T* get() const {
             if (ref.expired()) {
-                PyErr_SetString(
-                    PyExc_ReferenceError,
-                    "referenced object no longer exists"
-                );
-                return nullptr;  // propagate error
+                throw std::runtime_error("referenced object no longer exists");
             }
             return ref.lock().get();
         }
@@ -353,16 +349,10 @@ public:
     }
 
     /* Implement LinkedList.copy() for all variants. */
-    inline VariantList* copy() {
+    inline VariantList copy() {
         return std::visit(
-            [&](auto& list) -> VariantList* {
-                // copy underlying list
-                try {
-                    return new VariantList(list.copy());
-                } catch (const std::exception& e) {
-                    PyErr_SetString(PyExc_RuntimeError, e.what());
-                    return nullptr;  // propagate C++ errors
-                }
+            [&](auto& list) {
+                return VariantList(std::move(list.copy()));
             },
             variant
         );
@@ -452,14 +442,10 @@ public:
     public:
 
         /* Implement LinkedList.__getitem__() for all variants. */
-        VariantList* get() {
-            VariantList* parent = ref.get();
-            if (parent == nullptr) {
-                return nullptr;  // propagate
-            }
+        VariantList get() {
             return std::visit(
-                [&](auto& list) -> VariantList* {
-                    return new VariantList(
+                [&](auto& list) {
+                    return VariantList(
                         std::apply(
                             [&](Args... args) {
                                 return list.slice(std::forward<Args>(args)...).get();
@@ -468,16 +454,12 @@ public:
                         )
                     );
                 },
-                parent->variant
+                ref.get()->variant
             );
         }
 
         /* Implement LinkedList.__setitem__() for all variants (slice). */
         void set(PyObject* items) {
-            VariantList* parent = ref.get();
-            if (parent == nullptr) {
-                return;  // propagate
-            }
             std::visit(
                 [&](auto& list) {
                     // construct proxy using deferred arguments
@@ -488,16 +470,12 @@ public:
                     // replace slice
                     proxy.set(items);
                 },
-                parent->variant
+                ref.get()->variant
             );
         }
 
         /* Implement LinkedList.__delitem__() for all variants (slice). */
         void del() {
-            VariantList* parent = ref.get();
-            if (parent == nullptr) {
-                return;  // propagate
-            }
             std::visit(
                 [&](auto& list) {
                     // generate proxy
@@ -508,7 +486,7 @@ public:
                     // drop slice
                     proxy.del();
                 },
-                parent->variant
+                ref.get()->variant
             );
         }
 
