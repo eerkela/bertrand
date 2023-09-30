@@ -349,10 +349,16 @@ public:
     }
 
     /* Implement LinkedList.copy() for all variants. */
-    inline VariantList copy() {
+    inline Slot<VariantList> copy() {
         return std::visit(
             [&](auto& list) {
-                return VariantList(std::move(list.copy()));
+                // NOTE: ordinarily, we would just return the copy directly, but for
+                // Cython to be able to stack-allocate the result, we need to use a
+                // wrapper that is trivially constructible.  This is a bit of a hack,
+                // but it works and avoids unnecessary heap allocations.
+                Slot<VariantList> slot;
+                slot.construct(std::move(list.copy()));
+                return slot;
             },
             variant
         );
@@ -442,10 +448,15 @@ public:
     public:
 
         /* Implement LinkedList.__getitem__() for all variants. */
-        VariantList get() {
+        Slot<VariantList> get() {
             return std::visit(
                 [&](auto& list) {
-                    return VariantList(
+                    // NOTE: ordinarily, we would just return the copy directly, but
+                    // for Cython to be able to stack-allocate the result, we need to
+                    // use a wrapper that is trivially constructible.  This is a bit of
+                    // a hack, but it works and avoids unnecessary heap allocations.
+                    Slot<VariantList> slot;
+                    slot.construct(
                         std::apply(
                             [&](Args... args) {
                                 return list.slice(std::forward<Args>(args)...).get();
@@ -453,6 +464,7 @@ public:
                             args
                         )
                     );
+                    return slot;
                 },
                 ref.get()->variant
             );

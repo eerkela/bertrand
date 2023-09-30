@@ -154,10 +154,10 @@ cdef class LinkedList:
             )
 
     @staticmethod
-    cdef LinkedList from_variant(VariantList& variant):
+    cdef LinkedList from_variant(VariantList* variant):
         """Create a new LinkedList from a C++ variant."""
         cdef LinkedList result = LinkedList.__new__(LinkedList)  # bypasses __init__()
-        result.variant = variant
+        result.variant.move_ptr(variant)  # Cython-compatible move assignment
         return result
 
     ##############################
@@ -180,7 +180,7 @@ cdef class LinkedList:
         Appends are O(1) for both ends of the list.
         """
         # dispatch to append.h
-        deref(self.variant).append(<PyObject*>item, <bint>left)
+        self.variant.ptr().append(<PyObject*>item, <bint>left)
 
     def insert(self, index: int, item: object) -> None:
         """Insert an item at the specified index.
@@ -199,7 +199,7 @@ cdef class LinkedList:
         Inserts are O(n) on average.
         """
         # dispatch to insert.h
-        deref(self.variant).insert(<PyObject*>index, <PyObject*>item)
+        self.variant.ptr().insert(<PyObject*>index, <PyObject*>item)
 
     def extend(self, items: Iterable[object], left: bool = False) -> None:
         """Add multiple items to the end of the list.
@@ -222,7 +222,7 @@ cdef class LinkedList:
         reversing the order of elements in ``items``.
         """
         # dispatch to extend.h
-        deref(self.variant).extend(<PyObject*>items, <bint>left)
+        self.variant.ptr().extend(<PyObject*>items, <bint>left)
 
     def index(self, item: object, start: int = 0, stop: int = -1) -> int:
         """Get the index of an item within the list.
@@ -247,7 +247,7 @@ cdef class LinkedList:
         Indexing is O(n) on average.
         """
         # dispatch to index.h
-        return deref(self.variant).index(<PyObject*>item, start, stop)
+        return self.variant.ptr().index(<PyObject*>item, start, stop)
 
     def count(self, item: object, start: int = 0, stop: int = -1) -> int:
         """Count the number of occurrences of an item in the list.
@@ -267,7 +267,7 @@ cdef class LinkedList:
         Counting is O(n).
         """
         # dispatch to count.h
-        return deref(self.variant).count(<PyObject*>item, start, stop)
+        return self.variant.ptr().count(<PyObject*>item, start, stop)
 
     def remove(self, item: object) -> None:
         """Remove an item from the list.
@@ -287,7 +287,7 @@ cdef class LinkedList:
         Removals are O(n) on average.
         """
         # delegate to remove.h
-        deref(self.variant).remove(<PyObject*>item)
+        self.variant.ptr().remove(<PyObject*>item)
 
     def pop(self, index: int = -1) -> object:
         """Remove and return the item at the specified index.
@@ -320,7 +320,7 @@ cdef class LinkedList:
         Otherwise, pops are O(n) for nodes in the middle of the list.
         """
         # dispatch to pop.h
-        return <object>deref(self.variant).pop(index)
+        return <object>self.variant.ptr().pop(index)
 
     def copy(self) -> LinkedList:
         """Create a shallow copy of the list.
@@ -334,7 +334,7 @@ cdef class LinkedList:
         -----
         Copying a :class:`LinkedList` is O(n).
         """
-        return LinkedList.from_variant(deref(self.variant).copy())
+        return LinkedList.from_variant(self.variant.ptr().copy().ptr())
 
     def clear(self) -> None:
         """Remove all items from the list.
@@ -343,7 +343,7 @@ cdef class LinkedList:
         -----
         Clearing a list is O(n).
         """
-        deref(self.variant).clear()
+        self.variant.ptr().clear()
 
     def sort(self, *, key: object = None, reverse: bool = False) -> None:
         """Sort the list in-place.
@@ -385,9 +385,9 @@ cdef class LinkedList:
         """
         # dispatch to sort.h
         if key is None:
-            deref(self.variant).sort(<PyObject*>NULL, <bint>reverse)
+            self.variant.ptr().sort(<PyObject*>NULL, <bint>reverse)
         else:
-            deref(self.variant).sort(<PyObject*>key, <bint>reverse)
+            self.variant.ptr().sort(<PyObject*>key, <bint>reverse)
 
     def reverse(self) -> None:
         """Reverse the order of the list in-place.
@@ -397,7 +397,7 @@ cdef class LinkedList:
         Reversing a :class:`LinkedList` is O(n).
         """
         # dispatch to reverse.h
-        deref(self.variant).reverse()
+        self.variant.ptr().reverse()
 
     def rotate(self, steps: int = 1) -> None:
         """Rotate the list to the right by the specified number of steps.
@@ -417,7 +417,7 @@ cdef class LinkedList:
         :class:`collections.deque <python:collections.deque>` class.
         """
         # dispatch to rotate.h
-        deref(self.variant).rotate(<ssize_t>steps)
+        self.variant.ptr().rotate(<ssize_t>steps)
 
     def __len__(self) -> int:
         """Get the total number of items in the list.
@@ -427,7 +427,7 @@ cdef class LinkedList:
         int
             The number of items in the list.
         """
-        return deref(self.variant).size()
+        return self.variant.ptr().size()
 
     def __iter__(self) -> Iterator[object]:
         """Iterate through the list items in order.
@@ -441,7 +441,7 @@ cdef class LinkedList:
         -----
         Iterating through a :class:`LinkedList` is O(n).
         """
-        return <object>(deref(self.variant).iter())
+        return <object>(self.variant.ptr().iter())
 
     def __reversed__(self) -> Iterator[object]:
         """Iterate through the list in reverse order.
@@ -457,7 +457,7 @@ cdef class LinkedList:
         singly-linked lists it is O(2n).  This is because of the need to build a
         temporary stack to store each element, which forces a second iteration.
         """
-        return <object>(deref(self.variant).riter())
+        return <object>(self.variant.ptr().riter())
 
     def __getitem__(self, key: int | slice) -> object | LinkedList:
         """Index the list for a particular item or slice.
@@ -498,10 +498,10 @@ cdef class LinkedList:
         """
         if isinstance(key, slice):
             return LinkedList.from_variant(
-                deref(self.variant).slice(<PyObject*>key).get()
+                self.variant.ptr().slice(<PyObject*>key).get().ptr()
             )
 
-        return <object>(deref(self.variant)[<PyObject*>key].get())
+        return <object>(deref(self.variant.ptr())[<PyObject*>key].get())
 
     def __setitem__(self, key: int | slice, value: object | Iterable[object]) -> None:
         """Set the value of an item or slice in the list.
@@ -541,9 +541,9 @@ cdef class LinkedList:
         complete.
         """
         if isinstance(key, slice):
-            deref(self.variant).slice(<PyObject*>key).set(<PyObject*>value)
+            self.variant.ptr().slice(<PyObject*>key).set(<PyObject*>value)
         else:
-            deref(self.variant)[<PyObject*>key].set(<PyObject*>value)
+            deref(self.variant.ptr())[<PyObject*>key].set(<PyObject*>value)
 
     def __delitem__(self, key: int | slice) -> None:
         """Delete an item or slice from the list.
@@ -577,9 +577,9 @@ cdef class LinkedList:
         complete.
         """
         if isinstance(key, slice):
-            deref(self.variant).slice(<PyObject*>key).delete()
+            self.variant.ptr().slice(<PyObject*>key).delete()
         else:
-            deref(self.variant)[<PyObject*>key].delete()
+            deref(self.variant.ptr())[<PyObject*>key].delete()
 
     def __contains__(self, item: object) -> bool:
         """Check if the item is contained in the list.
@@ -598,7 +598,7 @@ cdef class LinkedList:
         -----
         Membership checks are O(n) on average.
         """
-        return deref(self.variant).contains(<PyObject*>item)
+        return self.variant.ptr().contains(<PyObject*>item)
 
     def __add__(self, other: Iterable[object]) -> LinkedList:
         """Concatenate two lists.
@@ -939,7 +939,7 @@ cdef class LinkedList:
             The total number of bytes consumed by the list, including all its
             nodes (but not their values).
         """
-        return deref(self.variant).nbytes()
+        return self.variant.ptr().nbytes()
 
     @property
     def specialization(self) -> Any:
@@ -961,7 +961,7 @@ cdef class LinkedList:
         This is equivalent to the ``spec`` argument passed to the constructor
         and/or :meth:`specialize() <LinkedList.specialize>` method.
         """
-        cdef PyObject* spec = deref(self.variant).specialization()
+        cdef PyObject* spec = self.variant.ptr().specialization()
         if spec is NULL:
             return None
 
@@ -1005,9 +1005,9 @@ cdef class LinkedList:
             untyped equivalents.
         """
         if spec is None:
-            deref(self.variant).specialize(<PyObject*>NULL)
+            self.variant.ptr().specialize(<PyObject*>NULL)
         else:
-            deref(self.variant).specialize(<PyObject*>spec)
+            self.variant.ptr().specialize(<PyObject*>spec)
 
     def __class_getitem__(cls, key: object) -> type:
         """Subscribe a :class:`LinkedList` to a particular type specialization.
@@ -1196,7 +1196,7 @@ cdef class ThreadGuard:
 
     def __enter__(self):
         if self.context is NULL:
-            self.context = deref(self.parent.variant).lock.context()  # acquire mutex
+            self.context = deref(self.parent.variant.ptr()).lock.context()  # acquire mutex
         return self  # enter context block
 
     def locked(self) -> bool:

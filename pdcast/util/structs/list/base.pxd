@@ -12,11 +12,12 @@ from libcpp.utility cimport pair
 # and static polymorphism.
 
 cdef extern from "core/util.h":
-    cdef cppclass Slot[T]:  # facilitates stack allocation in Cython
-        Slot()
+    cdef cppclass Slot[T]:
+        Slot()  # trivial constructor allows stack allocation in Cython
         void construct(...) except +
-        void operator=(T& val) except +
-        T& operator*()
+        T& operator*() except +
+        void move_ptr(T* val) except +
+        T* ptr() except +
 
 
 cdef extern from "core/node.h":

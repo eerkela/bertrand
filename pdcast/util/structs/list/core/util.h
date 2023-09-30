@@ -144,7 +144,13 @@ template <typename Func, typename... Args>
 using ReturnType = typename _ReturnType<Func, void, Args...>::type;
 
 
-/* A raw memory buffer */
+/* A raw memory buffer that supports delayed construction from C++.
+
+NOTE: To be able to stack allocate members of Cython/Python extension types, the
+object must be trivially constructible.  If this is not the case, then a Slot can be
+used to allocate raw memory on the stack, into which values can be easily constructed
+and/or moved.  This allows intuitive RAII semantics in Cython, and avoids unnecessary
+heap allocations and the indirection that they cause. */
 template <typename T>
 class Slot {
 private:
@@ -152,17 +158,6 @@ private:
     alignas(T) char data[sizeof(T)];  // access via reinterpret_cast
 
 public:
-
-    /* Trivial constructor for delayed construction. */
-    Slot() {}
-
-    /* Destroy the value within the memory buffer. */
-    ~Slot() {
-        if (constructed) {
-            reinterpret_cast<T&>(data).~T();
-            constructed = false;
-        }
-    }
 
     /* Construct the value within the memory buffer using the given arguments,
     replacing any previous value it may have held. */
@@ -175,32 +170,59 @@ public:
         constructed = true;
     }
 
+    /* Trivial constructor for delayed construction. */
+    Slot() {}
+
+    /* Move constructor. */
+    Slot(Slot&& other) noexcept : constructed(other.constructed) {
+        if (constructed) {
+            this->construct(std::move(other.operator*()));
+        }
+    }
+
+    /* Move assignment operator. */
+    inline Slot& operator=(Slot&& other) {
+        *this = std::move(*other);  // forward to rvalue overload
+        return *this;
+    }
+
     /* Assign a new value to the memory buffer using ordinary C++ move semantics. */
     inline Slot& operator=(T&& val) {
         this->construct(std::move(val));
         return *this;
     }
 
-    /* Assign a new value into the memory buffer using Cython-compatible move semantics.
-
-    NOTE: this has to accept an lvalue reference to a temporary object because Cython
-    does not support rvalue references.  This means that the referenced instance will
-    be in an undefined state after this method is called, as if it had been moved
-    from. */
-    inline Slot& operator=(T& val) {
-        *this = std::move(val);  // forward to rvalue overload
-        return *this;
-    }
-
-    /* Move the contents of one Slot to another. */
-    inline Slot& operator=(Slot&& other) {
-        *this = std::move(*other);  // forward to rvalue overload
-        return *this;
+    /* Destroy the value within the memory buffer. */
+    ~Slot() {
+        if (constructed) {
+            reinterpret_cast<T&>(data).~T();
+            constructed = false;
+        }
     }
 
     /* Dereference to get the value currently stored in the memory buffer. */
     inline T& operator*() {
+        if (!constructed) {
+            throw std::runtime_error("Slot is not initialized");
+        }
         return reinterpret_cast<T&>(data);
+    }
+
+    /* Get a pointer to the value currently stored in the memory buffer.
+
+    NOTE: Cython sometimes has trouble with the above dereference operator and value
+    semantics in general, so this method can be used as an alternative. */
+    inline T* ptr() {
+        return &(this->operator*());
+    }
+
+    /* Assign a new value into the memory buffer using Cython-compatible move semantics.
+
+    NOTE: this has to accept a pointer to a temporary object because Cython does not
+    support rvalue references.  This means that the referenced object will be in an
+    undefined state after this method is called, as if it had been moved from. */
+    inline void move_ptr(T* val) {
+        *this = std::move(*val);  // forward to rvalue assignment
     }
 
 };
@@ -473,8 +495,8 @@ private:
     for this, but this adds extra allocation overhead.  Using raw data buffers avoids
     this and places the iterators on the stack, where they belong. */
     PyObject_HEAD
-    alignas(Iterator) char first[sizeof(Iterator)];  // access via reinterpret_cast
-    alignas(Iterator) char second[sizeof(Iterator)];
+    Slot<Iterator> first;
+    Slot<Iterator> second;
 
     /* Force users to use create() factory method. */
     PyIterator() = delete;
@@ -515,8 +537,8 @@ public:
         }
 
         // initialize iterators into raw storage
-        new (&result->first) Iterator(std::move(begin));  // placement new
-        new (&result->second) Iterator(std::move(end));
+        result->first.construct(std::move(begin));
+        result->second.construct(std::move(end));
         return result;
     }
 
@@ -527,17 +549,14 @@ public:
 
     /* Free the Python iterator when its reference count falls to zero. */
     inline static void dealloc(PyObject* self) {
-        Self* ref = reinterpret_cast<Self*>(self);
-        reinterpret_cast<Iterator&>(ref->first).~Iterator();
-        reinterpret_cast<Iterator&>(ref->second).~Iterator();
         Py_TYPE(self)->tp_free(self);
     }
 
     /* Call next(iter) from Python. */
     inline static PyObject* iter_next(PyObject* self) {
         Self* ref = reinterpret_cast<Self*>(self);
-        Iterator& begin = reinterpret_cast<Iterator&>(ref->first);
-        Iterator& end = reinterpret_cast<Iterator&>(ref->second);
+        Iterator& begin = *(ref->first);
+        Iterator& end = *(ref->second);
 
         if (!(begin != end)) {  // terminate the sequence
             PyErr_SetNone(PyExc_StopIteration);

@@ -312,7 +312,7 @@ cdef extern from "list_cython.h":
             void delete "del" () except +*  # del() shadows Cython `delete` keyword
 
         cppclass Slice:
-            VariantList get() except +
+            Slot[VariantList] get() except +
             void set(PyObject* items) except +*
             void delete "del" () except +*  # del() shadows Cython `delete` keyword
 
@@ -342,7 +342,7 @@ cdef extern from "list_cython.h":
         int contains(PyObject* item) except +*
         void remove(PyObject*) except *
         PyObject* pop[T](T index) except NULL
-        VariantList copy() except +
+        Slot[VariantList] copy() except +
         void clear()
         void sort(PyObject* key, bint reverse) except +*
         void reverse()
@@ -378,7 +378,7 @@ cdef class LinkedList:
         object __weakref__  # allows LinkedList to be weak-referenced from Python
 
     @staticmethod
-    cdef LinkedList from_variant(VariantList& variant)
+    cdef LinkedList from_variant(VariantList* variant)
 
 
 cdef class ThreadGuard:
