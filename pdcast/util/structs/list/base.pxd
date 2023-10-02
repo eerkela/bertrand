@@ -4,17 +4,11 @@ from libcpp.optional cimport optional
 from libcpp.utility cimport pair
 
 
-# NOTE: since the objects in this subpackage deal with direct memory allocation
-# and reference counting, only a subset of the C++ API is exposed here.  These
-# are mostly for manual testing and diagnostics from the Python side, and not
-# for general use or anything that involves heavy lifting.  The C++ API is
-# easier to interact with directly from C++, due to the heavy use of templates
-# and static polymorphism.
-
 cdef extern from "core/util.h":
     cdef cppclass Slot[T]:
         Slot()  # trivial constructor allows stack allocation in Cython
         void construct(...) except +
+        bint constructed()
         T& operator*() except +
         void move_ptr(T* val) except +
         T* ptr() except +

@@ -146,13 +146,7 @@ public:
             >;
 
             // create Python iterator over list
-            Iter* iter = Iter::create(begin(), end());
-            if (iter == nullptr) {
-                throw std::runtime_error("could not create iterator instance");
-            }
-
-            // return as PyObject*
-            return reinterpret_cast<PyObject*>(iter);
+            return Iter::init(begin(), end());
         }
 
         /* Get a reverse Python iterator over the list. */
@@ -163,13 +157,7 @@ public:
             >;
 
             // create Python iterator over list
-            Iter* iter = Iter::create(rbegin(), rend());
-            if (iter == nullptr) {
-                throw std::runtime_error("could not create iterator instance");
-            }
-
-            // return as PyObject*
-            return reinterpret_cast<PyObject*>(iter);
+            return Iter::init(rbegin(), rend());
         }
 
     private:

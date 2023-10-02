@@ -1071,12 +1071,12 @@ public:
 
 
 template <typename Node>
-struct NodeTraits {
+struct NodeInfo {
 
-    inline static constexpr bool has_prev = has_prev<Node>::value;
-    inline static constexpr bool has_hash = has_hash<Node>::value;
-    inline static constexpr bool has_mapped = has_mapped<Node>::value;
-    inline static constexpr bool has_mutex = has_mutex<Node>::value;
+    inline static constexpr bool doubly_linked = has_prev<Node>::value;
+    inline static constexpr bool hashed = has_hash<Node>::value;
+    inline static constexpr bool mapped = has_mapped<Node>::value;
+    inline static constexpr bool threaded = has_mutex<Node>::value;
 
     //////////////////////
     ////    SFINAE    ////

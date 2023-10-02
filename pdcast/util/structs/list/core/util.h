@@ -144,17 +144,17 @@ template <typename Func, typename... Args>
 using ReturnType = typename _ReturnType<Func, void, Args...>::type;
 
 
-/* A raw memory buffer that supports delayed construction from C++.
+/* A raw memory buffer that supports delayed construction from C++/Cython.
 
 NOTE: To be able to stack allocate members of Cython/Python extension types, the
 object must be trivially constructible.  If this is not the case, then a Slot can be
 used to allocate raw memory on the stack, into which values can be easily constructed
 and/or moved.  This allows intuitive RAII semantics in Cython, and avoids unnecessary
-heap allocations and the indirection that they cause. */
+heap allocations and indirection that they bring. */
 template <typename T>
 class Slot {
 private:
-    bool constructed = false;
+    bool _constructed = false;
     alignas(T) char data[sizeof(T)];  // access via reinterpret_cast
 
 public:
@@ -163,19 +163,32 @@ public:
     replacing any previous value it may have held. */
     template <typename... Args>
     inline void construct(Args&&... args) {
-        if (constructed) {
+        if (_constructed) {
             this->operator*().~T();
         }
         new (data) T(std::forward<Args>(args)...);
-        constructed = true;
+        _constructed = true;
+    }
+
+    /* Indicates whether the slot currently holds a valid object. */
+    inline bool constructed() const noexcept {
+        return _constructed;
+    }
+
+    /* Destroy the value within the memory buffer. */
+    inline void destroy() noexcept {
+        if (_constructed) {
+            reinterpret_cast<T&>(data).~T();
+            _constructed = false;
+        }
     }
 
     /* Trivial constructor for delayed construction. */
-    Slot() {}
+    Slot() noexcept {}
 
     /* Move constructor. */
-    Slot(Slot&& other) noexcept : constructed(other.constructed) {
-        if (constructed) {
+    Slot(Slot&& other) noexcept : _constructed(other._constructed) {
+        if (_constructed) {
             this->construct(std::move(other.operator*()));
         }
     }
@@ -193,16 +206,13 @@ public:
     }
 
     /* Destroy the value within the memory buffer. */
-    ~Slot() {
-        if (constructed) {
-            reinterpret_cast<T&>(data).~T();
-            constructed = false;
-        }
+    ~Slot() noexcept {
+        this->destroy();
     }
 
     /* Dereference to get the value currently stored in the memory buffer. */
     inline T& operator*() {
-        if (!constructed) {
+        if (!_constructed) {
             throw std::runtime_error("Slot is not initialized");
         }
         return reinterpret_cast<T&>(data);
@@ -369,26 +379,25 @@ inline T next_power_of_two(T n) {
 /////////////////////////////////
 
 
-/*
-NOTE: CoupledIterators are used to share state between the begin() and end() iterators
-in a loop and generally simplify the iterator interface.  They act like pass-through
-decorators for the begin() iterator, and contain their own end() iterator to terminate
-the loop.  This means we can write loops as follows:
-
-for (auto iter = view.iter(); iter != iter.end(); ++iter) {
-     // full access to iter
-}
-
-Rather than the more verbose:
-
-for (auto iter = view.begin(), end = view.end(); iter != end; ++iter) {
-     // same as above
-}
-
-Both have identical performance, but the former is more concise and easier to read.  It
-also allows any arguments provided to iter() to be passed through to both the begin()
-and end() iterators, which can be used to share state between the two.
-*/
+/* NOTE: CoupledIterators are used to share state between the begin() and end()
+ * iterators in a loop and generally simplify the iterator interface.  They act like
+ * pass-through decorators for the begin() iterator, and contain their own end()
+ * iterator to terminate the loop.  This means we can write loops as follows:
+ *
+ * for (auto iter = view.iter(); iter != iter.end(); ++iter) {
+ *     // full access to iter
+ * }
+ * 
+ * Rather than the more verbose:
+ * 
+ * for (auto iter = view.begin(), end = view.end(); iter != end; ++iter) {
+ *      // same as above
+ * }
+ * 
+ * Both generate identical code, but the former is more concise and easier to read.  It
+ * also allows any arguments provided to the call operator to be passed through to both
+ * the begin() and end() iterators, which can be used to share state between the two.
+ */
 
 
 /* A coupled pair of begin() and end() iterators to simplify the iterator interface. */
@@ -461,60 +470,66 @@ protected:
 ////////////////////////////////
 
 
-/*
-NOTE: PyIterable describes a Python iterable object, which is any object that can be
-iterated over using PyObject_GetIter() (i.e. `iter(obj)` in normal Python).  This
-automates the complicated (and dangerous) reference counting that would be required to
-iterate over a Python sequence using the C API directly.  It also allows us to use
-range-based for loops to iterate over Python sequences, which is much more concise and
-easier to read than the equivalent C API code.
-
-Note that PyIterable can throw std::invalid_argument errors if PyObject_GetIter() or
-PyIter_Next() fail with an error code.  Users should be prepared to handle these
-exceptions whenever a PyIterable is constructed or iterated over.
-*/
+/* NOTE: Python iterables are somewhat tricky to interact with from C++.  Reference
+ * counts have to be carefully managed to avoid memory leaks, and the C API is not
+ * particularly intuitive.  These helper classes simplify the interface and allow us to
+ * use RAII to automatically manage reference counts.
+ * 
+ * PyIterator is a wrapper around a C++ iterator that allows it to be used from Python.
+ * It can only be used for iterators that dereference to PyObject*, and it uses a
+ * manually-defined PyTypeObject (whose name must be given as a template argument) to
+ * expose the iterator to Python.  This type defines the __iter__() and __next__()
+ * magic methods, which are used to implement the iterator protocol in Python.
+ * 
+ * PyIterable is essentially the inverse.  It represents a C++ wrapper around a Python
+ * iterator that defines the __iter__() and __next__() magic methods.  The wrapper can
+ * be iterated over using normal C++ syntax, and it automatically manages reference
+ * counts for both the iterator itself and each element as we access them.
+ * 
+ * PySequence is a C++ wrapper around a Python sequence (list or tuple) that allows
+ * elements to be accessed by index.  It corresponds to the PySequence_FAST() family of
+ * C API functions.  Just like PyIterable, the wrapper automatically manages reference
+ * counts for the sequence and its contents as they are accessed.
+ */
 
 
 /* A wrapper around a C++ iterator that allows it to be used from Python. */
 template <typename Iterator, const std::string_view& name>
 class PyIterator {
-private:
-    using Self = PyIterator<Iterator, name>;
-
     // sanity check
     static_assert(
-        std::is_same_v<typename Iterator::value_type, PyObject*>,
+        std::is_convertible_v<typename Iterator::value_type, PyObject*>,
         "Iterator must dereference to PyObject*"
     );
 
     /* Store coupled iterators as raw data buffers.
     
     NOTE: PyObject_New() does not allow for traditional stack allocation like we would
-    normally use to store the wrapped iterators.  Instead, we have to be able to assign
-    the iterators after construction.  We could use pointers to heap-allocated memory
+    normally use to store the wrapped iterators.  Instead, we have to delay construction
+    until the init() method is called.  We could use pointers to heap-allocated memory
     for this, but this adds extra allocation overhead.  Using raw data buffers avoids
     this and places the iterators on the stack, where they belong. */
     PyObject_HEAD
     Slot<Iterator> first;
     Slot<Iterator> second;
 
-    /* Force users to use create() factory method. */
+    /* Force users to use init() factory method. */
     PyIterator() = delete;
-    PyIterator(const Self&) = delete;
-    PyIterator(Self&&) = delete;
+    PyIterator(const PyIterator&) = delete;
+    PyIterator(PyIterator&&) = delete;
 
     /* Initialize a PyTypeObject to represent this iterator from Python. */
     static PyTypeObject init_type() {
-        PyTypeObject type_obj = {};  // zero-initialize
+        PyTypeObject type_obj;  // zero-initialize
         type_obj.tp_name = name.data();
         type_obj.tp_doc = "Python-compatible wrapper around a C++ iterator.";
+        type_obj.tp_basicsize = sizeof(PyIterator);
         type_obj.tp_flags = Py_TPFLAGS_DEFAULT;
+        type_obj.tp_alloc = PyType_GenericAlloc;
         type_obj.tp_new = PyType_GenericNew;
         type_obj.tp_iter = PyObject_SelfIter;
         type_obj.tp_iternext = iter_next;
-        type_obj.tp_basicsize = sizeof(Self);
-        type_obj.tp_itemsize = 0;
-        type_obj.tp_dealloc = dealloc;
+        type_obj.tp_dealloc = (destructor) dealloc;
 
         // register iterator type with Python
         if (PyType_Ready(&type_obj) < 0) {
@@ -528,35 +543,31 @@ public:
     inline static PyTypeObject Type = init_type();
 
     /* Construct a Python iterator from a C++ iterator range. */
-    static Self* create(Iterator&& begin, Iterator&& end) {
+    inline static PyObject* init(Iterator&& begin, Iterator&& end) {
         // create new iterator instance
-        Self* result = PyObject_New(Self, &Type);
+        PyIterator* result = PyObject_New(PyIterator, &Type);
         if (result == nullptr) {
-            PyErr_SetString(PyExc_RuntimeError, "could not allocate PyIterator");
-            return nullptr;  // propagate error
+            throw std::runtime_error("could not allocate Python iterator");
         }
 
         // initialize iterators into raw storage
         result->first.construct(std::move(begin));
         result->second.construct(std::move(end));
-        return result;
+
+        // return as PyObject*
+        return reinterpret_cast<PyObject*>(result);
     }
 
     /* Construct a Python iterator from a coupled iterator. */
-    inline static Self* create(CoupledIterator<Iterator>&& iter) {
-        return create(iter.begin(), iter.end());
-    }
-
-    /* Free the Python iterator when its reference count falls to zero. */
-    inline static void dealloc(PyObject* self) {
-        Py_TYPE(self)->tp_free(self);
+    inline static PyObject* init(CoupledIterator<Iterator>&& iter) {
+        return init(iter.begin(), iter.end());
     }
 
     /* Call next(iter) from Python. */
-    inline static PyObject* iter_next(PyObject* self) {
-        Self* ref = reinterpret_cast<Self*>(self);
-        Iterator& begin = *(ref->first);
-        Iterator& end = *(ref->second);
+    inline static PyObject* iter_next(PyObject* py_self) {
+        PyIterator* self = reinterpret_cast<PyIterator*>(py_self);
+        Iterator& begin = *(self->first);
+        Iterator& end = *(self->second);
 
         if (!(begin != end)) {  // terminate the sequence
             PyErr_SetNone(PyExc_StopIteration);
@@ -567,6 +578,11 @@ public:
         PyObject* result = *begin;
         ++begin;
         return Py_NewRef(result);  // new reference
+    }
+
+    /* Free the Python iterator when its reference count falls to zero. */
+    inline static void dealloc(PyObject* self) {
+        Py_TYPE(self)->tp_free(self);
     }
 
 };
@@ -694,22 +710,21 @@ protected:
 /////////////////////////////
 
 
-/*
-NOTE: Bidirectional is a type-erased iterator wrapper that can contain either a forward
-or backward iterator over a linked list.  This allows us to write bare-metal loops if
-the iteration direction is known at compile time, while also allowing for dynamic
-traversal based on runtime conditions.  This is useful for implementing slices, which
-can be iterated over in either direction depending on the step size and singly- vs.
-doubly-linked nature of the list.
-
-Bidirectional iterators have a small overhead compared to statically-typed iterators,
-but this is minimized as much as possible through the use of tagged unions and
-constexpr branches to eliminate conditionals.  If a list is doubly-linked, these
-optimizations mean that we only add a single if-statement on a constant boolean
-discriminator to the loop body to determine the iterator direction.  If a list is
-singly-linked, then the Bidirectional iterator is functionally equivalent to a
-statically-typed forward iterator, and there are no unnecessary branches at all.
-*/
+/* NOTE: Bidirectional is a type-erased iterator wrapper that can contain either a
+ * forward or backward iterator over a linked list.  This allows us to write bare-metal
+ * loops if the iteration direction is known at compile time, while also allowing for
+ * dynamic traversal based on runtime conditions.  This is useful for implementing
+ * slices, which can be iterated over in either direction depending on the step size
+ * and singly- vs. doubly-linked nature of the list.
+ * 
+ * Bidirectional iterators have a small overhead compared to statically-typed iterators,
+ * but this is minimized as much as possible through the use of tagged unions and
+ * constexpr branches to eliminate conditionals.  If a list is doubly-linked, these
+ * optimizations mean that we only add a single if statement on a constant boolean
+ * discriminator to the body of the loop to determine the iterator direction.  If a
+ * list is singly-linked, then the Bidirectional iterator is functionally equivalent to
+ * a statically-typed forward iterator, and there are no unnecessary branches at all.
+ */
 
 
 /* enum to make iterator direction hints more readable. */
