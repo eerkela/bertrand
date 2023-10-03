@@ -582,6 +582,7 @@ public:
 
     /* Free the Python iterator when its reference count falls to zero. */
     inline static void dealloc(PyObject* self) {
+        // TODO: Type.tp_free(self)  <- we already have access to the type object
         Py_TYPE(self)->tp_free(self);
     }
 

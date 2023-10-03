@@ -295,27 +295,6 @@ cdef extern from "list.h":
 
 cdef extern from "list_cython.h":
     cdef cppclass VariantList:
-        # nested types/classes
-        cppclass Lock:
-            cppclass Guard:
-                pass
-            Guard operator()()
-            Guard* context()
-            size_t count()
-            size_t duration()
-            double contention()
-            void reset_diagnostics()
-
-        cppclass Index:
-            PyObject* get() except +*
-            void set(PyObject* item) except +*
-            void delete "del" () except +*  # del() shadows Cython `delete` keyword
-
-        cppclass Slice:
-            Slot[VariantList] get() except +
-            void set(PyObject* items) except +*
-            void delete "del" () except +*  # del() shadows Cython `delete` keyword
-
         # constructors
         VariantList(
             bint doubly_linked,
@@ -331,6 +310,12 @@ cdef extern from "list_cython.h":
         ) except +
 
         # functors
+        cppclass Lock:
+            PyObject* operator()()
+            size_t count()
+            size_t duration()
+            double contention()
+            void reset_diagnostics()
         const Lock lock  # lock() functor
 
         # list interface
@@ -348,7 +333,19 @@ cdef extern from "list_cython.h":
         void reverse()
         void rotate(ssize_t steps)
         size_t size()
+
+        # indexing
+        cppclass Index:
+            PyObject* get() except +*
+            void set(PyObject* item) except +*
+            void delete "del" () except +*  # del() shadows Cython `delete` keyword
         Index operator[](PyObject* index)
+
+        # slicing
+        cppclass Slice:
+            Slot[VariantList] get() except +
+            void set(PyObject* items) except +*
+            void delete "del" () except +*  # del() shadows Cython `delete` keyword
         Slice slice(PyObject* py_slice)
 
         # operator overloads
@@ -381,6 +378,6 @@ cdef class LinkedList:
     cdef LinkedList from_variant(VariantList* variant)
 
 
-cdef class ThreadGuard:
-    cdef LinkedList parent
-    cdef VariantList.Lock.Guard* context  # context manager threading lock
+# cdef class ThreadGuard:
+#     cdef LinkedList parent
+#     cdef VariantList.Lock.Guard* context  # context manager threading lock

@@ -132,24 +132,13 @@ environment. */
 template <typename T>
 class VariantLock {
 public:
-    using Guard = std::lock_guard<std::recursive_mutex>;  // TODO: figure out how to deal with different lock types
 
     /* Return an RAII-style lock guard for the underlying mutex. */
-    inline Guard operator()() const {
+    inline PyObject* operator()() const {
         return std::visit(
             [&](auto& obj) {
-                return obj.lock();
+                return obj.lock.python();
             }, 
-            ref.variant
-        );
-    }
-
-    /* Return a heap-allocated lock guard for the underlying mutex. */
-    inline Guard* context() const {
-        return std::visit(
-            [&](auto& obj) {
-                return obj.lock.context();
-            },
             ref.variant
         );
     }

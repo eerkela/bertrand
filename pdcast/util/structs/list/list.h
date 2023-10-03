@@ -63,7 +63,7 @@ template <
     typename LockPolicy = BasicLock
 >
 class LinkedList :
-    public LinkedBase<ListView<NodeType>, linked_list_name>,
+    public LinkedBase<ListView<NodeType>, LockPolicy, linked_list_name>,
     public ListInterface<
         LinkedList<NodeType, SortPolicy, LockPolicy>,
         ListView<NodeType>,
@@ -77,7 +77,7 @@ public:
     using View = ListView<NodeType>;
     using Node = typename View::Node;
     using Value = typename Node::Value;
-    using Base = LinkedBase<View, linked_list_name>;
+    using Base = LinkedBase<View, LockPolicy, linked_list_name>;
     static constexpr std::string_view name { linked_list_name };
 
     // TODO: type aliases for Iterator, doubly_linked, etc.
@@ -123,20 +123,6 @@ public:
         return *this;
     }
 
-    /* A functor that allows the list to be locked for thread safety. */
-    const LockPolicy lock;
-    /* BasicLock:
-     * lock()
-     * lock.context()
-     *
-     * DiagnosticLock:
-     * lock()
-     * lock.context()
-     * lock.count()
-     * lock.duration()
-     * lock.contention()
-     * lock.reset_diagnostics()
-     */
 };
 
 

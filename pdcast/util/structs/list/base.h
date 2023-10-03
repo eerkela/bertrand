@@ -6,11 +6,12 @@
 #include <optional>     // std::optional
 #include <stdexcept>    // std::runtime_error
 #include <string_view>  // std::string_view
+#include "core/thread.h"  // Lock, PyLock
 #include "core/util.h"  // string concatenation, CoupledIterator, PyIterator
 
 
 /* Base class that forwards the public members of the underlying view. */
-template <typename View, const std::string_view& name>
+template <typename View, typename Lock, const std::string_view& name>
 class LinkedBase {
 public:
     /* Every LinkedList contains a view that manages low-level node
@@ -162,9 +163,9 @@ public:
 
     private:
         friend LinkedBase;
-        LinkedBase<View, name>& parent;
+        LinkedBase<View, Lock, name>& parent;
 
-        IteratorFactory(LinkedBase<View, name>& parent) : parent(parent) {}
+        IteratorFactory(LinkedBase<View, Lock, name>& parent) : parent(parent) {}
     };
 
     /* Functor to create various kinds of iterators over the list. */
@@ -189,6 +190,51 @@ public:
     inline auto rend() const {
         return iter.rend();
     }
+
+    ///////////////////////////////
+    ////    THREADING LOCKS    ////
+    ///////////////////////////////
+
+    /* Adapt lock policy to allow for Python context managers as locks. */
+    class LockFactory : public Lock {
+    public:
+
+        /* Wrap a lock guard as a Python context manager. */
+        template <typename... Args>
+        inline PyObject* python(Args&&... args) const {
+            static constexpr std::string_view suffix = ".lock";
+            using Context = PyLock<Lock, String::concat_v<name, suffix>>;
+            return Context::init(this);
+        }
+
+    };
+
+    /* Functor that produces threading locks for a linked data structure. */
+    const LockFactory lock;
+    /* BasicLock:
+     * lock()  // lock guard
+     * lock.python()  // context manager
+     *
+     * ReadWriteLock:
+     * lock()  // lock guard (exclusive)
+     * lock.python()  // context manager (exclusive)
+     * lock.shared()  // lock guard (shared)
+     * lock.shared.python()  // context manager (shared)
+     *
+     * RecursiveLock<Lock>:
+     * Allows the above methods to be called recursively within a single thread.
+     *
+     * SpinLock<Lock>:
+     * Adds a spin effect to lock acquisition, with optional timeout and sleep interval
+     * between each cycle.
+     *
+     * DiagnosticLock<Lock>:
+     * Tracks diagnostics about lock acquisition and release.
+     * lock.count()  // number of times the lock has been acquired
+     * lock.duration()  // total time spent acquiring the lock
+     * lock.contention()  // average time spent acquiring the lock
+     * lock.reset_diagnostics()  // reset the above values to zero
+     */
 
 protected:
 

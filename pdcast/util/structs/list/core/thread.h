@@ -10,6 +10,8 @@
 #include <thread>  // std::thread
 #include <unordered_set>  // std::unordered_set
 
+#include "util.h"  // Slot
+
 
 // TODO: Locks are implemented in LinkedBase, just like iterators.  LinkedBase must
 // accept the lock type as a template parameter, and that template parameter must
@@ -35,10 +37,8 @@
 
 /* A lock functor that uses a simple mutex and a `std::unique_lock` guard. */
 class BasicLock {
-protected:
-    mutable std::mutex mtx;
-
 public:
+    using Mutex = std::mutex;
     using Guard = std::unique_lock<std::mutex>;
     inline static constexpr bool is_shared = false;
 
@@ -47,15 +47,15 @@ public:
     goes out of scope.  Any operations in between are guaranteed to be atomic. */
     inline Guard operator()() const noexcept { return Guard(mtx); }
 
+protected:
+    mutable Mutex mtx;
 };
 
 
 /* A lock functor that uses a shared mutex for concurrent reads and exclusive writes. */
 class ReadWriteLock {
-protected:
-    mutable std::shared_mutex mtx;
-
 public:
+    using Mutex = std::shared_mutex;
     using Guard = std::unique_lock<std::shared_mutex>;
     using SharedGuard = std::shared_lock<std::shared_mutex>;
     inline static constexpr bool is_shared = true;
@@ -73,6 +73,8 @@ public:
     normal call operator. */
     inline SharedGuard shared() const { return SharedGuard(mtx); }
 
+protected:
+    mutable Mutex mtx;
 };
 
 
@@ -242,6 +244,25 @@ public:
 // TODO: implement Spinlock and TimedLock decorators
 
 
+// SpinLock could use a protected `try_lock` method that returns a std::optional<Guard>.
+// This calls the mutex's `try_lock` method, and if it fails, it returns nullopt.
+// Otherwise, it constructs a guard using std::adopt_lock and inserts it into the
+// optional.  The decorator's `operator()` method would then loop until it successfully
+// acquires the lock, and then unwraps the guard.
+
+
+// TODO: SpinLock and TimedLock can be combined into a single decorator that handles
+// bounded waiting in general.  This would accept the following arguments:
+
+// max_retries: the maximum number of times to cycle the lock before giving up
+// -> defaults to std::nullopt (no limit)
+// timeout: the maximum amount of time to wait for the lock before giving up
+// -> defaults to std::nullopt (no limit)
+// wait: the amount of time to wait between lock cycles
+// -> defaults to 0 (spinlock)
+
+// These could be supplied as template parameters.
+
 
 /* A lock decorator that adds a spin effect to lock acquisition. */
 template <typename Lock>
@@ -344,6 +365,112 @@ public:
     }
 
 };
+
+
+
+/* A wrapper around a C++ lock guard that allows it to be used as a Python context
+manager. */
+template <typename Lock, const std::string_view& name>
+class PyLock {
+    using Guard = typename Lock::Guard;
+
+    PyObject_HEAD
+    const Lock* lock;
+    Slot<Guard> guard;
+
+    /* Force users to use init() factory method. */
+    PyLock() = delete;
+    PyLock(const PyLock&) = delete;
+    PyLock(PyLock&&) = delete;
+
+    /* Initialize a PyTypeObject to represent this lock from Python. */
+    static PyTypeObject init_type() {
+        PyTypeObject type_obj;  // zero-initialize
+        type_obj.tp_name = name.data();
+        type_obj.tp_doc = "Python-compatible wrapper around a C++ lock guard.";
+        type_obj.tp_basicsize = sizeof(PyLock);
+        type_obj.tp_flags = Py_TPFLAGS_DEFAULT;
+        type_obj.tp_alloc = PyType_GenericAlloc;
+        type_obj.tp_new = PyType_GenericNew;
+        type_obj.tp_methods = methods;
+        type_obj.tp_dealloc = (destructor) dealloc;
+
+        // register iterator type with Python
+        if (PyType_Ready(&type_obj) < 0) {
+            throw std::runtime_error("could not initialize PyLock type");
+        }
+        return type_obj;
+    }
+
+public:
+    /* C-style Python type declaration. */
+    inline static PyTypeObject Type = init_type();
+
+    /* Construct a Python lock from a C++ lock guard. */
+    inline static PyObject* init(const Lock* lock) {
+        // create new iterator instance
+        PyLock* result = PyObject_New(PyLock, &Type);
+        if (result == nullptr) {
+            throw std::runtime_error("could not allocate Python iterator");
+        }
+
+        // initialize lock functor
+        result->lock = lock;
+
+        // return as PyObject*
+        return reinterpret_cast<PyObject*>(result);
+    }
+
+    // TODO: SFINAE support for shared() accessor.
+
+    /* Enter the context manager's block, acquiring a new lock. */
+    inline static PyObject* enter(PyObject* py_self) {
+        PyLock* self = reinterpret_cast<PyLock*>(py_self);
+        if (!self->guard.constructed()) {
+            self->guard.construct(self->lock->operator()());
+        }
+        return py_self;
+    }
+
+    /* Exit the context manager's block, releasing the lock. */
+    inline static PyObject* exit(PyObject* py_self, PyObject* args) {
+        PyLock* self = reinterpret_cast<PyLock*>(py_self);
+        if (self->guard.constructed()) {
+            self->guard.destroy();
+        }
+        Py_RETURN_NONE;
+    }
+
+    /* Check if the lock is acquired. */
+    inline static PyObject* locked(PyObject* py_self, PyObject* args) {
+        PyLock* self = reinterpret_cast<PyLock*>(py_self);
+        return PyBool_FromLong(self->guard.constructed());
+    }
+
+    /* Release the lock when the context manager is garbage collected, if it hasn't
+    been released already. */
+    inline static void dealloc(PyObject* py_self) {
+        PyLock* self = reinterpret_cast<PyLock*>(py_self);
+        if (self->guard.constructed()) {
+            self->guard.destroy();
+        }
+        // TODO: Type.tp_free(self)  <- we already have access to the type object
+        Py_TYPE(py_self)->tp_free(py_self);
+    }
+
+
+private:
+
+    /* Vtable containing Python methods for the context manager. */
+    inline static PyMethodDef methods[] = {
+        {"__enter__", (PyCFunction) enter, METH_NOARGS, "Enter the context manager."},
+        {"__exit__", (PyCFunction) exit, METH_VARARGS, "Exit the context manager."},
+        {"locked", (PyCFunction) locked, METH_VARARGS, "Check if the lock is acquired."},
+        {NULL}  // sentinel
+    };
+
+};
+
 
 
 #endif  // BERTRAND_STRUCTS_CORE_THREAD_H include guard
