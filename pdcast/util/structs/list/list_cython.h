@@ -22,34 +22,6 @@
 // make them callable from Python.
 
 
-// TODO: could implement a Slot<T> Cython helper that can facilitate stack allocation
-// in Cython.
-
-
-// - Provide a C++ `Slot<typename T>` object that allocates raw memory for the size of
-//   the template argument (`alignas(T) char slot[sizeof(T)]`.  This object should be
-//   trivially constructible.
-// - Provide a method on that object that uses placement new to construct the
-//   underlying object in the preallocated memory.
-// - Stack allocate the slot on the Cython class using its limited support.
-// - Call the constructor method within the Cython wrapper's `__cinit__()` method to
-//   finalize construction.
-// - Rely on the slot's destructor to clean up the templated type as soon as the Cython
-//   wrapper is garbage collected.
-
-// The slot would also need to offer an `item()` method that returns a reference to the
-// stored object, so that we could access its interface from Python.
-
-
-// -> Actually, this can all be done with a std::optional<T> and the `emplace()`/`reset()`
-// methods for construction/destruction.  We would need to subclass it though to provide
-// copy/move semantics using pointers from Cython.
-
-// The from_variant() method already matches Python's built-in list behavior with
-// respect to subclasses.  We'd still need to assign it though, which would require a
-// way to move values into the optional from Cython.
-
-
 ///////////////////////
 ////    PRIVATE    ////
 ///////////////////////
@@ -117,27 +89,27 @@ private:
 };
 
 
-// TODO: Lock should return Python context managers a la PyIterator.  That way we
-// don't need to worry about type erasure, and we can stack-allocate the locks within
-// the Python type.  These are templated on the underlying lock type, but are opaque
-// to Python.
-
-// This would also eliminate the need for the unsafe `context()` methods on the lock
-// functor, since the context manager can just wrap a lock object directly, with no
-// extra pointer indirections or heap allocations.
-
-
 /* A functor that allows the list to be locked for use in a multithreaded
 environment. */
 template <typename T>
 class VariantLock {
 public:
 
-    /* Return an RAII-style lock guard for the underlying mutex. */
+    /* Return a Python context manager containing an exclusive lock on the mutex. */
     inline PyObject* operator()() const {
         return std::visit(
             [&](auto& obj) {
                 return obj.lock.python();
+            }, 
+            ref.variant
+        );
+    }
+
+    /* Return a Python context manager containing a shared lock on the mutex. */
+    inline PyObject* shared() const {
+        return std::visit(
+            [&](auto& obj) {
+                return obj.lock.shared_python();
             }, 
             ref.variant
         );

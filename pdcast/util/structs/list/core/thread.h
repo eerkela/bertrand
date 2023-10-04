@@ -13,10 +13,13 @@
 #include "util.h"  // Slot
 
 
-// TODO: Locks are implemented in LinkedBase, just like iterators.  LinkedBase must
-// accept the lock type as a template parameter, and that template parameter must
-// implement a lock.python() method that returns a Python context manager.
+/////////////////////////
+////    CONSTANTS    ////
+/////////////////////////
 
+
+using MAX_SIZE_T = std::integral_constant<size_t, std::numeric_limits<size_t>::max()>;
+using ZERO_DURATION = std::integral_constant<typename std::chrono::milliseconds::rep, 0>;
 
 
 ////////////////////////
@@ -24,14 +27,25 @@
 ////////////////////////
 
 
-/* Locks are functors (function objects) that produce std::lock_guards for an internal
- * mutex.  They can be applied to any data structure, and are generally safer than
- * manually locking and unlocking the mutex.
+/* Locks are functors (function objects) that produce RAII lock guards for an internal
+ * mutex.  They can be applied to any data structure, and are significantly safer than
+ * manually locking and unlocking a mutex directly.  Locks come in 2 basic flavors:
+ * BasicLock and ReadWriteLock.
  * 
- * DiagnosticLock is a variation of BasicLock that provides the same functionality, but
- * also keeps track of basic diagnostics, including the total number of times the mutex
- * has been locked and the average contention time for each lock.  This is useful for
- * profiling the performance of threaded code and identifying potential bottlenecks.
+ * BasicLock is a simple mutex that allows only one thread to access the data structure
+ * at a time.  This has very low overhead and is the default lock type for most data
+ * structures.
+ * 
+ * ReadWriteLock, on the other hand, is capable of producing 2 different types of
+ * locks: one which allows multiple threads to access the data structure concurrently
+ * (a shared lock - typically used for read-only operations), and one which forces
+ * exclusive access just like BasicLock (an exclusive lock - typically used for
+ * operations that can modify the underlying data structure).  The object can have
+ * several shared locks at once, but only one exclusive lock at a time.  The two types
+ * of locks are mutually exclusive, meaning that once a shared lock has been acquired,
+ * no other threads can acquire an exclusive lock until all the shared locks have been
+ * released.  Similarly, once an exclusive lock is acquired, no other threads can
+ * acquire a shared lock until the exclusive lock falls out of context.
  */
 
 
@@ -49,6 +63,15 @@ public:
 
 protected:
     mutable Mutex mtx;
+
+    /* Try to acquire the lock without blocking. */
+    inline std::optional<Guard> try_lock() const noexcept {
+        if (mtx.try_lock()) {
+            return Guard(mtx, std::adopt_lock);
+        }
+        return std::nullopt;
+    }
+
 };
 
 
@@ -75,12 +98,64 @@ public:
 
 protected:
     mutable Mutex mtx;
+
+    /* Try to acquire an exclusive lock without blocking. */
+    inline std::optional<Guard> try_lock() const noexcept {
+        if (mtx.try_lock()) {
+            return Guard(mtx, std::adopt_lock);
+        }
+        return std::nullopt;
+    }
+
+    /* Try to acquire a shared lock without blocking. */
+    inline std::optional<SharedGuard> try_shared() const noexcept {
+        if (mtx.try_lock_shared()) {
+            return SharedGuard(mtx, std::adopt_lock);
+        }
+        return std::nullopt;
+    }
+
 };
 
 
 //////////////////////////
 ////    DECORATORS    ////
 //////////////////////////
+
+
+/* Lock decorators are wrappers around one of the core lock functors that add extra
+ * functionality.  They can be used to add recursive locking, spinlocks, timed locks,
+ * and performance diagnostics to any lock functor.
+ *
+ * RecursiveLock is a decorator that allows a single thread to acquire the same lock
+ * multiple times without deadlocking.  Normally, if a thread attempts to acquire a
+ * lock on a mutex that it already owns (within a nested context, for example), the
+ * program will deadlock.  Recursive (or reentrant) locks prevent this by tracking the
+ * current owner of the mutex and skipping lock acquisition if it references the
+ * current thread.  This is useful for recursive functions that need to acquire a lock
+ * (either shared or exlusive) on the same mutex multiple times, but is generally
+ * discouraged due to the extra overhead involved.  Instead, it is better to refactor
+ * the code to avoid recursive locks if possible.  They are provided here for
+ * completeness, and in the rare cases that no other solution is possible.
+ *
+ * SpinLock allows a thread to repeatedly attempt to acquire a lock until it succeeds.
+ * This is useful for situations where the lock is expected to be released quickly, but
+ * may not succeed on the first try.  By default, a SpinLock will busy wait until the
+ * lock is acquired, but this can be modified to introduce a sleep interval between
+ * attempts to reduce CPU usage.  A maximum number of retries can also be specified to
+ * prevent infinite loops.  SpinLocks can also be used to implement a timed lock, which
+ * will attempt to acquire the lock within a specified time limit before giving up.
+ * 
+ * DiagnosticLock tracks performance characteristics for a lock functor.  These include
+ * the total number of times the mutex has been locked and the average waiting time for
+ * each lock.  This is useful for profiling the performance of threaded code and
+ * identifying potential bottlenecks.
+ *
+ * Lastly, PyLock is an adapter for a C++ lock guard that allows it to be used as a
+ * Python context manager.  This is how locks are exposed to Python code, and allows
+ * the use of idiomatic `with` blocks to acquire and release locks.  A lock will be
+ * acquired as soon as the context is entered, and released when the context is exited.
+ */
 
 
 /* Base class specialization for non-shared lock functors. */
@@ -239,64 +314,162 @@ public:
 };
 
 
-
-
-// TODO: implement Spinlock and TimedLock decorators
-
-
-// SpinLock could use a protected `try_lock` method that returns a std::optional<Guard>.
-// This calls the mutex's `try_lock` method, and if it fails, it returns nullopt.
-// Otherwise, it constructs a guard using std::adopt_lock and inserts it into the
-// optional.  The decorator's `operator()` method would then loop until it successfully
-// acquires the lock, and then unwraps the guard.
-
-
-// TODO: SpinLock and TimedLock can be combined into a single decorator that handles
-// bounded waiting in general.  This would accept the following arguments:
-
-// max_retries: the maximum number of times to cycle the lock before giving up
-// -> defaults to std::nullopt (no limit)
-// timeout: the maximum amount of time to wait for the lock before giving up
-// -> defaults to std::nullopt (no limit)
-// wait: the amount of time to wait between lock cycles
-// -> defaults to 0 (spinlock)
-
-// These could be supplied as template parameters.
-
-
 /* A lock decorator that adds a spin effect to lock acquisition. */
-template <typename Lock>
+template <
+    typename Lock,
+    int MaxRetries = -1,
+    typename TimeoutUnit = std::chrono::milliseconds,
+    int TimeoutValue = -1,
+    typename WaitUnit = std::chrono::milliseconds,
+    int WaitValue = -1
+>
 class SpinLock : public Lock {
+
+    /* Guards to ensure that time units are compatible with std::chrono::duration. */
+    template <typename T>
+    struct is_chrono_duration {
+        static constexpr bool value = false;
+    };
+    template <typename Rep, typename Period>
+    struct is_chrono_duration<std::chrono::duration<Rep, Period>> {
+        static constexpr bool value = true;
+    };
+
+    /* Check that units are given as std::chrono durations. */
+    static_assert(
+        is_chrono_duration<TimeoutUnit>::value,
+        "TimeoutUnit must be a std::chrono duration"
+    );
+    static_assert(
+        is_chrono_duration<WaitUnit>::value,
+        "WaitUnit must be a std::chrono duration"
+    );
+
+    /* Convert a duration into a numeric string with units. */
+    template <typename Duration>
+    static std::string duration_to_string(Duration duration) {
+        using namespace std::chrono;
+        std::ostringstream msg;
+
+        // get numeric component
+        msg << duration.count();
+
+        // add units
+        if constexpr (std::is_same_v<Duration, nanoseconds>) {
+            msg << "ns";
+        } else if constexpr (std::is_same_v<Duration, microseconds>) {
+            msg << "us";
+        } else if constexpr (std::is_same_v<Duration, milliseconds>) {
+            msg << "ms";
+        } else if constexpr (std::is_same_v<Duration, seconds>) {
+            msg << "s";
+        } else if constexpr (std::is_same_v<Duration, minutes>) {
+            msg << "m";
+        } else if constexpr (std::is_same_v<Duration, hours>) {
+            msg << "h";
+        } else {
+            msg << "(" << std::to_string(Duration::period::num) << "/";
+            msg << std::to_string(Duration::period::den) << " s)";
+        }
+
+        // return as std::string
+        return msg.str();
+    }
+
 public:
+    static constexpr int max_retries = MaxRetries;
+    static constexpr TimeoutUnit timeout = TimeoutUnit(TimeoutValue);
+    static constexpr WaitUnit wait = WaitUnit(WaitValue);
 
-    /* Acquire the lock, spinning for  */
+    /* Acquire an exclusive lock, spinning according to the template parameters. */
+    template <typename... Args>
+    inline auto operator()(Args&&... args) const
+        -> decltype(Lock::operator()(std::forward<Args>(args)...))
+    {
+        auto end = std::chrono::high_resolution_clock::now() + timeout;
+        int retries = 0;
 
+        // loop until the lock is acquired or we hit an error condition
+        while (true) {
+            // try to lock the mutex
+            std::optional<typename Lock::Guard> guard = Lock::try_lock();
+            if (guard.has_value()) {
+                return guard.value();  // lock succeeded
+            }
+
+            // check for maximum number of retries
+            if constexpr (max_retries >= 0) {
+                if (++retries >= max_retries) {
+                    std::ostringstream msg;
+                    msg << "failed to acquire exclusive lock (exceeded max retries: ";
+                    msg << max_retries << ")";
+                    throw std::runtime_error(msg.str());
+                }
+            }
+
+            // check for timeout
+            if constexpr (TimeoutValue >= 0) {
+                if (std::chrono::high_resolution_clock::now() > end) {
+                    std::ostringstream msg;
+                    msg << "failed to acquire exclusive lock (exceeded timeout: ";
+                    msg << duration_to_string(timeout) << ")";
+                    throw std::runtime_error(msg.str());
+                }
+            }
+
+            // wait and try again
+            if constexpr (WaitValue > 0) {
+                std::this_thread::sleep_for(wait);
+            }
+        }
+        // indefinite loop
+    }
+
+    /* Acquire a shared lock, spinning according to the template parameters. */
+    template <typename... Args>
+    inline auto shared(Args&&... args) const
+        -> decltype(Lock::shared(std::forward<Args>(args)...))
+    {
+        auto end = std::chrono::high_resolution_clock::now() + timeout;
+        int retries = 0;
+
+        // loop until the lock is acquired or we hit an error condition
+        while (true) {
+            // try to lock the mutex
+            std::optional<typename Lock::SharedGuard> guard = Lock::try_shared();
+            if (guard.has_value()) {
+                return guard.value();  // lock succeeded
+            }
+
+            // check for maximum number of retries
+            if constexpr (max_retries > 0) {
+                if (++retries >= max_retries) {
+                    std::ostringstream msg;
+                    msg << "failed to acquire shared lock (exceeded max retries: ";
+                    msg << max_retries << ")";
+                    throw std::runtime_error(msg.str());
+                }
+            }
+
+            // check for timeout
+            if constexpr (TimeoutValue > 0) {
+                if (std::chrono::high_resolution_clock::now() > end) {
+                    std::ostringstream msg;
+                    msg << "failed to acquire shared lock (exceeded timeout: ";
+                    msg << duration_to_string(timeout) << ")";
+                    throw std::runtime_error(msg.str());
+                }
+            }
+
+            // wait and try again
+            if constexpr (WaitValue > 0) {
+                std::this_thread::sleep_for(wait);
+            }
+        }
+        // indefinite loop
+    }
 
 };
-
-
-
-
-
-/* A lock decorator that adds timeout conditions in the event of contention. */
-template <typename Lock, typename Unit = std::chrono::nanoseconds>
-class TimedLock {
-
-
-
-public:
-    using Clock = std::chrono::high_resolution_clock;
-    using Resolution = Unit;
-};
-
-
-
-
-
-
-
-
-
 
 
 /* A lock decorator that adds tracks performance diagnostics for the lock. */
@@ -367,16 +540,13 @@ public:
 };
 
 
-
 /* A wrapper around a C++ lock guard that allows it to be used as a Python context
 manager. */
 template <typename Lock, const std::string_view& name>
 class PyLock {
-    using Guard = typename Lock::Guard;
-
     PyObject_HEAD
     const Lock* lock;
-    Slot<Guard> guard;
+    Slot<typename Lock::Guard> guard;
 
     /* Force users to use init() factory method. */
     PyLock() = delete;

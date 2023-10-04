@@ -11,9 +11,6 @@ from typing import Iterable, Iterator
 # respectively.
 
 
-# TODO: __getitem__() sometimes throws unexpected ValueErrors and occasionally
-# causes a segfault.
-
 # TODO: in order to rigorously test these, we should copy over the tests from
 # the standard library.
 # https://github.com/python/cpython/blob/3.11/Lib/test/list_tests.py
@@ -1176,57 +1173,3 @@ cdef class LinkedList:
             >>> l.append("y")
         """
         return <object>(self.variant.ptr().lock())
-
-
-#######################
-####    PRIVATE    ####
-#######################
-
-
-# cdef class ThreadGuard:
-#     """A context manager that enforces thread-safety within its context block.
-# 
-#     This is basically just a wrapper around a heap-allocated `std::thread_guard`,
-#     which is manually deleted upon exiting the context block.
-#     """
-# 
-#     def __cinit__(self, LinkedList parent):
-#         self.parent = parent
-#         self.context = NULL
-# 
-#     def __enter__(self):
-#         if self.context is NULL:
-#             self.context = deref(self.parent.variant.ptr()).lock.context()  # acquire mutex
-#         return self  # enter context block
-# 
-#     def locked(self) -> bool:
-#         """Check if the :class:`ThreadGuard` is currently blocking access from other
-#         threads.
-# 
-#         Returns
-#         -------
-#         bool
-#             ``True`` if this method is called from within the guard's context block.
-#             ``False`` otherwise.
-# 
-#         Examples
-#         --------
-#         .. doctest::
-# 
-#             >>> l = LinkedList("abcdef")
-#             >>> with l.lock() as thread_guard:
-#             ...     print(thread_guard.locked())
-#             True
-#             >>> print(thread_guard.locked())
-#             False
-#         """
-#         return self.context is not NULL
-# 
-#     def __exit__(self, exc_type, exc_val, exc_tb):
-#         if self.context is not NULL:
-#             del self.context  # release mutex
-#             self.context = NULL
-# 
-#     def __dealloc__(self):
-#         if self.context is not NULL:
-#             del self.context  # release mutex if __exit__ wasn't called for some reason

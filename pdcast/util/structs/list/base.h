@@ -207,6 +207,16 @@ public:
             return Context::init(this);
         }
 
+        /* Wrap a shared lock as a Python context manager. */
+        template <bool is_shared = Lock::is_shared, typename... Args>
+        inline auto shared_python(Args&&... args) const
+            -> std::enable_if_t<is_shared, PyObject*>
+        {
+            static constexpr std::string_view suffix = ".shared_lock";
+            using Context = PyLock<Lock, String::concat_v<name, suffix>>;
+            return Context::init(this);
+        }
+
     };
 
     /* Functor that produces threading locks for a linked data structure. */

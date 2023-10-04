@@ -3,7 +3,7 @@ from cpython.ref cimport PyObject
 from libcpp.optional cimport optional, nullopt
 from libcpp.stack cimport stack
 
-from .base cimport SingleNode, DoubleNode, Slot
+from .base cimport Slot
 
 
 # NOTE: LinkedList is a compound class with both a C++ and Cython implementation. Both
@@ -309,15 +309,6 @@ cdef extern from "list_cython.h":
             PyObject* spec
         ) except +
 
-        # functors
-        cppclass Lock:
-            PyObject* operator()()
-            size_t count()
-            size_t duration()
-            double contention()
-            void reset_diagnostics()
-        const Lock lock  # lock() functor
-
         # list interface
         void append(PyObject* item, bint left) except +*
         void insert[T](T index, PyObject* item) except +*
@@ -361,6 +352,16 @@ cdef extern from "list_cython.h":
         # bint lexicographic_ge(PyObject* other) except +
         # bint lexicographic_gt(PyObject* other) except +
 
+        # thread locks
+        cppclass Lock:
+            PyObject* operator()() except +
+            PyObject* shared() except +
+            size_t count()
+            size_t duration()
+            double contention()
+            void reset_diagnostics()
+        const Lock lock
+
         # extra methods
         PyObject* specialization()
         void specialize(PyObject* spec) except +*
@@ -376,8 +377,3 @@ cdef class LinkedList:
 
     @staticmethod
     cdef LinkedList from_variant(VariantList* variant)
-
-
-# cdef class ThreadGuard:
-#     cdef LinkedList parent
-#     cdef VariantList.Lock.Guard* context  # context manager threading lock
