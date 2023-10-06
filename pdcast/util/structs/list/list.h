@@ -64,7 +64,7 @@ namespace IList = algorithms::list;
 
 /* A modular linked list class that mimics the Python list interface in C++. */
 template <
-    typename NodeType = DoubleNode<PyObject*>,
+    typename NodeType,
     typename SortPolicy = MergeSort,
     typename LockPolicy = BasicLock
 >
@@ -79,7 +79,6 @@ public:
     using Node = typename View::Node;
     using Value = typename Node::Value;
     using Base = LinkedBase<View, LockPolicy, linked_list_name>;
-    using Self = LinkedList<NodeType, SortPolicy, LockPolicy>;
     static constexpr std::string_view name { linked_list_name };
 
     // TODO: type aliases for Iterator, doubly_linked, etc.
@@ -128,6 +127,27 @@ public:
     //////////////////////////////
     ////    LIST INTERFACE    ////
     //////////////////////////////
+
+    /* LinkedLists implement the full Python list interface with equivalent semantics
+     * to the built-in Python list type, as well as a few addons from
+     * `collections.deque`.  There are only a few differences:
+     *
+     *      1.  The append() and extend() methods accept a second boolean argument that
+     *          signals whether the item(s) should be inserted at the beginning of the
+     *          list or at the end.  This is similar to the appendleft() and
+     *          extendleft() methods of `collections.deque`.
+     *      2.  The count() method accepts optional `start` and `stop` arguments that
+     *          specify a slice of the list to search within.  This is similar to the
+     *          index() method of the built-in Python list.
+     *      3.  LinkedLists are able to store non-Python C++ types, but only when
+     *          declared from C++ code.  LinkedLists are available from Python, but can
+     *          only store Python objects (i.e. PyObject*) when declared from a Python
+     *          context.
+     *
+     * Otherwise, everything should behave exactly as expected, with similar overall
+     * performance to a built-in Python list (random access limitations of linked lists
+     * notwithstanding.)
+     */
 
     /* Append an item to the end of a list. */
     inline void append(PyObject* item, bool left = false) {
@@ -179,8 +199,8 @@ public:
     }
 
     /* Return a shallow copy of the list. */
-    inline Self copy() const {
-        return Self(this->view.copy());
+    inline LinkedList copy() const {
+        return LinkedList(this->view.copy());
     }
 
     /* Sort a list in-place. */
@@ -203,6 +223,43 @@ public:
     ////    PROXIES    ////
     ///////////////////////
 
+    /* Proxies allow access to a particular element or slice of a list, allowing
+     * convenient, Python-like syntax for list operations. 
+     *
+     * ElementProxies are returned by the array index operator [] when given with a
+     * single numeric argument.  This argument can be negative following the same
+     * semantics as built-in Python lists (i.e. -1 refers to the last element, and
+     * overflow results in an error).  Each proxy offers the following methods:
+     *
+     *      Value get(): return the value at the current index.
+     *      void set(Value value): set the value at the current index.
+     *      void del(): delete the value at the current index.
+     *      void insert(Value value): insert a value at the current index.
+     *      Value pop(): remove the value at the current index and return it.
+     *      operator Value(): implicitly coerce the proxy to its value in function
+     *          calls and other contexts.
+     *      operator=(Value& value): set the value at the current index using
+     *          assignment syntax.
+     *
+     * SliceProxies are returned by the `slice()` factory method, which can accept
+     * either a Python slice object or separate start, stop, and step arguments, each
+     * of which are optional, and can be negative following the same semantics as
+     * above.  Each proxy exposes the following methods:
+     *
+     *      LinkedList get(): return a new list containing the contents of the slice.
+     *      void set(PyObject* items): overwrite the contents of the slice with the
+     *          contents of the iterable.
+     *      void del(): remove the slice from the list.
+     *      Iterator iter(): return a coupled iterator over the slice.
+     *          NOTE: slice iterators may not yield results in the same order as the
+     *          step size would indicate.  This is because slices are traversed in
+     *          such a way as to minimize the number of nodes that must be visited and
+     *          avoid backtracking.  See linked/algorithms/slice.h for more details.
+     *      Iterator begin():  return an iterator to the first element of the slice.
+     *          See note above.
+     *      Iterator end(): return an iterator to terminate the slice.
+     */
+
     /* Get a proxy for a value at a particular index of the list. */
     template <typename T>
     IList::ElementProxy<View> operator[](T index) {
@@ -211,7 +268,7 @@ public:
 
     /* Get a proxy for a slice within the list. */
     template <typename... Args>
-    IList::SliceProxy<Self> slice(Args&&... args) {
+    IList::SliceProxy<LinkedList> slice(Args&&... args) {
         // can throw type_error, std::invalid_argument, std::runtime_error
         return IList::slice(*this, std::forward<Args>(args)...);
     }
