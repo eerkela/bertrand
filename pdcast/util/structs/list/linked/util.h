@@ -163,9 +163,7 @@ public:
     replacing any previous value it may have held. */
     template <typename... Args>
     inline void construct(Args&&... args) {
-        if (_constructed) {
-            this->operator*().~T();
-        }
+        this->destroy();
         new (data) T(std::forward<Args>(args)...);
         _constructed = true;
     }
@@ -195,7 +193,7 @@ public:
 
     /* Move assignment operator. */
     inline Slot& operator=(Slot&& other) {
-        *this = std::move(*other);  // forward to rvalue overload
+        *this = std::move(other.operator*());  // forward to rvalue overload
         return *this;
     }
 

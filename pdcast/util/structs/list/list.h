@@ -9,7 +9,6 @@
 
 #include "linked/util.h"
 #include "linked/view.h"
-#include "linked/sort.h"
 #include "linked/algorithms/append.h"
 #include "linked/algorithms/clear.h"
 #include "linked/algorithms/contains.h"
@@ -23,6 +22,7 @@
 #include "linked/algorithms/reverse.h"
 #include "linked/algorithms/rotate.h"
 #include "linked/algorithms/slice.h"
+#include "linked/algorithms/sort.h"
 
 #include "base.h"  // LinkedBase
 
@@ -65,7 +65,7 @@ namespace IList = algorithms::list;
 /* A modular linked list class that mimics the Python list interface in C++. */
 template <
     typename NodeType,
-    typename SortPolicy = MergeSort,
+    typename SortPolicy = IList::MergeSort,
     typename LockPolicy = BasicLock
 >
 class LinkedList :
@@ -206,7 +206,7 @@ public:
     /* Sort a list in-place. */
     template <typename Func>
     void sort(Func key = nullptr, bool reverse = false) {
-        SortFunc<SortPolicy, Func>::sort(this->view, key, reverse);
+        IList::SortFunc<SortPolicy, Func>::sort(this->view, key, reverse);
     }
 
     /* Reverse a list in-place. */

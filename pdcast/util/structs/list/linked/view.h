@@ -15,7 +15,6 @@
 #include "iter.h"  // IteratorFactory
 // #include "slice.h"  // SliceFactory
 #include "table.h"  // HashTable
-#include "thread.h"  // BasicLock/DiagnosticLock
 #include "util.h"  // CoupledIterator<>, Bidirectional<>, PyIterable
 
 

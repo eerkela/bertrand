@@ -10,7 +10,7 @@
 #include <thread>  // std::thread
 #include <unordered_set>  // std::unordered_set
 
-#include "util.h"  // Slot
+#include "../linked/util.h"  // Slot
 
 
 ////////////////////////
@@ -554,7 +554,7 @@ class PyLock {
         type_obj.tp_alloc = PyType_GenericAlloc;
         type_obj.tp_new = PyType_GenericNew;
         type_obj.tp_methods = methods;
-        type_obj.tp_dealloc = (destructor) dealloc;
+        type_obj.tp_dealloc = dealloc;
 
         // register iterator type with Python
         if (PyType_Ready(&type_obj) < 0) {
@@ -593,11 +593,15 @@ public:
         return py_self;
     }
 
+    // TODO: context manager sometimes segfaults when exiting context block for some
+    // reason.  This doesn't seem to happen all the time, though.
+
     /* Exit the context manager's block, releasing the lock. */
     inline static PyObject* exit(PyObject* py_self, PyObject* args) {
         PyLock* self = reinterpret_cast<PyLock*>(py_self);
         if (self->guard.constructed()) {
-            self->guard.destroy();
+            // TODO: segfault seems to happen here.
+            self->guard.destroy();  // something wrong with slot.destroy?
         }
         Py_RETURN_NONE;
     }
@@ -615,10 +619,8 @@ public:
         if (self->guard.constructed()) {
             self->guard.destroy();
         }
-        // TODO: Type.tp_free(self)  <- we already have access to the type object
-        Py_TYPE(py_self)->tp_free(py_self);
+        Type.tp_free(py_self);
     }
-
 
 private:
 

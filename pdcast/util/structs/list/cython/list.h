@@ -22,6 +22,7 @@
 // make them callable from Python.
 
 
+/* Namespaces reflect file system and Python import path. */
 namespace bertrand {
 namespace structs {
 namespace cython {
@@ -35,10 +36,10 @@ namespace cython {
 /* A std::variant encapsulating all the possible list types that are constructable
 from Python. */
 using ListAlternative = std::variant<
-    LinkedList<SingleNode<PyObject*>, MergeSort, BasicLock>,
-    // LinkedList<SingleNode, MergeSort, DiagnosticLock>,
-    LinkedList<DoubleNode<PyObject*>, MergeSort, BasicLock>
-    // LinkedList<DoubleNode, MergeSort, DiagnosticLock>,
+    LinkedList<SingleNode<PyObject*>, IList::MergeSort, BasicLock>,
+    // LinkedList<SingleNode, IList::MergeSort, DiagnosticLock>,
+    LinkedList<DoubleNode<PyObject*>, IList::MergeSort, BasicLock>
+    // LinkedList<DoubleNode, IList::MergeSort, DiagnosticLock>,
 >;
 
 
@@ -189,8 +190,8 @@ class VariantList {
 private:
     using Self = SelfRef<VariantList>;
     using WeakRef = Self::WeakRef;
-    using SingleList = LinkedList<SingleNode<PyObject*>, MergeSort, BasicLock>;
-    using DoubleList = LinkedList<DoubleNode<PyObject*>, MergeSort, BasicLock>;
+    using SingleList = LinkedList<SingleNode<PyObject*>, IList::MergeSort, BasicLock>;
+    using DoubleList = LinkedList<DoubleNode<PyObject*>, IList::MergeSort, BasicLock>;
 
     /* Select a variant based on constructor arguments. */
     template <typename... Args>

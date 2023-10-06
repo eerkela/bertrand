@@ -6,7 +6,7 @@
 #include <optional>     // std::optional
 #include <stdexcept>    // std::runtime_error
 #include <string_view>  // std::string_view
-#include "linked/thread.h"  // Lock, PyLock
+#include "util/thread.h"  // Lock, PyLock
 #include "linked/util.h"  // string concatenation, CoupledIterator, PyIterator
 
 
