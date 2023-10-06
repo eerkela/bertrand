@@ -74,42 +74,37 @@ public:
         using pointer               = Node**;
         using reference             = Node*&;
 
-        // neighboring nodes at the current position
-        Node* prev;
-        Node* curr;
-        Node* next;
-
         /////////////////////////////////
         ////    ITERATOR PROTOCOL    ////
         /////////////////////////////////
 
         /* Dereference the iterator to get the node at the current position. */
         inline Node* operator*() const noexcept {
-            return curr;
+            return _curr;
         }
 
         /* Prefix increment to advance the iterator to the next node in the slice. */
         inline Iterator& operator++() noexcept {
             if constexpr (dir == Direction::backward) {
-                next = curr;
-                curr = prev;
-                if (prev != nullptr) {
+                _next = _curr;
+                _curr = _prev;
+                if (_prev != nullptr) {
                     if constexpr (has_stack) {
                         if (this->stack.empty()) {
-                            prev = nullptr;
+                            _prev = nullptr;
                         } else {
-                            prev = this->stack.top();
+                            _prev = this->stack.top();
                             this->stack.pop();
                         }
                     } else {
-                        prev = prev->prev();
+                        _prev = _prev->prev();
                     }
                 }
             } else {
-                prev = curr;
-                curr = next;
-                if (next != nullptr) {
-                    next = next->next();
+                _prev = _curr;
+                _curr = _next;
+                if (_next != nullptr) {
+                    _next = _next->next();
                 }
             }
             return *this;
@@ -118,59 +113,74 @@ public:
         /* Inequality comparison to terminate the slice. */
         template <Direction T>
         inline bool operator!=(const Iterator<T>& other) const noexcept {
-            return curr != other.curr;
+            return _curr != other._curr;
         }
 
         //////////////////////////////
         ////    HELPER METHODS    ////
         //////////////////////////////
 
+        /* Get the previous node in the list. */
+        inline Node* prev() const noexcept {
+            return _prev;
+        }
+
+        /* Get the current node in the list. */
+        inline Node* curr() const noexcept {
+            return _curr;
+        }
+
+        /* Get the next node in the list. */
+        inline Node* next() const noexcept {
+            return _next;
+        }
+
         /* Insert a node at the current position. */
         inline void insert(Node* node) {
             // link new node
             if constexpr (dir == Direction::backward) {
-                view.link(curr, node, next);
+                view.link(_curr, node, _next);
             } else {
-                view.link(prev, node, curr);
+                view.link(_prev, node, _curr);
             }
 
             // update iterator
             if constexpr (dir == Direction::backward) {
                 if constexpr (has_stack) {
-                    this->stack.push(prev);
+                    this->stack.push(_prev);
                 }
-                prev = curr;
+                _prev = _curr;
             } else {
-                next = curr;
+                _next = _curr;
             }
-            curr = node;
+            _curr = node;
         }
 
         /* Remove the node at the current position. */
         inline Node* remove() {
             // unlink current node
-            Node* removed = curr;
-            view.unlink(prev, curr, next);
+            Node* removed = _curr;
+            view.unlink(_prev, _curr, _next);
 
             // update iterator
             if constexpr (dir == Direction::backward) {
-                curr = prev;
-                if (prev != nullptr) {
+                _curr = _prev;
+                if (_prev != nullptr) {
                     if constexpr (has_stack) {
                         if (this->stack.empty()) {
-                            prev = nullptr;
+                            _prev = nullptr;
                         } else {
-                            prev = this->stack.top();
+                            _prev = this->stack.top();
                             this->stack.pop();
                         }
                     } else {
-                        prev = prev->prev();
+                        _prev = _prev->prev();
                     }
                 }
             } else {
-                curr = next;
-                if (next != nullptr) {
-                    next = next->next();
+                _curr = _next;
+                if (_next != nullptr) {
+                    _next = _next->next();
                 }
             }
 
@@ -181,46 +191,46 @@ public:
         /* Replace the node at the current position. */
         inline void replace(Node* node) {
             // swap current node
-            view.unlink(prev, curr, next);
-            view.link(prev, node, next);
+            view.unlink(_prev, _curr, _next);
+            view.link(_prev, node, _next);
 
             // update iterator
-            view.recycle(curr);
-            curr = node;
+            view.recycle(_curr);
+            _curr = node;
         }
 
         /* Copy constructor. */
         Iterator(const Iterator& other) :
-            Base(other), prev(other.prev), curr(other.curr), next(other.next),
-            view(other.view)
+            Base(other), view(other.view), _prev(other._prev), _curr(other._curr),
+            _next(other._next)
         {}
 
         /* Copy constructor from a different direction. */
         template <Direction T>
         Iterator(const Iterator<T>& other) :
-            Base(other), prev(other.prev), curr(other.curr), next(other.next),
-            view(other.view)
+            Base(other), view(other.view), _prev(other._prev), _curr(other._curr),
+            _next(other._next)
         {}
 
         /* Move constructor. */
         Iterator(Iterator&& other) :
-            Base(std::move(other)), prev(other.prev), curr(other.curr),
-            next(other.next), view(other.view)
+            Base(std::move(other)), view(other.view), _prev(other._prev),
+            _curr(other._curr), _next(other._next)
         {
-            other.prev = nullptr;
-            other.curr = nullptr;
-            other.next = nullptr;
+            other._prev = nullptr;
+            other._curr = nullptr;
+            other._next = nullptr;
         }
 
         /* Move constructor from a different direction. */
         template <Direction T>
         Iterator(Iterator<T>&& other) :
-            Base(std::move(other)), prev(other.prev), curr(other.curr),
-            next(other.next), view(other.view)
+            Base(std::move(other)), view(other.view), _prev(other._prev),
+            _curr(other._curr), _next(other._next)
         {
-            other.prev = nullptr;
-            other.curr = nullptr;
-            other.next = nullptr;
+            other._prev = nullptr;
+            other._curr = nullptr;
+            other._next = nullptr;
         }
 
         /* Assignment operators deleted for simplicity. */
@@ -230,6 +240,9 @@ public:
     protected:
         friend IteratorFactory;
         View& view;
+        Node* _prev;
+        Node* _curr;
+        Node* _next;
 
         ////////////////////////////
         ////    CONSTRUCTORS    ////
@@ -237,12 +250,12 @@ public:
 
         /* Initialize an empty iterator. */
         Iterator(View& view) :
-            prev(nullptr), curr(nullptr), next(nullptr), view(view)
+            view(view), _prev(nullptr), _curr(nullptr), _next(nullptr)
         {}
 
         /* Initialize an iterator around a particular linkage within the list. */
         Iterator(View& view, Node* prev, Node* curr, Node* next) :
-            prev(prev), curr(curr), next(next), view(view)
+            view(view), _prev(prev), _curr(curr), _next(next)
         {}
 
         /* Initialize an iterator with a stack that allows reverse iteration over a
@@ -254,8 +267,8 @@ public:
             Node* curr,
             Node* next
         ) :
-            Base(std::move(prev)), prev(this->stack.top()), curr(curr), next(next),
-            view(view)
+            Base(std::move(prev)), view(view), _prev(this->stack.top()), _curr(curr),
+            _next(next)
         {
             this->stack.pop();  // always has at least one element (nullptr)
         }

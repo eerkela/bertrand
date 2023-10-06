@@ -11,15 +11,20 @@
 #include <Python.h>  // CPython API
 
 // Core
-#include "core/allocate.h"  // Allocator policies
-#include "core/node.h"  // Nodes
-#include "core/view.h"  // Views
+#include "linked/allocate.h"  // Allocator policies
+#include "linked/node.h"  // Nodes
+#include "linked/view.h"  // Views
 
-#include "list.h"  // LinkedList
+#include "../list.h"  // LinkedList
 
 
 // TODO: Figure out how to carry operator overloads up to the VariantList level and
 // make them callable from Python.
+
+
+namespace bertrand {
+namespace structs {
+namespace cython {
 
 
 ///////////////////////
@@ -187,8 +192,6 @@ private:
     using SingleList = LinkedList<SingleNode<PyObject*>, MergeSort, BasicLock>;
     using DoubleList = LinkedList<DoubleNode<PyObject*>, MergeSort, BasicLock>;
 
-    // TODO: somehow these lists are being destroyed twice, which causes a segfault
-
     /* Select a variant based on constructor arguments. */
     template <typename... Args>
     inline static ListAlternative select_variant(bool doubly_linked, Args... args) {
@@ -229,14 +232,14 @@ public:
         lock(*this), weak_ref(*this)
     {}
 
-    /* Construct a new VariantList from an existing C++ view. */
-    template <typename View>
-    VariantList(View&& view) :
-        variant(std::move(view)), lock(*this), weak_ref(*this)
+    /* Construct a new VariantList from an existing C++ LinkedList. */
+    template <typename List>
+    explicit VariantList(List&& list) :
+        variant(std::move(list)), lock(*this), weak_ref(*this)
     {}
 
     /* Move constructor. */
-    VariantList(VariantList&& other) :
+    explicit VariantList(VariantList&& other) :
         variant(std::move(other.variant)), lock(*this), weak_ref(*this)
     {}
 
@@ -245,6 +248,73 @@ public:
         variant = std::move(other.variant);
         return *this;
     }
+
+    /////////////////////////////////
+    ////    LOW-LEVEL METHODS    ////
+    /////////////////////////////////
+
+    /* Check whether the list contains any elements. */
+    inline bool empty() const noexcept {
+        return std::visit([&](auto& list) { return list.empty(); }, variant);
+    }
+
+    /* Get the number of elements within the list. */
+    inline size_t size() const noexcept {
+        return std::visit([&](auto& list) { return list.size(); }, variant);
+    }
+
+    /* Get the current length of the allocator's dynamic array. */
+    inline size_t capacity() const noexcept {
+        return std::visit([&](auto& list) { return list.capacity(); }, variant);
+    }
+
+    /* Get the list's current size limit. */
+    inline std::optional<size_t> max_size() const noexcept {
+        return std::visit([&](auto& list) { return list.max_size(); }, variant);
+    }
+
+    /* Reserve space for a list of a given size. */
+    inline void reserve(size_t capacity) {
+        std::visit([&](auto& list) { list.reserve(capacity); }, variant);
+    }
+
+    /* Rearrange the allocator's contents to match the current list order. */
+    inline void consolidate() {
+        std::visit([&](auto& list) { list.consolidate(); }, variant);
+    }
+
+    /* Get the current Python specialization for the list's elements. */
+    inline PyObject* specialization() const noexcept {
+        return std::visit(
+            [&](auto& list) {
+                return Py_XNewRef(list.specialization());  // ref may be NULL
+            },
+            variant
+        );
+    }
+
+    /* Enforce strict typing for Python objects within a list. */
+    inline void specialize(PyObject* spec) {
+        std::visit([&](auto& list) { list.specialize(spec); }, variant);
+    }
+
+    /* Get the total memory consumed by a list. */
+    inline size_t nbytes() {
+        return std::visit([&](auto& list) { return list.nbytes(); }, variant);
+    }
+
+    /* Return a forward iterator over the list. */
+    inline PyObject* iter() {
+        return std::visit([&](auto& list) { return list.iter.python(); }, variant);
+    }
+
+    /* Return a reverse iterator over the list. */
+    inline PyObject* riter() {
+        return std::visit([&](auto& list) { return list.iter.rpython(); }, variant);
+    }
+
+    /* Forward the list's lock() functor. */
+    const Lock lock;  // lock(), lock.shared(), etc.
 
     //////////////////////////////
     ////    LIST INTERFACE    ////
@@ -313,10 +383,6 @@ public:
     inline Slot<VariantList> copy() {
         return std::visit(
             [&](auto& list) {
-                // NOTE: ordinarily, we would just return the copy directly, but for
-                // Cython to be able to stack-allocate the result, we need to use a
-                // wrapper that is trivially constructible.  This is a bit of a hack,
-                // but it works and avoids unnecessary heap allocations.
                 Slot<VariantList> slot;
                 slot.construct(std::move(list.copy()));
                 return slot;
@@ -338,11 +404,6 @@ public:
     /* Implement LinkedList.rotate() for all variants. */
     inline void rotate(long long steps) {
         std::visit([&](auto& list) { list.rotate(steps); }, variant);
-    }
-
-    /* Implement LinkedList.__len__() for all variants. */
-    inline size_t size() {
-        return std::visit([&](auto& list) { return list.size(); }, variant);
     }
 
     /* Implement LinkedList.__getitem__() for all variants (single index). */
@@ -412,10 +473,6 @@ public:
         Slot<VariantList> get() {
             return std::visit(
                 [&](auto& list) {
-                    // NOTE: ordinarily, we would just return the copy directly, but
-                    // for Cython to be able to stack-allocate the result, we need to
-                    // use a wrapper that is trivially constructible.  This is a bit of
-                    // a hack, but it works and avoids unnecessary heap allocations.
                     Slot<VariantList> slot;
                     slot.construct(
                         std::apply(
@@ -478,60 +535,134 @@ public:
     ////    OPERATOR OVERLOADS    ////
     //////////////////////////////////
 
-    // template <typename T>
-    // inline VariantList* concat(VariantList* lhs, T rhs) {
-    //     return std::visit(
-    //         [&](auto& list) {
-    //             return new VariantList(list + rhs);
-    //         },
-    //         lhs->variant
-    //     );
-    // }
-
-    // template <typename T>
-    // inline VariantList* concat(T lhs, VariantList* rhs) {
-    //     return std::visit(
-    //         [&](auto& list) {
-    //             return new VariantList(lhs + list);
-    //         },
-    //         rhs->variant
-    //     );
-    // }
-
-    /////////////////////////////
-    ////    EXTRA METHODS    ////
-    /////////////////////////////
-
-    const Lock lock;  // lock(), lock.context(), etc.
-
-    /* Implement LinkedList.specialization() for all variants. */
-    inline PyObject* specialization() {
+    /* Allow concatenation using the + operator. */
+    template <typename T>
+    inline Slot<VariantList> concat(T rhs) {
         return std::visit(
             [&](auto& list) {
-                return Py_XNewRef(list.specialization());  // ref may be NULL
+                Slot<VariantList> slot;
+                slot.construct(list + rhs);
+                return slot;
             },
             variant
         );
     }
 
-    /* Implement LinkedList.specialize() for all variants. */
-    inline void specialize(PyObject* spec) {
-        std::visit([&](auto& list) { list.specialize(spec); }, variant);
+    /* Allow concatenation using the + operator (symmetric). */
+    template <typename T>
+    inline Slot<T> concatenate(T lhs, VariantList& rhs) {
+        return std::visit(
+            [&](auto& list) {
+                Slot<T> slot;
+                slot.construct(lhs + list);
+                return slot;
+            },
+            rhs.variant
+        );
     }
 
-    /* Implement LinkedList.nbytes() for all variants. */
-    inline size_t nbytes() {
-        return std::visit([&](auto& list) { return list.nbytes(); }, variant);
+    /* Allow repetition using the * operator. */
+    template <typename T>
+    inline Slot<VariantList> repeat(VariantList& lhs, T rhs) {
+        return std::visit(
+            [&](auto& list) {
+                Slot<VariantList> slot;
+                slot.construct(VariantList(list * rhs));
+                return slot;
+            },
+            lhs.variant
+        );
     }
 
-    /* Implement LinkedList.__iter__() for all variants. */
-    inline PyObject* iter() {
-        return std::visit([&](auto& list) { return list.iter.python(); }, variant);
+    /* Allow repetition using the * operator (symmetric). */
+    template <typename T>
+    inline Slot<VariantList> repeat(T lhs, VariantList& rhs) {
+        return std::visit(
+            [&](auto& list) {
+                Slot<VariantList> slot;
+                slot.construct(VariantList(lhs * list));
+                return slot;
+            },
+            rhs.variant
+        );
     }
 
-    /* Implement LinkedList.__reversed__() for all variants. */
-    inline PyObject* riter() {
-        return std::visit([&](auto& list) { return list.iter.rpython(); }, variant);
+    /* Allow in-place repetition using the *= operator. */
+    template <typename T>
+    inline void irepeat(VariantList& lhs, T rhs) {
+        std::visit([&](auto& list) { list *= rhs; }, lhs.variant);
+    }
+
+    /* Allow lexicographic < comparisons. */
+    template <typename T>
+    inline bool lt(T rhs) {
+        return std::visit([&](auto& list) { return list < rhs; }, variant);
+    }
+
+    /* Allow lexicographic < comparisons (symmetric). */
+    template <typename T>
+    inline bool rlt(T lhs) {
+        return std::visit([&](auto& list) { return lhs < list; }, variant);
+    }
+
+    /* Allow lexicographic <= comparisons. */
+    template <typename T>
+    inline bool lexical_le(VariantList& lhs, T rhs) {
+        return std::visit([&](auto& list) { return list <= rhs; }, lhs.variant);
+    }
+
+    /* Allow lexicographic <= comparisons (symmetric). */
+    template <typename T>
+    inline bool lexical_le(T lhs, VariantList& rhs) {
+        return std::visit([&](auto& list) { return lhs <= list; }, rhs.variant);
+    }
+
+    /* Allow lexicographic == comparisons. */
+    template <typename T>
+    inline bool lexical_eq(VariantList& lhs, T rhs) {
+        return std::visit([&](auto& list) { return list == rhs; }, lhs.variant);
+    }
+
+    /* Allow lexicographic == comparisons (symmetric). */
+    template <typename T>
+    inline bool lexical_eq(T lhs, VariantList& rhs) {
+        return std::visit([&](auto& list) { return lhs == list; }, rhs.variant);
+    }
+
+    /* Allow lexicographic != comparisons. */
+    template <typename T>
+    inline bool lexical_ne(VariantList& lhs, T rhs) {
+        return std::visit([&](auto& list) { return list != rhs; }, lhs.variant);
+    }
+
+    /* Allow lexicographic != comparisons (symmetric). */
+    template <typename T>
+    inline bool lexical_ne(T lhs, VariantList& rhs) {
+        return std::visit([&](auto& list) { return lhs != list; }, rhs.variant);
+    }
+
+    /* Allow lexicographic >= comparisons. */
+    template <typename T>
+    inline bool lexical_ge(VariantList& lhs, T rhs) {
+        return std::visit([&](auto& list) { return list >= rhs; }, lhs.variant);
+    }
+
+    /* Allow lexicographic >= comparisons (symmetric). */
+    template <typename T>
+    inline bool lexical_ge(T lhs, VariantList& rhs) {
+        return std::visit([&](auto& list) { return lhs >= list; }, rhs.variant);
+    }
+
+    /* Allow lexicographic > comparisons. */
+    template <typename T>
+    inline bool lexical_gt(VariantList& lhs, T rhs) {
+        return std::visit([&](auto& list) { return list > rhs; }, lhs.variant);
+    }
+
+    /* Allow lexicographic > comparisons (symmetric). */
+    template <typename T>
+    inline bool lexical_gt(T lhs, VariantList& rhs) {
+        return std::visit([&](auto& list) { return lhs > list; }, rhs.variant);
     }
 
 protected:
@@ -540,6 +671,16 @@ protected:
 
     const Self weak_ref;  // functor to generate weak references to the variant
 };
+
+
+//////////////////////////////////
+////    OPERATOR OVERLOADS    ////
+//////////////////////////////////
+
+
+}  // namespace cython
+}  // namespace structs
+}  // namespace bertrand
 
 
 #endif  // BERTRAND_STRUCTS_LIST_H include guard

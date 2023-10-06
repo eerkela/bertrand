@@ -4,9 +4,12 @@
 
 #include <tuple>  // std::tuple
 #include <Python.h>  // CPython API
-#include "../core/bounds.h"  // neighbors()
-#include "../core/node.h"  // has_prev<>
-#include "../core/view.h"  // views
+#include "position.h"  // position()
+
+
+namespace bertrand {
+namespace structs {
+namespace algorithms {
 
 
 //////////////////////
@@ -14,66 +17,18 @@
 //////////////////////
 
 
-namespace Ops {
+namespace list {
 
     /* Pop an item from a linked list, set, or dictionary at the given index. */
     template <typename View, typename T>
     PyObject* pop(View& view, T index) {
-        using Node = typename View::Node;
-
-        // allow python-style negative indexing + boundschecking
-        size_t idx = normalize_index(index, view.size, false);
-        if (idx == MAX_SIZE_T && PyErr_Occurred()) {
-            return nullptr;  // propagate error
-        }
-
-        // get neighbors at index
-        std::tuple<Node*, Node*, Node*> bounds = neighbors(&view, view.head, idx);
-        Node* prev = std::get<0>(bounds);
-        Node* curr = std::get<1>(bounds);
-        Node* next = std::get<2>(bounds);
-
-        // recycle node and return a new reference to its value
-        return _pop_node(view, prev, curr, next);
+        return position(view, index).pop();
     }
 
-    /* Pop a key from a linked dictionary and return its corresponding value. */
-    template <typename NodeType, template <typename> class Allocator>
-    PyObject* pop(
-        DictView<NodeType, Allocator>& view,
-        PyObject* key,
-        PyObject* default_value
-    ) {
-        using Node = typename DictView<NodeType, Allocator>::Node;
-        Node* prev;
-        Node* curr;
+}  // namespace list
 
-        // search for node
-        curr = view.search(key);
-        if (curr == nullptr) {
-            return default_value;
-        }
 
-        // get neighboring nodes
-        if constexpr (has_prev<Node>::value) {
-            // NOTE: this is O(1) for doubly-linked dictionaries because we can use
-            // the node's prev and next pointers to unlink it from the list.
-            prev = static_cast<Node*>(curr->prev);
-        } else {
-            // NOTE: this is O(n) for singly-linked dictionaries because we have to
-            // traverse the whole list to find the node that precedes the popped node.
-            prev = nullptr;
-            Node* temp = view.head;
-            while (temp != curr) {
-                prev = temp;
-                temp = static_cast<Node*>(temp->next);
-            }
-        }
-
-        // recycle node and return a new reference to its value
-        Node* next = static_cast<Node*>(curr->next);
-        return _pop_node(view, prev, curr, next);
-    }
+namespace set {
 
     /* Pop an item from a linked list, set, or dictionary relative to a given
     sentinel value. */
@@ -111,7 +66,50 @@ namespace Ops {
         return _pop_node(view, prev, curr, next);
     }
 
-}
+}  // namespace set
+
+
+namespace dict {
+
+    /* Pop a key from a linked dictionary and return its corresponding value. */
+    template <typename View>
+    PyObject* pop(
+        View& view,
+        PyObject* key,
+        PyObject* default_value
+    ) {
+        using Node = typename View::Node;
+        Node* prev;
+        Node* curr;
+
+        // search for node
+        curr = view.search(key);
+        if (curr == nullptr) {
+            return default_value;
+        }
+
+        // get neighboring nodes
+        if constexpr (View::doubly_linked) {
+            // NOTE: this is O(1) for doubly-linked dictionaries because we can use
+            // the node's prev and next pointers to unlink it from the list.
+            prev = static_cast<Node*>(curr->prev);
+        } else {
+            // NOTE: this is O(n) for singly-linked dictionaries because we have to
+            // traverse the whole list to find the node that precedes the popped node.
+            prev = nullptr;
+            Node* temp = view.head;
+            while (temp != curr) {
+                prev = temp;
+                temp = static_cast<Node*>(temp->next);
+            }
+        }
+
+        // recycle node and return a new reference to its value
+        Node* next = static_cast<Node*>(curr->next);
+        return _pop_node(view, prev, curr, next);
+    }
+
+}  // namespace dict
 
 
 ///////////////////////
@@ -131,6 +129,11 @@ inline PyObject* _pop_node(View& view, Node* prev, Node* curr, Node* next) {
     view.recycle(curr);
     return value;  // caller takes ownership of value
 }
+
+
+}  // namespace algorithms
+}  // namespace structs
+}  // namespace bertrand
 
 
 #endif // BERTRAND_STRUCTS_ALGORITHMS_POP_H include guard

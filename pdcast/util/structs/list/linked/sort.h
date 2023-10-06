@@ -8,8 +8,8 @@
 #include <optional>  // std::optional
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
-#include "../core/node.h"  // Keyed<>
-#include "../core/view.h"  // views
+#include "../linked/node.h"  // Keyed<>
+#include "../linked/view.h"  // views
 
 
 // TODO: sort() with key function fails.

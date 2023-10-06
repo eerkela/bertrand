@@ -23,12 +23,6 @@ const bool DEBUG = true;
 
 
 ////////////////////
-////    BASE    ////
-////////////////////
-
-
-
-////////////////////
 ////    LIST    ////
 ////////////////////
 
@@ -121,7 +115,7 @@ private:
 
     /* Initialize a node from the array to use in a list. */
     template <typename... Args>
-    inline void init_node(Node* node, Args... args) {
+    inline void init_node(Node* node, Args&&... args) {
         // variadic dispatch to node constructor
         new (node) Node(std::forward<Args>(args)...);
 
@@ -492,9 +486,9 @@ public:
 };
 
 
-//////////////////////
-////    HASHED    ////
-//////////////////////
+//////////////////////////////
+////    SET/DICTIONARY    ////
+//////////////////////////////
 
 
 #endif  // BERTRAND_STRUCTS_CORE_ALLOCATE_H include guard

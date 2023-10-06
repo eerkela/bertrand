@@ -11,9 +11,9 @@
 #include <Python.h>  // CPython API
 #include "node.h"  // Hashed<>, Mapped<>
 #include "allocate.h"  // Allocator
-#include "index.h"  // IndexFactory
+// #include "index.h"  // IndexFactory
 #include "iter.h"  // IteratorFactory
-#include "slice.h"  // SliceFactory
+// #include "slice.h"  // SliceFactory
 #include "table.h"  // HashTable
 #include "thread.h"  // BasicLock/DiagnosticLock
 #include "util.h"  // CoupledIterator<>, Bidirectional<>, PyIterable

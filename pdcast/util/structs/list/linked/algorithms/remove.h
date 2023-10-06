@@ -3,8 +3,13 @@
 #define BERTRAND_STRUCTS_ALGORITHMS_REMOVE_H
 
 #include <Python.h>  // CPython API
-#include "../core/node.h"  // has_prev<>
-#include "../core/view.h"  // views
+#include <sstream>  // std::ostringstream
+#include <stdexcept>  // std::invalid_argument
+
+
+namespace bertrand {
+namespace structs {
+namespace algorithms {
 
 
 //////////////////////
@@ -12,37 +17,32 @@
 //////////////////////
 
 
-namespace Ops {
+namespace list {
 
     /* Remove the first occurrence of an item from a linked list. */
-    template <typename NodeType, template <typename> class Allocator>
-    void remove(ListView<NodeType, Allocator>& view, PyObject* item) {
-        using Node = typename ListView<NodeType, Allocator>::Node;
+    template <typename View>
+    void remove(View& view, PyObject* item) {
+        using Node = typename View::Node;
 
-        // find the node to remove
-        Node* prev = nullptr;
-        Node* curr = view.head;
-        while (curr != nullptr) {
-            Node* next = static_cast<Node*>(curr->next);
-
-            // C API equivalent of the == operator
-            int comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
-            if (comp == -1) {  // comparison raised an exception
-                return;  // propagate
-            } else if (comp == 1) {  // found a match
-                view.unlink(prev, curr, next);
-                view.recycle(curr);
+        // find item in list
+        for (auto iter = view.iter(); iter != iter.end(); ++iter) {
+            Node* node = *iter;
+            if (node->eq(item)) {
+                view.recycle(iter.remove());
                 return;
             }
-
-            // advance to next node
-            prev = curr;
-            curr = next;
         }
 
         // item not found
-        PyErr_Format(PyExc_ValueError, "%R not in list", item);
+        std::ostringstream msg;
+        msg << repr(item) << " is not in list";
+        throw std::invalid_argument(msg.str());  
     }
+
+}  // namespace list
+
+
+namespace set {
 
     /* Remove an item from a linked set or dictionary. */
     template <typename View>
@@ -57,7 +57,7 @@ namespace Ops {
         _drop_relative(view, sentinel, offset, true);  // propagate errors
     }
 
-}
+}  // namespace set
 
 
 ///////////////////////
@@ -147,6 +147,11 @@ void _drop_relative(View& view, PyObject* sentinel, Py_ssize_t offset, bool rais
     view.unlink(prev, curr, next);
     view.recycle(curr);
 }
+
+
+}  // namespace algorithms
+}  // namespace structs
+}  // namespace bertrand
 
 
 #endif  // BERTRAND_STRUCTS_ALGORITHMS_REMOVE_H include guard

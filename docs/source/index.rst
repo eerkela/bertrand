@@ -6,7 +6,6 @@
 .. testsetup::
 
    import pandas as pd
-   from pdcast import *
 
 .. include:: ../../README.rst
 

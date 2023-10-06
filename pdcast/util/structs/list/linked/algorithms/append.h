@@ -3,10 +3,14 @@
 #define BERTRAND_STRUCTS_ALGORITHMS_APPEND_H
 
 #include <Python.h>  // CPython API
-#include "../core/view.h"  // views
 
 
-namespace Ops {
+namespace bertrand {
+namespace structs {
+namespace algorithms {
+
+
+namespace list {
 
     /* Add an item to the end of a linked list, set, or dictionary. */
     template <typename View>
@@ -15,36 +19,32 @@ namespace Ops {
 
         // allocate a new node
         Node* node = view.node(item);
-        if (node == nullptr) {
-            return;  // propagate error
-        }
 
         // link to beginning/end of list
         if (left) {
-            view.link(nullptr, node, view.head);
+            view.link(nullptr, node, view.head());
         } else {
-            view.link(view.tail, node, nullptr);
-        }
-        if (PyErr_Occurred()) {
-            view.recycle(node);  // clean up allocated node
+            view.link(view.tail(), node, nullptr);
         }
     }
 
+}  // namespace list
+
+
+namespace dict {
+
     /* Add a key-value pair to the end of a linked dictionary. */
-    template <typename NodeType, template <typename> class Allocator>
+    template <typename View>
     void append(
-        DictView<NodeType, Allocator>& view,
+        View& view,
         PyObject* key,
         PyObject* value,
         bool left
     ) {
-        using Node = typename DictView<NodeType, Allocator>::Node;
+        using Node = typename View::Node;
 
         // allocate a new node (use 2-argument init())
         Node* node = view.node(key, value);
-        if (node == nullptr) {
-            return;  // propagate error
-        }
 
         // link to beginning/end of list
         if (left) {
@@ -52,12 +52,14 @@ namespace Ops {
         } else {
             view.link(view.tail, node, nullptr);
         }
-        if (PyErr_Occurred()) {
-            view.recycle(node);  // clean up allocated node
-        }
     }
 
-}
+}  // namespace dict
+
+
+}  // namespace algorithms
+}  // namespace structs
+}  // namespace bertrand
 
 
 #endif // BERTRAND_STRUCTS_ALGORITHMS_APPEND_H

@@ -55,7 +55,7 @@ The behavior of the decorated function is otherwise unchanged.
         ...
     TypeError: foo() missing 1 required positional argument: 'bar'
 
-.. _extension_func.managed:
+.. _extension_func.arguments:
 
 Managed arguments
 -----------------

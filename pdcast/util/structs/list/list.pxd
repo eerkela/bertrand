@@ -20,7 +20,7 @@ from .base cimport Slot
 ###################
 
 
-cdef extern from "core/allocate.h":
+cdef extern from "linked/allocate.h":
     cdef cppclass ListAllocator[Node]:
         ListAllocator(optional[size_t] capacity, PyObject* specialization) except +
         ListAllocator(const ListAllocator& other) except +
@@ -34,7 +34,7 @@ cdef extern from "core/allocate.h":
         void specialize(PyObject* spec) except +
 
 
-cdef extern from "core/view.h":
+cdef extern from "linked/view.h":
     cdef cppclass ListView[Node = *, Allocator = *]:
         cppclass IteratorFactory:
             cppclass Iterator:
@@ -86,7 +86,7 @@ cdef extern from "core/view.h":
         IteratorFactory.Iterator rend()
 
 
-cdef extern from "list.h":
+cdef extern from "list.h" namespace "bertrand::structs":
     # NOTE: C++ LinkedLists are renamed to avoid conflict with the Cython class of the
     # same name.
     cdef cppclass CppLinkedList "LinkedList" [T, Node = *, Sort = *, Lock = *]:
@@ -293,7 +293,7 @@ cdef extern from "list.h":
 ######################
 
 
-cdef extern from "list_cython.h":
+cdef extern from "cython/list.h" namespace "bertrand::structs::cython":
     cdef cppclass VariantList:
         # constructors
         VariantList(
@@ -309,6 +309,29 @@ cdef extern from "list_cython.h":
             PyObject* spec
         ) except +
 
+        # low level methods
+        bint empty()
+        size_t size()
+        size_t capacity()
+        optional[size_t] max_size()
+        void reserve(size_t capacity) except +
+        void consolidate() except +
+        PyObject* specialization()
+        void specialize(PyObject* spec) except +*
+        size_t nbytes()
+        PyObject* iter() except +*
+        PyObject* riter() except +*
+
+        # thread locks
+        cppclass Lock:
+            PyObject* operator()() except +
+            PyObject* shared() except +
+            size_t count()
+            size_t duration()
+            double contention()
+            void reset_diagnostics()
+        const Lock lock
+
         # list interface
         void append(PyObject* item, bint left) except +*
         void insert[T](T index, PyObject* item) except +*
@@ -323,7 +346,6 @@ cdef extern from "list_cython.h":
         void sort(PyObject* key, bint reverse) except +*
         void reverse()
         void rotate(ssize_t steps)
-        size_t size()
 
         # indexing
         cppclass Index:
@@ -340,34 +362,17 @@ cdef extern from "list_cython.h":
         Slice slice(PyObject* py_slice)
 
         # operator overloads
-        # VariantList* concat(PyObject* rhs) except +
-        # VariantList* rconcat(PyObject* lhs) except +
+        Slot[VariantList] concat[T](T rhs) except +
+        # Slot[VariantList] rconcat(PyObject* lhs) except +
         # void iconcat(PyObject* rhs) except +
         # VariantList* repeat(PyObject* steps) except +
         # void irepeat(PyObject* steps) except +
-        # bint lexicographic_lt(PyObject* other) except +
+        bint lt[T](T other) except +
         # bint lexicographic_le(PyObject* other) except +
         # bint lexicographic_eq(PyObject* other) except +
         # bint lexicographic_ne(PyObject* other) except +
         # bint lexicographic_ge(PyObject* other) except +
         # bint lexicographic_gt(PyObject* other) except +
-
-        # thread locks
-        cppclass Lock:
-            PyObject* operator()() except +
-            PyObject* shared() except +
-            size_t count()
-            size_t duration()
-            double contention()
-            void reset_diagnostics()
-        const Lock lock
-
-        # extra methods
-        PyObject* specialization()
-        void specialize(PyObject* spec) except +*
-        size_t nbytes()
-        PyObject* iter() except +*
-        PyObject* riter() except +*
 
 
 cdef class LinkedList:

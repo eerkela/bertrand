@@ -49,8 +49,8 @@ namespace String {
     template <const std::string_view&... Strings>
     static constexpr auto concat_v = concat<Strings...>::value;
 
-    /* A metadata trait that determines which specialization of repr() is appropriate
-    for a given type. */
+    /* A trait that determines which specialization of repr() is appropriate for a
+    given type. */
     template <typename T>
     class Repr {
         using True = std::true_type;
@@ -119,15 +119,15 @@ namespace String {
 }
 
 
-/* A type trait that infers the return type of a C++ function pointer that accepts the
-given arguments. */
+/* A trait that infers the return type of a C++ function pointer that accepts the given
+arguments. */
 template <typename Func, typename Enable = void, typename... Args>
 struct _ReturnType {
     using type = std::invoke_result_t<Func, Args...>;
 };
 
 
-/* A type trait that represents the return type of a python callable. */
+/* A trait that represents the return type of a python callable (always PyObject*). */
 template <typename Func, typename... Args>
 struct _ReturnType<
     Func,
@@ -138,8 +138,8 @@ struct _ReturnType<
 };
 
 
-/* Infer the return type of a C++ function with the given arguments or a Python
-callable. */
+/* Infer the return type of a Python callable or C++ function with the given
+arguments. */
 template <typename Func, typename... Args>
 using ReturnType = typename _ReturnType<Func, void, Args...>::type;
 
@@ -436,6 +436,21 @@ public:
     // for more information.
 
     template <typename T = Iterator>
+    inline auto prev() const -> decltype(std::declval<T>().prev()) {
+        return first.prev();
+    }
+
+    template <typename T = Iterator>
+    inline auto curr() const -> decltype(std::declval<T>().curr()) {
+        return first.curr();
+    }
+
+    template <typename T = Iterator>
+    inline auto next() const -> decltype(std::declval<T>().next()) {
+        return first.next();
+    }
+
+    template <typename T = Iterator>
     inline auto insert(value_type value) -> decltype(std::declval<T>().insert(value)) {
         return first.insert(value);  // void
     }
@@ -456,8 +471,8 @@ public:
     }
 
     template <typename T = Iterator>
-    inline auto inverted() -> decltype(std::declval<T>().inverted()) const {
-        return first.inverted();
+    inline auto idx() -> decltype(std::declval<T>().idx()) const {
+        return first.idx();
     }
 
 protected:
@@ -738,7 +753,7 @@ enum class Direction {
 /* Conditionally-compiled base class for Bidirectional iterators that respects the
 reversability of the associated view. */
 template <template <Direction> class Iterator, bool doubly_linked = false>
-class BidirectionalBase {
+class _Bidirectional {
 public:
     Direction direction = Direction::forward;
 
@@ -748,42 +763,42 @@ protected:
     };
 
     /* Initialize the union with a forward iterator. */
-    BidirectionalBase(const Iterator<Direction::forward>& iter) {
+    _Bidirectional(const Iterator<Direction::forward>& iter) {
         new (&forward) Iterator<Direction::forward>(iter);
     }
 
     /* Copy constructor. */
-    BidirectionalBase(const BidirectionalBase& other) : direction(other.direction) {
+    _Bidirectional(const _Bidirectional& other) : direction(other.direction) {
         new (&forward) Iterator<Direction::forward>(other.forward);
     }
 
     /* Move constructor. */
-    BidirectionalBase(BidirectionalBase&& other) noexcept : direction(other.direction) {
+    _Bidirectional(_Bidirectional&& other) noexcept : direction(other.direction) {
         new (&forward) Iterator<Direction::forward>(std::move(other.forward));
     }
 
     /* Copy assignment operator. */
-    BidirectionalBase& operator=(const BidirectionalBase& other) {
+    _Bidirectional& operator=(const _Bidirectional& other) {
         direction = other.direction;
         forward = other.forward;
         return *this;
     }
 
     /* Move assignment operator. */
-    BidirectionalBase& operator=(BidirectionalBase&& other) {
+    _Bidirectional& operator=(_Bidirectional&& other) {
         direction = other.direction;
         forward = std::move(other.forward);
         return *this;
     }
 
     /* Call the contained type's destructor. */
-    ~BidirectionalBase() { forward.~Iterator(); }
+    ~_Bidirectional() { forward.~Iterator(); }
 };
 
 
 /* Specialization for doubly-linked lists. */
 template <template <Direction> class Iterator>
-class BidirectionalBase<Iterator, true> {
+class _Bidirectional<Iterator, true> {
 public:
     Direction direction;
 
@@ -794,21 +809,21 @@ protected:
     };
 
     /* Initialize the union with a forward iterator. */
-    BidirectionalBase(const Iterator<Direction::forward>& iter) :
+    _Bidirectional(const Iterator<Direction::forward>& iter) :
         direction(Direction::forward)
     {
         new (&forward) Iterator<Direction::forward>(iter);
     }
 
     /* Initialize the union with a backward iterator. */
-    BidirectionalBase(const Iterator<Direction::backward>& iter) :
+    _Bidirectional(const Iterator<Direction::backward>& iter) :
         direction(Direction::backward)
     {
         new (&backward) Iterator<Direction::backward>(iter);
     }
 
     /* Copy constructor. */
-    BidirectionalBase(const BidirectionalBase& other) : direction(other.direction) {
+    _Bidirectional(const _Bidirectional& other) : direction(other.direction) {
         switch (other.direction) {
             case Direction::backward:
                 new (&backward) Iterator<Direction::backward>(other.backward);
@@ -820,7 +835,7 @@ protected:
     }
 
     /* Move constructor. */
-    BidirectionalBase(BidirectionalBase&& other) noexcept : direction(other.direction) {
+    _Bidirectional(_Bidirectional&& other) noexcept : direction(other.direction) {
         switch (other.direction) {
             case Direction::backward:
                 new (&backward) Iterator<Direction::backward>(std::move(other.backward));
@@ -832,7 +847,7 @@ protected:
     }
 
     /* Copy assignment operator. */
-    BidirectionalBase& operator=(const BidirectionalBase& other) {
+    _Bidirectional& operator=(const _Bidirectional& other) {
         direction = other.direction;
         switch (other.direction) {
             case Direction::backward:
@@ -846,7 +861,7 @@ protected:
     }
 
     /* Move assignment operator. */
-    BidirectionalBase& operator=(BidirectionalBase&& other) {
+    _Bidirectional& operator=(_Bidirectional&& other) {
         direction = other.direction;
         switch (other.direction) {
             case Direction::backward:
@@ -860,7 +875,7 @@ protected:
     }
 
     /* Call the contained type's destructor. */
-    ~BidirectionalBase() {
+    ~_Bidirectional() {
         switch (direction) {
             case Direction::backward:
                 backward.~Iterator();
@@ -875,14 +890,14 @@ protected:
 
 /* A type-erased iterator that can contain either a forward or backward iterator. */
 template <template <Direction> class Iterator>
-class Bidirectional : public BidirectionalBase<
+class Bidirectional : public _Bidirectional<
     Iterator,
     Iterator<Direction::forward>::Node::doubly_linked
 > {
 public:
     using ForwardIterator = Iterator<Direction::forward>;
     using Node = typename ForwardIterator::Node;
-    using Base = BidirectionalBase<Iterator, Node::doubly_linked>;
+    using Base = _Bidirectional<Iterator, Node::doubly_linked>;
 
     // iterator tags for std::iterator_traits
     using iterator_category     = typename ForwardIterator::iterator_category;
@@ -905,7 +920,7 @@ public:
     /* Move constructor. */
     Bidirectional(Bidirectional&& other) noexcept : Base(std::move(other)) {}
 
-    // destructor is automatically called by BidirectionalBase
+    // destructor is automatically called by base class
 
     /////////////////////////////////
     ////    ITERATOR PROTOCOL    ////
@@ -1003,6 +1018,36 @@ public:
     // that of the Iterator.  See https://en.cppreference.com/w/cpp/language/sfinae
     // for more information.
 
+    template <typename T = ForwardIterator>
+    inline auto prev() const -> decltype(std::declval<T>().prev()) {
+        if constexpr (Node::doubly_linked) {
+            if (this->direction == Direction::backward) {
+                return this->backward.prev();
+            }
+        }
+        return this->forward.prev();
+    }
+
+    template <typename T = ForwardIterator>
+    inline auto curr() const -> decltype(std::declval<T>().curr()) {
+        if constexpr (Node::doubly_linked) {
+            if (this->direction == Direction::backward) {
+                return this->backward.curr();
+            }
+        }
+        return this->forward.curr();
+    }
+
+    template <typename T = ForwardIterator>
+    inline auto next() const -> decltype(std::declval<T>().next()) {
+        if constexpr (Node::doubly_linked) {
+            if (this->direction == Direction::backward) {
+                return this->backward.next();
+            }
+        }
+        return this->forward.next();
+    }
+
     /* Insert a node at the current position. */
     template <typename T = ForwardIterator>
     inline auto insert(value_type value) -> decltype(std::declval<T>().insert(value)) {
@@ -1038,7 +1083,7 @@ public:
 
     /* Get the index of the current position. */
     template <typename T = ForwardIterator>
-    inline auto index() -> decltype(std::declval<T>().index()) const {
+    inline auto index() const -> decltype(std::declval<T>().index()) {
         if constexpr (Node::doubly_linked) {
             if (this->direction == Direction::backward) {
                 return this->backward.index();
@@ -1049,13 +1094,13 @@ public:
 
     /* Check whether the iterator direction is consistent with a slice's step size. */
     template <typename T = ForwardIterator>
-    inline auto inverted() -> decltype(std::declval<T>().inverted()) const {
+    inline auto idx() const -> decltype(std::declval<T>().idx()) {
         if constexpr (Node::doubly_linked) {
             if (this->direction == Direction::backward) {
-                return this->backward.inverted();
+                return this->backward.idx();
             }
         }
-        return this->forward.inverted();
+        return this->forward.idx();
     }
 
 };

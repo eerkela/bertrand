@@ -3,32 +3,70 @@
 #define BERTRAND_STRUCTS_ALGORITHMS_EXTEND_H
 
 #include <Python.h>  // CPython API
-#include "../core/bounds.h"  // relative_junction()
-#include "../core/view.h"  // views
+#include "append.h"  // append()
 
 
-//////////////////////
-////    PUBLIC    ////
-//////////////////////
+namespace bertrand {
+namespace structs {
+namespace algorithms {
 
 
-namespace Ops {
+namespace list {
 
     /* Add multiple items to the end of a list, set, or dictionary. */
     template <typename View>
     inline void extend(View& view, PyObject* items, bool left) {
         using Node = typename View::Node;
 
-        Node* null = static_cast<Node*>(nullptr);
+        // note original head/tail in case of error
+        Node* original;
         if (left) {
-            _extend_right_to_left(view, null, view.head, items, false);
+            original = view.head();
         } else {
-            _extend_left_to_right(view, view.tail, null, items, false);
+            original = view.tail();
+        }
+
+        // proceed with extend
+        try {
+            PyIterable sequence(items);
+            for (PyObject* item : sequence) {
+                append(view, item, left);
+            }
+
+        // if an error occurs, clean up any nodes that were added to the list
+        } catch (...) {
+            if (left) {
+                // if we appended to the left, then just remove until we reach the
+                // original head
+                Node* curr = view.head();
+                while (curr != original) {
+                    Node* next = curr->next();
+                    view.unlink(nullptr, curr, next);
+                    view.recycle(curr);
+                    curr = next;
+                }
+            } else {
+                // otherwise, start from the original tail and remove until we reach
+                // the end of the list
+                Node* curr = original->next();
+                while (curr != nullptr) {
+                    Node* next = curr->next();
+                    view.unlink(original, curr, next);
+                    view.recycle(curr);
+                    curr = next;
+                }
+            }
+            throw;  // propagate error
         }
     }
 
-    /* Insert elements into a linked set or dictionary relative to the given
-    sentinel value. */
+}
+
+
+namespace set {
+
+    /* Insert elements into a linked set or dictionary relative to the given sentinel
+    value. */
     template <typename View>
     inline void extend_relative(
         View& view,
@@ -292,6 +330,11 @@ void _undo_right_to_left(
         view.head = left;  // reset head if necessary
     }
 }
+
+
+}  // namespace algorithms
+}  // namespace structs
+}  // namespace bertrand
 
 
 #endif // BERTRAND_STRUCTS_ALGORITHMS_EXTEND_H include guard

@@ -620,7 +620,9 @@ cdef class LinkedList:
         result = self.copy()
         result.extend(other)
         return result
-        # return LinkedList.from_variant(self.variant.concat(self.variant, <PyObject*>other))
+        # return LinkedList.from_variant(
+        #     self.variant.ptr().concat(<PyObject*>other).ptr()
+        # )
 
     def __iadd__(self, other: Iterable[object]) -> LinkedList:
         """Concatenate two lists in-place.
@@ -724,6 +726,13 @@ cdef class LinkedList:
         -----
         Comparisons are O(n).
         """
+        # if isinstance(other, type(self)):
+        #     return self.variant.ptr().lt(deref((<LinkedList>other).variant.ptr()))
+        # if isinstance(other, list):
+        #     return self.variant.ptr().lt(<PyObject*>other)
+
+        # return NotImplemented
+
         if not isinstance(other, type(self)):
             return NotImplemented
 
@@ -875,7 +884,7 @@ cdef class LinkedList:
         bool
             Indicates whether the list is empty.
         """
-        return bool(len(self))
+        return not bool(self.variant.ptr().empty())
 
     def __str__(self):
         """Return a standard string representation of the list.
@@ -1140,7 +1149,7 @@ cdef class LinkedList:
             {"__init__": __init__, "specialize": specialize}
         )
 
-    def lock(self) -> Any:
+    def lock(self) -> object:
         """Generate a context manager that temporarily locks a list for use in a
         multithreaded environment.
 

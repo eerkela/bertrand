@@ -13,15 +13,6 @@
 #include "util.h"  // Slot
 
 
-/////////////////////////
-////    CONSTANTS    ////
-/////////////////////////
-
-
-using MAX_SIZE_T = std::integral_constant<size_t, std::numeric_limits<size_t>::max()>;
-using ZERO_DURATION = std::integral_constant<typename std::chrono::milliseconds::rep, 0>;
-
-
 ////////////////////////
 ////    FUNCTORS    ////
 ////////////////////////
@@ -640,7 +631,6 @@ private:
     };
 
 };
-
 
 
 #endif  // BERTRAND_STRUCTS_CORE_THREAD_H include guard

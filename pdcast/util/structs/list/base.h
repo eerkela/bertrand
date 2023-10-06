@@ -6,8 +6,8 @@
 #include <optional>     // std::optional
 #include <stdexcept>    // std::runtime_error
 #include <string_view>  // std::string_view
-#include "core/thread.h"  // Lock, PyLock
-#include "core/util.h"  // string concatenation, CoupledIterator, PyIterator
+#include "linked/thread.h"  // Lock, PyLock
+#include "linked/util.h"  // string concatenation, CoupledIterator, PyIterator
 
 
 /* Base class that forwards the public members of the underlying view. */
@@ -19,22 +19,22 @@ public:
     View view;
 
     /* Check if the list contains any elements. */
-    inline bool empty() const {
+    inline bool empty() const noexcept {
         return view.size() == 0;
     }
 
     /* Get the current size of the list. */
-    inline size_t size() const {
+    inline size_t size() const noexcept {
         return view.size();
     }
 
     /* Get the current capacity of the allocator array. */
-    inline size_t capacity() const {
+    inline size_t capacity() const noexcept {
         return view.capacity();
     }
 
     /* Get the maximum size of the list. */
-    inline std::optional<size_t> max_size() const {
+    inline std::optional<size_t> max_size() const noexcept {
         return view.max_size();
     }
 
@@ -52,7 +52,7 @@ public:
     }
 
     /* Get the current specialization for elements of this list. */
-    inline PyObject* specialization() const {
+    inline PyObject* specialization() const noexcept {
         return view.specialization();  // TODO: reference counting?
     }
 
@@ -62,7 +62,7 @@ public:
     }
 
     /* Get the total amount of memory consumed by the list. */
-    inline size_t nbytes() const {
+    inline size_t nbytes() const noexcept {
         return view.nbytes();
     }
 

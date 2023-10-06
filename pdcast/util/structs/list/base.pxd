@@ -4,7 +4,7 @@ from libcpp.optional cimport optional
 from libcpp.utility cimport pair
 
 
-cdef extern from "core/util.h":
+cdef extern from "linked/util.h":
     cdef cppclass Slot[T]:
         Slot()  # trivial constructor allows stack allocation in Cython
         void construct(...) except +
@@ -14,7 +14,7 @@ cdef extern from "core/util.h":
         T* ptr() except +
 
 
-cdef extern from "core/node.h":
+cdef extern from "linked/node.h":
     cdef cppclass BaseNode[T]:
         ctypedef T Value
         Value value()
@@ -61,7 +61,7 @@ cdef extern from "core/node.h":
         void join(DoubleNode* prev, DoubleNode* curr)
 
 
-cdef extern from "core/view.h":
+cdef extern from "linked/view.h":
     cdef cppclass SetView[T, U]:
         cppclass Node:
             Py_hash_t hash

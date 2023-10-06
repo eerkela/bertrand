@@ -4,13 +4,26 @@
 
 #include <cstddef>  // size_t
 #include <Python.h>  // CPython API
-#include "../core/node.h"  // has_prev<>
-#include "../core/view.h"  // views
+
+
+namespace bertrand {
+namespace structs {
+namespace algorithms {
 
 
 //////////////////////
 ////    PUBLIC    ////
 //////////////////////
+
+
+namespace list {
+
+    template <typename View>
+    inline void clear(View& view) {
+        view.clear();
+    }
+
+}  // namespace list
 
 
 namespace Relative {
@@ -201,6 +214,10 @@ void _clear_backward_single(
     }
 }
 
+
+}  // namespace algorithms
+}  // namespace structs
+}  // namespace bertrand
 
 
 #endif // BERTRAND_STRUCTS_ALGORITHMS_RELATIVE_H include guard
