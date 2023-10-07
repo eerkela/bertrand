@@ -53,9 +53,6 @@ public:
     // -> figure out how to access the allocator from a view of a different type.
     // We probably need to make it a public member at the view level.
 
-    // TODO: or we can abandon the idea of a separate allocator and just move all the
-    // allocation logic into the base view.
-
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
