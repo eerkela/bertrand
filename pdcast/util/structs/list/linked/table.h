@@ -15,6 +15,11 @@
 // TODO: table and tombstone should be stack-allocated
 
 
+namespace bertrand {
+namespace structs {
+namespace linked {
+
+
 /////////////////////////
 ////    CONSTANTS    ////
 /////////////////////////
@@ -433,6 +438,11 @@ public:
     }
 
 };
+
+
+}  // namespace linked
+}  // namespace structs
+}  // namespace bertrand
 
 
 #endif  // BERTRAND_STRUCTS_CORE_TABLE_H include guard

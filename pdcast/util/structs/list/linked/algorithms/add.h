@@ -3,7 +3,7 @@
 #define BERTRAND_STRUCTS_ALGORITHMS_ADD_H
 
 #include <Python.h>  // CPython API
-#include "../core/view.h"  // views
+#include "../linked/view.h"  // views
 #include "insert.h"  // _insert_relative()
 
 

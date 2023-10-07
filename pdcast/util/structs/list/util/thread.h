@@ -9,8 +9,12 @@
 #include <shared_mutex>  // std::shared_mutex, std::shared_lock
 #include <thread>  // std::thread
 #include <unordered_set>  // std::unordered_set
+#include "slot.h"  // Slot
 
-#include "../linked/util.h"  // Slot
+
+namespace bertrand {
+namespace structs {
+namespace util {
 
 
 ////////////////////////
@@ -633,6 +637,11 @@ private:
     };
 
 };
+
+
+}  // namespace util
+}  // namespace structs
+}  // namespace bertrand
 
 
 #endif  // BERTRAND_STRUCTS_CORE_THREAD_H include guard

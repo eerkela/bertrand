@@ -2,13 +2,20 @@
 #ifndef BERTRAND_STRUCTS_CORE_NODE_H
 #define BERTRAND_STRUCTS_CORE_NODE_H
 
-#include <queue>  // for std::queue
+#include <queue>  // std::queue
 #include <mutex>  // std::mutex
-#include <stdexcept>  // for std::invalid_argument
-#include <type_traits>  // for std::integral_constant, std::is_base_of_v
-#include <Python.h>  // for CPython API
+#include <sstream>  // std::ostringstream
+#include <stdexcept>  // std::invalid_argument
+#include <type_traits>  // std::enable_if_t<>, std::is_convertible_v<>, etc.
+#include <Python.h>  // CPython API
+#include "../util/except.h"  // catch_python(), type_error()
+#include "../util/func.h"  // ReturnType
+#include "../util/string.h"  // repr()
 
-#include "util.h"  // for catch_python, type_error
+
+namespace bertrand {
+namespace structs {
+namespace linked {
 
 
 ////////////////////
@@ -35,7 +42,7 @@ public:
         if constexpr (py_val) {
             int comp = PyObject_RichCompareBool(_value, other, Py_LT);
             if (comp == -1) {  // error during comparison
-                throw catch_python<type_error>();
+                throw util::catch_python<util::type_error>();
             }
             return static_cast<bool>(comp);
         }
@@ -47,7 +54,7 @@ public:
         if constexpr (py_val) {
             int comp = PyObject_RichCompareBool(_value, other, Py_LE);
             if (comp == -1) {  // error during comparison
-                throw catch_python<type_error>();
+                throw util::catch_python<util::type_error>();
             }
             return static_cast<bool>(comp);
         }
@@ -59,7 +66,7 @@ public:
         if constexpr (py_val) {
             int comp = PyObject_RichCompareBool(_value, other, Py_EQ);
             if (comp == -1) {  // error during comparison
-                throw catch_python<type_error>();
+                throw util::catch_python<util::type_error>();
             }
             return static_cast<bool>(comp);
         }
@@ -71,7 +78,7 @@ public:
         if constexpr (py_val) {
             int comp = PyObject_RichCompareBool(_value, other, Py_NE);
             if (comp == -1) {  // error during comparison
-                throw catch_python<type_error>();
+                throw util::catch_python<util::type_error>();
             }
             return static_cast<bool>(comp);
         }
@@ -83,7 +90,7 @@ public:
         if constexpr (py_val) {
             int comp = PyObject_RichCompareBool(_value, other, Py_GE);
             if (comp == -1) {  // error during comparison
-                throw catch_python<type_error>();
+                throw util::catch_python<util::type_error>();
             }
             return static_cast<bool>(comp);
         }
@@ -95,7 +102,7 @@ public:
         if constexpr (py_val) {
             int comp = PyObject_RichCompareBool(_value, other, Py_GT);
             if (comp == -1) {  // error during comparison
-                throw catch_python<type_error>();
+                throw util::catch_python<util::type_error>();
             }
             return static_cast<bool>(comp);
         }
@@ -107,7 +114,7 @@ public:
     inline std::enable_if_t<cond, bool> typecheck(PyObject* specialization) const {
         int comp = PyObject_IsInstance(_value, specialization);
         if (comp == -1) {
-            throw catch_python<type_error>();
+            throw util::catch_python<util::type_error>();
         }
         return static_cast<bool>(comp);
     }
@@ -454,7 +461,7 @@ function to each value in a list.  It is not meant to be used in any other conte
 template <
     typename Wrapped,
     typename Func,
-    typename _Value = ReturnType<Func, typename Wrapped::Value>
+    typename _Value = util::ReturnType<Func, typename Wrapped::Value>
 >
 class Keyed : public SingleNode<_Value> {
 private:
@@ -473,7 +480,7 @@ private:
             // apply key function to node value
             PyObject* val = PyObject_CallFunctionObjArgs(func, arg, nullptr);
             if (val == nullptr) {
-                throw catch_python<type_error>();
+                throw util::catch_python<util::type_error>();
             }
             return val;  // new reference
 
@@ -582,7 +589,7 @@ class Hashed : public Wrapped {
                 // NOTE: we have to make sure to release any resources that were
                 // acquired during the wrapped constructor
                 node->~Hashed();
-                throw catch_python<type_error>();
+                throw util::catch_python<util::type_error>();
             }
             return static_cast<size_t>(hash_val);  // for compatibility with std::hash
         } else {
@@ -704,8 +711,8 @@ class Mapped : public Wrapped {
         // Check that item is a tuple of size 2 (key-value pair)
         if (!PyTuple_Check(tuple) || PyTuple_Size(tuple) != 2) {
             std::ostringstream msg;
-            msg << "Expected tuple of size 2 (key, value), not: " << repr(tuple);
-            throw type_error(msg.str());
+            msg << "Expected tuple of size 2 (key, value), not: " << util::repr(tuple);
+            throw util::type_error(msg.str());
         }
 
         // unpack tuple and return pair
@@ -1102,6 +1109,10 @@ struct NodeInfo {
 
 };
 
+
+}  // namespace linked
+}  // namespace structs
+}  // namespace bertrand
 
 
 #endif // BERTRAND_STRUCTS_CORE_NODE_H include guard

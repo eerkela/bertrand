@@ -6,8 +6,15 @@
 #include <optional>     // std::optional
 #include <stdexcept>    // std::runtime_error
 #include <string_view>  // std::string_view
+#include "linked/iter.h"  // Direction
+#include "util/coupled_iter.h"  // CoupledIterator
+#include "util/python.h"  // PyIterator
+#include "util/string.h"  // string concatenation
 #include "util/thread.h"  // Lock, PyLock
-#include "linked/util.h"  // string concatenation, CoupledIterator, PyIterator
+
+
+namespace bertrand {
+namespace structs {
 
 
 /* Base class that forwards the public members of the underlying view. */
@@ -74,7 +81,7 @@ public:
     class IteratorFactory {
     public:
         /* A wrapper around a view iterator that yields values rather than nodes. */
-        template <Direction dir>
+        template <linked::Direction dir>
         class Iterator {
             using Wrapped = typename View::template Iterator<dir>;
 
@@ -111,39 +118,43 @@ public:
 
         /* Invoke the functor to get a coupled iterator over the list. */
         inline auto operator()() const {
-            return CoupledIterator<Iterator<Direction::forward>>(parent.iter());
+            return util::CoupledIterator<Iterator<linked::Direction::forward>>(
+                parent.iter()
+            );
         }
 
         /* Get a coupled reverse iterator over the list. */
         inline auto reverse() const {
-            return CoupledIterator<Iterator<Direction::backward>>(parent.iter.reverse());
+            return util::CoupledIterator<Iterator<linked::Direction::backward>>(
+                parent.iter.reverse()
+            );
         }
 
         /* Get a forward iterator to the head of the list. */
         inline auto begin() const {
-            return Iterator<Direction::forward>(parent.view.begin());
+            return Iterator<linked::Direction::forward>(parent.view.begin());
         }
 
         /* Get an empty forward iterator to terminate the sequence. */
         inline auto end() const {
-            return Iterator<Direction::forward>(parent.view.end());
+            return Iterator<linked::Direction::forward>(parent.view.end());
         }
 
         /* Get a backward iterator to the tail of the list. */
         inline auto rbegin() const {
-            return Iterator<Direction::backward>(parent.view.rbegin());
+            return Iterator<linked::Direction::backward>(parent.view.rbegin());
         }
 
         /* Get an empty backward iterator to terminate the sequence. */
         inline auto rend() const {
-            return Iterator<Direction::backward>(parent.view.rend());
+            return Iterator<linked::Direction::backward>(parent.view.rend());
         }
 
         /* Get a forward Python iterator over the list. */
         inline PyObject* python() const {
             static constexpr std::string_view suffix = ".iter";
-            using Iter = PyIterator<
-                Iterator<Direction::forward>, String::concat_v<name, suffix>
+            using Iter = util::PyIterator<
+                Iterator<linked::Direction::forward>, util::string::concat<name, suffix>
             >;
 
             // create Python iterator over list
@@ -153,8 +164,8 @@ public:
         /* Get a reverse Python iterator over the list. */
         inline PyObject* rpython() const {
             static constexpr std::string_view suffix = ".reverse_iter";
-            using Iter = PyIterator<
-                Iterator<Direction::backward>, String::concat_v<name, suffix>
+            using Iter = util::PyIterator<
+                Iterator<linked::Direction::backward>, util::string::concat<name, suffix>
             >;
 
             // create Python iterator over list
@@ -203,7 +214,7 @@ public:
         template <typename... Args>
         inline PyObject* python(Args&&... args) const {
             static constexpr std::string_view suffix = ".lock";
-            using Context = PyLock<Lock, String::concat_v<name, suffix>>;
+            using Context = util::PyLock<Lock, util::string::concat<name, suffix>>;
             return Context::init(this);
         }
 
@@ -213,7 +224,7 @@ public:
             -> std::enable_if_t<is_shared, PyObject*>
         {
             static constexpr std::string_view suffix = ".shared_lock";
-            using Context = PyLock<Lock, String::concat_v<name, suffix>>;
+            using Context = util::PyLock<Lock, util::string::concat<name, suffix>>;
             return Context::init(this);
         }
 
@@ -292,6 +303,10 @@ protected:
     }
 
 };
+
+
+}  // namespace structs
+}  // namespace bertrand
 
 
 #endif  // BERTRAND_STRUCTS_BASE_H

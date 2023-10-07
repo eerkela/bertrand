@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_CORE_ALLOCATE_H
-#define BERTRAND_STRUCTS_CORE_ALLOCATE_H
+// include guard: BERTRAND_STRUCTS_LINKED_ALLOCATE_H
+#ifndef BERTRAND_STRUCTS_LINKED_ALLOCATE_H
+#define BERTRAND_STRUCTS_LINKED_ALLOCATE_H
 
 #include <cstddef>  // size_t
 #include <cstdlib>  // malloc(), free()
@@ -9,7 +9,14 @@
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
 #include <Python.h>  // CPython API
-#include "util.h"  // repr(), next_power_of_two()
+#include "../util/except.h"  // catch_python(), type_error()
+#include "../util/math.h"  // next_power_of_two()
+#include "../util/string.h"  // repr()
+
+
+namespace bertrand {
+namespace structs {
+namespace linked {
 
 
 /////////////////////////
@@ -122,14 +129,14 @@ private:
         // check python specialization if enabled
         if (specialization != nullptr && !node->typecheck(specialization)) {
             std::ostringstream msg;
-            msg << repr(node->value()) << " is not of type ";
-            msg << repr(specialization);
+            msg << util::repr(node->value()) << " is not of type ";
+            msg << util::repr(specialization);
             node->~Node();  // in-place destructor
-            throw type_error(msg.str());
+            throw util::type_error(msg.str());
         }
 
         if constexpr (DEBUG) {
-            std::cout << "    -> create: " << repr(node->value()) << std::endl;
+            std::cout << "    -> create: " << util::repr(node->value()) << std::endl;
         }
     }
 
@@ -139,7 +146,7 @@ private:
         while (curr != nullptr) {
             Node* next = curr->next();
             if constexpr (DEBUG) {
-                std::cout << "    -> recycle: " << repr(curr->value()) << std::endl;
+                std::cout << "    -> recycle: " << util::repr(curr->value()) << std::endl;
             }
             curr->~Node();  // in-place destructor
             curr = next;
@@ -363,7 +370,7 @@ public:
     void recycle(Node* node) {
         // manually call destructor
         if constexpr (DEBUG) {
-            std::cout << "    -> recycle: " << repr(node->value()) << std::endl;
+            std::cout << "    -> recycle: " << util::repr(node->value()) << std::endl;
         }
         node->~Node();
 
@@ -428,7 +435,7 @@ public:
         }
 
         // resize to the next power of two
-        size_t rounded = next_power_of_two(new_capacity);
+        size_t rounded = util::next_power_of_two(new_capacity);
         if (rounded != capacity) {
             resize(rounded);
         }
@@ -460,7 +467,7 @@ public:
         if (specialization != nullptr) {
             int comp = PyObject_RichCompareBool(spec, specialization, Py_EQ);
             if (comp == -1) {  // comparison raised an exception
-                throw catch_python<type_error>();
+                throw util::catch_python<util::type_error>();
             } else if (comp == 1) {
                 return;
             }
@@ -470,7 +477,7 @@ public:
         Node* curr = head;
         while (curr != nullptr) {
             if (!curr->typecheck(spec)) {
-                throw type_error("node type does not match specialization");
+                throw util::type_error("node type does not match specialization");
             }
             curr = curr->next();
         }
@@ -491,4 +498,9 @@ public:
 //////////////////////////////
 
 
-#endif  // BERTRAND_STRUCTS_CORE_ALLOCATE_H include guard
+}  // namespace linked
+}  // namespace structs
+}  // namespace bertrand
+
+
+#endif  // BERTRAND_STRUCTS_LINKED_ALLOCATE_H

@@ -9,6 +9,7 @@
 
 namespace bertrand {
 namespace structs {
+namespace linked {
 namespace algorithms {
 
 
@@ -132,6 +133,7 @@ inline PyObject* _pop_node(View& view, Node* prev, Node* curr, Node* next) {
 
 
 }  // namespace algorithms
+}  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
 

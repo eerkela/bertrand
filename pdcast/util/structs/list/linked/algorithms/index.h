@@ -8,10 +8,12 @@
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
 #include "position.h"  // normalize_index()
+#include "../../util/string.h"  // repr()
 
 
 namespace bertrand {
 namespace structs {
+namespace linked {
 namespace algorithms {
 
 
@@ -25,7 +27,7 @@ namespace list {
         // trivial case: empty list
         if (view.size() == 0) {
             std::ostringstream msg;
-            msg << repr(item) << " is not in list";
+            msg << util::repr(item) << " is not in list";
             throw std::invalid_argument(msg.str());
         }
 
@@ -68,7 +70,7 @@ namespace list {
 
                 // item not found
                 std::ostringstream msg;
-                msg << repr(item) << " is not in list";
+                msg << util::repr(item) << " is not in list";
                 throw std::invalid_argument(msg.str());
             }
         }
@@ -93,7 +95,7 @@ namespace list {
 
         // item not found
         std::ostringstream msg;
-        msg << repr(item) << " is not in list";
+        msg << util::repr(item) << " is not in list";
         throw std::invalid_argument(msg.str());
     }
 
@@ -195,6 +197,7 @@ namespace list {
 
 
 }  // namespace algorithms
+}  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
 

@@ -7,6 +7,7 @@
 
 namespace bertrand {
 namespace structs {
+namespace linked {
 namespace algorithms {
 
 
@@ -58,6 +59,7 @@ namespace dict {
 
 
 }  // namespace algorithms
+}  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
 

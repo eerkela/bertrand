@@ -6,15 +6,16 @@
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
-#include "../util.h"  // type_error
-
-
-// TODO: py_modulo should go in math.h, next to next_power_of_two
-
+#include "../iter.h"  // Bidirectional<>
+#include "../../util/coupled_iter.h"  // CoupledIterator<>
+#include "../../util/except.h"  // type_error()
+#include "../../util/math.h"  // py_modulo()
+#include "../../util/python.h"  // PySequence
 
 
 namespace bertrand {
 namespace structs {
+namespace linked {
 namespace algorithms {
 
 
@@ -85,7 +86,7 @@ namespace list {
     SliceIndices<View> normalize_slice(View& view, PyObject* py_slice) {
         // check that input is a Python slice object
         if (!PySlice_Check(py_slice)) {
-            throw type_error("index must be a Python slice");
+            throw util::type_error("index must be a Python slice");
         }
 
         size_t size = view.size();
@@ -181,7 +182,7 @@ namespace list {
             first(0), last(0), length(length), inverted(false), backward(false)
         {
             // convert to closed interval [start, closed]
-            long long mod = py_modulo((stop - start), step);
+            long long mod = util::py_modulo((stop - start), step);
             long long closed = (mod == 0) ? (stop - step) : (stop - mod);
 
             // get direction to traverse slice based on singly-/doubly-linked status
@@ -194,15 +195,6 @@ namespace list {
             // We must account for this when getting/setting items in the slice.
             backward = (first > ((view_size - (view_size > 0)) / 2));
             inverted = backward ^ (step < 0);
-        }
-
-        /* A Python-style modulo operator (%). */
-        template <typename T>
-        inline static T py_modulo(T a, T b) {
-            // NOTE: Python's `%` operator is defined such that the result has
-            // the same sign as the divisor (b).  This differs from C/C++, where
-            // the result has the same sign as the dividend (a).
-            return (a % b + b) % b;
         }
 
         /* Swap the start and stop indices based on singly-/doubly-linked status. */
@@ -425,7 +417,7 @@ namespace list {
         /* Replace a slice within a linked list. */
         void set(PyObject* items) {
             // unpack iterable into reversible sequence
-            PySequence sequence(items, "can only assign an iterable");
+            util::PySequence sequence(items, "can only assign an iterable");
 
             // trvial case: both slice and sequence are empty
             if (empty() && sequence.size() == 0) {
@@ -535,7 +527,7 @@ namespace list {
 
             // default to length of slice
             if (!length.has_value()) {
-                return CoupledIterator<Bidirectional<Iterator>>(begin(), end());  
+                return util::CoupledIterator<Bidirectional<Iterator>>(begin(), end());  
             }
 
             // use length override if given
@@ -545,7 +537,7 @@ namespace list {
             if constexpr (Node::doubly_linked) {
                 using Backward = Iterator<Direction::backward>;
                 if (backward()) {
-                    return CoupledIterator<Bidirectional<Iterator>>(
+                    return util::CoupledIterator<Bidirectional<Iterator>>(
                         Bidirectional(Backward(list.view, origin(), indices, len)),
                         Bidirectional(Backward(list.view, indices, len))
                     );
@@ -553,7 +545,7 @@ namespace list {
             }
 
             // forward traversal
-            return CoupledIterator<Bidirectional<Iterator>>(
+            return util::CoupledIterator<Bidirectional<Iterator>>(
                 Bidirectional(Forward(list.view, origin(), indices, len)),
                 Bidirectional(Forward(list.view, indices, len))
             );
@@ -655,6 +647,7 @@ namespace list {
 
 
 }  // namespace algorithms
+}  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
 

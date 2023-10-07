@@ -12,14 +12,13 @@
 #include "../view.h"  // views
 
 
-// TODO: sort() with key function fails.
-
 // TODO: we also need to figure out how to transfer ownership temporarily to a list
 // to apply the sorting algorithm.
 
 
 namespace bertrand {
 namespace structs {
+namespace linked {
 namespace algorithms {
 
 
@@ -360,6 +359,7 @@ public:
 
 
 }  // namespace algorithms
+}  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
 

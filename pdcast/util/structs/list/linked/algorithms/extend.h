@@ -4,10 +4,12 @@
 
 #include <Python.h>  // CPython API
 #include "append.h"  // append()
+#include "../../util/python.h"  // PyIterable
 
 
 namespace bertrand {
 namespace structs {
+namespace linked {
 namespace algorithms {
 
 
@@ -28,7 +30,7 @@ namespace list {
 
         // proceed with extend
         try {
-            PyIterable sequence(items);
+            util::PyIterable sequence(items);
             for (PyObject* item : sequence) {
                 append(view, item, left);
             }
@@ -333,6 +335,7 @@ void _undo_right_to_left(
 
 
 }  // namespace algorithms
+}  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
 

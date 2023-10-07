@@ -9,6 +9,7 @@
 #include <utility>  // std::pair
 #include <variant>  // std::variant
 #include <Python.h>  // CPython API
+#include "../util/slot.h"  // Slot
 
 // Core
 #include "linked/allocate.h"  // Allocator policies
@@ -36,9 +37,9 @@ namespace cython {
 /* A std::variant encapsulating all the possible list types that are constructable
 from Python. */
 using ListAlternative = std::variant<
-    LinkedList<SingleNode<PyObject*>, IList::MergeSort, BasicLock>,
+    LinkedList<linked::SingleNode<PyObject*>, IList::MergeSort, util::BasicLock>,
     // LinkedList<SingleNode, IList::MergeSort, DiagnosticLock>,
-    LinkedList<DoubleNode<PyObject*>, IList::MergeSort, BasicLock>
+    LinkedList<linked::DoubleNode<PyObject*>, IList::MergeSort, util::BasicLock>
     // LinkedList<DoubleNode, IList::MergeSort, DiagnosticLock>,
 >;
 
@@ -190,8 +191,12 @@ class VariantList {
 private:
     using Self = SelfRef<VariantList>;
     using WeakRef = Self::WeakRef;
-    using SingleList = LinkedList<SingleNode<PyObject*>, IList::MergeSort, BasicLock>;
-    using DoubleList = LinkedList<DoubleNode<PyObject*>, IList::MergeSort, BasicLock>;
+    using SingleList = LinkedList<
+        linked::SingleNode<PyObject*>, IList::MergeSort, util::BasicLock
+    >;
+    using DoubleList = LinkedList<
+        linked::DoubleNode<PyObject*>, IList::MergeSort, util::BasicLock
+    >;
 
     /* Select a variant based on constructor arguments. */
     template <typename... Args>
@@ -381,10 +386,10 @@ public:
     }
 
     /* Implement LinkedList.copy() for all variants. */
-    inline Slot<VariantList> copy() {
+    inline util::Slot<VariantList> copy() {
         return std::visit(
             [&](auto& list) {
-                Slot<VariantList> slot;
+                util::Slot<VariantList> slot;
                 slot.construct(std::move(list.copy()));
                 return slot;
             },
@@ -471,10 +476,10 @@ public:
     public:
 
         /* Implement LinkedList.__getitem__() for all variants. */
-        Slot<VariantList> get() {
+        util::Slot<VariantList> get() {
             return std::visit(
                 [&](auto& list) {
-                    Slot<VariantList> slot;
+                    util::Slot<VariantList> slot;
                     slot.construct(
                         std::apply(
                             [&](Args... args) {
@@ -538,10 +543,10 @@ public:
 
     /* Allow concatenation using the + operator. */
     template <typename T>
-    inline Slot<VariantList> concat(T rhs) {
+    inline util::Slot<VariantList> concat(T rhs) {
         return std::visit(
             [&](auto& list) {
-                Slot<VariantList> slot;
+                util::Slot<VariantList> slot;
                 slot.construct(list + rhs);
                 return slot;
             },
@@ -551,10 +556,10 @@ public:
 
     /* Allow concatenation using the + operator (symmetric). */
     template <typename T>
-    inline Slot<T> concatenate(T lhs, VariantList& rhs) {
+    inline util::Slot<T> concatenate(T lhs, VariantList& rhs) {
         return std::visit(
             [&](auto& list) {
-                Slot<T> slot;
+                util::Slot<T> slot;
                 slot.construct(lhs + list);
                 return slot;
             },
@@ -564,10 +569,10 @@ public:
 
     /* Allow repetition using the * operator. */
     template <typename T>
-    inline Slot<VariantList> repeat(VariantList& lhs, T rhs) {
+    inline util::Slot<VariantList> repeat(VariantList& lhs, T rhs) {
         return std::visit(
             [&](auto& list) {
-                Slot<VariantList> slot;
+                util::Slot<VariantList> slot;
                 slot.construct(VariantList(list * rhs));
                 return slot;
             },
@@ -577,10 +582,10 @@ public:
 
     /* Allow repetition using the * operator (symmetric). */
     template <typename T>
-    inline Slot<VariantList> repeat(T lhs, VariantList& rhs) {
+    inline util::Slot<VariantList> repeat(T lhs, VariantList& rhs) {
         return std::visit(
             [&](auto& list) {
-                Slot<VariantList> slot;
+                util::Slot<VariantList> slot;
                 slot.construct(VariantList(lhs * list));
                 return slot;
             },

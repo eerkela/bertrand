@@ -2,11 +2,17 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_LEXICAL_COMPARE_H
 #define BERTRAND_STRUCTS_ALGORITHMS_LEXICAL_COMPARE_H
 
+#include <iterator>  // std::begin(), std::end()
 #include <Python.h>  // CPython API
-#include "../util.h"
 
 
-namespace IList {
+namespace bertrand {
+namespace structs {
+namespace linked {
+namespace algorithms {
+
+
+namespace list {
 
     /* Compare a view to an */
     template <typename View, typename T>
@@ -33,9 +39,13 @@ namespace IList {
         return (iter_lhs == end_lhs && iter_rhs != end_rhs);
     }
 
-    
+}  // namespace list
 
-}
+
+}  // namespace algorithms
+}  // namespace linked
+}  // namespace structs
+}  // namespace bertrand
 
 
 #endif // BERTRAND_STRUCTS_ALGORITHMS_COMPARE_H include guard

@@ -5,10 +5,12 @@
 #include <Python.h>  // CPython API
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
+#include "../../util/string.h"  // repr()
 
 
 namespace bertrand {
 namespace structs {
+namespace linked {
 namespace algorithms {
 
 
@@ -35,7 +37,7 @@ namespace list {
 
         // item not found
         std::ostringstream msg;
-        msg << repr(item) << " is not in list";
+        msg << util::repr(item) << " is not in list";
         throw std::invalid_argument(msg.str());  
     }
 
@@ -150,6 +152,7 @@ void _drop_relative(View& view, PyObject* sentinel, Py_ssize_t offset, bool rais
 
 
 }  // namespace algorithms
+}  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
 

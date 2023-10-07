@@ -7,7 +7,6 @@
 #include <sstream>  // std::ostringstream
 #include <stack>  // std::stack
 
-#include "linked/util.h"
 #include "linked/view.h"
 #include "linked/algorithms/append.h"
 #include "linked/algorithms/clear.h"
@@ -23,6 +22,8 @@
 #include "linked/algorithms/rotate.h"
 #include "linked/algorithms/slice.h"
 #include "linked/algorithms/sort.h"
+#include "util/except.h"  // type_error()
+#include "util/python.h"  // PyIterable
 
 #include "base.h"  // LinkedBase
 
@@ -59,23 +60,23 @@ inline constexpr std::string_view linked_list_name { "LinkedList" };
 
 
 /* Namespace alias for generic list methods/operators. */
-namespace IList = algorithms::list;
+namespace IList = linked::algorithms::list;
 
 
 /* A modular linked list class that mimics the Python list interface in C++. */
 template <
     typename NodeType,
     typename SortPolicy = IList::MergeSort,
-    typename LockPolicy = BasicLock
+    typename LockPolicy = util::BasicLock
 >
 class LinkedList :
-    public LinkedBase<ListView<NodeType>, LockPolicy, linked_list_name>,
+    public LinkedBase<linked::ListView<NodeType>, LockPolicy, linked_list_name>,
     public Concatenateable<LinkedList<NodeType, SortPolicy, LockPolicy>>,
     public Repeatable<LinkedList<NodeType, SortPolicy, LockPolicy>>,
     public Lexicographic<LinkedList<NodeType, SortPolicy, LockPolicy>>
 {
 public:
-    using View = ListView<NodeType>;
+    using View = linked::ListView<NodeType>;
     using Node = typename View::Node;
     using Value = typename Node::Value;
     using Base = LinkedBase<View, LockPolicy, linked_list_name>;
@@ -269,7 +270,6 @@ public:
     /* Get a proxy for a slice within the list. */
     template <typename... Args>
     IList::SliceProxy<LinkedList> slice(Args&&... args) {
-        // can throw type_error, std::invalid_argument, std::runtime_error
         return IList::slice(*this, std::forward<Args>(args)...);
     }
 
@@ -361,7 +361,7 @@ inline auto operator+(const PyObject* lhs, const Derived& rhs)
         std::ostringstream msg;
         msg << "can only concatenate sequence (not '";
         msg << lhs->ob_type->tp_name << "') to sequence";
-        throw type_error(msg.str());
+        throw util::type_error(msg.str());
     }
 
     // unpack list into Python sequence
@@ -472,13 +472,13 @@ auto operator*(const Derived& lhs, const PyObject* rhs)
         std::ostringstream msg;
         msg << "can't multiply sequence by non-int of type '";
         msg << rhs->ob_type->tp_name << "'";
-        throw type_error(msg.str());
+        throw util::type_error(msg.str());
     }
 
     // convert to C++ integer
     ssize_t val = PyLong_AsSsize_t(rhs);
     if (val == -1 && PyErr_Occurred()) {
-        throw catch_python<type_error>();
+        throw util::catch_python<util::type_error>();
     }
 
     // delegate to C++ overload
@@ -530,13 +530,13 @@ inline auto operator*=(Derived& lhs, const PyObject* rhs)
         std::ostringstream msg;
         msg << "can't multiply sequence by non-int of type '";
         msg << rhs->ob_type->tp_name << "'";
-        throw type_error(msg.str());
+        throw util::type_error(msg.str());
     }
 
     // convert to C++ integer
     ssize_t val = PyLong_AsSsize_t(rhs);
     if (val == -1 && PyErr_Occurred()) {
-        throw catch_python<type_error>();
+        throw util::catch_python<util::type_error>();
     }
 
     // delegate to C++ overload
@@ -636,13 +636,13 @@ auto operator<(const Derived& lhs, const PyObject* rhs)
         std::ostringstream msg;
         msg << "can only compare list to sequence (not '";
         msg << rhs->ob_type->tp_name << "')";
-        throw type_error(msg.str());
+        throw util::type_error(msg.str());
     }
 
     // get coupled iterators
     auto iter_lhs = std::begin(lhs);
     auto end_lhs = std::end(lhs);
-    PyIterable pyiter_rhs(rhs);  // handles reference counts
+    util::PyIterable pyiter_rhs(rhs);  // handles reference counts
     auto iter_rhs = pyiter_rhs.begin();
     auto end_rhs = pyiter_rhs.end();
 
@@ -656,7 +656,7 @@ auto operator<(const Derived& lhs, const PyObject* rhs)
         // compare rhs < lhs
         int comp = PyObject_RichCompareBool(*iter_rhs, node->value(), Py_LT);
         if (comp == -1) {
-            throw catch_python<type_error>();
+            throw util::catch_python<util::type_error>();
         } else if (comp == 1) {
             return false;
         }
@@ -719,13 +719,13 @@ auto operator<=(const Derived& lhs, const PyObject* rhs)
         std::ostringstream msg;
         msg << "can only compare list to sequence (not '";
         msg << rhs->ob_type->tp_name << "')";
-        throw type_error(msg.str());
+        throw util::type_error(msg.str());
     }
 
     // get coupled iterators
     auto iter_lhs = std::begin(lhs);
     auto end_lhs = std::end(lhs);
-    PyIterable pyiter_rhs(rhs);  // handles reference counts
+    util::PyIterable pyiter_rhs(rhs);  // handles reference counts
     auto iter_rhs = pyiter_rhs.begin();
     auto end_rhs = pyiter_rhs.end();
 
@@ -800,7 +800,7 @@ auto operator==(const Derived& lhs, const PyObject* rhs)
         std::ostringstream msg;
         msg << "can only compare list to sequence (not '";
         msg << rhs->ob_type->tp_name << "')";
-        throw type_error(msg.str());
+        throw util::type_error(msg.str());
     }
 
     // check that lhs and rhs have the same length
@@ -809,13 +809,13 @@ auto operator==(const Derived& lhs, const PyObject* rhs)
         std::ostringstream msg;
         msg << "could not get length of sequence (of type '";
         msg << rhs->ob_type->tp_name << "')";
-        throw type_error(msg.str());
+        throw util::type_error(msg.str());
     } else if (lhs.size() != static_cast<size_t>(len)) {
         return false;
     }
 
     // compare elements in order
-    PyIterable pyiter_rhs(rhs);  // handles reference counts
+    util::PyIterable pyiter_rhs(rhs);  // handles reference counts
     auto iter_rhs = pyiter_rhs.begin();
     for (const Node& item : lhs) {
         if (item->ne(*iter_rhs)) {

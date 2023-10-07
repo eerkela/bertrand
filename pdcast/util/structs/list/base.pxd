@@ -1,10 +1,8 @@
 """Cython headers for pdcast/util/structs/base.h"""
 from cpython.ref cimport PyObject
-from libcpp.optional cimport optional
-from libcpp.utility cimport pair
 
 
-cdef extern from "linked/util.h":
+cdef extern from "util/slot.h" namespace "bertrand::structs::util":
     cdef cppclass Slot[T]:
         Slot()  # trivial constructor allows stack allocation in Cython
         void construct(...) except +
@@ -14,7 +12,7 @@ cdef extern from "linked/util.h":
         T* ptr() except +
 
 
-cdef extern from "linked/node.h":
+cdef extern from "linked/node.h" namespace "bertrand::structs::linked":
     cdef cppclass BaseNode[T]:
         ctypedef T Value
         Value value()
@@ -61,7 +59,7 @@ cdef extern from "linked/node.h":
         void join(DoubleNode* prev, DoubleNode* curr)
 
 
-cdef extern from "linked/view.h":
+cdef extern from "linked/view.h" namespace "bertrand::structs::linked":
     cdef cppclass SetView[T, U]:
         cppclass Node:
             Py_hash_t hash

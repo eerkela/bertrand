@@ -6,11 +6,13 @@
 #include <stdexcept>  // std::out_of_range
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
-#include "../util.h"  // type_error()
+#include "../iter.h"  // Direction, Bidirectional
+#include "../../util/except.h"  // type_error()
 
 
 namespace bertrand {
 namespace structs {
+namespace linked {
 namespace algorithms {
 
 
@@ -49,7 +51,7 @@ namespace list {
     size_t normalize_index(PyObject* index, size_t size, bool truncate) {
         // check that index is a Python integer
         if (!PyLong_Check(index)) {
-            throw type_error("index must be a Python integer");
+            throw util::type_error("index must be a Python integer");
         }
 
         // comparisons are kept at the python level until we're ready to return
@@ -107,7 +109,7 @@ namespace list {
     ElementProxy<View> position(View& view, T index) {
         using Node = typename View::Node;
 
-        // normalize index (can throw std::out_of_range, type_error)
+        // normalize index
         size_t norm_index = normalize_index(index, view.size(), false);
 
         // get iterator to index
@@ -207,6 +209,7 @@ namespace list {
 
 
 }  // namespace algorithms
+}  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
 
