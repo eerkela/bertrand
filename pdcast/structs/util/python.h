@@ -79,11 +79,14 @@ class PyIterator {
         type_obj.tp_name = name.data();
         type_obj.tp_doc = "Python-compatible wrapper around a C++ iterator.";
         type_obj.tp_basicsize = sizeof(PyIterator);
-        type_obj.tp_flags = Py_TPFLAGS_DEFAULT;
+        type_obj.tp_itemsize = 0;
+        type_obj.tp_flags = (
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
+            Py_TPFLAGS_DISALLOW_INSTANTIATION
+        );
         type_obj.tp_alloc = PyType_GenericAlloc;
-        type_obj.tp_new = PyType_GenericNew;
         type_obj.tp_iter = PyObject_SelfIter;
-        type_obj.tp_iternext = iter_next;
+        type_obj.tp_iternext = (iternextfunc) iter_next;
         type_obj.tp_dealloc = (destructor) dealloc;
 
         // register iterator type with Python
@@ -94,8 +97,6 @@ class PyIterator {
     }
 
 public:
-    /* C-style Python type declaration. */
-    inline static PyTypeObject Type = init_type();
 
     /* Construct a Python iterator from a C++ iterator range. */
     inline static PyObject* init(Iterator&& begin, Iterator&& end) {
@@ -105,7 +106,11 @@ public:
             throw std::runtime_error("could not allocate Python iterator");
         }
 
-        // initialize iterators into raw storage
+        // initialize (NOTE: PyObject_New() does not call stack constructors)
+        new (&(result->first)) Slot<Iterator>();
+        new (&(result->second)) Slot<Iterator>();
+
+        // construct iterators within raw storage
         result->first.construct(std::move(begin));
         result->second.construct(std::move(end));
 
@@ -119,8 +124,7 @@ public:
     }
 
     /* Call next(iter) from Python. */
-    inline static PyObject* iter_next(PyObject* py_self) {
-        PyIterator* self = reinterpret_cast<PyIterator*>(py_self);
+    inline static PyObject* iter_next(PyIterator* self) {
         Iterator& begin = *(self->first);
         Iterator& end = *(self->second);
 
@@ -136,9 +140,14 @@ public:
     }
 
     /* Free the Python iterator when its reference count falls to zero. */
-    inline static void dealloc(PyObject* self) {
+    inline static void dealloc(PyIterator* self) {
         Type.tp_free(self);
     }
+
+private:
+
+    /* C-style Python type declaration. */
+    inline static PyTypeObject Type = init_type();
 
 };
 

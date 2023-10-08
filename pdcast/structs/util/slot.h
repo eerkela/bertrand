@@ -6,6 +6,10 @@
 #include <utility>  // std::move(), std::forward()
 
 
+#include <iostream>  // std::cout (debugging)
+#include "string.h"  // repr() (debugging)
+
+
 namespace bertrand {
 namespace structs {
 namespace util {
@@ -22,7 +26,7 @@ template <typename T>
 class Slot {
 private:
     bool _constructed = false;
-    alignas(T) char data[sizeof(T)];  // access via reinterpret_cast
+    union { T data; };
 
 public:
 
@@ -30,21 +34,23 @@ public:
     replacing any previous value it may have held. */
     template <typename... Args>
     inline void construct(Args&&... args) {
-        this->destroy();
-        new (data) T(std::forward<Args>(args)...);
-        _constructed = true;
+        if (this->_constructed) {
+            data.~T();
+        }
+        new (&data) T(std::forward<Args>(args)...);
+        this->_constructed = true;
     }
 
     /* Indicates whether the slot currently holds a valid object. */
     inline bool constructed() const noexcept {
-        return _constructed;
+        return this->_constructed;
     }
 
     /* Destroy the value within the memory buffer. */
     inline void destroy() noexcept {
-        if (_constructed) {
-            reinterpret_cast<T&>(data).~T();
-            _constructed = false;
+        if (this->_constructed) {
+            data.~T();
+            this->_constructed = false;
         }
     }
 
@@ -53,14 +59,14 @@ public:
 
     /* Move constructor. */
     Slot(Slot&& other) noexcept : _constructed(other._constructed) {
-        if (_constructed) {
-            this->construct(std::move(other.operator*()));
+        if (other._constructed) {
+            this->construct(std::move(*other));
         }
     }
 
     /* Move assignment operator. */
     inline Slot& operator=(Slot&& other) {
-        *this = std::move(other.operator*());  // forward to rvalue overload
+        *this = std::move(*other);  // forward to rvalue overload
         return *this;
     }
 
@@ -70,17 +76,17 @@ public:
         return *this;
     }
 
-    /* Destroy the value within the memory buffer. */
-    ~Slot() noexcept {
-        this->destroy();
-    }
-
     /* Dereference to get the value currently stored in the memory buffer. */
     inline T& operator*() {
-        if (!_constructed) {
+        if (!(this->_constructed)) {
             throw std::runtime_error("Slot is not initialized");
         }
-        return reinterpret_cast<T&>(data);
+        return data;
+    }
+
+    /* Destroy the value within the memory buffer. */
+    ~Slot() {
+        this->destroy();
     }
 
     /* Get a pointer to the value currently stored in the memory buffer.
@@ -88,7 +94,7 @@ public:
     NOTE: Cython sometimes has trouble with the above dereference operator and value
     semantics in general, so this method can be used as an alternative. */
     inline T* ptr() {
-        return &(this->operator*());
+        return &(**this);
     }
 
     /* Assign a new value into the memory buffer using Cython-compatible move semantics.

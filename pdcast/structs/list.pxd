@@ -378,7 +378,8 @@ cdef extern from "cython/list.h" namespace "bertrand::structs::cython":
 cdef class LinkedList:
     cdef:
         Slot[VariantList] variant  # stack-allocated
-        object __weakref__  # allows LinkedList to be weak-referenced from Python
+        # NOTE: uncommenting this line causes a compiler warning about memory alignment
+        # object __weakref__  # allows LinkedList to be weak-referenced from Python
 
     @staticmethod
     cdef LinkedList from_variant(VariantList* variant)

@@ -539,9 +539,11 @@ public:
 manager. */
 template <typename Lock, const std::string_view& name>
 class PyLock {
+    using Guard = typename Lock::Guard;
+
     PyObject_HEAD
+    Slot<Guard> guard;
     const Lock* lock;
-    Slot<typename Lock::Guard> guard;
 
     /* Force users to use init() factory method. */
     PyLock() = delete;
@@ -554,11 +556,14 @@ class PyLock {
         type_obj.tp_name = name.data();
         type_obj.tp_doc = "Python-compatible wrapper around a C++ lock guard.";
         type_obj.tp_basicsize = sizeof(PyLock);
-        type_obj.tp_flags = Py_TPFLAGS_DEFAULT;
+        type_obj.tp_itemsize = 0;
+        type_obj.tp_flags = (
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
+            Py_TPFLAGS_DISALLOW_INSTANTIATION
+        );
         type_obj.tp_alloc = PyType_GenericAlloc;
-        type_obj.tp_new = PyType_GenericNew;
         type_obj.tp_methods = methods;
-        type_obj.tp_dealloc = dealloc;
+        type_obj.tp_dealloc = (destructor) dealloc;
 
         // register iterator type with Python
         if (PyType_Ready(&type_obj) < 0) {
@@ -568,8 +573,6 @@ class PyLock {
     }
 
 public:
-    /* C-style Python type declaration. */
-    inline static PyTypeObject Type = init_type();
 
     /* Construct a Python lock from a C++ lock guard. */
     inline static PyObject* init(const Lock* lock) {
@@ -579,7 +582,8 @@ public:
             throw std::runtime_error("could not allocate Python iterator");
         }
 
-        // initialize lock functor
+        // initialize (NOTE: PyObject_New() does not call stack constructors)
+        new (&(result->guard)) Slot<Guard>();
         result->lock = lock;
 
         // return as PyObject*
@@ -589,53 +593,42 @@ public:
     // TODO: SFINAE support for shared() accessor.
 
     /* Enter the context manager's block, acquiring a new lock. */
-    inline static PyObject* enter(PyObject* py_self) {
-        PyLock* self = reinterpret_cast<PyLock*>(py_self);
-        if (!self->guard.constructed()) {
-            self->guard.construct(self->lock->operator()());
-        }
-        return py_self;
+    inline static PyObject* enter(PyLock* self, PyObject* args) {
+        self->guard.construct(self->lock->operator()());
+        return Py_NewRef(self);
     }
 
-    // TODO: context manager sometimes segfaults when exiting context block for some
-    // reason.  This doesn't seem to happen all the time, though.
-
     /* Exit the context manager's block, releasing the lock. */
-    inline static PyObject* exit(PyObject* py_self, PyObject* args) {
-        PyLock* self = reinterpret_cast<PyLock*>(py_self);
-        if (self->guard.constructed()) {
-            // TODO: segfault seems to happen here.
-            self->guard.destroy();  // something wrong with slot.destroy?
-        }
+    inline static PyObject* exit(PyLock* self, PyObject* args) {
+        self->guard.destroy();
+        Py_DECREF(self);
         Py_RETURN_NONE;
     }
 
     /* Check if the lock is acquired. */
-    inline static PyObject* locked(PyObject* py_self, PyObject* args) {
-        PyLock* self = reinterpret_cast<PyLock*>(py_self);
+    inline static PyObject* locked(PyLock* self, PyObject* args) {
         return PyBool_FromLong(self->guard.constructed());
     }
 
     /* Release the lock when the context manager is garbage collected, if it hasn't
     been released already. */
-    inline static void dealloc(PyObject* py_self) {
-        PyLock* self = reinterpret_cast<PyLock*>(py_self);
-        if (self->guard.constructed()) {
-            self->guard.destroy();
-        }
-        Type.tp_free(py_self);
+    inline static void dealloc(PyLock* self) {
+        self->guard.destroy();
+        Type.tp_free(self);
     }
 
 private:
 
     /* Vtable containing Python methods for the context manager. */
-    inline static PyMethodDef methods[] = {
+    inline static PyMethodDef methods[4] = {
         {"__enter__", (PyCFunction) enter, METH_NOARGS, "Enter the context manager."},
         {"__exit__", (PyCFunction) exit, METH_VARARGS, "Exit the context manager."},
-        {"locked", (PyCFunction) locked, METH_VARARGS, "Check if the lock is acquired."},
+        {"locked", (PyCFunction) locked, METH_NOARGS, "Check if the lock is acquired."},
         {NULL}  // sentinel
     };
 
+    /* C-style Python type declaration. */
+    inline static PyTypeObject Type = init_type();
 };
 
 

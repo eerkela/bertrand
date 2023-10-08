@@ -214,9 +214,11 @@ public:
         template <typename... Args>
         inline PyObject* python(Args&&... args) const {
             static constexpr std::string_view suffix = ".lock";
-            using Context = util::PyLock<Lock, util::string::concat<name, suffix>>;
-            return Context::init(this);
+            using namespace util;
+            return PyLock<LockFactory, string::concat<name, suffix>>::init(this);
         }
+
+        // TODO: shared_python() is exactly the same as python().
 
         /* Wrap a shared lock as a Python context manager. */
         template <bool is_shared = Lock::is_shared, typename... Args>
@@ -224,14 +226,14 @@ public:
             -> std::enable_if_t<is_shared, PyObject*>
         {
             static constexpr std::string_view suffix = ".shared_lock";
-            using Context = util::PyLock<Lock, util::string::concat<name, suffix>>;
-            return Context::init(this);
+            using namespace util;
+            return PyLock<LockFactory, string::concat<name, suffix>>::init(this);
         }
 
     };
 
     /* Functor that produces threading locks for a linked data structure. */
-    const LockFactory lock;
+    LockFactory lock;
     /* BasicLock:
      * lock()  // lock guard
      * lock.python()  // context manager
