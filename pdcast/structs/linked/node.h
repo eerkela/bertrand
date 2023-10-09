@@ -461,7 +461,7 @@ function to each value in a list.  It is not meant to be used in any other conte
 template <
     typename Wrapped,
     typename Func,
-    typename _Value = util::ReturnType<Func, typename Wrapped::Value>
+    typename _Value = typename util::Inspect<Func, typename Wrapped::Value>::ReturnType
 >
 class Keyed : public SingleNode<_Value> {
 private:

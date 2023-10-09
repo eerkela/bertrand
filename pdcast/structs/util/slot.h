@@ -94,7 +94,7 @@ public:
     NOTE: Cython sometimes has trouble with the above dereference operator and value
     semantics in general, so this method can be used as an alternative. */
     inline T* ptr() {
-        return &(**this);
+        return &(this->operator*());
     }
 
     /* Assign a new value into the memory buffer using Cython-compatible move semantics.

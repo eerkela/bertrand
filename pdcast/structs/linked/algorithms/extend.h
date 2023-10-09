@@ -7,6 +7,15 @@
 #include "../../util/python.h"  // PyIterable
 
 
+// bertrand::structs::linked::List()
+// bertrand::structs::linked::ListView()
+// bertrand::structs::linked::ListAllocator()
+// bertrand::structs::linked::Set()
+// bertrand::structs::linked::Dict()
+// bertrand::structs::linked::extend(list, items, left)
+
+
+
 namespace bertrand {
 namespace structs {
 namespace linked {
@@ -16,23 +25,23 @@ namespace algorithms {
 namespace list {
 
     /* Add multiple items to the end of a list, set, or dictionary. */
-    template <typename View>
-    inline void extend(View& view, PyObject* items, bool left) {
-        using Node = typename View::Node;
+    template <typename ListLike>
+    inline void extend(ListLike& list, PyObject* items, bool left) {
+        using Node = typename ListLike::Node;
 
         // note original head/tail in case of error
         Node* original;
         if (left) {
-            original = view.head();
+            original = list.view.head();
         } else {
-            original = view.tail();
+            original = list.view.tail();
         }
 
         // proceed with extend
         try {
             util::PyIterable sequence(items);
             for (PyObject* item : sequence) {
-                append(view, item, left);
+                append(list, item, left);
             }
 
         // if an error occurs, clean up any nodes that were added to the list
@@ -40,11 +49,11 @@ namespace list {
             if (left) {
                 // if we appended to the left, then just remove until we reach the
                 // original head
-                Node* curr = view.head();
+                Node* curr = list.view.head();
                 while (curr != original) {
                     Node* next = curr->next();
-                    view.unlink(nullptr, curr, next);
-                    view.recycle(curr);
+                    list.view.unlink(nullptr, curr, next);
+                    list.view.recycle(curr);
                     curr = next;
                 }
             } else {
@@ -53,8 +62,8 @@ namespace list {
                 Node* curr = original->next();
                 while (curr != nullptr) {
                     Node* next = curr->next();
-                    view.unlink(original, curr, next);
-                    view.recycle(curr);
+                    list.view.unlink(original, curr, next);
+                    list.view.recycle(curr);
                     curr = next;
                 }
             }

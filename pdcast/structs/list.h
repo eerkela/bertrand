@@ -152,7 +152,7 @@ public:
 
     /* Append an item to the end of a list. */
     inline void append(PyObject* item, bool left = false) {
-        IList::append(this->view, item, left);
+        IList::append(*this, item, left);  // append.h
     }
 
     /* Insert an item into a list at the specified index. */
@@ -163,7 +163,7 @@ public:
 
     /* Extend a list by appending elements from the iterable. */
     inline void extend(PyObject* items, bool left = false) {
-        IList::extend(this->view, items, left);
+        IList::extend(*this, items, left);  // extend.h
     }
 
     /* Get the index of an item within a list. */

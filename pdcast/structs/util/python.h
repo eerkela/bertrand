@@ -73,29 +73,6 @@ class PyIterator {
     PyIterator(const PyIterator&) = delete;
     PyIterator(PyIterator&&) = delete;
 
-    /* Initialize a PyTypeObject to represent this iterator from Python. */
-    static PyTypeObject init_type() {
-        PyTypeObject type_obj;  // zero-initialize
-        type_obj.tp_name = name.data();
-        type_obj.tp_doc = "Python-compatible wrapper around a C++ iterator.";
-        type_obj.tp_basicsize = sizeof(PyIterator);
-        type_obj.tp_itemsize = 0;
-        type_obj.tp_flags = (
-            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
-            Py_TPFLAGS_DISALLOW_INSTANTIATION
-        );
-        type_obj.tp_alloc = PyType_GenericAlloc;
-        type_obj.tp_iter = PyObject_SelfIter;
-        type_obj.tp_iternext = (iternextfunc) iter_next;
-        type_obj.tp_dealloc = (destructor) dealloc;
-
-        // register iterator type with Python
-        if (PyType_Ready(&type_obj) < 0) {
-            throw std::runtime_error("could not initialize PyIterator type");
-        }
-        return type_obj;
-    }
-
 public:
 
     /* Construct a Python iterator from a C++ iterator range. */
@@ -145,6 +122,28 @@ public:
     }
 
 private:
+
+    /* Initialize a PyTypeObject to represent this iterator from Python. */
+    static PyTypeObject init_type() {
+        PyTypeObject type_obj;  // zero-initialize
+        type_obj.tp_name = name.data();
+        type_obj.tp_doc = "Python-compatible wrapper around a C++ iterator.";
+        type_obj.tp_basicsize = sizeof(PyIterator);
+        type_obj.tp_flags = (
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
+            Py_TPFLAGS_DISALLOW_INSTANTIATION
+        );
+        type_obj.tp_alloc = PyType_GenericAlloc;
+        type_obj.tp_iter = PyObject_SelfIter;
+        type_obj.tp_iternext = (iternextfunc) iter_next;
+        type_obj.tp_dealloc = (destructor) dealloc;
+
+        // register iterator type with Python
+        if (PyType_Ready(&type_obj) < 0) {
+            throw std::runtime_error("could not initialize PyIterator type");
+        }
+        return type_obj;
+    }
 
     /* C-style Python type declaration. */
     inline static PyTypeObject Type = init_type();

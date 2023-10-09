@@ -17,9 +17,9 @@ namespace structs {
 namespace util {
 
 
-////////////////////////
-////    FUNCTORS    ////
-////////////////////////
+///////////////////////
+////    MUTEXES    ////
+///////////////////////
 
 
 /* Locks are functors (function objects) that produce RAII lock guards for an internal
@@ -313,12 +313,13 @@ public:
 template <
     typename Lock,
     int MaxRetries = -1,
-    typename TimeoutUnit = std::chrono::milliseconds,
+    typename TimeoutUnit = std::chrono::nanoseconds,
     int TimeoutValue = -1,
-    typename WaitUnit = std::chrono::milliseconds,
+    typename WaitUnit = std::chrono::nanoseconds,
     int WaitValue = -1
 >
 class SpinLock : public Lock {
+    using Clock = std::chrono::high_resolution_clock;
 
     /* Guards to ensure that time units are compatible with std::chrono::duration. */
     template <typename T>
@@ -381,7 +382,7 @@ public:
     inline auto operator()(Args&&... args) const
         -> decltype(Lock::operator()(std::forward<Args>(args)...))
     {
-        auto end = std::chrono::high_resolution_clock::now() + timeout;
+        auto end = Clock::now() + timeout;
         int retries = 0;
 
         // loop until the lock is acquired or we hit an error condition
@@ -404,7 +405,7 @@ public:
 
             // check for timeout
             if constexpr (TimeoutValue >= 0) {
-                if (std::chrono::high_resolution_clock::now() > end) {
+                if (Clock::now() > end) {
                     std::ostringstream msg;
                     msg << "failed to acquire exclusive lock (exceeded timeout: ";
                     msg << duration_to_string(timeout) << ")";
@@ -425,7 +426,7 @@ public:
     inline auto shared(Args&&... args) const
         -> decltype(Lock::shared(std::forward<Args>(args)...))
     {
-        auto end = std::chrono::high_resolution_clock::now() + timeout;
+        auto end = Clock::now() + timeout;
         int retries = 0;
 
         // loop until the lock is acquired or we hit an error condition
@@ -448,7 +449,7 @@ public:
 
             // check for timeout
             if constexpr (TimeoutValue > 0) {
-                if (std::chrono::high_resolution_clock::now() > end) {
+                if (Clock::now() > end) {
                     std::ostringstream msg;
                     msg << "failed to acquire shared lock (exceeded timeout: ";
                     msg << duration_to_string(timeout) << ")";
@@ -470,12 +471,12 @@ public:
 /* A lock decorator that adds tracks performance diagnostics for the lock. */
 template <typename Lock, typename Unit = std::chrono::nanoseconds>
 class DiagnosticLock : public Lock {
+    using Clock = std::chrono::high_resolution_clock;
+    using Resolution = std::chrono::duration<double, typename Unit::period>;
     mutable size_t lock_count = 0;
-    mutable size_t lock_time = 0;
+    mutable Resolution lock_time = {};
 
 public:
-    using Clock = std::chrono::high_resolution_clock;
-    using Resolution = Unit;
 
     /* Track the elapsed time to acquire a lock on the internal mutex. */
     template <typename... Args>
@@ -486,7 +487,7 @@ public:
         auto result = Lock::operator()(std::forward<Args>(args)...);
 
         auto end = Clock::now();
-        lock_time += std::chrono::duration_cast<Resolution>(end - start).count();
+        lock_time += std::chrono::duration_cast<Resolution>(end - start);
         ++lock_count;
 
         // create a guard using the acquired lock
@@ -504,7 +505,7 @@ public:
         auto result = Lock::shared(std::forward<Args>(args)...);
 
         auto end = Clock::now();
-        lock_time += std::chrono::duration_cast<Resolution>(end - start).count();
+        lock_time += std::chrono::duration_cast<Resolution>(end - start);
         ++lock_count;
 
         // create a guard using the acquired lock
@@ -517,19 +518,19 @@ public:
     }
 
     /* Get the total time spent waiting to acquire the lock. */
-    inline size_t duration() const {
+    inline Resolution duration() const {
         return lock_time;  // includes a small overhead for lock acquisition
     }
 
     /* Get the average time spent waiting to acquire the lock. */
-    inline double contention() const {
-        return static_cast<double>(lock_time) / lock_count;
+    inline Resolution contention() const {
+        return (lock_count == 0) ? Resolution(0) : (lock_time / lock_count);
     }
 
     /* Reset the internal diagnostic counters. */
     inline void reset_diagnostics() {
         lock_count = 0;
-        lock_time = 0;
+        lock_time = {};
     }
 
 };
@@ -549,28 +550,6 @@ class PyLock {
     PyLock() = delete;
     PyLock(const PyLock&) = delete;
     PyLock(PyLock&&) = delete;
-
-    /* Initialize a PyTypeObject to represent this lock from Python. */
-    static PyTypeObject init_type() {
-        PyTypeObject type_obj;  // zero-initialize
-        type_obj.tp_name = name.data();
-        type_obj.tp_doc = "Python-compatible wrapper around a C++ lock guard.";
-        type_obj.tp_basicsize = sizeof(PyLock);
-        type_obj.tp_itemsize = 0;
-        type_obj.tp_flags = (
-            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
-            Py_TPFLAGS_DISALLOW_INSTANTIATION
-        );
-        type_obj.tp_alloc = PyType_GenericAlloc;
-        type_obj.tp_methods = methods;
-        type_obj.tp_dealloc = (destructor) dealloc;
-
-        // register iterator type with Python
-        if (PyType_Ready(&type_obj) < 0) {
-            throw std::runtime_error("could not initialize PyLock type");
-        }
-        return type_obj;
-    }
 
 public:
 
@@ -627,8 +606,118 @@ private:
         {NULL}  // sentinel
     };
 
+    /* Initialize a PyTypeObject to represent this lock from Python. */
+    static PyTypeObject init_type() {
+        PyTypeObject type_obj;  // zero-initialize
+        type_obj.tp_name = name.data();
+        type_obj.tp_doc = "Python-compatible wrapper around a C++ lock guard.";
+        type_obj.tp_basicsize = sizeof(PyLock);
+        type_obj.tp_flags = (
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
+            Py_TPFLAGS_DISALLOW_INSTANTIATION
+        );
+        type_obj.tp_alloc = PyType_GenericAlloc;
+        type_obj.tp_methods = methods;
+        type_obj.tp_dealloc = (destructor) dealloc;
+
+        // register iterator type with Python
+        if (PyType_Ready(&type_obj) < 0) {
+            throw std::runtime_error("could not initialize PyLock type");
+        }
+        return type_obj;
+    }
+
     /* C-style Python type declaration. */
     inline static PyTypeObject Type = init_type();
+};
+
+
+//////////////////////
+////    TRAITS    ////
+//////////////////////
+
+
+/* A collection of SFINAE traits for inspecting lock types at compile time. */
+template <typename LockType>
+class LockTraits {
+
+    /* Detects whether the templated lock has a shared() method, indicating a
+    read/write locking strategy. */
+    struct _is_shared {
+        template <typename T>
+        static constexpr auto test(T* t) -> decltype(t->shared(), std::true_type());
+        template <typename T>
+        static constexpr auto test(...) -> std::false_type;
+        static constexpr bool value = decltype(test<LockType>(nullptr))::value;
+    };
+
+    /* Detects whether the templated lock inherits from Recursive<>, allowing it to
+    be locked/unlocked recursively within a single thread. */
+    struct _is_recursive {
+        using Recursive = RecursiveLock<LockType>;
+        static constexpr bool value = std::is_base_of_v<Recursive, LockType>;
+    };
+
+    /* Get the unit used for diagnostic durations. */
+    struct _diagnostic_unit {
+        template <typename T>
+        static constexpr auto test(T* t) -> decltype(t->contention());
+        template <typename T>
+        static constexpr auto test(...) -> void;
+        using type = decltype(test<LockType>(nullptr));
+    };
+
+    /* Get the maximum number of retries for the lock, if it has a corresponding
+    static member (defaults to -1 otherwise, indicating unlimited retries). */
+    struct _max_retries {
+        template <typename T, int max_retries = T::max_retries>
+        static constexpr auto test(int) -> std::integral_constant<int, max_retries>;
+        template <typename T>
+        static constexpr auto test(...) -> std::integral_constant<int, -1>;
+        static constexpr int value = decltype(test<LockType>(0))::value;
+    };
+
+    /* Get the timeout duration for the lock, if it has a corresponding static member
+    (defaults to -1ns otherwise, indicating an unlimited timeout duration). */
+    struct _timeout {
+        template <typename T>
+        static constexpr auto test() -> decltype(T::timeout) {
+            return T::timeout;
+        }
+        template <typename T>
+        static constexpr auto test(...) -> std::chrono::nanoseconds {
+            return std::chrono::nanoseconds(-1);
+        }
+        using type = decltype(test<LockType>());
+        static constexpr type value = test<LockType>();
+    };
+
+    /* Get the wait duration for the lock, if it has a corresponding static member
+    (defaults to -1ns otherwise, indicating a busy wait cycle). */
+    struct _wait {
+        template <typename T>
+        static constexpr auto test() -> decltype(T::wait) {
+            return T::wait;
+        }
+        template <typename T>
+        static constexpr auto test(...) -> std::chrono::nanoseconds {
+            return std::chrono::nanoseconds(-1);
+        }
+        using type = decltype(test<LockType>());
+        static constexpr type value = test<LockType>();
+    };
+
+public:
+    using DiagnosticUnit = typename _diagnostic_unit::type;
+    using TimeoutUnit = typename _timeout::type;
+    using WaitUnit = typename _wait::type;
+
+    static constexpr bool is_shared = _is_shared::value;
+    static constexpr bool is_recursive = _is_recursive::value;
+    static constexpr bool is_diagnostic = !std::is_same_v<DiagnosticUnit, void>;
+    static constexpr int max_retries = _max_retries::value;
+    static constexpr TimeoutUnit timeout = _timeout::value;
+    static constexpr WaitUnit wait = _wait::value;
 };
 
 

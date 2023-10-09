@@ -47,9 +47,9 @@ public:
 
     /* Reserve memory for a specific number of nodes ahead of time. */
     inline void reserve(size_t capacity) {
-        // NOTE: the new capacity is absolute, not relative to the current capacity.
-        // If a capacity of 25 is requested, then the allocator array will be resized
-        // to house at least 25 nodes, regardless of the current capacity.
+        // NOTE: the new capacity is absolute, not relative to the current capacity.  If
+        // a capacity of 25 is requested (for example), then the allocator array will be
+        // resized to house at least 25 nodes, regardless of the current capacity.
         view.reserve(capacity);
     }
 

@@ -14,18 +14,18 @@ namespace algorithms {
 namespace list {
 
     /* Add an item to the end of a linked list, set, or dictionary. */
-    template <typename View>
-    void append(View& view, PyObject* item, bool left) {
-        using Node = typename View::Node;
+    template <typename ListLike>
+    void append(ListLike& list, PyObject* item, bool left) {
+        using Node = typename ListLike::Node;
 
         // allocate a new node
-        Node* node = view.node(item);
+        Node* node = list.view.node(item);
 
         // link to beginning/end of list
         if (left) {
-            view.link(nullptr, node, view.head());
+            list.view.link(nullptr, node, list.view.head());
         } else {
-            view.link(view.tail(), node, nullptr);
+            list.view.link(list.view.tail(), node, nullptr);
         }
     }
 
