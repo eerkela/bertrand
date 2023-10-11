@@ -6,6 +6,7 @@
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
 #include "../../util/string.h"  // repr()
+#include "../node.h"  // NodeTraits
 
 
 namespace bertrand {
@@ -87,7 +88,7 @@ void _drop_setlike(View& view, PyObject* item, bool raise) {
 
     // get previous node
     Node* prev;
-    if constexpr (has_prev<Node>::value) {
+    if constexpr (NodeTraits<Node>::has_prev) {
         // NOTE: this is O(1) for doubly-linked sets and dictionaries because
         // we already have a pointer to the previous node.
         prev = static_cast<Node*>(curr->prev);

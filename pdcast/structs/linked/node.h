@@ -461,7 +461,7 @@ function to each value in a list.  It is not meant to be used in any other conte
 template <
     typename Wrapped,
     typename Func,
-    typename _Value = typename util::Inspect<Func, typename Wrapped::Value>::ReturnType
+    typename _Value = typename util::FuncTraits<Func, typename Wrapped::Value>::ReturnType
 >
 class Keyed : public SingleNode<_Value> {
 private:
@@ -965,129 +965,74 @@ struct Counted : public Wrapped {
 };
 
 
-///////////////////////////
-////    NODE TRAITS    ////
-///////////////////////////
+//////////////////////
+////    TRAITS    ////
+//////////////////////
 
 
-// TODO: replace these with inline constexpr using C++17 syntax:
+/* A collection of SFINAE traits for inspecting node types at compile time. */
+template <typename NodeType>
+class NodeTraits {
 
-// template <typename Node, typename = void>
-// inline constexpr bool has_prev = false;
+    // sanity check
+    static_assert(
+        std::is_base_of_v<BaseNode<typename NodeType::Value>, NodeType>,
+        "Templated type does not inherit from BaseNode"
+    );
 
-// template <typename Node>
-// inline constexpr bool has_prev<
-//     Node, std::void_t<decltype(std::declval<Node>().prev())>
-// > = true;
+    /* Detects whether the templated type has a prev() method. */
+    struct _has_prev {
+        template <typename T>
+        static constexpr auto test(T* t) -> decltype(t->prev(), std::true_type());
+        template <typename T>
+        static constexpr auto test(...) -> std::false_type;
+        static constexpr bool value = decltype(test<NodeType>(nullptr))::value;
+    };
 
+    /* Detects whether the templated type has a node() method. */
+    struct _has_node {
+        template <typename T>
+        static constexpr auto test(T* t) -> decltype(t->node(), std::true_type());
+        template <typename T>
+        static constexpr auto test(...) -> std::false_type;
+        static constexpr bool value = decltype(test<NodeType>(nullptr))::value;
+    };
 
-// if constexpr (has_prev<Node>) {}
-// vs
-// if constexpr (has_prev<Node>::value) {}
+    /* Detects whether the templated type has a hash() method. */
+    struct _has_hash {
+        template <typename T>
+        static constexpr auto test(T* t) -> decltype(t->hash(), std::true_type());
+        template <typename T>
+        static constexpr auto test(...) -> std::false_type;
+        static constexpr bool value = decltype(test<NodeType>(nullptr))::value;
+    };
 
+    /* Detects whether the templated type has a mapped() accessor. */
+    struct _has_mapped {
+        template <typename T>
+        static constexpr auto test(T* t) -> decltype(t->mapped(), std::true_type());
+        template <typename T>
+        static constexpr auto test(...) -> std::false_type;
+        static constexpr bool value = decltype(test<NodeType>(nullptr))::value;
+    };
 
-// using C++20 traits:
-
-/*
-template <typename Node>
-concept HasPrev = requires(Node node) {
-    { node.prev() } -> std::convertible_to<Node*>;
-};
-
-
-template <typename Node>
-concept HasHash = requires(Node node) {
-    { node.hash } -> std::convertible_to<Py_hash_t>;
-};
-*/
-
-
-/* A trait that detects whether the templated node type is doubly-linked (i.e.
-has a `prev` pointer). */
-template <typename Node>
-struct has_prev {
-private:
-    // Helper template to detect whether Node has a `prev` field
-    template <typename T>
-    static std::true_type test(decltype(&T::prev)*);
-
-    //  Overload for when `prev` is not present
-    template <typename T>
-    static std::false_type test(...);
-
-public:
-    static constexpr bool value = decltype(test<Node>(nullptr))::value;
-};
-
-
-/* A trait that detects whether the templated node type stores the hash of the
-underlying value. */
-template <typename Node>
-struct has_hash {
-private:
-    // Helper template to detect whether Node has a `hash` field
-    template <typename T>
-    static std::true_type test(decltype(&T::hash)*);
-
-    // Overload for when `hash` is not present
-    template <typename T>
-    static std::false_type test(...);
+    /* Detects whether the templated type has a count() accessor. */
+    struct _has_count {
+        template <typename T>
+        static constexpr auto test(T* t) -> decltype(t->count(), std::true_type());
+        template <typename T>
+        static constexpr auto test(...) -> std::false_type;
+        static constexpr bool value = decltype(test<NodeType>(nullptr))::value;
+    };
 
 public:
-    static constexpr bool value = decltype(test<Node>(nullptr))::value;
-};
+    using Value = decltype(std::declval<NodeType>().value());
 
-
-/* A trait that detects whether the templated node type holds a reference to a
-mapped value. */
-template <typename Node>
-struct has_mapped {
-private:
-    // Helper template to detect whether Node has a `mapped` field
-    template <typename T>
-    static std::true_type test(decltype(&T::mapped)*);
-
-    // Overload for when `mapped` is not present
-    template <typename T>
-    static std::false_type test(...);
-
-public:
-    static constexpr bool value = decltype(test<Node>(nullptr))::value;
-};
-
-
-/* A trait that detects whether the templated node type has a mutex for advanced
-thread-safety. */
-template <typename Node>
-struct has_mutex {
-private:
-    // Helper template to detect whether Node has a `mutex` field
-    template <typename T>
-    static std::true_type test(decltype(&T::mutex)*);
-
-    // Overload for when `mutex` is not present
-    template <typename T>
-    static std::false_type test(...);
-
-public:
-    static constexpr bool value = decltype(test<Node>(nullptr))::value;
-};
-
-
-// TODO: migrate code to use NodeTraits rather than has_xxx traits directly
-
-
-template <typename Node>
-struct NodeInfo {
-
-    inline static constexpr bool doubly_linked = has_prev<Node>::value;
-    inline static constexpr bool hashed = has_hash<Node>::value;
-    inline static constexpr bool mapped = has_mapped<Node>::value;
-    inline static constexpr bool threaded = has_mutex<Node>::value;
-
-    //////////////////////
-    ////    SFINAE    ////
-    //////////////////////
+    static constexpr bool has_prev = _has_prev::value;
+    static constexpr bool has_node = _has_node::value;
+    static constexpr bool has_hash = _has_hash::value;
+    static constexpr bool has_mapped = _has_mapped::value;
+    static constexpr bool has_count = _has_count::value;
 
     /*
     NOTE: when GCC accepts C++20 as the default standard, we can replace

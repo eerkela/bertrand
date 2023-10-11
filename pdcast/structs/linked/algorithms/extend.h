@@ -6,6 +6,7 @@
 #include "append.h"  // append()
 #include "../../util/python.h"  // PyIterable
 
+#include "../view.h"  // ViewTraits
 
 // bertrand::structs::linked::List()
 // bertrand::structs::linked::ListView()
@@ -40,7 +41,7 @@ namespace list {
         // proceed with extend
         try {
             util::PyIterable sequence(items);
-            for (PyObject* item : sequence) {
+            for (PyObject* item : iter(sequence)) {
                 append(list, item, left);
             }
 
@@ -134,11 +135,11 @@ void _extend_left_to_right(
         }
 
         // check if we should update existing nodes
-        if constexpr (is_setlike<View>::value) {
+        if constexpr (ViewTraits<View>::is_setlike) {
             if (update) {
                 Node* existing = view.search(curr);
                 if (existing != nullptr) {  // item already exists
-                    if constexpr (has_mapped<Node>::value) {
+                    if constexpr (NodeTraits<Node>::has_mapped) {
                         Py_DECREF(existing->mapped);
                         Py_INCREF(curr->mapped);
                         existing->mapped = curr->mapped;
@@ -206,11 +207,11 @@ void _extend_right_to_left(
         }
 
         // check if we should update existing nodes
-        if constexpr (is_setlike<View>::value) {
+        if constexpr (ViewTraits<View>::is_setlike) {
             if (update) {
                 Node* existing = view.search(curr);
                 if (existing != nullptr) {  // item already exists
-                    if constexpr (has_mapped<Node>::value) {
+                    if constexpr (NodeTraits<Node>::has_mapped) {
                         Py_DECREF(existing->mapped);
                         Py_INCREF(curr->mapped);
                         existing->mapped = curr->mapped;

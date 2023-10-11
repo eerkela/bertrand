@@ -4,6 +4,7 @@
 
 #include <cstddef>  // size_t
 #include <Python.h>  // CPython API
+#include "../node.h"  // NodeTraits
 
 
 namespace bertrand {
@@ -67,7 +68,7 @@ namespace Relative {
 
         // If we're iterating backwards and the list is doubly-linked, then we can
         // just use the `prev` pointer at each node
-        if constexpr (has_prev<Node>::value) {
+        if constexpr (NodeTraits<Node>::has_prev) {
             _clear_backward_double(view, curr, offset, length);
             return;
         }

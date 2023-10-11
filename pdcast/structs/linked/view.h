@@ -29,6 +29,11 @@ namespace linked {
 ////////////////////////
 
 
+// TODO: separate into BaseView and ListView.  BaseView is templated to accept an
+// allocator as a template parameter, and ListView is a specialization of BaseView that
+// uses ListAllocator by default.  BaseView also anchors ViewTraits.
+
+
 /* A pure C++ linked list data structure with customizable node types and allocation
 strategies. */
 template <
@@ -1050,21 +1055,47 @@ protected:
 ///////////////////////////
 
 
-/* A trait that detects whether the templated view is set-like (i.e. has a
-search() method). */
-template <typename View>
-struct is_setlike {
-private:
-    // Helper template to detect whether View has a search() method
-    template <typename T>
-    static auto test(T* t) -> decltype(t->search(nullptr), std::true_type());
+/* A collection of SFINAE traits for inspecting view types at compile time. */
+template <typename ViewType>
+class ViewTraits {
 
-    // Overload for when View does not have a search() method
-    template <typename T>
-    static std::false_type test(...);
+    /* Detects whether the templated type has a search(Value&) method, indicating
+    set-like behavior. */
+    struct _is_setlike {
+        /* Specialization for types that have a search(Value&) method. */
+        template <typename T, typename Value = typename T::Value>
+        static constexpr auto test(T* t) -> decltype(
+            t->search(std::declval<Value>()),
+            std::true_type()
+        );
+
+        /* Fallback for types that don't have a search() method. */
+        template <typename T>
+        static constexpr auto test(...) -> std::false_type;
+
+        static constexpr bool value = decltype(test<ViewType>(nullptr))::value;
+    };
+
+    /* Detects whether the templated type has a lookup(Value&) method, indicating
+    dict-like behavior. */
+    struct _is_dictlike {
+        /* Specialization for types that have a lookup(Value&) method. */
+        template <typename T, typename Value = typename T::Value>
+        static constexpr auto test(T* t) -> decltype(
+            t->lookup(std::declval<Value>()),
+            std::true_type()
+        );
+
+        /* Fallback for types that don't have a lookup() method. */
+        template <typename T>
+        static constexpr auto test(...) -> std::false_type;
+
+        static constexpr bool value = decltype(test<ViewType>(nullptr))::value;
+    };
 
 public:
-    static constexpr bool value = decltype(test<View>(nullptr))::value;
+    static constexpr bool is_setlike = _is_setlike::value;
+    static constexpr bool is_dictlike = _is_dictlike::value;
 };
 
 

@@ -366,7 +366,7 @@ public:
     template <typename T>
     Node* search(T* key) const {
         Py_hash_t hash_val;
-        if constexpr (has_hash<T>::value) {
+        if constexpr (NodeTraits<T>::has_hash) {
             // if input node has a pre-computed hash, then we can reuse it to
             // speed up lookups
             hash_val = key->hash;

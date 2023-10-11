@@ -20,16 +20,16 @@ namespace util {
 /* A collection of traits to allow compile-time introspection of C++ function pointers
 and Python callables. */
 template <typename Func, typename... Args>
-class Inspect {
+class FuncTraits {
 public:
 
     /* An enum listing all the possible values for the category trait */
     enum class Category {
         FUNCTION_PTR,
         MEMBER_FUNCTION_PTR,
-        LAMBDA,  // specifically those that do not capture
-        FUNCTOR,  // any callable class that is not a lambda
-        PYTHON_CALLABLE,
+        LAMBDA,  // specifically those that do not capture any local variables
+        FUNCTOR,  // any callable object that is not a lambda
+        PYTHON_CALLABLE,  // A PyObject* of any kind (no type checking is done)
         UNKNOWN
     };
 
@@ -203,8 +203,8 @@ public:
     using Signature = ReturnType(*)(Args...);
 
     static constexpr Category category = cat;
-    static constexpr int arity = sizeof...(Args);  // number of arguments
-    static constexpr int n_args = arity;  // alias for arity
+    static constexpr int n_args = sizeof...(Args);
+    static constexpr int arity = n_args;  // alias
     static constexpr bool is_const = Qualifiers<Func>::is_const;
     static constexpr bool is_volatile = Qualifiers<Func>::is_volatile;
     static constexpr bool is_lvalue_ref = Qualifiers<Func>::is_lvalue_ref;
@@ -219,7 +219,7 @@ public:
         // the given type.
         static_assert(
             category == Category::MEMBER_FUNCTION_PTR,
-            "Function must be a member of any class"
+            "Function is not a member of any class"
         );
         return std::is_same_v<Class, Parent>;
     }
