@@ -16,6 +16,8 @@
 // bertrand::structs::linked::extend(list, items, left)
 
 
+#include "../../util/iter.h" // iter()
+
 
 namespace bertrand {
 namespace structs {
