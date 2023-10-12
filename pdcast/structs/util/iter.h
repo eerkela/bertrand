@@ -7,8 +7,11 @@
 #include <type_traits>
 #include <typeinfo>  // typeid
 #include <Python.h>  // CPython API
-#include "slot.h"  // Slot
+#include <utility>
+#include "coupled_iter.h"  // CoupledIterator
+#include "func.h"  // FuncTraits
 #include "python.h"  // PyIterator
+#include "slot.h"  // Slot
 
 
 namespace bertrand {
@@ -21,16 +24,34 @@ namespace util {
 ////////////////////////////////////
 
 
-// template <typename Iterator, const std::string_view& name>
-// class PyIterator;
-
-
+/* Type returned by iter() when called on a C++ container. */
 template <typename Container, typename Func, bool rvalue>
 class IterProxy;
 
 
-// template <typename Container, typename Func>
-// class PyIterProxy;
+/* Type returned by iter() when called on a Python container. */
+template <typename Container, typename Func>
+class PyIterProxy;
+
+
+/* Iterator type returned by iteration methods involving an inline conversion
+function. */
+template <typename Iterator, typename Func>
+class ConvertedIterator;
+
+
+/* Iterator type returned by a proxy's `python()`-family of methods. */
+template <typename Iterator, const std::string_view& name>
+class PyIterator;
+
+
+/* A placeholder conversion function for when no inline conversion is specified. */
+struct identity {
+    template <typename T>
+    inline constexpr T&& operator()(T&& value) const noexcept {
+        return std::forward<T>(value);
+    }
+};
 
 
 //////////////////////////////
@@ -47,44 +68,27 @@ these methods to generate equivalent Python iterators with corresponding `iter()
 `next()` methods, which can be returned directly to the standard Python interpreter.
 This translation works as long as the C++ iterators dereference to PyObject*, or if a
 custom conversion function is provided via the `convert` argument.  This allows users
-to insert a conversion in between the iterator dereference and the return of the
+to insert a scalar conversion in between the iterator dereference and the return of the
 `next()` method on the Python side.  For example, if the C++ iterator dereferences to a
-custom struct, the user can provide a lambda conversion that translates the struct into
-a valid PyObject* reference, which is then returned to Python like normal.
+custom struct, the user can provide an inline lambda that translates the struct into a
+valid PyObject*, which is returned to Python like normal.
 
 When called with a Python container, the `iter()` method produces an equivalent proxy
 that wraps the `PyObject_GetIter()` C API function and exposes a standard C++ interface
 on the other side.  Just like the C++ to Python conversion, custom conversion functions
 can be added in between the result of the `next()` method on the Python side and the
-iterator dereference on the C++ side.  Note that due to the dynamic nature of Python's
-type system, conversions of this sort will require foreknowledge of the container's
-specific element type in order to perform the casts necessary to narrow the types to
-their C++ equivalents.  In order to facilitate this, all the data structures exposed in
-the `bertrand::structs` namespace support optional Python-side type specialization,
-which can be used to enforce homogeneity at the container level.
+iterator dereference on the C++ side.
+
+Note that due to the dynamic nature of Python's type system, conversions of this sort
+will require foreknowledge of the container's specific element type in order to perform
+the casts necessary to narrow the types to their C++ equivalents.  To facilitate this,
+all the data structures exposed in the `bertrand::structs` namespace support optional
+Python-side type specialization, which can be used to enforce homogeneity at the
+container level.
 */
 
 
-// TODO: proxies need to compile into two different forms based on whether a key
-// function is provided or not, similar to how they compile into different forms for
-// lvalue and rvalue references.
-
-// non-keyed version includes an assertion that the iterators dereference to PyObject*.
-// The keyed version requires that the key function accepts a single PyObject* and uses
-// the inferred return value of the function type to determine the value_type of the
-// resulting iterator.
-
-
-/* A no-op function object that returns its argument unchanged. */
-struct identity {
-    template <typename T>
-    inline constexpr T&& operator()(T&& value) const noexcept {
-        return std::forward<T>(value);
-    }
-};
-
-
-/*    LVALUE REFERENCES    */
+//    LVALUE REFERENCES
 
 
 /* Create a C++ to Python iterator proxy for a mutable C++ lvalue container. */
@@ -118,7 +122,7 @@ inline IterProxy<const Container, Func, false> iter(
 }
 
 
-/*    RVALUE REFERENCES    */
+//    RVALUE REFERENCES
 
 
 /* Create a C++ to Python iterator proxy for a mutable rvalue container. */
@@ -152,38 +156,38 @@ inline IterProxy<const Container, Func, true> iter(
 }
 
 
-/*    PYTHON REFERENCES    */
+//    PYTHON REFERENCES
 
 
-// /* Create a Python to C++ iterator proxy for a mutable Python container. */
-// template <typename Container>
-// inline PyIterProxy<Container, identity> iter(PyObject* container) {
-//     return PyIterProxy<Container, identity>(container);
-// }
+/* Create a Python to C++ iterator proxy for a mutable Python container. */
+template <typename Container>
+inline PyIterProxy<Container, identity> iter(PyObject* container) {
+    return PyIterProxy<Container, identity>(container);
+}
 
 
-// /* Create a Python to C++ iterator proxy for a const Python container. */
-// template <typename Container>
-// inline PyIterProxy<const Container, identity> iter(const PyObject* container) {
-//     return PyIterProxy<const Container, identity>(container);
-// }
+/* Create a Python to C++ iterator proxy for a const Python container. */
+template <typename Container>
+inline PyIterProxy<const Container, identity> iter(const PyObject* container) {
+    return PyIterProxy<const Container, identity>(container);
+}
 
 
-// /* Create a Python to C++ iterator proxy for a mutable Python container. */
-// template <typename Container, typename Func>
-// inline PyIterProxy<Container, Func> iter(PyObject* container, Func convert) {
-//     return PyIterProxy<Container, Func>(container, convert);
-// }
+/* Create a Python to C++ iterator proxy for a mutable Python container. */
+template <typename Container, typename Func>
+inline PyIterProxy<Container, Func> iter(PyObject* container, Func convert) {
+    return PyIterProxy<Container, Func>(container, convert);
+}
 
 
-// /* Create a Python to C++ iterator proxy for a const Python container. */
-// template <typename Container, typename Func>
-// inline PyIterProxy<const Container, Func> iter(
-//     const PyObject* container,
-//     Func convert
-// ) {
-//     return PyIterProxy<const Container, Func>(container, convert);
-// }
+/* Create a Python to C++ iterator proxy for a const Python container. */
+template <typename Container, typename Func>
+inline PyIterProxy<const Container, Func> iter(
+    const PyObject* container,
+    Func convert
+) {
+    return PyIterProxy<const Container, Func>(container, convert);
+}
 
 
 ////////////////////////////
@@ -223,9 +227,7 @@ template <typename Container, typename Func, bool rvalue = false>
 class _IterProxy {
 public:
     Container& container;
-    const Func convert;
-    _IterProxy(Container& c) : container(c), convert(Func{}) {}
-    _IterProxy(Container& c, Func f) : container(c), convert(f) {}
+    _IterProxy(Container& c) : container(c) {}
 };
 
 /* Base class for IterProxies around rvalue container references.
@@ -236,10 +238,8 @@ through the use of a move constructor, which should be fairly efficient. */
 template <typename Container, typename Func>
 class _IterProxy<Container, Func, true> {
 public:
-    Container container;
-    const Func convert;
-    _IterProxy(Container&& c) : container(std::move(c)), convert(Func{}) {}
-    _IterProxy(Container&& c, Func f) : container(std::move(c)), convert(f) {}
+    Container container;  // owns the container
+    _IterProxy(Container&& c) : container(std::move(c)) {}
 };
 
 
@@ -248,45 +248,38 @@ template <typename Container, typename Func, bool rvalue>
 class IterProxy : public _IterProxy<Container, Func, rvalue> {
     using Base = _IterProxy<Container, Func, rvalue>;
     static constexpr bool is_identity = std::is_same_v<Func, identity>;
+    Func convert;
 
     /* Get the Python-compatible name of the templated iterator, defaulting to the
     mangled C++ type name. */
-    template <typename T, typename = void>
+    template <typename Iter, typename = void>
     struct type_name {
-        static constexpr std::string_view value { typeid(T).name() };
+        static constexpr std::string_view value { typeid(Iter).name() };
     };
 
     /* Get the Python-compatible name of the templated iterator, using the static
     `name` attribute if it is available. */
-    template <typename T>
-    struct type_name<T, std::void_t<decltype(T::name)>> {
-        static constexpr std::string_view value { T::name };
+    template <typename Iter>
+    struct type_name<Iter, std::void_t<decltype(Iter::name)>> {
+        static constexpr std::string_view value { Iter::name };
     };
 
-    /* Get the final type for a valid iterator method without any conversions. */
-    template <typename T, bool cond = false>
-    struct iter_wrapper {
-        using type = T;
-        inline static type convert(T&& iter) {
-            return iter;
+    /* Get a wrapper around an iterator that applies a conversion function to the
+    result of its dereference operator. */
+    template <typename Iter, bool cond = false>
+    struct conversion_wrapper {
+        using type = ConvertedIterator<Iter, Func>;
+        inline static type decorate(Iter&& iter, Func func) {
+            return type(std::move(iter), func);
         }
     };
 
-    /* Get the final type for a valid iterator method with conversions. */
-    template <typename T>
-    struct iter_wrapper<T, true> {
-        struct type : public T {
-            const Func _bertrand_convert;
-            using T::T;  // inherit constructors
-            inline auto operator*() const {
-                assert(_bertrand_convert != nullptr);
-                return _bertrand_convert)(T::operator*());  // apply conversion
-            }
-        };
-        inline static type convert(T&& iter) {
-            type result(iter);
-            result._bertrand_convert = &(Base::convert);
-            return result;
+    /* If no conversion function is given, return the iterator unmodified. */
+    template <typename Iter>
+    struct conversion_wrapper<Iter, true> {
+        using type = Iter;
+        inline static type decorate(Iter&& iter, Func func) {
+            return iter;
         }
     };
 
@@ -306,96 +299,105 @@ class IterProxy : public _IterProxy<Container, Func, rvalue> {
 
     These are checked in order at compile time, and the first one found is passed
     through to the proxy's `.begin()` member, which represents a unified interface for
-    all types of iterable containers.  This allows us to write generic code that works
-    with any container that implements the standard library iterator interface, without
-    having to manually extend the proxy for each new container type.
+    all types of iterable containers.  If none of these methods exist, the proxy's
+    `.begin()` member is not defined, and any attempt to use it will result in a
+    compile error.
+
+    If a conversion function is supplied to the proxy, then the result of the
+    `.begin()` method is wrapped in a ConvertedIterator<>, which applies the conversion
+    function at the point of dereference.  For this to work, the underlying iterator
+    must be copy/move constructible, and must implement any combination of the standard
+    operator overloads (e.g. `*`, `[]`, `->`, `++`, `--`, `==`, `!=`, etc.).
+    Additionally, the supplied conversion function must be invocable with the result of
+    the iterator's original dereference operator.  If any of these conditions are not
+    met, it will result in a compile error.
+
+    Lastly, the conversion function's return type (evaluated at compile time) will be
+    used to set the `value_type` of the converted iterator, and if it is convertible to
+    PyObject*, then Python-compatible iterators can be constructed from it using the
+    proxy's `python()`, `cpython()`, `rpython()`, and `crpython()` methods.  If the
+    result of the conversion is not Python-compatible, then these methods will not be
+    defined, and any attempt to use them will result in a compile error.
 
     See https://en.cppreference.com/w/cpp/language/adl for more information on ADL and
-    non-member functions. */
+    non-member functions, and https://en.cppreference.com/w/cpp/language/sfinae for
+    a reference on SFINAE substitution and compile-time metaprogramming. */
     #define TRAIT_FLAG(FLAG_NAME, STATEMENT) \
-        template <typename T, typename = void> \
+        /* Flags gate the SFINAE detection, ensuring that we stop at the first match */ \
+        template <typename Iterable, typename = void> \
         struct FLAG_NAME : std::false_type {}; \
-        template <typename T> \
-        struct FLAG_NAME<T, std::void_t<decltype(STATEMENT)>> : std::true_type {}; \
+        template <typename Iterable> \
+        struct FLAG_NAME<Iterable, std::void_t<decltype(STATEMENT)>> : std::true_type {}; \
 
     #define ITER_TRAIT(METHOD) \
         /* Default specialization for methods that don't exist on the Iterable type. */ \
-        template <typename T, typename = void, typename = void, typename = void> \
+        template <typename Iterable, typename = void, typename = void, typename = void> \
         struct _##METHOD { \
             using type = void; \
             static constexpr bool exists = false; \
             static constexpr std::string_view name { "" }; \
         }; \
         /* First, check for a member method of the same name within Iterable. */ \
-        template <typename T> \
+        template <typename Iterable> \
         struct _##METHOD< \
-            T, \
-            std::void_t<decltype(std::declval<T&>().METHOD())> \
+            Iterable, \
+            std::void_t<decltype(std::declval<Iterable&>().METHOD())> \
         > { \
-            using base_type = decltype(std::declval<T&>().METHOD()); \
-            using wrapper = iter_wrapper<base_type, is_identity>; \
+            using base_type = decltype(std::declval<Iterable&>().METHOD()); \
+            using wrapper = conversion_wrapper<base_type, is_identity>; \
             using type = typename wrapper::type; \
             static constexpr bool exists = true; \
             static constexpr std::string_view name { type_name<type>::value }; \
-            inline static type func(T& iterable) { \
-                return wrapper::convert(iterable.METHOD()); \
+            inline static type call(Iterable& iterable, Func func) { \
+                return wrapper::decorate(iterable.METHOD(), func); \
             } \
         }; \
-        TRAIT_FLAG(has_member_##METHOD, std::declval<T&>().METHOD()) \
+        TRAIT_FLAG(has_member_##METHOD, std::declval<Iterable&>().METHOD()) \
         /* Second, check for a non-member ADL method within the same namespace. */ \
-        template <typename T> \
+        template <typename Iterable> \
         struct _##METHOD< \
-            T, \
+            Iterable, \
             void, \
             std::enable_if_t< \
-                !has_member_##METHOD<T>::value, \
-                std::void_t<decltype(METHOD(std::declval<T&>()))> \
+                !has_member_##METHOD<Iterable>::value, \
+                std::void_t<decltype(METHOD(std::declval<Iterable&>()))> \
             > \
         > { \
-            using base_type = decltype(METHOD(std::declval<T&>())); \
-            using type = typename iter_wrapper<base_type, is_identity>::type; \
+            using base_type = decltype(METHOD(std::declval<Iterable&>())); \
+            using wrapper = conversion_wrapper<base_type, is_identity>; \
+            using type = typename wrapper::type; \
             static constexpr bool exists = true; \
             static constexpr std::string_view name { type_name<type>::value }; \
-            inline static type func(T& iterable) { \
-                if constexpr (is_identity) { \
-                    return METHOD(iterable); \
-                } else { \
-                    type iter { METHOD(iterable) }; \
-                    iter._bertrand_convert = &(Base::convert); \
-                    return iter; \
-                } \
+            inline static type call(Iterable& iterable, Func func) { \
+                return wrapper::decorate(METHOD(iterable), func); \
             } \
         }; \
-        TRAIT_FLAG(has_adl_##METHOD, METHOD(std::declval<T&>())) \
+        TRAIT_FLAG(has_adl_##METHOD, METHOD(std::declval<Iterable&>())) \
         /* Third, check for an equivalently-named standard library method. */ \
-        template <typename T> \
+        template <typename Iterable> \
         struct _##METHOD< \
-            T, \
+            Iterable, \
             void, \
             void, \
             std::enable_if_t< \
-                !has_member_##METHOD<T>::value && !has_adl_##METHOD<T>::value, \
-                std::void_t<decltype(std::METHOD(std::declval<T&>()))> \
+                !has_member_##METHOD<Iterable>::value && \
+                !has_adl_##METHOD<Iterable>::value, \
+                std::void_t<decltype(std::METHOD(std::declval<Iterable&>()))> \
             > \
         > { \
-            using base_type = decltype(std::METHOD(std::declval<T&>())); \
-            using type = typename iter_wrapper<base_type, is_identity>::type; \
+            using base_type = decltype(std::METHOD(std::declval<Iterable&>())); \
+            using wrapper = conversion_wrapper<base_type, is_identity>; \
+            using type = typename wrapper::type; \
             static constexpr bool exists = true; \
             static constexpr std::string_view name { type_name<type>::value }; \
-            inline static type func(T& iterable) { \
-                if constexpr (is_identity) { \
-                    return std::METHOD(iterable); \
-                } else { \
-                    type iter { std::METHOD(iterable) }; \
-                    iter._bertrand_convert = &(Base::convert); \
-                    return iter; \
-                } \
+            inline static type call(Iterable& iterable, Func func) { \
+                return wrapper::decorate(std::METHOD(iterable), func); \
             } \
         }; \
 
     /* A collection of SFINAE traits that allows introspection of a mutable container's
     iterator interface. */
-    template <typename Iterable>
+    template <typename _Iterable>
     class _Traits {
         ITER_TRAIT(begin)
         ITER_TRAIT(cbegin)
@@ -407,14 +409,14 @@ class IterProxy : public _IterProxy<Container, Func, rvalue> {
         ITER_TRAIT(crend)
 
     public:
-        using begin = _begin<Iterable>;
-        using cbegin = _cbegin<Iterable>;
-        using end = _end<Iterable>;
-        using cend = _cend<Iterable>;
-        using rbegin = _rbegin<Iterable>;
-        using crbegin = _crbegin<Iterable>;
-        using rend = _rend<Iterable>;
-        using crend = _crend<Iterable>;
+        using begin = _begin<_Iterable>;
+        using cbegin = _cbegin<_Iterable>;
+        using end = _end<_Iterable>;
+        using cend = _cend<_Iterable>;
+        using rbegin = _rbegin<_Iterable>;
+        using crbegin = _crbegin<_Iterable>;
+        using rend = _rend<_Iterable>;
+        using crend = _crend<_Iterable>;
     };
 
     /* A collection of SFINAE traits that allows introspection of a const container's
@@ -425,22 +427,22 @@ class IterProxy : public _IterProxy<Container, Func, rvalue> {
     equivalents if they exist.  This is mostly for convenience so that we don't have to
     explicitly switch from begin() to cbegin() whenever we want to iterate over a const
     container. */
-    template <typename Iterable>
-    class _Traits<const Iterable> {
+    template <typename _Iterable>
+    class _Traits<const _Iterable> {
         ITER_TRAIT(cbegin)
         ITER_TRAIT(cend)
         ITER_TRAIT(crbegin)
         ITER_TRAIT(crend)
 
     public:
-        using begin = _cbegin<const Iterable>;
-        using cbegin = _cbegin<const Iterable>;
-        using end = _cend<const Iterable>;
-        using cend = _cend<const Iterable>;
-        using rbegin = _crbegin<const Iterable>;
-        using crbegin = _crbegin<const Iterable>;
-        using rend = _crend<const Iterable>;
-        using crend = _crend<const Iterable>;
+        using begin = _cbegin<const _Iterable>;
+        using cbegin = _cbegin<const _Iterable>;
+        using end = _cend<const _Iterable>;
+        using cend = _cend<const _Iterable>;
+        using rbegin = _crbegin<const _Iterable>;
+        using crbegin = _crbegin<const _Iterable>;
+        using rend = _crend<const _Iterable>;
+        using crend = _crend<const _Iterable>;
     };
 
     #undef ITER_TRAIT
@@ -450,53 +452,170 @@ class IterProxy : public _IterProxy<Container, Func, rvalue> {
 
 public:
 
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
+
+    /* The proxy uses SFINAE to expose only those methods that exist on the underlying
+     * container.  The others are not compiled, and any attempt to use them will result
+     * in a compile error.
+     */
+
     /* Delegate to the container's begin() method, if it exists. */
     template <bool cond = Traits::begin::exists>
     inline auto begin() -> std::enable_if_t<cond, typename Traits::begin::type> {
-        return Traits::begin::func(this->container);
+        return Traits::begin::call(this->container, this->convert);
     }
 
     /* Delegate to the container's cbegin() method, if it exists. */
     template <bool cond = Traits::cbegin::exists>
     inline auto cbegin() -> std::enable_if_t<cond, typename Traits::cbegin::type> {
-        return Traits::cbegin::func(this->container);
+        return Traits::cbegin::call(this->container, this->convert);
     }
 
     /* Delegate to the container's end() method, if it exists. */
     template <bool cond = Traits::end::exists>
     inline auto end() -> std::enable_if_t<cond, typename Traits::end::type> {
-        return Traits::end::func(this->container);
+        return Traits::end::call(this->container, this->convert);
     }
 
     /* Delegate to the container's cend() method, if it exists. */
     template <bool cond = Traits::cend::exists>
     inline auto cend() -> std::enable_if_t<cond, typename Traits::cend::type> {
-        return Traits::cend::func(this->container);
+        return Traits::cend::call(this->container, this->convert);
     }
 
     /* Delegate to the container's rbegin() method, if it exists. */
     template <bool cond = Traits::rbegin::exists>
     inline auto rbegin() -> std::enable_if_t<cond, typename Traits::rbegin::type> {
-        return Traits::rbegin::func(this->container);
+        return Traits::rbegin::call(this->container, this->convert);
     }
 
     /* Delegate to the container's crbegin() method, if it exists. */
     template <bool cond = Traits::crbegin::exists>
     inline auto crbegin() -> std::enable_if_t<cond, typename Traits::crbegin::type> {
-        return Traits::crbegin::func(this->container);
+        return Traits::crbegin::call(this->container, this->convert);
     }
 
     /* Delegate to the container's rend() method, if it exists. */
     template <bool cond = Traits::rend::exists>
     inline auto rend() -> std::enable_if_t<cond, typename Traits::rend::type> {
-        return Traits::rend::func(this->container);
+        return Traits::rend::call(this->container, this->convert);
     }
 
     /* Delegate to the container's crend() method, if it exists. */
     template <bool cond = Traits::crend::exists>
     inline auto crend() -> std::enable_if_t<cond, typename Traits::crend::type> {
-        return Traits::crend::func(this->container);
+        return Traits::crend::call(this->container, this->convert);
     }
+
+    /////////////////////////////////
+    ////    COUPLED ITERATORS    ////
+    /////////////////////////////////
+
+    /* The typical C++ syntax for iterating over a container is a bit clunky at times,
+     * especially when it comes to reverse iteration.  Normally, this requires separate
+     * calls to `rbegin()` and `rend()`, which are then passed to a manual for loop
+     * construction.  This is not very ergonomic, and can be a bit confusing at times.
+     * Coupled iterators solve that.
+     *
+     * A coupled iterator represents a pair of `begin()` and `end()` iterators that are
+     * bound into a single object.  This allows for the following syntax:
+     *
+     *      for (auto& item : iter(container).iter()) {
+     *          // forward iteration
+     *      }
+     *      for (auto& item : iter(container).citer()) {
+     *          // forward iteration over const container
+     *      }
+     *      for (auto& item : iter(container).reverse()) {
+     *          // reverse iteration
+     *      }
+     *      for (auto& item : iter(container).creverse()) {
+     *          // reverse iteration over const container
+     *      }
+     *
+     * Which is considerably more readable than the equivalent:
+     *
+     *      for (auto it = iter(container).rbegin(), end = iter(container).rend(); it != end; ++it) {
+     *          // reverse iteration
+     *      }
+     *
+     * NOTE: the `iter()` method is not strictly necessary since the proxy itself
+     * implements the standard iterator interface.  As a result, the following syntax
+     * is identical in most cases:
+     *
+     *      for (auto& item : iter(container)) {
+     *          // forward iteration
+     *      }
+     *
+     * Lastly, coupled iterators can also be used in manual loop constructions if
+     * access to the underlying iterator is required:
+     *
+     *      for (auto it = iter(container).reverse(); it != it.end(); ++it) {
+     *          // reverse iteration
+     *      }
+     *
+     * The `it` variable can then be used just like an ordinary `rbegin()` iterator.
+     */
+
+    /* Create a coupled iterator over the container using the begin()/end() methods. */
+    template <bool cond = Traits::begin::exists && Traits::end::exists>
+    inline auto iter() -> std::enable_if_t<
+        cond, CoupledIterator<typename Traits::begin::type>
+    > {
+        return CoupledIterator<typename Traits::begin::type>(begin(), end());
+    }
+
+    /* Create a coupled iterator over the container using the cbegin()/cend() methods. */
+    template <bool cond = Traits::cbegin::exists && Traits::cend::exists>
+    inline auto citer() -> std::enable_if_t<
+        cond, CoupledIterator<typename Traits::cbegin::type>
+    > {
+        return CoupledIterator<typename Traits::cbegin::type>(cbegin(), cend());
+    }
+
+    /* Create a coupled iterator over the container using the rbegin()/rend() methods. */
+    template <bool cond = Traits::rbegin::exists && Traits::rend::exists>
+    inline auto reverse() -> std::enable_if_t<
+        cond, CoupledIterator<typename Traits::rbegin::type>
+    > {
+        return CoupledIterator<typename Traits::rbegin::type>(rbegin(), rend());
+    }
+
+    /* Create a coupled iterator over the container using the crbegin()/crend() methods. */
+    template <bool cond = Traits::crbegin::exists && Traits::crend::exists>
+    inline auto creverse() -> std::enable_if_t<
+        cond, CoupledIterator<typename Traits::crbegin::type>
+    > {
+        return CoupledIterator<typename Traits::crbegin::type>(crbegin(), crend());
+    }
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    /* If the container's iterators dereference to PyObject* (or can be converted to it
+     * using an inline conversion function), then the proxy can produce Python iterators
+     * straight from C++.  This allows C++ objects to be iterated over directly from
+     * Python using standard `for .. in ..` syntax.
+     *
+     * Doing so typically requires Cython, since the `iter()` function is only exposed
+     * at the C++ level.  The cython/iter.pxd header contains the necessary Cython
+     * declarations to do this, and can be included in any Cython module that needs to
+     * iterate over C++ containers.
+     *
+     * This functionality is also baked into the Python-side equivalents of the data
+     * structures exposed in the `bertrand::structs` namespace.  For example, here's
+     * the implementation of the `__iter__()` method for the `LinkedList` class:
+     *
+     *      def __iter__(self):
+     *          return <object>(iter(self.variant).python())
+     *
+     * This would ordinarily be an extremely delicate operation with lots of potential
+     * for inefficiency and error, but the proxy's unified interface handles all of the
+     * heavy lifting for us and yields a valid Python iterator with minimal overhead.
+     */
 
     /* Create a forward Python iterator over the container using the begin()/end()
     methods. */
@@ -557,15 +676,15 @@ private:
 
     /* Construct an iterator proxy around a an lvalue container. */
     template <bool cond = rvalue, std::enable_if_t<!cond, int> = 0>
-    IterProxy(Container& container) : Base(container) {}
+    IterProxy(Container& c) : Base(c), convert(Func()) {}
     template <bool cond = rvalue, std::enable_if_t<!cond, int> = 0>
-    IterProxy(Container& container, Func convert) : Base(container, convert) {}
+    IterProxy(Container& c, Func f) : Base(c), convert(f) {}
 
     /* Construct an iterator proxy around an rvalue container. */
     template <bool cond = rvalue, std::enable_if_t<cond, int> = 0>
-    IterProxy(Container&& container) : Base(std::move(container)) {}
+    IterProxy(Container&& c) : Base(std::move(c)) {}
     template <bool cond = rvalue, std::enable_if_t<cond, int> = 0>
-    IterProxy(Container&& container, Func convert) : Base(std::move(container), convert) {}
+    IterProxy(Container&& c, Func f) : Base(std::move(c)), convert(f) {}
 };
 
 
@@ -761,80 +880,154 @@ private:
 // };
 
 
-///////////////////////////
-////    CONVERSIONS    ////
-///////////////////////////
-
+///////////////////////
+////    PRIVATE    ////
+///////////////////////
 
 
 /* A decorator for a standard C++ iterator that applies a custom conversion at
 each step. */
 template <typename Iterator, typename Func>
 class ConvertedIterator {
-    Iterator iter;
-    const Func convert;
+    Func convert;
+
+    /* Ensure that Func is callable with a single argument of the iterator's
+    dereferenced value type and infer the corresponding return type. */
+    using ConvTraits = FuncTraits<Func, decltype(*std::declval<Iterator>())>;
+    using ReturnType = typename ConvTraits::ReturnType;
+
+    /* Get iterator_traits from wrapped iterator. */
+    using IterTraits = std::iterator_traits<Iterator>;
+
+    /* Force SFINAE evaluation of the templated type. */
+    template <typename T>
+    static constexpr bool exists = std::is_same_v<T, T>;
+
+    /* Detect whether the templated type supports the -> operator. */
+    template <typename T, typename = void>  // default
+    struct arrow_operator {
+        using type = void;
+        static constexpr bool value = false;
+    };
+    template <typename T>  // specialization for smart pointers
+    struct arrow_operator<T, std::void_t<decltype(std::declval<T>().operator->())>> {
+        using type = decltype(std::declval<T>().operator->());
+        static constexpr bool value = true;
+    };
+    template <typename T>  // specialization for raw pointers
+    struct arrow_operator<T*> {
+        using type = T*;
+        static constexpr bool value = true;
+    };
 
 public:
+    Iterator wrapped;
+
+    /* Forwards for std::iterator_traits. */
+    using iterator_category = std::enable_if_t<
+        exists<typename IterTraits::iterator_category>,
+        typename IterTraits::iterator_category
+    >;
+    using pointer = std::enable_if_t<
+        exists<typename IterTraits::pointer>,
+        typename IterTraits::pointer
+    >;
+    using reference = std::enable_if_t<
+        exists<typename IterTraits::reference>,
+        typename IterTraits::reference
+    >;
+    using value_type = std::enable_if_t<
+        exists<typename IterTraits::value_type>,
+        typename IterTraits::value_type
+    >;
+    using difference_type = std::enable_if_t<
+        exists<typename IterTraits::difference_type>,
+        typename IterTraits::difference_type
+    >;
 
     /* Construct a converted iterator from a standard C++ iterator and a conversion
     function. */
-    inline ConvertedIterator(Iterator&& i, Func f) : iter(std::move(i)), convert(f) {}
+    inline ConvertedIterator(Iterator& i, Func f) : convert(f), wrapped(i) {}
+    inline ConvertedIterator(Iterator&& i, Func f) : convert(f), wrapped(std::move(i)) {}
+    inline ConvertedIterator(const ConvertedIterator& other) :
+        wrapped(other.wrapped), convert(other.convert)
+    {}
+    inline ConvertedIterator(ConvertedIterator&& other) :
+        wrapped(std::move(other.wrapped)), convert(std::move(other.convert))
+    {}
+    inline ConvertedIterator& operator=(const ConvertedIterator& other) {
+        wrapped = other.wrapped;
+        convert = other.convert;
+        return *this;
+    }
+    inline ConvertedIterator& operator=(ConvertedIterator&& other) {
+        wrapped = std::move(other.wrapped);
+        convert = std::move(other.convert);
+        return *this;
+    }
 
     /* Dereference the iterator and apply the conversion function. */
-    inline auto operator*() const {
-        return convert(*iter);
+    inline ReturnType operator*() const {
+        return convert(*wrapped);
     }
     template <typename T>
-    inline auto operator[](T&& index) const {
-        return convert(iter[index]);
+    inline ReturnType operator[](T&& index) const {
+        return convert(wrapped[index]);
+    }
+    template <
+        bool cond = arrow_operator<ReturnType>::value,
+        std::enable_if_t<cond, int> = 0
+    >
+    inline auto operator->() const -> typename arrow_operator<ReturnType>::type {
+        return this->operator*().operator->();
     }
 
-    /* Forward all other methods to the underlying iterator. */
+    /* Forward all other methods to the wrapped iterator. */
     inline ConvertedIterator& operator++() {
-        ++iter;
+        ++wrapped;
         return *this;
     }
     inline ConvertedIterator operator++(int) {
         ConvertedIterator temp(*this);
-        ++iter;
+        ++wrapped;
         return temp;
     }
     inline ConvertedIterator& operator--() {
-        --iter;
+        --wrapped;
         return *this;
     }
     inline ConvertedIterator operator--(int) {
         ConvertedIterator temp(*this);
-        --iter;
+        --wrapped;
         return temp;
     }
     inline bool operator==(const ConvertedIterator& other) const {
-        return iter == other.iter;
+        return wrapped == other.wrapped;
     }
     inline bool operator!=(const ConvertedIterator& other) const {
-        return iter != other.iter;
+        return wrapped != other.wrapped;
     }
     template <typename T>
     inline ConvertedIterator& operator+=(T&& other) {
-        iter += other;
+        wrapped += other;
         return *this;
     }
     template <typename T>
     inline ConvertedIterator& operator-=(T&& other) {
-        iter -= other;
+        wrapped -= other;
         return *this;
     }
     inline bool operator<(const ConvertedIterator& other) const {
-        return iter < other.iter;
+        return wrapped < other.wrapped;
     }
     inline bool operator>(const ConvertedIterator& other) const {
-        return iter > other.iter;
+        return wrapped > other.wrapped;
     }
     inline bool operator<=(const ConvertedIterator& other) const {
-        return iter <= other.iter;
+        return wrapped <= other.wrapped;
     }
     inline bool operator>=(const ConvertedIterator& other) const {
-        return iter >= other.iter;
+        return wrapped >= other.wrapped;
     }
 
     /* operator+ implemented as a non-member function for commutativity. */
@@ -864,38 +1057,44 @@ public:
 };
 
 
+/* Non-member operator+ overload to allow for commutativity. */
 template <typename T, typename Iterator, typename Func>
 ConvertedIterator<Iterator, Func> operator+(
     const ConvertedIterator<Iterator, Func>& iter,
     T n
 ) {
-    return iter.iter + n;
+    return ConvertedIterator<Iterator, Func>(iter.wrapped + n, iter.convert);
 }
 
 
+/* Non-member operator+ overload to allow for commutativity. */
 template <typename T, typename Iterator, typename Func>
-auto operator+(T n, const ConvertedIterator<Iterator, Func>& iter) {
-    return n + iter.iter;
+ConvertedIterator<Iterator, Func> operator+(
+    T n,
+    const ConvertedIterator<Iterator, Func>& iter
+) {
+    return ConvertedIterator<Iterator, Func>(n + iter.wrapped, iter.convert);
 }
 
 
+/* Non-member operator- overload to allow for commutativity. */
 template <typename T, typename Iterator, typename Func>
 ConvertedIterator<Iterator, Func> operator-(
     const ConvertedIterator<Iterator, Func>& iter,
     T n
 ) {
-    return iter.iter - n;
+    return ConvertedIterator<Iterator, Func>(iter.wrapped - n, iter.convert);
 }
 
 
+/* Non-member operator- overload to allow for commutativity. */
 template <typename T, typename Iterator, typename Func>
 ConvertedIterator<Iterator, Func> operator-(
     T n,
     const ConvertedIterator<Iterator, Func>& iter
 ) {
-    return n - iter.iter;
+    return ConvertedIterator<Iterator, Func>(n - iter.wrapped, iter.convert);
 }
-
 
 
 }  // namespace util

@@ -19,6 +19,9 @@
 #include "../../util/iter.h" // iter()
 
 
+#include <vector>  // std::vector
+
+
 namespace bertrand {
 namespace structs {
 namespace linked {
@@ -40,10 +43,28 @@ namespace list {
             original = list.view.tail();
         }
 
+
+
+
+        using util::iter;
+        auto conv = [&](int item) {
+            printf("hello world!\n");
+            return static_cast<double>(item) / 2;
+        };
+
+        std::vector<int> vec {1, 2, 3};
+        for (auto i : iter(vec, conv)) {
+            std::cout << i << std::endl;
+        }
+
+
+
+
+
         // proceed with extend
         try {
             util::PyIterable sequence(items);
-            for (PyObject* item : iter(sequence)) {
+            for (PyObject* item : sequence) {
                 append(list, item, left);
             }
 

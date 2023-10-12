@@ -184,14 +184,14 @@ private:
     {};
 
     /* Infer the return type for a C++ function or lambda. */
-    template <typename T, typename = void>
+    template <typename T, bool cond = (cat == Category::PYTHON_CALLABLE), typename = void>
     struct _ReturnType {
         using type = std::invoke_result_t<T, Args...>;
     };
 
     /* Infer the return type for a Python callable. */
-    template <typename T>
-    struct _ReturnType<T, std::enable_if_t<cat == Category::PYTHON_CALLABLE>> {
+    template <typename T, bool cond>
+    struct _ReturnType<T, cond, std::enable_if_t<cond, void>> {
         using type = PyObject*;
     };
 
