@@ -47,13 +47,13 @@ namespace list {
 
 
         using util::iter;
-        auto conv = [&](int item) {
-            printf("hello world!\n");
-            return static_cast<double>(item) / 2;
-        };
+        // auto conv = [&](int item) {
+        //     printf("hello world!\n");
+        //     return static_cast<double>(item) / 2;
+        // };
 
         std::vector<int> vec {1, 2, 3};
-        for (auto i : iter(vec, conv)) {
+        for (auto i : iter(vec).reverse()) {
             std::cout << i << std::endl;
         }
 
@@ -64,7 +64,7 @@ namespace list {
         // proceed with extend
         try {
             util::PyIterable sequence(items);
-            for (PyObject* item : sequence) {
+            for (PyObject* item : iter(sequence)) {
                 append(list, item, left);
             }
 

@@ -17,6 +17,15 @@ namespace structs {
 namespace util {
 
 
+/* A placeholder function that returns a single unmodified argument. */
+struct identity {
+    template <typename T>
+    inline constexpr T&& operator()(T&& value) const noexcept {
+        return std::forward<T>(value);
+    }
+};
+
+
 /* A collection of traits to allow compile-time introspection of C++ function pointers
 and Python callables. */
 template <typename Func, typename... Args>
