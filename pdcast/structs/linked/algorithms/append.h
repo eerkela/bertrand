@@ -14,8 +14,8 @@ namespace algorithms {
 namespace list {
 
     /* Add an item to the end of a linked list, set, or dictionary. */
-    template <typename ListLike>
-    void append(ListLike& list, PyObject* item, bool left) {
+    template <typename ListLike, typename Value = typename ListLike::Value>
+    void append(ListLike& list, Value& item, bool left) {
         using Node = typename ListLike::Node;
 
         // allocate a new node

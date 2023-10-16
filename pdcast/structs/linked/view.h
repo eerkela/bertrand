@@ -21,12 +21,370 @@ namespace structs {
 namespace linked {
 
 
-// TODO: Might be able to bring back inheritance between views.
+// TODO: ListView, SetView, and DictView should all be subclasses of BaseView, which
+// wraps a templated allocator.
+
+// TODO: BaseView should support a converting copy/move constructor that accepts
+// another BaseView with any type of allocator.
 
 
-////////////////////////
-////    LISTVIEW    ////
-////////////////////////
+
+/////////////////////////
+////    ITERATORS    ////
+/////////////////////////
+
+
+// TODO: put this below ViewTraits
+
+// TODO: these iterators should dereference to Value, not Node*.  The current node can
+// be accessed through the iterator's curr() method.
+// -> no need for LinkedBase to define its own iterator type.  We just make begin/end
+// methods that return the appropriate iterator type for the view.
+
+// TODO: iterator methods are specialized to only apply to subclasses of BaseView.
+// Public equivalents are keyed to only apply to subclasses of LinkedBase.
+
+
+
+/* enum makes iterator declarations more readable. */
+enum class Direction {
+    forward,
+    backward
+};
+
+
+
+// TODO: make StackReversed<> a decorator that wraps a forward iterator and reverses
+// it using a stack.  This replaces conditional compilation using a base class.
+
+
+
+/* Specialization for forward iterators or reverse iterators over doubly-linked
+lists. */
+template <typename Node, bool has_stack = false>
+class _Iterator {};
+
+
+/* Specialization for reverse iterators over singly-linked lists. */
+template <typename Node>
+class _Iterator<Node, true> {
+protected:
+    std::stack<Node*> stack;
+
+    /* Constructors to initialize conditional stack. */
+    _Iterator() {}
+    _Iterator(std::stack<Node*>&& stack) : stack(std::move(stack)) {}
+    _Iterator(const _Iterator& other) : stack(other.stack) {}
+    _Iterator(_Iterator&& other) : stack(std::move(other.stack)) {}
+};
+
+
+/* An iterator that traverses a list and keeps track of each node's neighbors. */
+template <typename Node, Direction dir>
+class Iterator {
+    using Base = _Iterator<has_stack>;
+
+public:
+    using View = ViewType;
+    using Node = typename View::Node;
+
+    // iterator tags for std::iterator_traits
+    using iterator_category     = std::forward_iterator_tag;
+    using difference_type       = std::ptrdiff_t;
+    using value_type            = Node*;
+    using pointer               = Node**;
+    using reference             = Node*&;
+
+    /////////////////////////////////
+    ////    ITERATOR PROTOCOL    ////
+    /////////////////////////////////
+
+    /* Dereference the iterator to get the node at the current position. */
+    inline Node* operator*() const noexcept {
+        return _curr;
+    }
+
+    /* Prefix increment to advance the iterator to the next node in the slice. */
+    inline Iterator& operator++() noexcept {
+        if constexpr (dir == Direction::backward) {
+            _next = _curr;
+            _curr = _prev;
+            if (_prev != nullptr) {
+                if constexpr (has_stack) {
+                    if (this->stack.empty()) {
+                        _prev = nullptr;
+                    } else {
+                        _prev = this->stack.top();
+                        this->stack.pop();
+                    }
+                } else {
+                    _prev = _prev->prev();
+                }
+            }
+        } else {
+            _prev = _curr;
+            _curr = _next;
+            if (_next != nullptr) {
+                _next = _next->next();
+            }
+        }
+        return *this;
+    }
+
+    /* Inequality comparison to terminate the slice. */
+    template <Direction T>
+    inline bool operator!=(const Iterator<T>& other) const noexcept {
+        return _curr != other._curr;
+    }
+
+    //////////////////////////////
+    ////    HELPER METHODS    ////
+    //////////////////////////////
+
+    /* Get the previous node in the list. */
+    inline Node* prev() const noexcept {
+        return _prev;
+    }
+
+    /* Get the current node in the list. */
+    inline Node* curr() const noexcept {
+        return _curr;
+    }
+
+    /* Get the next node in the list. */
+    inline Node* next() const noexcept {
+        return _next;
+    }
+
+    /* Insert a node at the current position. */
+    inline void insert(Node* node) {
+        // link new node
+        if constexpr (dir == Direction::backward) {
+            view.link(_curr, node, _next);
+        } else {
+            view.link(_prev, node, _curr);
+        }
+
+        // update iterator
+        if constexpr (dir == Direction::backward) {
+            if constexpr (has_stack) {
+                this->stack.push(_prev);
+            }
+            _prev = _curr;
+        } else {
+            _next = _curr;
+        }
+        _curr = node;
+    }
+
+    /* Remove the node at the current position. */
+    inline Node* remove() {
+        // unlink current node
+        Node* removed = _curr;
+        view.unlink(_prev, _curr, _next);
+
+        // update iterator
+        if constexpr (dir == Direction::backward) {
+            _curr = _prev;
+            if (_prev != nullptr) {
+                if constexpr (has_stack) {
+                    if (this->stack.empty()) {
+                        _prev = nullptr;
+                    } else {
+                        _prev = this->stack.top();
+                        this->stack.pop();
+                    }
+                } else {
+                    _prev = _prev->prev();
+                }
+            }
+        } else {
+            _curr = _next;
+            if (_next != nullptr) {
+                _next = _next->next();
+            }
+        }
+
+        // return removed node
+        return removed;
+    }
+
+    /* Replace the node at the current position. */
+    inline void replace(Node* node) {
+        // swap current node
+        view.unlink(_prev, _curr, _next);
+        view.link(_prev, node, _next);
+
+        // update iterator
+        view.recycle(_curr);
+        _curr = node;
+    }
+
+    /* Copy constructor. */
+    Iterator(const Iterator& other) :
+        Base(other), view(other.view), _prev(other._prev), _curr(other._curr),
+        _next(other._next)
+    {}
+
+    /* Copy constructor from a different direction. */
+    template <Direction T>
+    Iterator(const Iterator<T>& other) :
+        Base(other), view(other.view), _prev(other._prev), _curr(other._curr),
+        _next(other._next)
+    {}
+
+    /* Move constructor. */
+    Iterator(Iterator&& other) :
+        Base(std::move(other)), view(other.view), _prev(other._prev),
+        _curr(other._curr), _next(other._next)
+    {
+        other._prev = nullptr;
+        other._curr = nullptr;
+        other._next = nullptr;
+    }
+
+    /* Move constructor from a different direction. */
+    template <Direction T>
+    Iterator(Iterator<T>&& other) :
+        Base(std::move(other)), view(other.view), _prev(other._prev),
+        _curr(other._curr), _next(other._next)
+    {
+        other._prev = nullptr;
+        other._curr = nullptr;
+        other._next = nullptr;
+    }
+
+    /* Assignment operators deleted for simplicity. */
+    Iterator& operator=(const Iterator&) = delete;
+    Iterator& operator=(Iterator&&) = delete;
+
+protected:
+    friend IteratorFactory;
+    View& view;
+    Node* _prev;
+    Node* _curr;
+    Node* _next;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Initialize an empty iterator. */
+    Iterator(View& view) :
+        view(view), _prev(nullptr), _curr(nullptr), _next(nullptr)
+    {}
+
+    /* Initialize an iterator around a particular linkage within the list. */
+    Iterator(View& view, Node* prev, Node* curr, Node* next) :
+        view(view), _prev(prev), _curr(curr), _next(next)
+    {}
+
+    /* Initialize an iterator with a stack that allows reverse iteration over a
+    singly-linked list. */
+    template <bool cond = has_stack>
+    Iterator(
+        std::enable_if_t<cond, View&> view,
+        std::stack<Node*>&& prev,
+        Node* curr,
+        Node* next
+    ) :
+        Base(std::move(prev)), view(view), _prev(this->stack.top()), _curr(curr),
+        _next(next)
+    {
+        this->stack.pop();  // always has at least one element (nullptr)
+    }
+
+};
+
+
+/* A decorator for Iterator<> that converts a forward iterator into a reverse iterator
+using a temporary stack.
+
+NOTE: this is typically used to allow reverse iteration over a singly-linked list,
+which does not support reverse traversal by default.  It is not necessary for doubly-
+linked lists, which can be traversed natively in either direction.
+*/
+template <typename Iter>
+class StackReversed : public Iter {
+    std::stack<Node*> stack;
+
+public:
+
+};
+
+
+/* The iterator protocol is implemented using non-member ADL method to allow generic
+ * iteration over any subclass of BaseView.  This means we can use the same iterators
+ * for lists, sets, and dictionaries, without having to duplicate code between them.
+ *
+ * NOTE: this method is called internally by the `iter()` function when iterating over
+ * a linked data structure.  Users should never need to call it directly - `iter()`
+ * should always be preferred for compatibility with Python and other C++ containers,
+ * as well as its generally simpler/more readable interface.
+ */
+
+
+// TODO: if we put these methods in LinkedBase, then we don't need to conditionally
+// enable them, and we can share templates with the View.
+
+
+/* Get a forward iterator over a linked data structure. */
+template <
+    typename View,
+    typename Node,
+    typename Allocator,
+    std::enable_if_t<std::is_base_of_v<BaseView<Node, Allocator>, View>, int> = 0
+>
+Iterator<Direction::forward> begin();
+
+
+/* Terminate a forward iteration over a linked data structure. */
+template <
+    typename View,
+    typename Node,
+    typename Allocator,
+    std::enable_if_t<std::is_base_of_v<BaseView<Node, Allocator>, View>, int> = 0
+>
+Iterator<Direction::forward> end();
+
+
+/* Get a reverse iterator over a linked data structure. */
+template <
+    typename View,
+    typename Node,
+    typename Allocator,
+    std::enable_if_t<std::is_base_of_v<BaseView<Node, Allocator>, View>, int> = 0
+>
+auto rbegin() -> std::conditional_t<
+    ViewTraits<View>::doubly_linked,
+    Iterator<Direction::backward>,
+    StackReversed<Iterator<Direction::forward>>
+>;
+
+
+/* Terminate a reverse iteration over a linked data structure. */
+template <
+    typename View,
+    typename Node,
+    typename Allocator,
+    std::enable_if_t<std::is_base_of_v<BaseView<Node, Allocator>, View>, int> = 0
+>
+auto rend() -> std::conditional_t<
+    ViewTraits<View>::doubly_linked,
+    Iterator<Direction::backward>,
+    StackReversed<Iterator<Direction::forward>>
+>;
+
+
+////////////////////
+////    BASE    ////
+////////////////////
+
+
+// TODO: BaseView includes every list method except consolidate().
+// -> consolidate() -> defragment()?  For lists this would rearrange nodes into
+// sequential order.  For sets/dicts, it would remove all tombstones and rehash the
+// table.
 
 
 // TODO: separate into BaseView and ListView.  BaseView is templated to accept an
@@ -34,8 +392,77 @@ namespace linked {
 // uses ListAllocator by default.  BaseView also anchors ViewTraits.
 
 
-/* A pure C++ linked list data structure with customizable node types and allocation
-strategies. */
+// TODO: maybe sort() should just be generic, rather than casting to ListView.  That
+// would completely eliminate the need for converting copies/moves.
+
+
+/* Low-level base class representing the internal state of a linked data structure.
+
+Views are responsible for managing the memory of and links between the underlying
+nodes, as well as references to the head/tail of the list and its current size.  They
+are essentially wrappers around a raw memory allocator that exposes the following
+interface:
+
+class Allocator {
+public:
+    Node* head;
+    Node* tail;
+    size_t occupied;  // equivalent to size()
+    PyObject* specialization;
+
+    Node* create(Args...);  // forward to Node constructor
+    void recycle(Node* node);
+    void clear();
+    void specialize(PyObject* spec);
+    size_t nbytes();
+};
+
+To this, they add a number of convenience methods for manipulating the list, including
+the insertion/removal of nodes, iteration over the list, and whole-list copies/clears.
+*/
+template <typename NodeType, typename Allocator>
+class BaseView {
+
+
+protected:
+
+};
+
+
+////////////////////////
+////    LISTVIEW    ////
+////////////////////////
+
+
+/* A linked data structure that uses a dynamic array to store nodes in sequential
+order.
+
+ListViews use a similar memory layout to std::vector and the built-in Python list.  It
+initially allocates a small array of nodes (8 in this case), and advances an internal
+pointer whenever a new node is constructed.  When the array is full, it allocates a new
+array of twice the size and moves the old nodes into the new array.  This strategy is
+significantly more efficient than allocating nodes individually on the heap, which is
+typical for linked lists and incurs a large overhead for each allocation.  The
+sequential memory layout also avoids memory fragmentation, improving cache locality and
+overall performance.  This gives the list amortized O(1) insertion time comparable to
+std::vector or its Python equivalent, and much faster than std::list.
+
+Whenever a node is removed from the list, its memory is returned to the allocator array
+and inserted into a linked list of recycled nodes.  This list is composed directly from
+the removed nodes themselves, avoiding auxiliary data structures and unnecessary memory
+overhead.  When a new node is constructed, the free list is checked to see if there are
+any available nodes.  If there are, the node is removed from the free list and reused.
+Otherwise, a new node is allocated from the array, causing it to grow if necessary.
+Conversely, if a linked list's size drops to below 1/4 of its capacity, its allocator
+array will be shrunk to half its current size.
+
+As an additional optimization, linked lists prefer to store their nodes in strictly
+sequential order, which ensures optimal alignment at the hardware level.  This is
+accomplished by transferring nodes in their current list order whenever we grow or
+shrink the internal array.  This periodically defragments the list as elements are
+added and removed, requiring no additional overhead beyond an ordinary copy.  If
+necessary, this process can also be triggered manually via the consolidate() method.
+*/
 template <
     typename NodeType = DoubleNode<PyObject*>,
     typename Allocator = ListAllocator<NodeType>

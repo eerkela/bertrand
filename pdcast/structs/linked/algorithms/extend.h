@@ -31,9 +31,10 @@ namespace algorithms {
 namespace list {
 
     /* Add multiple items to the end of a list, set, or dictionary. */
-    template <typename ListLike>
-    inline void extend(ListLike& list, PyObject* items, bool left) {
+    template <typename ListLike, typename Iterable>
+    inline void extend(ListLike& list, Iterable& items, bool left) {
         using Node = typename ListLike::Node;
+        using util::iter;
 
         // note original head/tail in case of error
         Node* original;
@@ -43,36 +44,16 @@ namespace list {
             original = list.view.tail();
         }
 
-
-
-
-        using util::iter;
-        // auto conv = [&](int item) {
-        //     printf("hello world!\n");
-        //     return static_cast<double>(item) / 2;
-        // };
-
-        std::vector<int> vec {1, 2, 3};
-        for (auto i : iter(vec).reverse()) {
-            std::cout << i << std::endl;
-        }
-
-
-
-
-
         // proceed with extend
         try {
-            util::PyIterable sequence(items);
-            for (PyObject* item : iter(sequence)) {
+            for (auto item : iter(items)) {
                 append(list, item, left);
             }
 
         // if an error occurs, clean up any nodes that were added to the list
         } catch (...) {
             if (left) {
-                // if we appended to the left, then just remove until we reach the
-                // original head
+                // if we linked to head, just remove until we reach the original head
                 Node* curr = list.view.head();
                 while (curr != original) {
                     Node* next = curr->next();
@@ -81,8 +62,7 @@ namespace list {
                     curr = next;
                 }
             } else {
-                // otherwise, start from the original tail and remove until we reach
-                // the end of the list
+                // otherwise, start from original tail and remove until end of list
                 Node* curr = original->next();
                 while (curr != nullptr) {
                     Node* next = curr->next();
@@ -91,7 +71,7 @@ namespace list {
                     curr = next;
                 }
             }
-            throw;  // propagate error
+            throw;  // propagate
         }
     }
 

@@ -855,12 +855,12 @@ public:
         // iterator tags for std::iterator_traits
         using iterator_category     = std::forward_iterator_tag;
         using difference_type       = std::ptrdiff_t;
-        using value_type            = ReturnType;
-        using pointer               = ReturnType*;
-        using reference             = ReturnType&;
+        using value_type            = std::remove_reference_t<ReturnType>;
+        using pointer               = value_type*;
+        using reference             = value_type&;
 
         /* Get current item. */
-        ReturnType operator*() const {
+        value_type operator*() const {
             if constexpr (is_identity) {
                 return curr;  // no conversion necessary
             } else {

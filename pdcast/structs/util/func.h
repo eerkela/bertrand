@@ -20,8 +20,8 @@ namespace util {
 /* A placeholder function that returns a single unmodified argument. */
 struct identity {
     template <typename T>
-    inline constexpr T&& operator()(T&& value) const noexcept {
-        return std::forward<T>(value);
+    inline decltype(auto) operator()(T&& arg) const noexcept {
+        return std::forward<T>(arg);
     }
 };
 
