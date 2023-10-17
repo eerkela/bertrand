@@ -311,12 +311,22 @@ public:
 
     /* Return a forward iterator over the list. */
     inline PyObject* iter() {
-        return std::visit([&](auto& list) { return list.iter.python(); }, variant);
+        return std::visit(
+            [&](auto& list) {
+                return util::iter(list).python();
+            },
+            variant
+        );
     }
 
     /* Return a reverse iterator over the list. */
     inline PyObject* riter() {
-        return std::visit([&](auto& list) { return list.iter.rpython(); }, variant);
+        return std::visit(
+            [&](auto& list) {
+                return util::iter(list).rpython();
+            },
+            variant
+        );
     }
 
     /* Forward the list's lock() functor. */

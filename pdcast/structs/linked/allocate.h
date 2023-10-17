@@ -35,8 +35,11 @@ const bool DEBUG = true;
 
 
 /* A custom allocator that uses a dynamic array to manage memory for each node. */
-template <typename Node>
+template <typename NodeType>
 class ListAllocator {
+public:
+    using Node = NodeType;
+
 private:
     static const size_t DEFAULT_CAPACITY = 8;  // minimum array size
 

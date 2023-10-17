@@ -31,34 +31,34 @@ namespace algorithms {
 namespace list {
 
     /* Add multiple items to the end of a list, set, or dictionary. */
-    template <typename ListLike, typename Iterable>
-    inline void extend(ListLike& list, Iterable& items, bool left) {
-        using Node = typename ListLike::Node;
+    template <typename View, typename Iterable>
+    inline void extend(View& view, Iterable& items, bool left) {
+        using Node = typename View::Node;
         using util::iter;
 
         // note original head/tail in case of error
         Node* original;
         if (left) {
-            original = list.view.head();
+            original = view.head();
         } else {
-            original = list.view.tail();
+            original = view.tail();
         }
 
         // proceed with extend
         try {
             for (auto item : iter(items)) {
-                append(list, item, left);
+                append(view, item, left);
             }
 
         // if an error occurs, clean up any nodes that were added to the list
         } catch (...) {
             if (left) {
                 // if we linked to head, just remove until we reach the original head
-                Node* curr = list.view.head();
+                Node* curr = view.head();
                 while (curr != original) {
                     Node* next = curr->next();
-                    list.view.unlink(nullptr, curr, next);
-                    list.view.recycle(curr);
+                    view.unlink(nullptr, curr, next);
+                    view.recycle(curr);
                     curr = next;
                 }
             } else {
@@ -66,8 +66,8 @@ namespace list {
                 Node* curr = original->next();
                 while (curr != nullptr) {
                     Node* next = curr->next();
-                    list.view.unlink(original, curr, next);
-                    list.view.recycle(curr);
+                    view.unlink(original, curr, next);
+                    view.recycle(curr);
                     curr = next;
                 }
             }

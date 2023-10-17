@@ -18,9 +18,16 @@ namespace structs {
 
 
 /* Base class that forwards the public members of the underlying view. */
-template <typename View, typename Lock, const std::string_view& name>
+template <typename ViewType, typename LockType, const std::string_view& name>
 class LinkedBase {
 public:
+    using View = ViewType;
+    using Node = typename View::Node;
+    using Value = typename View::Value;
+
+    template <linked::Direction dir>
+    using Iterator = typename View::template Iterator<dir>;
+
     /* Every LinkedList contains a view that manages low-level node
     allocation/deallocation and links between nodes. */
     View view;
@@ -77,129 +84,24 @@ public:
     ////    ITERATOR PROTOCOL    ////
     /////////////////////////////////
 
-    /* Forward the view.iter() functor. */
-    class IteratorFactory {
-    public:
-        /* A wrapper around a view iterator that yields values rather than nodes. */
-        template <linked::Direction dir>
-        class Iterator {
-            using Wrapped = typename View::template Iterator<dir>;
-
-        public:
-            /* iterator tags for std::iterator_traits */
-            using iterator_category     = typename Wrapped::iterator_category;
-            using difference_type       = typename Wrapped::difference_type;
-            using value_type            = typename Wrapped::Node::Value;
-            using pointer               = typename Wrapped::Node::Value*;
-            using reference             = typename Wrapped::Node::Value&;
-
-            /* Dereference the iterator to get the value at the current node. */
-            inline PyObject* operator*() const {
-                return (*iter)->value();
-            }
-
-            /* Advance the iterator to the next node. */
-            inline Iterator& operator++() {
-                ++iter;
-                return *this;
-            }
-
-            /* Inequality comparison to terminate the loop. */
-            inline bool operator!=(const Iterator& other) const {
-                return iter != other.iter;
-            }
-
-        private:
-            friend IteratorFactory;
-            Wrapped iter;
-
-            Iterator(Wrapped&& iter) : iter(std::move(iter)) {}
-        };
-
-        /* Invoke the functor to get a coupled iterator over the list. */
-        inline auto operator()() const {
-            return util::CoupledIterator<Iterator<linked::Direction::forward>>(
-                parent.iter()
-            );
-        }
-
-        /* Get a coupled reverse iterator over the list. */
-        inline auto reverse() const {
-            return util::CoupledIterator<Iterator<linked::Direction::backward>>(
-                parent.iter.reverse()
-            );
-        }
-
-        /* Get a forward iterator to the head of the list. */
-        inline auto begin() const {
-            return Iterator<linked::Direction::forward>(parent.view.begin());
-        }
-
-        /* Get an empty forward iterator to terminate the sequence. */
-        inline auto end() const {
-            return Iterator<linked::Direction::forward>(parent.view.end());
-        }
-
-        /* Get a backward iterator to the tail of the list. */
-        inline auto rbegin() const {
-            return Iterator<linked::Direction::backward>(parent.view.rbegin());
-        }
-
-        /* Get an empty backward iterator to terminate the sequence. */
-        inline auto rend() const {
-            return Iterator<linked::Direction::backward>(parent.view.rend());
-        }
-
-        /* Get a forward Python iterator over the list. */
-        inline PyObject* python() const {
-            static constexpr std::string_view suffix = ".iter";
-            using Iter = util::PyIterator<
-                Iterator<linked::Direction::forward>, util::string::concat<name, suffix>
-            >;
-
-            // create Python iterator over list
-            return Iter::init(begin(), end());
-        }
-
-        /* Get a reverse Python iterator over the list. */
-        inline PyObject* rpython() const {
-            static constexpr std::string_view suffix = ".reverse_iter";
-            using Iter = util::PyIterator<
-                Iterator<linked::Direction::backward>, util::string::concat<name, suffix>
-            >;
-
-            // create Python iterator over list
-            return Iter::init(rbegin(), rend());
-        }
-
-    private:
-        friend LinkedBase;
-        LinkedBase<View, Lock, name>& parent;
-
-        IteratorFactory(LinkedBase<View, Lock, name>& parent) : parent(parent) {}
-    };
-
-    /* Functor to create various kinds of iterators over the list. */
-    const IteratorFactory iter;
-
     /* Get a forward iterator to the start of the list. */
-    inline auto begin() const {
-        return iter.begin();
+    inline Iterator<linked::Direction::forward> begin() const {
+        return view.begin();
     }
 
     /* Get a forward iterator to the end of the list. */
-    inline auto end() const {
-        return iter.end();
+    inline Iterator<linked::Direction::forward> end() const {
+        return view.end();
     }
 
     /* Get a reverse iterator to the end of the list. */
-    inline auto rbegin() const {
-        return iter.rbegin();
+    inline Iterator<linked::Direction::backward> rbegin() const {
+        return view.rbegin();
     }
 
     /* Get a reverse iterator to the start of the list. */
-    inline auto rend() const {
-        return iter.rend();
+    inline Iterator<linked::Direction::backward> rend() const {
+        return view.rend();
     }
 
     ///////////////////////////////
@@ -207,7 +109,7 @@ public:
     ///////////////////////////////
 
     /* Adapt lock policy to allow for Python context managers as locks. */
-    class LockFactory : public Lock {
+    class LockFactory : public LockType {
     public:
 
         /* Wrap a lock guard as a Python context manager. */
@@ -221,7 +123,7 @@ public:
         // TODO: shared_python() is exactly the same as python().
 
         /* Wrap a shared lock as a Python context manager. */
-        template <bool is_shared = Lock::is_shared, typename... Args>
+        template <bool is_shared = LockType::is_shared, typename... Args>
         inline auto shared_python(Args&&... args) const
             -> std::enable_if_t<is_shared, PyObject*>
         {
@@ -265,7 +167,8 @@ protected:
     LinkedBase(
         std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr
-    ) : view(max_size, spec), iter(*this)
+    ) :
+        view(max_size, spec)
     {}
 
     /* Construct a list from an input iterable. */
@@ -274,23 +177,20 @@ protected:
         bool reverse = false,
         std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr
-    ) : view(iterable, reverse, max_size, spec), iter(*this)
+    ) :
+        view(iterable, reverse, max_size, spec)
     {}
 
     /* Construct a list from a base view. */
-    LinkedBase(View&& view) : view(std::move(view)), iter(*this) {}
+    LinkedBase(View&& view) : view(std::move(view)) {}
 
     // TODO: construct from iterators?
 
     /* Copy constructor. */
-    LinkedBase(const LinkedBase& other) :
-        view(other.view), iter(*this)
-    {}
+    LinkedBase(const LinkedBase& other) : view(other.view) {}
 
     /* Move constructor. */
-    LinkedBase(LinkedBase&& other) :
-        view(std::move(other.view)), iter(*this)
-    {}
+    LinkedBase(LinkedBase&& other) : view(std::move(other.view)) {}
 
     /* Copy assignment operator. */
     LinkedBase& operator=(const LinkedBase& other) {
