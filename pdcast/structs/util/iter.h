@@ -378,14 +378,39 @@ class IterProxy {
     /* Get the Python-compatible name of the templated iterator, defaulting to the
     mangled C++ type name. */
     template <typename Iter, typename = void>
-    struct type_name {
-        static constexpr std::string_view value { typeid(Iter).name() };
+    struct TypeName {
+        /* NOTE: name mangling is not standardized across compilers, so we have to
+         * use platform-specific macros to get the correct name.
+         *
+         * GCC and Clang both use __PRETTY_FUNCTION__, which returns a string of the
+         * following form:
+         *
+         *      constexpr std::string_view TypeName<Iter>::get() [with Iter = ...]
+         */
+
+        #if defined(__GNUC__) || defined(__clang__)
+            static constexpr std::string_view get() {
+                // get the full function signature as a string
+                constexpr const char* sig = __PRETTY_FUNCTION__;
+
+                // Find start of the type name
+                constexpr const char* prefix = "with Iter = ";
+                constexpr const char* start = std::strstr(sig, prefix);
+                
+            }
+        #elif defined(_MSC_VER)
+            static constexpr std::string_view get() { return __FUNCSIG__; }
+        #else
+            static_assert(false, "Unsupported compiler");
+        #endif
+
+        static constexpr std::string_view value = get();
     };
 
     /* Get the Python-compatible name of the templated iterator, using the static
     `name` attribute if it is available. */
     template <typename Iter>
-    struct type_name<Iter, std::void_t<decltype(Iter::name)>> {
+    struct TypeName<Iter, std::void_t<decltype(Iter::name)>> {
         static constexpr std::string_view value { Iter::name };
     };
 
@@ -472,7 +497,7 @@ class IterProxy {
             using wrapper = conversion_wrapper<base_type, is_identity>; \
             using type = typename wrapper::type; \
             static constexpr bool exists = true; \
-            static constexpr std::string_view name { type_name<type>::value }; \
+            static constexpr std::string_view name { TypeName<type>::value }; \
             inline static type call(Iterable& iterable, Func func) { \
                 return wrapper::decorate(iterable.METHOD(), func); \
             } \
@@ -492,7 +517,7 @@ class IterProxy {
             using wrapper = conversion_wrapper<base_type, is_identity>; \
             using type = typename wrapper::type; \
             static constexpr bool exists = true; \
-            static constexpr std::string_view name { type_name<type>::value }; \
+            static constexpr std::string_view name { TypeName<type>::value }; \
             inline static type call(Iterable& iterable, Func func) { \
                 return wrapper::decorate(METHOD(iterable), func); \
             } \
@@ -514,7 +539,7 @@ class IterProxy {
             using wrapper = conversion_wrapper<base_type, is_identity>; \
             using type = typename wrapper::type; \
             static constexpr bool exists = true; \
-            static constexpr std::string_view name { type_name<type>::value }; \
+            static constexpr std::string_view name { TypeName<type>::value }; \
             inline static type call(Iterable& iterable, Func func) { \
                 return wrapper::decorate(std::METHOD(iterable), func); \
             } \
