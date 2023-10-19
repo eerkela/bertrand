@@ -115,9 +115,10 @@ public:
         /* Wrap a lock guard as a Python context manager. */
         template <typename... Args>
         inline PyObject* python(Args&&... args) const {
-            static constexpr std::string_view suffix = ".lock";
+            // static constexpr std::string_view suffix = ".lock";
             using namespace util;
-            return PyLock<LockFactory, string::concat<name, suffix>>::init(this);
+            // return PyLock<LockFactory, path::concat_v<name, suffix>>::init(this);
+            return PyLock<LockFactory>::init(this);
         }
 
         // TODO: shared_python() is exactly the same as python().
@@ -127,9 +128,10 @@ public:
         inline auto shared_python(Args&&... args) const
             -> std::enable_if_t<is_shared, PyObject*>
         {
-            static constexpr std::string_view suffix = ".shared_lock";
+            // static constexpr std::string_view suffix = ".shared_lock";
             using namespace util;
-            return PyLock<LockFactory, string::concat<name, suffix>>::init(this);
+            // return PyLock<LockFactory, path::concat_v<name, suffix>>::init(this);
+            return PyLock<LockFactory>::init(this);
         }
 
     };

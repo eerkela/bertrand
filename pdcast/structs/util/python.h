@@ -6,6 +6,7 @@
 #include <Python.h>  // CPython API
 #include "coupled_iter.h"  // CoupledIterator
 #include "slot.h"  // Slot
+#include "string.h"  // PyName
 
 
 /* NOTE: This file contains a collection of helper classes for interacting with the
@@ -49,7 +50,7 @@ namespace util {
 
 
 /* A wrapper around a C++ iterator that allows it to be used from Python. */
-template <typename Iterator, const std::string_view& name>
+template <typename Iterator>
 class PyIterator {
     // sanity check
     static_assert(
@@ -74,7 +75,6 @@ class PyIterator {
     PyIterator(PyIterator&&) = delete;
 
 public:
-
     /* Construct a Python iterator from a C++ iterator range. */
     inline static PyObject* init(Iterator&& begin, Iterator&& end) {
         // create new iterator instance
@@ -122,11 +122,10 @@ public:
     }
 
 private:
-
     /* Initialize a PyTypeObject to represent this iterator from Python. */
     static PyTypeObject init_type() {
         PyTypeObject type_obj;  // zero-initialize
-        type_obj.tp_name = name.data();
+        type_obj.tp_name = PyName<Iterator>::value.data();
         type_obj.tp_doc = "Python-compatible wrapper around a C++ iterator.";
         type_obj.tp_basicsize = sizeof(PyIterator);
         type_obj.tp_flags = (

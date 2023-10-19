@@ -36,41 +36,107 @@ namespace util {
  *
  * In order to generate a Python-compatible name for a C++ type, we need to do the
  * following:
- *      - If the type defines a `static constexpr std::string_view type_name` attribute,
- *        then we can use that directly.  This allows users to configure custom names
- *        for their types, which will be reflected at the Python level.
+ *      - If a specific specialization of `PyName` exists for a given type, then we
+ *        can use that directly.  This works as long as the specialization exposes a
+ *        `static constexpr std::string_view value{ ... }` public member, which will
+ *        be reflected at the Python level for any PyObject* wrappers around the given
+ *        type.
  *      - Otherwise, we need to generate a name ourselves.  This is done by getting the
- *        mangled type name using compiler macros, and then sanitizing it to remove
- *        invalid characters.  This allows us to generate a name that is guaranteed to
- *        be unique for each type, but is still human-readable at the Python level.
+ *        raw type name using compiler macros, and then mangling it with a unique hash
+ *        sanitizing it to remove invalid characters.  This allows us to generate a
+ *        name that is guaranteed to be unique for each type, but is still
+ *        human-readable at the Python level.
  *              NOTE: automatic naming relies on compiler support and is not guaranteed
  *              to work across all platforms.  At minimum, it should be compatible with
  *              most popular compilers (including GCC, Clang, and MSVC), but the
  *              specific implementation may need to be tweaked over time as compiler
  *              standards evolve.
  *
- * Additionally, these strings may need to be concatenated to form a dotted name.  If
- * we're careful, we can do this at compile-time as well, which allows us to generate
- * the full dotted name for an arbitrary type and bake it into the final binary.  There
- * is thus no runtime overhead for using these names, and they can be passed up to
- * Python without any additional work.
+ * Additionally, these strings may need to be concatenated to form a dotted name.  The
+ * `Path` class provides a mechanism to do exactly that.  The syntax for doing so is as
+ * follows:
+ *
+ * constexpr std::string_view name = Path::dotted<PyName<T>::value, PyName<U>::value, ...>;
  */
 
 
-/* Get the Python-compatible name of the templated iterator, defaulting to the
-mangled C++ type name. */
-template <typename T, typename = void>
-class TypeName {
+/* Compile-time string concatenation for dotted Python names and other uses. */
+class Path {
+    static constexpr std::string_view dot = ".";
 
-/* Extract the fully qualified C++ name of the templated class.
+    /* Concatenate a sequence of std::string_views at compile-time. */
+    template <const std::string_view&... Strings>
+    class _concat {
+        /* Join all strings into a single std::array of chars with static storage. */
+        static constexpr auto array = [] {
+            // Get array with size equal to total length of strings 
+            constexpr size_t len = (Strings.size() + ... + 0);
+            std::array<char, len + 1> array{};
 
-    NOTE: name mangling is not standardized across compilers, so we have to use
-    platform-specific macros here.  The */
+            // Append each string to the array
+            auto append = [i = 0, &array](const auto& str) mutable {
+                for (auto c : str) array[i++] = c;
+            };
+            (append(Strings), ...);
+            array[len] = 0;  // null-terminate
+            return array;
+        }();
+
+    public:
+        /* Get the concatenated string as a std::string_view. */
+        static constexpr std::string_view value { array.data(), array.size() - 1 };
+    };
+
+    /* Recursive template specializations to form a Python-style dotted path by
+    interleaving `.` characters in between each concatenated string. */
+    template <const std::string_view&...>
+    struct _dotted;
+    template <const std::string_view& First, const std::string_view&... Rest>
+    struct _dotted<First, Rest...> {
+        static constexpr std::string_view value = (
+            _concat<First, dot, _dotted<Rest...>::value>::value
+        );
+    };
+    template <const std::string_view& Last>
+    struct _dotted<Last> {
+        static constexpr std::string_view value = Last;
+    };
+
+public:
+    /* Concatenate strings directly at compile time, without using a separator. */
+    template <const std::string_view&... Strings>
+    static constexpr std::string_view concat = _concat<Strings...>::value;
+
+    /* Form a Python-style dotted name at compile time, with a `.` character between
+    each concatenated string. */
+    template <const std::string_view&... Strings>
+    static constexpr std::string_view dotted = _dotted<Strings...>::value;
+};
+
+
+/* Get the Python-compatible name of the templated iterator, defaulting to a mangled
+C++ type name.
+
+NOTE: name mangling is not standardized across compilers, so we have to use
+platform-specific macros in the general case.  This is less than desirable, but as of
+C++17, it is the only way to introspect a unique name for an arbitrary type at
+compile-time.  If this fails, or if a different name is desired, users can provide their
+own specializations of this class to inject a custom name.
+
+Automatic naming is supported on the following compilers:
+    - GCC (>= 11.0.0)
+    - Clang (>= 15.0.0)
+    - MSVC (>= 19.29.30038)
+*/
+template <typename T>
+class PyName {
+
+    /* Extract the fully qualified C++ name of the templated class. */
     #if (defined(__GNUC__) && __GNUC__ >= 11) || (defined(__clang__) && __clang_major__ >= 16)
         /* GCC and Clang both support the __PRETTY_FUNCTION__ macro, which gives us
          * a string of the following form:
          *
-         * constexpr std::string_view bertrand::structs::util::TypeName<T>::extract() [with T = <type>; ...]
+         * constexpr std::string_view bertrand::structs::util::PyName<T>::_signature() [with T = <type>; ...]
          *
          * Where <type> is the name we want to extract.
          */
@@ -116,40 +182,17 @@ class TypeName {
         /* Extract the qualified name from the compiled function signature. */
         static constexpr std::string_view extract() { return __FUNCSIG__; }
     #else
-        /* Otherwise, automatic naming is not supported.  In this case, we will have to
-         * manually name each object using the `type_name` attribute described above.
+        /* Otherwise, automatic naming is not supported.  In this case, an explicit
+         * specialization of this class must be provided to generate a compatible name.
          */
         static_assert(
             false,
             "Automatic naming is only supported in GCC (>= 11.0.0) and clang "
-            "(>= 15.0.0)-based compilers - please define a `static constexpr "
-            "std::string_view type_name` attribute for this type to generate "
-            "Python-compatible names."
+            "(>= 15.0.0)-based compilers - please define a specialization of "
+            "`bertrand::structs::util::PyName` to generate Python-compatible names "
+            "for this type."
         );
     #endif
-
-    /* Concatenate a sequence of std::string_views at compile-time. */
-    template <const std::string_view&... Strings>
-    class concat {
-        /* Join all strings into a single std::array of chars with static storage. */
-        static constexpr auto array = [] {
-            // Get array with size equal to total length of strings 
-            constexpr size_t len = (Strings.size() + ... + 0);
-            std::array<char, len + 1> array{};
-
-            // Append each string to the array
-            auto append = [i = 0, &array](const auto& s) mutable {
-                for (auto c : s) array[i++] = c;
-            };
-            (append(Strings), ...);
-            array[len] = 0;  // null-terminate
-            return array;
-        }();
-
-    public:
-        /* Get the concatenated string as a std::string_view. */
-        static constexpr std::string_view value { array.data(), array.size() - 1 };
-    };
 
     /* Find the first occurrence of a substring within a string at compile time. */
     static constexpr const char* find_substring(const char* str, const char* substr) {
@@ -199,10 +242,10 @@ class TypeName {
     static constexpr std::string_view hash_str{hash_array.data()};
 
     /* Concatenate name and hash. */
-    static constexpr std::string_view concatenated = concat<raw_name, hash_str>::value;
+    static constexpr std::string_view concatenated = Path::concat<raw_name, hash_str>;
 
     /* Sanitize output, converting invalid characters into underscores.
-    
+
     NOTE: because we previously appended a hash to the end of the type name, we can
     guarantee that sanitization will not produce an unintended name collision. */
     static constexpr std::array<char, concatenated.size() + 1> sanitized = [] {
@@ -223,28 +266,16 @@ class TypeName {
         return sanitized;
     }();
 
-    /* dot for concatenating names into dotted Python paths. */
-    static constexpr std::string_view dot = ".";
-
 public:
-    /* The original signature that was generated by the compiler, for debugging
-    purposes. */
-    static constexpr const char* signature = _signature();
-
     /* A unique, Python-compatible type name computed at compile time. */
     static constexpr std::string_view value{sanitized.data()};
 
-    /* Extend this type's dotted name with another string. */
-    template <const std::string_view& Other>
-    static constexpr std::string_view extend = concat<value, dot, Other>::value;
-};
+    /* The original signature that was generated by the compiler (for debugging
+    purposes).
 
-
-/* Get the Python-compatible name of the templated iterator, using the static
-`name` attribute if it is available. */
-template <typename T>
-struct TypeName<T, std::void_t<decltype(T::name)>> {
-    static constexpr std::string_view value { T::name };
+    NOTE: this is not needed in specializations of this class.  It's meant solely to
+    make debugging compiler interactions more straightforward. */
+    static constexpr const char* signature = _signature();
 };
 
 

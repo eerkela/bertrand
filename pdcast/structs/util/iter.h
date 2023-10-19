@@ -4,10 +4,10 @@
 
 #include <optional>  // std::optional
 #include <string_view>  // std::string_view
-#include <type_traits>
+#include <type_traits>  // std::enable_if_t, std::is_same_v, std::void_t
 #include <typeinfo>  // typeid
 #include <Python.h>  // CPython API
-#include <utility>
+#include <utility>  // std::declval, std::move
 #include "coupled_iter.h"  // CoupledIterator
 #include "func.h"  // identity, FuncTraits
 #include "python.h"  // PyIterator
@@ -49,109 +49,6 @@ namespace util {
  *      rpython()           // (rbegin() + rend())
  *      crpython()          // (crbegin() + crend())
  */
-
-
-// /* A wrapper around a C++ iterator that allows it to be used from Python. */
-// template <typename Iterator, const std::string_view& name>
-// class PyIterator {
-//     // sanity check
-//     static_assert(
-//         std::is_convertible_v<typename Iterator::value_type, PyObject*>,
-//         "Iterator must dereference to PyObject*"
-//     );
-
-//     /* Store coupled iterators as raw data buffers.
-    
-//     NOTE: PyObject_New() does not allow for traditional stack allocation like we would
-//     normally use to store the wrapped iterators.  Instead, we have to delay construction
-//     until the init() method is called.  We could use pointers to heap-allocated memory
-//     for this, but this adds extra allocation overhead.  Using raw data buffers avoids
-//     this and places the iterators on the stack, where they belong. */
-//     PyObject_HEAD
-//     Slot<Iterator> first;
-//     Slot<Iterator> second;
-
-//     /* Force users to use init() factory method. */
-//     PyIterator() = delete;
-//     PyIterator(const PyIterator&) = delete;
-//     PyIterator(PyIterator&&) = delete;
-
-// public:
-
-//     /* Construct a Python iterator from a C++ iterator range. */
-//     inline static PyObject* init(Iterator&& begin, Iterator&& end) {
-//         // create new iterator instance
-//         PyIterator* result = PyObject_New(PyIterator, &Type);
-//         if (result == nullptr) {
-//             throw std::runtime_error("could not allocate Python iterator");
-//         }
-
-//         // initialize (NOTE: PyObject_New() does not call stack constructors)
-//         new (&(result->first)) Slot<Iterator>();
-//         new (&(result->second)) Slot<Iterator>();
-
-//         // construct iterators within raw storage
-//         result->first.construct(std::move(begin));
-//         result->second.construct(std::move(end));
-
-//         // return as PyObject*
-//         return reinterpret_cast<PyObject*>(result);
-//     }
-
-//     /* Construct a Python iterator from a coupled iterator. */
-//     inline static PyObject* init(CoupledIterator<Iterator>&& iter) {
-//         return init(iter.begin(), iter.end());
-//     }
-
-//     /* Call next(iter) from Python. */
-//     inline static PyObject* iter_next(PyIterator* self) {
-//         Iterator& begin = *(self->first);
-//         Iterator& end = *(self->second);
-
-//         if (!(begin != end)) {  // terminate the sequence
-//             PyErr_SetNone(PyExc_StopIteration);
-//             return nullptr;
-//         }
-
-//         // increment iterator and return current value
-//         PyObject* result = *begin;
-//         ++begin;
-//         return Py_NewRef(result);  // new reference
-//     }
-
-//     /* Free the Python iterator when its reference count falls to zero. */
-//     inline static void dealloc(PyIterator* self) {
-//         Type.tp_free(self);
-//     }
-
-// private:
-
-//     /* Initialize a PyTypeObject to represent this iterator from Python. */
-//     static PyTypeObject init_type() {
-//         PyTypeObject type_obj;  // zero-initialize
-//         type_obj.tp_name = name.data();
-//         type_obj.tp_doc = "Python-compatible wrapper around a C++ iterator.";
-//         type_obj.tp_basicsize = sizeof(PyIterator);
-//         type_obj.tp_flags = (
-//             Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
-//             Py_TPFLAGS_DISALLOW_INSTANTIATION
-//         );
-//         type_obj.tp_alloc = PyType_GenericAlloc;
-//         type_obj.tp_iter = PyObject_SelfIter;
-//         type_obj.tp_iternext = (iternextfunc) iter_next;
-//         type_obj.tp_dealloc = (destructor) dealloc;
-
-//         // register iterator type with Python
-//         if (PyType_Ready(&type_obj) < 0) {
-//             throw std::runtime_error("could not initialize PyIterator type");
-//         }
-//         return type_obj;
-//     }
-
-//     /* C-style Python type declaration. */
-//     inline static PyTypeObject Type = init_type();
-
-// };
 
 
 /* A decorator for a standard C++ iterator that applies a custom conversion at
@@ -375,45 +272,6 @@ class IterProxy {
     Func convert;
     static constexpr bool is_identity = std::is_same_v<Func, identity>;
 
-    /* Get the Python-compatible name of the templated iterator, defaulting to the
-    mangled C++ type name. */
-    template <typename Iter, typename = void>
-    struct TypeName {
-        /* NOTE: name mangling is not standardized across compilers, so we have to
-         * use platform-specific macros to get the correct name.
-         *
-         * GCC and Clang both use __PRETTY_FUNCTION__, which returns a string of the
-         * following form:
-         *
-         *      constexpr std::string_view TypeName<Iter>::get() [with Iter = ...]
-         */
-
-        #if defined(__GNUC__) || defined(__clang__)
-            static constexpr std::string_view get() {
-                // get the full function signature as a string
-                constexpr const char* sig = __PRETTY_FUNCTION__;
-
-                // Find start of the type name
-                constexpr const char* prefix = "with Iter = ";
-                constexpr const char* start = std::strstr(sig, prefix);
-                
-            }
-        #elif defined(_MSC_VER)
-            static constexpr std::string_view get() { return __FUNCSIG__; }
-        #else
-            static_assert(false, "Unsupported compiler");
-        #endif
-
-        static constexpr std::string_view value = get();
-    };
-
-    /* Get the Python-compatible name of the templated iterator, using the static
-    `name` attribute if it is available. */
-    template <typename Iter>
-    struct TypeName<Iter, std::void_t<decltype(Iter::name)>> {
-        static constexpr std::string_view value { Iter::name };
-    };
-
     /* Get a wrapper around an iterator that applies a conversion function to the
     result of its dereference operator. */
     template <typename Iter, bool cond = false>
@@ -497,7 +355,6 @@ class IterProxy {
             using wrapper = conversion_wrapper<base_type, is_identity>; \
             using type = typename wrapper::type; \
             static constexpr bool exists = true; \
-            static constexpr std::string_view name { TypeName<type>::value }; \
             inline static type call(Iterable& iterable, Func func) { \
                 return wrapper::decorate(iterable.METHOD(), func); \
             } \
@@ -517,7 +374,6 @@ class IterProxy {
             using wrapper = conversion_wrapper<base_type, is_identity>; \
             using type = typename wrapper::type; \
             static constexpr bool exists = true; \
-            static constexpr std::string_view name { TypeName<type>::value }; \
             inline static type call(Iterable& iterable, Func func) { \
                 return wrapper::decorate(METHOD(iterable), func); \
             } \
@@ -539,7 +395,6 @@ class IterProxy {
             using wrapper = conversion_wrapper<base_type, is_identity>; \
             using type = typename wrapper::type; \
             static constexpr bool exists = true; \
-            static constexpr std::string_view name { TypeName<type>::value }; \
             inline static type call(Iterable& iterable, Func func) { \
                 return wrapper::decorate(std::METHOD(iterable), func); \
             } \
@@ -770,7 +625,7 @@ public:
     methods. */
     template <bool cond = Traits::begin::exists && Traits::end::exists>
     inline auto python() -> std::enable_if_t<cond, PyObject*> {
-        using Iter = PyIterator<typename Traits::begin::type, Traits::begin::name>;
+        using Iter = PyIterator<typename Traits::begin::type>;
         return Iter::init(begin(), end());
     }
 
@@ -778,7 +633,7 @@ public:
     methods. */
     template <bool cond = Traits::cbegin::exists && Traits::cend::exists>
     inline auto cpython() -> std::enable_if_t<cond, PyObject*> {
-        using Iter = PyIterator<typename Traits::cbegin::type, Traits::cbegin::name>;
+        using Iter = PyIterator<typename Traits::cbegin::type>;
         return Iter::init(cbegin(), cend());
     }
 
@@ -786,7 +641,7 @@ public:
     methods. */
     template <bool cond = Traits::rbegin::exists && Traits::rend::exists>
     inline auto rpython() -> std::enable_if_t<cond, PyObject*> {
-        using Iter = PyIterator<typename Traits::rbegin::type, Traits::rbegin::name>;
+        using Iter = PyIterator<typename Traits::rbegin::type>;
         return Iter::init(rbegin(), rend());
     }
 
@@ -794,7 +649,7 @@ public:
     methods. */
     template <bool cond = Traits::crbegin::exists && Traits::crend::exists>
     inline auto crpython() -> std::enable_if_t<cond, PyObject*> {
-        using Iter = PyIterator<typename Traits::crbegin::type, Traits::crbegin::name>;
+        using Iter = PyIterator<typename Traits::crbegin::type>;
         return Iter::init(crbegin(), crend());
     }
 

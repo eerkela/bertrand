@@ -15,10 +15,13 @@
 #include "table.h"  // HashTable
 #include "../util/python.h"  // PyIterable
 #include "../util/iter.h"  // iter()
+#include "../util/string.h"  // PyName
 
 
 namespace bertrand {
 namespace structs {
+
+
 namespace linked {
 
 
@@ -35,11 +38,6 @@ namespace linked {
 // would completely eliminate the need for converting copies/moves.
 
 
-////////////////////
-////    BASE    ////
-////////////////////
-
-
 /* enum makes iterator declarations more readable. */
 // enum class Direction {
 //     forward,
@@ -47,29 +45,42 @@ namespace linked {
 // };
 
 
-/* Low-level base class representing the internal state of a linked data structure.
+////////////////////
+////    BASE    ////
+////////////////////
+
+
+/* Base class representing the low-level core of a linked data structure.
 
 Views are responsible for managing the memory of and links between the underlying
-nodes, as well as references to the head/tail of the list and its current size.  They
-are essentially wrappers around a raw memory allocator that exposes the following
-interface:
+nodes, iteration over them, and references to the head/tail of the list as well as its
+current size.  They are lightweight wrappers around a raw memory allocator that exposes
+the following interface:
 
 class Allocator {
 public:
     Node* head;
     Node* tail;
-    size_t occupied;  // equivalent to size()
+    size_t capacity;  // total number of nodes in existence
+    size_t occupied;  // equivalent to view.size()
     PyObject* specialization;
+    bool frozen;  // indicates whether or not the data structure can grow dynamically
 
     Node* create(Args...);  // forward to Node constructor
     void recycle(Node* node);
+    void reserve(size_t capacity);
+    void defragment();
     void clear();
     void specialize(PyObject* spec);
     size_t nbytes();
 };
 
-To this, they add a number of convenience methods for manipulating the list, including
-the insertion/removal of nodes, iteration over the list, and whole-list copies/clears.
+To this, they add a number of convenience methods for high-level list manipulations,
+which are then used in the various non-member method headers listed in the algorithms/
+directory.  This setup allows for ultimate configurability and code reuse, since
+methods can be mixed, matched, and specialized alongside views to produce a variety of
+flexible and highly-optimized data structures, without worrying about low-level
+implementation details.
 */
 template <typename Derived, typename Allocator>
 class BaseView {
@@ -87,9 +98,7 @@ private:
     template <typename Node>
     class _Iterator<Node, true> {
     protected:
-        std::stack<Node*> stack;
-
-        /* Constructors to initialize conditional stack. */
+        std::stack<Node*> stack;  // only compiled if needed
         _Iterator() {}
         _Iterator(std::stack<Node*>&& stack) : stack(std::move(stack)) {}
         _Iterator(const _Iterator& other) : stack(other.stack) {}
@@ -113,8 +122,7 @@ public:
         bool reverse = false,
         std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr
-    ) :
-        allocator(max_size, spec)
+    ) : allocator(max_size, spec)
     {
         for (PyObject* item : util::iter(iterable)) {
             // NOTE: node() constructor is fallible, but because all memory is managed
@@ -290,6 +298,7 @@ public:
     class Iterator :
         public _Iterator<Node, dir == Direction::backward && !NodeTraits<Node>::has_prev>
     {
+        /* Conditional compilation of reversal stack for singly-linked lists. */
         static constexpr bool has_stack = (
             dir == Direction::backward && !NodeTraits<Node>::has_prev
         );
@@ -310,12 +319,12 @@ public:
         ////    ITERATOR PROTOCOL    ////
         /////////////////////////////////
 
-        /* Dereference the iterator to get the node at the current position. */
+        /* Dereference the iterator to get the value at the current position. */
         inline value_type operator*() const noexcept {
             return _curr->value();
         }
 
-        /* Prefix increment to advance the iterator to the next node in the slice. */
+        /* Prefix increment to advance the iterator to the next node in the view. */
         inline Iterator& operator++() noexcept {
             if constexpr (direction == Direction::backward) {
                 _next = _curr;
@@ -342,7 +351,7 @@ public:
             return *this;
         }
 
-        /* Inequality comparison to terminate the slice. */
+        /* Inequality comparison to terminate the sequence. */
         template <Direction T>
         inline bool operator!=(const Iterator<T>& other) const noexcept {
             return _curr != other._curr;
@@ -437,7 +446,7 @@ public:
             _next(other._next)
         {}
 
-        /* Copy constructor from a different direction. */
+        /* Copy constructor from the other direction. */
         template <Direction T>
         Iterator(const Iterator<T>& other) :
             Base(other), view(other.view), _prev(other._prev), _curr(other._curr),
@@ -454,7 +463,7 @@ public:
             other._next = nullptr;
         }
 
-        /* Move constructor from a different direction. */
+        /* Move constructor from the other direction. */
         template <Direction T>
         Iterator(Iterator<T>&& other) :
             Base(std::move(other)), view(other.view), _prev(other._prev),
@@ -480,17 +489,17 @@ public:
         ////    CONSTRUCTORS    ////
         ////////////////////////////
 
-        /* Initialize an empty iterator. */
+        /* Create an empty iterator. */
         Iterator(Derived& view) :
             view(view), _prev(nullptr), _curr(nullptr), _next(nullptr)
         {}
 
-        /* Initialize an iterator around a particular linkage within the list. */
+        /* Create an iterator around a particular linkage within the view. */
         Iterator(Derived& view, Node* prev, Node* curr, Node* next) :
             view(view), _prev(prev), _curr(curr), _next(next)
         {}
 
-        /* Initialize a reverse iterator over a singly-linked list. */
+        /* Create a reverse iterator over a singly-linked view. */
         template <bool cond = has_stack, std::enable_if_t<cond, int> = 0>
         Iterator(Derived& view, std::stack<Node*>&& prev, Node* curr, Node* next) :
             Base(std::move(prev)), view(view), _prev(this->stack.top()), _curr(curr),
@@ -500,7 +509,7 @@ public:
         }
     };
 
-    /* Return a forward iterator to the head of the list. */
+    /* Return a forward iterator to the head of the view. */
     Iterator<Direction::forward> begin() const {
         // short-circuit if list is empty
         if (head() == nullptr) {
@@ -511,12 +520,12 @@ public:
         return Iterator<Direction::forward>(*this, nullptr, head(), next);
     }
 
-    /* Return an empty forward iterator to terminate the sequence. */
+    /* Return a forward iterator to terminate the view. */
     Iterator<Direction::forward> end() const {
         return Iterator<Direction::forward>(*this);
     }
 
-    /* Return a backward iterator to the tail of the list. */
+    /* Return a reverse iterator to the tail of the view. */
     Iterator<Direction::backward> rbegin() const {
         // short-circuit if list is empty
         if (tail() == nullptr) {
@@ -543,13 +552,13 @@ public:
         }
     }
 
-    /* Return an empty backward iterator to terminate the sequence. */
+    /* Return a reverse iterator to terminate the view. */
     Iterator<Direction::backward> rend() const {
         return Iterator<Direction::backward>(*this);
     }
 
 protected:
-    mutable Allocator allocator;
+    mutable Allocator allocator;  // low-level memory management
 };
 
 
@@ -564,28 +573,30 @@ order.
 ListViews use a similar memory layout to std::vector and the built-in Python list.  It
 initially allocates a small array of nodes (8 in this case), and advances an internal
 pointer whenever a new node is constructed.  When the array is full, it allocates a new
-array of twice the size and moves the old nodes into the new array.  This strategy is
+array with twice the size and moves the old nodes into the new array.  This strategy is
 significantly more efficient than allocating nodes individually on the heap, which is
-typical for linked lists and incurs a large overhead for each allocation.  The
-sequential memory layout also avoids memory fragmentation, improving cache locality and
-overall performance.  This gives the list amortized O(1) insertion time comparable to
-std::vector or its Python equivalent, and much faster than std::list.
+typical for linked lists and incurs a large overhead for each allocation.  This
+sequential memory layout also avoids heap fragmentation, improving cache locality and
+overall performance as a result.  This gives the list amortized O(1) insertion time
+comparable to std::vector or its Python equivalent, and much faster in general than
+std::list.
 
 Whenever a node is removed from the list, its memory is returned to the allocator array
 and inserted into a linked list of recycled nodes.  This list is composed directly from
-the removed nodes themselves, avoiding auxiliary data structures and unnecessary memory
+the removed nodes themselves, avoiding auxiliary data structures and associated memory
 overhead.  When a new node is constructed, the free list is checked to see if there are
 any available nodes.  If there are, the node is removed from the free list and reused.
 Otherwise, a new node is allocated from the array, causing it to grow if necessary.
-Conversely, if a linked list's size drops to below 1/4 of its capacity, its allocator
-array will be shrunk to half its current size.
+Conversely, if a linked list's size drops to below 1/4 its capacity, the allocator
+array will shrink to half its current size, providing dynamic sizing.
 
 As an additional optimization, linked lists prefer to store their nodes in strictly
 sequential order, which ensures optimal alignment at the hardware level.  This is
 accomplished by transferring nodes in their current list order whenever we grow or
-shrink the internal array.  This periodically defragments the list as elements are
-added and removed, requiring no additional overhead beyond an ordinary copy.  If
-necessary, this process can also be triggered manually via the consolidate() method.
+shrink the internal array.  This automatically defragments the list periodically as
+elements are added and removed, requiring no additional overhead beyond an ordinary
+copy.  If desired, this process can also be triggered manually via the defragment()
+method for on-demand optimization.
 */
 template <typename NodeType = DoubleNode<PyObject*>>
 class ListView : public BaseView<ListView<NodeType>, ListAllocator<NodeType>> {
@@ -594,6 +605,12 @@ class ListView : public BaseView<ListView<NodeType>, ListAllocator<NodeType>> {
 public:
     // inherit constructors
     using Base::Base;
+
+    /* NOTE: we don't need any further implementation since ListView is the minimal
+     * valid view configuration.  Other than an optimized memory management strategy,
+     * it does not add any additional functionality, and does not assume any specific
+     * capabilities of the underlying nodes.
+     */
 };
 
 
@@ -1598,6 +1615,46 @@ public:
 
 
 }  // namespace linked
+
+
+/* Name specializations for Python compatibility. */
+namespace util {
+
+
+// template <typename Node>
+// class PyName<linked::ListView<Node>> {
+//     static constexpr std::string_view preamble{"bertrand.structs.linked.ListView_"};
+//     static constexpr std::string_view node = PyName<Node>::value;
+
+// public:
+//     static constexpr std::string_view value = Path::concat<preamble, node>;
+// };
+
+
+// template <typename Node>
+// class PyName<linked::ListView<Node>::template Iterator<linked::Direction::forward>> {
+//     static constexpr std::string_view preamble = PyName<View>::value;
+//     using Direction = linked::Direction;
+
+//     template <Direction D = Direction::forward, typename T = void>
+//     struct name {
+//         static constexpr std::string_view value{"iter"};
+//     };
+//     template <typename T>
+//     struct name<Direction::backward, T> {
+//         static constexpr std::string_view value{"reverse_iter"};
+//     };
+
+// public:
+//     static constexpr std::string_view value = Path::dotted<preamble, name<dir>::value>;
+// };
+
+
+
+
+}  // namespace util
+
+
 }  // namespace structs
 }  // namespace bertrand
 

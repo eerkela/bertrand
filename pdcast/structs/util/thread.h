@@ -44,6 +44,12 @@ namespace util {
  */
 
 
+// TODO: These locks should inherit from BaseLock, which provides the requisite
+// python() methods using CRTP.  This handles name inference directly.  We might make
+// Guard + SharedGuard subclass from their respective lock types.  They can then
+// expose python_name as expected.
+
+
 /* A lock functor that uses a simple mutex and a `std::unique_lock` guard. */
 class BasicLock {
 public:
@@ -538,7 +544,7 @@ public:
 
 /* A wrapper around a C++ lock guard that allows it to be used as a Python context
 manager. */
-template <typename Lock, const std::string_view& name>
+template <typename Lock>
 class PyLock {
     using Guard = typename Lock::Guard;
 
@@ -609,7 +615,7 @@ private:
     /* Initialize a PyTypeObject to represent this lock from Python. */
     static PyTypeObject init_type() {
         PyTypeObject type_obj;  // zero-initialize
-        type_obj.tp_name = name.data();
+        type_obj.tp_name = PyName<Lock>::value.data();
         type_obj.tp_doc = "Python-compatible wrapper around a C++ lock guard.";
         type_obj.tp_basicsize = sizeof(PyLock);
         type_obj.tp_flags = (
