@@ -91,12 +91,18 @@ public:
 private:
 
     /* Base class for forward iterators + reverse iterators over doubly-linked lists. */
-    template <typename Node, bool has_stack = false>
-    class _Iterator {};
+    template <typename NodeType, bool has_stack = false>
+    class _Iterator {
+    public:
+        using Node = NodeType;
+    };
 
     /* Base class for reverse iterators over singly-linked lists. */
-    template <typename Node>
-    class _Iterator<Node, true> {
+    template <typename NodeType>
+    class _Iterator<NodeType, true> {
+    public:
+        using Node = NodeType;
+
     protected:
         std::stack<Node*> stack;  // only compiled if needed
         _Iterator() {}
@@ -292,6 +298,9 @@ public:
      * directly; `iter()` should always be preferred for compatibility with Python and
      * other C++ containers, as well as its generally simpler/more readable interface.
      */
+
+    // TODO: make this a non-nested class so that we can specialize its name and expose
+    // the necessary aliases (Node/View).
 
     /* An iterator that traverses a list and keeps track of each node's neighbors. */
     template <Direction dir>

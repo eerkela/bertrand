@@ -10,6 +10,7 @@
 #include <thread>  // std::thread
 #include <unordered_set>  // std::unordered_set
 #include "slot.h"  // Slot
+#include "string.h"  // PyName
 
 
 namespace bertrand {
@@ -544,12 +545,13 @@ public:
 
 /* A wrapper around a C++ lock guard that allows it to be used as a Python context
 manager. */
-template <typename Lock>
+template <typename Lock, bool shared>
 class PyLock {
     using Guard = typename Lock::Guard;
+    using SharedGuard = typename Lock::SharedGuard;  // may not exist
 
     PyObject_HEAD
-    Slot<Guard> guard;
+    std::conditional_t<shared, Slot<SharedGuard>, Slot<Guard>> guard;
     const Lock* lock;
 
     /* Force users to use init() factory method. */
@@ -568,7 +570,11 @@ public:
         }
 
         // initialize (NOTE: PyObject_New() does not call stack constructors)
-        new (&(result->guard)) Slot<Guard>();
+        if constexpr (shared) {
+            new (&(result->guard)) Slot<SharedGuard>();
+        } else {
+            new (&(result->guard)) Slot<Guard>();
+        };
         result->lock = lock;
 
         // return as PyObject*
@@ -615,7 +621,11 @@ private:
     /* Initialize a PyTypeObject to represent this lock from Python. */
     static PyTypeObject init_type() {
         PyTypeObject type_obj;  // zero-initialize
-        type_obj.tp_name = PyName<Lock>::value.data();
+        if constexpr (shared) {
+            type_obj.tp_name = PyName<SharedGuard>.data();
+        } else {
+            type_obj.tp_name = PyName<Guard>.data();
+        }
         type_obj.tp_doc = "Python-compatible wrapper around a C++ lock guard.";
         type_obj.tp_basicsize = sizeof(PyLock);
         type_obj.tp_flags = (

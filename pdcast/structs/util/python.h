@@ -125,7 +125,7 @@ private:
     /* Initialize a PyTypeObject to represent this iterator from Python. */
     static PyTypeObject init_type() {
         PyTypeObject type_obj;  // zero-initialize
-        type_obj.tp_name = PyName<Iterator>::value.data();
+        type_obj.tp_name = PyName<Iterator>.data();
         type_obj.tp_doc = "Python-compatible wrapper around a C++ iterator.";
         type_obj.tp_basicsize = sizeof(PyIterator);
         type_obj.tp_flags = (

@@ -129,58 +129,74 @@ Automatic naming is supported on the following compilers:
     - MSVC (>= 19.29.30038)
 */
 template <typename T>
-class PyName {
+class TypeName {
+private:
 
     /* Extract the fully qualified C++ name of the templated class. */
-    #if (defined(__GNUC__) && __GNUC__ >= 11) || (defined(__clang__) && __clang_major__ >= 16)
+    #if defined(__GNUC__) || defined(__clang__)
         /* GCC and Clang both support the __PRETTY_FUNCTION__ macro, which gives us
          * a string of the following form:
          *
-         * constexpr std::string_view bertrand::structs::util::PyName<T>::_signature() [with T = <type>; ...]
+         * constexpr std::string_view bertrand::structs::util::Typename<T>::_signature() [with T = {type}; ...]
          *
-         * Where <type> is the name we want to extract.
+         * Where {type} is the name we want to extract.
          */
 
         /* Invoke the preprocessor macro to get a detailed function signature. */
-        static constexpr const char* _signature() {
-            return __PRETTY_FUNCTION__;
+        static constexpr std::string_view _signature() {
+            return std::string_view(__PRETTY_FUNCTION__);
         }
 
         /* Extract the qualified name from the compiled function signature. */
         static constexpr std::string_view extract() {
-            // Get the full signature of the function
-            constexpr const char* sig = _signature();
-            constexpr const char* prefix = "T = ";  // 4 characters
-
-            // find prefix in the signature
-            constexpr const char* token = find_substring(sig, prefix);
+            constexpr std::string_view sig = _signature();
+            constexpr size_t token = sig.find("T = ");  // 4 characters
             static_assert(
-                token != nullptr,
+                token != sig.npos,
                 "Could not extract type name from __PRETTY_FUNCTION__"
             );
-            constexpr const char* start = token + 4;  // get next token after prefix
-
-            // Find end of the type name (next semicolon or end of string)
-            const char* end = start;
-            while (*end != ';' && *end != ']' && *end != '\0') {
-                ++end;
-            }
-
-            // return as constexpr string_view
-            return std::string_view(start, end - start);
+            constexpr size_t start = token + 4;  // get next token after prefix
+            constexpr size_t stop = sig.find_first_of(";]\0", start);
+            return sig.substr(start, stop - start);
         }
+
     #elif defined(_MSC_VER)
         /* MSVC uses the __FUNCSIG__ macro, which gives us a string of the following
          * form:
          *
-         * 
+         * class std::basic_string_view<char,struct std::char_traits<char> > __cdecl TypeName<[struct/class ]{type}[ ]>::_signature(void)
+         *
+         * Where {type} is the name we want to extract, and components in [] are
+         * optional based on whether the type is a struct, class, or builtin type.
          */
 
         /* Invoke the preprocessor macro to get a detailed function signature. */
         static constexpr const char* _signature() { return __FUNCSIG__; }
 
         /* Extract the qualified name from the compiled function signature. */
-        static constexpr std::string_view extract() { return __FUNCSIG__; }
+        static constexpr std::string_view extract() {
+            constexpr std::string_view sig = _signature();
+            constexpr size_t token = sig.find("TypeName<");  // 9 characters
+            static_assert(
+                token != sig.npos,
+                "Could not extract type name from __FUNCSIG__"
+                );
+            constexpr size_t start = token + 9;  // get next token after prefix
+            constexpr size_t stop = sig.find(">::_signature(void)", start);
+            constexpr std::string_view raw = sig.substr(start, stop - start);
+            constexpr std::string_view result = (
+                raw.rfind(' ') == raw.size() ?
+                    raw.substr(0, raw.size() - 1) :
+                    raw
+            );
+            if (result.find("struct ") == 0) {
+                return result.substr(7, result.size() - 7);
+            } else if (result.find("class ") == 0) {
+                return result.substr(6, result.size() - 6);
+            }
+            return result;
+        }
+
     #else
         /* Otherwise, automatic naming is not supported.  In this case, an explicit
          * specialization of this class must be provided to generate a compatible name.
@@ -192,66 +208,52 @@ class PyName {
             "`bertrand::structs::util::PyName` to generate Python-compatible names "
             "for this type."
         );
+
     #endif
 
-    /* Find the first occurrence of a substring within a string at compile time. */
-    static constexpr const char* find_substring(const char* str, const char* substr) {
+public:
+    /* Full signature that was returned by compiler. */
+    static constexpr std::string_view signature = _signature();
+
+    /* Extracted class name. */
+    static constexpr std::string_view name = extract();
+
+    /* Hash of class name to ensure uniqueness. */
+    static constexpr uint32_t hash = [] {
+        uint32_t val = 2166136261u;  // common 32-bit basis for FNV-1a
+        const char* str = name.data();
         while (*str) {
-            const char* s = str;
-            const char* sub = substr;
-            while (*s == *sub && *sub) {
-                ++s;
-                ++sub;
-            }
-            if (!(*sub)) {
-                return str;
-            }
-            ++str;
+            val ^= static_cast<unsigned char>(*str++);
+            val *= 16777619u;  // common prime for 32-bit FNV-1a
         }
-        return nullptr;
-    }
+        return val;
+    }();
 
-    /* Compute a hash for a compile-time string using FNV-1a to ensure uniqueness. */
-    static constexpr uint32_t fnv1a(const char* str) {
-        uint32_t hash = 2166136261u;  // common 32-bit basis for FNV-1a
-        while (*str) {
-            hash ^= static_cast<unsigned char>(*str++);
-            hash *= 16777619u;  // common prime for 32-bit FNV-1a
-        }
-        return hash;
-    }
-
-    /* Get the raw name of the templated type. */
-    static constexpr std::string_view raw_name = extract();
-
-    /* Compute the hash of the literal C++ name to ensure uniqueness. */
-    static constexpr uint32_t hash_value = fnv1a(raw_name.data());
+private:
 
     /* Convert hash to a character array with static storage duration. */
-    static constexpr std::array<char, 11> hash_array = [](uint32_t hash) {
-        std::array<char, 11> temp{};  // 10 digits (32-bit) + null-terminator
+    static constexpr std::array<char, 11> hash_array = [] {
+        uint32_t val = hash;
+        std::array<char, 11> arr{};  // 10 digits (32-bits) + null-terminator
         for (int i = 9; i >= 0; --i) {
-            temp[i] = '0' + (hash % 10);
-            hash /= 10;
+            arr[i] = '0' + (val % 10);
+            val /= 10;
         }
-        temp[10] = '\0';  // null-terminate
-        return temp;
-    }(hash_value);
+        arr[10] = '\0';  // null-terminate
+        return arr;
+    }();
 
     /* Interpret character array as std::string_view. */
-    static constexpr std::string_view hash_str{hash_array.data()};
+    static constexpr std::string_view hash_str{hash_array.data(), hash_array.size()};
 
     /* Concatenate name and hash. */
-    static constexpr std::string_view concatenated = Path::concat<raw_name, hash_str>;
+    static constexpr std::string_view concatenated = Path::concat<name, hash_str>;
 
-    /* Sanitize output, converting invalid characters into underscores.
-
-    NOTE: because we previously appended a hash to the end of the type name, we can
-    guarantee that sanitization will not produce an unintended name collision. */
+    /* Sanitize output, converting invalid characters into underscores. */
     static constexpr std::array<char, concatenated.size() + 1> sanitized = [] {
         std::array<char, concatenated.size() + 1> sanitized{};  // null-terminated
         int j = 0;
-        for (int i = 0; i < concatenated.size(); ++i) {
+        for (size_t i = 0; i < concatenated.size(); ++i) {
             char c = concatenated[i];
             if ((c >= 'a' && c <= 'z') ||
                 (c >= 'A' && c <= 'Z') ||
@@ -268,15 +270,13 @@ class PyName {
 
 public:
     /* A unique, Python-compatible type name computed at compile time. */
-    static constexpr std::string_view value{sanitized.data()};
-
-    /* The original signature that was generated by the compiler (for debugging
-    purposes).
-
-    NOTE: this is not needed in specializations of this class.  It's meant solely to
-    make debugging compiler interactions more straightforward. */
-    static constexpr const char* signature = _signature();
+    static constexpr std::string_view mangled{sanitized.data(), concatenated.size()};
 };
+
+
+/* Overloadable alias for TypeName<T>::mangled. */
+template <typename T>
+constexpr std::string_view PyName = TypeName<T>::mangled;
 
 
 ////////////////////////////////
