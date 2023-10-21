@@ -8,6 +8,7 @@
 #include <string>  // std::string
 #include <string_view>  // std::string_view
 #include <typeinfo>  // typeid()
+#include <vector>  // std::vector
 #include <Python.h>  // CPython API
 #include "except.h"  // catch_python()
 
@@ -60,58 +61,174 @@ namespace util {
  */
 
 
-/* Compile-time string concatenation for dotted Python names and other uses. */
-class Path {
-    static constexpr std::string_view dot = ".";
+
+inline static constexpr std::string_view empty_string_view {"", 0};
+
+
+/* Compile-time string manipulations.
+
+NOTE: using this class requires a shift in thinking from runtime string manipulation.
+First of all, the class is purely static, and cannot be instantiated anywhere in code.
+Second, its methods are implemented as static constexpr members, which means that they
+do not need to be invoked at runtime.  If they accept arguments, those arguments must
+be supplied as constexpr template parameters, and may need to be forward declared
+before use.  For example, consider the following:
+
+    static constexpr std::string_view foo{"foo"};
+    static constexpr std::string_view bar{"bar"};
+    static constexpr std::string_view sep{"."};
+    std::cout << String<sep>::join<foo, bar>;  // yields "foo.bar"
+
+This is functionally similar to the equivalent Python `".".join(["foo", "bar"])`, but
+evaluated entirely at compile-time.  The use of angle brackets to invoke the join
+method clearly differentiates these operations from their runtime counterparts, and
+prevents confusion between the two.
+*/
+template <const std::string_view& str = empty_string_view>
+class String {
 
     /* Concatenate a sequence of std::string_views at compile-time. */
-    template <const std::string_view&... Strings>
+    template <const std::string_view&... strings>
     class _concat {
         /* Join all strings into a single std::array of chars with static storage. */
         static constexpr auto array = [] {
             // Get array with size equal to total length of strings 
-            constexpr size_t len = (Strings.size() + ... + 0);
-            std::array<char, len + 1> array{};
+            constexpr size_t len = (strings.size() + ... + 0);
+            std::array<char, len + 1> array{};  // null-terminated
 
-            // Append each string to the array
-            auto append = [i = 0, &array](const auto& str) mutable {
-                for (auto c : str) array[i++] = c;
+            // Recursively insert each string into array
+            auto append = [i = 0, &array](const auto& string) mutable {
+                for (auto c : string) array[i++] = c;
             };
-            (append(Strings), ...);
+            (append(strings), ...);
             array[len] = 0;  // null-terminate
             return array;
         }();
 
     public:
         /* Get the concatenated string as a std::string_view. */
-        static constexpr std::string_view value { array.data(), array.size() - 1 };
+        static constexpr std::string_view value {array.data(), array.size() - 1};
     };
 
-    /* Recursive template specializations to form a Python-style dotted path by
-    interleaving `.` characters in between each concatenated string. */
+    /* Count the number of occurrences of `sep` within `str`. */
+    template <const std::string_view& sub>
+    static constexpr size_t _count() {
+        size_t total = 0;
+        for (size_t i = 0; i < str.size(); ++i) {
+            if (str.substr(i, sub.size()) == sub) {
+                ++total;
+                i += sub.size() - 1;
+            }
+        }
+        return total;
+    }
+
+    /* Recursive template specializations to interleave a `str` token in between each
+    concatenated string. */
     template <const std::string_view&...>
-    struct _dotted;
-    template <const std::string_view& First, const std::string_view&... Rest>
-    struct _dotted<First, Rest...> {
+    struct _join;
+    template <const std::string_view& first, const std::string_view&... rest>
+    struct _join<first, rest...> {
         static constexpr std::string_view value = (
-            _concat<First, dot, _dotted<Rest...>::value>::value
+            _concat<first, str, _join<rest...>::value>::value
         );
+
+        /* Join all strings into a single std::array of chars with static storage. */
+        static constexpr auto array = [] {
+            // Get array with size equal to total length of strings 
+            constexpr size_t len = first.size() + ((rest.size() + str.size()) + ... + 0);
+            std::array<char, len + 1> array{};  // null-terminated
+            size_t idx = 0;
+            for (auto c : first) array[idx++] = c;  // insert first string
+
+            // Recursively insert each string into array
+            auto append = [&idx, &array](const auto& string) mutable {
+                for (auto c : str) array[idx++] = c;
+                for (auto c : string) array[idx++] = c;
+            };
+            (append(rest), ...);
+            array[idx] = '\0';  // null-terminate
+            return array;
+        }();
+
+        /* Wrap array as std::string_view. */
+        static constexpr std::string_view value{array.data(), array.size() - 1};
     };
-    template <const std::string_view& Last>
-    struct _dotted<Last> {
-        static constexpr std::string_view value = Last;
+    template <const std::string_view& last>
+    struct _join<last> {
+        static constexpr std::string_view value = last;
+    };
+
+    /* Helper for splitting `str` using a given separator token. */
+    template <const std::string_view& sep>
+    class _split {
+
+        /* Construct an array containing the start index and length of every substring
+        in `str`. */
+        template <size_t size>
+        static constexpr auto bounds() {
+            std::array<std::pair<size_t, size_t>, size + 1> arr{};
+            size_t start = 0;
+            size_t index = 0;
+
+            // Find all occurrences of `sep` and record their boundaries in `parts`
+            for (size_t i = 0; i < str.size() && index < size; ++i) {
+                if (str.substr(i, sep.size()) == sep) {
+                    size_t j = index++;
+                    arr[j].first = start;
+                    arr[j].second = i - start;
+                    start = i + sep.size();
+                    i += sep.size() - 1;
+                }
+            }
+            arr[size].first = start;
+            arr[size].second = str.size() - start;
+            return arr;
+        }
+
+        /* Convert an array of bounds into an array of substrings. */
+        template <size_t... I>
+        static constexpr auto extract(
+            std::index_sequence<I...>,
+            const std::array<std::pair<size_t, size_t>, sizeof...(I) + 1>& parts
+        ) {
+            std::array<std::string_view, sizeof...(I) + 1> arr{
+                str.substr(parts[I].first, parts[I].second)...
+            };
+            arr[sizeof...(I)] = str.substr(parts[sizeof...(I)].first);
+            return arr;
+        }
+
+    public:
+        static constexpr auto value = [] {
+            constexpr size_t size = _count<sep>();
+            if constexpr (size == 0) {
+                return std::array<std::string_view, 1>{str};
+            } else {
+                return extract(std::make_index_sequence<size>(), bounds<size>());
+            }
+        }();
+
     };
 
 public:
-    /* Concatenate strings directly at compile time, without using a separator. */
-    template <const std::string_view&... Strings>
-    static constexpr std::string_view concat = _concat<Strings...>::value;
 
-    /* Form a Python-style dotted name at compile time, with a `.` character between
-    each concatenated string. */
-    template <const std::string_view&... Strings>
-    static constexpr std::string_view dotted = _dotted<Strings...>::value;
+    /* Count the total number of occurrences of a substring within the templated
+    string. */
+    template <const std::string_view& sub>
+    static constexpr size_t count = _count<sub>();
+
+    /* Concatenate strings at compile time, inserting the templated string as a
+    separator between each token. */
+    template <const std::string_view&... strings>
+    static constexpr std::string_view join = _join<strings...>::value;
+
+    /* Split strings at compile time using the templated string as a separator. */
+    template <const std::string_view& sep>
+    static constexpr auto split = _split<sep>::value;
+
 };
+
 
 
 /* Get the Python-compatible name of the templated iterator, defaulting to a mangled

@@ -18,6 +18,250 @@ namespace structs {
 namespace util {
 
 
+////////////////////////////////////
+////    FORWARD DECLARATIONS    ////
+////////////////////////////////////
+
+
+/* Enum holding all possible guard types. */
+enum class Lock {
+    EXCLUSIVE,  // returned by functor()  <- default call operator
+    SHARED  // returned by functor.shared()
+};
+
+
+template <typename Mutex, Lock mode>
+class Guard;
+
+
+template <typename LockType, typename Guard>
+class RecursiveGuard;
+
+
+class BasicLock;
+
+
+class ReadWriteLock;
+
+
+template <typename LockType>
+class RecursiveLock;
+
+
+template <
+    typename LockType,
+    int MaxRetries,
+    typename TimeoutUnit,
+    int TimeoutValue,
+    typename WaitUnit,
+    int WaitValue
+>
+class SpinLock;
+
+
+template <typename LockType, typename Unit>
+class DiagnosticLock;
+
+
+template <typename LockType, Lock mode>
+class PyLock;
+
+
+template <typename LockType>
+class LockTraits;
+
+
+//////////////////////
+////    GUARDS    ////
+//////////////////////
+
+
+/* The guards presented here are simple wrappers around C++-style `std::lock_guards`
+ * and their related classes (std::unique_lock, std::shared_lock, etc.).  They are used
+ * in the same way, but are customized to work with the lock functors defined below.
+ *
+ * Each type of guard specializes the same overall `Guard` interface, which is defined
+ * as follows:
+ *
+ *      template <typename Mutex, Lock mode = ...>
+ *      class Guard {
+ *      public:
+ *          using mutex_type = Mutex;
+ *          static constexpr Lock lock_mode = mode;
+ *
+ *          Guard(mutex_type& mtx);
+ *          Guard(mutex_type& mtx, std::adopt_lock_t t);
+ *          Guard(Guard&& other);
+ *          Guard& operator=(Guard&& other);
+ *          void swap(Guard& other);
+ *          bool locked();
+ *          operator bool();  // equivalent to `locked()`
+ *      };
+ *
+ * This is a narrower interface than the standard lock guards, but it ensures that
+ * guards cannot constructed without properly acquiring or transferring ownership of a
+ * mutex, and cannot be prematurely locked or unlocked by accident.  Empty guards are
+ * not allowed (except in recursive contexts, where construction is controlled by the
+ * lock functor itself).  This makes locks safer and more intuitive to use, and
+ * prevents common mistakes that can lead to deadlocks and other pitfalls.
+ */
+
+
+/* An exclusive guard for a lock functor (default case). */
+template <typename Mutex, Lock mode = Lock::EXCLUSIVE>
+class Guard {
+    std::unique_lock<Mutex> guard;
+
+public:
+    using mutex_type = Mutex;
+    static constexpr Lock lock_mode = mode;
+
+    /* Acquire a mutex during construction, locking it. */
+    Guard(mutex_type& mtx) : guard(mtx) {}
+
+    /* Acquire a pre-locked mutex. */
+    Guard(mutex_type& mtx, std::adopt_lock_t t) : guard(mtx, std::adopt_lock) {}
+
+    /* Move constructor. */
+    Guard(Guard&& other) : guard(std::move(other.guard)) {}
+
+    /* Move assignment operator. */
+    Guard& operator=(Guard&& other) {
+        guard = std::move(other.guard);
+        return *this;
+    }
+
+    /* Swap state with another Guard. */
+    inline void swap(Guard& other) {
+        guard.swap(other.guard);
+    }
+
+    /* Check if the guard owns a lock on the associated mutex. */
+    inline bool locked() const noexcept {
+        return guard.owns_lock();
+    }
+
+    /* Check if the guard owns a lock on the associated mutex. */
+    inline explicit operator bool() const noexcept {
+        return locked();
+    }
+
+};
+
+
+/* A shared guard for a lock functor. */
+template <typename Mutex>
+class Guard<Mutex, Lock::SHARED> {
+    std::shared_lock<Mutex> guard;
+
+public:
+    using mutex_type = Mutex;
+    static constexpr Lock lock_mode = Lock::SHARED;
+
+    /* Acquire a mutex during construction, locking it. */
+    Guard(mutex_type& mtx) : guard(mtx) {}
+
+    /* Acquire a pre-locked mutex. */
+    Guard(mutex_type& mtx, std::adopt_lock_t t) : guard(mtx, std::adopt_lock) {}
+
+    /* Move constructor. */
+    Guard(Guard&& other) : guard(std::move(other.guard)) {}
+
+    /* Move assignment operator. */
+    Guard& operator=(Guard&& other) {
+        guard = std::move(other.guard);
+        return *this;
+    }
+
+    /* Swap state with another Guard. */
+    inline void swap(Guard& other) {
+        guard.swap(other.guard);
+    }
+
+    /* Check if the guard owns a lock on the associated mutex. */
+    inline bool locked() const noexcept {
+        return guard.owns_lock();
+    }
+
+    /* Check if the guard owns a lock on the associated mutex. */
+    inline explicit operator bool() const noexcept {
+        return locked();
+    }
+
+};
+
+
+/* A decorator for the wrapped lock guard that manages the state of a recursive functor
+and allows a single thread to hold multiple locks at once. */
+template <typename LockType, typename Guard>
+class RecursiveGuard {
+    LockType& lock;
+    std::optional<Guard> guard;
+
+    /* Construct the outermost guard for the recursive lock.
+    
+    NOTE: recursive lock proxies have to specify RecursiveGuard as a friend class in
+    order to access these private constructors. */
+    RecursiveGuard(LockType& lock, Guard&& guard) :
+        lock(lock), guard(std::move(guard))
+    {}
+
+    /* Construct an empty inner guard for a recursive lock. */
+    RecursiveGuard(LockType& lock) : lock(lock) {}
+
+public:
+    using mutex_type = typename Guard::mutex_type;
+    static constexpr Lock lock_mode = Guard::lock_mode;
+
+    /* Acquire a mutex during construction, locking it. */
+    RecursiveGuard(LockType& lock, mutex_type& mtx) : lock(lock), guard(mtx) {}
+
+    /* Acquire a pre-locked mutex. */
+    RecursiveGuard(LockType& lock, mutex_type& mtx, std::adopt_lock_t t) :
+        lock(lock), guard(mtx, std::adopt_lock)
+    {}
+
+    /* Move constructor. */
+    RecursiveGuard(RecursiveGuard&& other) :
+        lock(other.lock), guard(std::move(other.guard))
+    {}
+
+    /* Move assignment operator. */
+    RecursiveGuard& operator=(RecursiveGuard&& other) {
+        lock = other.lock;
+        guard = std::move(other.guard);
+        return *this;
+    }
+
+    /* Destroy the guard proxy and reset the lock's owner. */
+    ~RecursiveGuard() {
+        if constexpr (lock_mode == Lock::EXCLUSIVE) {
+            lock.owner = std::thread::id();  // empty id
+        } else if constexpr (lock_mode == Lock::SHARED) {
+            lock.shared_owners.erase(std::this_thread::get_id());
+        } else {
+            static_assert(false, "unrecognized lock mode");
+        }
+    }
+
+    /* Swap state with another RecursiveGuard. */
+    inline void swap(RecursiveGuard& other) {
+        guard.swap(other.guard);
+    }
+
+    /* Check if the guard owns a lock on the associated mutex. */
+    inline bool locked() const noexcept {
+        return guard.has_value() && guard.value().locked();
+    }
+
+    /* Check if the guard owns a lock on the associated mutex. */
+    inline explicit operator bool() const noexcept {
+        return locked();
+    }
+
+};
+
+
 ///////////////////////
 ////    MUTEXES    ////
 ///////////////////////
@@ -55,21 +299,22 @@ namespace util {
 class BasicLock {
 public:
     using Mutex = std::mutex;
-    using Guard = std::unique_lock<std::mutex>;
-    inline static constexpr bool is_shared = false;
+    using ExclusiveGuard = Guard<Mutex, Lock::EXCLUSIVE>;
 
     /* Return a std::unique_lock for the internal mutex using RAII semantics.  The
     mutex is automatically acquired when the guard is constructed and released when it
     goes out of scope.  Any operations in between are guaranteed to be atomic. */
-    inline Guard operator()() const noexcept { return Guard(mtx); }
+    inline ExclusiveGuard operator()() const noexcept {
+        return ExclusiveGuard(mtx);
+    }
 
 protected:
     mutable Mutex mtx;
 
     /* Try to acquire the lock without blocking. */
-    inline std::optional<Guard> try_lock() const noexcept {
+    inline std::optional<ExclusiveGuard> try_lock() const noexcept {
         if (mtx.try_lock()) {
-            return Guard(mtx, std::adopt_lock);
+            return ExclusiveGuard(mtx, std::adopt_lock);
         }
         return std::nullopt;
     }
@@ -81,30 +326,33 @@ protected:
 class ReadWriteLock {
 public:
     using Mutex = std::shared_mutex;
-    using Guard = std::unique_lock<std::shared_mutex>;
-    using SharedGuard = std::shared_lock<std::shared_mutex>;
-    inline static constexpr bool is_shared = true;
+    using ExclusiveGuard = Guard<Mutex, Lock::EXCLUSIVE>;
+    using SharedGuard = Guard<Mutex, Lock::SHARED>;
 
     /* Return a std::unique_lock for the internal mutex using RAII semantics.  The
     mutex is automatically acquired when the guard is constructed and released when it
     goes out of scope.  Any operations in between are guaranteed to be atomic.*/
-    inline Guard operator()() const noexcept { return Guard(mtx); }
+    inline ExclusiveGuard operator()() const noexcept {
+        return ExclusiveGuard(mtx);
+    }
 
-    /* Return a std::shared_lock for the internal mutex.
+    /* Return a wrapper around a std::shared_lock for the internal mutex.
 
     NOTE: These locks allow concurrent access to the object as long as no exclusive
     guards have been requested.  This is useful for read-only operations that do not
     modify the underlying data structure.  They have the save RAII semantics as the
     normal call operator. */
-    inline SharedGuard shared() const { return SharedGuard(mtx); }
+    inline SharedGuard shared() const {
+        return SharedGuard(mtx);
+    }
 
 protected:
     mutable Mutex mtx;
 
     /* Try to acquire an exclusive lock without blocking. */
-    inline std::optional<Guard> try_lock() const noexcept {
+    inline std::optional<ExclusiveGuard> try_lock() const noexcept {
         if (mtx.try_lock()) {
-            return Guard(mtx, std::adopt_lock);
+            return ExclusiveGuard(mtx, std::adopt_lock);
         }
         return std::nullopt;
     }
@@ -161,54 +409,21 @@ protected:
 
 
 /* Base class specialization for non-shared lock functors. */
-template <typename Lock, bool is_shared = false>
-class _RecursiveLock : public Lock {};
+template <typename LockType, bool is_shared = false>
+class _RecursiveLock : public LockType {};
 
 
 /* Base class specialization for shared lock functors. */
-template <typename Lock>
-class _RecursiveLock<Lock, true> : public Lock {
-    friend struct SharedGuard;
-    using SharedWrapped = typename Lock::SharedGuard;
+template <typename LockType>
+class _RecursiveLock<LockType, true> : public LockType {
+    using _SharedGuard = typename LockType::SharedGuard;
     mutable std::unordered_set<std::thread::id> shared_owners;
 
+    template <typename _LockType, typename _Guard>
+    friend class RecursiveGuard;
+
 public:
-
-    /* A proxy for the wrapped lock guard that allows recursive references using the
-    functor's reference counter. */
-    struct SharedGuard {
-        _RecursiveLock& lock;
-        std::optional<SharedWrapped> guard;
-
-        /* Construct an empty guard proxy. */
-        SharedGuard(_RecursiveLock& lock) : lock(lock) {}
-
-        /* Construct the outermost guard proxy for the recursive lock. */
-        SharedGuard(_RecursiveLock& lock, SharedWrapped guard) : lock(lock), guard(guard) {}
-
-        /* Disabled copy constructor/assignment for compatibility with
-        std::unique_lock. */
-        SharedGuard(const SharedGuard&) = delete;
-        SharedGuard& operator=(const SharedGuard&) = delete;
-
-        /* Move constructor. */
-        SharedGuard(SharedGuard&& other) : lock(other.lock), guard(std::move(other.guard)) {}
-
-        /* Move assignment operator. */
-        SharedGuard& operator=(SharedGuard&& other) {
-            lock = other.lock;
-            guard = std::move(other.guard);
-            return *this;
-        }
-
-        /* Destroy the guard proxy and remove the shared lock from the pool. */
-        ~SharedGuard() {
-            if (guard.has_value()) {
-                lock.shared_owners.erase(std::this_thread::get_id());
-            }
-        }
-
-    };
+    using SharedGuard = RecursiveGuard<RecursiveLock<LockType>, _SharedGuard>;
 
     /* Acquire the lock in shared mode, allowing repeated locks within a single
     thread. */
@@ -234,7 +449,7 @@ public:
         // lock and update the owner set accordingly.
 
         // otherwise, attempt to acquire the lock
-        SharedWrapped guard = Lock::shared(std::forward<Args>(args)...);  // blocks
+        _SharedGuard guard = LockType::shared(std::forward<Args>(args)...);  // blocks
         shared_owners.insert(id);
         return SharedGuard(*this, std::move(guard));
     }
@@ -244,58 +459,26 @@ public:
 
 /* A lock decorator that allows a thread to be locked recursively without
 deadlocking. */
-template <typename Lock>
-class RecursiveLock : public _RecursiveLock<Lock, Lock::is_shared> {
-    friend struct Guard;
-    using Wrapped = typename Lock::Guard;
+template <typename LockType>
+class RecursiveLock : public _RecursiveLock<LockType, LockType::is_shared> {
+    using _ExclusiveGuard = typename LockType::ExclusiveGuard;
     mutable std::thread::id owner;
 
+    template <typename _LockType, typename _Guard>
+    friend class RecursiveGuard;
+
 public:
+    using ExclusiveGuard = RecursiveGuard<RecursiveLock, _ExclusiveGuard>;
 
-    /* A proxy for the wrapped lock guard that allows recursive references using the
-    functor's reference counter. */
-    struct Guard {
-        RecursiveLock& lock;
-        std::optional<Wrapped> guard;
-
-        /* Construct an empty guard proxy. */
-        Guard(RecursiveLock& lock) : lock(lock) {}
-
-        /* Construct the outermost guard proxy for the recursive lock. */
-        Guard(RecursiveLock& lock, Wrapped guard) : lock(lock), guard(guard) {}
-
-        /* Disabled copy constructor/assignment for compatibility with
-        std::unique_lock. */
-        Guard(const Guard&) = delete;
-        Guard& operator=(const Guard&) = delete;
-
-        /* Move constructor. */
-        Guard(Guard&& other) : lock(other.lock), guard(std::move(other.guard)) {}
-
-        /* Move assignment operator. */
-        Guard& operator=(Guard&& other) {
-            lock = other.lock;
-            guard = std::move(other.guard);
-            return *this;
-        }
-
-        /* Destroy the guard proxy and reset the lock's owner. */
-        ~Guard() {
-            if (guard.has_value()) {
-                lock.owner = std::thread::id();  // empty id
-            }
-        }
-
-    };
-
-    /* Acquire the lock, allowing repeated locks within a single thread. */
+    /* Acquire the lock in exclusive mode, allowing repeated locks within a single
+    thread. */
     template <typename... Args>
-    inline Guard operator()(Args&&... args) const {
+    inline ExclusiveGuard operator()(Args&&... args) const {
         auto id = std::this_thread::get_id();
 
         // if the current thread already owns the lock, return an empty guard
         if (id == owner) {
-            return Guard(*this);
+            return ExclusiveGuard(*this);
         }
 
         // NOTE: the handling of the `owner` identifier is only thread-safe due to the 
@@ -308,9 +491,9 @@ public:
         // first thread releases the lock, and then updates the owner accordingly.
 
         // otherwise, attempt to acquire the lock
-        Wrapped guard = Lock::operator()(std::forward<Args>(args)...);  // blocks
+        _ExclusiveGuard guard = LockType::operator()(std::forward<Args>(args)...);  // blocks
         owner = id;
-        return Guard(*this, std::move(guard));
+        return ExclusiveGuard(*this, std::move(guard));
     }
 
 };
@@ -318,14 +501,14 @@ public:
 
 /* A lock decorator that adds a spin effect to lock acquisition. */
 template <
-    typename Lock,
+    typename LockType,
     int MaxRetries = -1,
     typename TimeoutUnit = std::chrono::nanoseconds,
     int TimeoutValue = -1,
     typename WaitUnit = std::chrono::nanoseconds,
     int WaitValue = -1
 >
-class SpinLock : public Lock {
+class SpinLock : public LockType {
     using Clock = std::chrono::high_resolution_clock;
 
     /* Guards to ensure that time units are compatible with std::chrono::duration. */
@@ -387,15 +570,16 @@ public:
     /* Acquire an exclusive lock, spinning according to the template parameters. */
     template <typename... Args>
     inline auto operator()(Args&&... args) const
-        -> decltype(Lock::operator()(std::forward<Args>(args)...))
+        -> decltype(LockType::operator()(std::forward<Args>(args)...))
     {
+        using Guard = decltype(LockType::operator()(std::forward<Args>(args)...));
         auto end = Clock::now() + timeout;
         int retries = 0;
 
         // loop until the lock is acquired or we hit an error condition
         while (true) {
             // try to lock the mutex
-            std::optional<typename Lock::Guard> guard = Lock::try_lock();
+            std::optional<Guard> guard = LockType::try_lock();
             if (guard.has_value()) {
                 return guard.value();  // lock succeeded
             }
@@ -431,15 +615,16 @@ public:
     /* Acquire a shared lock, spinning according to the template parameters. */
     template <typename... Args>
     inline auto shared(Args&&... args) const
-        -> decltype(Lock::shared(std::forward<Args>(args)...))
+        -> decltype(LockType::shared(std::forward<Args>(args)...))
     {
+        using Guard = decltype(LockType::shared(std::forward<Args>(args)...));
         auto end = Clock::now() + timeout;
         int retries = 0;
 
         // loop until the lock is acquired or we hit an error condition
         while (true) {
             // try to lock the mutex
-            std::optional<typename Lock::SharedGuard> guard = Lock::try_shared();
+            std::optional<Guard> guard = LockType::try_shared();
             if (guard.has_value()) {
                 return guard.value();  // lock succeeded
             }
@@ -476,8 +661,8 @@ public:
 
 
 /* A lock decorator that adds tracks performance diagnostics for the lock. */
-template <typename Lock, typename Unit = std::chrono::nanoseconds>
-class DiagnosticLock : public Lock {
+template <typename LockType, typename Unit = std::chrono::nanoseconds>
+class DiagnosticLock : public LockType {
     using Clock = std::chrono::high_resolution_clock;
     using Resolution = std::chrono::duration<double, typename Unit::period>;
     mutable size_t lock_count = 0;
@@ -491,7 +676,7 @@ public:
         auto start = Clock::now();
 
         // acquire lock
-        auto result = Lock::operator()(std::forward<Args>(args)...);
+        auto result = LockType::operator()(std::forward<Args>(args)...);
 
         auto end = Clock::now();
         lock_time += std::chrono::duration_cast<Resolution>(end - start);
@@ -504,12 +689,12 @@ public:
     /* Track the elapsed time to acquire a shared lock, if enabled. */
     template <typename... Args>
     inline auto shared(Args&&... args) const
-        -> decltype(Lock::shared(std::forward<Args>(args)...))
+        -> decltype(LockType::shared(std::forward<Args>(args)...))
     {
         auto start = Clock::now();
 
         // acquire lock
-        auto result = Lock::shared(std::forward<Args>(args)...);
+        auto result = LockType::shared(std::forward<Args>(args)...);
 
         auto end = Clock::now();
         lock_time += std::chrono::duration_cast<Resolution>(end - start);
@@ -545,14 +730,16 @@ public:
 
 /* A wrapper around a C++ lock guard that allows it to be used as a Python context
 manager. */
-template <typename Lock, bool shared>
+template <typename LockType, Lock mode>
 class PyLock {
-    using Guard = typename Lock::Guard;
-    using SharedGuard = typename Lock::SharedGuard;  // may not exist
+    using Guard = typename LockType::Guard;
+
+    template <bool cond = shared, std::enable_if_t<cond, int> = 0>
+    using SharedGuard = typename LockType::SharedGuard;  // may not exist
 
     PyObject_HEAD
     std::conditional_t<shared, Slot<SharedGuard>, Slot<Guard>> guard;
-    const Lock* lock;
+    const LockType* lock;
 
     /* Force users to use init() factory method. */
     PyLock() = delete;
@@ -562,7 +749,7 @@ class PyLock {
 public:
 
     /* Construct a Python lock from a C++ lock guard. */
-    inline static PyObject* init(const Lock* lock) {
+    inline static PyObject* init(const LockType* lock) {
         // create new iterator instance
         PyLock* result = PyObject_New(PyLock, &Type);
         if (result == nullptr) {
