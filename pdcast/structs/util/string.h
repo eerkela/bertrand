@@ -40,9 +40,9 @@ inline static constexpr std::string_view empty_string_view {"", 0};
 NOTE: using this class requires a shift in thinking from runtime string manipulation.
 First of all, the class is purely static, and cannot be instantiated anywhere in code.
 Second, its methods are implemented as static constexpr members, which means that they
-do not need to be invoked at runtime.  If they accept arguments, those arguments must
-be supplied as constexpr template parameters, and may need to be forward declared
-before use.  For example, consider the following:
+do not need to be invoked at runtime.  They accept arguments via constexpr template
+parameters, which may need to be forward declared before use.  For example, consider
+the following:
 
     static constexpr std::string_view foo{"foo"};
     static constexpr std::string_view bar{"bar"};
@@ -165,6 +165,7 @@ private:
     }
 
     /* Helper for converting a string to lower case. */
+    template <typename = void>
     struct _lower {
         static constexpr std::array<char, str.size() + 1> array = [] {
             std::array<char, str.size() + 1> array{};  // null-terminated
@@ -179,6 +180,7 @@ private:
     };
 
     /* Helper for converting a string to upper case. */
+    template <typename = void>
     struct _upper {
         static constexpr std::array<char, str.size() + 1> array = [] {
             std::array<char, str.size() + 1> array{};  // null-terminated
@@ -193,6 +195,7 @@ private:
     };
 
     /* Helper for converting a string to capital case. */
+    template <typename = void>
     struct _capitalize {
         static constexpr std::array<char, str.size() + 1> array = [] {
             std::array<char, str.size() + 1> array{};  // null-terminated
@@ -214,6 +217,7 @@ private:
     };
 
     /* Helper for converting a string to title case. */
+    template <typename = void>
     struct _title {
         static constexpr std::array<char, str.size() + 1> array = [] {
             std::array<char, str.size() + 1> array{};  // null-terminated
@@ -238,6 +242,7 @@ private:
     };
 
     /* Helper for swapping the case of every letter in a string. */
+    template <typename = void>
     struct _swapcase {
         static constexpr std::array<char, str.size() + 1> array = [] {
             std::array<char, str.size() + 1> array{};  // null-terminated
@@ -255,25 +260,29 @@ private:
 public:
 
     /* Check if all characters in the string are alphabetic. */
+    template <typename = void>
     static constexpr bool isalpha = [] {
         for (auto c : str) if (!is_alpha(c)) return false;
         return !str.empty();
     }();
 
     /* Check if all characters in the string are digits. */
+    template <typename = void>
     static constexpr bool isdigit = [] {
         for (auto c : str) if (!is_digit(c)) return false;
         return !str.empty();
     }();
 
     /* Check if all characters in the string are alphanumeric. */
+    template <typename = void>
     static constexpr bool isalnum = [] {
         for (auto c : str) if (!is_alnum(c)) return false;
         return !str.empty();
     }();
 
-    /* Check if all cased characters in the string are lowercase and there is at least
-    one cased character. */
+    /* Check if all cased characters in the string are in lower case and there is at
+    least one cased character. */
+    template <typename = void>
     static constexpr bool islower = [] {
         bool has_cased = false;
         for (auto c : str) {
@@ -286,8 +295,9 @@ public:
         return has_cased;
     }();
 
-    /* Check if all cased characters in the string are uppercase and there is at least
-    one cased character. */
+    /* Check if all cased characters in the string are in upper case and there is at
+    least one cased character. */
+    template <typename = void>
     static constexpr bool isupper = [] {
         bool has_cased = false;
         for (auto c : str) {
@@ -300,6 +310,9 @@ public:
         return has_cased;
     }();
 
+    /* Check if all characters in the string are in title case and there is at least
+    one cased character. */
+    template <typename = void>
     static constexpr bool istitle = [] {
         bool expect_capital = true;
         for (size_t i = 0; i < str.size(); ++i) {
@@ -319,40 +332,47 @@ public:
     }();
 
     /* Check if all characters in the string are whitespace. */
+    template <typename = void>
     static constexpr bool isspace = [] {
         for (auto c : str) if (!is_space(c)) return false;
         return !str.empty();
     }();
 
     /* Check if all characters in the string are in the ASCII character set. */
+    template <typename = void>
     static constexpr bool isascii = [] {
         for (auto c : str) if (!is_ascii(c)) return false;
         return true;
     }();
 
-    /* Change all characters within the templated string to lowercase. */
-    static constexpr std::string_view lower = _lower::value;
+    /* Change all characters within the templated string to lower case. */
+    template <typename = void>
+    static constexpr std::string_view lower = _lower<>::value;
 
-    /* Change all characters within the templated string to uppercase. */
-    static constexpr std::string_view upper = _upper::value;
+    /* Change all characters within the templated string to upper case. */
+    template <typename = void>
+    static constexpr std::string_view upper = _upper<>::value;
 
     /* Uppercase the first letter in the templated string and lowercase all others. */
-    static constexpr std::string_view capitalize = _capitalize::value;
+    template <typename = void>
+    static constexpr std::string_view capitalize = _capitalize<>::value;
 
     /* Uppercase the first letter in every word of the templated string.
 
     NOTE: word boundaries are determined by the `is_delimeter()` function, and should
-    be robust for english test.  However, this may not be the case for other languages,
-    as the tools for doing complex string manipulations are not available at compile
-    time. */
-    static constexpr std::string_view title = _title::value;
+    be robust for english strings.  This may not be the case for other languages, as
+    the tools for doing complex string manipulations are not available strictly at
+    compile time. */
+    template <typename = void>
+    static constexpr std::string_view title = _title<>::value;
 
     /* Swap the case of every character in the templated string. */
-    static constexpr std::string_view swapcase = _swapcase::value;
+    template <typename = void>
+    static constexpr std::string_view swapcase = _swapcase<>::value;
 
-    /////////////////////////////
-    ////    JUSTIFICATION    ////
-    /////////////////////////////
+    ///////////////////////
+    ////    PADDING    ////
+    ///////////////////////
 
 private:
 
@@ -497,13 +517,13 @@ private:
 
 public:
 
+    // TODO: strip, lstrip, rstrip, removeprefix, removesuffix
 
     ////////////////////////////
     ////    FIND/REPLACE    ////
     ////////////////////////////
 
 private:
-
 
 
 public:
@@ -521,6 +541,8 @@ public:
         }
         return total;
     }();
+
+    // TODO: find, index, startswith, endswith, replace, expandtabs
 
     //////////////////////////
     ////    JOIN/SPLIT    ////
@@ -622,6 +644,8 @@ public:
     /* Split strings at compile time using the templated string as a separator. */
     template <const std::string_view& sep>
     static constexpr auto split = _split<sep>::value;
+
+    // TODO: partition, rpartition, rsplit, splitlines
 
 };
 
