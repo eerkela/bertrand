@@ -3,6 +3,7 @@
 #define BERTRAND_STRUCTS_UTIL_STRING_H
 
 #include <array>  // std::array
+#include <cstddef>
 #include <cstdint>  // uint32_t
 #include <sstream>  // std::ostringstream
 #include <string>  // std::string
@@ -52,7 +53,13 @@ the following:
 This is functionally similar to the equivalent Python `".".join(["foo", "bar"])`, but
 evaluated entirely at compile-time.  The use of angle brackets to invoke the join
 method clearly differentiates these operations from their runtime counterparts, and
-prevents confusion between the two. */
+prevents confusion between the two.
+
+Operations that do not accept any arguments can be invoked by providing empty angle
+brackets, similar to an empty function signature.  For example:
+
+    std::cout<< String<String<sep>::join<foo, bar>>::upper<>;  // yields "FOO.BAR"
+*/
 template <const std::string_view& str = empty_string_view>
 class String {
 public:
@@ -514,10 +521,69 @@ public:
 
 private:
 
+    static constexpr std::string_view whitespace {" \t\n\r\f\v"};
+
+    /* Helper for finding the index of the first non-stripped character in a string. */
+    static constexpr size_t first(const std::string_view& chars) {
+        size_t i = 0;
+        for (; i < str.size(); ++i) {
+            if (chars.find(str[i]) == chars.npos) break;
+        }
+        return i;
+    }
+
+    /* Helper for finding the index of the last non-stripped character in a string. */
+    static constexpr size_t last(const std::string_view& chars, size_t start) {
+        size_t i = str.size();
+        for (; i > start; --i) {
+            if (chars.find(str[i - 1]) == chars.npos) break;
+        }
+        return i;
+    };
 
 public:
 
-    // TODO: strip, lstrip, rstrip, removeprefix, removesuffix
+    /* Remove leading and trailing characters from the templated string. */
+    template <const std::string_view& chars = whitespace>
+    static constexpr std::string_view strip = [] {
+        size_t start = first(chars);
+        size_t stop = last(chars, start);
+        return str.substr(start, stop - start);
+    }();
+
+    /* Remove leading characters from the templated string. */
+    template <const std::string_view& chars = whitespace>
+    static constexpr std::string_view lstrip = [] {
+        size_t start = first(chars);
+        return str.substr(start);
+    }();
+
+    /* Remove trailing characters from the templated string. */
+    template <const std::string_view& chars = whitespace>
+    static constexpr std::string_view rstrip = [] {
+        size_t stop = last(chars, 0);
+        return str.substr(0, stop);
+    }();
+
+    /* Remove a prefix from the templated string if it is present. */
+    template <const std::string_view& prefix>
+    static constexpr std::string_view removeprefix = [] {
+        if constexpr (str.substr(0, prefix.size()) == prefix) {
+            return str.substr(prefix.size());
+        } else {
+            return str;
+        }
+    }();
+
+    /* Remove a suffix from the templated string if it is present. */
+    template <const std::string_view& suffix>
+    static constexpr std::string_view removesuffix = [] {
+        if constexpr (str.substr(str.size() - suffix.size()) == suffix) {
+            return str.substr(0, str.size() - suffix.size());
+        } else {
+            return str;
+        }
+    }();
 
     ////////////////////////////
     ////    FIND/REPLACE    ////
