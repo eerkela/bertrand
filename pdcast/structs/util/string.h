@@ -354,9 +354,149 @@ public:
     ////    JUSTIFICATION    ////
     /////////////////////////////
 
+private:
+
+    /* Helper for left-justifying a string. */
+    template <size_t width, char fill>
+    struct _ljust {
+        static constexpr std::array<char, width + 1> array = [] {
+            std::array<char, width + 1> array{};  // null-terminated
+            size_t i = 0;
+            for (; i < str.size(); ++i) {
+                array[i] = str[i];
+            }
+            for (; i < width; ++i) {
+                array[i] = fill;
+            }
+            array[width] = '\0';  // null-terminate
+            return array;
+        }();
+
+        static constexpr std::string_view value{array.data(), width};
+    };
+
+    /* Helper for right-justifying a string. */
+    template <size_t width, char fill>
+    struct _rjust {
+        static constexpr std::array<char, width + 1> array = [] {
+            std::array<char, width + 1> array{};  // null-terminated
+            size_t i = 0;
+            size_t offset = width - str.size();
+            for (; i < offset; ++i) {
+                array[i] = fill;
+            }
+            for (; i < width; ++i) {
+                array[i] = str[i - offset];
+            }
+            array[width] = '\0';  // null-terminate
+            return array;
+        }();
+
+        static constexpr std::string_view value{array.data(), width};
+    };
+
+    /* Helper for centering a string. */
+    template <size_t width, char fill>
+    struct _center {
+        static constexpr std::array<char, width + 1> array = [] {
+            std::array<char, width + 1> array{};  // null-terminated
+            size_t i = 0;
+            size_t offset = (width - str.size()) / 2;
+            for (; i < offset; ++i) {
+                array[i] = fill;
+            }
+            for (; i < offset + str.size(); ++i) {
+                array[i] = str[i - offset];
+            }
+            for (; i < width; ++i) {
+                array[i] = fill;
+            }
+            array[width] = '\0';  // null-terminate
+            return array;
+        }();
+
+        static constexpr std::string_view value{array.data(), width};
+    };
+
+    /* Helper for zfilling a string. */
+    template <size_t width>
+    struct _zfill {
+        static constexpr std::array<char, width + 1> array = [] {
+            std::array<char, width + 1> array{};  // null-terminated
+            size_t i = 0;
+            bool has_sign = (str.size() > 0 && (str[0] == '-' || str[0] == '+'));
+            if (has_sign) array[i++] = str[0];
+            size_t offset = width - str.size();
+            for (; i < offset + has_sign; ++i) {
+                array[i] = '0';
+            }
+            for (; i < width; ++i) {
+                array[i] = str[i - offset];
+            }
+            array[width] = '\0';  // null-terminate
+            return array;
+        }();
+
+        static constexpr std::string_view value{array.data(), width};
+    };
+
+public:
+
+    /* Pad the left side of the string with a given character until it reaches a
+    specified width. */
+    template <size_t width, const char fill = ' '>
+    static constexpr std::string_view ljust = [] {
+        if constexpr (width <= str.size()) {
+            return str;
+        } else {
+            return _ljust<width, fill>::value;
+        }
+    }();
+
+    /* Pad the right side of the string with a given character until it reaches a
+    specified width. */
+    template <size_t width, const char fill = ' '>
+    static constexpr std::string_view rjust = [] {
+        if constexpr (width <= str.size()) {
+            return str;
+        } else {
+            return _rjust<width, fill>::value;
+        }
+    }();
+
+    /* Pad both sides of the string with a given character until it reaches a specified
+    width. */
+    template <size_t width, const char fill = ' '>
+    static constexpr std::string_view center = [] {
+        if constexpr (width <= str.size()) {
+            return str;
+        } else {
+            return _center<width, fill>::value;
+        }
+    }();
+
+    /* Pad the left side of the string with zeros until it reaches a specified width.
+    
+    NOTE: if the first character of the string is a `+` or `-` sign, then the sign will
+    be preserved and remain at the beginning of the string. */
+    template <size_t width>
+    static constexpr std::string_view zfill = [] {
+        if constexpr (width <= str.size()) {
+            return str;
+        } else {
+            return _zfill<width>::value;
+        }
+    }();
+
     /////////////////////
     ////    STRIP    ////
     /////////////////////
+
+private:
+
+
+public:
+
 
     ////////////////////////////
     ////    FIND/REPLACE    ////
