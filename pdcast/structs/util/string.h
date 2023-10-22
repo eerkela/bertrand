@@ -14,7 +14,7 @@
 
 
 /* NOTE: This file contains utilities for working with C++ and Python strings for
- * debugging, error reporting, and compile-time naming for Python objects.
+ * debugging, error reporting, type naming, and compile-time string manipulations.
  */
 
 
@@ -23,45 +23,15 @@ namespace structs {
 namespace util {
 
 
-///////////////////////////////////////
-////    COMPILE-TIME TYPE NAMES    ////
-///////////////////////////////////////
+///////////////////////////////////////////
+////    COMPILE-TIME STRING METHODS    ////
+///////////////////////////////////////////
 
 
-/* Custom PyObjects require a dotted name to be used from Python.  Unfortunately,
- * accessing the name of a C++ type is not always straightforward, especially when
- * dealing with heavily templated types.  Moreover, since these types do not change
- * over the course of the program, we would prefer to compute them at compile-time
- * if possible.  There is no standard way to do this, but using some compiler-specific
- * trickery, we can do exactly that.
- *
- * In order to generate a Python-compatible name for a C++ type, we need to do the
- * following:
- *      - If a specific specialization of `PyName` exists for a given type, then we
- *        can use that directly.  This works as long as the specialization exposes a
- *        `static constexpr std::string_view value{ ... }` public member, which will
- *        be reflected at the Python level for any PyObject* wrappers around the given
- *        type.
- *      - Otherwise, we need to generate a name ourselves.  This is done by getting the
- *        raw type name using compiler macros, and then mangling it with a unique hash
- *        sanitizing it to remove invalid characters.  This allows us to generate a
- *        name that is guaranteed to be unique for each type, but is still
- *        human-readable at the Python level.
- *              NOTE: automatic naming relies on compiler support and is not guaranteed
- *              to work across all platforms.  At minimum, it should be compatible with
- *              most popular compilers (including GCC, Clang, and MSVC), but the
- *              specific implementation may need to be tweaked over time as compiler
- *              standards evolve.
- *
- * Additionally, these strings may need to be concatenated to form a dotted name.  The
- * `Path` class provides a mechanism to do exactly that.  The syntax for doing so is as
- * follows:
- *
- * constexpr std::string_view name = Path::dotted<PyName<T>::value, PyName<U>::value, ...>;
- */
+/* Default string for compile-time `String<>` operations.
 
-
-
+NOTE: in order to use `String<>` with the default value, an empty specialization must
+be provided (i.e. `String<>::`, not `String::`). */
 inline static constexpr std::string_view empty_string_view {"", 0};
 
 
@@ -82,46 +52,341 @@ before use.  For example, consider the following:
 This is functionally similar to the equivalent Python `".".join(["foo", "bar"])`, but
 evaluated entirely at compile-time.  The use of angle brackets to invoke the join
 method clearly differentiates these operations from their runtime counterparts, and
-prevents confusion between the two.
-*/
+prevents confusion between the two. */
 template <const std::string_view& str = empty_string_view>
 class String {
+public:
 
-    /* Concatenate a sequence of std::string_views at compile-time. */
-    template <const std::string_view&... strings>
-    class _concat {
-        /* Join all strings into a single std::array of chars with static storage. */
-        static constexpr auto array = [] {
-            // Get array with size equal to total length of strings 
-            constexpr size_t len = (strings.size() + ... + 0);
-            std::array<char, len + 1> array{};  // null-terminated
+    /* Disallow instances of this class. */
+    String() = delete;
+    String(const String&) = delete;
+    String(String&&) = delete;
 
-            // Recursively insert each string into array
-            auto append = [i = 0, &array](const auto& string) mutable {
-                for (auto c : string) array[i++] = c;
-            };
-            (append(strings), ...);
-            array[len] = 0;  // null-terminate
+    //////////////////////
+    ////    CASING    ////
+    //////////////////////
+
+private:
+
+    static constexpr char offset_lower_to_upper = 'A' - 'a';
+    static constexpr char offset_upper_to_lower = 'a' - 'A';
+
+    /* Check if a character is lower case. */
+    static constexpr bool is_lower(char c) {
+        return (c >= 'a' && c <= 'z');
+    }
+
+    /* Check if a character is upper case. */
+    static constexpr bool is_upper(char c) {
+        return (c >= 'A' && c <= 'Z');
+    }
+
+    /* Check if a character is a letter. */
+    static constexpr bool is_alpha(char c) {
+        return is_lower(c) || is_upper(c);
+    }
+
+    /* Check if a character is a digit. */
+    static constexpr bool is_digit(char c) {
+        return (c >= '0' && c <= '9');
+    }
+
+    /* Check if a character is alphanumeric. */
+    static constexpr bool is_alnum(char c) {
+        return is_alpha(c) || is_digit(c);
+    }
+
+    /* Check if a character is in the ASCII character set. */
+    static constexpr bool is_ascii(char c) {
+        return (c >= 0 && c <= 127);
+    }
+
+    /* Check if a character is a whitespace character. */
+    static constexpr bool is_space(char c) {
+        switch (c) {
+            case ' ':
+            case '\t':
+            case '\n':
+            case '\r':
+            case '\f':
+            case '\v':
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /* Check if a character delimits a word boundary. */
+    static constexpr bool is_delimeter(char c) {
+        /* Switch statement compiles to a jump table, which is O(1). */
+        switch (c) {
+            case ' ':
+            case '\t':
+            case '\n':
+            case '\r':
+            case '\f':
+            case '\v':
+            case '.':
+            case '!':
+            case '?':
+            case ',':
+            case ';':
+            case ':':
+            case '#':
+            case '&':
+            case '+':
+            case '-':
+            case '*':
+            case '/':
+            case '|':
+            case '\\':
+            case '(':
+            case ')':
+            case '[':
+            case ']':
+            case '{':
+            case '}':
+            case '<':
+            case '>':
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /* Convert a character to lower case. */
+    static constexpr char to_lower(char c) {
+        return is_upper(c) ? c + offset_upper_to_lower : c;
+    }
+
+    /* Convert a character to upper case. */
+    static constexpr char to_upper(char c) {
+        return is_lower(c) ? c + offset_lower_to_upper : c;
+    }
+
+    /* Helper for converting a string to lower case. */
+    struct _lower {
+        static constexpr std::array<char, str.size() + 1> array = [] {
+            std::array<char, str.size() + 1> array{};  // null-terminated
+            for (size_t i = 0; i < str.size(); ++i) {
+                array[i] = to_lower(str[i]);
+            }
+            array[str.size()] = '\0';  // null-terminate
             return array;
         }();
 
-    public:
-        /* Get the concatenated string as a std::string_view. */
-        static constexpr std::string_view value {array.data(), array.size() - 1};
+        static constexpr std::string_view value{array.data(), array.size() - 1};
     };
 
-    /* Count the number of occurrences of `sep` within `str`. */
-    template <const std::string_view& sub>
-    static constexpr size_t _count() {
-        size_t total = 0;
+    /* Helper for converting a string to upper case. */
+    struct _upper {
+        static constexpr std::array<char, str.size() + 1> array = [] {
+            std::array<char, str.size() + 1> array{};  // null-terminated
+            for (size_t i = 0; i < str.size(); ++i) {
+                array[i] = to_upper(str[i]);
+            }
+            array[str.size()] = '\0';  // null-terminate
+            return array;
+        }();
+
+        static constexpr std::string_view value{array.data(), array.size() - 1};
+    };
+
+    /* Helper for converting a string to capital case. */
+    struct _capitalize {
+        static constexpr std::array<char, str.size() + 1> array = [] {
+            std::array<char, str.size() + 1> array{};  // null-terminated
+            bool do_capitalize = true;
+            for (size_t i = 0; i < str.size(); ++i) {
+                char c = str[i];
+                if (do_capitalize && is_alpha(c)) {
+                    array[i] = to_upper(c);
+                    do_capitalize = false;
+                } else {
+                    array[i] = to_lower(c);
+                }
+            }
+            array[str.size()] = '\0';  // null-terminate
+            return array;
+        }();
+
+        static constexpr std::string_view value{array.data(), array.size() - 1};
+    };
+
+    /* Helper for converting a string to title case. */
+    struct _title {
+        static constexpr std::array<char, str.size() + 1> array = [] {
+            std::array<char, str.size() + 1> array{};  // null-terminated
+            bool do_capitalize = true;
+            for (size_t i = 0; i < str.size(); ++i) {
+                char c = str[i];
+                if (do_capitalize && is_alpha(c)) {
+                    array[i] = to_upper(c);
+                    do_capitalize = false;
+                } else if (is_delimeter(c)) {
+                    array[i] = c;
+                    do_capitalize = true;
+                } else {
+                    array[i] = to_lower(c);
+                }
+            }
+            array[str.size()] = '\0';  // null-terminate
+            return array;
+        }();
+
+        static constexpr std::string_view value{array.data(), array.size() - 1};
+    };
+
+    /* Helper for swapping the case of every letter in a string. */
+    struct _swapcase {
+        static constexpr std::array<char, str.size() + 1> array = [] {
+            std::array<char, str.size() + 1> array{};  // null-terminated
+            for (size_t i = 0; i < str.size(); ++i) {
+                char c = str[i];
+                array[i] = is_lower(c) ? to_upper(c) : to_lower(c);
+            }
+            array[str.size()] = '\0';  // null-terminate
+            return array;
+        }();
+
+        static constexpr std::string_view value{array.data(), array.size() - 1};
+    };
+
+public:
+
+    /* Check if all characters in the string are alphabetic. */
+    static constexpr bool isalpha = [] {
+        for (auto c : str) if (!is_alpha(c)) return false;
+        return !str.empty();
+    }();
+
+    /* Check if all characters in the string are digits. */
+    static constexpr bool isdigit = [] {
+        for (auto c : str) if (!is_digit(c)) return false;
+        return !str.empty();
+    }();
+
+    /* Check if all characters in the string are alphanumeric. */
+    static constexpr bool isalnum = [] {
+        for (auto c : str) if (!is_alnum(c)) return false;
+        return !str.empty();
+    }();
+
+    /* Check if all cased characters in the string are lowercase and there is at least
+    one cased character. */
+    static constexpr bool islower = [] {
+        bool has_cased = false;
+        for (auto c : str) {
+            if (is_upper(c)) {
+                return false;
+            } else if (is_lower(c)) {
+                has_cased = true;
+            }
+        }
+        return has_cased;
+    }();
+
+    /* Check if all cased characters in the string are uppercase and there is at least
+    one cased character. */
+    static constexpr bool isupper = [] {
+        bool has_cased = false;
+        for (auto c : str) {
+            if (is_lower(c)) {
+                return false;
+            } else if (is_upper(c)) {
+                has_cased = true;
+            }
+        }
+        return has_cased;
+    }();
+
+    static constexpr bool istitle = [] {
+        bool expect_capital = true;
         for (size_t i = 0; i < str.size(); ++i) {
+            char c = str[i];
+            if (is_alpha(c)) {
+                if (expect_capital) {
+                    if (is_lower(c)) return false;
+                    expect_capital = false;
+                } else {
+                    if (is_upper(c)) return false;
+                }
+            } else if (is_delimeter(c)) {
+                expect_capital = true;
+            }
+        }
+        return !str.empty();
+    }();
+
+    /* Check if all characters in the string are whitespace. */
+    static constexpr bool isspace = [] {
+        for (auto c : str) if (!is_space(c)) return false;
+        return !str.empty();
+    }();
+
+    /* Check if all characters in the string are in the ASCII character set. */
+    static constexpr bool isascii = [] {
+        for (auto c : str) if (!is_ascii(c)) return false;
+        return true;
+    }();
+
+    /* Change all characters within the templated string to lowercase. */
+    static constexpr std::string_view lower = _lower::value;
+
+    /* Change all characters within the templated string to uppercase. */
+    static constexpr std::string_view upper = _upper::value;
+
+    /* Uppercase the first letter in the templated string and lowercase all others. */
+    static constexpr std::string_view capitalize = _capitalize::value;
+
+    /* Uppercase the first letter in every word of the templated string.
+
+    NOTE: word boundaries are determined by the `is_delimeter()` function, and should
+    be robust for english test.  However, this may not be the case for other languages,
+    as the tools for doing complex string manipulations are not available at compile
+    time. */
+    static constexpr std::string_view title = _title::value;
+
+    /* Swap the case of every character in the templated string. */
+    static constexpr std::string_view swapcase = _swapcase::value;
+
+    /////////////////////////////
+    ////    JUSTIFICATION    ////
+    /////////////////////////////
+
+    /////////////////////
+    ////    STRIP    ////
+    /////////////////////
+
+    ////////////////////////////
+    ////    FIND/REPLACE    ////
+    ////////////////////////////
+
+private:
+
+
+
+public:
+
+    /* Count the total number of occurrences of a substring within the templated
+    string. */
+    template <const std::string_view& sub, size_t start = 0, size_t end = str.size()>
+    static constexpr size_t count = [] {
+        size_t total = 0;
+        for (size_t i = start; i < end; ++i) {
             if (str.substr(i, sub.size()) == sub) {
                 ++total;
                 i += sub.size() - 1;
             }
         }
         return total;
-    }
+    }();
+
+    //////////////////////////
+    ////    JOIN/SPLIT    ////
+    //////////////////////////
+
+private:
 
     /* Recursive template specializations to interleave a `str` token in between each
     concatenated string. */
@@ -129,10 +394,6 @@ class String {
     struct _join;
     template <const std::string_view& first, const std::string_view&... rest>
     struct _join<first, rest...> {
-        static constexpr std::string_view value = (
-            _concat<first, str, _join<rest...>::value>::value
-        );
-
         /* Join all strings into a single std::array of chars with static storage. */
         static constexpr auto array = [] {
             // Get array with size equal to total length of strings 
@@ -201,7 +462,7 @@ class String {
 
     public:
         static constexpr auto value = [] {
-            constexpr size_t size = _count<sep>();
+            constexpr size_t size = count<sep>;
             if constexpr (size == 0) {
                 return std::array<std::string_view, 1>{str};
             } else {
@@ -212,11 +473,6 @@ class String {
     };
 
 public:
-
-    /* Count the total number of occurrences of a substring within the templated
-    string. */
-    template <const std::string_view& sub>
-    static constexpr size_t count = _count<sub>();
 
     /* Concatenate strings at compile time, inserting the templated string as a
     separator between each token. */
@@ -229,6 +485,52 @@ public:
 
 };
 
+
+//////////////////////////////////////
+////    AUTOMATIC PYTHON NAMES    ////
+//////////////////////////////////////
+
+
+/* Custom PyObjects require a dotted name to be used from Python.  Unfortunately,
+ * accessing the name of a C++ type is not always straightforward, especially when
+ * dealing with heavily templated types.  Moreover, since these types do not change
+ * over the course of the program, we would prefer to compute them at compile-time
+ * if possible.  There is no standard way to do this, but using some compiler-specific
+ * trickery, we can do exactly that.
+ *
+ * In order to generate a Python-compatible name for a C++ type, we need to do the
+ * following:
+ *      - If a specific specialization of `PyName` exists for a given type, then we
+ *        can use that directly.  This makes it straightforward to assign a custom name
+ *        to an arbitrary type, without requiring direct access to the type itself,
+ *        thereby promoting the open/closed principle of reusable software.
+ *      - Otherwise, we need to generate a name ourselves.  This is done by getting the
+ *        raw type name using compiler macros, and then mangling it with a unique hash
+ *        and sanitizing it to remove invalid characters.  This allows us to generate a
+ *        name that is guaranteed to be unique for each type, but is still reasonably
+ *        readable at the Python level.
+ *              NOTE: automatic naming relies on compiler support and is not guaranteed
+ *              to work identically across all platforms.  It should be compatible with
+ *              the vast majority of popular compilers (including GCC, Clang, and
+ *              MSVC-based solutions), but the specific implementation may need to be
+ *              tweaked over time as compiler standards evolve.
+ *
+ * Additionally, these strings may need to be concatenated to form a dotted name.  The
+ * `String` class provides a mechanism to do exactly that, as well as a number of other
+ * useful compile-time string manipulations.  The syntax for doing so is as follows:
+ *
+ *      static constexpr std::string_view dot{".", 1};
+ *      constexpr std::string_view name = String<dot>::join<PyName<T>, PyName<U>, ...>;
+ *
+ * This mimics the syntax of Python's `str.join()` method, and operates in a similar
+ * fashion.  Note the need to forward-declare the separator string as a constexpr
+ * string_view with static storage duration.  This is necessary for the template
+ * evaluation to work correctly, as string literals are not valid template arguments
+ * until C++20.  If using a compiler that supports C++20 syntax, then this can be
+ * simplified to:
+ *
+ *      constexpr std::string_view name = String<".">::join<PyName<T>, PyName<U>, ...>;
+ */
 
 
 /* Get the Python-compatible name of the templated iterator, defaulting to a mangled
@@ -243,7 +545,7 @@ own specializations of this class to inject a custom name.
 Automatic naming is supported on the following compilers:
     - GCC (>= 11.0.0)
     - Clang (>= 15.0.0)
-    - MSVC (>= 19.29.30038)
+    - MSVC (>= 19.29.30038 in C++17 mode)
 */
 template <typename T>
 class TypeName {
@@ -364,7 +666,7 @@ private:
     static constexpr std::string_view hash_str{hash_array.data(), hash_array.size()};
 
     /* Concatenate name and hash. */
-    static constexpr std::string_view concatenated = Path::concat<name, hash_str>;
+    static constexpr std::string_view concatenated = String<>::join<name, hash_str>;
 
     /* Sanitize output, converting invalid characters into underscores. */
     static constexpr std::array<char, concatenated.size() + 1> sanitized = [] {
@@ -391,7 +693,8 @@ public:
 };
 
 
-/* Overloadable alias for TypeName<T>::mangled. */
+/* Alias for TypeName<T>::mangled.  This can be easily overloaded to assign a custom
+name to a particular type. */
 template <typename T>
 constexpr std::string_view PyName = TypeName<T>::mangled;
 
