@@ -3,13 +3,13 @@
 #define BERTRAND_STRUCTS_UTIL_STRING_H
 
 #include <array>  // std::array
-#include <cstddef>
+#include <cstddef>  // size_t
 #include <cstdint>  // uint32_t
+#include <limits>  // std::numeric_limits
 #include <sstream>  // std::ostringstream
 #include <string>  // std::string
 #include <string_view>  // std::string_view
 #include <typeinfo>  // typeid()
-#include <vector>  // std::vector
 #include <Python.h>  // CPython API
 #include "except.h"  // catch_python()
 
@@ -75,8 +75,8 @@ public:
 
 private:
 
-    static constexpr char offset_lower_to_upper = 'A' - 'a';
-    static constexpr char offset_upper_to_lower = 'a' - 'A';
+    static constexpr char OFFSET_LOWER_TO_UPPER = 'A' - 'a';
+    static constexpr char OFFSET_UPPER_TO_LOWER = 'a' - 'A';
 
     /* Check if a character is lower case. */
     static constexpr bool is_lower(char c) {
@@ -163,12 +163,12 @@ private:
 
     /* Convert a character to lower case. */
     static constexpr char to_lower(char c) {
-        return is_upper(c) ? c + offset_upper_to_lower : c;
+        return is_upper(c) ? c + OFFSET_UPPER_TO_LOWER : c;
     }
 
     /* Convert a character to upper case. */
     static constexpr char to_upper(char c) {
-        return is_lower(c) ? c + offset_lower_to_upper : c;
+        return is_lower(c) ? c + OFFSET_LOWER_TO_UPPER : c;
     }
 
     /* Helper for converting a string to lower case. */
@@ -521,7 +521,7 @@ public:
 
 private:
 
-    static constexpr std::string_view whitespace {" \t\n\r\f\v"};
+    static constexpr std::string_view WHITESPACE {" \t\n\r\f\v"};
 
     /* Helper for finding the index of the first non-stripped character in a string. */
     static constexpr size_t first(const std::string_view& chars) {
@@ -544,7 +544,7 @@ private:
 public:
 
     /* Remove leading and trailing characters from the templated string. */
-    template <const std::string_view& chars = whitespace>
+    template <const std::string_view& chars = WHITESPACE>
     static constexpr std::string_view strip = [] {
         size_t start = first(chars);
         size_t stop = last(chars, start);
@@ -552,14 +552,14 @@ public:
     }();
 
     /* Remove leading characters from the templated string. */
-    template <const std::string_view& chars = whitespace>
+    template <const std::string_view& chars = WHITESPACE>
     static constexpr std::string_view lstrip = [] {
         size_t start = first(chars);
         return str.substr(start);
     }();
 
     /* Remove trailing characters from the templated string. */
-    template <const std::string_view& chars = whitespace>
+    template <const std::string_view& chars = WHITESPACE>
     static constexpr std::string_view rstrip = [] {
         size_t stop = last(chars, 0);
         return str.substr(0, stop);
@@ -578,10 +578,13 @@ public:
     /* Remove a suffix from the templated string if it is present. */
     template <const std::string_view& suffix>
     static constexpr std::string_view removesuffix = [] {
-        if constexpr (str.substr(str.size() - suffix.size()) == suffix) {
-            return str.substr(0, str.size() - suffix.size());
-        } else {
+        if constexpr (
+            str.size() < suffix.size() ||
+            str.substr(str.size() - suffix.size()) != suffix
+        ) {
             return str;
+        } else {
+            return str.substr(0, str.size() - suffix.size());
         }
     }();
 
@@ -589,26 +592,137 @@ public:
     ////    FIND/REPLACE    ////
     ////////////////////////////
 
-private:
+    /* Find the first occurrence of a substring within the templated string. */
+    template <const std::string_view& sub, size_t start = 0, size_t end = str.size()>
+    static constexpr size_t find = [] {
+        if (end < sub.size()) return str.npos;
+        for (size_t i = start; i <= end - sub.size(); ++i) {
+            if (str.substr(i, sub.size()) == sub) return i;
+        }
+        return str.npos;
+    }();
 
-
-public:
+    /* Find the last occurrence of a substring within the templated string. */
+    template <const std::string_view& sub, size_t start = 0, size_t end = str.size()>
+    static constexpr size_t rfind = [] {
+        if (end < sub.size()) return str.npos;
+        for (size_t i = end - sub.size() + 1; i > start; --i) {
+            size_t j = i - 1;  // avoid underflow
+            if (str.substr(j, sub.size()) == sub) return j;
+        }
+        return str.npos;
+    }();
 
     /* Count the total number of occurrences of a substring within the templated
     string. */
     template <const std::string_view& sub, size_t start = 0, size_t end = str.size()>
     static constexpr size_t count = [] {
         size_t total = 0;
-        for (size_t i = start; i < end; ++i) {
+        for (size_t i = start; i <= end - sub.size(); ++i) {
             if (str.substr(i, sub.size()) == sub) {
                 ++total;
-                i += sub.size() - 1;
+                i += sub.size() - 1;  // skip ahead
             }
         }
         return total;
     }();
 
-    // TODO: find, index, startswith, endswith, replace, expandtabs
+    /* Check if the templated string starts with a given sequence of characters. */
+    template <const std::string_view& prefix>
+    static constexpr bool startswith = [] {
+        return str.substr(0, prefix.size()) == prefix;
+    }();
+
+    /* Check if the templated string ends with a given sequence of characters. */
+    template <const std::string_view& suffix>
+    static constexpr bool endswith = [] {
+        if (str.size() < suffix.size()) return false;
+        return str.substr(str.size() - suffix.size()) == suffix;
+    }();
+
+private:
+
+    static constexpr size_t MAX_SIZE_T = std::numeric_limits<size_t>::max();
+
+    /* Helper for replacing substrings within the templated string. */
+    template <const std::string_view& key, const std::string_view& val, size_t max_count>
+    struct _replace {
+        /* Compute the total length of the resulting string. */
+        static constexpr size_t size() {
+            size_t total = (count<key> < max_count) ? count<key> : max_count;
+            return str.size() - (total * key.size()) + (total * val.size());
+        }
+
+        static constexpr std::array<char, size() + 1> array = [] {
+            std::array<char, size() + 1> array{};  // null-terminated
+            size_t i = 0;  // current string index
+            size_t idx = 0;  // current array index
+            size_t replacements = 0;  // number of replacements made
+
+            // Replace occurrences of `key` with `val`, up to `max_count`
+            for (; i < str.size() && replacements < max_count; ++i) {
+                if (str.substr(i, key.size()) == key) {
+                    for (auto c : val) array[idx++] = c;
+                    i += key.size() - 1;  // skip ahead
+                    ++replacements;
+                } else {
+                    array[idx++] = str[i];
+                }
+            }
+
+            // If `max_count` was reached, copy the rest of the string
+            for (; i < str.size(); ++i) {
+                array[idx++] = str[i];
+            }
+
+            array[size()] = '\0';  // null-terminate
+            return array;
+        }();
+
+        static constexpr std::string_view value{array.data(), size()};
+    };
+
+    /* Helper for expanding tabs within the templated string. */
+    template <size_t tabsize = 8>
+    struct _expandtabs {
+        static constexpr std::string_view key{"\t"};
+        static constexpr std::array<char, tabsize + 1> val_array = [] {
+            std::array<char, tabsize + 1> array{};  // null-terminated
+            for (size_t i = 0; i < tabsize; ++i) {
+                array[i] = ' ';
+            }
+            array[tabsize] = '\0';  // null-terminate
+            return array;
+        }();
+        static constexpr std::string_view val{val_array.data(), tabsize};
+
+        /* Delegate to _replace<>. */
+        static constexpr std::string_view value = _replace<
+            key,
+            val,
+            MAX_SIZE_T
+        >::value;
+    };
+
+public:
+
+    /* Replace all occurrences of a substring within the templated string. */
+    template <
+        const std::string_view& key,
+        const std::string_view& val,
+        size_t count = MAX_SIZE_T
+    >
+    static constexpr std::string_view replace = [] {
+        if constexpr (key == val || count == 0) {
+            return str;
+        } else {
+            return _replace<key, val, count>::value;
+        }
+    }();
+
+    /* Replace tab characters with a given number of spaces. */
+    template <size_t tabsize = 8>
+    static constexpr std::string_view expandtabs = _expandtabs<tabsize>::value;
 
     //////////////////////////
     ////    JOIN/SPLIT    ////
