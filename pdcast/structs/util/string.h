@@ -896,7 +896,7 @@ private:
         /* Compute the total number of lines in the string. */
         static constexpr size_t line_count = [] {
             if constexpr (str.empty()) {
-                return 0;
+                return static_cast<size_t>(0);
             }
             size_t total = 1;
             for (size_t i = 0; i < str.size(); ++i) {
