@@ -10,6 +10,8 @@
 #include <string>  // std::string
 #include <string_view>  // std::string_view
 #include <typeinfo>  // typeid()
+#include <tuple>  // std::tuple
+#include <utility>  // std::pair
 #include <Python.h>  // CPython API
 #include "except.h"  // catch_python()
 
@@ -33,7 +35,7 @@ namespace util {
 
 NOTE: in order to use `String<>` with the default value, an empty specialization must
 be provided (i.e. `String<>::`, not `String::`). */
-inline static constexpr std::string_view empty_string_view {"", 0};
+inline static constexpr std::string_view EMPTY_STRING_VIEW {"", 0};
 
 
 /* Compile-time string manipulations.
@@ -60,7 +62,7 @@ brackets, similar to an empty function signature.  For example:
 
     std::cout<< String<String<sep>::join<foo, bar>>::upper<>;  // yields "FOO.BAR"
 */
-template <const std::string_view& str = empty_string_view>
+template <const std::string_view& str = EMPTY_STRING_VIEW>
 class String {
 public:
 
@@ -710,13 +712,13 @@ public:
     template <
         const std::string_view& key,
         const std::string_view& val,
-        size_t count = MAX_SIZE_T
+        size_t max_count = MAX_SIZE_T
     >
     static constexpr std::string_view replace = [] {
-        if constexpr (key == val || count == 0) {
+        if constexpr (key == val || max_count == 0) {
             return str;
         } else {
-            return _replace<key, val, count>::value;
+            return _replace<key, val, max_count>::value;
         }
     }();
 
@@ -763,52 +765,205 @@ private:
     };
 
     /* Helper for splitting `str` using a given separator token. */
-    template <const std::string_view& sep>
-    class _split {
+    template <const std::string_view& sep, size_t max_count>
+    struct _split {
 
         /* Construct an array containing the start index and length of every substring
         in `str`. */
         template <size_t size>
         static constexpr auto bounds() {
             std::array<std::pair<size_t, size_t>, size + 1> arr{};
-            size_t start = 0;
+            size_t prev = 0;
             size_t index = 0;
 
-            // Find all occurrences of `sep` and record their boundaries in `parts`
-            for (size_t i = 0; i < str.size() && index < size; ++i) {
+            // Find all occurrences of `sep` and record their boundaries
+            for (size_t i = 0; i <= str.size() - sep.size() && index < size; ++i) {
                 if (str.substr(i, sep.size()) == sep) {
                     size_t j = index++;
-                    arr[j].first = start;
-                    arr[j].second = i - start;
-                    start = i + sep.size();
-                    i += sep.size() - 1;
+                    arr[j].first = prev;
+                    arr[j].second = i - prev;
+                    prev = i + sep.size();
+                    i += sep.size() - 1;  // skip ahead, accounting for loop increment
                 }
             }
-            arr[size].first = start;
-            arr[size].second = str.size() - start;
+            arr[size].first = prev;
+            arr[size].second = str.size() - prev;
             return arr;
         }
 
         /* Convert an array of bounds into an array of substrings. */
         template <size_t... I>
         static constexpr auto extract(
-            std::index_sequence<I...>,
-            const std::array<std::pair<size_t, size_t>, sizeof...(I) + 1>& parts
+            const std::index_sequence<I...>,
+            const std::array<std::pair<size_t, size_t>, sizeof...(I)>& parts
         ) {
-            std::array<std::string_view, sizeof...(I) + 1> arr{
+            return std::array<std::string_view, sizeof...(I)> {
                 str.substr(parts[I].first, parts[I].second)...
             };
-            arr[sizeof...(I)] = str.substr(parts[sizeof...(I)].first);
-            return arr;
         }
 
-    public:
         static constexpr auto value = [] {
-            constexpr size_t size = count<sep>;
+            constexpr size_t size = (max_count < count<sep>) ? max_count : count<sep>;
             if constexpr (size == 0) {
                 return std::array<std::string_view, 1>{str};
             } else {
-                return extract(std::make_index_sequence<size>(), bounds<size>());
+                return extract(
+                    std::make_index_sequence<size + 1>(),
+                    bounds<size + 1>()
+                );
+            }
+        }();
+
+    };
+
+    /* Helper for splitting `str` using a given separator token, starting from the
+    right side of the string. */
+    template <const std::string_view& sep, size_t max_count>
+    struct _rsplit {
+
+        /* Construct an array containing the start index and length of every substring
+        in `str`. */
+        template <size_t size>
+        static constexpr auto bounds() {
+            std::array<std::pair<size_t, size_t>, size + 1> arr{};
+            size_t prev = str.size();
+            size_t index = 0;
+
+            // Find all occurrences of `sep` and record their boundaries
+            for (size_t i = str.size() - sep.size(); i > 0 && index < size; --i) {
+                size_t j = i - 1;  // avoid underflow
+                if (str.substr(j, sep.size()) == sep) {
+                    size_t k = index++;
+                    size_t l = j + sep.size();
+                    arr[k].first = l;
+                    arr[k].second = prev - l;
+                    prev = j;
+                    i -= sep.size() - 1;  // skip ahead, accounting for loop decrement
+                }
+            }
+            arr[size].first = 0;
+            arr[size].second = prev;
+            return arr;
+        }
+
+        /* Convert an array of bounds into an array of substrings. */
+        template <size_t... I>
+        static constexpr auto extract(
+            const std::index_sequence<I...>,
+            const std::array<std::pair<size_t, size_t>, sizeof...(I)>& parts
+        ) {
+            return std::array<std::string_view, sizeof...(I)> {
+                str.substr(parts[I].first, parts[I].second)...
+            };
+        }
+
+        static constexpr auto value = [] {
+            constexpr size_t size = (max_count < count<sep>) ? max_count : count<sep>;
+            if constexpr (size == 0) {
+                return std::array<std::string_view, 1>{str};
+            } else {
+                return extract(
+                    std::make_index_sequence<size + 1>(),
+                    bounds<size + 1>()
+                );
+            }
+        }();
+
+    };
+
+    /* Helper for splitting `str` at line breaks. */
+    template <bool keepends>
+    struct _splitlines {
+
+        /* Check whether a character represents a line break. */
+        static constexpr bool is_line_break(const char c) {
+            // NOTE: multi-character line breaks have to be checked separately 
+            switch (c) {
+                case '\n':      // newline
+                case '\r':      // carriage return
+                case '\v':      // vertical tab
+                case '\f':      // form feed
+                case '\x1c':    // file separator
+                case '\x1d':    // group separator
+                case '\x1e':    // record separator
+                case '\x85':    // next line (C1 control code)
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        /* Compute the total number of lines in the string. */
+        static constexpr size_t line_count = [] {
+            if constexpr (str.empty()) {
+                return 0;
+            }
+            size_t total = 1;
+            for (size_t i = 0; i < str.size(); ++i) {
+                if (str.substr(i, 2) == "\r\n") {
+                    ++total;
+                    ++i;  // skip ahead
+                } else if (is_line_break(str[i])) {
+                    ++total;
+                }
+            }
+            return total;
+        }();
+
+        /* Construct an array containing the start index and length of every line in
+        `str`. */
+        static constexpr auto bounds() {
+            std::array<std::pair<size_t, size_t>, line_count> arr{};
+            size_t prev = 0;
+            size_t index = 0;
+
+            // Find all occurrences of line breaks and record their boundaries
+            for (size_t i = 0; i < str.size() && index < line_count - 1; ++i) {
+                if (str.substr(i, 2) == "\r\n") {
+                    size_t j = index++;
+                    arr[j].first = prev;
+                    if constexpr (keepends) {
+                        arr[j].second = i - prev + 2;
+                    } else {
+                        arr[j].second = i - prev;
+                    }
+                    prev = i + 2;
+                    ++i;  // skip ahead
+                } else if (is_line_break(str[i])) {
+                    size_t j = index++;
+                    arr[j].first = prev;
+                    if constexpr (keepends) {
+                        arr[j].second = i - prev + 1;
+                    } else {
+                        arr[j].second = i - prev;
+                    }
+                    prev = i + 1;
+                }
+            }
+            arr[line_count - 1].first = prev;
+            arr[line_count - 1].second = str.size() - prev;
+            return arr;
+        }
+
+        /* Convert an array of bounds into an array of substrings. */
+        template <size_t... I>
+        static constexpr auto extract(
+            const std::index_sequence<I...>,
+            const std::array<std::pair<size_t, size_t>, sizeof...(I)>& parts
+        ) {
+            return std::array<std::string_view, sizeof...(I)> {
+                str.substr(parts[I].first, parts[I].second)...
+            };
+        }
+
+        static constexpr auto value = [] {
+            if constexpr (line_count == 0) {
+                return std::array<std::string_view, 0>{};
+            } else {
+                return extract(
+                    std::make_index_sequence<line_count>(),
+                    bounds()
+                );
             }
         }();
 
@@ -816,16 +971,72 @@ private:
 
 public:
 
-    /* Concatenate strings at compile time, inserting the templated string as a
-    separator between each token. */
+    /* Concatenate strings, inserting the templated string as a separator between each
+    token. */
     template <const std::string_view&... strings>
     static constexpr std::string_view join = _join<strings...>::value;
 
-    /* Split strings at compile time using the templated string as a separator. */
-    template <const std::string_view& sep>
-    static constexpr auto split = _split<sep>::value;
+    /* Split the templated string into an array of substrings using the given
+    separator.  If `max_count` is given, then only split up to the specified number of
+    times, from left to right. */
+    template <const std::string_view& sep, size_t max_count = MAX_SIZE_T>
+    static constexpr auto split = [] {
+        if constexpr (sep == EMPTY_STRING_VIEW) {
+            static_assert(sep != EMPTY_STRING_VIEW, "cannot split on empty string");
+        } else {
+            return _split<sep, max_count>::value;
+        }
+    }();
 
-    // TODO: partition, rpartition, rsplit, splitlines
+    /* Split the templated string into an array of substrings using the given
+    separator.  If `max_count` is given, then only split up to the specified number of
+    times, from right to left. */
+    template <const std::string_view& sep, size_t max_count = MAX_SIZE_T>
+    static constexpr auto rsplit = [] {
+        if constexpr (sep == EMPTY_STRING_VIEW) {
+            static_assert(sep != EMPTY_STRING_VIEW, "cannot split on empty string");
+        } else {
+            return _rsplit<sep, max_count>::value;
+        }
+    }();
+
+    /* Split the templated string at the first occurrence of a separator, returning
+    a three tuple containing the substring before the separator, the separator itself,
+    and the substring after the separator. */
+    template <const std::string_view& sep>
+    static constexpr auto partition = [] {
+        constexpr size_t idx = find<sep>;
+        if constexpr (idx == str.npos) {
+            return std::make_tuple(str, "", "");
+        } else {
+            return std::make_tuple(
+                str.substr(0, idx),
+                sep,
+                str.substr(idx + sep.size())
+            );
+        }
+    }();
+
+    /* Split the templated string at the last occurrence of a separator, returning
+    a three tuple containing the substring before the separator, the separator itself,
+    and the substring after the separator. */
+    template <const std::string_view& sep>
+    static constexpr auto rpartition = [] {
+        constexpr size_t idx = rfind<sep>;
+        if constexpr (idx == str.npos) {
+            return std::make_tuple("", "", str);
+        } else {
+            return std::make_tuple(
+                str.substr(0, idx),
+                sep,
+                str.substr(idx + sep.size())
+            );
+        }
+    }();
+
+    /* Split the templated string at line breaks, returning an array of substrings. */
+    template <bool keepends = false>
+    static constexpr auto splitlines = _splitlines<keepends>::value;
 
 };
 
@@ -1076,7 +1287,7 @@ class ReprTraits {
     using False = std::false_type;
     using Stream = std::ostringstream;
 
-    enum class Strategy {
+    enum class Use {
         python,
         to_string,
         stream,
@@ -1113,26 +1324,26 @@ class ReprTraits {
     static auto _iterable(...) -> False;
 
     /* Determine the Repr() overload to use for objects of the templated type. */
-    static constexpr Strategy category = [] {
+    static constexpr Use category = [] {
         if constexpr (decltype(_python(std::declval<T>()))::value) {
-            return Strategy::python;
+            return Use::python;
         } else if constexpr (decltype(_to_string(std::declval<T>()))::value) {
-            return Strategy::to_string;
+            return Use::to_string;
         } else if constexpr (decltype(_streamable(std::declval<T>()))::value) {
-            return Strategy::stream;
+            return Use::stream;
         } else if constexpr (decltype(_iterable(std::declval<T>()))::value) {
-            return Strategy::iterable;
+            return Use::iterable;
         } else {
-            return Strategy::type_id;
+            return Use::type_id;
         }
     }();
 
 public:
-    static constexpr bool python = (category == Strategy::python);
-    static constexpr bool streamable = (category == Strategy::stream);
-    static constexpr bool to_string = (category == Strategy::to_string);
-    static constexpr bool iterable = (category == Strategy::iterable);
-    static constexpr bool type_id = (category == Strategy::type_id);
+    static constexpr bool python = (category == Use::python);
+    static constexpr bool streamable = (category == Use::stream);
+    static constexpr bool to_string = (category == Use::to_string);
+    static constexpr bool iterable = (category == Use::iterable);
+    static constexpr bool type_id = (category == Use::type_id);
 };
 
 
