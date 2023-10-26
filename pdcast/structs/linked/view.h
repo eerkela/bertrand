@@ -83,7 +83,7 @@ public:
     using Value = typename Node::Value;
 
     template <Direction dir>
-    using Iterator = linked::Iterator<Derived, dir>;
+    using Iterator = linked::Iterator<BaseView, dir>;
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

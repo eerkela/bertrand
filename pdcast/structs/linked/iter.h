@@ -198,6 +198,25 @@ public:
         _curr = node;
     }
 
+    /* Create an empty iterator. */
+    Iterator(View& view) :
+        view(view), _prev(nullptr), _curr(nullptr), _next(nullptr)
+    {}
+
+    /* Create an iterator around a particular linkage within the view. */
+    Iterator(View& view, Node* prev, Node* curr, Node* next) :
+        view(view), _prev(prev), _curr(curr), _next(next)
+    {}
+
+    /* Create a reverse iterator over a singly-linked view. */
+    template <bool cond = has_stack, std::enable_if_t<cond, int> = 0>
+    Iterator(View& view, std::stack<Node*>&& prev, Node* curr, Node* next) :
+        Base(std::move(prev)), view(view), _prev(this->stack.top()), _curr(curr),
+        _next(next)
+    {
+        this->stack.pop();  // always has at least one element (nullptr)
+    }
+
     /* Copy constructor. */
     Iterator(const Iterator& other) :
         Base(other), view(other.view), _prev(other._prev), _curr(other._curr),
@@ -237,34 +256,10 @@ public:
     Iterator& operator=(Iterator&&) = delete;
 
 protected:
-    friend View;
     View& view;
     Node* _prev;
     Node* _curr;
     Node* _next;
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Create an empty iterator. */
-    Iterator(View& view) :
-        view(view), _prev(nullptr), _curr(nullptr), _next(nullptr)
-    {}
-
-    /* Create an iterator around a particular linkage within the view. */
-    Iterator(View& view, Node* prev, Node* curr, Node* next) :
-        view(view), _prev(prev), _curr(curr), _next(next)
-    {}
-
-    /* Create a reverse iterator over a singly-linked view. */
-    template <bool cond = has_stack, std::enable_if_t<cond, int> = 0>
-    Iterator(View& view, std::stack<Node*>&& prev, Node* curr, Node* next) :
-        Base(std::move(prev)), view(view), _prev(this->stack.top()), _curr(curr),
-        _next(next)
-    {
-        this->stack.pop();  // always has at least one element (nullptr)
-    }
 };
 
 
@@ -596,13 +591,13 @@ public:
 
     /* Remove the node at the current position. */
     template <typename T = ForwardIterator>
-    inline auto remove() -> decltype(std::declval<T>().remove()) {
+    inline auto drop() -> decltype(std::declval<T>().drop()) {
         if constexpr (Node::doubly_linked) {
             if (this->direction == Direction::backward) {
-                return this->backward.remove();
+                return this->backward.drop();
             }
         }
-        return this->forward.remove();
+        return this->forward.drop();
     }
 
     /* Replace the node at the current position. */

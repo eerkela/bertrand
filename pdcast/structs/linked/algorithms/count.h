@@ -40,19 +40,19 @@ namespace list {
         if constexpr (Node::doubly_linked) {
             if ((view.size() - 1 - norm_stop) < norm_start) {
                 // get backwards iterator to stop index
-                auto iter = view.iter.reverse();
+                auto it = view.rbegin();
                 size_t idx = view.size() - 1;
                 while (idx > norm_stop) {
-                    ++iter;
+                    ++it;
                     --idx;
                 }
 
                 // search until we hit start index
                 size_t count = 0;
                 while (idx >= norm_start) {
-                    Node* node = *iter;
+                    Node* node = it.curr();
                     count += node->eq(item);  // branchless
-                    ++iter;
+                    ++it;
                     --idx;
                 }
                 return count;
@@ -60,19 +60,19 @@ namespace list {
         }
 
         // otherwise, we iterate forward from the head
-        auto iter = view.begin();
+        auto it = view.begin();
         size_t idx = 0;
         while (idx < norm_start) {
-            ++iter;
+            ++it;
             ++idx;
         }
 
         // search until we hit item or stop index
         size_t count = 0;
         while (idx < norm_stop) {
-            Node* node = *iter;
+            Node* node = it.curr();
             count += node->eq(item);  // branchless
-            ++iter;
+            ++it;
             ++idx;
         }
         return count;

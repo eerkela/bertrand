@@ -7,7 +7,7 @@
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
 #include "../iter.h"  // Bidirectional<>
-#include "../../util/iter.h"  // CoupledIterator<>
+#include "../../util/iter.h"  // iter()
 #include "../../util/except.h"  // type_error()
 #include "../../util/math.h"  // py_modulo()
 #include "../../util/python.h"  // PySequence
@@ -294,9 +294,9 @@ namespace list {
             }
 
             /* Remove the node at the current position. */
-            inline Node* remove() {
+            inline Node* drop() {
                 ++implicit_skip;
-                return Base::remove();
+                return Base::drop();
             }
 
             /* Copy constructor. */
@@ -451,7 +451,7 @@ namespace list {
 
             // loop 1: remove current nodes in slice
             for (auto iter = this->iter(); iter != iter.end(); ++iter) {
-                Node* node = iter.remove();  // remove node from list
+                Node* node = iter.drop();  // remove node from list
                 new (&recovery[iter.idx()]) Node(*node);  // copy into recovery array
                 list.view.recycle(node);  // recycle original node
             }
@@ -474,7 +474,7 @@ namespace list {
                 } catch (...) {
                     // loop 3: remove nodes that have already been added to list
                     for (auto it = this->iter(iter.idx()); it != it.end(); ++it) {
-                        Node* node = it.remove();
+                        Node* node = it.drop();
                         list.view.recycle(node);
                     }
 
@@ -503,7 +503,7 @@ namespace list {
 
             // recycle every node in slice
             for (auto iter = this->iter(); iter != iter.end(); ++iter) {
-                Node* node = iter.remove();  // remove from list
+                Node* node = iter.drop();  // remove from list
                 list.view.recycle(node);
             }
         }

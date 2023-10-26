@@ -5,6 +5,7 @@
 #include <Python.h>  // CPython API
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
+#include "../../util/iter.h"  // iter()
 #include "../../util/repr.h"  // repr()
 #include "../node.h"  // NodeTraits
 
@@ -26,12 +27,13 @@ namespace list {
     template <typename View>
     void remove(View& view, PyObject* item) {
         using Node = typename View::Node;
+        using util::iter;
 
         // find item in list
-        for (auto iter = view.iter(); iter != iter.end(); ++iter) {
-            Node* node = *iter;
+        for (auto it = iter(view).iter(); it != it.end(); ++it) {
+            Node* node = it.curr();
             if (node->eq(item)) {
-                view.recycle(iter.remove());
+                view.recycle(it.drop());
                 return;
             }
         }

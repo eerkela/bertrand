@@ -125,11 +125,9 @@ namespace list {
         }
 
         // forward traversal
-        Iterator<Direction::forward> iter = view.begin();
-        for (size_t i = 0; i < norm_index; ++i) {
-            ++iter;
-        }
-        return ElementProxy<View>(view, iter);
+        Iterator<Direction::forward> it = view.begin();
+        for (size_t i = 0; i < norm_index; ++i) ++it;
+        return ElementProxy<View>(view, it);
     }
 
     /* A proxy for an element at a particular index of the list, as returned by the []
@@ -146,7 +144,7 @@ namespace list {
 
         /* Get the value at the current index. */
         inline Value get() const {
-            return (*iter)->value();
+            return *iter;
         }
 
         /* Set the value at the current index. */
@@ -163,12 +161,12 @@ namespace list {
 
         /* Delete the value at the current index. */
         inline void del() {
-            iter.remove();
+            iter.drop();
         }
 
         /* Remove the node at the current index and return its value. */
         inline Value pop() {
-            Node* node = iter.remove();
+            Node* node = iter.drop();
             Value result = node->value();
             Py_INCREF(result);  // ensure value is not garbage collected during recycle()
             view.recycle(node);

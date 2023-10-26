@@ -45,8 +45,8 @@ private:
         ListView<Decorated<Node>> decorated(view.size(), nullptr);
 
         // decorate each node in original list
-        for (Node* node : view) {
-            Decorated<Node>* keyed = decorated.node(node, func);
+        for (auto it = view.begin(), end = view.end(); it != end; ++it) {
+            Decorated<Node>* keyed = decorated.node(it.curr(), func);
             decorated.link(decorated.tail(), keyed, nullptr);
         }
         return decorated;
@@ -59,9 +59,10 @@ private:
         Node* new_tail = nullptr;
 
         // NOTE: we recycle the decorators as we go in order to avoid a second loop
-        auto iter = decorated.iter();
-        while (iter != iter.end()) {
-            Node* unwrapped = (*iter)->node();
+        auto it = decorated.begin();
+        auto end = decorated.end();
+        while (it != end) {
+            Node* unwrapped = it.curr()->node();
 
             // link to sorted list
             if (new_head == nullptr) {
@@ -72,7 +73,7 @@ private:
             new_tail = unwrapped;
 
             // remove and recycle wrapper
-            decorated.recycle(iter.remove());  // NOTE: implicitly advances iter
+            decorated.recycle(it.drop());  // NOTE: implicitly advances iterator
         }
 
         // update head/tail of sorted list
