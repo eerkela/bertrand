@@ -7,7 +7,6 @@
 #include <stdexcept>    // std::runtime_error
 #include <string_view>  // std::string_view
 #include "linked/iter.h"  // Direction
-#include "util/coupled_iter.h"  // CoupledIterator
 #include "util/python.h"  // PyIterator
 #include "util/string.h"  // string concatenation
 #include "util/thread.h"  // Lock, PyLock
@@ -17,9 +16,16 @@ namespace bertrand {
 namespace structs {
 
 
+/* Empty tag class marking a linked data structure.
+
+Using an empty class like this allows for easy SFINAE checks via a simple
+std::is_base_of check, without requiring any foreknowledge of template parameters. */
+class LinkedTag {};
+
+
 /* Base class that forwards the public members of the underlying view. */
 template <typename ViewType, typename LockType, const std::string_view& name>
-class LinkedBase {
+class LinkedBase : public LinkedTag {
 public:
     using View = ViewType;
     using Node = typename View::Node;
@@ -108,36 +114,8 @@ public:
     ////    THREADING LOCKS    ////
     ///////////////////////////////
 
-    /* Adapt lock policy to allow for Python context managers as locks. */
-    class LockFactory : public LockType {
-    public:
-
-        /* Wrap a lock guard as a Python context manager. */
-        template <typename... Args>
-        inline PyObject* python(Args&&... args) const {
-            // static constexpr std::string_view suffix = ".lock";
-            using namespace util;
-            // return PyLock<LockFactory, path::concat_v<name, suffix>>::init(this);
-            return PyLock<LockFactory>::init(this);
-        }
-
-        // TODO: shared_python() is exactly the same as python().
-
-        /* Wrap a shared lock as a Python context manager. */
-        template <bool is_shared = LockType::is_shared, typename... Args>
-        inline auto shared_python(Args&&... args) const
-            -> std::enable_if_t<is_shared, PyObject*>
-        {
-            // static constexpr std::string_view suffix = ".shared_lock";
-            using namespace util;
-            // return PyLock<LockFactory, path::concat_v<name, suffix>>::init(this);
-            return PyLock<LockFactory>::init(this);
-        }
-
-    };
-
     /* Functor that produces threading locks for a linked data structure. */
-    LockFactory lock;
+    util::PyLock<LockType> lock;
     /* BasicLock:
      * lock()  // lock guard
      * lock.python()  // context manager

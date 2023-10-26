@@ -8,7 +8,7 @@
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
 #include "position.h"  // normalize_index()
-#include "../../util/string.h"  // repr()
+#include "../../util/repr.h"  // repr()
 
 
 namespace bertrand {

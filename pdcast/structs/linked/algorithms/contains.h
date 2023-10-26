@@ -16,10 +16,8 @@ namespace list {
     /* Check if an item is contained within a linked list. */
     template <typename View>
     int contains(View& view, PyObject* item) {
-        using Node = typename View::Node;
-
-        for (Node* node : view) {
-            if (node->eq(item)) {
+        for (auto it = view.begin(), end = view.end(); it != end; ++it) {
+            if (it.curr()->eq(item)) {
                 return true;
             }
         }

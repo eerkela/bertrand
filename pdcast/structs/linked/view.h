@@ -4,24 +4,18 @@
 
 #include <cstddef>  // size_t
 #include <optional>  // std::optional
-#include <iostream>  // std::cout, std::endl
-#include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
 #include <tuple>  // std::tuple
 #include <Python.h>  // CPython API
 #include "node.h"  // Hashed<>, Mapped<>
 #include "allocate.h"  // Allocator
-#include "iter.h"  // IteratorFactory
+#include "iter.h"  // Iterator, Direction
 #include "table.h"  // HashTable
-#include "../util/python.h"  // PyIterable
 #include "../util/iter.h"  // iter()
-#include "../util/string.h"  // PyName
 
 
 namespace bertrand {
 namespace structs {
-
-
 namespace linked {
 
 
@@ -88,30 +82,8 @@ public:
     using Node = typename Allocator::Node;
     using Value = typename Node::Value;
 
-private:
-
-    /* Base class for forward iterators + reverse iterators over doubly-linked lists. */
-    template <typename NodeType, bool has_stack = false>
-    class _Iterator {
-    public:
-        using Node = NodeType;
-    };
-
-    /* Base class for reverse iterators over singly-linked lists. */
-    template <typename NodeType>
-    class _Iterator<NodeType, true> {
-    public:
-        using Node = NodeType;
-
-    protected:
-        std::stack<Node*> stack;  // only compiled if needed
-        _Iterator() {}
-        _Iterator(std::stack<Node*>&& stack) : stack(std::move(stack)) {}
-        _Iterator(const _Iterator& other) : stack(other.stack) {}
-        _Iterator(_Iterator&& other) : stack(std::move(other.stack)) {}
-    };
-
-public:
+    template <Direction dir>
+    using Iterator = linked::Iterator<Derived, dir>;
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -130,7 +102,8 @@ public:
         PyObject* spec = nullptr
     ) : allocator(max_size, spec)
     {
-        for (PyObject* item : util::iter(iterable)) {
+        using util::iter;
+        for (PyObject* item : iter(iterable)) {
             // NOTE: node() constructor is fallible, but because all memory is managed
             // by the encapsulated allocator, we don't need to worry about cleaning up
             // the list in the event of an exception.
@@ -293,230 +266,11 @@ public:
     ////    ITERATOR PROTOCOL    ////
     /////////////////////////////////
 
-    /* NOTE: these methods are called internally by the `iter()` proxy function when
-     * traversing a linked data structure.  Users should never need to call them
-     * directly; `iter()` should always be preferred for compatibility with Python and
+    /* NOTE: these methods are called automatically by the `iter()` utility function
+     * when traversing a linked data structure.  Users should never need to call them
+     * directly - `iter()` should always be preferred for compatibility with Python and
      * other C++ containers, as well as its generally simpler/more readable interface.
      */
-
-    // TODO: make this a non-nested class so that we can specialize its name and expose
-    // the necessary aliases (Node/View).
-
-    /* An iterator that traverses a list and keeps track of each node's neighbors. */
-    template <Direction dir>
-    class Iterator :
-        public _Iterator<Node, dir == Direction::backward && !NodeTraits<Node>::has_prev>
-    {
-        /* Conditional compilation of reversal stack for singly-linked lists. */
-        static constexpr bool has_stack = (
-            dir == Direction::backward && !NodeTraits<Node>::has_prev
-        );
-        using Base = _Iterator<Node, has_stack>;
-
-    public:
-        using View = Derived;
-        static constexpr Direction direction = dir;
-
-        // iterator tags for std::iterator_traits
-        using iterator_category     = std::forward_iterator_tag;
-        using difference_type       = std::ptrdiff_t;
-        using value_type            = std::remove_reference_t<typename View::Node::Value>;
-        using pointer               = value_type*;
-        using reference             = value_type&;
-
-        /////////////////////////////////
-        ////    ITERATOR PROTOCOL    ////
-        /////////////////////////////////
-
-        /* Dereference the iterator to get the value at the current position. */
-        inline value_type operator*() const noexcept {
-            return _curr->value();
-        }
-
-        /* Prefix increment to advance the iterator to the next node in the view. */
-        inline Iterator& operator++() noexcept {
-            if constexpr (direction == Direction::backward) {
-                _next = _curr;
-                _curr = _prev;
-                if (_prev != nullptr) {
-                    if constexpr (has_stack) {
-                        if (this->stack.empty()) {
-                            _prev = nullptr;
-                        } else {
-                            _prev = this->stack.top();
-                            this->stack.pop();
-                        }
-                    } else {
-                        _prev = _prev->prev();
-                    }
-                }
-            } else {
-                _prev = _curr;
-                _curr = _next;
-                if (_next != nullptr) {
-                    _next = _next->next();
-                }
-            }
-            return *this;
-        }
-
-        /* Inequality comparison to terminate the sequence. */
-        template <Direction T>
-        inline bool operator!=(const Iterator<T>& other) const noexcept {
-            return _curr != other._curr;
-        }
-
-        //////////////////////////////
-        ////    HELPER METHODS    ////
-        //////////////////////////////
-
-        /* Get the previous node in the list. */
-        inline Node* prev() const noexcept {
-            return _prev;
-        }
-
-        /* Get the current node in the list. */
-        inline Node* curr() const noexcept {
-            return _curr;
-        }
-
-        /* Get the next node in the list. */
-        inline Node* next() const noexcept {
-            return _next;
-        }
-
-        /* Insert a node at the current position. */
-        inline void insert(Node* node) {
-            // link new node
-            if constexpr (direction == Direction::backward) {
-                view.link(_curr, node, _next);
-            } else {
-                view.link(_prev, node, _curr);
-            }
-
-            // update iterator
-            if constexpr (direction == Direction::backward) {
-                if constexpr (has_stack) {
-                    this->stack.push(_prev);
-                }
-                _prev = _curr;
-            } else {
-                _next = _curr;
-            }
-            _curr = node;
-        }
-
-        /* Remove the node at the current position. */
-        inline Node* drop() {
-            // unlink current node
-            Node* removed = _curr;
-            view.unlink(_prev, _curr, _next);
-
-            // update iterator
-            if constexpr (dir == Direction::backward) {
-                _curr = _prev;
-                if (_prev != nullptr) {
-                    if constexpr (has_stack) {
-                        if (this->stack.empty()) {
-                            _prev = nullptr;
-                        } else {
-                            _prev = this->stack.top();
-                            this->stack.pop();
-                        }
-                    } else {
-                        _prev = _prev->prev();
-                    }
-                }
-            } else {
-                _curr = _next;
-                if (_next != nullptr) {
-                    _next = _next->next();
-                }
-            }
-
-            // return removed node
-            return removed;
-        }
-
-        /* Replace the node at the current position. */
-        inline void replace(Node* node) {
-            // swap current node
-            view.unlink(_prev, _curr, _next);
-            view.link(_prev, node, _next);
-
-            // update iterator
-            view.recycle(_curr);
-            _curr = node;
-        }
-
-        /* Copy constructor. */
-        Iterator(const Iterator& other) :
-            Base(other), view(other.view), _prev(other._prev), _curr(other._curr),
-            _next(other._next)
-        {}
-
-        /* Copy constructor from the other direction. */
-        template <Direction T>
-        Iterator(const Iterator<T>& other) :
-            Base(other), view(other.view), _prev(other._prev), _curr(other._curr),
-            _next(other._next)
-        {}
-
-        /* Move constructor. */
-        Iterator(Iterator&& other) :
-            Base(std::move(other)), view(other.view), _prev(other._prev),
-            _curr(other._curr), _next(other._next)
-        {
-            other._prev = nullptr;
-            other._curr = nullptr;
-            other._next = nullptr;
-        }
-
-        /* Move constructor from the other direction. */
-        template <Direction T>
-        Iterator(Iterator<T>&& other) :
-            Base(std::move(other)), view(other.view), _prev(other._prev),
-            _curr(other._curr), _next(other._next)
-        {
-            other._prev = nullptr;
-            other._curr = nullptr;
-            other._next = nullptr;
-        }
-
-        /* Assignment operators deleted for simplicity. */
-        Iterator& operator=(const Iterator&) = delete;
-        Iterator& operator=(Iterator&&) = delete;
-
-    protected:
-        friend Derived;
-        Derived& view;
-        Node* _prev;
-        Node* _curr;
-        Node* _next;
-
-        ////////////////////////////
-        ////    CONSTRUCTORS    ////
-        ////////////////////////////
-
-        /* Create an empty iterator. */
-        Iterator(Derived& view) :
-            view(view), _prev(nullptr), _curr(nullptr), _next(nullptr)
-        {}
-
-        /* Create an iterator around a particular linkage within the view. */
-        Iterator(Derived& view, Node* prev, Node* curr, Node* next) :
-            view(view), _prev(prev), _curr(curr), _next(next)
-        {}
-
-        /* Create a reverse iterator over a singly-linked view. */
-        template <bool cond = has_stack, std::enable_if_t<cond, int> = 0>
-        Iterator(Derived& view, std::stack<Node*>&& prev, Node* curr, Node* next) :
-            Base(std::move(prev)), view(view), _prev(this->stack.top()), _curr(curr),
-            _next(next)
-        {
-            this->stack.pop();  // always has at least one element (nullptr)
-        }
-    };
 
     /* Return a forward iterator to the head of the view. */
     Iterator<Direction::forward> begin() const {
@@ -524,7 +278,6 @@ public:
         if (head() == nullptr) {
             return end();
         }
-
         Node* next = head()->next();
         return Iterator<Direction::forward>(*this, nullptr, head(), next);
     }
@@ -549,7 +302,7 @@ public:
         // Otherwise, we have to build a stack of prev pointers
         } else {
             std::stack<Node*> prev;
-            prev.push(nullptr);
+            prev.push(nullptr);  // stack always has at least one element (nullptr)
             Node* temp = head();
             while (temp != tail()) {
                 prev.push(temp);
@@ -1624,46 +1377,6 @@ public:
 
 
 }  // namespace linked
-
-
-/* Name specializations for Python compatibility. */
-namespace util {
-
-
-// template <typename Node>
-// class PyName<linked::ListView<Node>> {
-//     static constexpr std::string_view preamble{"bertrand.structs.linked.ListView_"};
-//     static constexpr std::string_view node = PyName<Node>::value;
-
-// public:
-//     static constexpr std::string_view value = Path::concat<preamble, node>;
-// };
-
-
-// template <typename Node>
-// class PyName<linked::ListView<Node>::template Iterator<linked::Direction::forward>> {
-//     static constexpr std::string_view preamble = PyName<View>::value;
-//     using Direction = linked::Direction;
-
-//     template <Direction D = Direction::forward, typename T = void>
-//     struct name {
-//         static constexpr std::string_view value{"iter"};
-//     };
-//     template <typename T>
-//     struct name<Direction::backward, T> {
-//         static constexpr std::string_view value{"reverse_iter"};
-//     };
-
-// public:
-//     static constexpr std::string_view value = Path::dotted<preamble, name<dir>::value>;
-// };
-
-
-
-
-}  // namespace util
-
-
 }  // namespace structs
 }  // namespace bertrand
 

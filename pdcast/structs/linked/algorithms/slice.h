@@ -7,7 +7,7 @@
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
 #include "../iter.h"  // Bidirectional<>
-#include "../../util/coupled_iter.h"  // CoupledIterator<>
+#include "../../util/iter.h"  // CoupledIterator<>
 #include "../../util/except.h"  // type_error()
 #include "../../util/math.h"  // py_modulo()
 #include "../../util/python.h"  // PySequence

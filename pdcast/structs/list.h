@@ -23,7 +23,6 @@
 #include "linked/algorithms/slice.h"
 #include "linked/algorithms/sort.h"
 #include "util/except.h"  // type_error()
-#include "util/python.h"  // PyIterable
 
 #include "base.h"  // LinkedBase
 
@@ -642,9 +641,9 @@ auto operator<(const Derived& lhs, const PyObject* rhs)
     // get coupled iterators
     auto iter_lhs = std::begin(lhs);
     auto end_lhs = std::end(lhs);
-    util::PyIterable pyiter_rhs(rhs);  // handles reference counts
-    auto iter_rhs = pyiter_rhs.begin();
-    auto end_rhs = pyiter_rhs.end();
+    auto iter_proxy = util::iter(rhs);
+    auto iter_rhs = iter_proxy.begin();
+    auto end_rhs = iter_proxy.end();
 
     // loop until one of the sequences is exhausted
     while (iter_lhs != end_lhs && iter_rhs != end_rhs) {
@@ -725,9 +724,9 @@ auto operator<=(const Derived& lhs, const PyObject* rhs)
     // get coupled iterators
     auto iter_lhs = std::begin(lhs);
     auto end_lhs = std::end(lhs);
-    util::PyIterable pyiter_rhs(rhs);  // handles reference counts
-    auto iter_rhs = pyiter_rhs.begin();
-    auto end_rhs = pyiter_rhs.end();
+    auto iter_proxy = util::iter(rhs);
+    auto iter_rhs = iter_proxy.begin();
+    auto end_rhs = iter_proxy.end();
 
     // loop until one of the sequences is exhausted
     while (iter_lhs != end_lhs && iter_rhs != end_rhs) {
@@ -815,8 +814,7 @@ auto operator==(const Derived& lhs, const PyObject* rhs)
     }
 
     // compare elements in order
-    util::PyIterable pyiter_rhs(rhs);  // handles reference counts
-    auto iter_rhs = pyiter_rhs.begin();
+    auto iter_rhs = util::iter(rhs).begin();
     for (const Node& item : lhs) {
         if (item->ne(*iter_rhs)) {
             return false;

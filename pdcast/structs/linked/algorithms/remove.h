@@ -5,7 +5,7 @@
 #include <Python.h>  // CPython API
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
-#include "../../util/string.h"  // repr()
+#include "../../util/repr.h"  // repr()
 #include "../node.h"  // NodeTraits
 
 

@@ -11,7 +11,7 @@
 #include <Python.h>  // CPython API
 #include "../util/except.h"  // catch_python(), type_error()
 #include "../util/math.h"  // next_power_of_two()
-#include "../util/string.h"  // repr()
+#include "../util/repr.h"  // repr()
 
 
 namespace bertrand {

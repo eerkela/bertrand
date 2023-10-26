@@ -2,16 +2,65 @@
 #ifndef BERTRAND_STRUCTS_UTIL_ITER_H
 #define BERTRAND_STRUCTS_UTIL_ITER_H
 
-#include <optional>  // std::optional
-#include <string_view>  // std::string_view
+#include <iterator>  // std::iterator_traits
 #include <type_traits>  // std::enable_if_t, std::is_same_v, std::void_t
-#include <typeinfo>  // typeid
 #include <Python.h>  // CPython API
 #include <utility>  // std::declval, std::move
-#include "coupled_iter.h"  // CoupledIterator
-#include "func.h"  // identity, FuncTraits
-#include "python.h"  // PyIterator
-#include "slot.h"  // Slot
+#include "func.h"  // identity, FuncTraits<>
+#include "name.h"  // PyName<>
+#include "slot.h"  // Slot<>
+
+
+/* The `iter()` method represents a two-way bridge between Python and C++ containers
+implementing the standard iterator interface.  It can be invoked as follows:
+
+    for (auto item : iter(container)) {
+        // do something with item
+    }
+
+Where `container` is any C++ or Python container that implements the standard iterator
+interface in its respective language.  On the C++ side, this includes all STL
+containers, as well as any custom container that exposes some combination of `begin()`,
+`end()`, `rbegin()`, `rend()`, etc.  On the Python side, it includes built-in lists,
+tuples, sets, strings, dictionaries, and any other object that implements the
+`__iter__()` and/or `__reversed__()` magic methods, including custom classes.
+
+When called with a C++ container, the `iter()` method produces a proxy that forwards
+the container's original iterator interface (however it is defined).  The proxy uses
+these methods to generate equivalent Python iterators with corresponding `__iter__()`
+and `__next__()` methods, which can be returned directly to the Python interpreter.
+This translation works as long as the C++ iterators dereference to PyObject*, or if a
+custom conversion function is provided via the optional `convert` argument.  This
+allows users to insert a scalar conversion in between the iterator dereference and the
+return of the `__next__()` method on the Python side.  For example, if the C++ iterator
+dereferences to a custom struct, the user can provide an inline lambda that translates
+the struct into a valid PyObject*, which is returned to Python like normal.  This
+conversion can be invoked as follows:
+
+    return iter(container, [](MyStruct& s) { return do_something(s); }).python();
+
+Which returns a Python iterator that yields the result of `do_something(s)` for every
+`s` in `container`.
+
+When called with a Python container, the `iter()` method produces an equivalent proxy
+that wraps the `PyObject_GetIter()` C API function and exposes a standard C++ iterator
+interface on the other side.  Just like the C++ to Python translation, custom
+conversion functions can be added in between the result of the `__next__()` method on
+the Python side and the iterator dereference on the C++ side:
+
+    for (auto item : iter(container, [](PyObject* obj) { return do_something(obj); })) {
+        // item is the result of `do_something(obj)` for every `obj` in `container`
+    }
+
+Note that due to the dynamic nature of Python's type system, conversions of this sort
+require foreknowledge of the container's specific element type in order to perform the
+casts necessary to narrow Python types to their C++ counterparts.  To facilitate this,
+each of the data structures exposed in the `bertrand::structs` namespace support
+optional Python-side type specialization, which can be used to enforce homogeneity at
+the container level.  With this in place, users can safely convert the contents of the
+container to a specific C++ type without having to worry about type errors or
+unexpected behavior.
+*/
 
 
 namespace bertrand {
@@ -19,35 +68,128 @@ namespace structs {
 namespace util {
 
 
-////////////////////////////
-////    C++ BINDINGS    ////
-////////////////////////////
+/////////////////////////////////
+////    ITERATOR WRAPPERS    ////
+/////////////////////////////////
 
 
-/* C++ bindings consist of a battery of compile-time SFINAE checks to detect the
- * presence and return types of the standard C++ iterator interface, including the
- * following methods:
- *      begin()
- *      cbegin()
- *      end()
- *      cend()
- *      rbegin()
- *      crbegin()
- *      rend()
- *      crend()
+/* NOTE: CoupledIterators are used to share state between the begin() and end()
+ * iterators in a loop and generally simplify the overall iterator interface.  They act
+ * like pass-through decorators for the begin() iterator, and contain their own end()
+ * iterator to terminate the loop.  This means we can write loops as follows:
  *
- * Which can be defined as either member methods, non-member ADL methods, or via the
- * equivalent standard library functions (in order of preference).  The first one found
- * is forwarded as the proxy's own begin(), cbegin(), end() (etc.) member methods,
- * which standardizes the interface for all types of iterable containers.
+ * for (auto iter = view.iter(); iter != iter.end(); ++iter) {
+ *     // full access to iter
+ * }
+ * 
+ * Rather than the more verbose:
+ * 
+ * for (auto iter = view.begin(), end = view.end(); iter != end; ++iter) {
+ *      // same as above
+ * }
+ * 
+ * Both generate identical code, but the former is more concise and easier to read.  It
+ * also allows any arguments provided to the call operator to be passed through to both
+ * the begin() and end() iterators, which can be used to share state between the two.
+ */
+
+
+/* A coupled pair of begin() and end() iterators to simplify the iterator interface. */
+template <typename IteratorType>
+class CoupledIterator {
+public:
+    using Iterator = IteratorType;
+
+    // iterator tags for std::iterator_traits
+    using iterator_category     = typename Iterator::iterator_category;
+    using difference_type       = typename Iterator::difference_type;
+    using value_type            = typename Iterator::value_type;
+    using pointer               = typename Iterator::pointer;
+    using reference             = typename Iterator::reference;
+
+    // couple the begin() and end() iterators into a single object
+    CoupledIterator(const Iterator& first, const Iterator& second) :
+        first(std::move(first)), second(std::move(second))
+    {}
+
+    // allow use of the CoupledIterator in a range-based for loop
+    Iterator& begin() { return first; }
+    Iterator& end() { return second; }
+
+    // pass iterator protocol through to begin()
+    inline value_type operator*() const { return *first; }
+    inline CoupledIterator& operator++() { ++first; return *this; }
+    inline bool operator!=(const Iterator& other) const { return first != other; }
+
+    // conditionally compile all other methods based on Iterator interface.
+    // NOTE: this uses SFINAE to detect the presence of these methods on the template
+    // Iterator.  If the Iterator does not implement the named method, then it will not
+    // be compiled, and users will get compile-time errors if they try to access it.
+    // This avoids the need to manually extend the CoupledIterator interface to match
+    // that of the Iterator.  See https://en.cppreference.com/w/cpp/language/sfinae
+    // for more information.
+
+    template <typename T = Iterator>
+    inline auto prev() const -> decltype(std::declval<T>().prev()) {
+        return first.prev();
+    }
+
+    template <typename T = Iterator>
+    inline auto curr() const -> decltype(std::declval<T>().curr()) {
+        return first.curr();
+    }
+
+    template <typename T = Iterator>
+    inline auto next() const -> decltype(std::declval<T>().next()) {
+        return first.next();
+    }
+
+    template <typename T = Iterator>
+    inline auto insert(value_type value) -> decltype(std::declval<T>().insert(value)) {
+        return first.insert(value);  // void
+    }
+
+    template <typename T = Iterator>
+    inline auto remove() -> decltype(std::declval<T>().remove()) {
+        return first.remove();
+    }
+
+    template <typename T = Iterator>
+    inline auto replace(value_type value) -> decltype(std::declval<T>().replace(value)) {
+        return first.replace(value);
+    }
+
+    template <typename T = Iterator>
+    inline auto index() -> decltype(std::declval<T>().index()) const {
+        return first.index();
+    }
+
+    template <typename T = Iterator>
+    inline auto idx() -> decltype(std::declval<T>().idx()) const {
+        return first.idx();
+    }
+
+protected:
+    Iterator first, second;
+};
+
+
+/* NOTE: ConvertedIterators can be used to apply a custom conversion function to the
+ * result of a standard C++ iterator's dereference operator.  This is useful for
+ * applying conversions during iteration, which may be necessary when translating
+ * between C++ and Python types, for example.
  *
- * Python iterators are then constructed by coupling various pairs of `begin()` and
- * `end()` iterators and packaging them into an appropriate PyObject*, as returned by
- * the following proxy methods:
- *      python()            // (begin() + end())
- *      cpython()           // (cbegin() + cend())
- *      rpython()           // (rbegin() + rend())
- *      crpython()          // (crbegin() + crend())
+ * ConvertedIterators use SFINAE and compile-time reflection to detect the presence of
+ * the standard iterator interface, and to adjust the return type of the relevant
+ * dereference operator(s).  This is inferred automatically at compile-time directly
+ * from the provided conversion function, allowing for a unified interface across all
+ * types of iterators.
+ *
+ * Note that any additional (non-operator) methods that are exposed by the underlying
+ * iterator are not forwarded to the ConvertedIterator wrapper due to limitations with
+ * dynamic forwarding in C++.  The ConvertedIterator does, however, expose the wrapped
+ * iterator as a public attribute, which can be used to access these methods directly
+ * if needed.
  */
 
 
@@ -263,6 +405,173 @@ ConvertedIterator<Iterator, Func> operator-(
 }
 
 
+/* NOTE: PyIterators are wrappers around standard C++ iterators that allow them to be
+ * used from Python.  They are implemented using a C-style PyTypeObject definition to
+ * expose the __iter__() and __next__() magic methods, which are used to implement the
+ * iterator protocol in Python.  These Python methods simply delegate to the minimal
+ * C++ forward iterator interface, which must include:
+ *
+ *      1. operator*() to dereference the iterator
+ *      2. operator++() to preincrement the iterator
+ *      3. operator!=() to terminate the sequence
+ *
+ * The only other requirement is that the iterator must dereference to PyObject*, or be
+ * converted to PyObject* via a custom conversion function.  This ensures that the
+ * items yielded by the iterator are compatible with the Python C API, and can be
+ * passed to other Python functions without issue.  Failure to handle these will result
+ * in compile-time errors.
+ *
+ * NOTE: PyIterators, just like other bertrand-enabled Python wrappers around C++
+ * objects (e.g. PyLock, etc.), use compile-time type information (CTTI) to build their
+ * respective PyTypeObject definitions, which are guaranteed to be unique for each of
+ * the wrapped iterator types.  This allows the wrapper to be applied generically to
+ * any C++ type without any additional configuration from the user.  The only potential
+ * complication is in deriving an appropriate dotted name for the Python type, which
+ * normally requires the use of compiler-specific macros.
+ *
+ * A robust solution to this problem is provided by the PyName<> class, which can
+ * generate a mangled, Python-compatible name for any C++ type, taking into account
+ * namespaces, templates, and other common C++ constructs.  This approach should work
+ * for all major compilers (including GCC, Clang, and MSVC-based solutions), but should
+ * it fail, a custom name can be provided by specializing the PyName<> template for the
+ * desired type.  See the PyName<> documentation for more information.
+ */
+
+
+/* A wrapper around a C++ iterator that allows it to be used from Python. */
+template <typename Iterator>
+class PyIterator {
+    // sanity check
+    static_assert(
+        std::is_convertible_v<typename Iterator::value_type, PyObject*>,
+        "Iterator must dereference to PyObject*"
+    );
+
+    /* Store coupled iterators as raw data buffers.
+    
+    NOTE: PyObject_New() does not allow for traditional stack allocation like we would
+    normally use to store the wrapped iterators.  Instead, we have to delay construction
+    until the init() method is called.  We could use pointers to heap-allocate memory
+    for this, but this adds extra allocation overhead.  Using raw data buffers avoids
+    this and places the iterators on the stack, where they belong. */
+    PyObject_HEAD
+    Slot<Iterator> first;
+    Slot<Iterator> second;
+
+    /* Force users to use init() factory method. */
+    PyIterator() = delete;
+    PyIterator(const PyIterator&) = delete;
+    PyIterator(PyIterator&&) = delete;
+
+public:
+
+    /* Construct a Python iterator from a C++ iterator range. */
+    inline static PyObject* init(Iterator&& begin, Iterator&& end) {
+        // create new iterator instance
+        PyIterator* result = PyObject_New(PyIterator, &Type);
+        if (result == nullptr) {
+            throw std::runtime_error("could not allocate Python iterator");
+        }
+
+        // initialize (NOTE: PyObject_New() does not call stack constructors)
+        new (&(result->first)) Slot<Iterator>();
+        new (&(result->second)) Slot<Iterator>();
+
+        // construct iterators within raw storage
+        result->first.construct(std::move(begin));
+        result->second.construct(std::move(end));
+
+        // return as PyObject*
+        return reinterpret_cast<PyObject*>(result);
+    }
+
+    /* Construct a Python iterator from a coupled iterator. */
+    inline static PyObject* init(CoupledIterator<Iterator>&& iter) {
+        return init(iter.begin(), iter.end());
+    }
+
+    /* Call next(iter) from Python. */
+    inline static PyObject* iter_next(PyIterator* self) {
+        Iterator& begin = *(self->first);
+        Iterator& end = *(self->second);
+
+        if (!(begin != end)) {  // terminate the sequence
+            PyErr_SetNone(PyExc_StopIteration);
+            return nullptr;
+        }
+
+        // increment iterator and return current value
+        PyObject* result = *begin;
+        ++begin;
+        return Py_NewRef(result);  // new reference
+    }
+
+    /* Free the Python iterator when its reference count falls to zero. */
+    inline static void dealloc(PyIterator* self) {
+        Type.tp_free(self);
+    }
+
+private:
+    /* Initialize a PyTypeObject to represent this iterator from Python. */
+    static PyTypeObject init_type() {
+        PyTypeObject type_obj;  // zero-initialize
+        type_obj.tp_name = PyName<Iterator>.data();
+        type_obj.tp_doc = "Python-compatible wrapper around a C++ iterator.";
+        type_obj.tp_basicsize = sizeof(PyIterator);
+        type_obj.tp_flags = (
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
+            Py_TPFLAGS_DISALLOW_INSTANTIATION
+        );
+        type_obj.tp_alloc = PyType_GenericAlloc;
+        type_obj.tp_iter = PyObject_SelfIter;
+        type_obj.tp_iternext = (iternextfunc) iter_next;
+        type_obj.tp_dealloc = (destructor) dealloc;
+
+        // register iterator type with Python
+        if (PyType_Ready(&type_obj) < 0) {
+            throw std::runtime_error("could not initialize PyIterator type");
+        }
+        return type_obj;
+    }
+
+    /* C-style Python type declaration. */
+    inline static PyTypeObject Type = init_type();
+
+};
+
+
+////////////////////////////
+////    C++ BINDINGS    ////
+////////////////////////////
+
+
+/* C++ bindings consist of a battery of compile-time SFINAE checks to detect the
+ * presence and return types of the standard C++ iterator interface, including the
+ * following methods:
+ *      begin()
+ *      cbegin()
+ *      end()
+ *      cend()
+ *      rbegin()
+ *      crbegin()
+ *      rend()
+ *      crend()
+ *
+ * Which can be defined as either member methods, non-member ADL methods, or via the
+ * equivalent standard library functions (in order of preference).  The first one found
+ * is forwarded as the proxy's own begin(), cbegin(), end(), etc. member methods,
+ * which standardizes the interface for all types of iterable containers.
+ *
+ * Python iterators are then constructed by coupling various pairs of `begin()` and
+ * `end()` iterators and packaging them into an appropriate PyIterator wrapper, as
+ * returned by the following proxy methods:
+ *      python()            // (begin() + end())
+ *      cpython()           // (cbegin() + cend())
+ *      rpython()           // (rbegin() + rend())
+ *      crpython()          // (crbegin() + crend())
+ */
+
+
 /* A proxy for a C++ container that allows iteration from both C++ and Python. */
 template <typename Container, typename Func, bool rvalue>
 class IterProxy {
@@ -343,7 +652,6 @@ class IterProxy {
         struct _##METHOD { \
             using type = void; \
             static constexpr bool exists = false; \
-            static constexpr std::string_view name { "" }; \
         }; \
         /* First, check for a member method of the same name within Iterable. */ \
         template <typename Iterable> \
@@ -701,7 +1009,7 @@ private:
  * from the CPython API and exposing it to C++ using a standard iterator interface with
  * RAII semantics.  This abstracts away the CPython API (and the associated reference
  * counting/error handling) and allows for standard C++ loop constructs to be used
- * directly on Python containers.
+ * directly on Python containers using the same syntax as C++ containers.
  */
 
 
@@ -938,35 +1246,6 @@ private:
 //////////////////////////////
 ////    ITER() FACTORY    ////
 //////////////////////////////
-
-
-/* The `iter()` method represents a two-way bridge between Python and C++ containers
-implementing the standard iterator interface.
-
-When called with a C++ container, the `iter()` method produces a proxy that forwards
-the container's original iterator interface (however it is defined).  The proxy uses
-these methods to generate equivalent Python iterators with corresponding `iter()` and
-`next()` methods, which can be returned directly to the standard Python interpreter.
-This translation works as long as the C++ iterators dereference to PyObject*, or if a
-custom conversion function is provided via the `convert` argument.  This allows users
-to insert a scalar conversion in between the iterator dereference and the return of the
-`next()` method on the Python side.  For example, if the C++ iterator dereferences to a
-custom struct, the user can provide an inline lambda that translates the struct into a
-valid PyObject*, which is returned to Python like normal.
-
-When called with a Python container, the `iter()` method produces an equivalent proxy
-that wraps the `PyObject_GetIter()` C API function and exposes a standard C++ interface
-on the other side.  Just like the C++ to Python conversion, custom conversion functions
-can be added in between the result of the `next()` method on the Python side and the
-iterator dereference on the C++ side.
-
-Note that due to the dynamic nature of Python's type system, conversions of this sort
-will require foreknowledge of the container's specific element type in order to perform
-the casts necessary to narrow the types to their C++ equivalents.  To facilitate this,
-all the data structures exposed in the `bertrand::structs` namespace support optional
-Python-side type specialization, which can be used to enforce homogeneity at the
-container level.
-*/
 
 
 /* Create a C++ to Python iterator proxy for a mutable C++ lvalue container. */

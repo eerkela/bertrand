@@ -10,7 +10,7 @@
 #include <Python.h>  // CPython API
 #include "../util/except.h"  // catch_python(), type_error()
 #include "../util/func.h"  // ReturnType
-#include "../util/string.h"  // repr()
+#include "../util/repr.h"  // repr()
 
 
 namespace bertrand {
