@@ -20,7 +20,7 @@ from .base cimport Slot
 ###################
 
 
-cdef extern from "linked/allocate.h":
+cdef extern from "core/allocate.h":
     cdef cppclass ListAllocator[Node]:
         ListAllocator(optional[size_t] capacity, PyObject* specialization) except +
         ListAllocator(const ListAllocator& other) except +
@@ -34,7 +34,7 @@ cdef extern from "linked/allocate.h":
         void specialize(PyObject* spec) except +
 
 
-cdef extern from "linked/view.h":
+cdef extern from "core/view.h":
     cdef cppclass ListView[Node = *, Allocator = *]:
         cppclass IteratorFactory:
             cppclass Iterator:
@@ -293,7 +293,7 @@ cdef extern from "list.h" namespace "bertrand::structs":
 ######################
 
 
-cdef extern from "cython/list.h" namespace "bertrand::structs::cython":
+cdef extern from "list_cython.h" namespace "bertrand::structs::cython":
     cdef cppclass VariantList:
         # constructors
         VariantList(

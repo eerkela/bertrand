@@ -2,7 +2,7 @@
 from cpython.ref cimport PyObject
 
 
-cdef extern from "util/slot.h" namespace "bertrand::structs::util":
+cdef extern from "../util/slot.h" namespace "bertrand::structs::util":
     cdef cppclass Slot[T]:
         Slot()  # trivial constructor allows stack allocation in Cython
         void construct(...) except +
@@ -12,7 +12,7 @@ cdef extern from "util/slot.h" namespace "bertrand::structs::util":
         T* ptr() except +
 
 
-cdef extern from "linked/node.h" namespace "bertrand::structs::linked":
+cdef extern from "core/node.h" namespace "bertrand::structs::linked":
     cdef cppclass BaseNode[T]:
         ctypedef T Value
         Value value()
@@ -59,7 +59,7 @@ cdef extern from "linked/node.h" namespace "bertrand::structs::linked":
         void join(DoubleNode* prev, DoubleNode* curr)
 
 
-cdef extern from "linked/view.h" namespace "bertrand::structs::linked":
+cdef extern from "core/view.h" namespace "bertrand::structs::linked":
     cdef cppclass SetView[T, U]:
         cppclass Node:
             Py_hash_t hash

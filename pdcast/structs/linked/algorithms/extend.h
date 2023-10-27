@@ -6,7 +6,7 @@
 #include "append.h"  // append()
 #include "../../util/python.h"  // PyIterable
 
-#include "../view.h"  // ViewTraits
+#include "../core/view.h"  // ViewTraits
 
 // bertrand::structs::linked::List()
 // bertrand::structs::linked::ListView()

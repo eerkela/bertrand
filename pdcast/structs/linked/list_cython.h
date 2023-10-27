@@ -12,11 +12,11 @@
 #include "../util/slot.h"  // Slot
 
 // Core
-#include "linked/allocate.h"  // Allocator policies
-#include "linked/node.h"  // Nodes
-#include "linked/view.h"  // Views
+#include "core/allocate.h"  // Allocator policies
+#include "core/node.h"  // Nodes
+#include "core/view.h"  // Views
 
-#include "../list.h"  // LinkedList
+#include "list.h"  // LinkedList
 
 
 // TODO: Figure out how to carry operator overloads up to the VariantList level and

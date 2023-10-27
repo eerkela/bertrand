@@ -6,7 +6,7 @@
 #include <stdexcept>  // std::out_of_range
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
-#include "../iter.h"  // Direction, Bidirectional
+#include "../core/iter.h"  // Direction, Bidirectional
 #include "../../util/except.h"  // type_error()
 
 

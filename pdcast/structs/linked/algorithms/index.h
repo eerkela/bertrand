@@ -21,7 +21,7 @@ namespace list {
 
     /* Get the index of an item within a linked list. */
     template <typename View, typename T>
-    size_t index(View& view, PyObject* item, T start, T stop) {
+    size_t index(const View& view, PyObject* item, T start, T stop) {
         using Node = typename View::Node;
 
         // trivial case: empty list
@@ -56,7 +56,7 @@ namespace list {
                 bool found = false;
                 size_t last_observed;
                 while (idx >= norm_start) {
-                    Node* node = it.curr();
+                    const Node* node = it.curr();
                     if (node->eq(item)) {
                         found = true;
                         last_observed = idx;
@@ -85,7 +85,7 @@ namespace list {
 
         // search until we hit item or stop index
         while (idx < norm_stop) {
-            Node* node = it.curr();
+            const Node* node = it.curr();
             if (node->eq(item)) {
                 return idx;
             }

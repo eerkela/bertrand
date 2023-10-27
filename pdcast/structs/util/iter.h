@@ -145,7 +145,9 @@ public:
     }
 
     template <typename T = Iterator>
-    inline auto insert(value_type value) -> decltype(std::declval<T>().insert(value)) {
+    inline auto insert(typename T::Node* value)
+        -> decltype(std::declval<T>().insert(value))
+    {
         return first.insert(value);  // void
     }
 
@@ -155,7 +157,9 @@ public:
     }
 
     template <typename T = Iterator>
-    inline auto replace(value_type value) -> decltype(std::declval<T>().replace(value)) {
+    inline auto replace(typename T::Node* value)
+        -> decltype(std::declval<T>().replace(value))
+    {
         return first.replace(value);
     }
 
@@ -458,7 +462,7 @@ class PyIterator {
     Slot<Iterator> first;
     Slot<Iterator> second;
 
-    /* Force users to use init() factory method. */
+    /* Force use of init() factory method. */
     PyIterator() = delete;
     PyIterator(const PyIterator&) = delete;
     PyIterator(PyIterator&&) = delete;
@@ -523,9 +527,10 @@ private:
             Py_TPFLAGS_DISALLOW_INSTANTIATION
         );
         type_obj.tp_alloc = PyType_GenericAlloc;
+        type_obj.tp_new = PyType_GenericNew;
         type_obj.tp_iter = PyObject_SelfIter;
-        type_obj.tp_iternext = (iternextfunc) iter_next;
-        type_obj.tp_dealloc = (destructor) dealloc;
+        type_obj.tp_iternext = reinterpret_cast<iternextfunc>(iter_next);
+        type_obj.tp_dealloc = reinterpret_cast<destructor>(dealloc);
 
         // register iterator type with Python
         if (PyType_Ready(&type_obj) < 0) {
@@ -560,9 +565,17 @@ private:
  * Which can be defined as either member methods, non-member ADL methods, or via the
  * equivalent standard library functions (in order of preference).  The first one found
  * is forwarded as the proxy's own begin(), cbegin(), end(), etc. member methods,
- * which standardizes the interface for all types of iterable containers.
+ * which standardizes the interface for all types of iterable containers.  What's more,
+ * const/non-const overloads are detected and handled automatically, allowing us to
+ * synthesize missing methods through delegation.  For example, if the container does
+ * not implement cbegin(), but does implement a const overload for begin(), then we can
+ * generate a cbegin() method by simply delegating to the const overload.  Similarly,
+ * if a container does not implement begin(), but does implement cbegin(), then we can
+ * generate begin() by delegating to cbegin().  This allows us to support as wide a
+ * range of iterable containers as possible, regardless of their specific iterator
+ * implementation.
  *
- * Python iterators are then constructed by coupling various pairs of `begin()` and
+ * Python iterators are constructed by coupling various pairs of `begin()` and
  * `end()` iterators and packaging them into an appropriate PyIterator wrapper, as
  * returned by the following proxy methods:
  *      python()            // (begin() + end())
@@ -572,15 +585,15 @@ private:
  */
 
 
-/* A collection of SFINAE traits introspecting a container's iterator interface. */
+/* A collection of SFINAE traits introspecting a C++ container's iterator interface. */
 template <typename Container, typename Func = identity>
 class ContainerTraits {
     static constexpr bool is_identity = std::is_same_v<Func, identity>;
 
     /* Create a wrapper around an iterator that applies a conversion function to the
     result of its dereference operator. */
-    template <typename Iter, bool cond = false>
-    struct _conversion_wrapper {
+    template <typename Iter, bool do_conversion = false>
+    struct _conv {
         using type = ConvertedIterator<Iter, Func>;
         inline static type decorate(Iter&& iter, Func func) {
             return type(std::move(iter), func);
@@ -589,7 +602,7 @@ class ContainerTraits {
 
     /* If no conversion function is given, return the iterator unmodified. */
     template <typename Iter>
-    struct _conversion_wrapper<Iter, true> {
+    struct _conv<Iter, true> {
         using type = Iter;
         inline static type decorate(Iter&& iter, Func func) {
             return iter;
@@ -597,7 +610,7 @@ class ContainerTraits {
     };
 
     template <typename Iter>
-    using conversion_wrapper = _conversion_wrapper<Iter, is_identity>;
+    using conv = _conv<Iter, is_identity>;
 
     /* NOTE: using a preprocessor macro avoids a lot of boilerplate when it comes to
     instantiating correct SFINAE iterator traits, but can be a bit intimidating to
@@ -614,10 +627,10 @@ class ContainerTraits {
                 e.g. std::begin(iterable)
 
     These are checked in order at compile time, and the first one found is passed
-    through to the proxy's `.begin()` member, which represents a unified interface for
-    all types of iterable containers.  If none of these methods exist, the proxy's
-    `.begin()` member is not defined, and any attempt to use it will result in a
-    compile error.
+    through to the proxy's `.begin()` member (or other member of a corresponding name),
+    which represents a unified interface for all types of iterable containers.  If none
+    of these methods exist, the proxy's `.begin()` member (or equivalent) is not
+    defined, and any attempt to use it will result in a compile error.
 
     If a conversion function is supplied to the proxy, then the result of the
     `.begin()` method is wrapped in a ConvertedIterator<>, which applies the conversion
@@ -665,7 +678,7 @@ class ContainerTraits {
         > { \
             static constexpr bool exists = true; \
             using base_type = decltype(std::declval<Iterable&>().METHOD()); \
-            using wrapper = conversion_wrapper<base_type>; \
+            using wrapper = conv<base_type>; \
             using type = typename wrapper::type; \
             static inline type call(Iterable& iterable, Func func) { \
                 return wrapper::decorate(iterable.METHOD(), func); \
@@ -684,7 +697,7 @@ class ContainerTraits {
         > { \
             static constexpr bool exists = true; \
             using base_type = decltype(METHOD(std::declval<Iterable&>())); \
-            using wrapper = conversion_wrapper<base_type>; \
+            using wrapper = conv<base_type>; \
             using type = typename wrapper::type; \
             static inline type call(Iterable& iterable, Func func) { \
                 return wrapper::decorate(METHOD(iterable), func); \
@@ -705,7 +718,7 @@ class ContainerTraits {
         > { \
             static constexpr bool exists = true; \
             using base_type = decltype(std::METHOD(std::declval<Iterable&>())); \
-            using wrapper = conversion_wrapper<base_type>; \
+            using wrapper = conv<base_type>; \
             using type = typename wrapper::type; \
             static inline type call(Iterable& iterable, Func func) { \
                 return wrapper::decorate(std::METHOD(iterable), func); \
@@ -725,18 +738,10 @@ class ContainerTraits {
     #undef ITER_TRAIT
     #undef TRAIT_FLAG
 
-    /* NOTE: With some care, we can synthesize some of the methods that don't exist on
-     * the underlying container.  For example, if the container does not implement
-     * `cbegin()`, but does implement a const overload for `begin()`, then we can
-     * synthesize a corresponding `cbegin()` method by simply delegating to the
-     * const overload.  This is done by simply redirecting `cbegin()` calls on the
-     * proxy to the corresponding `begin()` method on a const container.
-     */
-
     /* A collection of SFINAE traits that delegates proxy calls to the appropriate
     iterator implementation. */
     template <typename _Iterable>
-    struct _Traits {
+    struct Traits {
         using Begin = std::conditional_t<
             _begin<_Iterable>::exists,
             _begin<_Iterable>,
@@ -782,7 +787,7 @@ class ContainerTraits {
     /* A collection of SFINAE traits that delegates proxy calls to the appropriate
     iterator implementation. */
     template <typename _Iterable>
-    struct _Traits<const _Iterable> {
+    struct Traits<const _Iterable> {
         using Begin = std::conditional_t<
             _begin<const _Iterable>::exists,
             _begin<const _Iterable>,
@@ -826,27 +831,39 @@ class ContainerTraits {
     };
 
 public:
-    using Begin = typename _Traits<Container>::Begin;
-    using CBegin = typename _Traits<Container>::CBegin;
-    using End = typename _Traits<Container>::End;
-    using CEnd = typename _Traits<Container>::CEnd;
-    using RBegin = typename _Traits<Container>::RBegin;
-    using CRBegin = typename _Traits<Container>::CRBegin;
-    using REnd = typename _Traits<Container>::REnd;
-    using CREnd = typename _Traits<Container>::CREnd;
+    using Begin = typename Traits<Container>::Begin;
+    using CBegin = typename Traits<Container>::CBegin;
+    using End = typename Traits<Container>::End;
+    using CEnd = typename Traits<Container>::CEnd;
+    using RBegin = typename Traits<Container>::RBegin;
+    using CRBegin = typename Traits<Container>::CRBegin;
+    using REnd = typename Traits<Container>::REnd;
+    using CREnd = typename Traits<Container>::CREnd;
 };
 
 
 /* A proxy for a C++ container that allows iteration from both C++ and Python. */
-template <typename Container, typename Func, bool rvalue>
+template <typename Container, typename Func>
 class IterProxy {
-    // NOTE: if rvalue is true, then we own the container.  Otherwise, we only keep
-    // a reference to it.
-    std::conditional_t<rvalue, Container, Container&> container;
+    // sanity check
+    static_assert(
+        !std::is_rvalue_reference_v<Container>,
+        "Iteration over a temporary rvalue reference is not allowed."
+    );
+
+    /* NOTE: rvalue references could be supported in the future by moving the container
+     * into the proxy, and then on to the iterator itself.  However, this makes
+     * lifetimes difficult to reason about, and adds a considerable amount of
+     * complexity.  It also adds more runtime overhead, to handle the extra moves.  For
+     * these reasons, rvalue references are left unsupported.
+     */
+
+    using container_type = std::remove_reference_t<Container>;
+    container_type& container;
     Func convert;
 
 public:
-    using Traits = ContainerTraits<Container>;
+    using Traits = ContainerTraits<container_type>;
 
     /////////////////////////////
     ////    C++ INTERFACE    ////
@@ -1048,39 +1065,13 @@ public:
 private:
     /* IterProxies can only be constructed through `iter()` factory function. */
     template <typename _Container>
-    friend IterProxy<_Container, identity, false> iter(_Container& container);
-    template <typename _Container>
-    friend IterProxy<const _Container, identity, false> iter(const _Container& container);
+    friend auto iter(_Container&& container);
     template <typename _Container, typename _Func>
-    friend IterProxy<_Container, _Func, false> iter(_Container& container, _Func convert);
-    template <typename _Container, typename _Func>
-    friend IterProxy<const _Container, _Func, false> iter(
-        const _Container& container,
-        _Func convert
-    );
-    template <typename _Container>
-    friend IterProxy<_Container, identity, true> iter(_Container&& container);
-    template <typename _Container>
-    friend IterProxy<const _Container, identity, true> iter(const _Container&& container);
-    template <typename _Container, typename _Func>
-    friend IterProxy<_Container, _Func, true> iter(_Container&& container, _Func convert);
-    template <typename _Container, typename _Func>
-    friend IterProxy<const _Container, _Func, true> iter(
-        const _Container&& container,
-        _Func convert
-    );
+    friend auto iter(_Container&& container, _Func func);
 
-    /* Construct an iterator proxy around a an lvalue container. */
-    template <bool cond = !rvalue, std::enable_if_t<cond, int> = 0>
-    IterProxy(Container& c) : container(c), convert(Func{}) {}
-    template <bool cond = !rvalue, std::enable_if_t<cond, int> = 0>
-    IterProxy(Container& c, Func f) : container(c), convert(f) {}
-
-    /* Construct an iterator proxy around an rvalue container. */
-    template <bool cond = rvalue, std::enable_if_t<cond, int> = 0>
-    IterProxy(Container&& c) : container(std::move(c)), convert(Func{}) {}
-    template <bool cond = rvalue, std::enable_if_t<cond, int> = 0>
-    IterProxy(Container&& c, Func f) : container(std::move(c)), convert(f) {}
+    /* Construct an iterator proxy around a perfectly-forwarded container reference. */
+    IterProxy(Container c) : container(std::forward<Container>(c)), convert(Func{}) {}
+    IterProxy(Container c, Func f) : container(std::forward<Container>(c)), convert(f) {}
 };
 
 
@@ -1097,11 +1088,19 @@ private:
  */
 
 
+// TODO: specialize this for identity.  That way we don't even have to allocate a
+// function object.  We just get a reference to the object being iterated over.
+// -> this also slims down the iterator itself, since we can make the same
+// optimizations.
+
+
 /* A wrapper around a Python iterator that manages reference counts and enables
-for-each loop syntax in C++. */
-template <typename Func, bool is_const>
+for-each loop syntax in C++.
+
+The default specialization is chosen whenever a custom conversion is given to the
+`iter()` utility function. */
+template <typename Container, typename Func>
 class PyIterProxy {
-    using Container = std::conditional_t<is_const, const PyObject, PyObject>;
     Container* const container;  // ptr cannot be reassigned
     Func convert;
     static constexpr bool is_identity = std::is_same_v<Func, identity>;
@@ -1132,12 +1131,8 @@ public:
         using reference             = value_type&;
 
         /* Get current item. */
-        value_type operator*() const {
-            if constexpr (is_identity) {
-                return curr;  // no conversion necessary
-            } else {
-                return convert(curr);
-            }
+        ReturnType operator*() const {
+            return convert(curr);
         }
 
         /* Advance to next item. */
@@ -1210,76 +1205,36 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
-    /* Get a forward iterator over a mutable container. */
-    inline Iterator begin() const {
-        return Iterator(this->python(), this->convert);
-    }
-
-    /* Get a forward iterator to terminate the loop. */
-    inline Iterator end() const {
-        return Iterator(this->convert);
-    }
-
-    /* Get a forward const iterator over an immutable container. */
-    inline Iterator cbegin() const {
-        return begin();
-    }
-
-    /* Get a forward const iterator to terminate the loop. */
-    inline Iterator cend() const {
-        return end();
-    }
-
-    /* Get a reverse iterator over a mutable container. */
-    inline Iterator rbegin() const {
-        return Iterator(this->rpython(), this->convert);
-    }
-
-    /* Get a reverse iterator to terminate the loop. */
-    inline Iterator rend() const {
-        return Iterator(this->convert);
-    }
-
-    /* Get a reverse const iterator over an immutable container. */
-    inline Iterator crbegin() const {
-        return rbegin();
-    }
-
-    /* Get a reverse const iterator to terminate the loop. */
-    inline Iterator crend() const {
-        return rend();
-    }
+    inline Iterator begin() { return Iterator(this->python(), this->convert); }
+    inline Iterator end() { return Iterator(this->convert); }
+    inline Iterator rbegin() { return Iterator(this->rpython(), this->convert); }
+    inline Iterator rend() { return Iterator(this->convert); }
+    inline Iterator begin() const { return cbegin(); }
+    inline Iterator end() const { return cend(); }
+    inline Iterator rbegin() const { return crbegin(); }
+    inline Iterator rend() const { return crend(); }
+    inline Iterator cbegin() const { return Iterator(this->python(), this->convert); }
+    inline Iterator cend() const { return Iterator(this->convert); }
+    inline Iterator crbegin() const { return Iterator(this->rpython(), this->convert); }
+    inline Iterator crend() const { return Iterator(this->convert); }
 
     /////////////////////////////////
     ////    COUPLED ITERATORS    ////
     /////////////////////////////////
 
-    /* Create a coupled iterator over the container using the begin()/end() methods. */
-    inline auto iter() const {
-        return CoupledIterator<Iterator>(begin(), end());
-    }
-
-    /* Create a coupled iterator over the container using the cbegin()/cend() methods. */
-    inline auto citer() const {
-        return CoupledIterator<Iterator>(cbegin(), cend());
-    }
-
-    /* Create a coupled iterator over the container using the rbegin()/rend() methods. */
-    inline auto reverse() const {
-        return CoupledIterator<Iterator>(rbegin(), rend());
-    }
-
-    /* Create a coupled iterator over the container using the crbegin()/crend() methods. */
-    inline auto creverse() const {
-        return CoupledIterator<Iterator>(crbegin(), crend());
-    }
+    inline auto forward() { return CoupledIterator<Iterator>(begin(), end()); }
+    inline auto reverse() { return CoupledIterator<Iterator>(rbegin(), rend()); }
+    inline auto forward() const { return cforward(); }
+    inline auto reverse() const { return creverse(); }
+    inline auto cforward() const { return CoupledIterator<Iterator>(cbegin(), cend()); }
+    inline auto creverse() const { return CoupledIterator<Iterator>(crbegin(), crend()); }
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
-    /* Get a forward Python iterator over a mutable container. */
-    inline PyObject* python() const {
+    /* Get a mutable forward Python iterator over a container. */
+    inline PyObject* python() {
         PyObject* iter = PyObject_GetIter(this->container);
         if (iter == nullptr && PyErr_Occurred()) {
             throw catch_python<type_error>();
@@ -1287,13 +1242,8 @@ public:
         return iter;
     }
 
-    /* Get a forward Python iterator over an immutable container. */
-    inline PyObject* cpython() const {
-        return this->python();
-    }
-
-    /* Get a reverse Python iterator over a mutable container. */
-    inline PyObject* rpython() const {
+    /* Get a mutable reverse Python iterator over a container. */
+    inline PyObject* rpython() {
         PyObject* attr = PyObject_GetAttrString(this->container, "__reversed__");
         if (attr == nullptr && PyErr_Occurred()) {
             throw catch_python<type_error>();
@@ -1306,6 +1256,204 @@ public:
         return iter;  // new reference
     }
 
+    /* Get a const forward Python iterator over a const container. */
+    inline PyObject* python() const {
+        return this->cpython();
+    }
+
+    /* Get a const reverse Python iterator over a const container. */
+    inline PyObject* rpython() const {
+        return this->crpython();
+    }
+
+    /* Get a const forward Python iterator over a container. */
+    inline PyObject* cpython() const {
+        return this->python();
+    }
+
+    /* Get a reverse Python iterator over an immutable container. */
+    inline PyObject* crpython() const {
+        return this->rpython();
+    }
+
+private:
+    template <typename _Func>
+    friend auto iter(PyObject* container, _Func convert);
+    template <typename _Func>
+    friend auto iter(const PyObject* container, _Func convert);
+
+    /* Construct an iterator proxy around a python container. */
+    PyIterProxy(Container* c, Func f) : container(c), convert(f) {}
+
+};
+
+
+/* A wrapper around a Python iterator that manages reference counts and enables
+for-each loop syntax in C++.
+
+This specialization is chosen when no conversion is given to `iter()`.  In this case,
+conversions are unnecessary, so we can avoid allocating an extra member on the proxy
+and iterator to help speed things up. */
+template <typename Container>
+class PyIterProxy<Container, identity> {
+    Container* const container;  // PyObject ptr cannot be reassigned
+
+public:
+
+    ///////////////////////
+    ////    WRAPPER    ////
+    ///////////////////////
+
+    /* A C++ wrapper around a Python iterator that exposes a standard interface. */
+    class Iterator {
+        PyObject* py_iterator;
+        PyObject* curr;
+
+    public:
+        // iterator tags for std::iterator_traits
+        using iterator_category     = std::forward_iterator_tag;
+        using difference_type       = std::ptrdiff_t;
+        using value_type            = PyObject*;
+        using pointer               = value_type*;
+        using reference             = value_type&;
+
+        /* Get current item. */
+        value_type operator*() const {
+            return curr;  // no conversion necessary
+        }
+
+        /* Advance to next item. */
+        Iterator& operator++() {
+            Py_DECREF(curr);
+            curr = PyIter_Next(py_iterator);
+            if (curr == nullptr && PyErr_Occurred()) {
+                throw std::runtime_error("could not get next(iterator)");
+            }
+            return *this;
+        }
+
+        /* Terminate sequence. */
+        bool operator!=(const Iterator& other) const {
+            return curr != other.curr;
+        }
+
+        /* Copy constructor. */
+        Iterator(const Iterator& other) : py_iterator(other.py_iterator), curr(other.curr) {
+            Py_XINCREF(py_iterator);
+            Py_XINCREF(curr);
+        }
+
+        /* Move constructor. */
+        Iterator(Iterator&& other) : py_iterator(other.py_iterator), curr(other.curr) {
+            other.py_iterator = nullptr;
+            other.curr = nullptr;
+        }
+
+        /* Copy assignment. */
+        Iterator& operator=(const Iterator& other) {
+            Py_XINCREF(py_iterator);
+            Py_XINCREF(curr);
+            py_iterator = other.py_iterator;
+            curr = other.curr;
+            return *this;
+        }
+
+        /* Handle reference counts if an iterator is destroyed partway through
+        iteration. */
+        ~Iterator() {
+            Py_XDECREF(py_iterator);
+            Py_XDECREF(curr);
+        }
+
+    private:
+        friend PyIterProxy;
+
+        /* Return an iterator to the start of the sequence. */
+        Iterator(PyObject* i) : py_iterator(i), curr(nullptr) {
+            // NOTE: py_iterator is a borrowed reference from PyObject_GetIter()
+            if (py_iterator != nullptr) {
+                curr = PyIter_Next(py_iterator);  // get first item
+                if (curr == nullptr && PyErr_Occurred()) {
+                    Py_DECREF(py_iterator);
+                    throw catch_python<std::runtime_error>();
+                }
+            }
+        }
+
+        /* Return an iterator to the end of the sequence. */
+        Iterator() : py_iterator(nullptr), curr(nullptr) {}
+    };
+
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
+
+    inline Iterator begin() { return Iterator(this->python()); }
+    inline Iterator end() { return Iterator(); }
+    inline Iterator rbegin() { return Iterator(this->rpython()); }
+    inline Iterator rend() { return Iterator(); }
+    inline Iterator begin() const { return cbegin(); }
+    inline Iterator end() const { return cend(); }
+    inline Iterator rbegin() const { return crbegin(); }
+    inline Iterator rend() const { return crend(); }
+    inline Iterator cbegin() const { return Iterator(this->python()); }
+    inline Iterator cend() const { return Iterator(); }
+    inline Iterator crbegin() const { return Iterator(this->rpython()); }
+    inline Iterator crend() const { return Iterator(); }
+
+    /////////////////////////////////
+    ////    COUPLED ITERATORS    ////
+    /////////////////////////////////
+
+    inline auto forward() { return CoupledIterator<Iterator>(begin(), end()); }
+    inline auto reverse() { return CoupledIterator<Iterator>(rbegin(), rend()); }
+    inline auto forward() const { return cforward(); }
+    inline auto reverse() const { return creverse(); }
+    inline auto cforward() const { return CoupledIterator<Iterator>(cbegin(), cend()); }
+    inline auto creverse() const { return CoupledIterator<Iterator>(crbegin(), crend()); }
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    /* Get a mutable forward Python iterator over a container. */
+    inline PyObject* python() {
+        PyObject* iter = PyObject_GetIter(this->container);
+        if (iter == nullptr && PyErr_Occurred()) {
+            throw catch_python<type_error>();
+        }
+        return iter;
+    }
+
+    /* Get a mutable reverse Python iterator over a container. */
+    inline PyObject* rpython() {
+        PyObject* attr = PyObject_GetAttrString(this->container, "__reversed__");
+        if (attr == nullptr && PyErr_Occurred()) {
+            throw catch_python<type_error>();
+        }
+        PyObject* iter = PyObject_CallObject(attr, nullptr);
+        Py_DECREF(attr);
+        if (iter == nullptr && PyErr_Occurred()) {
+            throw catch_python<type_error>();
+        }
+        return iter;  // new reference
+    }
+
+    /* Get a const forward Python iterator over a const container. */
+    inline PyObject* python() const {
+        return this->cpython();
+    }
+
+    /* Get a const reverse Python iterator over a const container. */
+    inline PyObject* rpython() const {
+        return this->crpython();
+    }
+
+    /* Get a const forward Python iterator over a container. */
+    inline PyObject* cpython() const {
+        return this->python();
+    }
+
     /* Get a reverse Python iterator over an immutable container. */
     inline PyObject* crpython() const {
         return this->rpython();
@@ -1313,18 +1461,16 @@ public:
 
 private:
     /* PyIterProxies can only be constructed through `iter()` factory function. */
-    friend PyIterProxy<identity, false> iter(PyObject* container);
-    friend PyIterProxy<identity, true> iter(const PyObject* container);
-    template <typename _Func>
-    friend PyIterProxy<_Func, false> iter(PyObject* container, _Func convert);
-    template <typename _Func>
-    friend PyIterProxy<_Func, true> iter(const PyObject* container, _Func convert);
+    template <typename>
+    friend auto iter(PyObject* container);
+    template <typename>
+    friend auto iter(const PyObject* container);
 
     /* Construct an iterator proxy around a python container. */
-    PyIterProxy(Container* c) : container(c), convert(Func{}) {}
-    PyIterProxy(Container* c, Func f) : container(c), convert(f) {}
+    PyIterProxy(Container* c) : container(c) {}
 
 };
+
 
 
 //////////////////////////////
@@ -1332,91 +1478,52 @@ private:
 //////////////////////////////
 
 
-/* Create a C++ to Python iterator proxy for a mutable C++ lvalue container. */
+/* Create a C++ to Python iterator proxy for a container. */
 template <typename Container>
-inline IterProxy<Container, identity, false> iter(Container& container) {
-    return IterProxy<Container, identity, false>(container);
+inline auto iter(Container&& container) {
+    return IterProxy<
+        decltype(std::forward<Container>(std::declval<Container>())),
+        identity
+    >(std::forward<Container>(container));
 }
 
 
-/* Create a C++ to Python iterator proxy for a const lvalue container. */
-template <typename Container>
-inline IterProxy<const Container, identity, false> iter(const Container& container) {
-    return IterProxy<const Container, identity, false>(container);
-}
-
-
-/* Create a C++ to Python iterator proxy for a mutable C++ lvalue container. */
+/* Create a C++ to Python iterator proxy for a container, applying a custom conversion
+function at each dereference. */
 template <typename Container, typename Func>
-inline IterProxy<Container, Func, false> iter(Container& container, Func convert) {
-    return IterProxy<Container, Func, false>(container, convert);
-}
-
-
-/* Create a C++ to Python iterator proxy for a const lvalue container. */
-template <typename Container, typename Func>
-inline IterProxy<const Container, Func, false> iter(
-    const Container& container,
-    Func convert
-) {
-    return IterProxy<const Container, Func, false>(container, convert);
-}
-
-
-/* Create a C++ to Python iterator proxy for a mutable rvalue container. */
-template <typename Container>
-inline IterProxy<Container, identity, true> iter(Container&& container) {
-    return IterProxy<Container, identity, true>(std::move(container));
-}
-
-
-/* Create a C++ to Python iterator proxy for a const rvalue container. */
-template <typename Container>
-inline IterProxy<const Container, identity, true> iter(const Container&& container) {
-    return IterProxy<const Container, identity, true>(std::move(container));
-}
-
-
-/* Create a C++ to Python iterator proxy for a mutable rvalue container. */
-template <typename Container, typename Func>
-inline IterProxy<Container, Func, true> iter(Container&& container, Func convert) {
-    return IterProxy<Container, Func, true>(std::move(container), convert);
-}
-
-
-/* Create a C++ to Python iterator proxy for a const rvalue container. */
-template <typename Container, typename Func>
-inline IterProxy<const Container, Func, true> iter(
-    const Container&& container,
-    Func convert
-) {
-    return IterProxy<const Container, Func, true>(std::move(container), convert);
+inline auto iter(Container&& container, Func func) {
+    return IterProxy<
+        decltype(std::forward<Container>(std::declval<Container>())),
+        Func
+    >(std::forward<Container>(container), func);
 }
 
 
 /* Create a Python to C++ iterator proxy for a mutable Python container. */
-inline PyIterProxy<identity, false> iter(PyObject* container) {
-    return PyIterProxy<identity, false>(container);
+template <typename = void>
+inline auto iter(PyObject* container) {
+    return PyIterProxy<PyObject, identity>(container);
 }
 
 
 /* Create a Python to C++ iterator proxy for a const Python container. */
-inline PyIterProxy<identity, true> iter(const PyObject* container) {
-    return PyIterProxy<identity, true>(container);
+template <typename = void>
+inline auto iter(const PyObject* container) {
+    return PyIterProxy<const PyObject, identity>(container);
 }
 
 
 /* Create a Python to C++ iterator proxy for a mutable Python container. */
 template <typename Func>
-inline PyIterProxy<Func, false> iter(PyObject* container, Func convert) {
-    return PyIterProxy<Func, false>(container, convert);
+inline auto iter(PyObject* container, Func convert) {
+    return PyIterProxy<PyObject, Func>(container, convert);
 }
 
 
 /* Create a Python to C++ iterator proxy for a const Python container. */
 template <typename Func>
-inline PyIterProxy<Func, true> iter(const PyObject* container, Func convert) {
-    return PyIterProxy<Func, true>(container, convert);
+inline auto iter(const PyObject* container, Func convert) {
+    return PyIterProxy<const PyObject, Func>(container, convert);
 }
 
 

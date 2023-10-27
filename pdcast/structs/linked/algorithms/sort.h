@@ -8,8 +8,8 @@
 #include <optional>  // std::optional
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
-#include "../node.h"  // Keyed<>
-#include "../view.h"  // views
+#include "../core/node.h"  // Keyed<>
+#include "../core/view.h"  // views
 
 
 // TODO: we also need to figure out how to transfer ownership temporarily to a list

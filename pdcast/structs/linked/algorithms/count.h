@@ -18,7 +18,7 @@ namespace list {
 
     /* Count the number of occurrences of an item within a linked list. */
     template <typename View, typename T>
-    size_t count(View& view, PyObject* item, T start, T stop) {
+    size_t count(const View& view, PyObject* item, T start, T stop) {
         using Node = typename View::Node;
 
         // trivial case: empty list
@@ -50,7 +50,7 @@ namespace list {
                 // search until we hit start index
                 size_t count = 0;
                 while (idx >= norm_start) {
-                    Node* node = it.curr();
+                    const Node* node = it.curr();
                     count += node->eq(item);  // branchless
                     ++it;
                     --idx;
@@ -70,7 +70,7 @@ namespace list {
         // search until we hit item or stop index
         size_t count = 0;
         while (idx < norm_stop) {
-            Node* node = it.curr();
+            const Node* node = it.curr();
             count += node->eq(item);  // branchless
             ++it;
             ++idx;

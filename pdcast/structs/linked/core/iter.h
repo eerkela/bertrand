@@ -34,30 +34,39 @@ singly-linked list.  The upside is that we can use the same interface for both s
 and doubly-linked lists. */
 template <typename NodeType>
 class _Iterator<NodeType, true> {
+    static constexpr bool constant = std::is_const_v<NodeType>;
+    using Node = std::conditional_t<constant, const NodeType, NodeType>;
+
 protected:
-    std::stack<NodeType*> stack;
+    std::stack<Node*> stack;
     _Iterator() {}
-    _Iterator(std::stack<NodeType*>&& stack) : stack(std::move(stack)) {}
+    _Iterator(std::stack<Node*>&& stack) : stack(std::move(stack)) {}
     _Iterator(const _Iterator& other) : stack(other.stack) {}
     _Iterator(_Iterator&& other) : stack(std::move(other.stack)) {}
 };
 
 
-/* An iterator that traverses a list and keeps track of each node's neighbors. */
+/* An optionally const iterator over the templated view, with the given direction. */
 template <typename ViewType, Direction dir>
 class Iterator :
     public _Iterator<
-        typename ViewType::Node,
+        std::conditional_t<
+            std::is_const_v<ViewType>,
+            const typename ViewType::Node,
+            typename ViewType::Node
+        >,
         dir == Direction::backward && !NodeTraits<typename ViewType::Node>::has_prev
     >
 {
+    static constexpr bool constant = std::is_const_v<ViewType>;
+
 public:
     using View = ViewType;
-    using Node = typename View::Node;
-    using Value = typename Node::Value;
+    using Node = std::conditional_t<constant, const typename View::Node, typename View::Node>;
+    using Value = std::conditional_t<constant, const typename Node::Value, typename Node::Value>;
     static constexpr Direction direction = dir;
 
-private:
+protected:
     /* Conditional compilation of reversal stack for singly-linked lists. */
     static constexpr bool has_stack = (
         direction == Direction::backward && !NodeTraits<Node>::has_prev
@@ -135,7 +144,8 @@ public:
     }
 
     /* Insert a node at the current position. */
-    inline void insert(Node* node) {
+    template <bool cond = !constant>
+    inline std::enable_if_t<cond, void> insert(Node* node) {
         // link new node
         if constexpr (direction == Direction::backward) {
             view.link(_curr, node, _next);
@@ -156,7 +166,8 @@ public:
     }
 
     /* Remove the node at the current position. */
-    inline Node* drop() {
+    template <bool cond = !constant>
+    inline std::enable_if_t<cond, Node*> drop() {
         // unlink current node
         Node* removed = _curr;
         view.unlink(_prev, _curr, _next);
@@ -188,7 +199,8 @@ public:
     }
 
     /* Replace the node at the current position. */
-    inline void replace(Node* node) {
+    template <bool cond = !constant>
+    inline std::enable_if_t<cond, void> replace(Node* node) {
         // swap current node
         view.unlink(_prev, _curr, _next);
         view.link(_prev, node, _next);
@@ -222,6 +234,11 @@ public:
         Base(other), view(other.view), _prev(other._prev), _curr(other._curr),
         _next(other._next)
     {}
+
+    // converting constructors need to take the temporary stack into account.  When
+    // creating a backward iterator from a forward iterator, we need to generate a copy
+    // of the forward iterator, exhaust it, and add each node to the stack in reverse
+    // order.
 
     /* Copy constructor from the other direction. */
     template <Direction T>
@@ -261,6 +278,23 @@ protected:
     Node* _curr;
     Node* _next;
 };
+
+
+// template<bertrand::structs::linked::Direction T>
+// bertrand::structs::linked::Iterator<ViewType, dir>::Iterator(
+//     bertrand::structs::linked::Iterator<ViewType, T>&&
+// )
+// [with bertrand::structs::linked::Direction T = T;
+// ViewType = bertrand::structs::linked::BaseView<
+//     bertrand::structs::linked::ListView<
+//         bertrand::structs::linked::SingleNode<_object*>
+//     >,
+//     bertrand::structs::linked::ListAllocator<
+//         bertrand::structs::linked::SingleNode<_object*>
+//     >
+// >;
+// bertrand::structs::linked::Direction dir = bertrand::structs::linked::Direction::forward
+// ]
 
 
 /* NOTE: Bidirectional<> is a type-erased iterator wrapper that can contain either a
@@ -457,7 +491,8 @@ public:
     /////////////////////////////////
 
     /* Dereference the iterator to get the node at the current position. */
-    inline value_type operator*() const {
+    template <typename T = ForwardIterator>
+    inline auto operator*() const -> decltype(std::declval<T>().operator*()) {
         /*
          * HACK: we rely on a special property of the templated iterators: that both
          * forward and backward iterators use the same implementation of the
@@ -580,7 +615,7 @@ public:
 
     /* Insert a node at the current position. */
     template <typename T = ForwardIterator>
-    inline auto insert(value_type value) -> decltype(std::declval<T>().insert(value)) {
+    inline auto insert(Node* value) -> decltype(std::declval<T>().insert(value)) {
         if constexpr (Node::doubly_linked) {
             if (this->direction == Direction::backward) {
                 return this->backward.insert(value);
@@ -602,7 +637,7 @@ public:
 
     /* Replace the node at the current position. */
     template <typename T = ForwardIterator>
-    inline auto replace(value_type value) -> decltype(std::declval<T>().replace(value)) {
+    inline auto replace(Node* value) -> decltype(std::declval<T>().replace(value)) {
         if constexpr (Node::doubly_linked) {
             if (this->direction == Direction::backward) {
                 return this->backward.replace(value);

@@ -4,7 +4,7 @@
 
 #include <cstddef>  // size_t
 #include <Python.h>  // CPython API
-#include "../node.h"  // NodeTraits
+#include "../core/node.h"  // NodeTraits
 
 
 namespace bertrand {

@@ -6,7 +6,7 @@
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
-#include "../iter.h"  // Bidirectional<>
+#include "../core/iter.h"  // Bidirectional<>
 #include "../../util/iter.h"  // iter()
 #include "../../util/except.h"  // type_error()
 #include "../../util/math.h"  // py_modulo()

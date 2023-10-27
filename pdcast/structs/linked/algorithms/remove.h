@@ -7,7 +7,7 @@
 #include <stdexcept>  // std::invalid_argument
 #include "../../util/iter.h"  // iter()
 #include "../../util/repr.h"  // repr()
-#include "../node.h"  // NodeTraits
+#include "../core/node.h"  // NodeTraits
 
 
 namespace bertrand {
@@ -30,7 +30,7 @@ namespace list {
         using util::iter;
 
         // find item in list
-        for (auto it = iter(view).iter(); it != it.end(); ++it) {
+        for (auto it = iter(view).forward(); it != it.end(); ++it) {
             Node* node = it.curr();
             if (node->eq(item)) {
                 view.recycle(it.drop());

@@ -6,10 +6,10 @@
 #include <optional>     // std::optional
 #include <stdexcept>    // std::runtime_error
 #include <string_view>  // std::string_view
-#include "linked/iter.h"  // Direction
-#include "util/python.h"  // PyIterator
-#include "util/string.h"  // string concatenation
-#include "util/thread.h"  // Lock, PyLock
+#include "core/iter.h"  // Direction
+#include "../util/python.h"  // PyIterator
+#include "../util/string.h"  // string concatenation
+#include "../util/thread.h"  // Lock, PyLock
 
 
 namespace bertrand {
@@ -26,13 +26,17 @@ class LinkedTag {};
 /* Base class that forwards the public members of the underlying view. */
 template <typename ViewType, typename LockType, const std::string_view& name>
 class LinkedBase : public LinkedTag {
+    using Direction = linked::Direction;
+
 public:
     using View = ViewType;
     using Node = typename View::Node;
     using Value = typename View::Value;
 
-    template <linked::Direction dir>
+    template <Direction dir>
     using Iterator = typename View::template Iterator<dir>;
+    template <Direction dir>
+    using ConstIterator = typename View::template ConstIterator<dir>;
 
     /* Every LinkedList contains a view that manages low-level node
     allocation/deallocation and links between nodes. */
@@ -90,25 +94,18 @@ public:
     ////    ITERATOR PROTOCOL    ////
     /////////////////////////////////
 
-    /* Get a forward iterator to the start of the list. */
-    inline Iterator<linked::Direction::forward> begin() const {
-        return view.begin();
-    }
-
-    /* Get a forward iterator to the end of the list. */
-    inline Iterator<linked::Direction::forward> end() const {
-        return view.end();
-    }
-
-    /* Get a reverse iterator to the end of the list. */
-    inline Iterator<linked::Direction::backward> rbegin() const {
-        return view.rbegin();
-    }
-
-    /* Get a reverse iterator to the start of the list. */
-    inline Iterator<linked::Direction::backward> rend() const {
-        return view.rend();
-    }
+    inline Iterator<Direction::forward> begin() { return view.begin(); }
+    inline Iterator<Direction::forward> end() { return view.end(); }
+    inline Iterator<Direction::backward> rbegin() { return view.rbegin(); }
+    inline Iterator<Direction::backward> rend() { return view.rend(); }
+    inline ConstIterator<Direction::forward> begin() const { return view.begin(); }
+    inline ConstIterator<Direction::forward> end() const { return view.end(); }
+    inline ConstIterator<Direction::backward> rbegin() const { return view.rbegin(); }
+    inline ConstIterator<Direction::backward> rend() const { return view.rend(); }
+    inline ConstIterator<Direction::forward> cbegin() const { return view.cbegin(); }
+    inline ConstIterator<Direction::forward> cend() const { return view.cend(); }
+    inline ConstIterator<Direction::backward> crbegin() const { return view.crbegin(); }
+    inline ConstIterator<Direction::backward> crend() const { return view.crend(); }
 
     ///////////////////////////////
     ////    THREADING LOCKS    ////
@@ -147,8 +144,7 @@ protected:
     LinkedBase(
         std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr
-    ) :
-        view(max_size, spec)
+    ) : view(max_size, spec)
     {}
 
     /* Construct a list from an input iterable. */
@@ -157,8 +153,7 @@ protected:
         bool reverse = false,
         std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr
-    ) :
-        view(iterable, reverse, max_size, spec)
+    ) : view(iterable, reverse, max_size, spec)
     {}
 
     /* Construct a list from a base view. */

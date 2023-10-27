@@ -7,22 +7,22 @@
 #include <sstream>  // std::ostringstream
 #include <stack>  // std::stack
 
-#include "linked/view.h"
-#include "linked/algorithms/append.h"
-#include "linked/algorithms/clear.h"
-#include "linked/algorithms/contains.h"
-#include "linked/algorithms/count.h"
-#include "linked/algorithms/extend.h"
-#include "linked/algorithms/index.h"
-#include "linked/algorithms/insert.h"
-#include "linked/algorithms/pop.h"
-#include "linked/algorithms/position.h"
-#include "linked/algorithms/remove.h"
-#include "linked/algorithms/reverse.h"
-#include "linked/algorithms/rotate.h"
-#include "linked/algorithms/slice.h"
-#include "linked/algorithms/sort.h"
-#include "util/except.h"  // type_error()
+#include "core/view.h"
+#include "algorithms/append.h"
+#include "algorithms/clear.h"
+#include "algorithms/contains.h"
+#include "algorithms/count.h"
+#include "algorithms/extend.h"
+#include "algorithms/index.h"
+#include "algorithms/insert.h"
+#include "algorithms/pop.h"
+#include "algorithms/position.h"
+#include "algorithms/remove.h"
+#include "algorithms/reverse.h"
+#include "algorithms/rotate.h"
+#include "algorithms/slice.h"
+#include "algorithms/sort.h"
+#include "../util/except.h"  // type_error()
 
 #include "base.h"  // LinkedBase
 

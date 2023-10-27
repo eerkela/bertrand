@@ -11,7 +11,7 @@
 #include "allocate.h"  // Allocator
 #include "iter.h"  // Iterator, Direction
 #include "table.h"  // HashTable
-#include "../util/iter.h"  // iter()
+#include "../../util/iter.h"  // iter()
 
 
 namespace bertrand {
@@ -30,13 +30,6 @@ namespace linked {
 
 // TODO: maybe sort() should just be generic, rather than casting to ListView.  That
 // would completely eliminate the need for converting copies/moves.
-
-
-/* enum makes iterator declarations more readable. */
-// enum class Direction {
-//     forward,
-//     backward
-// };
 
 
 ////////////////////
@@ -84,6 +77,8 @@ public:
 
     template <Direction dir>
     using Iterator = linked::Iterator<BaseView, dir>;
+    template <Direction dir>
+    using ConstIterator = linked::Iterator<const BaseView, dir>;
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -103,7 +98,7 @@ public:
     ) : allocator(max_size, spec)
     {
         using util::iter;
-        for (PyObject* item : iter(iterable)) {
+        for (auto item : iter(iterable)) {
             // NOTE: node() constructor is fallible, but because all memory is managed
             // by the encapsulated allocator, we don't need to worry about cleaning up
             // the list in the event of an exception.
@@ -182,8 +177,8 @@ public:
         using util::iter;
 
         Derived result(max_size(), specialization());
-        for (auto it = iter(*this).iter(); it != it.end(); ++it) {
-            Node* copied = result.node(it.curr());
+        for (auto it = iter(*this).forward(); it != it.end(); ++it) {
+            Node* copied = result.node(*it.curr());
             result.link(result.tail(), copied, nullptr);
         }
         return result;
@@ -269,12 +264,11 @@ public:
     /* NOTE: these methods are called automatically by the `iter()` utility function
      * when traversing a linked data structure.  Users should never need to call them
      * directly - `iter()` should always be preferred for compatibility with Python and
-     * other C++ containers, as well as its generally simpler/more readable interface.
+     * other C++ containers, as well as its more streamlined/intuitive interface.
      */
 
-    /* Return a forward iterator to the head of the view. */
-    Iterator<Direction::forward> begin() const {
-        // short-circuit if list is empty
+    /* Return a mutable forward iterator to the head of a view. */
+    Iterator<Direction::forward> begin() {
         if (head() == nullptr) {
             return end();
         }
@@ -282,14 +276,13 @@ public:
         return Iterator<Direction::forward>(*this, nullptr, head(), next);
     }
 
-    /* Return a forward iterator to terminate the view. */
-    Iterator<Direction::forward> end() const {
+    /* Return a mutable forward iterator to terminate a view. */
+    Iterator<Direction::forward> end() {
         return Iterator<Direction::forward>(*this);
     }
 
-    /* Return a reverse iterator to the tail of the view. */
-    Iterator<Direction::backward> rbegin() const {
-        // short-circuit if list is empty
+    /* Return a mutable reverse iterator to the tail of a view. */
+    Iterator<Direction::backward> rbegin() {
         if (tail() == nullptr) {
             return rend();
         }
@@ -299,7 +292,7 @@ public:
             Node* prev = tail()->prev();
             return Iterator<Direction::backward>(*this, prev, tail(), nullptr);
 
-        // Otherwise, we have to build a stack of prev pointers
+        // Otherwise, we have to build a temporary stack of prev pointers
         } else {
             std::stack<Node*> prev;
             prev.push(nullptr);  // stack always has at least one element (nullptr)
@@ -314,9 +307,66 @@ public:
         }
     }
 
-    /* Return a reverse iterator to terminate the view. */
-    Iterator<Direction::backward> rend() const {
+    /* Return a mutable reverse iterator to terminate a view. */
+    Iterator<Direction::backward> rend() {
         return Iterator<Direction::backward>(*this);
+    }
+
+    /* Return a const forward iterator to the head of a const view. */
+    ConstIterator<Direction::forward> begin() const { return cbegin(); }
+
+    /* Return a const forward iterator to terminate a const view. */
+    ConstIterator<Direction::forward> end() const { return cend(); }
+
+    /* Return a const reverse iterator to the tail of a const view. */
+    ConstIterator<Direction::backward> rbegin() const { return crbegin(); }
+
+    /* Return a const reverse iterator to terminate a const view. */
+    ConstIterator<Direction::backward> rend() const { return crend(); }
+
+    /* Return a const forward iterator to the head of a view. */
+    ConstIterator<Direction::forward> cbegin() const {
+        if (head() == nullptr) {
+            return cend();
+        }
+        Node* next = head()->next();
+        return ConstIterator<Direction::forward>(*this, nullptr, head(), next);
+    }
+
+    /* Return a const forward iterator to terminate thae view. */
+    ConstIterator<Direction::forward> cend() const {
+        return ConstIterator<Direction::forward>(*this);
+    }
+
+    /* Return a const reverse iterator to the tail of a view. */
+    ConstIterator<Direction::backward> crbegin() const {
+        if (tail() == nullptr) {
+            return crend();
+        }
+
+        // if list is doubly-linked, we can just use the prev pointer to get neighbors
+        if constexpr (Node::doubly_linked) {
+            Node* prev = tail()->prev();
+            return ConstIterator<Direction::backward>(*this, prev, tail(), nullptr);
+
+        // Otherwise, we have to build a temporary stack of prev pointers
+        } else {
+            std::stack<Node*> prev;
+            prev.push(nullptr);  // stack always has at least one element (nullptr)
+            Node* temp = head();
+            while (temp != tail()) {
+                prev.push(temp);
+                temp = temp->next();
+            }
+            return ConstIterator<Direction::backward>(
+                *this, std::move(prev), tail(), nullptr
+            );
+        }
+    }
+
+    /* Return a const reverse iterator to terminate a view. */
+    ConstIterator<Direction::backward> crend() const {
+        return ConstIterator<Direction::backward>(*this);
     }
 
 protected:
@@ -367,6 +417,7 @@ class ListView : public BaseView<ListView<NodeType>, ListAllocator<NodeType>> {
 public:
     // inherit constructors
     using Base::Base;
+    using Base::operator=;
 
     /* NOTE: we don't need any further implementation since ListView is the minimal
      * valid view configuration.  Other than an optimized memory management strategy,
