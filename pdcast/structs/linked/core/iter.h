@@ -235,17 +235,17 @@ public:
         _next(other._next)
     {}
 
-    // converting constructors need to take the temporary stack into account.  When
+    // TODO: converting constructors need to take the temporary stack into account.  When
     // creating a backward iterator from a forward iterator, we need to generate a copy
     // of the forward iterator, exhaust it, and add each node to the stack in reverse
     // order.
 
-    /* Copy constructor from the other direction. */
-    template <Direction T>
-    Iterator(const Iterator<View, T>& other) :
-        Base(other), view(other.view), _prev(other._prev), _curr(other._curr),
-        _next(other._next)
-    {}
+    // /* Copy constructor from the other direction. */
+    // template <Direction T>
+    // Iterator(const Iterator<View, T>& other) :
+    //     Base(other), view(other.view), _prev(other._prev), _curr(other._curr),
+    //     _next(other._next)
+    // {}
 
     /* Move constructor. */
     Iterator(Iterator&& other) :
@@ -257,16 +257,16 @@ public:
         other._next = nullptr;
     }
 
-    /* Move constructor from the other direction. */
-    template <Direction T>
-    Iterator(Iterator<View, T>&& other) :
-        Base(std::move(other)), view(other.view), _prev(other._prev),
-        _curr(other._curr), _next(other._next)
-    {
-        other._prev = nullptr;
-        other._curr = nullptr;
-        other._next = nullptr;
-    }
+    // /* Move constructor from the other direction. */
+    // template <Direction T>
+    // Iterator(Iterator<View, T>&& other) :
+    //     Base(std::move(other)), view(other.view), _prev(other._prev),
+    //     _curr(other._curr), _next(other._next)
+    // {
+    //     other._prev = nullptr;
+    //     other._curr = nullptr;
+    //     other._next = nullptr;
+    // }
 
     /* Assignment operators deleted for simplicity. */
     Iterator& operator=(const Iterator&) = delete;

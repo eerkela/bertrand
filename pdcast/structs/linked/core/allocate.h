@@ -26,7 +26,7 @@ namespace linked {
 
 /* DEBUG=TRUE adds print statements for every call to malloc()/free() in order
 to help catch memory leaks. */
-const bool DEBUG = false;
+const bool DEBUG = true;
 
 
 ////////////////////

@@ -7,6 +7,7 @@
 #include <stdexcept>    // std::runtime_error
 #include <string_view>  // std::string_view
 #include "core/iter.h"  // Direction
+#include "../util/iter.h"  // iter(), IterProxy
 #include "../util/python.h"  // PyIterator
 #include "../util/string.h"  // string concatenation
 #include "../util/thread.h"  // Lock, PyLock
@@ -24,7 +25,7 @@ class LinkedTag {};
 
 
 /* Base class that forwards the public members of the underlying view. */
-template <typename ViewType, typename LockType, const std::string_view& name>
+template <typename ViewType, typename LockType>
 class LinkedBase : public LinkedTag {
     using Direction = linked::Direction;
 

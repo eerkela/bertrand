@@ -454,13 +454,14 @@ class PyIterator {
     /* Store coupled iterators as raw data buffers.
     
     NOTE: PyObject_New() does not allow for traditional stack allocation like we would
-    normally use to store the wrapped iterators.  Instead, we have to delay construction
-    until the init() method is called.  We could use pointers to heap-allocate memory
-    for this, but this adds extra allocation overhead.  Using raw data buffers avoids
-    this and places the iterators on the stack, where they belong. */
+    normally use to store the wrapped iterators.  Instead, we have to delay
+    construction until the init() method is called.  We could use pointers to
+    heap-allocate memory for this, but this adds extra allocation overhead.  Using raw
+    data buffers avoids this and places the iterators on the stack, where they
+    belong.  They can be accessed via reinterpret_cast<Iterator&>. */
     PyObject_HEAD
-    Slot<Iterator> first;
-    Slot<Iterator> second;
+    alignas(Iterator) char first[sizeof(Iterator)];
+    alignas(Iterator) char second[sizeof(Iterator)];
 
     /* Force use of init() factory method. */
     PyIterator() = delete;
@@ -478,12 +479,8 @@ public:
         }
 
         // initialize (NOTE: PyObject_New() does not call stack constructors)
-        new (&(result->first)) Slot<Iterator>();
-        new (&(result->second)) Slot<Iterator>();
-
-        // construct iterators within raw storage
-        result->first.construct(std::move(begin));
-        result->second.construct(std::move(end));
+        new (&(result->first)) Iterator(std::move(begin));
+        new (&(result->second)) Iterator(std::move(end));
 
         // return as PyObject*
         return reinterpret_cast<PyObject*>(result);
@@ -496,8 +493,8 @@ public:
 
     /* Call next(iter) from Python. */
     inline static PyObject* iter_next(PyIterator* self) {
-        Iterator& begin = *(self->first);
-        Iterator& end = *(self->second);
+        Iterator& begin = reinterpret_cast<Iterator&>(self->first);
+        Iterator& end = reinterpret_cast<Iterator&>(self->second);
 
         if (!(begin != end)) {  // terminate the sequence
             PyErr_SetNone(PyExc_StopIteration);
@@ -512,6 +509,8 @@ public:
 
     /* Free the Python iterator when its reference count falls to zero. */
     inline static void dealloc(PyIterator* self) {
+        reinterpret_cast<Iterator&>(self->first).~Iterator();
+        reinterpret_cast<Iterator&>(self->second).~Iterator();
         Type.tp_free(self);
     }
 
@@ -529,8 +528,8 @@ private:
         type_obj.tp_alloc = PyType_GenericAlloc;
         type_obj.tp_new = PyType_GenericNew;
         type_obj.tp_iter = PyObject_SelfIter;
-        type_obj.tp_iternext = reinterpret_cast<iternextfunc>(iter_next);
-        type_obj.tp_dealloc = reinterpret_cast<destructor>(dealloc);
+        type_obj.tp_iternext = (iternextfunc) iter_next;
+        type_obj.tp_dealloc = (destructor) dealloc;
 
         // register iterator type with Python
         if (PyType_Ready(&type_obj) < 0) {
@@ -595,7 +594,7 @@ class ContainerTraits {
     template <typename Iter, bool do_conversion = false>
     struct _conv {
         using type = ConvertedIterator<Iter, Func>;
-        inline static type decorate(Iter&& iter, Func func) {
+        static inline type decorate(Iter&& iter, Func func) {
             return type(std::move(iter), func);
         }
     };
@@ -604,9 +603,6 @@ class ContainerTraits {
     template <typename Iter>
     struct _conv<Iter, true> {
         using type = Iter;
-        inline static type decorate(Iter&& iter, Func func) {
-            return iter;
-        }
     };
 
     template <typename Iter>
@@ -681,7 +677,11 @@ class ContainerTraits {
             using wrapper = conv<base_type>; \
             using type = typename wrapper::type; \
             static inline type call(Iterable& iterable, Func func) { \
-                return wrapper::decorate(iterable.METHOD(), func); \
+                if constexpr (is_identity) { \
+                    return iterable.METHOD(); \
+                } else { \
+                    return wrapper::decorate(iterable.METHOD(), func); \
+                } \
             } \
         }; \
         TRAIT_FLAG(has_member_##METHOD, std::declval<Iterable&>().METHOD()) \
@@ -700,7 +700,11 @@ class ContainerTraits {
             using wrapper = conv<base_type>; \
             using type = typename wrapper::type; \
             static inline type call(Iterable& iterable, Func func) { \
-                return wrapper::decorate(METHOD(iterable), func); \
+                if constexpr (is_identity) { \
+                    return METHOD(iterable); \
+                } else { \
+                    return wrapper::decorate(METHOD(iterable), func); \
+                } \
             } \
         }; \
         TRAIT_FLAG(has_adl_##METHOD, METHOD(std::declval<Iterable&>())) \
@@ -721,7 +725,11 @@ class ContainerTraits {
             using wrapper = conv<base_type>; \
             using type = typename wrapper::type; \
             static inline type call(Iterable& iterable, Func func) { \
-                return wrapper::decorate(std::METHOD(iterable), func); \
+                if constexpr (is_identity) { \
+                    return std::METHOD(iterable); \
+                } else { \
+                    return wrapper::decorate(std::METHOD(iterable), func); \
+                } \
             } \
         }; \
 
@@ -1088,12 +1096,6 @@ private:
  */
 
 
-// TODO: specialize this for identity.  That way we don't even have to allocate a
-// function object.  We just get a reference to the object being iterated over.
-// -> this also slims down the iterator itself, since we can make the same
-// optimizations.
-
-
 /* A wrapper around a Python iterator that manages reference counts and enables
 for-each loop syntax in C++.
 
@@ -1131,8 +1133,12 @@ public:
         using reference             = value_type&;
 
         /* Get current item. */
-        ReturnType operator*() const {
-            return convert(curr);
+        value_type operator*() const {
+            if constexpr (is_identity) {
+                return curr;
+            } else {
+                return convert(curr);
+            }
         }
 
         /* Advance to next item. */
@@ -1277,200 +1283,19 @@ public:
     }
 
 private:
+    template <typename>
+    friend auto iter(PyObject* container);
+    template <typename>
+    friend auto iter(const PyObject* container);
     template <typename _Func>
     friend auto iter(PyObject* container, _Func convert);
     template <typename _Func>
     friend auto iter(const PyObject* container, _Func convert);
 
     /* Construct an iterator proxy around a python container. */
-    PyIterProxy(Container* c, Func f) : container(c), convert(f) {}
-
-};
-
-
-/* A wrapper around a Python iterator that manages reference counts and enables
-for-each loop syntax in C++.
-
-This specialization is chosen when no conversion is given to `iter()`.  In this case,
-conversions are unnecessary, so we can avoid allocating an extra member on the proxy
-and iterator to help speed things up. */
-template <typename Container>
-class PyIterProxy<Container, identity> {
-    Container* const container;  // PyObject ptr cannot be reassigned
-
-public:
-
-    ///////////////////////
-    ////    WRAPPER    ////
-    ///////////////////////
-
-    /* A C++ wrapper around a Python iterator that exposes a standard interface. */
-    class Iterator {
-        PyObject* py_iterator;
-        PyObject* curr;
-
-    public:
-        // iterator tags for std::iterator_traits
-        using iterator_category     = std::forward_iterator_tag;
-        using difference_type       = std::ptrdiff_t;
-        using value_type            = PyObject*;
-        using pointer               = value_type*;
-        using reference             = value_type&;
-
-        /* Get current item. */
-        value_type operator*() const {
-            return curr;  // no conversion necessary
-        }
-
-        /* Advance to next item. */
-        Iterator& operator++() {
-            Py_DECREF(curr);
-            curr = PyIter_Next(py_iterator);
-            if (curr == nullptr && PyErr_Occurred()) {
-                throw std::runtime_error("could not get next(iterator)");
-            }
-            return *this;
-        }
-
-        /* Terminate sequence. */
-        bool operator!=(const Iterator& other) const {
-            return curr != other.curr;
-        }
-
-        /* Copy constructor. */
-        Iterator(const Iterator& other) : py_iterator(other.py_iterator), curr(other.curr) {
-            Py_XINCREF(py_iterator);
-            Py_XINCREF(curr);
-        }
-
-        /* Move constructor. */
-        Iterator(Iterator&& other) : py_iterator(other.py_iterator), curr(other.curr) {
-            other.py_iterator = nullptr;
-            other.curr = nullptr;
-        }
-
-        /* Copy assignment. */
-        Iterator& operator=(const Iterator& other) {
-            Py_XINCREF(py_iterator);
-            Py_XINCREF(curr);
-            py_iterator = other.py_iterator;
-            curr = other.curr;
-            return *this;
-        }
-
-        /* Handle reference counts if an iterator is destroyed partway through
-        iteration. */
-        ~Iterator() {
-            Py_XDECREF(py_iterator);
-            Py_XDECREF(curr);
-        }
-
-    private:
-        friend PyIterProxy;
-
-        /* Return an iterator to the start of the sequence. */
-        Iterator(PyObject* i) : py_iterator(i), curr(nullptr) {
-            // NOTE: py_iterator is a borrowed reference from PyObject_GetIter()
-            if (py_iterator != nullptr) {
-                curr = PyIter_Next(py_iterator);  // get first item
-                if (curr == nullptr && PyErr_Occurred()) {
-                    Py_DECREF(py_iterator);
-                    throw catch_python<std::runtime_error>();
-                }
-            }
-        }
-
-        /* Return an iterator to the end of the sequence. */
-        Iterator() : py_iterator(nullptr), curr(nullptr) {}
-    };
-
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
-
-    inline Iterator begin() { return Iterator(this->python()); }
-    inline Iterator end() { return Iterator(); }
-    inline Iterator rbegin() { return Iterator(this->rpython()); }
-    inline Iterator rend() { return Iterator(); }
-    inline Iterator begin() const { return cbegin(); }
-    inline Iterator end() const { return cend(); }
-    inline Iterator rbegin() const { return crbegin(); }
-    inline Iterator rend() const { return crend(); }
-    inline Iterator cbegin() const { return Iterator(this->python()); }
-    inline Iterator cend() const { return Iterator(); }
-    inline Iterator crbegin() const { return Iterator(this->rpython()); }
-    inline Iterator crend() const { return Iterator(); }
-
-    /////////////////////////////////
-    ////    COUPLED ITERATORS    ////
-    /////////////////////////////////
-
-    inline auto forward() { return CoupledIterator<Iterator>(begin(), end()); }
-    inline auto reverse() { return CoupledIterator<Iterator>(rbegin(), rend()); }
-    inline auto forward() const { return cforward(); }
-    inline auto reverse() const { return creverse(); }
-    inline auto cforward() const { return CoupledIterator<Iterator>(cbegin(), cend()); }
-    inline auto creverse() const { return CoupledIterator<Iterator>(crbegin(), crend()); }
-
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
-
-    /* Get a mutable forward Python iterator over a container. */
-    inline PyObject* python() {
-        PyObject* iter = PyObject_GetIter(this->container);
-        if (iter == nullptr && PyErr_Occurred()) {
-            throw catch_python<type_error>();
-        }
-        return iter;
-    }
-
-    /* Get a mutable reverse Python iterator over a container. */
-    inline PyObject* rpython() {
-        PyObject* attr = PyObject_GetAttrString(this->container, "__reversed__");
-        if (attr == nullptr && PyErr_Occurred()) {
-            throw catch_python<type_error>();
-        }
-        PyObject* iter = PyObject_CallObject(attr, nullptr);
-        Py_DECREF(attr);
-        if (iter == nullptr && PyErr_Occurred()) {
-            throw catch_python<type_error>();
-        }
-        return iter;  // new reference
-    }
-
-    /* Get a const forward Python iterator over a const container. */
-    inline PyObject* python() const {
-        return this->cpython();
-    }
-
-    /* Get a const reverse Python iterator over a const container. */
-    inline PyObject* rpython() const {
-        return this->crpython();
-    }
-
-    /* Get a const forward Python iterator over a container. */
-    inline PyObject* cpython() const {
-        return this->python();
-    }
-
-    /* Get a reverse Python iterator over an immutable container. */
-    inline PyObject* crpython() const {
-        return this->rpython();
-    }
-
-private:
-    /* PyIterProxies can only be constructed through `iter()` factory function. */
-    template <typename>
-    friend auto iter(PyObject* container);
-    template <typename>
-    friend auto iter(const PyObject* container);
-
-    /* Construct an iterator proxy around a python container. */
     PyIterProxy(Container* c) : container(c) {}
-
+    PyIterProxy(Container* c, Func f) : container(c), convert(f) {}
 };
-
 
 
 //////////////////////////////

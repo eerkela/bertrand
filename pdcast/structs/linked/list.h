@@ -54,10 +54,6 @@ class Lexicographic;
 //////////////////////
 
 
-/* Name of the equivalent Python class, to form dotted names for Python iterators. */
-inline constexpr std::string_view linked_list_name { "LinkedList" };
-
-
 /* Namespace alias for generic list methods/operators. */
 namespace IList = linked::algorithms::list;
 
@@ -69,7 +65,7 @@ template <
     typename LockPolicy = util::BasicLock
 >
 class LinkedList :
-    public LinkedBase<linked::ListView<NodeType>, LockPolicy, linked_list_name>,
+    public LinkedBase<linked::ListView<NodeType>, LockPolicy>,
     public Concatenateable<LinkedList<NodeType, SortPolicy, LockPolicy>>,
     public Repeatable<LinkedList<NodeType, SortPolicy, LockPolicy>>,
     public Lexicographic<LinkedList<NodeType, SortPolicy, LockPolicy>>
@@ -78,8 +74,7 @@ public:
     using View = linked::ListView<NodeType>;
     using Node = typename View::Node;
     using Value = typename Node::Value;
-    using Base = LinkedBase<View, LockPolicy, linked_list_name>;
-    static constexpr std::string_view name { linked_list_name };
+    using Base = LinkedBase<View, LockPolicy>;
 
     // TODO: type aliases for Iterator, doubly_linked, etc.
 
