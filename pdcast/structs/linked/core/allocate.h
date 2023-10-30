@@ -794,24 +794,25 @@ private:
     /* Look up a value in the hash table by providing an explicit hash. */
     Node* _search(const size_t hash, const Value& value) const {
         // get index and step for double hashing
-        size_t idx = hash % this->capacity;
         size_t step = (hash % prime) | 1;
+        size_t idx = hash % this->capacity;
         Node& lookup = array[idx];
-        uint32_t bits = flags[idx / 16] >> (idx % 16);
-        bool constructed = bits & 0b10;  // indicates whether node is constructed
-        bool tombstone = bits & 0b01;  // indicates whether node is a tombstone
+        uint32_t& bits = flags[idx / 16];
+        unsigned char flag = (bits >> (idx % 16)) & 0b11;
+
+        // NOTE: first bit flag indicates whether bucket is occupied by a valid node.
+        // Second indicates whether it is a tombstone.  Both are mutually exclusive.
 
         // handle collisions
         std::equal_to<Value> eq;
-        while (constructed || tombstone) {
-            if (constructed && eq(lookup->value(), value)) return &lookup;
+        while (flag > 0b00) {
+            if (flag == 0b10 && eq(lookup->value(), value)) return &lookup;
 
             // advance to next slot
             idx = (idx + step) % this->capacity;
             lookup = array[idx];
-            bits = flags[idx / 16] >> (idx % 16);
-            constructed = bits & 0b10;
-            tombstone = bits & 0b01;
+            bits = flags[idx / 16];
+            flag = (bits >> (idx % 16)) & 0b11;
         }
 
         // value not found
@@ -954,8 +955,8 @@ public:
                 } else if (tombstones > this->capacity / 16) {
                     resize(exponent);  // clear tombstones
                 }
-                // some tombstones, but still room to grow: allow a small amount of
-                // hysteresis (load factor up to 0.5625) to avoid pessimistic rehashing
+                // NOTE: allow a small amount of hysteresis (load factor up to 0.5625)
+                // to avoid pessimistic rehashing
             } else {
                 resize(exponent + 1);  // grow array
             }
@@ -966,13 +967,17 @@ public:
         size_t step = (hash % prime) | 1;  // double hashing
         size_t idx = hash % this->capacity;
         Node& lookup = array[idx];
-        uint32_t bits = flags[idx / 16] >> (idx % 16);
-        bool constructed = bits & 0b10;  // indicates whether node is constructed
-        bool tombstone = bits & 0b01;  // indicates whether node is a tombstone
+        size_t div = idx / 16;
+        size_t mod = idx % 16;
+        uint32_t& bits = flags[div];
+        unsigned char flag = (bits >> mod) & 0b11;
 
-        // handle collisions
-        while (constructed || tombstone) {
-            if (constructed && lookup.eq(this->temp->value())) {
+        // NOTE: first bit flag indicates whether bucket is occupied by a valid node.
+        // Second indicates whether it is a tombstone.  Both are mutually exclusive.
+
+        // handle collisions, replacing tombstones if they are encountered
+        while (flag == 0b10) {
+            if (lookup.eq(this->temp->value())) {
                 this->temp->~Node();  // in-place destructor
                 std::ostringstream msg;
                 msg << "duplicate key: " << util::repr(this->temp->value());
@@ -982,14 +987,19 @@ public:
             // advance to next index
             idx = (idx + step) % this->capacity;
             lookup = array[idx];
-            bits = flags[idx / 16] >> (idx % 16);
-            constructed = bits & 0b10;
-            tombstone = bits & 0b01;
+            div = idx / 16;
+            mod = idx % 16;
+            bits = flags[div];
+            flag = (bits >> mod) & 0b11;
         }
 
-        // move temp into empty bucket
+        // move temp into empty bucket/tombstone
         new (&lookup) Node(std::move(*this->temp));
-        flags[idx / 16] |= 0b10 << (idx % 16);  // mark as constructed
+        bits |= (0b10 << mod);  // mark constructed flag
+        if (flag == 0b01) {
+            flag &= 0b10 << mod;  // clear tombstone flag
+            --tombstones;
+        }
         ++this->occupied;
         return &lookup;
     }
@@ -1007,16 +1017,19 @@ public:
         Node& lookup = array[idx];
         size_t div = idx / 16;
         size_t mod = idx % 16;
-        uint32_t bits = flags[div] >> mod;
-        bool constructed = bits & 0b10;  // indicates whether node is constructed
-        bool tombstone = bits & 0b01;  // indicates whether node is a tombstone
+        uint32_t& bits = flags[div];
+        unsigned char flag = (bits >> mod) & 0b11;
+
+        // NOTE: first bit flag indicates whether bucket is occupied by a valid node.
+        // Second indicates whether it is a tombstone.  Both are mutually exclusive.
 
         // handle collisions
-        while (constructed || tombstone) {
-            if (constructed && lookup.eq(node->value())) {
+        while (flag > 0b00) {
+            if (flag == 0b10 && lookup.eq(node->value())) {
                 // mark as tombstone
                 lookup.~Node();  // in-place destructor
-                flags[div] = (flags[div] & ~(0b10 << mod)) | (0b01 << mod);
+                bits &= (0b01 << mod);  // clear constructed flag
+                bits |= (0b01 << mod);  // set tombstone flag
                 ++tombstones;
                 --this->occupied;
 
@@ -1038,9 +1051,8 @@ public:
             lookup = array[idx];
             div = idx / 16;
             mod = idx % 16;
-            bits = flags[div] >> mod;
-            constructed = bits & 0b10;
-            tombstone = bits & 0b01;
+            bits = flags[div];
+            flag = (bits >> mod) & 0b11;
         }
 
         // node not found
