@@ -3,7 +3,7 @@
 #define BERTRAND_STRUCTS_LINKED_ALLOCATE_H
 
 #include <cstddef>  // size_t
-#include <cstdlib>  // malloc(), free()
+#include <cstdlib>  // malloc(), calloc(), free()
 #include <iostream>  // std::cout, std::endl
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
@@ -56,6 +56,15 @@ protected:
     //     PyObject*
     // >;
 
+    /* Allocate a temporary node for use in algorithms. */
+    inline static Node* allocate_temp() {
+        Node* result = static_cast<Node*>(malloc(sizeof(Node)));
+        if (result == nullptr) {
+            throw std::bad_alloc();
+        }
+        return result;
+    }
+
     /* Allocate a contiguous block of uninitialized nodes with the specified size. */
     inline static Node* allocate_array(size_t capacity) {
         Node* result = static_cast<Node*>(malloc(capacity * sizeof(Node)));
@@ -105,6 +114,7 @@ protected:
 public:
     Node* head;  // head of the list
     Node* tail;  // tail of the list
+    Node* temp;  // temporary node for use in insertions/custom algorithms
     size_t capacity;  // number of nodes in the array
     size_t occupied;  // number of nodes currently in use - equivalent to list.size()
     bool frozen;  // indicates if the array is frozen at its current capacity
@@ -114,14 +124,20 @@ public:
     // whether the node stores PyObject* values, as determined from NodeTraits<>.
 
     /* Create an allocator with an optional fixed size. */
-    BaseAllocator(std::optional<size_t> capacity, PyObject* specialization, size_t default_capacity) :
+    BaseAllocator(
+        std::optional<size_t> capacity,
+        size_t default_capacity,
+        PyObject* specialization
+    ) :
         head(nullptr),
         tail(nullptr),
+        temp(allocate_temp()),
         capacity(capacity.value_or(default_capacity)),
         occupied(0),
         frozen(capacity.has_value()),
         specialization(specialization)
     {
+        
         if constexpr (DEBUG) {
             std::cout << "    -> allocate: " << this->capacity << " nodes" << std::endl;
         }
@@ -134,6 +150,7 @@ public:
     BaseAllocator(const BaseAllocator& other) :
         head(nullptr),
         tail(nullptr),
+        temp(allocate_temp()),
         capacity(other.capacity),
         occupied(other.occupied),
         frozen(other.frozen),
@@ -149,6 +166,7 @@ public:
     BaseAllocator(BaseAllocator&& other) noexcept :
         head(other.head),
         tail(other.tail),
+        temp(allocate_temp()),
         capacity(other.capacity),
         occupied(other.occupied),
         frozen(other.frozen),
@@ -226,6 +244,7 @@ public:
     /* Destroy an allocator and release its resources. */
     ~BaseAllocator() noexcept {
         Py_XDECREF(specialization);
+        free(temp);
     }
 
     /* Enforce strict type checking for python values within the list. */
@@ -264,6 +283,11 @@ public:
             Py_DECREF(specialization);
         }
         specialization = spec;
+    }
+
+    /* Get the total amount of dynamic memory allocated by this allocator. */
+    inline size_t nbytes() const {
+        return sizeof(Node);  // temporary node
     }
 
 };
@@ -362,7 +386,7 @@ public:
 
     /* Create an allocator with an optional fixed size. */
     ListAllocator(std::optional<size_t> capacity, PyObject* specialization) :
-        Base(capacity, specialization, DEFAULT_CAPACITY),
+        Base(capacity, DEFAULT_CAPACITY, specialization),
         array(Base::allocate_array(this->capacity)),
         free_list(std::make_pair(nullptr, nullptr))
     {}
@@ -462,7 +486,7 @@ public:
 
     /* Construct a new node for the list. */
     template <typename... Args>
-    Node* create(Args... args) {
+    Node* create(Args&&... args) {
         // check free list
         if (free_list.first != nullptr) {
             Node* node = free_list.first;
@@ -523,7 +547,7 @@ public:
         --this->occupied;
     }
 
-    /* Remove all elements from a list. */
+    /* Remove all elements from the list. */
     void clear() noexcept {
         // destroy all nodes
         Base::destroy_list();
@@ -541,7 +565,7 @@ public:
         }
     }
 
-    /* Resize the array to house a specific number of nodes. */
+    /* Resize the array to store a specific number of nodes. */
     void reserve(size_t new_capacity) {
         // ensure new capacity is large enough to store all nodes
         if (new_capacity < this->occupied) {
@@ -586,6 +610,11 @@ public:
         return node >= array && node < array + this->capacity;  // pointer arithmetic
     }
 
+    /* Get the total amount of dynamic memory allocated by this allocator. */
+    inline size_t nbytes() const {
+        return Base::nbytes() + (this->capacity * sizeof(Node));
+    }
+
 };
 
 
@@ -601,10 +630,11 @@ public:
     using Node = NodeType;
 
 private:
+    using Base = BaseAllocator<NodeType>;
     static constexpr size_t DEFAULT_CAPACITY = 16;  // minimum array size
-    static constexpr float MAX_LOAD_FACTOR = 0.7;  // grow if load factor exceeds threshold
-    static constexpr float MIN_LOAD_FACTOR = 0.2;  // shrink if load factor drops below threshold
-    static constexpr float MAX_TOMBSTONES = 0.2;  // clear tombstones if threshold is exceeded
+    static constexpr float MAX_LOAD_FACTOR = 0.5;  // grow if load factor exceeds threshold
+    static constexpr float MIN_LOAD_FACTOR = 0.125;  // shrink if load factor drops below threshold
+    static constexpr float MAX_TOMBSTONES = 0.125;  // clear tombstones if threshold is exceeded
     static constexpr size_t PRIMES[29] = {  // prime numbers to use for double hashing
         // HASH PRIME   // TABLE SIZE               // AI AUTOCOMPLETE
         13,             // 16 (2**4)                13
@@ -640,20 +670,323 @@ private:
     };
 
     Node* array;  // dynamic array of nodes
+    uint32_t* flags;  // bit array indicating whether a node is occupied or deleted
     size_t tombstones;  // number of nodes marked for deletion
     size_t prime;  // prime number used for double hashing
     unsigned char exponent;  // log2(capacity) - log2(DEFAULT_CAPACITY)
 
+    /* Allocate an auxiliary bit array indicating whether a given index is currently
+    occupied or is marked as a tombstone. */
+    inline static uint32_t* allocate_flags(size_t capacity) {
+        size_t num_flags = (capacity - 1) / 16;
+        uint32_t* result = static_cast<uint32_t*>(calloc(num_flags, sizeof(uint32_t)));
+        if (result == nullptr) {
+            throw std::bad_alloc();
+        }
+        return result;
+    }
+
+    /* Copy/move the nodes from one allocator into another. */
+    static void transfer_nodes(Node* head, Node* array) {
+
+    }
+
+    /* Allocate a new array of a given size and transfer the contents of the list. */
+    void resize(size_t new_capacity) {
+
+    }
+
 public:
 
-    // TODO: head, tail, capacity, occupied, frozen, specialization can all be placed
-    // in base class along with allocate_array(), init_node(), destroy_list(), and
-    // specialize().
+    /* Create an allocator with an optional fixed size. */
+    HashAllocator(std::optional<size_t> capacity, PyObject* specialization) :
+        Base(capacity, DEFAULT_CAPACITY, specialization),
+        array(Base::allocate_array(this->capacity)),
+        flags(allocate_flags(this->capacity)),
+        tombstones(0),
+        prime(PRIMES[0]),
+        exponent(0)
+    {}
 
+    /* Copy constructor. */
+    HashAllocator(const HashAllocator& other) :
+        Base(other),
+        array(Base::allocate_array(this->capacity)),
+        flags(allocate_flags(this->capacity)),
+        tombstones(other.tombstones),
+        prime(other.prime),
+        exponent(other.exponent)
+    {
+        // copy over existing nodes in correct list order (head -> tail)
+        if (this->occupied != 0) {
+            // transfer_nodes<true>(other.head, array);
+            // this->head = &array[0];
+            // this->tail = &array[this->occupied - 1];
+        }
+    }
+
+    /* Move constructor. */
+    HashAllocator(HashAllocator&& other) noexcept :
+        Base(std::move(other)),
+        array(other.array),
+        flags(other.flags),
+        tombstones(other.tombstones),
+        prime(other.prime),
+        exponent(other.exponent)
+    {
+        other.array = nullptr;
+        other.flags = nullptr;
+        other.tombstones = 0;
+        other.prime = 0;
+        other.exponent = 0;
+    }
+
+    /* Copy assignment operator. */
+    HashAllocator& operator=(const HashAllocator& other) {
+        // check for self-assignment
+        if (this == &other) {
+            return *this;
+        }
+
+        // invoke parent
+        Base::operator=(other);
+
+        // destroy array
+        if (array != nullptr) {
+            free(array);
+            free(flags);
+        }
+
+        // copy array
+        array = Base::allocate_array(this->capacity);
+        flags = allocate_flags(this->capacity);
+        if (this->occupied != 0) {
+            // transfer_nodes<true>(other.head, array);
+            // this->head = &array[0];
+            // this->tail = &array[this->occupied - 1];
+        }
+
+        return *this;
+    }
+
+    /* Move assignment operator. */
+    HashAllocator& operator=(HashAllocator&& other) noexcept {
+        // check for self-assignment
+        if (this == &other) {
+            return *this;
+        }
+
+        // invoke parent
+        Base::operator=(std::move(other));
+
+        // destroy array
+        if (array != nullptr) {
+            free(array);
+            free(flags);
+        }
+
+        // transfer ownership
+        array = other.array;
+        flags = other.flags;
+        tombstones = other.tombstones;
+        prime = other.prime;
+        exponent = other.exponent;
+
+        // reset other
+        other.array = nullptr;
+        other.free_list.first = nullptr;
+        other.free_list.second = nullptr;
+        return *this;
+    }
+
+    /* Destroy an allocator and release its resources. */
+    ~HashAllocator() noexcept {
+        if (this->head != nullptr) {
+            Base::destroy_list();  // calls destructors
+        }
+        if (array != nullptr) {
+            free(array);
+            free(flags);
+            if constexpr (DEBUG) {
+                std::cout << "    -> deallocate: " << this->capacity << " nodes" << std::endl;
+            }
+        }
+    }
+
+    /* Construct a new node for the list. */
+    template <typename... Args>
+    Node* create(Args&&... args) {
+        // allocate into temporary node
+        Base::init_node(this->temp, std::forward<Args>(args)...);
+
+        // check if we need to grow the array
+        if (this->occupied + tombstones >= this->capacity / 2) {
+            if (this->frozen) {
+                this->temp->~Node();  // in-place destructor
+                std::ostringstream msg;
+                msg << "array cannot grow beyond size " << this->capacity;
+                throw std::runtime_error(msg.str());
+            }
+            resize(this->capacity * 2);
+        }
+
+        // search for node within hash table
+        size_t hash = this->temp->hash();
+        size_t step = (hash % prime) | 1;  // double hashing
+        size_t idx = hash % this->capacity;
+        Node& lookup = array[idx];
+        uint32_t bits = flags[idx / 16] >> (idx % 16);
+        bool constructed = bits & 0b10;  // indicates whether node is constructed
+        bool tombstone = bits & 0b01;  // indicates whether node is a tombstone
+
+        // handle collisions
+        while (constructed || tombstone) {
+            if (constructed && lookup.eq(this->temp->value())) {
+                this->temp->~Node();  // in-place destructor
+                std::ostringstream msg;
+                msg << "duplicate key: " << util::repr(this->temp->value());
+                throw std::invalid_argument(msg.str());
+            }
+
+            // advance to next index
+            idx = (idx + step) % this->capacity;
+            lookup = array[idx];
+            bits = flags[idx / 16] >> (idx % 16);
+            constructed = bits & 0b10;
+            tombstone = bits & 0b01;
+        }
+
+        // move temp into empty bucket
+        new (&lookup) Node(std::move(*this->temp));
+        flags[idx / 16] |= 0b10 << (idx % 16);  // mark as constructed
+        ++this->occupied;
+        return &lookup;
+    }
+
+    /* Release a node from the list. */
+    void recycle(Node* node) {
+        if constexpr (DEBUG) {
+            std::cout << "    -> recycle: " << util::repr(node->value()) << std::endl;
+        }
+
+        // look up node in hash table
+        size_t hash = node->hash();
+        size_t step = (hash % prime) | 1;  // double hashing
+        size_t idx = hash % this->capacity;
+        Node& lookup = array[idx];
+        size_t div = idx / 16;
+        size_t mod = idx % 16;
+        uint32_t bits = flags[div] >> mod;
+        bool constructed = bits & 0b10;  // indicates whether node is constructed
+        bool tombstone = bits & 0b01;  // indicates whether node is a tombstone
+
+        // handle collisions
+        while (constructed || tombstone) {
+            if (constructed && lookup.eq(node->value())) {
+                // mark as tombstone
+                lookup.~Node();  // in-place destructor
+                flags[div] = (flags[div] & ~(0b10 << mod)) | (0b01 << mod);
+                ++tombstones;
+                --this->occupied;
+
+                // check if we need to shrink the array
+                if (!this->frozen && this->capacity != DEFAULT_CAPACITY) {
+                    if (this->occupied < this->capacity / 8) {
+                        resize(this->capacity / 2);
+                    }
+                }
+                return;
+            }
+
+            // advance to next index
+            idx = (idx + step) % this->capacity;
+            lookup = array[idx];
+            div = idx / 16;
+            mod = idx % 16;
+            bits = flags[div] >> mod;
+            constructed = bits & 0b10;
+            tombstone = bits & 0b01;
+        }
+
+        // node not found
+        std::ostringstream msg;
+        msg << "key not found: " << util::repr(node->value());
+        throw std::invalid_argument(msg.str());
+    }
+
+    /* Remove all elements from the list. */
+    void clear() noexcept {
+        // destroy all nodes
+        Base::destroy_list();
+
+        // reset list parameters
+        this->head = nullptr;
+        this->tail = nullptr;
+        this->occupied = 0;
+        tombstones = 0;
+        prime = PRIMES[0];
+        exponent = 0;
+        if (!this->frozen) {
+            this->capacity = DEFAULT_CAPACITY;
+            free(array);
+            free(flags);
+            array = Base::allocate_array(this->capacity);
+            flags = allocate_flags(this->capacity);
+        }
+    }
+
+    /* Resize the array to store a specific number of nodes. */
+    void reserve(size_t new_capacity) {
+        // ensure new capacity is large enough to store all nodes
+        if (new_capacity < this->occupied) {
+            throw std::invalid_argument(
+                "new capacity must not be smaller than current size"
+            );
+        }
+
+        // handle frozen arrays
+        if (this->frozen) {
+            if (new_capacity <= this->capacity) {
+                return;  // do nothing
+            }
+            std::ostringstream msg;
+            msg << "array cannot grow beyond size " << this->capacity;
+            throw std::runtime_error(msg.str());
+        }
+
+        // ensure array does not shrink below default capacity
+        if (new_capacity <= DEFAULT_CAPACITY) {
+            if (this->capacity != DEFAULT_CAPACITY) {
+                resize(DEFAULT_CAPACITY);
+            }
+            return;
+        }
+
+        // resize to the next power of two
+        size_t rounded = util::next_power_of_two(new_capacity);
+        if (rounded != this->capacity) {
+            resize(rounded);
+        }
+    }
+
+    /* Rehash the nodes within the array, removing tombstones. */
+    inline void defragment() {
+        resize(this->capacity);  // in-place resize
+    }
 
     /* Check whether the referenced node is being managed by this allocator. */
     inline bool owns(Node* node) const noexcept {
         return node >= array && node < array + this->capacity;  // pointer arithmetic
+    }
+
+    /* Search for a node by its value. */
+    Node* search(typename Node::Value key) const {
+        
+    }
+
+    /* Get the total amount of dynamic memory being managed by this allocator. */
+    inline size_t nbytes() const {
+        return Base::nbytes() + (this->capacity * sizeof(Node)) + (this->capacity / 4);
     }
 
 };
