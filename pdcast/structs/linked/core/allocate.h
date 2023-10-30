@@ -559,9 +559,9 @@ public:
     }
 
     /* Resize the array to store a specific number of nodes. */
-    void reserve(size_t new_capacity) {
+    void reserve(size_t new_size) {
         // ensure new capacity is large enough to store all nodes
-        if (new_capacity < this->occupied) {
+        if (new_size < this->occupied) {
             throw std::invalid_argument(
                 "new capacity must not be smaller than current size"
             );
@@ -569,7 +569,7 @@ public:
 
         // handle frozen arrays
         if (this->frozen) {
-            if (new_capacity <= this->capacity) {
+            if (new_size <= this->capacity) {
                 return;  // do nothing
             }
             std::ostringstream msg;
@@ -578,7 +578,7 @@ public:
         }
 
         // ensure array does not shrink below default capacity
-        if (new_capacity <= DEFAULT_CAPACITY) {
+        if (new_size <= DEFAULT_CAPACITY) {
             if (this->capacity != DEFAULT_CAPACITY) {
                 resize(DEFAULT_CAPACITY);
             }
@@ -586,7 +586,7 @@ public:
         }
 
         // resize to the next power of two
-        size_t rounded = util::next_power_of_two(new_capacity);
+        size_t rounded = util::next_power_of_two(new_size);
         if (rounded != this->capacity) {
             resize(rounded);
         }
@@ -626,6 +626,7 @@ private:
     using Base = BaseAllocator<NodeType>;
     using Value = typename Node::Value;
     static constexpr size_t DEFAULT_CAPACITY = 16;  // minimum array size
+    static constexpr unsigned char DEFAULT_EXPONENT = 4;  // log2(DEFAULT_CAPACITY)
     static constexpr float MAX_LOAD_FACTOR = 0.5;  // grow if load factor exceeds threshold
     static constexpr float MIN_LOAD_FACTOR = 0.125;  // shrink if load factor drops below threshold
     static constexpr float MAX_TOMBSTONES = 0.125;  // clear tombstones if threshold is exceeded
@@ -668,6 +669,26 @@ private:
     size_t tombstones;  // number of nodes marked for deletion
     size_t prime;  // prime number used for double hashing
     unsigned char exponent;  // log2(capacity) - log2(DEFAULT_CAPACITY)
+
+    /* Adjust the input to a constructor's `capacity` argument to account for double
+    hashing, maximum load factor, and strict power of two table sizes. */
+    inline static std::optional<size_t> adjust_size(std::optional<size_t> capacity) {
+        // ignore null
+        if (!capacity.has_value()) {
+            return std::nullopt;
+        }
+
+        // check if capacity is a power of two
+        size_t value = capacity.value();
+        if (!util::is_power_of_two(value)) {
+            std::ostringstream msg;
+            msg << "capacity must be a power of two, got " << value;
+            throw std::invalid_argument(msg.str());
+        }
+
+        // double capacity to ensure load factor is at most 0.5
+        return std::make_optional(value * 2);
+    }
 
     /* Allocate an auxiliary bit array indicating whether a given index is currently
     occupied or is marked as a tombstone. */
@@ -741,7 +762,7 @@ private:
     /* Allocate a new array of a given size and transfer the contents of the list. */
     void resize(const unsigned char new_exponent) {
         // allocate new array
-        size_t new_capacity = 1 << new_exponent;
+        size_t new_capacity = 1 << (new_exponent + DEFAULT_EXPONENT);
         if constexpr (DEBUG) {
             std::cout << "    -> allocate: " << new_capacity << " nodes" << std::endl;
         }
@@ -801,7 +822,7 @@ public:
 
     /* Create an allocator with an optional fixed size. */
     HashAllocator(std::optional<size_t> capacity, PyObject* specialization) :
-        Base(capacity, DEFAULT_CAPACITY, specialization),
+        Base(adjust_size(capacity), DEFAULT_CAPACITY, specialization),
         array(Base::allocate_array(this->capacity)),
         flags(allocate_flags(this->capacity)),
         tombstones(0),
@@ -923,14 +944,21 @@ public:
         Base::init_node(this->temp, std::forward<Args>(args)...);
 
         // check if we need to grow the array
-        if (this->occupied + tombstones >= this->capacity / 2) {
+        size_t total_load = this->occupied + tombstones;
+        if (total_load >= this->capacity / 2) {
             if (this->frozen) {
-                this->temp->~Node();  // in-place destructor
-                std::ostringstream msg;
-                msg << "array cannot grow beyond size " << this->capacity;
-                throw std::runtime_error(msg.str());
+                if (this->occupied == this->capacity / 2) {
+                    std::ostringstream msg;
+                    msg << "array cannot grow beyond size " << this->capacity;
+                    throw std::runtime_error(msg.str());
+                } else if (tombstones > this->capacity / 16) {
+                    resize(exponent);  // clear tombstones
+                }
+                // some tombstones, but still room to grow: allow a small amount of
+                // hysteresis (load factor up to 0.5625) to avoid pessimistic rehashing
+            } else {
+                resize(exponent + 1);  // grow array
             }
-            resize(this->capacity * 2);
         }
 
         // search for node within hash table
@@ -992,11 +1020,15 @@ public:
                 ++tombstones;
                 --this->occupied;
 
-                // check if we need to shrink the array
-                if (!this->frozen && this->capacity != DEFAULT_CAPACITY) {
-                    if (this->occupied < this->capacity / 8) {
-                        resize(this->capacity / 2);
-                    }
+                // check whether to shrink array or clear out tombstones
+                size_t threshold = this->capacity / 8;
+                if (!this->frozen &&
+                    this->capacity != DEFAULT_CAPACITY &&
+                    this->occupied < threshold  // load factor < 0.125
+                ) {
+                    resize(exponent - 1);
+                } else if (tombstones > threshold) {  // tombstones > 0.125
+                    resize(exponent);
                 }
                 return;
             }
@@ -1039,9 +1071,9 @@ public:
     }
 
     /* Resize the array to store a specific number of nodes. */
-    void reserve(size_t new_capacity) {
+    void reserve(size_t new_size) {
         // ensure new capacity is large enough to store all nodes
-        if (new_capacity < this->occupied) {
+        if (new_size < this->occupied) {
             throw std::invalid_argument(
                 "new capacity must not be smaller than current size"
             );
@@ -1049,7 +1081,7 @@ public:
 
         // handle frozen arrays
         if (this->frozen) {
-            if (new_capacity <= this->capacity) {
+            if (new_size <= this->capacity / 2) {
                 return;  // do nothing
             }
             std::ostringstream msg;
@@ -1058,23 +1090,27 @@ public:
         }
 
         // ensure array does not shrink below default capacity
-        if (new_capacity <= DEFAULT_CAPACITY) {
+        if (new_size <= DEFAULT_CAPACITY / 2) {  // DEFAULT_CAPACITY * max load factor
             if (this->capacity != DEFAULT_CAPACITY) {
-                resize(DEFAULT_CAPACITY);
+                resize(0);
             }
             return;
         }
 
         // resize to the next power of two
-        size_t rounded = util::next_power_of_two(new_capacity);
+        size_t rounded = util::next_power_of_two(new_size);
         if (rounded != this->capacity) {
-            resize(rounded);
+            // get exponent of new capacity
+            unsigned char new_exponent = 0;
+            while (rounded >>= 1) ++new_exponent;
+            new_exponent += 1;  // rounded / max load factor
+            resize(new_exponent - DEFAULT_EXPONENT);
         }
     }
 
     /* Rehash the nodes within the array, removing tombstones. */
     inline void defragment() {
-        resize(this->capacity);  // in-place resize
+        resize(exponent);  // in-place resize
     }
 
     /* Check whether the referenced node is being managed by this allocator. */
@@ -1100,7 +1136,11 @@ public:
 
     /* Get the total amount of dynamic memory being managed by this allocator. */
     inline size_t nbytes() const {
-        return Base::nbytes() + (this->capacity * sizeof(Node)) + (this->capacity / 4);
+        return (
+            Base::nbytes() +
+            this->capacity * sizeof(Node) +
+            this->capacity / 4  // flags take 2 bits per node => 4 nodes per byte
+        );
     }
 
 };

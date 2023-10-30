@@ -22,6 +22,13 @@ inline static T py_modulo(T a, T b) {
 }
 
 
+/* Check if a number is a power of two. */
+template <typename T, std::enable_if_t<std::is_unsigned_v<T>, int> = 0>
+inline bool is_power_of_two(T n) {
+    return n && !(n & (n - 1));
+}
+
+
 /* Round a number up to the next power of two. */
 template <typename T, std::enable_if_t<std::is_unsigned_v<T>, int> = 0>
 inline T next_power_of_two(T n) {
