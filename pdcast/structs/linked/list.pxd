@@ -29,7 +29,7 @@ cdef extern from "core/allocate.h":
         void recycle(Node* node) except +
         void clear()
         void reserve(size_t new_capacity) except +
-        void consolidate() except +
+        void defragment() except +
         bint owns(Node* node)
         void specialize(PyObject* spec) except +
 
@@ -75,7 +75,7 @@ cdef extern from "core/view.h":
         size_t capacity()
         optional[size_t] max_size()
         void reserve(size_t capacity)
-        void consolidate()
+        void defragment()
         void specialize(PyObject* spec) except +
         PyObject* specialization()
         size_t nbytes()
@@ -132,7 +132,7 @@ cdef extern from "list.h" namespace "bertrand::structs":
         size_t capacity
         optional[size_t] max_size()
         void reserve() except +
-        void consolidate() except +
+        void defragment() except +
         PyObject* specialization()
         void specialize(PyObject* spec) except +
         size_t nbytes()
@@ -315,7 +315,7 @@ cdef extern from "list_cython.h" namespace "bertrand::structs::cython":
         size_t capacity()
         optional[size_t] max_size()
         void reserve(size_t capacity) except +
-        void consolidate() except +
+        void defragment() except +
         PyObject* specialization()
         void specialize(PyObject* spec) except +*
         size_t nbytes()

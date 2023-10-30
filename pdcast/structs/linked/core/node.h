@@ -23,9 +23,16 @@ namespace linked {
 ////////////////////
 
 
+/* Empty tag class marking a node for a linked data structure.
+
+NOTE: this class is inherited by all nodes, and can be used for easy SFINAE checks via
+std::is_base_of, without requiring any foreknowledge of template parameters. */
+class NodeTag {};
+
+
 /* Base class containing common functionality across all nodes. */
 template <typename ValueType>
-class BaseNode {
+class BaseNode : public NodeTag {
     inline static constexpr bool py_val = std::is_convertible_v<ValueType, PyObject*>;
     ValueType _value;
 
@@ -973,10 +980,9 @@ struct Counted : public Wrapped {
 /* A collection of SFINAE traits for inspecting node types at compile time. */
 template <typename NodeType>
 class NodeTraits {
-
     // sanity check
     static_assert(
-        std::is_base_of_v<BaseNode<typename NodeType::Value>, NodeType>,
+        std::is_base_of_v<NodeTag, NodeType>,
         "Templated type does not inherit from BaseNode"
     );
 

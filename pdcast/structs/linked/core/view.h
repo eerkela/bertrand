@@ -10,7 +10,6 @@
 #include "node.h"  // Hashed<>, Mapped<>
 #include "allocate.h"  // Allocator
 #include "iter.h"  // Iterator, Direction
-#include "table.h"  // HashTable
 #include "../../util/iter.h"  // iter()
 
 
@@ -21,11 +20,6 @@ namespace linked {
 
 // TODO: BaseView should support a converting copy/move constructor that accepts
 // another BaseView with any type of allocator.
-
-
-// TODO: consolidate() -> defragment()?  For lists this would rearrange nodes into
-// sequential order.  For sets/dicts, it would remove all tombstones and rehash the
-// table.
 
 
 // TODO: maybe sort() should just be generic, rather than casting to ListView.  That
@@ -234,8 +228,8 @@ public:
     }
 
     /* Rearrange the nodes in memory to match their positions within the list. */
-    inline void consolidate() {
-        this->allocator.consolidate();
+    inline void defragment() {
+        this->allocator.defragment();
     }
 
     /* Get the total amount of memory consumed by the list. */
@@ -382,16 +376,16 @@ protected:
 /* A linked data structure that uses a dynamic array to store nodes in sequential
 order.
 
-ListViews use a similar memory layout to std::vector and the built-in Python list.  It
-initially allocates a small array of nodes (8 in this case), and advances an internal
-pointer whenever a new node is constructed.  When the array is full, it allocates a new
-array with twice the size and moves the old nodes into the new array.  This strategy is
-significantly more efficient than allocating nodes individually on the heap, which is
-typical for linked lists and incurs a large overhead for each allocation.  This
-sequential memory layout also avoids heap fragmentation, improving cache locality and
-overall performance as a result.  This gives the list amortized O(1) insertion time
-comparable to std::vector or its Python equivalent, and much faster in general than
-std::list.
+ListViews use a similar memory layout to std::vector and the built-in Python list.
+They initially allocate a small array of nodes (8 in this case), and advance an
+internal pointer whenever a new node is constructed.  When the array is full, the view
+allocates a new array with twice the size and moves the old nodes into the new array.
+This strategy is significantly more efficient than allocating nodes individually on the
+heap, which is typical for linked lists and incurs a large overhead for each
+allocation.  This sequential memory layout also avoids heap fragmentation, improving
+cache locality and overall performance as a result.  This gives the list amortized O(1)
+insertion time comparable to std::vector or its Python equivalent, and much faster in
+general than std::list.
 
 Whenever a node is removed from the list, its memory is returned to the allocator array
 and inserted into a linked list of recycled nodes.  This list is composed directly from
@@ -432,142 +426,58 @@ public:
 ///////////////////////
 
 
-// template <typename NodeType, template <typename> class Allocator>
-// class SetView : public ListView<Hashed<NodeType>> {
-// public:
-//     using Base = ListView<Hashed<NodeType>>;
-//     using View = SetView<NodeType, Allocator>;
-//     using Node = Hashed<NodeType>;
+/* A linked data structure that uses a hash table to allocate and store nodes.
 
-//     /* Construct an empty SetView. */
-//     SetView(Py_ssize_t max_size = -1, PyObject* spec = nullptr) :
-//         Base(max_size, spec), table()
-//     {}
+SetViews use a similar memory layout to std::unordered_set and the built-in Python set.
+They begin by allocating a small array of nodes (16 in this case), and placing nodes
+into the array using std::hash to determine their position.  If two nodes hash to the
+same index, then the collision is resolved using open addressing via double hashing.
+This strategy prevents clustering and ensures that items are relatively evenly
+distributed across the array, which is important for optimal performance.  Additionally,
+the maximum load factor before growing the array is 0.5, limiting collisions and
+ensuring fast lookup times in the average case.  The minimum load factor before
+shrinking the array is 0.125, providing hysteresis to prevent thrashing when the array
+is near its minimum/maximum size.
 
-//     /* Construct a SetView from an input iterable. */
-//     SetView(
-//         PyObject* iterable,
-//         bool reverse = false,
-//         Py_ssize_t max_size = -1,
-//         PyObject* spec = nullptr
-//     ) : Base(max_size, spec), table()
-//     {
-//         // C API equivalent of iter(iterable)
-//         PyObject* iterator = PyObject_GetIter(iterable);
-//         if (iterator == nullptr) {  // TypeError()
-//             this->self_destruct();
-//             throw std::invalid_argument("Value is not iterable");
-//         }
+Whenever a node is removed from the set, its corresponding index is marked as a
+tombstone in an auxiliary bit set, indicating that it is available for reuse without
+interfering with normal collision resolution.  These tombstones are skipped over during
+searches and removals, and are automatically cleared when the set is resized or
+defragmented, or if their concentration exceeds 1/8th of the table size.  Tombstones
+can also be gradually replaced if they are encountered during insertion, delaying the
+need for a full rehash.
 
-//         // unpack iterator into SetView
-//         PyObject* item;
-//         while (true) {
-//             // C API equivalent of next(iterator)
-//             item = PyIter_Next(iterator);
-//             if (item == nullptr) { // end of iterator or error
-//                 if (PyErr_Occurred()) {
-//                     Py_DECREF(iterator);
-//                     this->self_destruct();
-//                     throw std::invalid_argument("could not get item from iterator");
-//                 }
-//                 break;
-//             }
+Combining the allocator with a hash table like this provides a number of advantages
+over using a separate data structure.  First, it limits memory overhead to just 2 extra
+bits per node (for the required bit flags), which is significantly less than retaining
+a separate hash table in addition to the nodes themselves.  Second, it guarantees (at
+an algorithmic level) that the set invariants are never violated at any point.
+Non-hashable items will simply fail to compile, and duplicate items will be rejected by
+the allocator at runtime.  This is in contrast to maintaining a separate hash table,
+which requires manual synchronization to ensure that the data structures remain
+consistent with one another.  Finally, it removes an extra layer of indirection during
+lookups, which improves cache locality and overall performance. */
+template <typename NodeType = DoubleNode<PyObject*>>
+class SetView : public BaseView<
+    SetView<Hashed<NodeType>>, HashAllocator<Hashed<NodeType>>
+> {
+    using Base = BaseView<SetView<Hashed<NodeType>>, HashAllocator<Hashed<NodeType>>>;
 
-//             // allocate a new node and link it to the list
-//             stage(item, reverse);
-//             if (PyErr_Occurred()) {
-//                 Py_DECREF(iterator);
-//                 Py_DECREF(item);
-//                 this->self_destruct();
-//                 throw std::invalid_argument("could not stage item");
-//             }
+public:
+    using Node = Hashed<NodeType>;
 
-//             // advance to next item
-//             Py_DECREF(item);
-//         }
+    // inherit constructors
+    using Base::Base;
+    using Base::operator=;
 
-//         // release reference on iterator
-//         Py_DECREF(iterator);
-//     }
+    /* Search the set for a particular node/value. */
+    template <typename T>
+    inline Node* search(T* key) const {
+        return this->allocator.search(key);
+    }
 
-//     /* Move ownership from one SetView to another (move constructor). */
-//     SetView(SetView&& other) : Base(std::move(other)), table(std::move(other.table)) {}
+};
 
-//     /* Move ownership from one SetView to another (move assignment). */
-//     SetView& operator=(SetView&& other) {
-//         // check for self-assignment
-//         if (this == &other) {
-//             return *this;
-//         }
-
-//         // call parent move assignment operator
-//         Base::operator=(std::move(other));
-
-//         // transfer ownership of hash table
-//         table = std::move(other.table);
-//         return *this;
-//     }
-
-//     /* Copy a node in the list. */
-//     inline Node* copy(Node* node) const {
-//         return Base::copy(node);
-//     }
-
-//     /* Make a shallow copy of the entire list. */
-//     std::optional<View> copy() const {
-//         try {
-//             View result(this->max_size, this->specialization);
-
-//             // copy nodes into new list
-//             Base::copy_into(result);
-//             if (PyErr_Occurred()) {
-//                 return std::nullopt;
-//             }
-
-//             return std::make_optional(std::move(result));
-//         } catch (std::invalid_argument&) {
-//             return std::nullopt;
-//         }
-//     }
-
-//     /* Clear the list and reset the associated hash table. */
-//     inline void clear() {
-//         Base::clear();  // free all nodes
-//         table.reset();  // reset hash table
-//     }
-
-//     /* Link a node to its neighbors to form a linked list. */
-//     void link(Node* prev, Node* curr, Node* next) {
-//         // add node to hash table
-//         table.remember(curr);
-//         if (PyErr_Occurred()) {  // node is already present in table
-//             return;
-//         }
-
-//         // delegate to ListView
-//         Base::link(prev, curr, next);
-//     }
-
-//     /* Unlink a node from its neighbors. */
-//     void unlink(Node* prev, Node* curr, Node* next) {
-//         // remove node from hash table
-//         table.forget(curr);
-//         if (PyErr_Occurred()) {  // node is not present in table
-//             return;
-//         }
-
-//         // delegate to ListView
-//         Base::unlink(prev, curr, next);
-//     }
-
-//     /* Search for a node by its value. */
-//     template <typename T>
-//     inline Node* search(T* key) const {
-//         // NOTE: T can be either a PyObject or node pointer.  If a node is provided,
-//         // then its precomputed hash will be reused if available.  Otherwise, the value
-//         // will be passed through `PyObject_Hash()` before searching the table.
-//         return table.search(key);
-//     }
 
 //     /* A proxy class that allows for operations relative to a particular value
 //     within the set. */
@@ -835,59 +745,6 @@ public:
 //         }
 //     }
 
-//     /* Clear all tombstones from the hash table. */
-//     inline void clear_tombstones() {
-//         table.clear_tombstones();
-//     }
-
-//     /* Get the total amount of memory consumed by the set (in bytes).  */
-//     inline size_t nbytes() const {
-//         return Base::nbytes() + table.nbytes();
-//     }
-
-// protected:
-
-//     /* Allocate a new node for the item and add it to the set, discarding it in
-//     the event of an error. */
-//     inline void stage(PyObject* item, bool reverse) {
-//         // allocate a new node
-//         Node* curr = this->node(item);
-//         if (curr == nullptr) {  // error during node initialization
-//             if constexpr (DEBUG) {
-//                 // QoL - nothing has been allocated, so we don't actually free
-//                 std::cout << "    -> free: " << repr(item) << std::endl;
-//             }
-//             return;
-//         }
-
-//         // search for node in hash table
-//         Node* existing = search(curr);
-//         if (existing != nullptr) {  // item already exists
-//             if constexpr (has_mapped<Node>::value) {
-//                 // update mapped value
-//                 Py_DECREF(existing->mapped);
-//                 Py_INCREF(curr->mapped);
-//                 existing->mapped = curr->mapped;
-//             }
-//             this->recycle(curr);
-//             return;
-//         }
-
-//         // link the node to the staged list
-//         if (reverse) {
-//             link(nullptr, curr, this->head);
-//         } else {
-//             link(this->tail, curr, nullptr);
-//         }
-//         if (PyErr_Occurred()) {
-//             this->recycle(curr);  // clean up allocated node
-//             return;
-//         }
-//     }
-
-// private:
-//     HashTable<Node> table;  // stack allocated
-// };
 
 
 // ////////////////////////

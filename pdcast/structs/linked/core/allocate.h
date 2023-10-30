@@ -39,9 +39,8 @@ const bool DEBUG = true;
 
 /* Empty tag class marking a node allocator for a linked data structure.
 
-NOTE: this class is inherited by all allocators, and can be used for easy SFINAE
-checks via std::is_base_of, without requiring any foreknowledge of template
-parameters. */
+NOTE: this class is inherited by all allocators, and can be used for easy SFINAE checks
+via std::is_base_of, without requiring any foreknowledge of template parameters. */
 class AllocatorTag {};
 
 
@@ -594,7 +593,7 @@ public:
 
     /* Consolidate the nodes within the array, arranging them in the same order as
     they appear within the list. */
-    inline void consolidate() {
+    inline void defragment() {
         resize(this->capacity);  // in-place resize
     }
 
@@ -1131,7 +1130,7 @@ public:
     }
 
     /* Search for a node by reusing a hash from another node. */
-    template <typename Node>
+    template <typename Nod, std::enable_if_t<std::is_base_of_v<NodeTag, Node>, int> = 0>
     inline Node* search(Node* node) const {
         if constexpr (NodeTraits<Node>::has_hash) {
             return _search(node->hash(), node->value());

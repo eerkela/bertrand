@@ -285,8 +285,8 @@ public:
     }
 
     /* Rearrange the allocator's contents to match the current list order. */
-    inline void consolidate() {
-        std::visit([&](auto& list) { list.consolidate(); }, variant);
+    inline void defragment() {
+        std::visit([&](auto& list) { list.defragment(); }, variant);
     }
 
     /* Get the current Python specialization for the list's elements. */

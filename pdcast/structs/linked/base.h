@@ -72,8 +72,8 @@ public:
     }
 
     /* Rearrange the allocator array to reflect the current list order. */
-    inline void consolidate() {
-        view.consolidate();
+    inline void defragment() {
+        view.defragment();
     }
 
     /* Get the current specialization for elements of this list. */
