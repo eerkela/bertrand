@@ -2,6 +2,8 @@
 #ifndef BERTRAND_STRUCTS_UTIL_PYTHON_H
 #define BERTRAND_STRUCTS_UTIL_PYTHON_H
 
+#include <cstddef>  // size_t
+#include <functional>  // std::hash, std::less, std::plus, etc.
 #include <Python.h>  // CPython API
 #include "except.h"  // catch_python
 #include "iter.h"  // iter(), PyIterator
@@ -12,6 +14,236 @@
  * counts and other memory management concerns, and simplifies overall communication
  * between C++ and Python.
  */
+
+
+/* Specializations for C++ standard library functors using the Python C API. */
+namespace std {
+
+    ////////////////////
+    ////    HASH    ////
+    ////////////////////
+
+    /* Hash function for PyObject* pointers. */
+    template<>
+    struct hash<PyObject*> {
+        inline size_t operator()(PyObject* obj) const {
+            using namespace bertrand::structs::util;
+            Py_hash_t val = PyObject_Hash(obj);
+            if (val == -1 && PyErr_Occurred()) {
+                throw catch_python<type_error>();  // propagate error
+            }
+            return static_cast<size_t>(val);
+        }
+    };
+
+    ///////////////////////////
+    ////    COMPARISONS    ////
+    ///////////////////////////
+
+    /* < comparison for PyObject* pointers. */
+    template<>
+    struct less<PyObject*> {
+        inline bool operator()(PyObject* lhs, PyObject* rhs) const {
+            using namespace bertrand::structs::util;
+            int val = PyObject_RichCompareBool(lhs, rhs, Py_LT);
+            if (val == -1 && PyErr_Occurred()) {
+                throw catch_python<type_error>();  // propagate error
+            }
+            return static_cast<bool>(val);
+        }
+    };
+
+    /* <= comparison for PyObject* pointers. */
+    template<>
+    struct less_equal<PyObject*> {
+        inline bool operator()(PyObject* lhs, PyObject* rhs) const {
+            using namespace bertrand::structs::util;
+            int val = PyObject_RichCompareBool(lhs, rhs, Py_LE);
+            if (val == -1 && PyErr_Occurred()) {
+                throw catch_python<type_error>();  // propagate error
+            }
+            return static_cast<bool>(val);
+        }
+    };
+
+    /* == comparison for PyObject* pointers. */
+    template<>
+    struct equal_to<PyObject*> {
+        inline bool operator()(PyObject* lhs, PyObject* rhs) const {
+            using namespace bertrand::structs::util;
+            int val = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
+            if (val == -1 && PyErr_Occurred()) {
+                throw catch_python<type_error>();  // propagate error
+            }
+            return static_cast<bool>(val);
+        }
+    };
+
+    /* != comparison for PyObject* pointers. */
+    template<>
+    struct not_equal_to<PyObject*> {
+        inline bool operator()(PyObject* lhs, PyObject* rhs) const {
+            using namespace bertrand::structs::util;
+            int val = PyObject_RichCompareBool(lhs, rhs, Py_NE);
+            if (val == -1 && PyErr_Occurred()) {
+                throw catch_python<type_error>();  // propagate error
+            }
+            return static_cast<bool>(val);
+        }
+    };
+
+    /* >= comparison for PyObject* pointers. */
+    template<>
+    struct greater_equal<PyObject*> {
+        inline bool operator()(PyObject* lhs, PyObject* rhs) const {
+            using namespace bertrand::structs::util;
+            int val = PyObject_RichCompareBool(lhs, rhs, Py_GE);
+            if (val == -1 && PyErr_Occurred()) {
+                throw catch_python<type_error>();  // propagate error
+            }
+            return static_cast<bool>(val);
+        }
+    };
+
+    /* > comparison for PyObject* pointers. */
+    template<>
+    struct greater<PyObject*> {
+        inline bool operator()(PyObject* lhs, PyObject* rhs) const {
+            using namespace bertrand::structs::util;
+            int val = PyObject_RichCompareBool(lhs, rhs, Py_GT);
+            if (val == -1 && PyErr_Occurred()) {
+                throw catch_python<type_error>();  // propagate error
+            }
+            return static_cast<bool>(val);
+        }
+    };
+
+    ////////////////////
+    ////    MATH    ////
+    ////////////////////
+
+    /* Addition for PyObject* pointers. */
+    template<>
+    struct plus<PyObject*> {
+        inline PyObject* operator()(PyObject* lhs, PyObject* rhs) const {
+            using namespace bertrand::structs::util;
+            PyObject* val = PyNumber_Add(lhs, rhs);
+            if (val == nullptr) {
+                throw catch_python<type_error>();  // propagate error
+            }
+            return val;
+        }
+    };
+
+    /* Subtraction for PyObject* pointers. */
+    template<>
+    struct minus<PyObject*> {
+        inline PyObject* operator()(PyObject* lhs, PyObject* rhs) const {
+            using namespace bertrand::structs::util;
+            PyObject* val = PyNumber_Subtract(lhs, rhs);
+            if (val == nullptr) {
+                throw catch_python<type_error>();  // propagate error
+            }
+            return val;
+        }
+    };
+
+    /* Multiplication for PyObject* pointers. */
+    template<>
+    struct multiplies<PyObject*> {
+        inline PyObject* operator()(PyObject* lhs, PyObject* rhs) const {
+            using namespace bertrand::structs::util;
+            PyObject* val = PyNumber_Multiply(lhs, rhs);
+            if (val == nullptr) {
+                throw catch_python<type_error>();  // propagate error
+            }
+            return val;
+        }
+    };
+
+    /* Division for PyObject* pointers. */
+    template<>
+    struct divides<PyObject*> {
+        inline PyObject* operator()(PyObject* lhs, PyObject* rhs) const {
+            using namespace bertrand::structs::util;
+            PyObject* val = PyNumber_TrueDivide(lhs, rhs);
+            if (val == nullptr) {
+                throw catch_python<type_error>();  // propagate error
+            }
+            return val;
+        }
+    };
+
+    /* Modulus for PyObject* pointers. */
+    template<>
+    struct modulus<PyObject*> {
+        inline PyObject* operator()(PyObject* lhs, PyObject* rhs) const {
+            using namespace bertrand::structs::util;
+            PyObject* val = PyNumber_Remainder(lhs, rhs);
+            if (val == nullptr) {
+                throw catch_python<type_error>();  // propagate error
+            }
+            return val;
+        }
+    };
+
+    /* Negation for PyObject* pointers. */
+    template<>
+    struct negate<PyObject*> {
+        inline PyObject* operator()(PyObject* obj) const {
+            using namespace bertrand::structs::util;
+            PyObject* val = PyNumber_Negative(obj);
+            if (val == nullptr) {
+                throw catch_python<type_error>();  // propagate error
+            }
+            return val;
+        }
+    };
+
+    ///////////////////////
+    ////    BITWISE    ////
+    ///////////////////////
+
+    /* Bitwise AND for PyObject* pointers. */
+    template<>
+    struct bit_and<PyObject*> {
+        inline PyObject* operator()(PyObject* lhs, PyObject* rhs) const {
+            using namespace bertrand::structs::util;
+            PyObject* val = PyNumber_And(lhs, rhs);
+            if (val == nullptr) {
+                throw catch_python<type_error>();  // propagate error
+            }
+            return val;
+        }
+    };
+
+    /* Bitwise OR for PyObject* pointers. */
+    template<>
+    struct bit_or<PyObject*> {
+        inline PyObject* operator()(PyObject* lhs, PyObject* rhs) const {
+            using namespace bertrand::structs::util;
+            PyObject* val = PyNumber_Or(lhs, rhs);
+            if (val == nullptr) {
+                throw catch_python<type_error>();  // propagate error
+            }
+            return val;
+        }
+    };
+
+    /* Bitwise XOR for PyObject* pointers. */
+    template<>
+    struct bit_xor<PyObject*> {
+        inline PyObject* operator()(PyObject* lhs, PyObject* rhs) const {
+            using namespace bertrand::structs::util;
+            PyObject* val = PyNumber_Xor(lhs, rhs);
+            if (val == nullptr) {
+                throw catch_python<type_error>();  // propagate error
+            }
+            return val;
+        }
+    };
+
+}  // namespace std
 
 
 namespace bertrand {

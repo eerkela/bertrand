@@ -1028,6 +1028,7 @@ class NodeTraits {
 public:
     using Value = decltype(std::declval<NodeType>().value());
 
+    // TODO: has_pyobject
     static constexpr bool has_prev = _has_prev::value;
     static constexpr bool has_node = _has_node::value;
     static constexpr bool has_hash = _has_hash::value;

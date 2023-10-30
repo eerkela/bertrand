@@ -4,6 +4,7 @@
 
 #include <cstddef>  // size_t
 #include <cstdlib>  // malloc(), calloc(), free()
+#include <functional>  // std::hash, std::equal_to
 #include <iostream>  // std::cout, std::endl
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
@@ -11,7 +12,9 @@
 #include <Python.h>  // CPython API
 #include "../util/except.h"  // catch_python(), type_error()
 #include "../util/math.h"  // next_power_of_two()
+#include "../util/python.h"  // std::hash<PyObject*>, std::equal_to<PyObject*>
 #include "../util/repr.h"  // repr()
+#include "node.h"  // NodeTraits
 
 
 namespace bertrand {
@@ -50,11 +53,6 @@ public:
     using Node = NodeType;
 
 protected:
-    // TODO: do this with NodeTraits<>
-    // static constexpr bool is_pyobject = std::is_convertible_v<
-    //     typename Node::Value,
-    //     PyObject*
-    // >;
 
     /* Allocate a temporary node for use in algorithms. */
     inline static Node* allocate_temp() {
@@ -119,9 +117,6 @@ public:
     size_t occupied;  // number of nodes currently in use - equivalent to list.size()
     bool frozen;  // indicates if the array is frozen at its current capacity
     PyObject* specialization;  // type specialization for PyObject* values
-
-    // TODO: specialization and specialize() might be conditionally compiled based on
-    // whether the node stores PyObject* values, as determined from NodeTraits<>.
 
     /* Create an allocator with an optional fixed size. */
     BaseAllocator(
@@ -319,39 +314,39 @@ private:
     allocate a new array with twice the length and copy all nodes in the same order
     as they appear in the list. */
 
-    /* Copy/move the nodes from one allocator into another. */
-    template <bool copy>
-    static void transfer_nodes(Node* head, Node* array) {
-        // NOTE: nodes are always transferred in list order, with the head at the
-        // front of the array.  This is done to aid cache locality, ensuring that
-        // every subsequent node immediately follows its predecessor in memory.
+    /* Copy/move the nodes from this allocator into the given array. */
+    template <bool move>
+    std::pair<Node*, Node*> transfer(Node* other) {
+        Node* new_head = nullptr;
+        Node* new_tail = nullptr;
 
-        // keep track of previous node to maintain correct order
-        Node* new_prev = nullptr;
-
-        // copy over existing nodes from head -> tail
-        Node* curr = head;
+        // copy over existing nodes
+        Node* curr = this->head;
         size_t idx = 0;
         while (curr != nullptr) {
             // remember next node in original list
             Node* next = curr->next();
 
             // initialize new node in array
-            Node* new_curr = &array[idx];
-            if constexpr (copy) {
-                new (new_curr) Node(*curr);
+            Node* other_curr = &other[idx++];
+            if constexpr (move) {
+                new (other_curr) Node(std::move(*curr));
             } else {
-                new (new_curr) Node(std::move(*curr));
+                new (other_curr) Node(*curr);
             }
 
             // link to previous node in array
-            Node::join(new_prev, new_curr);
-
-            // advance
-            new_prev = new_curr;
+            if (curr == this->head) {
+                new_head = other_curr;
+            } else {
+                Node::join(new_tail, other_curr);
+            }
+            new_tail = other_curr;
             curr = next;
-            ++idx;
         }
+
+        // return head/tail pointers for new list
+        return std::make_pair(new_head, new_tail);
     }
 
     /* Allocate a new array of a given size and transfer the contents of the list. */
@@ -363,7 +358,9 @@ private:
         }
 
         // move nodes into new array
-        transfer_nodes<false>(this->head, new_array);
+        std::pair<Node*, Node*> bounds(transfer<true>(new_array));
+        this->head = bounds.first;
+        this->tail = bounds.second;
 
         // replace old array
         free(array);  // bypasses destructors
@@ -374,12 +371,6 @@ private:
         this->capacity = new_capacity;
         free_list.first = nullptr;
         free_list.second = nullptr;
-
-        // update head/tail pointers
-        if (this->occupied != 0) {
-            this->head = &(new_array[0]);
-            this->tail = &(new_array[this->occupied - 1]);
-        }
     }
 
 public:
@@ -399,9 +390,9 @@ public:
     {
         // copy over existing nodes in correct list order (head -> tail)
         if (this->occupied != 0) {
-            transfer_nodes<true>(other.head, array);
-            this->head = &array[0];
-            this->tail = &array[this->occupied - 1];
+            std::pair<Node*, Node*> bounds(other.transfer<false>(array));
+            this->head = bounds.first;
+            this->tail = bounds.second;
         }
     }
 
@@ -436,11 +427,13 @@ public:
         // copy array
         array = Base::allocate_array(this->capacity);
         if (this->occupied != 0) {
-            transfer_nodes<true>(other.head, array);
-            this->head = &array[0];
-            this->tail = &array[this->occupied - 1];
+            std::pair<Node*, Node*> bounds(other.transfer<false>(array));
+            this->head = bounds.first;
+            this->tail = bounds.second;
+        } else {
+            this->head = nullptr;
+            this->tail = nullptr;
         }
-
         return *this;
     }
 
@@ -631,6 +624,7 @@ public:
 
 private:
     using Base = BaseAllocator<NodeType>;
+    using Value = typename Node::Value;
     static constexpr size_t DEFAULT_CAPACITY = 16;  // minimum array size
     static constexpr float MAX_LOAD_FACTOR = 0.5;  // grow if load factor exceeds threshold
     static constexpr float MIN_LOAD_FACTOR = 0.125;  // shrink if load factor drops below threshold
@@ -677,7 +671,7 @@ private:
 
     /* Allocate an auxiliary bit array indicating whether a given index is currently
     occupied or is marked as a tombstone. */
-    inline static uint32_t* allocate_flags(size_t capacity) {
+    inline static uint32_t* allocate_flags(const size_t capacity) {
         size_t num_flags = (capacity - 1) / 16;
         uint32_t* result = static_cast<uint32_t*>(calloc(num_flags, sizeof(uint32_t)));
         if (result == nullptr) {
@@ -686,14 +680,121 @@ private:
         return result;
     }
 
-    /* Copy/move the nodes from one allocator into another. */
-    static void transfer_nodes(Node* head, Node* array) {
+    /* Copy/move the nodes from this allocator into the given array. */
+    template <bool move>
+    std::pair<Node*, Node*> transfer(Node* other, uint32_t* other_flags) {
+        Node* new_head = nullptr;
+        Node* new_tail = nullptr;
 
+        // move nodes into new array
+        Node* curr = this->head;
+        std::equal_to<Value> eq;
+        while (curr != nullptr) {
+            // rehash node
+            size_t hash;
+            if constexpr (NodeTraits<Node>::has_hash) {
+                hash = curr->hash();
+            } else {
+                hash = std::hash<Value>()(curr->value());
+            }
+
+            // get index in new array
+            size_t idx = hash % this->capacity;
+            size_t step = (hash % prime) | 1;
+            Node* lookup = &other[idx];
+            size_t div = idx / 16;
+            size_t mod = idx % 16;
+            uint32_t bits = other_flags[div] >> mod;
+
+            // handle collisions (NOTE: no need to check for tombstones)
+            while (bits & 0b10) {  // node is constructed
+                idx = (idx + step) % this->capacity;
+                lookup = &other[idx];
+                div = idx / 16;
+                mod = idx % 16;
+                bits = other_flags[div] >> mod;
+            }
+
+            // transfer node into new array
+            Node* next = curr->next();
+            if constexpr (move) {
+                new (lookup) Node(std::move(*curr));
+            } else {
+                new (lookup) Node(*curr);
+            }
+            other_flags[div] |= 0b10 << mod;  // mark as constructed
+
+            // update head/tail pointers
+            if (curr == this->head) {
+                new_head = lookup;
+            } else {
+                Node::join(new_tail, lookup);
+            }
+            new_tail = lookup;
+            curr = next;
+        }
+
+        // return head/tail pointers for new list
+        return std::make_pair(new_head, new_tail);
     }
 
     /* Allocate a new array of a given size and transfer the contents of the list. */
-    void resize(size_t new_capacity) {
+    void resize(const unsigned char new_exponent) {
+        // allocate new array
+        size_t new_capacity = 1 << new_exponent;
+        if constexpr (DEBUG) {
+            std::cout << "    -> allocate: " << new_capacity << " nodes" << std::endl;
+        }
+        Node* new_array = Base::allocate_array(new_capacity);
+        uint32_t* new_flags = allocate_flags(new_capacity);
 
+        // update table parameters
+        size_t old_capacity = this->capacity;
+        this->capacity = new_capacity;
+        tombstones = 0;
+        prime = PRIMES[new_exponent];
+        exponent = new_exponent;
+
+        // move nodes into new array
+        std::pair<Node*, Node*> bounds(transfer<true>(new_array, new_flags));
+        this->head = bounds.first;
+        this->tail = bounds.second;
+
+        // replace arrays
+        free(array);
+        free(flags);
+        array = new_array;
+        flags = new_flags;
+        if constexpr (DEBUG) {
+            std::cout << "    -> deallocate: " << old_capacity << " nodes" << std::endl;
+        }
+    }
+
+    /* Look up a value in the hash table by providing an explicit hash. */
+    Node* _search(const size_t hash, const Value& value) const {
+        // get index and step for double hashing
+        size_t idx = hash % this->capacity;
+        size_t step = (hash % prime) | 1;
+        Node& lookup = array[idx];
+        uint32_t bits = flags[idx / 16] >> (idx % 16);
+        bool constructed = bits & 0b10;  // indicates whether node is constructed
+        bool tombstone = bits & 0b01;  // indicates whether node is a tombstone
+
+        // handle collisions
+        std::equal_to<Value> eq;
+        while (constructed || tombstone) {
+            if (constructed && eq(lookup->value(), value)) return &lookup;
+
+            // advance to next slot
+            idx = (idx + step) % this->capacity;
+            lookup = array[idx];
+            bits = flags[idx / 16] >> (idx % 16);
+            constructed = bits & 0b10;
+            tombstone = bits & 0b01;
+        }
+
+        // value not found
+        return nullptr;
     }
 
 public:
@@ -719,9 +820,9 @@ public:
     {
         // copy over existing nodes in correct list order (head -> tail)
         if (this->occupied != 0) {
-            // transfer_nodes<true>(other.head, array);
-            // this->head = &array[0];
-            // this->tail = &array[this->occupied - 1];
+            std::pair<Node*, Node*> bounds(other.transfer<false>(array));
+            this->head = bounds.first;
+            this->tail = bounds.second;
         }
     }
 
@@ -761,11 +862,13 @@ public:
         array = Base::allocate_array(this->capacity);
         flags = allocate_flags(this->capacity);
         if (this->occupied != 0) {
-            // transfer_nodes<true>(other.head, array);
-            // this->head = &array[0];
-            // this->tail = &array[this->occupied - 1];
+            std::pair<Node*, Node*> bounds(other.transfer<false>(array));
+            this->head = bounds.first;
+            this->tail = bounds.second;
+        } else {
+            this->head = nullptr;
+            this->tail = nullptr;
         }
-
         return *this;
     }
 
@@ -979,9 +1082,20 @@ public:
         return node >= array && node < array + this->capacity;  // pointer arithmetic
     }
 
-    /* Search for a node by its value. */
-    Node* search(typename Node::Value key) const {
-        
+    /* Search for a node by reusing a hash from another node. */
+    template <typename Node>
+    inline Node* search(Node* node) const {
+        if constexpr (NodeTraits<Node>::has_hash) {
+            return _search(node->hash(), node->value());
+        } else {
+            size_t hash = std::hash<Value>{}(node->value());
+            return _search(hash, node->value());
+        }
+    }
+
+    /* Search for a node by its value directly. */
+    inline Node* search(Value& key) const {
+        return _search(std::hash<Value>{}(key), key);
     }
 
     /* Get the total amount of dynamic memory being managed by this allocator. */
