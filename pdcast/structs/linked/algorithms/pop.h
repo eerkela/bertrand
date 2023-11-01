@@ -5,6 +5,7 @@
 #include <tuple>  // std::tuple
 #include <type_traits>  // std::enable_if_t<>
 #include <Python.h>  // CPython API
+#include "../../util/base.h"  // is_pyobject<>
 #include "../core/view.h"  // ViewTraits
 #include "position.h"  // position()
 

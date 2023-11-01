@@ -10,9 +10,9 @@
 #include "node.h"  // Hashed<>, Mapped<>
 #include "allocate.h"  // Allocator
 #include "iter.h"  // Iterator, Direction
+#include "../../util/base.h"  // is_pyobject<>
 #include "../../util/iter.h"  // iter()
 #include "../../util/math.h"  // next_power_of_two()
-#include "../../util/python.h"  // is_pyobject<>
 
 
 namespace bertrand {
@@ -92,8 +92,7 @@ public:
         allocator(max_size, max_size.has_value(), spec)
     {}
 
-    // TODO: swap this constructor to accept rvalue initializers.
-    // TODO: could reserve an allocator of an exact size if we know it ahead of time.
+    // TODO: allow this constructor to accept rvalue initializers.
 
     /* Construct a view from an input iterable. */
     template <typename Container>
@@ -243,9 +242,9 @@ public:
         this->allocator.reserve(capacity);
     }
 
-    /* Reserve memory to hold all the elements of an arbitrary container if it
-    implements a `size()` method or is a Python object with a corresponding `__len__()`
-    attribute.  Does nothing otherwise. */
+    /* Reserve memory to hold all the elements of a given container if it implements a
+    `size()` method or is a Python object with a corresponding `__len__()` attribute.
+    Does nothing otherwise. */
     template <typename Container>
     inline void reserve(const Container& container) const {
         std::optional<size_t> size = get_size(container);
@@ -259,10 +258,9 @@ public:
         this->allocator.defragment();
     }
 
-    /* Get the total amount of dynamic memory consumed by the list.
-
-    NOTE: this does not include any stack memory used by the list itself, which must be
-    accounted for separately in the parent data structure (if applicable). */
+    /* Get the total amount of dynamic memory consumed by the list.  This does not
+    include any stack memory used by the list itself, which must be accounted for
+    separately by the caller. */
     inline size_t nbytes() const noexcept {
         return allocator.nbytes();
     }
@@ -392,7 +390,7 @@ protected:
 
     /* Attempt to get the size of an arbitrary C++ or python container. */
     template <typename Container>
-    static std::optional<size_t> get_size(const Container& container) {
+    static std::optional<size_t> get_size(Container&& container) {
         // check for container.size()
         if constexpr (util::ContainerTraits<Container>::has_size) {
             return std::make_optional(container.size());
@@ -416,7 +414,7 @@ protected:
     optional fixed size parameter. */
     template <typename Container>
     static std::optional<size_t> get_init_size(
-        const Container& container,
+        Container&& container,
         std::optional<size_t> max_size
     ) {
         // if max_size is specified, use that

@@ -6,8 +6,8 @@
 #include <stdexcept>  // std::out_of_range
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
+#include "../../util/base.h"  // is_pyobject<>
 #include "../../util/except.h"  // type_error()
-#include "../../util/python.h"  // is_pyobject<>
 #include "../core/iter.h"  // Direction, Bidirectional
 #include "../core/view.h"  // ViewTraits
 

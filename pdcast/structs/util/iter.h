@@ -6,8 +6,9 @@
 #include <type_traits>  // std::enable_if_t, std::is_same_v, std::void_t
 #include <Python.h>  // CPython API
 #include <utility>  // std::declval, std::move
+#include "base.h"  // is_pyobject<>
 #include "func.h"  // identity, FuncTraits<>
-#include "name.h"  // PyName<>
+#include "name.h"  // TypeName<>, PyName<>
 #include "slot.h"  // Slot<>
 
 
@@ -754,76 +755,32 @@ class ContainerTraits {
     iterator implementation. */
     template <typename T>
     struct _IterTraits {
+        using C = const T;
+
         using Begin = std::conditional_t<_begin<T>::exists, _begin<T>, _cbegin<T>>;
-        using CBegin = std::conditional_t<
-            _cbegin<T>::exists,
-            _cbegin<T>,
-            _begin<const T>
-        >;
+        using CBegin = std::conditional_t<_cbegin<T>::exists, _cbegin<T>, _begin<C>>;
         using End = std::conditional_t<_end<T>::exists, _end<T>, _cend<T>>;
-        using CEnd = std::conditional_t<
-            _cend<T>::exists,
-            _cend<T>,
-            _end<const T>
-        >;
+        using CEnd = std::conditional_t<_cend<T>::exists, _cend<T>, _end<C>>;
         using RBegin = std::conditional_t<_rbegin<T>::exists, _rbegin<T>, _crbegin<T>>;
-        using CRBegin = std::conditional_t<
-            _crbegin<T>::exists,
-            _crbegin<T>,
-            _rbegin<const T>
-        >;
+        using CRBegin = std::conditional_t<_crbegin<T>::exists, _crbegin<T>, _rbegin<C>>;
         using REnd = std::conditional_t<_rend<T>::exists, _rend<T>, _crend<T>>;
-        using CREnd = std::conditional_t<
-            _crend<T>::exists,
-            _crend<T>,
-            _rend<const T>
-        >;
+        using CREnd = std::conditional_t<_crend<T>::exists, _crend<T>, _rend<C>>;
     };
 
     /* A collection of SFINAE traits that delegates proxy calls to the appropriate
     iterator implementation. */
     template <typename T>
     struct _IterTraits<const T> {
-        using Begin = std::conditional_t<
-            _begin<const T>::exists,
-            _begin<const T>,
-            _cbegin<const T>
-        >;
-        using CBegin = std::conditional_t<
-            _cbegin<const T>::exists,
-            _cbegin<const T>,
-            _begin<const T>
-        >;
-        using End = std::conditional_t<
-            _end<const T>::exists,
-            _end<const T>,
-            _cend<const T>
-        >;
-        using CEnd = std::conditional_t<
-            _cend<const T>::exists,
-            _cend<const T>,
-            _end<const T>
-        >;
-        using RBegin = std::conditional_t<
-            _rbegin<const T>::exists,
-            _rbegin<const T>,
-            _crbegin<const T>
-        >;
-        using CRBegin = std::conditional_t<
-            _crbegin<const T>::exists,
-            _crbegin<const T>,
-            _rbegin<const T>
-        >;
-        using REnd = std::conditional_t<
-            _rend<const T>::exists,
-            _rend<const T>,
-            _crend<const T>
-        >;
-        using CREnd = std::conditional_t<
-            _crend<const T>::exists,
-            _crend<const T>,
-            _rend<const T>
-        >;
+        using C = const T;
+
+        using Begin = std::conditional_t<_begin<C>::exists, _begin<C>, _cbegin<C>>;
+        using CBegin = std::conditional_t<_cbegin<C>::exists, _cbegin<C>, _begin<C>>;
+        using End = std::conditional_t<_end<C>::exists, _end<C>, _cend<C>>;
+        using CEnd = std::conditional_t<_cend<C>::exists, _cend<C>, _end<C>>;
+        using RBegin = std::conditional_t<_rbegin<C>::exists, _rbegin<C>, _crbegin<C>>;
+        using CRBegin = std::conditional_t<_crbegin<C>::exists, _crbegin<C>, _rbegin<C>>;
+        using REnd = std::conditional_t<_rend<C>::exists, _rend<C>, _crend<C>>;
+        using CREnd = std::conditional_t<_crend<C>::exists, _crend<C>, _rend<C>>;
     };
 
     using IterTraits = _IterTraits<Container>;
@@ -865,25 +822,11 @@ public:
 /* A proxy for a C++ container that allows iteration from both C++ and Python. */
 template <typename Container, typename Func>
 class IterProxy {
-    // sanity check
-    static_assert(
-        !std::is_rvalue_reference_v<Container>,
-        "Iteration over a temporary rvalue reference is not allowed."
-    );
-
-    /* NOTE: rvalue references could be supported in the future by moving the container
-     * into the proxy, and then on to the iterator itself.  However, this makes
-     * lifetimes difficult to reason about, and adds a considerable amount of
-     * complexity.  It also adds more runtime overhead, to handle the extra moves.  For
-     * these reasons, rvalue references are left unsupported.
-     */
-
-    using container_type = std::remove_reference_t<Container>;
-    container_type& container;
+    Container& container;
     Func convert;
 
 public:
-    using Traits = ContainerTraits<container_type>;
+    using Traits = ContainerTraits<Container>;
 
     /////////////////////////////
     ////    C++ INTERFACE    ////
@@ -895,50 +838,50 @@ public:
      */
 
     /* Delegate to the container's begin() method, if it exists. */
-    template <bool cond = Traits::has_begin>
-    inline auto begin() -> std::enable_if_t<cond, typename Traits::Begin::type> {
+    inline auto begin() {
+        static_assert(Traits::has_begin, "container does not implement begin()");
         return Traits::Begin::call(this->container, this->convert);
     }
 
     /* Delegate to the container's cbegin() method, if it exists. */
-    template <bool cond = Traits::has_cbegin>
-    inline auto cbegin() -> std::enable_if_t<cond, typename Traits::CBegin::type> {
+    inline auto cbegin() {
+        static_assert(Traits::has_cbegin, "container does not implement cbegin()");
         return Traits::CBegin::call(this->container, this->convert);
     }
 
     /* Delegate to the container's end() method, if it exists. */
-    template <bool cond = Traits::has_end>
-    inline auto end() -> std::enable_if_t<cond, typename Traits::End::type> {
+    inline auto end() {
+        static_assert(Traits::has_end, "container does not implement end()");
         return Traits::End::call(this->container, this->convert);
     }
 
     /* Delegate to the container's cend() method, if it exists. */
-    template <bool cond = Traits::has_cend>
-    inline auto cend() -> std::enable_if_t<cond, typename Traits::CEnd::type> {
+    inline auto cend() {
+        static_assert(Traits::has_cend, "container does not implement cend()");
         return Traits::CEnd::call(this->container, this->convert);
     }
 
     /* Delegate to the container's rbegin() method, if it exists. */
-    template <bool cond = Traits::has_rbegin>
-    inline auto rbegin() -> std::enable_if_t<cond, typename Traits::RBegin::type> {
+    inline auto rbegin() {
+        static_assert(Traits::has_rbegin, "container does not implement rbegin()");
         return Traits::RBegin::call(this->container, this->convert);
     }
 
     /* Delegate to the container's crbegin() method, if it exists. */
-    template <bool cond = Traits::has_crbegin>
-    inline auto crbegin() -> std::enable_if_t<cond, typename Traits::CRBegin::type> {
+    inline auto crbegin() {
+        static_assert(Traits::has_crbegin, "container does not implement crbegin()");
         return Traits::CRBegin::call(this->container, this->convert);
     }
 
     /* Delegate to the container's rend() method, if it exists. */
-    template <bool cond = Traits::has_rend>
-    inline auto rend() -> std::enable_if_t<cond, typename Traits::REnd::type> {
+    inline auto rend() {
+        static_assert(Traits::has_rend, "container does not implement rend()");
         return Traits::REnd::call(this->container, this->convert);
     }
 
     /* Delegate to the container's crend() method, if it exists. */
-    template <bool cond = Traits::has_crend>
-    inline auto crend() -> std::enable_if_t<cond, typename Traits::CREnd::type> {
+    inline auto crend() {
+        static_assert(Traits::has_crend, "container does not implement crend()");
         return Traits::CREnd::call(this->container, this->convert);
     }
 
@@ -993,35 +936,43 @@ public:
      */
 
     /* Create a coupled iterator over the container using the begin()/end() methods. */
-    template <bool cond = Traits::Begin::exists && Traits::End::exists>
-    inline auto forward() -> std::enable_if_t<
-        cond, CoupledIterator<typename Traits::Begin::type>
-    > {
-        return CoupledIterator<typename Traits::Begin::type>(begin(), end());
+    inline auto forward() {
+        static_assert(
+            Traits::Begin::exists && Traits::End::exists,
+            "container does not implement begin() and end()"
+        );
+        using BeginType = typename Traits::Begin::type;
+        return CoupledIterator<BeginType>(begin(), end());
     }
 
     /* Create a coupled iterator over the container using the cbegin()/cend() methods. */
-    template <bool cond = Traits::CBegin::exists && Traits::CEnd::exists>
-    inline auto cforward() -> std::enable_if_t<
-        cond, CoupledIterator<typename Traits::CBegin::type>
-    > {
-        return CoupledIterator<typename Traits::CBegin::type>(cbegin(), cend());
+    inline auto cforward() {
+        static_assert(
+            Traits::CBegin::exists && Traits::CEnd::exists,
+            "container does not implement cbegin() and cend()"
+        );
+        using BeginType = typename Traits::CBegin::type;
+        return CoupledIterator<BeginType>(cbegin(), cend());
     }
 
     /* Create a coupled iterator over the container using the rbegin()/rend() methods. */
-    template <bool cond = Traits::RBegin::exists && Traits::REnd::exists>
-    inline auto reverse() -> std::enable_if_t<
-        cond, CoupledIterator<typename Traits::RBegin::type>
-    > {
-        return CoupledIterator<typename Traits::RBegin::type>(rbegin(), rend());
+    inline auto reverse() {
+        static_assert(
+            Traits::RBegin::exists && Traits::REnd::exists,
+            "container does not implement rbegin() and rend()"
+        );
+        using BeginType = typename Traits::RBegin::type;
+        return CoupledIterator<BeginType>(rbegin(), rend());
     }
 
     /* Create a coupled iterator over the container using the crbegin()/crend() methods. */
-    template <bool cond = Traits::CRBegin::exists && Traits::CREnd::exists>
-    inline auto creverse() -> std::enable_if_t<
-        cond, CoupledIterator<typename Traits::CRBegin::type>
-    > {
-        return CoupledIterator<typename Traits::CRBegin::type>(crbegin(), crend());
+    inline auto creverse() {
+        static_assert(
+            Traits::CRBegin::exists && Traits::CREnd::exists,
+            "container does not implement crbegin() and crend()"
+        );
+        using BeginType = typename Traits::CRBegin::type;
+        return CoupledIterator<BeginType>(crbegin(), crend());
     }
 
     ////////////////////////////////
@@ -1052,46 +1003,60 @@ public:
 
     /* Create a forward Python iterator over the container using the begin()/end()
     methods. */
-    template <bool cond = Traits::Begin::exists && Traits::End::exists>
-    inline auto python() -> std::enable_if_t<cond, PyObject*> {
-        using Iter = PyIterator<typename Traits::Begin::type>;
-        return Iter::init(begin(), end());
+    inline PyObject* python() {
+        static_assert(
+            Traits::Begin::exists && Traits::End::exists,
+            "container does not implement begin() and end()"
+        );
+        using PyIter = PyIterator<typename Traits::Begin::type>;
+        return PyIter::init(begin(), end());
     }
 
     /* Create a forward Python iterator over the container using the cbegin()/cend()
     methods. */
-    template <bool cond = Traits::CBegin::exists && Traits::CEnd::exists>
-    inline auto cpython() -> std::enable_if_t<cond, PyObject*> {
-        using Iter = PyIterator<typename Traits::CBegin::type>;
-        return Iter::init(cbegin(), cend());
+    inline PyObject* cpython() {
+        static_assert(
+            Traits::CBegin::exists && Traits::CEnd::exists,
+            "container does not implement cbegin() and cend()"
+        );
+        using PyIter = PyIterator<typename Traits::CBegin::type>;
+        return PyIter::init(cbegin(), cend());
     }
 
     /* Create a backward Python iterator over the container using the rbegin()/rend()
     methods. */
-    template <bool cond = Traits::RBegin::exists && Traits::REnd::exists>
-    inline auto rpython() -> std::enable_if_t<cond, PyObject*> {
-        using Iter = PyIterator<typename Traits::RBegin::type>;
-        return Iter::init(rbegin(), rend());
+    inline PyObject* rpython() {
+        static_assert(
+            Traits::RBegin::exists && Traits::REnd::exists,
+            "container does not implement rbegin() and rend()"
+        );
+        using PyIter = PyIterator<typename Traits::RBegin::type>;
+        return PyIter::init(rbegin(), rend());
     }
 
     /* Create a backward Python iterator over the container using the crbegin()/crend()
     methods. */
-    template <bool cond = Traits::CRBegin::exists && Traits::CREnd::exists>
-    inline auto crpython() -> std::enable_if_t<cond, PyObject*> {
-        using Iter = PyIterator<typename Traits::CRBegin::type>;
-        return Iter::init(crbegin(), crend());
+    inline PyObject* crpython() {
+        static_assert(
+            Traits::CRBegin::exists && Traits::CREnd::exists,
+            "container does not implement crbegin() and crend()"
+        );
+        using PyIter = PyIterator<typename Traits::CRBegin::type>;
+        return PyIter::init(crbegin(), crend());
     }
 
 private:
     /* IterProxies can only be constructed through `iter()` factory function. */
-    template <typename _Container>
-    friend auto iter(_Container&& container);
-    template <typename _Container, typename _Func>
-    friend auto iter(_Container&& container, _Func func);
+    template <typename T>
+    friend auto iter(T& container)
+        -> std::enable_if_t<!is_pyobject<T>, IterProxy<T, identity>>;
+    template <typename T, typename _Func>
+    friend auto iter(T& container, _Func func)
+        -> std::enable_if_t<!is_pyobject<T>, IterProxy<T, _Func>>;
 
     /* Construct an iterator proxy around a perfectly-forwarded container reference. */
-    IterProxy(Container c) : container(std::forward<Container>(c)), convert(Func{}) {}
-    IterProxy(Container c, Func f) : container(std::forward<Container>(c)), convert(f) {}
+    IterProxy(Container& c) : container(c), convert(Func{}) {}
+    IterProxy(Container& c, Func f) : container(c), convert(f) {}
 };
 
 
@@ -1115,7 +1080,7 @@ The default specialization is chosen whenever a custom conversion is given to th
 `iter()` utility function. */
 template <typename Container, typename Func>
 class PyIterProxy {
-    Container* const container;  // ptr cannot be reassigned
+    Container const container;  // ptr cannot be reassigned
     Func convert;
     static constexpr bool is_identity = std::is_same_v<Func, identity>;
 
@@ -1295,18 +1260,16 @@ public:
     }
 
 private:
-    template <typename>
-    friend auto iter(PyObject* container);
-    template <typename>
-    friend auto iter(const PyObject* container);
-    template <typename _Func>
-    friend auto iter(PyObject* container, _Func convert);
-    template <typename _Func>
-    friend auto iter(const PyObject* container, _Func convert);
+    template <typename T>
+    friend auto iter(T container)
+        -> std::enable_if_t<is_pyobject<T>, PyIterProxy<T, identity>>;
+    template <typename T, typename _Func>
+    friend auto iter(T container, _Func convert)
+        -> std::enable_if_t<is_pyobject<T>, PyIterProxy<T, _Func>>;
 
     /* Construct an iterator proxy around a python container. */
-    PyIterProxy(Container* c) : container(c) {}
-    PyIterProxy(Container* c, Func f) : container(c), convert(f) {}
+    PyIterProxy(Container c) : container(c) {}
+    PyIterProxy(Container c, Func f) : container(c), convert(f) {}
 };
 
 
@@ -1317,46 +1280,38 @@ private:
 
 /* Create a C++ to Python iterator proxy for a container. */
 template <typename Container>
-inline auto iter(Container&& container) {
-    using Fwd = decltype(std::forward<Container>(container));  // perfect forwarding
-    return IterProxy<Fwd, identity>(std::forward<Container>(container));
+inline auto iter(Container& container)
+    -> std::enable_if_t<!is_pyobject<Container>, IterProxy<Container, identity>>
+{
+    return IterProxy<Container, identity>(container);
 }
 
 
 /* Create a C++ to Python iterator proxy for a container, applying a custom conversion
 function at each dereference. */
 template <typename Container, typename Func>
-inline auto iter(Container&& container, Func func) {
-    using Fwd = decltype(std::forward<Container>(container));  // perfect forwarding
-    return IterProxy<Fwd, Func>(std::forward<Container>(container), func);
+inline auto iter(Container& container, Func func)
+    -> std::enable_if_t<!is_pyobject<Container>, IterProxy<Container, Func>>
+{
+    return IterProxy<Container, Func>(container, func);
 }
 
 
 /* Create a Python to C++ iterator proxy for a mutable Python container. */
-template <typename = void>
-inline auto iter(PyObject* container) {
-    return PyIterProxy<PyObject, identity>(container);
-}
-
-
-/* Create a Python to C++ iterator proxy for a const Python container. */
-template <typename = void>
-inline auto iter(const PyObject* container) {
-    return PyIterProxy<const PyObject, identity>(container);
+template <typename Container>
+inline auto iter(Container container)
+    -> std::enable_if_t<is_pyobject<Container>, PyIterProxy<Container, identity>>
+{
+    return PyIterProxy<Container, identity>(container);
 }
 
 
 /* Create a Python to C++ iterator proxy for a mutable Python container. */
-template <typename Func>
-inline auto iter(PyObject* container, Func convert) {
-    return PyIterProxy<PyObject, Func>(container, convert);
-}
-
-
-/* Create a Python to C++ iterator proxy for a const Python container. */
-template <typename Func>
-inline auto iter(const PyObject* container, Func convert) {
-    return PyIterProxy<const PyObject, Func>(container, convert);
+template <typename Container, typename Func>
+inline auto iter(Container container, Func convert)
+    -> std::enable_if_t<is_pyobject<Container>, PyIterProxy<Container, Func>>
+{
+    return PyIterProxy<Container, Func>(container, convert);
 }
 
 

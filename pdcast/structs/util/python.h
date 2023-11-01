@@ -252,13 +252,6 @@ namespace structs {
 namespace util {
 
 
-/* Check if a type is convertible to PyObject*. */
-template <typename T>
-inline constexpr bool is_pyobject = (
-    std::is_convertible_v<std::remove_cv_t<T>, PyObject*>
-);
-
-
 ////////////////////////////////
 ////    PYTHON ITERABLES    ////
 ////////////////////////////////

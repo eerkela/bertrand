@@ -221,7 +221,6 @@ template <typename T>
 constexpr std::string_view PyName = TypeName<T>::mangled;
 
 
-
 }  // namespace util
 }  // namespace structs
 }  // namespace bertrand

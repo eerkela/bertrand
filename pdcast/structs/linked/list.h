@@ -2,13 +2,9 @@
 #ifndef BERTRAND_STRUCTS_LIST_LIST_H
 #define BERTRAND_STRUCTS_LIST_LIST_H
 
-// TODO: additional includes as necessary
-
 #include <sstream>  // std::ostringstream
-#include <stack>  // std::stack
-
 #include "../util/except.h"  // type_error()
-#include "core/view.h"
+#include "core/view.h"  // ListView
 #include "base.h"  // LinkedBase
 
 #include "algorithms/add.h"
@@ -27,7 +23,6 @@
 #include "algorithms/sort.h"
 
 
-/* Namespaces reflect file system and Python import path. */
 namespace bertrand {
 namespace structs {
 
