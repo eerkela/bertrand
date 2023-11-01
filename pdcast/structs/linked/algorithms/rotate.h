@@ -5,8 +5,6 @@
 #include <cstddef>  // size_t
 #include <cmath>  // abs()
 #include <type_traits>  // std::enable_if_t<>
-#include <utility>  // std::pair
-#include <Python.h>  // CPython API
 #include "../core/view.h"  // ViewTraits
 
 

@@ -7,10 +7,12 @@
 #include <sstream>  // std::ostringstream
 #include <stack>  // std::stack
 
+#include "../util/except.h"  // type_error()
 #include "core/view.h"
+#include "base.h"  // LinkedBase
+
 #include "algorithms/add.h"
 #include "algorithms/append.h"
-#include "algorithms/clear.h"
 #include "algorithms/contains.h"
 #include "algorithms/count.h"
 #include "algorithms/extend.h"
@@ -23,9 +25,6 @@
 #include "algorithms/rotate.h"
 #include "algorithms/slice.h"
 #include "algorithms/sort.h"
-#include "../util/except.h"  // type_error()
-
-#include "base.h"  // LinkedBase
 
 
 /* Namespaces reflect file system and Python import path. */
@@ -99,10 +98,10 @@ public:
     /* Construct a list from an input iterable. */
     LinkedList(
         PyObject* iterable,
-        bool reverse = false,
         std::optional<size_t> max_size = std::nullopt,
-        PyObject* spec = nullptr
-    ) : Base(iterable, reverse, max_size, spec)
+        PyObject* spec = nullptr,
+        bool reverse = false
+    ) : Base(iterable, max_size, spec, reverse)
     {}
 
     /* Construct a list from a base view. */
@@ -175,8 +174,8 @@ public:
     }
 
     /* Count the number of occurrences of an item within a list. */
-    template <typename T>
-    inline size_t count(Value& item, T start = 0, T stop = -1) const {
+    template <typename Index>
+    inline size_t count(Value& item, Index start = 0, Index stop = -1) const {
         return linked::count(this->view, item, start, stop);
     }
 
@@ -208,17 +207,17 @@ public:
 
     /* Sort a list in-place. */
     template <typename Func>
-    void sort(Func key = nullptr, bool reverse = false) {
+    inline void sort(Func key = nullptr, bool reverse = false) {
         IList::SortFunc<SortPolicy, Func>::sort(this->view, key, reverse);
     }
 
     /* Reverse a list in-place. */
-    void reverse() {
+    inline void reverse() {
         linked::reverse(this->view);
     }
 
     /* Rotate a list to the right by the specified number of steps. */
-    void rotate(long long steps = 1) {
+    inline void rotate(long long steps = 1) {
         linked::rotate(this->view, steps);
     }
 
@@ -264,15 +263,15 @@ public:
      */
 
     /* Get a proxy for a value at a particular index of the list. */
-    template <typename T>
-    IList::ElementProxy<View> operator[](T index) {
-        return IList::position(this->view, index);
+    template <typename Index>
+    inline linked::ElementProxy<View> operator[](Index index) {
+        return linked::position(this->view, index);
     }
 
     /* Get a proxy for a slice within the list. */
     template <typename... Args>
-    IList::SliceProxy<LinkedList> slice(Args&&... args) {
-        return IList::slice(*this, std::forward<Args>(args)...);
+    inline linked::SliceProxy<LinkedList> slice(Args&&... args) {
+        return linked::slice(*this, std::forward<Args>(args)...);
     }
 
     //////////////////////////////////

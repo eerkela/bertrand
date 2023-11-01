@@ -88,7 +88,7 @@ public:
 
     /* Get the total amount of memory consumed by the list. */
     inline size_t nbytes() const noexcept {
-        return view.nbytes();
+        return sizeof(LinkedBase) + view.nbytes();
     }
 
     /////////////////////////////////
@@ -151,10 +151,10 @@ protected:
     /* Construct a list from an input iterable. */
     LinkedBase(
         PyObject* iterable,
-        bool reverse = false,
         std::optional<size_t> max_size = std::nullopt,
-        PyObject* spec = nullptr
-    ) : view(iterable, reverse, max_size, spec)
+        PyObject* spec = nullptr,
+        bool reverse = false
+    ) : view(iterable, max_size, spec, reverse)
     {}
 
     /* Construct a list from a base view. */

@@ -2,7 +2,6 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_APPEND_H
 #define BERTRAND_STRUCTS_ALGORITHMS_APPEND_H
 
-#include <Python.h>  // CPython API
 #include <type_traits>  // std::enable_if_t<>
 #include "../core/view.h"  // ViewTraits
 

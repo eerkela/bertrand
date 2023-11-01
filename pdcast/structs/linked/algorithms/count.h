@@ -5,7 +5,6 @@
 #include <cstddef>  // size_t
 #include <type_traits>  // std::enable_if_t<>
 #include <utility>  // std::pair
-#include <Python.h>  // CPython API
 #include "../core/view.h"  // ViewTraits
 #include "position.h"  // normalize_index()
 
@@ -32,8 +31,8 @@ namespace linked {
         }
 
         // normalize start/stop indices
-        size_t norm_start = algorithms::list::normalize_index(start, view.size(), true);
-        size_t norm_stop = algorithms::list::normalize_index(stop, view.size(), true);
+        size_t norm_start = normalize_index(start, view.size(), true);
+        size_t norm_stop = normalize_index(stop, view.size(), true);
         if (norm_start > norm_stop) {
             throw std::invalid_argument(
                 "start index cannot be greater than stop index"

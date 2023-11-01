@@ -589,6 +589,10 @@ template <typename Container, typename Func = identity>
 class ContainerTraits {
     static constexpr bool is_identity = std::is_same_v<Func, identity>;
 
+    /////////////////////////
+    ////    ITERATORS    ////
+    /////////////////////////
+
     /* Create a wrapper around an iterator that applies a conversion function to the
     result of its dereference operator. */
     template <typename Iter, bool do_conversion = false>
@@ -748,105 +752,113 @@ class ContainerTraits {
 
     /* A collection of SFINAE traits that delegates proxy calls to the appropriate
     iterator implementation. */
-    template <typename _Iterable>
-    struct Traits {
-        using Begin = std::conditional_t<
-            _begin<_Iterable>::exists,
-            _begin<_Iterable>,
-            _cbegin<_Iterable>
-        >;
+    template <typename T>
+    struct _IterTraits {
+        using Begin = std::conditional_t<_begin<T>::exists, _begin<T>, _cbegin<T>>;
         using CBegin = std::conditional_t<
-            _cbegin<_Iterable>::exists,
-            _cbegin<_Iterable>,
-            _begin<const _Iterable>
+            _cbegin<T>::exists,
+            _cbegin<T>,
+            _begin<const T>
         >;
-        using End = std::conditional_t<
-            _end<_Iterable>::exists,
-            _end<_Iterable>,
-            _cend<_Iterable>
-        >;
+        using End = std::conditional_t<_end<T>::exists, _end<T>, _cend<T>>;
         using CEnd = std::conditional_t<
-            _cend<_Iterable>::exists,
-            _cend<_Iterable>,
-            _end<const _Iterable>
+            _cend<T>::exists,
+            _cend<T>,
+            _end<const T>
         >;
-        using RBegin = std::conditional_t<
-            _rbegin<_Iterable>::exists,
-            _rbegin<_Iterable>,
-            _crbegin<_Iterable>
-        >;
+        using RBegin = std::conditional_t<_rbegin<T>::exists, _rbegin<T>, _crbegin<T>>;
         using CRBegin = std::conditional_t<
-            _crbegin<_Iterable>::exists,
-            _crbegin<_Iterable>,
-            _rbegin<const _Iterable>
+            _crbegin<T>::exists,
+            _crbegin<T>,
+            _rbegin<const T>
         >;
-        using REnd = std::conditional_t<
-            _rend<_Iterable>::exists,
-            _rend<_Iterable>,
-            _crend<_Iterable>
-        >;
+        using REnd = std::conditional_t<_rend<T>::exists, _rend<T>, _crend<T>>;
         using CREnd = std::conditional_t<
-            _crend<_Iterable>::exists,
-            _crend<_Iterable>,
-            _rend<const _Iterable>
+            _crend<T>::exists,
+            _crend<T>,
+            _rend<const T>
         >;
     };
 
     /* A collection of SFINAE traits that delegates proxy calls to the appropriate
     iterator implementation. */
-    template <typename _Iterable>
-    struct Traits<const _Iterable> {
+    template <typename T>
+    struct _IterTraits<const T> {
         using Begin = std::conditional_t<
-            _begin<const _Iterable>::exists,
-            _begin<const _Iterable>,
-            _cbegin<const _Iterable>
+            _begin<const T>::exists,
+            _begin<const T>,
+            _cbegin<const T>
         >;
         using CBegin = std::conditional_t<
-            _cbegin<const _Iterable>::exists,
-            _cbegin<const _Iterable>,
-            _begin<const _Iterable>
+            _cbegin<const T>::exists,
+            _cbegin<const T>,
+            _begin<const T>
         >;
         using End = std::conditional_t<
-            _end<const _Iterable>::exists,
-            _end<const _Iterable>,
-            _cend<const _Iterable>
+            _end<const T>::exists,
+            _end<const T>,
+            _cend<const T>
         >;
         using CEnd = std::conditional_t<
-            _cend<const _Iterable>::exists,
-            _cend<const _Iterable>,
-            _end<const _Iterable>
+            _cend<const T>::exists,
+            _cend<const T>,
+            _end<const T>
         >;
         using RBegin = std::conditional_t<
-            _rbegin<const _Iterable>::exists,
-            _rbegin<const _Iterable>,
-            _crbegin<const _Iterable>
+            _rbegin<const T>::exists,
+            _rbegin<const T>,
+            _crbegin<const T>
         >;
         using CRBegin = std::conditional_t<
-            _crbegin<const _Iterable>::exists,
-            _crbegin<const _Iterable>,
-            _rbegin<const _Iterable>
+            _crbegin<const T>::exists,
+            _crbegin<const T>,
+            _rbegin<const T>
         >;
         using REnd = std::conditional_t<
-            _rend<const _Iterable>::exists,
-            _rend<const _Iterable>,
-            _crend<const _Iterable>
+            _rend<const T>::exists,
+            _rend<const T>,
+            _crend<const T>
         >;
         using CREnd = std::conditional_t<
-            _crend<const _Iterable>::exists,
-            _crend<const _Iterable>,
-            _rend<const _Iterable>
+            _crend<const T>::exists,
+            _crend<const T>,
+            _rend<const T>
         >;
     };
 
+    using IterTraits = _IterTraits<Container>;
+
+    /////////////////////
+    ////    SIZE()    ///
+    /////////////////////
+
+    /* Detect whether the templated type supports the size() method. */
+    template <typename T, typename = void>
+    struct _has_size : std::false_type {};
+    template <typename T>
+    struct _has_size<T, std::void_t<decltype(std::declval<T>().size())>> :
+        std::true_type
+    {};
+
 public:
-    using Begin = typename Traits<Container>::Begin;
-    using CBegin = typename Traits<Container>::CBegin;
-    using End = typename Traits<Container>::End;
-    using CEnd = typename Traits<Container>::CEnd;
-    using RBegin = typename Traits<Container>::RBegin;
-    using CRBegin = typename Traits<Container>::CRBegin;
-    using REnd = typename Traits<Container>::REnd;
-    using CREnd = typename Traits<Container>::CREnd;
+    using Begin = typename IterTraits::Begin;
+    using CBegin = typename IterTraits::CBegin;
+    using End = typename IterTraits::End;
+    using CEnd = typename IterTraits::CEnd;
+    using RBegin = typename IterTraits::RBegin;
+    using CRBegin = typename IterTraits::CRBegin;
+    using REnd = typename IterTraits::REnd;
+    using CREnd = typename IterTraits::CREnd;
+
+    static constexpr bool has_begin = Begin::exists;
+    static constexpr bool has_cbegin = CBegin::exists;
+    static constexpr bool has_end = End::exists;
+    static constexpr bool has_cend = CEnd::exists;
+    static constexpr bool has_rbegin = RBegin::exists;
+    static constexpr bool has_crbegin = CRBegin::exists;
+    static constexpr bool has_rend = REnd::exists;
+    static constexpr bool has_crend = CREnd::exists;
+    static constexpr bool has_size = _has_size<Container>::value;
 };
 
 
@@ -883,49 +895,49 @@ public:
      */
 
     /* Delegate to the container's begin() method, if it exists. */
-    template <bool cond = Traits::Begin::exists>
+    template <bool cond = Traits::has_begin>
     inline auto begin() -> std::enable_if_t<cond, typename Traits::Begin::type> {
         return Traits::Begin::call(this->container, this->convert);
     }
 
     /* Delegate to the container's cbegin() method, if it exists. */
-    template <bool cond = Traits::CBegin::exists>
+    template <bool cond = Traits::has_cbegin>
     inline auto cbegin() -> std::enable_if_t<cond, typename Traits::CBegin::type> {
         return Traits::CBegin::call(this->container, this->convert);
     }
 
     /* Delegate to the container's end() method, if it exists. */
-    template <bool cond = Traits::End::exists>
+    template <bool cond = Traits::has_end>
     inline auto end() -> std::enable_if_t<cond, typename Traits::End::type> {
         return Traits::End::call(this->container, this->convert);
     }
 
     /* Delegate to the container's cend() method, if it exists. */
-    template <bool cond = Traits::CEnd::exists>
+    template <bool cond = Traits::has_cend>
     inline auto cend() -> std::enable_if_t<cond, typename Traits::CEnd::type> {
         return Traits::CEnd::call(this->container, this->convert);
     }
 
     /* Delegate to the container's rbegin() method, if it exists. */
-    template <bool cond = Traits::RBegin::exists>
+    template <bool cond = Traits::has_rbegin>
     inline auto rbegin() -> std::enable_if_t<cond, typename Traits::RBegin::type> {
         return Traits::RBegin::call(this->container, this->convert);
     }
 
     /* Delegate to the container's crbegin() method, if it exists. */
-    template <bool cond = Traits::CRBegin::exists>
+    template <bool cond = Traits::has_crbegin>
     inline auto crbegin() -> std::enable_if_t<cond, typename Traits::CRBegin::type> {
         return Traits::CRBegin::call(this->container, this->convert);
     }
 
     /* Delegate to the container's rend() method, if it exists. */
-    template <bool cond = Traits::REnd::exists>
+    template <bool cond = Traits::has_rend>
     inline auto rend() -> std::enable_if_t<cond, typename Traits::REnd::type> {
         return Traits::REnd::call(this->container, this->convert);
     }
 
     /* Delegate to the container's crend() method, if it exists. */
-    template <bool cond = Traits::CREnd::exists>
+    template <bool cond = Traits::has_crend>
     inline auto crend() -> std::enable_if_t<cond, typename Traits::CREnd::type> {
         return Traits::CREnd::call(this->container, this->convert);
     }
@@ -1306,10 +1318,8 @@ private:
 /* Create a C++ to Python iterator proxy for a container. */
 template <typename Container>
 inline auto iter(Container&& container) {
-    return IterProxy<
-        decltype(std::forward<Container>(std::declval<Container>())),
-        identity
-    >(std::forward<Container>(container));
+    using Fwd = decltype(std::forward<Container>(container));  // perfect forwarding
+    return IterProxy<Fwd, identity>(std::forward<Container>(container));
 }
 
 
@@ -1317,10 +1327,8 @@ inline auto iter(Container&& container) {
 function at each dereference. */
 template <typename Container, typename Func>
 inline auto iter(Container&& container, Func func) {
-    return IterProxy<
-        decltype(std::forward<Container>(std::declval<Container>())),
-        Func
-    >(std::forward<Container>(container), func);
+    using Fwd = decltype(std::forward<Container>(container));  // perfect forwarding
+    return IterProxy<Fwd, Func>(std::forward<Container>(container), func);
 }
 
 

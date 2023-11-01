@@ -4,6 +4,7 @@
 
 #include <cstddef>  // size_t
 #include <functional>  // std::hash, std::less, std::plus, etc.
+#include <type_traits>  // std::is_convertible_v<>, std::remove_cv_t<>, etc.
 #include <Python.h>  // CPython API
 #include "except.h"  // catch_python
 #include "iter.h"  // iter(), PyIterator
@@ -251,6 +252,13 @@ namespace structs {
 namespace util {
 
 
+/* Check if a type is convertible to PyObject*. */
+template <typename T>
+inline constexpr bool is_pyobject = (
+    std::is_convertible_v<std::remove_cv_t<T>, PyObject*>
+);
+
+
 ////////////////////////////////
 ////    PYTHON ITERABLES    ////
 ////////////////////////////////
@@ -298,17 +306,19 @@ public:
     /* Release the Python sequence on destruction. */
     ~PySequence() { Py_DECREF(sequence); }
 
-    /* Get the length of the sequence. */
-    inline size_t size() const { return length; }
-
     /* Iterate over the sequence. */
     inline auto begin() const { return iter(this->sequence).begin(); }
+    inline auto cbegin() const { return iter(this->sequence).cbegin(); }
     inline auto end() const { return iter(this->sequence).end(); }
+    inline auto cend() const { return iter(this->sequence).cend(); }
     inline auto rbegin() const { return iter(this->sequence).rbegin(); }
+    inline auto crbegin() const { return iter(this->sequence).crbegin(); }
     inline auto rend() const { return iter(this->sequence).rend(); }
+    inline auto crend() const { return iter(this->sequence).crend(); }
 
     /* Get underlying PyObject* array. */
-    inline PyObject** array() const { return PySequence_Fast_ITEMS(sequence); }
+    inline PyObject** data() const { return PySequence_Fast_ITEMS(sequence); }
+    inline size_t size() const { return length; }
 
     /* Get the value at a particular index of the sequence. */
     inline PyObject* operator[](size_t index) const {

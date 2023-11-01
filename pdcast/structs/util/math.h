@@ -34,7 +34,7 @@ template <typename T, std::enable_if_t<std::is_unsigned_v<T>, int> = 0>
 inline T next_power_of_two(T n) {
     constexpr size_t bits = sizeof(T) * 8;
     --n;
-    for (size_t i = 1; i < bits; i <<= 2) {
+    for (size_t i = 1; i < bits; i <<= 1) {
         n |= (n >> i);
     }
     return ++n;

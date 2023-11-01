@@ -6,25 +6,26 @@
 #include <stdexcept>  // std::out_of_range
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
-#include "../core/iter.h"  // Direction, Bidirectional
 #include "../../util/except.h"  // type_error()
+#include "../../util/python.h"  // is_pyobject<>
+#include "../core/iter.h"  // Direction, Bidirectional
+#include "../core/view.h"  // ViewTraits
 
 
 namespace bertrand {
 namespace structs {
 namespace linked {
-namespace algorithms {
 
 
-namespace list {
-
+    /* forward declaration */
     template <typename View>
-    class ElementProxy;  // forward declaration
+    class ElementProxy;
+
 
     /* Normalize a numeric index, applying Python-style wraparound and bounds
     checking. */
-    template <typename T>
-    size_t normalize_index(T index, size_t size, bool truncate) {
+    template <typename Index>
+    size_t normalize_index(Index index, size_t size, bool truncate) {
         // wraparound negative indices
         bool lt_zero = index < 0;
         if (lt_zero) {
@@ -33,12 +34,9 @@ namespace list {
         }
 
         // boundscheck
-        if (lt_zero || index >= static_cast<T>(size)) {
+        if (lt_zero || index >= static_cast<Index>(size)) {
             if (truncate) {
-                if (lt_zero) {
-                    return 0;
-                }
-                return size - 1;
+                return lt_zero ? 0 : size - 1;
             }
             throw std::out_of_range("list index out of range");
         }
@@ -46,6 +44,7 @@ namespace list {
         // return as size_t
         return static_cast<size_t>(index);
     }
+
 
     /* Normalize a Python integer for use as an index to a list. */
     size_t normalize_index(PyObject* index, size_t size, bool truncate) {
@@ -71,19 +70,12 @@ namespace list {
         if (lt_zero || PyObject_RichCompareBool(index, py_size, Py_GE)) {
             Py_DECREF(py_zero);
             Py_DECREF(py_size);
-            if (release_index) {
-                Py_DECREF(index);
-            }
+            if (release_index) Py_DECREF(index);
 
-            // apply truncation if directed
+            // truncate if directed
             if (truncate) {
-                if (lt_zero) {
-                    return 0;
-                }
-                return size - 1;
+                return lt_zero ? 0 : size - 1;
             }
-
-            // raise IndexError
             throw std::out_of_range("list index out of range");
         }
 
@@ -93,42 +85,43 @@ namespace list {
         // clean up references
         Py_DECREF(py_zero);
         Py_DECREF(py_size);
-        if (release_index) {
-            Py_DECREF(index);
-        }
+        if (release_index) Py_DECREF(index);
 
         return result;
     }
 
+
     /* Get a proxy for a value at a particular index of the list. */
     template <
         typename View,
-        typename T,
-        template <Direction> class Iterator = View::template Iterator
+        typename Index
     >
-    ElementProxy<View> position(View& view, T index) {
+    auto position(View& view, Index index)
+        -> std::enable_if_t<ViewTraits<View>::listlike, ElementProxy<View>>
+    {
         using Node = typename View::Node;
 
         // normalize index
         size_t norm_index = normalize_index(index, view.size(), false);
 
         // get iterator to index
-        if constexpr (Node::doubly_linked) {
+        if constexpr (NodeTraits<Node>::has_prev) {
             size_t threshold = (view.size() - (view.size() > 0)) / 2;
-            if (norm_index > threshold) {  // backward traversal
-                Iterator<Direction::backward> iter = view.rbegin();
-                for (size_t i = view.size() - 1; i > norm_index; --i) {
-                    ++iter;
-                }
+            if (norm_index > threshold) {
+                using Iterator = typename View::template Iterator<Direction::backward>;
+                Iterator iter = view.rbegin();
+                for (size_t i = view.size() - 1; i > norm_index; --i) ++iter;
                 return ElementProxy<View>(view, iter);
             }
         }
 
         // forward traversal
-        Iterator<Direction::forward> it = view.begin();
+        using Iterator = typename View::template Iterator<Direction::forward>;
+        Iterator it = view.begin();
         for (size_t i = 0; i < norm_index; ++i) ++it;
         return ElementProxy<View>(view, it);
     }
+
 
     /* A proxy for an element at a particular index of the list, as returned by the []
     operator. */
@@ -144,7 +137,11 @@ namespace list {
 
         /* Get the value at the current index. */
         inline Value get() const {
-            return *iter;
+            if constexpr (util::is_pyobject<Value>) {
+                return Py_NewRef(*iter);
+            } else {
+                return *iter;
+            }
         }
 
         /* Set the value at the current index. */
@@ -168,7 +165,9 @@ namespace list {
         inline Value pop() {
             Node* node = iter.drop();
             Value result = node->value();
-            Py_INCREF(result);  // ensure value is not garbage collected during recycle()
+            if constexpr (util::is_pyobject<Value>) {
+                Py_INCREF(result);
+            }
             view.recycle(node);
             return result;
         }
@@ -193,20 +192,18 @@ namespace list {
         }
 
     private:
-        template <typename _View, typename T, template <Direction> class _Iterator>
-        friend ElementProxy<_View> position(_View& view, T index);
-
         View& view;
         Bidirectional<Iterator> iter;
+
+        template <typename _View, typename _Index>
+        friend auto position(_View& view, _Index index)
+            -> std::enable_if_t<ViewTraits<_View>::listlike, ElementProxy<_View>>;
 
         template <Direction dir>
         ElementProxy(View& view, Iterator<dir>& iter) : view(view), iter(iter) {}
     };
 
-}  // namespace list
 
-
-}  // namespace algorithms
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand

@@ -2,10 +2,8 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_ADD_H
 #define BERTRAND_STRUCTS_ALGORITHMS_ADD_H
 
-#include <Python.h>  // CPython API
 #include <type_traits>  // std::enable_if_t<>
 #include "../core/view.h"  // views
-// #include "insert.h"  // _insert_relative()
 
 
 namespace bertrand {
@@ -57,23 +55,6 @@ namespace linked {
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
-
-
-// namespace Relative {
-
-//     /* Add an item to a linked set or dictionary relative to a given sentinel
-//     value if it is not already present. */
-//     template <typename View>
-//     inline void add_relative(
-//         View* view,
-//         PyObject* item,
-//         PyObject* sentinel,
-//         Py_ssize_t offset
-//     ) {
-//         _insert_relative(view, item, sentinel, offset, true);
-//     }
-
-// }
 
 
 

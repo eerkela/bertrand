@@ -11,6 +11,8 @@
 #include "allocate.h"  // Allocator
 #include "iter.h"  // Iterator, Direction
 #include "../../util/iter.h"  // iter()
+#include "../../util/math.h"  // next_power_of_two()
+#include "../../util/python.h"  // is_pyobject<>
 
 
 namespace bertrand {
@@ -87,19 +89,26 @@ public:
 
     /* Construct an empty view. */
     BaseView(std::optional<size_t> max_size = std::nullopt, PyObject* spec = nullptr) :
-        allocator(max_size, spec)
+        allocator(max_size, max_size.has_value(), spec)
     {}
 
+    // TODO: swap this constructor to accept rvalue initializers.
+    // TODO: could reserve an allocator of an exact size if we know it ahead of time.
+
     /* Construct a view from an input iterable. */
+    template <typename Container>
     BaseView(
-        PyObject* iterable,
-        bool reverse = false,
+        Container& iterable,
         std::optional<size_t> max_size = std::nullopt,
-        PyObject* spec = nullptr
-    ) : allocator(max_size, spec)
+        PyObject* spec = nullptr,
+        bool reverse = false
+    ) : allocator(
+            get_init_size(iterable, max_size),
+            max_size.has_value(),
+            spec
+        )
     {
-        using util::iter;
-        for (auto item : iter(iterable)) {
+        for (auto item : util::iter(iterable)) {
             // NOTE: node() constructor is fallible, but because all memory is managed
             // by the encapsulated allocator, we don't need to worry about cleaning up
             // the list in the event of an exception.
@@ -234,6 +243,17 @@ public:
         this->allocator.reserve(capacity);
     }
 
+    /* Reserve memory to hold all the elements of an arbitrary container if it
+    implements a `size()` method or is a Python object with a corresponding `__len__()`
+    attribute.  Does nothing otherwise. */
+    template <typename Container>
+    inline void reserve(const Container& container) const {
+        std::optional<size_t> size = get_size(container);
+        if (size.has_value()) {
+            this->allocator.reserve(this->size() + size.value());
+        }
+    }
+
     /* Rearrange the nodes in memory to match their positions within the list. */
     inline void defragment() {
         this->allocator.defragment();
@@ -292,7 +312,7 @@ public:
         }
 
         // if list is doubly-linked, we can just use the prev pointer to get neighbors
-        if constexpr (Node::doubly_linked) {
+        if constexpr (NodeTraits<Node>::has_prev) {
             Node* prev = tail()->prev();
             return Iterator<Direction::backward>(*this, prev, tail(), nullptr);
 
@@ -316,16 +336,10 @@ public:
         return Iterator<Direction::backward>(*this);
     }
 
-    /* Return a const forward iterator to the head of a const view. */
+    /* Return a set of iterators over a const view. */
     ConstIterator<Direction::forward> begin() const { return cbegin(); }
-
-    /* Return a const forward iterator to terminate a const view. */
     ConstIterator<Direction::forward> end() const { return cend(); }
-
-    /* Return a const reverse iterator to the tail of a const view. */
     ConstIterator<Direction::backward> rbegin() const { return crbegin(); }
-
-    /* Return a const reverse iterator to terminate a const view. */
     ConstIterator<Direction::backward> rend() const { return crend(); }
 
     /* Return a const forward iterator to the head of a view. */
@@ -349,7 +363,7 @@ public:
         }
 
         // if list is doubly-linked, we can just use the prev pointer to get neighbors
-        if constexpr (Node::doubly_linked) {
+        if constexpr (NodeTraits<Node>::has_prev) {
             Node* prev = tail()->prev();
             return ConstIterator<Direction::backward>(*this, prev, tail(), nullptr);
 
@@ -375,6 +389,52 @@ public:
 
 protected:
     mutable Allocator allocator;  // low-level memory management
+
+    /* Attempt to get the size of an arbitrary C++ or python container. */
+    template <typename Container>
+    static std::optional<size_t> get_size(const Container& container) {
+        // check for container.size()
+        if constexpr (util::ContainerTraits<Container>::has_size) {
+            return std::make_optional(container.size());
+
+        // check for PyObject_Length()
+        } else if constexpr (util::is_pyobject<Container>) {
+            if (PyObject_HasAttrString(container, "__len__")) {
+                Py_ssize_t size = PyObject_Length(container);
+                if (size == -1 && PyErr_Occurred()) {
+                    PyErr_Clear();  // ignore error
+                    return std::nullopt;
+                }
+                return std::make_optional(size);
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    /* Get the size at which to initialize a list based on a given iterable and
+    optional fixed size parameter. */
+    template <typename Container>
+    static std::optional<size_t> get_init_size(
+        const Container& container,
+        std::optional<size_t> max_size
+    ) {
+        // if max_size is specified, use that
+        if (max_size.has_value()) {
+            return max_size;
+        }
+
+        // otherwise, try to get the size of the container and round up
+        std::optional<size_t> size = get_size(container);
+        if (size.has_value()) {
+            size_t rounded = util::next_power_of_two(size.value());
+            return std::make_optional(rounded);
+        }
+
+        // if all else fails, use default size specified by allocator
+        return std::nullopt;
+    }
+
 };
 
 

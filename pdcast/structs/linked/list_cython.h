@@ -200,11 +200,11 @@ private:
 
     /* Select a variant based on constructor arguments. */
     template <typename... Args>
-    inline static ListAlternative select_variant(bool doubly_linked, Args... args) {
-        if (doubly_linked) {
-            return DoubleList(std::forward<Args>(args)...); 
+    inline static ListAlternative select_variant(bool singly_linked, Args&&... args) {
+        if (singly_linked) {
+             return SingleList(std::forward<Args>(args)...);
         }
-        return SingleList(std::forward<Args>(args)...);
+        return DoubleList(std::forward<Args>(args)...);
     }
 
 public:
@@ -224,17 +224,17 @@ public:
     /* Implement LinkedList.__init__() for cases where an input iterable is given. */
     VariantList(
         PyObject* iterable,
-        bool doubly_linked,
-        bool reverse,
         std::optional<size_t> max_size,
-        PyObject* spec
-    ) : variant(select_variant(doubly_linked, iterable, reverse, max_size, spec)),
+        PyObject* spec,
+        bool reverse,
+        bool singly_linked
+    ) : variant(select_variant(singly_linked, iterable, max_size, spec, reverse)),
         lock(*this), weak_ref(*this)
     {}
 
     /* Implement LinkedList.__init__() for cases where no iterable is given. */
-    VariantList(bool doubly_linked, std::optional<size_t> max_size, PyObject* spec) :
-        variant(select_variant(doubly_linked, max_size, spec)),
+    VariantList(std::optional<size_t> max_size, PyObject* spec, bool singly_linked) :
+        variant(select_variant(singly_linked, max_size, spec)),
         lock(*this), weak_ref(*this)
     {}
 

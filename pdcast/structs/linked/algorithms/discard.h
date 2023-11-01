@@ -2,28 +2,51 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_DISCARD_H
 #define BERTRAND_STRUCTS_ALGORITHMS_DISCARD_H
 
-#include <Python.h>  // CPython API
-#include "../core/node.h"  // has_prev<>
-#include "../core/view.h"  // views
-#include "remove.h"  // _drop_setlike(), _drop_relative()
+#include <type_traits>  // std::enable_if_t<>
+#include "../core/node.h"  // NodeTrats
+#include "../core/view.h"  // ViewTrats
 
 
-namespace Ops {
+namespace bertrand {
+namespace structs {
+namespace linked {
+
 
     /* Remove an item from a linked set or dictionary if it is present. */
-    template <typename View>
-    inline void discard(View* view, PyObject* item) {
-        _drop_setlike(view, item, false);  // suppress errors
+    template <
+        typename View,
+        typename Item = typename View::Value
+    >
+    auto discard(View& view, Item& item)
+        -> std::enable_if_t<ViewTraits<View>::setlike, void>
+    {
+        using Node = typename View::Node;
+
+        // search for node
+        Node* curr = view.search(item);
+        if (curr == nullptr) {
+            return;  // item not found
+        }
+
+        // get neighboring nodes
+        Node* prev;
+        if constexpr (NodeTraits<Node>::has_prev) {  // O(1) if doubly-linked
+            prev = curr->prev();
+        } else {
+            auto it = view.begin();
+            while (it.next() != curr) ++it;
+            prev = it.curr();
+        }
+
+        // unlink and free node
+        view.unlink(prev, curr, curr->next());
+        view.recycle(curr);
     }
 
-    /* Remove an item from a linked set or dictionary immediately after the
-    specified sentinel value. */
-    template <typename View>
-    inline void discard_relative(View* view, PyObject* sentinel, Py_ssize_t offset) {
-        _drop_relative(view, sentinel, offset, false);  // suppress errors
-    }
 
-}
+}  // namespace linked
+}  // namespace structs
+}  // namespace bertrand
 
 
 #endif  // BERTRAND_STRUCTS_ALGORITHMS_DISCARD_H include guard

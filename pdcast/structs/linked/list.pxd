@@ -297,16 +297,16 @@ cdef extern from "list_cython.h" namespace "bertrand::structs::cython":
     cdef cppclass VariantList:
         # constructors
         VariantList(
-            bint doubly_linked,
             optional[size_t] max_size,
-            PyObject* spec
+            PyObject* spec,
+            bint doubly_linked
         ) except +
         VariantList(
             PyObject* iterable,
-            bint doubly_linked,
-            bint reverse,
             optional[size_t] max_size,
-            PyObject* spec
+            PyObject* spec,
+            bint reverse,
+            bint doubly_linked
         ) except +
 
         # low level methods

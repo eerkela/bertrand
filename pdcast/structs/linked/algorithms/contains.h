@@ -2,7 +2,6 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_CONTAINS_H
 #define BERTRAND_STRUCTS_ALGORITHMS_CONTAINS_H
 
-#include <Python.h>  // CPython API
 #include <type_traits>  // std::enable_if_t<>
 #include "../core/view.h"  // ViewTraits
 
@@ -13,8 +12,8 @@ namespace linked {
 
 
     /* Check if an item is contained within a linked list. */
-    template <typename View>
-    inline auto contains(View& view, PyObject* item)
+    template <typename View, typename Item = typename View::Value>
+    inline auto contains(View& view, Item& item)
         -> std::enable_if_t<ViewTraits<View>::listlike, bool>
     {
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
@@ -25,8 +24,8 @@ namespace linked {
 
 
     /* Check if an item is contained within a linked set or dictionary. */
-    template <typename View>
-    inline auto contains(View& view, PyObject* item)
+    template <typename View, typename Item = typename View::Value>
+    inline auto contains(View& view, Item& item)
         -> std::enable_if_t<ViewTraits<View>::setlike, bool>
     {
         return view.search(item) != nullptr;

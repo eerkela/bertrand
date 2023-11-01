@@ -119,8 +119,9 @@ public:
 
     /* Create an allocator with an optional fixed size. */
     BaseAllocator(
-        std::optional<size_t> capacity,
         size_t default_capacity,
+        std::optional<size_t> capacity,
+        bool frozen,
         PyObject* specialization
     ) :
         head(nullptr),
@@ -128,7 +129,7 @@ public:
         temp(allocate_temp()),
         capacity(capacity.value_or(default_capacity)),
         occupied(0),
-        frozen(capacity.has_value()),
+        frozen(frozen),
         specialization(specialization)
     {
         
@@ -375,8 +376,12 @@ private:
 public:
 
     /* Create an allocator with an optional fixed size. */
-    ListAllocator(std::optional<size_t> capacity, PyObject* specialization) :
-        Base(capacity, DEFAULT_CAPACITY, specialization),
+    ListAllocator(
+        std::optional<size_t> capacity,
+        bool frozen,
+        PyObject* specialization
+    ) :
+        Base(DEFAULT_CAPACITY, capacity, frozen, specialization),
         array(Base::allocate_array(this->capacity)),
         free_list(std::make_pair(nullptr, nullptr))
     {}
@@ -672,9 +677,8 @@ private:
     /* Adjust the input to a constructor's `capacity` argument to account for double
     hashing, maximum load factor, and strict power of two table sizes. */
     inline static std::optional<size_t> adjust_size(std::optional<size_t> capacity) {
-        // ignore null
         if (!capacity.has_value()) {
-            return std::nullopt;
+            return std::nullopt;  // do not adjust
         }
 
         // check if capacity is a power of two
@@ -821,8 +825,12 @@ private:
 public:
 
     /* Create an allocator with an optional fixed size. */
-    HashAllocator(std::optional<size_t> capacity, PyObject* specialization) :
-        Base(adjust_size(capacity), DEFAULT_CAPACITY, specialization),
+    HashAllocator(
+        std::optional<size_t> capacity,
+        bool frozen,
+        PyObject* specialization
+    ) :
+        Base(DEFAULT_CAPACITY, adjust_size(capacity), frozen, specialization),
         array(Base::allocate_array(this->capacity)),
         flags(allocate_flags(this->capacity)),
         tombstones(0),

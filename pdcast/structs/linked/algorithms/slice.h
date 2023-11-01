@@ -16,16 +16,14 @@
 namespace bertrand {
 namespace structs {
 namespace linked {
-namespace algorithms {
 
 
-namespace list {
-
+    /* Forward declarations. */
     template <typename View>
-    class SliceIndices;  // forward declaration
-
+    class SliceIndices;
     template <typename List>
-    class SliceProxy;  // forward declaration
+    class SliceProxy;
+
 
     /* Normalize slice indices, applying Python-style wraparound and bounds
     checking. */
@@ -38,8 +36,8 @@ namespace list {
     ) {
         // normalize slice indices
         long long size = static_cast<long long>(view.size());
-        long long default_start = (step.value_or(0) < 0) ? (size - 1) : (0);
-        long long default_stop = (step.value_or(0) < 0) ? (-1) : (size);
+        long long default_start = step.value_or(0) < 0 ? size - 1 : 0;
+        long long default_stop = step.value_or(0) < 0 ? -1 : size;
         long long default_step = 1;
 
         // normalize step
@@ -53,10 +51,10 @@ namespace list {
         if (start_ < 0) {
             start_ += size;
             if (start_ < 0) {
-                start_ = (step_ < 0) ? (-1) : (0);
+                start_ = step_ < 0 ? -1 : 0;
             }
         } else if (start_ >= size) {
-            start_ = (step_ < 0) ? (size - 1) : (size);
+            start_ = step_ < 0 ? size - 1 : size;
         }
 
         // normalize stop index
@@ -64,10 +62,10 @@ namespace list {
         if (stop_ < 0) {
             stop_ += size;
             if (stop_ < 0) {
-                stop_ = (step_ < 0) ? -1 : 0;
+                stop_ = step_ < 0 ? -1 : 0;
             }
         } else if (stop_ > size) {
-            stop_ = (step_ < 0) ? (size - 1) : (size);
+            stop_ = step_ < 0 ? size - 1 : size;
         }
 
         // get length of slice
@@ -79,6 +77,7 @@ namespace list {
         // return as SliceIndices
         return SliceIndices<View>(start_, stop_, step_, length, size);
     }
+
 
     /* Normalize a Python slice object, applying Python-style wraparound and bounds
     checking. */
@@ -111,13 +110,18 @@ namespace list {
     }
 
 
+    // TODO: only enable if List::View is listlike
+
+
     /* Get a proxy for a slice within the list. */
     template <typename List, typename... Args>
     SliceProxy<List> slice(List& list, Args&&... args) {
         return SliceProxy(
-            list, normalize_slice(list.view, std::forward<Args>(args)...)
+            list,
+            normalize_slice(list.view, std::forward<Args>(args)...)
         );
     }
+
 
     /* A simple class representing the normalized indices needed to construct a slice
     from a linked data structure. */
@@ -125,22 +129,13 @@ namespace list {
     class SliceIndices {
     public:
 
-        /* Get the original indices that were supplied to the constructor. */
-        const long long start;
-        const long long stop;
-        const long long step;
-        const size_t abs_step;
-
-        /* Get the first and last included indices. */
-        size_t first;
-        size_t last;
-
-        /* Get the number of items included in the slice. */
-        const size_t length;
-
-        /* Check if the first and last indices conform to the expected step size. */
-        bool inverted;
-        bool backward;
+        /* Slice indices. */
+        long long start, stop, step;  // original indices supplied to constructor
+        size_t abs_step;  // absolute value of step size
+        size_t first, last;  // first and last indices included in slice
+        size_t length;  // total number of items in slice
+        bool inverted;  // check whether first and last indices confrom to step size
+        bool backward;  // check whether slice is traversed from tail to head
 
         /* Copy constructor. */
         SliceIndices(const SliceIndices& other) :
@@ -156,9 +151,33 @@ namespace list {
             length(other.length), inverted(other.inverted), backward(other.backward)
         {}
 
-        /* Assignment operators deleted due to presence of const members. */
-        SliceIndices& operator=(const SliceIndices& other) = delete;
-        SliceIndices& operator=(SliceIndices&& other) = delete;
+        /* Copy assignment operator. */
+        SliceIndices& operator=(const SliceIndices& other) {
+            start = other.start;
+            stop = other.stop;
+            step = other.step;
+            abs_step = other.abs_step;
+            first = other.first;
+            last = other.last;
+            length = other.length;
+            inverted = other.inverted;
+            backward = other.backward;
+            return *this;
+        }
+
+        /* Move assignment operator. */
+        SliceIndices& operator=(SliceIndices&& other) {
+            start = other.start;
+            stop = other.stop;
+            step = other.step;
+            abs_step = other.abs_step;
+            first = other.first;
+            last = other.last;
+            length = other.length;
+            inverted = other.inverted;
+            backward = other.backward;
+            return *this;
+        }
 
     private:
         template <typename _View>
@@ -173,11 +192,11 @@ namespace list {
         friend SliceIndices<_View> normalize_slice(_View& view, PyObject* py_slice);
 
         SliceIndices(
-            const long long start,
-            const long long stop,
-            const long long step,
-            const size_t length,
-            const size_t view_size
+            long long start,
+            long long stop,
+            long long step,
+            size_t length,
+            size_t view_size
         ) : start(start), stop(stop), step(step), abs_step(llabs(step)),
             first(0), last(0), length(length), inverted(false), backward(false)
         {
@@ -203,24 +222,25 @@ namespace list {
             size_t view_size
         ) {
             // if doubly-linked, start at whichever end is closest to slice boundary
-            if constexpr (View::Node::doubly_linked) {
+            if constexpr (NodeTraits<typename View::Node>::has_prev) {
                 long long size = static_cast<long long>(view_size);
-                if (
+                bool cond = (
                     (step > 0 && start <= size - closed) ||
                     (step < 0 && size - start <= closed)
-                ) {
-                    return std::make_pair(start, closed);
-                }
-                return std::make_pair(closed, start);
+                );
+                return cond ?
+                    std::make_pair(start, closed) :
+                    std::make_pair(closed, start);
             }
 
             // if singly-linked, always start from head of list
-            if (step > 0) {
-                return std::make_pair(start, closed);
-            }
-            return std::make_pair(closed, start);
+            return step > 0 ?
+                std::make_pair(start, closed) :
+                std::make_pair(closed, start);
         }
+
     };
+
 
     /* A proxy for a slice within a list, as returned by the slice() factory method. */
     template <typename List>
@@ -643,10 +663,6 @@ namespace list {
     };
 
 
-}  // namespace list
-
-
-}  // namespace algorithms
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand

@@ -122,10 +122,10 @@ cdef class LinkedList:
     def __init__(
         self,
         items: Iterable[object] | None = None,
-        doubly_linked: bool = True,
-        reverse: bool = False,
         max_size: int = None,
         spec: object | None = None,
+        reverse: bool = False,
+        singly_linked: bool = False,
     ):
         cdef optional[size_t] c_max_size
         cdef PyObject* c_spec
@@ -144,10 +144,10 @@ cdef class LinkedList:
 
         # init variant
         if items is None:  # empty
-            self.variant.construct(<bint>doubly_linked, c_max_size, c_spec)
+            self.variant.construct(c_max_size, c_spec, <bint>singly_linked)
         else:  # unpack iterable
             self.variant.construct(
-                <PyObject*>items, <bint>doubly_linked, <bint>reverse, c_max_size, c_spec
+                <PyObject*>items, c_max_size, c_spec, <bint>reverse, <bint>singly_linked
             )
 
     @staticmethod
