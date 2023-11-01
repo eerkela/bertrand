@@ -8,6 +8,7 @@
 #include <stack>  // std::stack
 
 #include "core/view.h"
+#include "algorithms/add.h"
 #include "algorithms/append.h"
 #include "algorithms/clear.h"
 #include "algorithms/contains.h"
@@ -70,13 +71,19 @@ class LinkedList :
     public Repeatable<LinkedList<NodeType, SortPolicy, LockPolicy>>,
     public Lexicographic<LinkedList<NodeType, SortPolicy, LockPolicy>>
 {
+    using Base = LinkedBase<linked::ListView<NodeType>, LockPolicy>;
+
 public:
     using View = linked::ListView<NodeType>;
     using Node = typename View::Node;
     using Value = typename Node::Value;
-    using Base = LinkedBase<View, LockPolicy>;
 
-    // TODO: type aliases for Iterator, doubly_linked, etc.
+    template <linked::Direction dir>
+    using Iterator = typename View::template Iterator<dir>;
+    template <linked::Direction dir>
+    using ConstIterator = typename View::template ConstIterator<dir>;
+
+    // TODO: type aliases for doubly_linked, etc.
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -145,52 +152,53 @@ public:
      */
 
     /* Append an item to the end of a list. */
-    inline void append(PyObject* item, bool left = false) {
-        IList::append(this->view, item, left);  // append.h
+    inline void append(Value& item, bool left = false) {
+        linked::append(this->view, item, left);
     }
 
     /* Insert an item into a list at the specified index. */
-    template <typename T>
-    inline void insert(T index, PyObject* item) {
-        IList::insert(this->view, index, item);
+    template <typename Index>
+    inline void insert(Index index, Value& item) {
+        linked::insert(this->view, index, item);
     }
 
     /* Extend a list by appending elements from the iterable. */
-    inline void extend(PyObject* items, bool left = false) {
-        IList::extend(this->view, items, left);  // extend.h
+    template <typename Container>
+    inline void extend(Container& items, bool left = false) {
+        linked::extend(this->view, items, left);
     }
 
     /* Get the index of an item within a list. */
-    template <typename T>
-    inline size_t index(PyObject* item, T start = 0, T stop = -1) const {
-        return IList::index(this->view, item, start, stop);
+    template <typename Index>
+    inline size_t index(Value& item, Index start = 0, Index stop = -1) const {
+        return linked::index(this->view, item, start, stop);
     }
 
     /* Count the number of occurrences of an item within a list. */
     template <typename T>
-    inline size_t count(PyObject* item, T start = 0, T stop = -1) const {
-        return IList::count(this->view, item, start, stop);
+    inline size_t count(Value& item, T start = 0, T stop = -1) const {
+        return linked::count(this->view, item, start, stop);
     }
 
     /* Check if the list contains a certain item. */
-    inline bool contains(PyObject* item) const {
-        return IList::contains(this->view, item);
+    inline bool contains(Value& item) const {
+        return linked::contains(this->view, item);
     }
 
     /* Remove the first occurrence of an item from a list. */
-    inline void remove(PyObject* item) {
-        IList::remove(this->view, item);
+    inline void remove(Value& item) {
+        linked::remove(this->view, item);
     }
 
     /* Remove an item from a list and return its value. */
-    template <typename T>
-    inline PyObject* pop(T index) {
-        return IList::pop(this->view, index);
+    template <typename Index>
+    inline Value pop(Index index) {
+        return linked::pop(this->view, index);
     }
 
     /* Remove all elements from a list. */
     inline void clear() {
-        IList::clear(this->view);
+        this->view.clear();
     }
 
     /* Return a shallow copy of the list. */
@@ -206,12 +214,12 @@ public:
 
     /* Reverse a list in-place. */
     void reverse() {
-        IList::reverse(this->view);
+        linked::reverse(this->view);
     }
 
     /* Rotate a list to the right by the specified number of steps. */
     void rotate(long long steps = 1) {
-        IList::rotate(this->view, steps);
+        linked::rotate(this->view, steps);
     }
 
     ///////////////////////

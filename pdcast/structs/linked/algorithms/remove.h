@@ -5,27 +5,26 @@
 #include <Python.h>  // CPython API
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
+#include <type_traits>  // std::enable_if_t<>
 #include "../../util/iter.h"  // iter()
 #include "../../util/repr.h"  // repr()
 #include "../core/node.h"  // NodeTraits
+#include "../core/view.h"  // ViewTraits
 
 
 namespace bertrand {
 namespace structs {
 namespace linked {
-namespace algorithms {
 
-
-//////////////////////
-////    PUBLIC    ////
-//////////////////////
-
-
-namespace list {
 
     /* Remove the first occurrence of an item from a linked list. */
-    template <typename View>
-    void remove(View& view, PyObject* item) {
+    template <
+        typename View,
+        typename Item = typename View::Value
+    >
+    auto remove(View& view, Item& item)
+        -> std::enable_if_t<ViewTraits<View>::listlike, void>
+    {
         using Node = typename View::Node;
         using util::iter;
 
@@ -44,25 +43,20 @@ namespace list {
         throw std::invalid_argument(msg.str());  
     }
 
-}  // namespace list
 
+    // /* Remove an item from a linked set or dictionary. */
+    // template <typename View>
+    // inline void remove(View& view, PyObject* item) {
+    //     _drop_setlike(view, item, true);  // propagate errors
+    // }
 
-namespace set {
+    // /* Remove an item from a linked set or dictionary relative to a given sentinel
+    // value. */
+    // template <typename View>
+    // inline void remove_relative(View& view, PyObject* sentinel, Py_ssize_t offset) {
+    //     _drop_relative(view, sentinel, offset, true);  // propagate errors
+    // }
 
-    /* Remove an item from a linked set or dictionary. */
-    template <typename View>
-    inline void remove(View& view, PyObject* item) {
-        _drop_setlike(view, item, true);  // propagate errors
-    }
-
-    /* Remove an item from a linked set or dictionary relative to a given sentinel
-    value. */
-    template <typename View>
-    inline void remove_relative(View& view, PyObject* sentinel, Py_ssize_t offset) {
-        _drop_relative(view, sentinel, offset, true);  // propagate errors
-    }
-
-}  // namespace set
 
 
 ///////////////////////
@@ -154,7 +148,6 @@ void _drop_relative(View& view, PyObject* sentinel, Py_ssize_t offset, bool rais
 }
 
 
-}  // namespace algorithms
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand

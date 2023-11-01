@@ -18,16 +18,6 @@ namespace algorithms {
 //////////////////////
 
 
-namespace list {
-
-    template <typename View>
-    inline void clear(View& view) {
-        view.clear();
-    }
-
-}  // namespace list
-
-
 namespace Relative {
 
     /* Remove a sequence of items from a linked set or dictionary relative to a

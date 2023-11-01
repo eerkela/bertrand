@@ -3,74 +3,62 @@
 #define BERTRAND_STRUCTS_ALGORITHMS_POP_H
 
 #include <tuple>  // std::tuple
+#include <type_traits>  // std::enable_if_t<>
 #include <Python.h>  // CPython API
+#include "../core/view.h"  // ViewTraits
 #include "position.h"  // position()
 
 
 namespace bertrand {
 namespace structs {
 namespace linked {
-namespace algorithms {
 
-
-//////////////////////
-////    PUBLIC    ////
-//////////////////////
-
-
-namespace list {
 
     /* Pop an item from a linked list, set, or dictionary at the given index. */
-    template <typename View, typename T>
-    PyObject* pop(View& view, T index) {
-        return position(view, index).pop();
+    template <typename View, typename Index>
+    inline auto pop(View& view, Index index)
+        -> std::enable_if_t<ViewTraits<View>::listlike, typename View::Value>
+    {
+        return algorithms::list::position(view, index).pop();
     }
 
-}  // namespace list
 
+    // /* Pop an item from a linked list, set, or dictionary relative to a given
+    // sentinel value. */
+    // template <typename View>
+    // PyObject* pop_relative(View& view, PyObject* sentinel, Py_ssize_t offset) {
+    //     using Node = typename View::Node;
 
-namespace set {
+    //     // ensure offset is nonzero
+    //     if (offset == 0) {
+    //         PyErr_SetString(PyExc_ValueError, "offset must be non-zero");
+    //         return nullptr;
+    //     }
 
-    /* Pop an item from a linked list, set, or dictionary relative to a given
-    sentinel value. */
-    template <typename View>
-    PyObject* pop_relative(View& view, PyObject* sentinel, Py_ssize_t offset) {
-        using Node = typename View::Node;
+    //     // search for sentinel
+    //     Node* node = view.search(sentinel);
+    //     if (node == nullptr) {
+    //         PyErr_Format(PyExc_ValueError, "%R is not in the set", sentinel);
+    //         return nullptr;
+    //     }
 
-        // ensure offset is nonzero
-        if (offset == 0) {
-            PyErr_SetString(PyExc_ValueError, "offset must be non-zero");
-            return nullptr;
-        }
+    //     // walk according to offset
+    //     std::tuple<Node*, Node*, Node*> bounds = relative_neighbors(
+    //         &view, node, offset, false
+    //     );
+    //     Node* prev = std::get<0>(bounds);
+    //     Node* curr = std::get<1>(bounds);
+    //     Node* next = std::get<2>(bounds);
+    //     if (prev == nullptr  && curr == nullptr && next == nullptr) {
+    //         // walked off end of list
+    //         PyErr_Format(PyExc_IndexError, "offset %zd is out of range", offset);
+    //         return nullptr;  // propagate
+    //     }
 
-        // search for sentinel
-        Node* node = view.search(sentinel);
-        if (node == nullptr) {
-            PyErr_Format(PyExc_ValueError, "%R is not in the set", sentinel);
-            return nullptr;
-        }
+    //     // pop node between boundaries
+    //     return _pop_node(view, prev, curr, next);
+    // }
 
-        // walk according to offset
-        std::tuple<Node*, Node*, Node*> bounds = relative_neighbors(
-            &view, node, offset, false
-        );
-        Node* prev = std::get<0>(bounds);
-        Node* curr = std::get<1>(bounds);
-        Node* next = std::get<2>(bounds);
-        if (prev == nullptr  && curr == nullptr && next == nullptr) {
-            // walked off end of list
-            PyErr_Format(PyExc_IndexError, "offset %zd is out of range", offset);
-            return nullptr;  // propagate
-        }
-
-        // pop node between boundaries
-        return _pop_node(view, prev, curr, next);
-    }
-
-}  // namespace set
-
-
-namespace dict {
 
     /* Pop a key from a linked dictionary and return its corresponding value. */
     template <typename View>
@@ -110,7 +98,6 @@ namespace dict {
         return _pop_node(view, prev, curr, next);
     }
 
-}  // namespace dict
 
 
 ///////////////////////
@@ -132,7 +119,6 @@ inline PyObject* _pop_node(View& view, Node* prev, Node* curr, Node* next) {
 }
 
 
-}  // namespace algorithms
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand

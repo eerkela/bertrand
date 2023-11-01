@@ -3,22 +3,27 @@
 #define BERTRAND_STRUCTS_ALGORITHMS_COUNT_H
 
 #include <cstddef>  // size_t
+#include <type_traits>  // std::enable_if_t<>
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
+#include "../core/view.h"  // ViewTraits
 #include "position.h"  // normalize_index()
 
 
 namespace bertrand {
 namespace structs {
 namespace linked {
-namespace algorithms {
 
-
-namespace list {
 
     /* Count the number of occurrences of an item within a linked list. */
-    template <typename View, typename T>
-    size_t count(const View& view, PyObject* item, T start, T stop) {
+    template <
+        typename View,
+        typename Index,
+        typename Item = typename View::Value
+    >
+    auto count(const View& view, Item& item, Index start, Index stop)
+        -> std::enable_if_t<ViewTraits<View>::listlike, size_t>
+    {
         using Node = typename View::Node;
 
         // trivial case: empty list
@@ -27,8 +32,8 @@ namespace list {
         }
 
         // normalize start/stop indices
-        size_t norm_start = normalize_index(start, view.size(), true);
-        size_t norm_stop = normalize_index(stop, view.size(), true);
+        size_t norm_start = algorithms::list::normalize_index(start, view.size(), true);
+        size_t norm_stop = algorithms::list::normalize_index(stop, view.size(), true);
         if (norm_start > norm_stop) {
             throw std::invalid_argument(
                 "start index cannot be greater than stop index"
@@ -78,14 +83,16 @@ namespace list {
         return count;
     }
 
-}  // namespace list
-
-
-namespace set {
 
     /* Count the number of occurrences of an item within a linked set or dictionary. */
-    template <typename View, typename T>
-    size_t count(View& view, PyObject* item, T start, T stop) {
+    template <
+        typename View,
+        typename Index,
+        typename Item = typename View::Value
+    >
+    auto count(View& view, Item& item, Index start, Index stop)
+        -> std::enable_if_t<ViewTraits<View>::setlike, size_t>
+    {
         using Node = typename View::Node;
 
         // allow Python-style negative indexing + boundschecking
@@ -119,10 +126,7 @@ namespace set {
         return 0;
     }
 
-}  // namespace set
 
-
-}  // namespace algorithms
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand

@@ -4,21 +4,22 @@
 
 #include <cstddef>  // size_t
 #include <cmath>  // abs()
+#include <type_traits>  // std::enable_if_t<>
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
+#include "../core/view.h"  // ViewTraits
 
 
 namespace bertrand {
 namespace structs {
 namespace linked {
-namespace algorithms {
 
-
-namespace list {
 
     /* Rotate a linked list to the right by the specified number of steps. */
     template <typename View>
-    void rotate(View& view, long long steps) {
+    auto rotate(View& view, long long steps)
+        -> std::enable_if_t<ViewTraits<View>::listlike, void>
+    {
         using Node = typename View::Node;
 
         // normalize steps
@@ -77,10 +78,7 @@ namespace list {
         view.tail(new_tail);
     }
 
-}  // namespace list
 
-
-}  // namespace algorithms
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand

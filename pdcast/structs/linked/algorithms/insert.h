@@ -3,31 +3,28 @@
 #define BERTRAND_STRUCTS_ALGORITHMS_INSERT_H
 
 #include <cstddef>  // size_t
+#include <type_traits>  // std::enable_if_t<>
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
+#include "../core/view.h"  // ViewTraits
 #include "position.h"  // position()
 
 
 namespace bertrand {
 namespace structs {
 namespace linked {
-namespace algorithms {
-
-
-//////////////////////
-////    PUBLIC    ////
-//////////////////////
-
-
-namespace list {
 
     /* Insert an item into a linked list, set, or dictionary at the given index. */
-    template <typename View, typename T>
-    inline void insert(View& view, T index, PyObject* item) {
-        position(view, index).insert(item);
+    template <
+        typename View,
+        typename Index,
+        typename Item = typename View::Value
+    >
+    inline auto insert(View& view, Index index, Item& item)
+        -> std::enable_if_t<ViewTraits<View>::listlike, void>
+    {
+        algorithms::list::position(view, index).insert(item);
     }
-
-}  // namespace list
 
 
 // namespace Relative {
@@ -115,7 +112,6 @@ namespace list {
 // }
 
 
-}  // namespace algorithms
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand

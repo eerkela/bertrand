@@ -3,25 +3,25 @@
 #define BERTRAND_STRUCTS_ALGORITHMS_APPEND_H
 
 #include <Python.h>  // CPython API
+#include <type_traits>  // std::enable_if_t<>
+#include "../core/view.h"  // ViewTraits
 
 
 namespace bertrand {
 namespace structs {
 namespace linked {
-namespace algorithms {
 
-
-namespace list {
 
     /* Add an item to the end of a linked list, set, or dictionary. */
-    template <typename View, typename Value = typename View::Value>
-    void append(View& view, Value& item, bool left) {
+    template <
+        typename View,
+        typename Item = typename View::Value
+    >
+    inline auto append(View& view, Item& item, bool left)
+        -> std::enable_if_t<ViewTraits<View>::listlike, void>
+    {
         using Node = typename View::Node;
-
-        // allocate a new node
         Node* node = view.node(item);
-
-        // link to beginning/end of list
         if (left) {
             view.link(nullptr, node, view.head());
         } else {
@@ -29,25 +29,18 @@ namespace list {
         }
     }
 
-}  // namespace list
-
-
-namespace dict {
 
     /* Add a key-value pair to the end of a linked dictionary. */
-    template <typename View>
-    void append(
-        View& view,
-        PyObject* key,
-        PyObject* value,
-        bool left
-    ) {
+    template <
+        typename View,
+        typename Key = typename View::Value,
+        typename Value = typename View::MappedValue
+    >
+    inline auto append(View& view, Key& key, Value& value, bool left)
+        -> std::enable_if_t<ViewTraits<View>::dictlike, void>
+    {
         using Node = typename View::Node;
-
-        // allocate a new node (use 2-argument init())
-        Node* node = view.node(key, value);
-
-        // link to beginning/end of list
+        Node* node = view.node(key, value);  // use 2-argument init
         if (left) {
             view.link(nullptr, node, view.head);
         } else {
@@ -55,10 +48,7 @@ namespace dict {
         }
     }
 
-}  // namespace dict
 
-
-}  // namespace algorithms
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand

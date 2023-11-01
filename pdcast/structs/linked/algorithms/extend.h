@@ -25,14 +25,15 @@
 namespace bertrand {
 namespace structs {
 namespace linked {
-namespace algorithms {
-
-
-namespace list {
 
     /* Add multiple items to the end of a list, set, or dictionary. */
-    template <typename View, typename Iterable>
-    inline void extend(View& view, Iterable& items, bool left) {
+    template <
+        typename View,
+        typename Container
+    >
+    inline auto extend(View& view, Container& items, bool left)
+        -> std::enable_if_t<ViewTraits<View>::listlike, void>
+    {
         using Node = typename View::Node;
         using util::iter;
 
@@ -75,10 +76,6 @@ namespace list {
         }
     }
 
-}
-
-
-namespace set {
 
     /* Insert elements into a linked set or dictionary relative to the given sentinel
     value. */
@@ -92,8 +89,6 @@ namespace set {
     ) {
         _extend_relative(view, items, sentinel, offset, reverse, false);
     }
-
-}
 
 
 ///////////////////////
@@ -347,7 +342,6 @@ void _undo_right_to_left(
 }
 
 
-}  // namespace algorithms
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand

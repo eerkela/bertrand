@@ -5,23 +5,28 @@
 #include <cstddef>  // size_t
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
+#include <type_traits>  // std::enable_if_t<>
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
 #include "position.h"  // normalize_index()
 #include "../../util/repr.h"  // repr()
+#include "../core/view.h"  // ViewTraits
 
 
 namespace bertrand {
 namespace structs {
 namespace linked {
-namespace algorithms {
 
-
-namespace list {
 
     /* Get the index of an item within a linked list. */
-    template <typename View, typename T>
-    size_t index(const View& view, PyObject* item, T start, T stop) {
+    template <
+        typename View,
+        typename Index,
+        typename Item = typename View::Value
+    >
+    auto index(const View& view, Item& item, Index start, Index stop)
+        -> std::enable_if_t<ViewTraits<View>::listlike, size_t>
+    {
         using Node = typename View::Node;
 
         // trivial case: empty list
@@ -32,8 +37,8 @@ namespace list {
         }
 
         // normalize start/stop indices
-        size_t norm_start = normalize_index(start, view.size(), true);
-        size_t norm_stop = normalize_index(stop, view.size(), true);
+        size_t norm_start = algorithms::list::normalize_index(start, view.size(), true);
+        size_t norm_stop = algorithms::list::normalize_index(stop, view.size(), true);
         if (norm_start > norm_stop) {
             throw std::invalid_argument(
                 "start index cannot be greater than stop index"
@@ -99,7 +104,6 @@ namespace list {
         throw std::invalid_argument(msg.str());
     }
 
-}
 
 
 // namespace set {
@@ -196,7 +200,6 @@ namespace list {
 // }
 
 
-}  // namespace algorithms
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand

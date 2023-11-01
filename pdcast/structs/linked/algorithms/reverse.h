@@ -2,18 +2,20 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_REVERSE_H
 #define BERTRAND_STRUCTS_ALGORITHMS_REVERSE_H
 
+#include <type_traits>  // std::enable_if_t<>
+#include "../core/view.h"  // ViewTraits
+
 
 namespace bertrand {
 namespace structs {
 namespace linked {
-namespace algorithms {
 
-
-namespace list {
 
     /* Reverse a linked list in-place. */
     template <typename View>
-    void reverse(View& view) {
+    auto reverse(View& view)
+        -> std::enable_if_t<ViewTraits<View>::listlike, void>
+    {
         using Node = typename View::Node;
 
         // save original `head` pointer
@@ -44,10 +46,7 @@ namespace list {
         view.tail(head);
     }
 
-}  // namespace list
 
-
-}  // namespace algorithms
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand

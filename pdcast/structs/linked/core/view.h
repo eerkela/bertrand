@@ -31,6 +31,13 @@ namespace linked {
 ////////////////////
 
 
+/* Empty tag class marking a low-level view for a linked data structure.
+
+NOTE: this class is inherited by all views, and can be used for easy SFINAE checks via
+std::is_base_of, without requiring any foreknowledge of template parameters. */
+class ViewTag {};
+
+
 /* Base class representing the low-level core of a linked data structure.
 
 Views are responsible for managing the memory of and links between the underlying
@@ -64,7 +71,7 @@ flexible and highly-optimized data structures, without worrying about low-level
 implementation details.
 */
 template <typename Derived, typename Allocator>
-class BaseView {
+class BaseView : public ViewTag {
 public:
     using Node = typename Allocator::Node;
     using Value = typename Node::Value;
@@ -232,9 +239,12 @@ public:
         this->allocator.defragment();
     }
 
-    /* Get the total amount of memory consumed by the list. */
+    /* Get the total amount of dynamic memory consumed by the list.
+
+    NOTE: this does not include any stack memory used by the list itself, which must be
+    accounted for separately in the parent data structure (if applicable). */
     inline size_t nbytes() const noexcept {
-        return sizeof(*this) + sizeof(Node) * allocator.capacity;
+        return allocator.nbytes();
     }
 
     /* Get the current specialization for Python objects within the list. */
@@ -469,6 +479,19 @@ public:
     // inherit constructors
     using Base::Base;
     using Base::operator=;
+
+    /* Construct a new node for the set.
+    
+    NOTE: this accepts an optional `exist_ok` template parameter that controls whether
+    or not the allocator will throw an exception if the value already exists in the set.
+    The default is false, meaning that an exception will be thrown if a duplicate node
+    is requested. */
+    template <bool exist_ok = false, typename... Args>
+    inline Node* node(Args&&... args) const {
+        return this->allocator.template create<exist_ok, Args&&...>(
+            std::forward<Args>(args)...
+        );
+    }
 
     /* Search the set for a particular node/value. */
     template <typename T>
@@ -1086,41 +1109,34 @@ class ViewTraits {
 
     /* Detects whether the templated type has a search(Value&) method, indicating
     set-like behavior. */
-    struct _is_setlike {
-        /* Specialization for types that have a search(Value&) method. */
-        template <typename T, typename Value = typename T::Value>
+    struct _setlike {
+        template <typename T>
         static constexpr auto test(T* t) -> decltype(
-            t->search(std::declval<Value>()),
+            t->search(std::declval<typename T::Value>()),
             std::true_type()
         );
-
-        /* Fallback for types that don't have a search() method. */
         template <typename T>
         static constexpr auto test(...) -> std::false_type;
-
         static constexpr bool value = decltype(test<ViewType>(nullptr))::value;
     };
 
     /* Detects whether the templated type has a lookup(Value&) method, indicating
     dict-like behavior. */
-    struct _is_dictlike {
-        /* Specialization for types that have a lookup(Value&) method. */
-        template <typename T, typename Value = typename T::Value>
+    struct _dictlike {
+        template <typename T>
         static constexpr auto test(T* t) -> decltype(
-            t->lookup(std::declval<Value>()),
+            t->lookup(std::declval<typename T::Value>()),
             std::true_type()
         );
-
-        /* Fallback for types that don't have a lookup() method. */
         template <typename T>
         static constexpr auto test(...) -> std::false_type;
-
         static constexpr bool value = decltype(test<ViewType>(nullptr))::value;
     };
 
 public:
-    static constexpr bool is_setlike = _is_setlike::value;
-    static constexpr bool is_dictlike = _is_dictlike::value;
+    static constexpr bool listlike = std::is_base_of_v<ViewTag, ViewType>;
+    static constexpr bool setlike = listlike && _setlike::value;
+    static constexpr bool dictlike = listlike && _dictlike::value;
 };
 
 

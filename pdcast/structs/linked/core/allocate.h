@@ -938,7 +938,7 @@ public:
     }
 
     /* Construct a new node for the list. */
-    template <typename... Args>
+    template <bool exist_ok = false, typename... Args>
     Node* create(Args&&... args) {
         // allocate into temporary node
         Base::init_node(this->temp, std::forward<Args>(args)...);
@@ -978,9 +978,13 @@ public:
         while (flag == 0b10) {
             if (lookup.eq(this->temp->value())) {
                 this->temp->~Node();  // in-place destructor
-                std::ostringstream msg;
-                msg << "duplicate key: " << util::repr(this->temp->value());
-                throw std::invalid_argument(msg.str());
+                if constexpr (exist_ok) {
+                    return &lookup;
+                } else {
+                    std::ostringstream msg;
+                    msg << "duplicate key: " << util::repr(this->temp->value());
+                    throw std::invalid_argument(msg.str());
+                }
             }
 
             // advance to next index
