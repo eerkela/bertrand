@@ -24,7 +24,7 @@ auto sort(View& view, Func key, bool reverse)
     -> std::enable_if_t<ViewTraits<View>::listlike, void>
 {
     using Node = typename View::Node;
-    using Decorated = Keyed<Node, Func>;
+    using KeyNode = Keyed<Node, Func>;
 
     // trivial case: empty view
     if (view.size() == 0) {
@@ -38,9 +38,9 @@ auto sort(View& view, Func key, bool reverse)
     }
 
     // otherwise, decorate each node with the computed key function
-    ListView<Decorated> decorated(view.size(), nullptr);  // allocated to exact size
+    ListView<KeyNode> decorated(view.size(), nullptr);  // allocated to exact size
     for (auto it = view.begin(), end = view.end(); it != end; ++it) {
-        Decorated* node = decorated.node(it.curr(), key);
+        KeyNode* node = decorated.node(it.curr(), key);
         decorated.link(decorated.tail(), node, nullptr);
     }
 
@@ -101,14 +101,13 @@ protected:
     ) {
         Node* curr = temp;  // temporary head of merged list
 
-        // NOTE: the way we merge sublists is by comparing the head of each sublist
-        // and appending the smaller of the two elements to the merged result.  We
-        // repeat this process until one of the sublists has been exhausted, giving us
-        // a sorted list of size `length * 2`.
+        // NOTE: we merge sublists by comparing the head of each sublist and appending
+        // the smaller of the two elements to the merged result, repeating until one of
+        // the sublists has been exhausted, giving a sorted list of size `length * 2`.
         while (left.first != nullptr && right.first != nullptr) {
             bool comp = left.first->lt(right.first->value());  // left < right
 
-            // append the smaller of the two candidates to the merged list
+            // append smaller of two candidates to the merged list
             if (reverse ^ comp) {  // [not] left < right
                 Node::join(curr, left.first);
                 left.first = left.first->next();
@@ -120,7 +119,7 @@ protected:
         }
 
         // NOTE: at this point, one of the sublists has been exhausted, so we can
-        // safely append the remaining nodes to the merged result.
+        // safely append the remaining nodes.
         Node* tail;
         if (left.first != nullptr) {
             Node::join(curr, left.first);
@@ -130,9 +129,9 @@ protected:
             tail = right.second;
         }
 
-        // unlink temporary head from final list and return proper head and tail
+        // unlink temporary node from final list and return proper head and tail
         curr = temp->next();
-        Node::split(temp, curr);  // temp can be reused
+        Node::split(temp, curr);
         return std::make_pair(curr, tail);
     }
 

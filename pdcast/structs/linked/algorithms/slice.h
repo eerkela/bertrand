@@ -1,12 +1,13 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_ALGORITHMS_SLICE_H
-#define BERTRAND_STRUCTS_ALGORITHMS_SLICE_H
+// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_SLICE_H
+#ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_SLICE_H
+#define BERTRAND_STRUCTS_LINKED_ALGORITHMS_SLICE_H
 
 #include <cstddef>  // size_t
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
 #include "../core/iter.h"  // Bidirectional<>
+#include "../core/view.h"  // ViewTraits
 #include "../../util/iter.h"  // iter()
 #include "../../util/except.h"  // type_error()
 #include "../../util/math.h"  // py_modulo()
@@ -110,12 +111,11 @@ namespace linked {
     }
 
 
-    // TODO: only enable if List::View is listlike
-
-
     /* Get a proxy for a slice within the list. */
     template <typename List, typename... Args>
-    SliceProxy<List> slice(List& list, Args&&... args) {
+    auto slice(List& list, Args&&... args)
+        -> std::enable_if_t<ViewTraits<typename List::View>::listlike, SliceProxy<List>>
+    {
         return SliceProxy(
             list,
             normalize_slice(list.view, std::forward<Args>(args)...)
@@ -528,19 +528,6 @@ namespace linked {
             }
         }
 
-        // TODO: SliceProxy might be better off outside the class and templated on the
-        // variant.  It could also have a full battery of iterators.  The reverse
-        // iterators would all use a stack to traverse the list in reverse order.
-
-        // list.slice().iter()
-        // list.slice().iter.reverse()
-        // list.slice().iter.begin()
-        // list.slice().iter.end()
-        // list.slice().iter.rbegin()
-        // list.slice().iter.rend()
-        // list.slice().iter.python()
-        // list.slice().iter.rpython()
-
         /* Return a coupled pair of iterators with a possible length override. */
         inline auto iter(std::optional<size_t> length = std::nullopt) const {
             using Forward = Iterator<Direction::forward>;
@@ -615,7 +602,10 @@ namespace linked {
 
     private:
         template <typename _List, typename... Args>
-        friend SliceProxy<_List> slice(_List& list, Args&&... args);
+        friend auto slice(_List& list, Args&&... args) -> std::enable_if_t<
+            ViewTraits<typename _List::View>::listlike,
+            SliceProxy<_List>
+        >;
 
         List& list;
         const SliceIndices<View> indices;
@@ -668,5 +658,4 @@ namespace linked {
 }  // namespace bertrand
 
 
-
-#endif // BERTRAND_STRUCTS_ALGORITHMS_SLICE_H include guard
+#endif // BERTRAND_STRUCTS_LINKED_ALGORITHMS_SLICE_H

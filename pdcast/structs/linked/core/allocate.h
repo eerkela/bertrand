@@ -380,8 +380,7 @@ public:
         std::optional<size_t> capacity,
         bool frozen,
         PyObject* specialization
-    ) :
-        Base(DEFAULT_CAPACITY, capacity, frozen, specialization),
+    ) : Base(DEFAULT_CAPACITY, capacity, frozen, specialization),
         array(Base::allocate_array(this->capacity)),
         free_list(std::make_pair(nullptr, nullptr))
     {}
@@ -704,6 +703,11 @@ private:
         return result;
     }
 
+    /* A fast modulo operator that exploits a power of two table capacity. */
+    inline static size_t modulo(const size_t a, const size_t b) {
+        return a & (b - 1);  // works for any power of two b
+    }
+
     /* Copy/move the nodes from this allocator into the given array. */
     template <bool move>
     std::pair<Node*, Node*> transfer(Node* other, uint32_t* other_flags) {
@@ -723,7 +727,7 @@ private:
             }
 
             // get index in new array
-            size_t idx = hash % this->capacity;
+            size_t idx = modulo(hash, this->capacity);
             size_t step = (hash % prime) | 1;
             Node* lookup = &other[idx];
             size_t div = idx / 16;
@@ -732,7 +736,7 @@ private:
 
             // handle collisions (NOTE: no need to check for tombstones)
             while (bits & 0b10) {  // node is constructed
-                idx = (idx + step) % this->capacity;
+                idx = modulo(idx + step, this->capacity);
                 lookup = &other[idx];
                 div = idx / 16;
                 mod = idx % 16;
@@ -798,7 +802,7 @@ private:
     Node* _search(const size_t hash, const Value& value) const {
         // get index and step for double hashing
         size_t step = (hash % prime) | 1;
-        size_t idx = hash % this->capacity;
+        size_t idx = modulo(hash, this->capacity);
         Node& lookup = array[idx];
         uint32_t& bits = flags[idx / 16];
         unsigned char flag = (bits >> (idx % 16)) & 0b11;
@@ -812,7 +816,7 @@ private:
             if (flag == 0b10 && eq(lookup->value(), value)) return &lookup;
 
             // advance to next slot
-            idx = (idx + step) % this->capacity;
+            idx = modulo(idx + step, this->capacity);
             lookup = array[idx];
             bits = flags[idx / 16];
             flag = (bits >> (idx % 16)) & 0b11;
@@ -829,8 +833,7 @@ public:
         std::optional<size_t> capacity,
         bool frozen,
         PyObject* specialization
-    ) :
-        Base(DEFAULT_CAPACITY, adjust_size(capacity), frozen, specialization),
+    ) : Base(DEFAULT_CAPACITY, adjust_size(capacity), frozen, specialization),
         array(Base::allocate_array(this->capacity)),
         flags(allocate_flags(this->capacity)),
         tombstones(0),
@@ -972,7 +975,7 @@ public:
         // search for node within hash table
         size_t hash = this->temp->hash();
         size_t step = (hash % prime) | 1;  // double hashing
-        size_t idx = hash % this->capacity;
+        size_t idx = modulo(hash, this->capacity);
         Node& lookup = array[idx];
         size_t div = idx / 16;
         size_t mod = idx % 16;
@@ -996,7 +999,7 @@ public:
             }
 
             // advance to next index
-            idx = (idx + step) % this->capacity;
+            idx = modulo(idx + step, this->capacity);
             lookup = array[idx];
             div = idx / 16;
             mod = idx % 16;
@@ -1024,7 +1027,7 @@ public:
         // look up node in hash table
         size_t hash = node->hash();
         size_t step = (hash % prime) | 1;  // double hashing
-        size_t idx = hash % this->capacity;
+        size_t idx = modulo(hash, this->capacity);
         Node& lookup = array[idx];
         size_t div = idx / 16;
         size_t mod = idx % 16;
@@ -1058,7 +1061,7 @@ public:
             }
 
             // advance to next index
-            idx = (idx + step) % this->capacity;
+            idx = modulo(idx + step, this->capacity);
             lookup = array[idx];
             div = idx / 16;
             mod = idx % 16;

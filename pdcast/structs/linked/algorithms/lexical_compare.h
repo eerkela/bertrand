@@ -2,47 +2,41 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_LEXICAL_COMPARE_H
 #define BERTRAND_STRUCTS_ALGORITHMS_LEXICAL_COMPARE_H
 
-#include <iterator>  // std::begin(), std::end()
-#include <Python.h>  // CPython API
+#include <type_traits>  // std::enable_if_t<>
+#include "../../util/iter.h"  // iter()
+#include "../../util/python.h"  // std::less<>, std::greater<>, std::equal_to<>, etc.
+#include "../core/view.h"  // ViewTraits
 
 
 namespace bertrand {
 namespace structs {
 namespace linked {
-namespace algorithms {
 
-
-namespace list {
 
     /* Compare a view to an */
-    template <typename View, typename T>
-    bool lexical_lt(const View& lhs, const T rhs) {
+    template <typename View, typename Container>
+    auto lexical_lt(const View& lhs, const Container& rhs)
+        -> std::enable_if_t<ViewTraits<View>::listlike, bool>
+    {
         using Node = typename View::Node;
+        auto it_lhs = util::iter(lhs).forward();
+        auto it_rhs = util::iter(rhs).forward();
 
-        // get coupled iterators
-        auto iter_lhs = std::begin(lhs);
-        auto end_lhs = std::end(lhs);
-        auto iter_rhs = std::begin(rhs);
-        auto end_rhs = std::end(rhs);
-
-        // loop until one of the sequences is exhausted
-        while (iter_lhs != end_lhs && iter_rhs != end_rhs) {
-            Node* val = (*iter_lhs)->value();
-            auto comp = *iter_rhs;
+        // compare until one of the sequences is exhausted
+        while (it_lhs != it_lhs.end() && it_rhs != it_rhs.end()) {
+            Node* val = *it_lhs;
+            auto comp = *it_rhs;
             if (val < comp) return true;
             if (comp < val) return false;
-            ++iter_lhs;
-            ++iter_rhs;
+            ++it_lhs;
+            ++it_rhs;
         }
 
         // check if lhs is shorter than rhs
-        return (iter_lhs == end_lhs && iter_rhs != end_rhs);
+        return (it_lhs == it_lhs.end() && it_rhs != it_rhs.end());
     }
 
-}  // namespace list
 
-
-}  // namespace algorithms
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
