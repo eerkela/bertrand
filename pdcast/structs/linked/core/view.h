@@ -20,14 +20,6 @@ namespace structs {
 namespace linked {
 
 
-// TODO: BaseView should support a converting copy/move constructor that accepts
-// another BaseView with any type of allocator.
-
-
-// TODO: maybe sort() should just be generic, rather than casting to ListView.  That
-// would completely eliminate the need for converting copies/moves.
-
-
 ////////////////////
 ////    BASE    ////
 ////////////////////
@@ -385,6 +377,15 @@ public:
         return ConstIterator<Direction::backward>(*this);
     }
 
+    ////////////////////////
+    ////    INTERNAL    ////
+    ////////////////////////
+
+    /* Get the allocator's temporary node. */
+    inline Node* temp() const noexcept {
+        return allocator.temp;
+    }
+
 protected:
     mutable Allocator allocator;  // low-level memory management
 
@@ -426,7 +427,10 @@ protected:
         std::optional<size_t> size = get_size(container);
         if (size.has_value()) {
             size_t rounded = util::next_power_of_two(size.value());
-            return std::make_optional(rounded);
+            return std::make_optional(rounded < Allocator::DEFAULT_CAPACITY ?
+                Allocator::DEFAULT_CAPACITY :
+                rounded
+            );
         }
 
         // if all else fails, use default size specified by allocator

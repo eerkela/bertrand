@@ -49,14 +49,10 @@ class Lexicographic;
 //////////////////////
 
 
-/* Namespace alias for generic list methods/operators. */
-namespace IList = linked::algorithms::list;
-
-
 /* A modular linked list class that mimics the Python list interface in C++. */
 template <
     typename NodeType,
-    typename SortPolicy = IList::MergeSort,
+    typename SortPolicy = linked::MergeSort,
     typename LockPolicy = util::BasicLock
 >
 class LinkedList :
@@ -203,7 +199,7 @@ public:
     /* Sort a list in-place. */
     template <typename Func>
     inline void sort(Func key = nullptr, bool reverse = false) {
-        IList::SortFunc<SortPolicy, Func>::sort(this->view, key, reverse);
+        linked::sort<SortPolicy>(this->view, key, reverse);
     }
 
     /* Reverse a list in-place. */

@@ -1,173 +1,79 @@
-// include guard prevents multiple inclusion
+// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_SORT_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_SORT_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_SORT_H
 
 #include <cstddef>  // size_t
-#include <iostream>  // std::cout, std::endl
-#include <queue>  // std::queue
-#include <optional>  // std::optional
 #include <utility>  // std::pair
-#include <Python.h>  // CPython API
 #include "../core/node.h"  // Keyed<>
-#include "../core/view.h"  // views
-
-
-// TODO: we also need to figure out how to transfer ownership temporarily to a list
-// to apply the sorting algorithm.
+#include "../core/view.h"  // ListView, ViewTraits
 
 
 namespace bertrand {
 namespace structs {
 namespace linked {
-namespace algorithms {
 
-
-namespace list {
 
 //////////////////////
 ////    PUBLIC    ////
 //////////////////////
 
 
-/* A wrapper around a SortPolicy that handles casting to ListView and
-decorating/undecorating according to key functions.  All the SortPolicy has to
-implement is the actual sorting algorithm itself. */
-template <typename SortPolicy, typename Func>
-class SortFunc {
-private:
-    template <typename Node>
+/* Sort a linked list, set, or dictionary in-place. */
+template <typename SortPolicy, typename View, typename Func>
+auto sort(View& view, Func key, bool reverse)
+    -> std::enable_if_t<ViewTraits<View>::listlike, void>
+{
+    using Node = typename View::Node;
     using Decorated = Keyed<Node, Func>;
 
-    /* Apply a key function to a list, decorating it with the computed result. */
-    template <typename Node>
-    inline static ListView<Decorated<Node>> decorate(ListView<Node>& view, Func func) {
-        // create temporary ListView to hold the keyed list (preallocated to exact size)
-        ListView<Decorated<Node>> decorated(view.size(), nullptr);
-
-        // decorate each node in original list
-        for (auto it = view.begin(), end = view.end(); it != end; ++it) {
-            Decorated<Node>* keyed = decorated.node(it.curr(), func);
-            decorated.link(decorated.tail(), keyed, nullptr);
-        }
-        return decorated;
+    // trivial case: empty view
+    if (view.size() == 0) {
+        return;
     }
 
-    /* Rearrange the underlying list in-place to reflect changes from a keyed sort. */
-    template <typename Node>
-    static void undecorate(ListView<Decorated<Node>>& decorated, ListView<Node>& view) {
-        Node* new_head = nullptr;
-        Node* new_tail = nullptr;
-
-        // NOTE: we recycle the decorators as we go in order to avoid a second loop
-        auto it = decorated.begin();
-        auto end = decorated.end();
-        while (it != end) {
-            Node* unwrapped = it.curr()->node();
-
-            // link to sorted list
-            if (new_head == nullptr) {
-                new_head = unwrapped;
-            } else {
-                Node::link(new_tail, unwrapped, nullptr);
-            }
-            new_tail = unwrapped;
-
-            // remove and recycle wrapper
-            decorated.recycle(it.drop());  // NOTE: implicitly advances iterator
-        }
-
-        // update head/tail of sorted list
-        view.head(new_head);
-        view.tail(new_tail);
+    // if no key function is given, sort the view directly
+    if (key == nullptr) {
+        SortPolicy::execute(view, reverse);
+        return;
     }
 
-    /* Execute the sorting algorithm. */
-    template <typename Node>
-    static void execute(ListView<Node>& view, PyObject* key, bool reverse) {
-        // if no key function is given, sort the list in-place
-        if (key == nullptr) {
-            SortPolicy::sort(view, reverse);
-            return;
-        }
-
-        // apply key function to each node in list
-        ListView<Decorated<Node>> decorated = decorate(view, key);
-
-        // sort decorated list
-        SortPolicy::sort(decorated, reverse);
-        if (PyErr_Occurred()) {
-            return;  // propagate without modifying original list
-        }
-
-        // rearrange the original list to reflect the sorted order
-        undecorate(decorated, view);
+    // otherwise, decorate each node with the computed key function
+    ListView<Decorated> decorated(view.size(), nullptr);  // allocated to exact size
+    for (auto it = view.begin(), end = view.end(); it != end; ++it) {
+        Decorated* node = decorated.node(it.curr(), key);
+        decorated.link(decorated.tail(), node, nullptr);
     }
 
-public:
+    // sort the decorated view
+    SortPolicy::execute(decorated, reverse);
 
-    /* Invoke the functor, decorating and sorting the view in-place. */
-    template <template <typename> class ViewType, typename Node>
-    static void sort(ViewType<Node>& view, PyObject* key, bool reverse) {
-        using View = ViewType<Node>;
-        using List = ListView<Node>;
+    // undecorate and reflect changes in original view
+    Node* new_head = nullptr;
+    Node* new_tail = nullptr;
+    for (auto it = decorated.begin(), end = decorated.end(); it != end; ) {
+        Node* unwrapped = it.curr()->node();
 
-        // trivial case: empty view
-        if (view.size() == 0) {
-            return;
+        // link to sorted view
+        if (new_head == nullptr) {
+            new_head = unwrapped;
+        } else {
+            Node::link(new_tail, unwrapped, nullptr);
         }
+        new_tail = unwrapped;
 
-        // if the view is already a ListView, then we can sort it directly
-        if constexpr (std::is_same_v<View, List>) {
-            execute(view, key, reverse);
-            return;
-        }
-
-        // TODO: we might just move the view into a ListView, but that would
-        // require a converting move constructor, which is a bit of a pain.  It might
-        // be what we need to do, though.
-        // TODO: we could also template the ListView on the allocator, and then offer
-        // a move constructor that takes a naked allocator.  That would allow us to
-        // view the list without copying it, transferring ownership from one view to
-        // another.
-        // TODO: Alternatively, we could build really robust copy/move semantics
-        // into the View constructor itself.  This would allow us to keep the
-        // the allocators internal to the view.  We would just assume that they have
-        // the correct structure.  This could possibly be accomplished via
-        // static_assert statements in the templated constructors.
-
-        // TODO: we should probably use both approaches.  We should template the
-        // ListView on the allocator, but default to ListAllocator.  Then we can
-        // provide a copy/move constructor that constructs a ListView around another
-        // view's allocator.  This is not safe, but if used correctly, it should allow
-        // us to sort a view without copying it.  As long as the methods that are used
-        // are valid for the new allocator, everything will compile just fine.
-
-
-        // otherwise, we create a temporary ListView into the view and sort that
-        // instead.
-        List list_view(view.size());  // preallocated to current size
-        list_view.head(view.head());
-        list_view.tail(view.tail());
-        // list_view.size = view.size();  // TODO: size is now private to allocator
-
-        // sort the viewed list in place
-        execute(list_view, key, reverse);
-
-        // free the temporary ListView
-        list_view.head(nullptr);  // avoids calling destructor on nodes
-        list_view.tail(nullptr);
-        // list_view.size = 0;
+        // NOTE: we recycle the decorated nodes as we go to avoid a second loop
+        decorated.recycle(it.drop());  // implicitly advances iterator
     }
 
-};
+    // update head/tail of sorted view
+    view.head(new_head);
+    view.tail(new_tail);
+}
 
 
 ////////////////////////
 ////    POLICIES    ////
 ////////////////////////
-
-
-// TODO: allocate temporary node on the view itself.
 
 
 /* An iterative merge sort algorithm with error recovery. */
@@ -177,16 +83,9 @@ protected:
     /* Walk along the list by the specified number of nodes. */
     template <typename Node>
     inline static Node* walk(Node* curr, size_t length) {
-        // if we're at the end of the list, there's nothing left to traverse
-        if (curr == nullptr) {
-            return nullptr;
-        }
-
-        // walk forward `length` nodes from `curr`
+        if (curr == nullptr) return nullptr;  // nothing left to traverse
         for (size_t i = 0; i < length; i++) {
-            if (curr->next() == nullptr) {  // list terminates before `length`
-                break;
-            }
+            if (curr->next() == nullptr) break;  // reached end of list
             curr = curr->next();
         }
         return curr;
@@ -231,13 +130,13 @@ protected:
             tail = right.second;
         }
 
-        // unlink temporary head from list and return the proper head and tail
+        // unlink temporary head from final list and return proper head and tail
         curr = temp->next();
-        Node::split(temp, curr);  // `temp` can be reused
+        Node::split(temp, curr);  // temp can be reused
         return std::make_pair(curr, tail);
     }
 
-    /* Undo the split() step to recover a valid list in case of an error. */
+    /* Undo the split() step to recover a valid view in case of an error. */
     template <typename Node>
     inline static std::pair<Node*, Node*> recover(
         std::pair<Node*, Node*> sorted,
@@ -256,28 +155,16 @@ protected:
 
 public:
 
-    /* Sort a linked list in-place using an iterative merge sort algorithm. */
-    template <typename Node>
-    static void sort(ListView<Node>& view, bool reverse) {
-        // NOTE: we need a temporary node to act as the head of the merged sublists.
-        // If we allocate it here, we can pass it to `merge()` as an argument and
-        // reuse it for every sublist.  This avoids an extra malloc/free cycle in
-        // each iteration.
-        if constexpr (DEBUG) {
-            std::cout << "    -> malloc: temp node" << std::endl;
-        }
-        Node* temp = static_cast<Node*>(malloc(sizeof(Node)));
-        if (temp == nullptr) {
-            PyErr_NoMemory();
-            return;
-        }
+    /* Sort a view in-place using an iterative merge sort algorithm. */
+    template <typename View>
+    static void execute(View& view, bool reverse) {
+        using Node = typename View::Node;
 
-        // NOTE: we use a series of pairs to keep track of the head and tail of
-        // each sublist used in the sort algorithm.  `unsorted` keeps track of the
-        // nodes that still need to be processed, while `sorted` does the same for
-        // those that have already been sorted.  The `left`, `right`, and `merged`
-        // pairs are used to keep track of the sublists that are used in each
-        // iteration of the merge loop.
+        // NOTE: we use a series of pairs to keep track of the head and tail of each
+        // sublist.  `unsorted` keeps track of the nodes that still need to be sorted,
+        // while `sorted` does the same for those that have already been processed.
+        // The `left`, `right`, and `merged` pairs track the sublists that are used in
+        // each iteration of the merge loop.
         std::pair<Node*, Node*> unsorted = std::make_pair(view.head(), view.tail());
         std::pair<Node*, Node*> sorted = std::make_pair(nullptr, nullptr);
         std::pair<Node*, Node*> left = std::make_pair(nullptr, nullptr);
@@ -314,17 +201,13 @@ public:
 
                 // merge the left and right sublists in sorted order
                 try {
-                    merged = merge(left, right, temp, reverse);
+                    merged = merge(left, right, view.temp(), reverse);
                 } catch (...) {
                     // undo the splits to recover a coherent list
                     merged = recover(sorted, left, right, unsorted);
                     view.head(merged.first);  // view is partially sorted, but valid
                     view.tail(merged.second);
-                    if constexpr (DEBUG) {
-                        std::cout << "    -> free: temp node" << std::endl;
-                    }
-                    free(temp);  // clean up temporary node
-                    throw;  // propagate the error
+                    throw;  // propagate
                 }
 
                 // link merged sublist to sorted
@@ -342,12 +225,6 @@ public:
             length *= 2;  // double the length of each sublist
         }
 
-        // clean up temporary node
-        if constexpr (DEBUG) {
-            std::cout << "    -> free: temp node" << std::endl;
-        }
-        free(temp);
-
         // update view parameters in-place
         view.head(sorted.first);
         view.tail(sorted.second);
@@ -356,13 +233,9 @@ public:
 };
 
 
-}  // namespace list
-
-
-}  // namespace algorithms
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
 
 
-#endif  // BERTRAND_STRUCTS_CORE_SORT_H
+#endif  // BERTRAND_STRUCTS_LINKED_ALGORITHMS_SORT_H

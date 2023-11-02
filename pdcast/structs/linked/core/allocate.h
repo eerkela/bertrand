@@ -298,10 +298,10 @@ template <typename NodeType>
 class ListAllocator : public BaseAllocator<NodeType> {
 public:
     using Node = NodeType;
+    static constexpr size_t DEFAULT_CAPACITY = 8;  // minimum array size
 
 private:
     using Base = BaseAllocator<Node>;
-    static constexpr size_t DEFAULT_CAPACITY = 8;  // minimum array size
 
     Node* array;  // dynamic array of nodes
     std::pair<Node*, Node*> free_list;  // singly-linked list of open nodes
@@ -625,11 +625,11 @@ template <typename NodeType>
 class HashAllocator : public BaseAllocator<NodeType> {
 public:
     using Node = NodeType;
+    static constexpr size_t DEFAULT_CAPACITY = 16;  // minimum array size
 
 private:
     using Base = BaseAllocator<NodeType>;
     using Value = typename Node::Value;
-    static constexpr size_t DEFAULT_CAPACITY = 16;  // minimum array size
     static constexpr unsigned char DEFAULT_EXPONENT = 4;  // log2(DEFAULT_CAPACITY)
     static constexpr float MAX_LOAD_FACTOR = 0.5;  // grow if load factor exceeds threshold
     static constexpr float MIN_LOAD_FACTOR = 0.125;  // shrink if load factor drops below threshold

@@ -37,10 +37,10 @@ namespace cython {
 /* A std::variant encapsulating all the possible list types that are constructable
 from Python. */
 using ListAlternative = std::variant<
-    LinkedList<linked::SingleNode<PyObject*>, IList::MergeSort, util::BasicLock>,
-    // LinkedList<SingleNode, IList::MergeSort, DiagnosticLock>,
-    LinkedList<linked::DoubleNode<PyObject*>, IList::MergeSort, util::BasicLock>
-    // LinkedList<DoubleNode, IList::MergeSort, DiagnosticLock>,
+    LinkedList<linked::SingleNode<PyObject*>, linked::MergeSort, util::BasicLock>,
+    // LinkedList<SingleNode, linked::MergeSort, DiagnosticLock>,
+    LinkedList<linked::DoubleNode<PyObject*>, linked::MergeSort, util::BasicLock>
+    // LinkedList<DoubleNode, linked::MergeSort, DiagnosticLock>,
 >;
 
 
@@ -192,10 +192,10 @@ private:
     using Self = SelfRef<VariantList>;
     using WeakRef = Self::WeakRef;
     using SingleList = LinkedList<
-        linked::SingleNode<PyObject*>, IList::MergeSort, util::BasicLock
+        linked::SingleNode<PyObject*>, linked::MergeSort, util::BasicLock
     >;
     using DoubleList = LinkedList<
-        linked::DoubleNode<PyObject*>, IList::MergeSort, util::BasicLock
+        linked::DoubleNode<PyObject*>, linked::MergeSort, util::BasicLock
     >;
 
     /* Select a variant based on constructor arguments. */
