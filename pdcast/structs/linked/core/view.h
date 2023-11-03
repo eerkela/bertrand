@@ -113,10 +113,25 @@ public:
         }
     }
 
-    /* Move constructor: transfer ownership from one view to another. */
+    /* Copy constructor. */
+    BaseView(const BaseView& other) : allocator(other.allocator) {}
+
+    /* Move constructor. */
     BaseView(BaseView&& other) noexcept : allocator(std::move(other.allocator)) {}
 
-    /* Move assignment: transfer ownership from one view to another. */
+    /* Copy assignment operator. */
+    BaseView& operator=(const BaseView& other) {
+        // check for self-assignment
+        if (this == &other) {
+            return *this;
+        }
+
+        // copy nodes
+        allocator = other.allocator;
+        return *this;
+    }
+
+    /* Move assignment operator. */
     BaseView& operator=(BaseView&& other) noexcept {
         // check for self-assignment
         if (this == &other) {
@@ -127,11 +142,6 @@ public:
         allocator = std::move(other.allocator);
         return *this;
     }
-
-    /* Copy constructors. These are disabled for the sake of efficiency, preventing us
-    from unintentionally copying data.  Use the explicit copy() method instead. */
-    BaseView(const BaseView& other) = delete;
-    BaseView& operator=(const BaseView&) = delete;
 
     ///////////////////////////////
     ////    NODE MANAGEMENT    ////

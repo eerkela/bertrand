@@ -316,7 +316,7 @@ private:
 
     /* Copy/move the nodes from this allocator into the given array. */
     template <bool move>
-    std::pair<Node*, Node*> transfer(Node* other) {
+    std::pair<Node*, Node*> transfer(Node* other) const {
         Node* new_head = nullptr;
         Node* new_tail = nullptr;
 
@@ -566,33 +566,24 @@ public:
         // ensure new capacity is large enough to store all nodes
         if (new_size < this->occupied) {
             throw std::invalid_argument(
-                "new capacity must not be smaller than current size"
+                "new capacity cannot be smaller than current size"
             );
         }
 
-        // handle frozen arrays
+        // do not shrink the array
+        if (new_size <= this->capacity) {
+            return;
+        }
+
+        // frozen arrays cannot grow
         if (this->frozen) {
-            if (new_size <= this->capacity) {
-                return;  // do nothing
-            }
             std::ostringstream msg;
             msg << "array cannot grow beyond size " << this->capacity;
             throw std::runtime_error(msg.str());
         }
 
-        // ensure array does not shrink below default capacity
-        if (new_size <= DEFAULT_CAPACITY) {
-            if (this->capacity != DEFAULT_CAPACITY) {
-                resize(DEFAULT_CAPACITY);
-            }
-            return;
-        }
-
         // resize to the next power of two
-        size_t rounded = util::next_power_of_two(new_size);
-        if (rounded != this->capacity) {
-            resize(rounded);
-        }
+        resize(util::next_power_of_two(new_size));
     }
 
     /* Consolidate the nodes within the array, arranging them in the same order as
@@ -710,7 +701,7 @@ private:
 
     /* Copy/move the nodes from this allocator into the given array. */
     template <bool move>
-    std::pair<Node*, Node*> transfer(Node* other, uint32_t* other_flags) {
+    std::pair<Node*, Node*> transfer(Node* other, uint32_t* other_flags) const {
         Node* new_head = nullptr;
         Node* new_tail = nullptr;
 
@@ -1105,33 +1096,24 @@ public:
             );
         }
 
-        // handle frozen arrays
+        // do not shrink the array
+        if (new_size <= this->capacity / 2) {
+            return;
+        }
+
+        // frozen arrays cannot grow
         if (this->frozen) {
-            if (new_size <= this->capacity / 2) {
-                return;  // do nothing
-            }
             std::ostringstream msg;
             msg << "array cannot grow beyond size " << this->capacity;
             throw std::runtime_error(msg.str());
         }
 
-        // ensure array does not shrink below default capacity
-        if (new_size <= DEFAULT_CAPACITY / 2) {  // DEFAULT_CAPACITY * max load factor
-            if (this->capacity != DEFAULT_CAPACITY) {
-                resize(0);
-            }
-            return;
-        }
-
         // resize to the next power of two
         size_t rounded = util::next_power_of_two(new_size);
-        if (rounded != this->capacity) {
-            // get exponent of new capacity
-            unsigned char new_exponent = 0;
-            while (rounded >>= 1) ++new_exponent;
-            new_exponent += 1;  // rounded / max load factor
-            resize(new_exponent - DEFAULT_EXPONENT);
-        }
+        unsigned char new_exponent = 0;
+        while (rounded >>= 1) ++new_exponent;
+        new_exponent += 1;  // account for max load factor (0.5)
+        resize(new_exponent - DEFAULT_EXPONENT);
     }
 
     /* Rehash the nodes within the array, removing tombstones. */

@@ -547,12 +547,12 @@ public:
     //////////////////////////////////
 
     /* Allow concatenation using the + operator. */
-    template <typename T>
-    inline util::Slot<CyLinkedList> concat(T rhs) {
+    template <typename Container>
+    inline util::Slot<CyLinkedList> concat(const Container& c) {
         return std::visit(
             [&](auto& list) {
                 util::Slot<CyLinkedList> slot;
-                slot.construct(list + rhs);
+                slot.construct(list + c);
                 return slot;
             },
             variant
@@ -560,48 +560,41 @@ public:
     }
 
     /* Allow concatenation using the + operator (symmetric). */
-    template <typename T>
-    inline util::Slot<T> concatenate(T lhs, CyLinkedList& rhs) {
+    template <typename Container>
+    inline util::Slot<CyLinkedList> rconcat(const Container& c) {
         return std::visit(
             [&](auto& list) {
-                util::Slot<T> slot;
-                slot.construct(lhs + list);
+                util::Slot<CyLinkedList> slot;
+                slot.construct(c + list);
                 return slot;
             },
-            rhs.variant
+            variant
         );
+    }
+
+    /* Allow in-place concatenation using the += operator. */
+    template <typename Container>
+    inline void iconcat(const Container& c) {
+        return std::visit([&](auto& list) { list += c; }, variant);
     }
 
     /* Allow repetition using the * operator. */
     template <typename T>
-    inline util::Slot<CyLinkedList> repeat(CyLinkedList& lhs, T rhs) {
+    inline util::Slot<CyLinkedList> repeat(T rhs) {
         return std::visit(
             [&](auto& list) {
                 util::Slot<CyLinkedList> slot;
                 slot.construct(CyLinkedList(list * rhs));
                 return slot;
             },
-            lhs.variant
-        );
-    }
-
-    /* Allow repetition using the * operator (symmetric). */
-    template <typename T>
-    inline util::Slot<CyLinkedList> repeat(T lhs, CyLinkedList& rhs) {
-        return std::visit(
-            [&](auto& list) {
-                util::Slot<CyLinkedList> slot;
-                slot.construct(CyLinkedList(lhs * list));
-                return slot;
-            },
-            rhs.variant
+            variant
         );
     }
 
     /* Allow in-place repetition using the *= operator. */
     template <typename T>
-    inline void irepeat(CyLinkedList& lhs, T rhs) {
-        std::visit([&](auto& list) { list *= rhs; }, lhs.variant);
+    inline void irepeat(T rhs) {
+        std::visit([&](auto& list) { list *= rhs; }, variant);
     }
 
     /* Allow lexicographic < comparisons. */

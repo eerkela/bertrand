@@ -614,15 +614,15 @@ cdef class LinkedList:
         -----
         Concatenation is O(n), where `n` is the length of the other list.
         """
-        if not isinstance(other, (list, LinkedList)):
-            return NotImplemented
+        return LinkedList.from_variant(
+            self.variant.ptr().concat(<PyObject*>other).ptr()
+        )
 
-        result = self.copy()
-        result.extend(other)
-        return result
-        # return LinkedList.from_variant(
-        #     self.variant.ptr().concat(<PyObject*>other).ptr()
-        # )
+    def __radd__(self, other: Iterable[object]) -> LinkedList:
+        """Reversed version of :meth:`__add__() <LinkedList.__add__>`."""
+        return LinkedList.from_variant(
+            self.variant.ptr().rconcat(<PyObject*>other).ptr()
+        )
 
     def __iadd__(self, other: Iterable[object]) -> LinkedList:
         """Concatenate two lists in-place.
@@ -641,10 +641,7 @@ cdef class LinkedList:
         -----
         Concatenation is O(m), where `m` is the length of the ``other`` list.
         """
-        if not isinstance(other, (list, LinkedList)):
-            return NotImplemented
-
-        self.extend(other)
+        self.variant.ptr().iconcat(<PyObject*>other)
         return self
 
     def __mul__(self, repeat: int) -> LinkedList:
@@ -665,21 +662,15 @@ cdef class LinkedList:
         -----
         Repetition is O(n * repeat).
         """
-        # TODO: implement this in C++?  Otherwise, __class_getitem__() can interfere
-        # with `spec` argument.
-        # if repeat < 1:
-        #     return type(self)(
-        #         doubly_linked=self.variant.doubly_linked(),
-        #         max_size=self.variant.max_size(),
-        #         spec=self.specialization,
-        #     )
+        return LinkedList.from_variant(
+            self.variant.ptr().repeat(<PyObject*>repeat).ptr()
+        )
 
-        cdef Py_ssize_t i
-
-        result = self.copy()
-        for i in range(<Py_ssize_t>repeat):
-            result.extend(self)
-        return result
+    def __rmul__(self, repeat: int) -> LinkedList:
+        """Reversed version of :meth:`__mul__() <LinkedList.__mul__>`."""
+        return LinkedList.from_variant(
+            self.variant.ptr().repeat(<PyObject*>repeat).ptr()
+        )
 
     def __imul__(self, repeat: int) -> LinkedList:
         """Repeat the list a specified number of times in-place.
@@ -698,11 +689,7 @@ cdef class LinkedList:
         -----
         Repetition is O(n * repeat).
         """
-        cdef Py_ssize_t i
-
-        original = self.copy()
-        for i in range(<Py_ssize_t>repeat):
-            self.extend(original)
+        self.variant.ptr().irepeat(<PyObject*>repeat)
         return self
 
     def __lt__(self, other: object) -> bool:

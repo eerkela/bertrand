@@ -9,6 +9,7 @@
 
 #include "algorithms/add.h"
 #include "algorithms/append.h"
+#include "algorithms/concatenate.h"
 #include "algorithms/contains.h"
 #include "algorithms/count.h"
 #include "algorithms/extend.h"
@@ -18,6 +19,7 @@
 #include "algorithms/pop.h"
 #include "algorithms/position.h"
 #include "algorithms/remove.h"
+#include "algorithms/repeat.h"
 #include "algorithms/reverse.h"
 #include "algorithms/rotate.h"
 #include "algorithms/slice.h"
@@ -263,6 +265,94 @@ public:
 };
 
 
+/////////////////////////////
+////    CONCATENATION    ////
+/////////////////////////////
+
+
+/* Concatenate a LinkedList with an arbitrary C++/Python container to produce a new
+list. */
+template <typename Container, typename... Ts>
+LinkedList<Ts...> operator+(const LinkedList<Ts...>& lhs, const Container& rhs) {
+    return linked::concatenate(lhs.view, rhs);
+}
+
+
+/* Concatenate a LinkedList with an arbitrary C++/Python container to produce a new
+list (reversed). */
+template <typename Container, typename... Ts>
+LinkedList<Ts...> operator+(const Container& lhs, const LinkedList<Ts...>& rhs) {
+    return linked::concatenate(lhs, rhs.view);
+}
+
+
+/* Concatenate a LinkedList with an arbitrary C++/Python container in-place. */
+template <typename Container, typename... Ts>
+LinkedList<Ts...>& operator+=(LinkedList<Ts...>& lhs, const Container& rhs) {
+    linked::extend(lhs.view, rhs, false);
+    return lhs;
+}
+
+
+// /* Allow Python-style concatenation between list-like C++ containers and Linked data
+// structures. */
+// template <typename T, typename Derived>
+// inline auto operator+(const T& lhs, const Derived& rhs)
+//     -> std::enable_if_t<
+//         // first, check that T is a list-like container with a range-based insert
+//         // method that returns an iterator.  This is true for all STL containers.
+//         std::is_same_v<
+//             decltype(
+//                 std::declval<T>().insert(
+//                     std::declval<T>().end(),
+//                     std::declval<Derived>().begin(),
+//                     std::declval<Derived>().end()
+//                 )
+//             ),
+//             typename T::iterator
+//         >,
+//         // next, check that Derived inherits from Concatenateable
+//         std::enable_if_t<Concatenateable<Derived>::enable, T>
+//     >
+// {
+//     T result = lhs;
+//     result.insert(result.end(), rhs.begin(), rhs.end());  // STL compliant
+//     return result;
+// }
+
+
+//////////////////////////
+////    REPETITION    ////
+//////////////////////////
+
+
+/* Repeat the elements of a LinkedList the specified number of times. */
+template <typename Integer, typename... Ts>
+inline LinkedList<Ts...> operator*(const LinkedList<Ts...>& list, const Integer rhs) {
+    return linked::repeat(list.view, rhs);
+}
+
+
+/* Repeat the elements of a LinkedList the specified number of times (reversed). */
+template <typename Integer, typename... Ts>
+inline LinkedList<Ts...> operator*(const Integer lhs, const LinkedList<Ts...>& list) {
+    return linked::repeat(list.view, lhs);
+}
+
+
+/* Repeat the elements of a LinkedList in-place the specified number of times. */
+template <typename Integer, typename... Ts>
+inline LinkedList<Ts...>& operator*=(LinkedList<Ts...>& list, const Integer rhs) {
+    linked::repeat_inplace(list.view, rhs);
+    return list;
+}
+
+
+////////////////////////////////////////
+////    LEXICOGRAPHIC COMPARISON    ////
+////////////////////////////////////////
+
+
 /* Apply a lexicographic `<` comparison between the elements of a LinkedList and
 another container.  */
 template <typename Container, typename... Ts>
@@ -357,217 +447,6 @@ template <typename Container, typename... Ts>
 inline bool operator>(const Container& lhs, const LinkedList<Ts...>& rhs) {
     return linked::lexical_gt(lhs, rhs);
 }
-
-
-// /////////////////////////////
-// ////    CONCATENATION    ////
-// /////////////////////////////
-
-
-// /* Allow Python-style concatenation between Linked data structures and arbitrary
-// Python/C++ containers. */
-// template <typename T, typename Derived>
-// inline auto operator+(const Derived& lhs, const T& rhs)
-//     -> std::enable_if_t<Concatenateable<Derived>::enable, Derived>
-// {
-//     std::optional<Derived> result = lhs.copy();
-//     if (!result.has_value()) {
-//         throw std::runtime_error("could not copy list");
-//     }
-//     result.value().extend(rhs);  // must be specialized for T
-//     return Derived(std::move(result.value()));
-// }
-
-
-// /* Allow Python-style concatenation between list-like C++ containers and Linked data
-// structures. */
-// template <typename T, typename Derived>
-// inline auto operator+(const T& lhs, const Derived& rhs)
-//     -> std::enable_if_t<
-//         // first, check that T is a list-like container with a range-based insert
-//         // method that returns an iterator.  This is true for all STL containers.
-//         std::is_same_v<
-//             decltype(
-//                 std::declval<T>().insert(
-//                     std::declval<T>().end(),
-//                     std::declval<Derived>().begin(),
-//                     std::declval<Derived>().end()
-//                 )
-//             ),
-//             typename T::iterator
-//         >,
-//         // next, check that Derived inherits from Concatenateable
-//         std::enable_if_t<Concatenateable<Derived>::enable, T>
-//     >
-// {
-//     T result = lhs;
-//     result.insert(result.end(), rhs.begin(), rhs.end());  // STL compliant
-//     return result;
-// }
-
-
-// /* Allow Python-style concatenation between Python sequences and Linked data
-// structures. */
-// template <typename T, typename Derived, bool Enable = Concatenateable<Derived>::enable>
-// inline auto operator+(const PyObject* lhs, const Derived& rhs)
-//     -> std::enable_if_t<Enable, PyObject*>
-// {
-//     // Check that lhs is a Python sequence
-//     if (!PySequence_Check(lhs)) {
-//         std::ostringstream msg;
-//         msg << "can only concatenate sequence (not '";
-//         msg << lhs->ob_type->tp_name << "') to sequence";
-//         throw util::type_error(msg.str());
-//     }
-
-//     // unpack list into Python sequence
-//     PyObject* seq = PySequence_List(rhs.iter.python());  // new ref
-//     if (seq == nullptr) {
-//         return nullptr;  // propagate error
-//     }
-
-//     // concatenate using Python API
-//     PyObject* concat = PySequence_Concat(lhs, seq);
-//     Py_DECREF(seq);
-//     return concat;
-// }
-
-
-// /* Allow in-place concatenation for Linked data structures using the += operator. */
-// template <typename T, typename Derived>
-// inline auto operator+=(Derived& lhs, const T& rhs)
-//     -> std::enable_if_t<Concatenateable<Derived>::enable, Derived&>
-// {
-//     lhs.extend(rhs);  // must be specialized for T
-//     return lhs;
-// }
-
-
-// //////////////////////////
-// ////    REPETITION    ////
-// //////////////////////////
-
-
-// // TODO: we could probably optimize repetition by allocating a contiguous block of
-// // nodes equal to list.size() * rhs.  We could also remove the extra copy in *= by
-// // using an iterator to the end of the list and reusing it for each iteration.
-
-
-// /* Allow Python-style repetition for Linked data structures using the * operator. */
-// template <typename = void, typename Derived>
-// auto operator*(const Derived& lhs, const ssize_t rhs)
-//     -> std::enable_if_t<Repeatable<Derived>::enable, Derived>
-// {
-//     // handle empty repitition
-//     if (rhs <= 0 || lhs.size() == 0) {
-//         return Derived(lhs.max_size(), lhs.specialization());
-//     }
-
-//     // copy lhs
-//     std::optional<Derived> result = lhs.copy();
-//     if (!result.has_value()) {
-//         throw std::runtime_error("could not copy list");
-//     }
-
-//     // extend copy rhs - 1 times
-//     for (ssize_t i = 1; i < rhs; ++i) {
-//         result.value().extend(lhs);
-//     }
-
-//     // move result into return value
-//     return Derived(std::move(result.value()));
-// }
-
-
-// /* Allow Python-style repetition for Linked data structures using the * operator. */
-// template <typename = void, typename Derived>
-// inline auto operator*(const ssize_t lhs, const Derived& rhs)
-//     -> std::enable_if_t<Repeatable<Derived>::enable, Derived>
-// {
-//     return rhs * lhs;  // symmetric
-// }
-
-
-// /* Allow Python-style repetition for Linked data structures using the * operator. */
-// template <typename = void, typename Derived>
-// auto operator*(const Derived& lhs, const PyObject* rhs)
-//     -> std::enable_if_t<Repeatable<Derived>::enable, Derived>
-// {
-//     // Check that rhs is a Python integer
-//     if (!PyLong_Check(rhs)) {
-//         std::ostringstream msg;
-//         msg << "can't multiply sequence by non-int of type '";
-//         msg << rhs->ob_type->tp_name << "'";
-//         throw util::type_error(msg.str());
-//     }
-
-//     // convert to C++ integer
-//     ssize_t val = PyLong_AsSsize_t(rhs);
-//     if (val == -1 && PyErr_Occurred()) {
-//         throw util::catch_python<util::type_error>();
-//     }
-
-//     // delegate to C++ overload
-//     return lhs * val;
-// }
-
-
-// /* Allow Python-style repetition for Linked data structures using the * operator. */
-// template <typename = void, typename Derived>
-// inline auto operator*(const PyObject* lhs, const Derived& rhs)
-//     -> std::enable_if_t<Repeatable<Derived>::enable, Derived>
-// {
-//     return rhs * lhs;  // symmetric
-// }
-
-
-// /* Allow in-place repetition for Linked data structures using the *= operator. */
-// template <typename = void, typename Derived>
-// auto operator*=(Derived& lhs, const ssize_t rhs)
-//     -> std::enable_if_t<Repeatable<Derived>::enable, Derived&>
-// {
-//     // handle empty repitition
-//     if (rhs <= 0 || lhs.size() == 0) {
-//         lhs.clear();
-//         return lhs;
-//     }
-
-//     // copy lhs
-//     std::optional<Derived> copy = lhs.copy();
-//     if (!copy.has_value()) {
-//         throw std::runtime_error("could not copy list");
-//     }
-
-//     // extend lhs rhs - 1 times
-//     for (ssize_t i = 1; i < rhs; ++i) {
-//         lhs.extend(copy.value());
-//     }
-//     return lhs;
-// }
-
-
-// /* Allow in-place repetition for Linked data structures using the *= operator. */
-// template <typename = void, typename Derived>
-// inline auto operator*=(Derived& lhs, const PyObject* rhs)
-//     -> std::enable_if_t<Repeatable<Derived>::enable, Derived&>
-// {
-//     // Check that rhs is a Python integer
-//     if (!PyLong_Check(rhs)) {
-//         std::ostringstream msg;
-//         msg << "can't multiply sequence by non-int of type '";
-//         msg << rhs->ob_type->tp_name << "'";
-//         throw util::type_error(msg.str());
-//     }
-
-//     // convert to C++ integer
-//     ssize_t val = PyLong_AsSsize_t(rhs);
-//     if (val == -1 && PyErr_Occurred()) {
-//         throw util::catch_python<util::type_error>();
-//     }
-
-//     // delegate to C++ overload
-//     return lhs *= val;
-// }
 
 
 }  // namespace structs

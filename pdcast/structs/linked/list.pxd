@@ -362,11 +362,11 @@ cdef extern from "list_cython.h" namespace "bertrand::structs::linked::cython":
         Slice slice(PyObject* py_slice)
 
         # operator overloads
-        Slot[CyLinkedList] concat[T](T rhs) except +
-        # Slot[CyLinkedList] rconcat(PyObject* lhs) except +
-        # void iconcat(PyObject* rhs) except +
-        # CyLinkedList* repeat(PyObject* steps) except +
-        # void irepeat(PyObject* steps) except +
+        Slot[CyLinkedList] concat[T](const T& other) except +
+        Slot[CyLinkedList] rconcat[T](const T& other) except +
+        void iconcat[T](const T& other) except +
+        Slot[CyLinkedList] repeat[T](T steps) except +
+        void irepeat[T](T steps) except +
         bint lt[T](const T& other) except +
         bint le[T](const T& other) except +
         bint eq[T](const T& other) except +
