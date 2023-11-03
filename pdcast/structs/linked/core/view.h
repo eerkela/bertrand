@@ -13,6 +13,7 @@
 #include "../../util/base.h"  // is_pyobject<>
 #include "../../util/iter.h"  // iter()
 #include "../../util/math.h"  // next_power_of_two()
+#include "../../util/python.h"  // len()
 
 
 namespace bertrand {
@@ -239,7 +240,7 @@ public:
     Does nothing otherwise. */
     template <typename Container>
     inline void reserve(const Container& container) const {
-        std::optional<size_t> size = get_size(container);
+        std::optional<size_t> size = util::len(container);
         if (size.has_value()) {
             this->allocator.reserve(this->size() + size.value());
         }
@@ -389,28 +390,6 @@ public:
 protected:
     mutable Allocator allocator;  // low-level memory management
 
-    /* Attempt to get the size of an arbitrary C++ or python container. */
-    template <typename Container>
-    static std::optional<size_t> get_size(Container&& container) {
-        // check for container.size()
-        if constexpr (util::ContainerTraits<Container>::has_size) {
-            return std::make_optional(container.size());
-
-        // check for PyObject_Length()
-        } else if constexpr (util::is_pyobject<Container>) {
-            if (PyObject_HasAttrString(container, "__len__")) {
-                Py_ssize_t size = PyObject_Length(container);
-                if (size == -1 && PyErr_Occurred()) {
-                    PyErr_Clear();  // ignore error
-                    return std::nullopt;
-                }
-                return std::make_optional(size);
-            }
-        }
-
-        return std::nullopt;
-    }
-
     /* Get the size at which to initialize a list based on a given iterable and
     optional fixed size parameter. */
     template <typename Container>
@@ -424,7 +403,7 @@ protected:
         }
 
         // otherwise, try to get the size of the container and round up
-        std::optional<size_t> size = get_size(container);
+        std::optional<size_t> size = util::len(container);
         if (size.has_value()) {
             size_t rounded = util::next_power_of_two(size.value());
             return std::make_optional(rounded < Allocator::DEFAULT_CAPACITY ?

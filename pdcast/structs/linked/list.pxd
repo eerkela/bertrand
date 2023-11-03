@@ -293,15 +293,15 @@ cdef extern from "list.h" namespace "bertrand::structs":
 ######################
 
 
-cdef extern from "list_cython.h" namespace "bertrand::structs::cython":
-    cdef cppclass VariantList:
+cdef extern from "list_cython.h" namespace "bertrand::structs::linked::cython":
+    cdef cppclass CyLinkedList:
         # constructors
-        VariantList(
+        CyLinkedList(
             optional[size_t] max_size,
             PyObject* spec,
             bint doubly_linked
         ) except +
-        VariantList(
+        CyLinkedList(
             PyObject* iterable,
             optional[size_t] max_size,
             PyObject* spec,
@@ -341,7 +341,7 @@ cdef extern from "list_cython.h" namespace "bertrand::structs::cython":
         int contains(PyObject* item) except +*
         void remove(PyObject*) except *
         PyObject* pop[T](T index) except NULL
-        Slot[VariantList] copy() except +
+        Slot[CyLinkedList] copy() except +
         void clear()
         void sort(PyObject* key, bint reverse) except +*
         void reverse()
@@ -356,30 +356,30 @@ cdef extern from "list_cython.h" namespace "bertrand::structs::cython":
 
         # slicing
         cppclass Slice:
-            Slot[VariantList] get() except +
+            Slot[CyLinkedList] get() except +
             void set(PyObject* items) except +*
             void delete "del" () except +*  # del() shadows Cython `delete` keyword
         Slice slice(PyObject* py_slice)
 
         # operator overloads
-        Slot[VariantList] concat[T](T rhs) except +
-        # Slot[VariantList] rconcat(PyObject* lhs) except +
+        Slot[CyLinkedList] concat[T](T rhs) except +
+        # Slot[CyLinkedList] rconcat(PyObject* lhs) except +
         # void iconcat(PyObject* rhs) except +
-        # VariantList* repeat(PyObject* steps) except +
+        # CyLinkedList* repeat(PyObject* steps) except +
         # void irepeat(PyObject* steps) except +
-        bint lt[T](T other) except +
-        # bint lexicographic_le(PyObject* other) except +
-        # bint lexicographic_eq(PyObject* other) except +
-        # bint lexicographic_ne(PyObject* other) except +
-        # bint lexicographic_ge(PyObject* other) except +
-        # bint lexicographic_gt(PyObject* other) except +
+        bint lt[T](const T& other) except +
+        bint le[T](const T& other) except +
+        bint eq[T](const T& other) except +
+        bint ne[T](const T& other) except +
+        bint ge[T](const T& other) except +
+        bint gt[T](const T& other) except +
 
 
 cdef class LinkedList:
     cdef:
-        Slot[VariantList] variant  # stack-allocated
+        Slot[CyLinkedList] variant  # stack-allocated
         # NOTE: uncommenting this line causes a compiler warning about memory alignment
         # object __weakref__  # allows LinkedList to be weak-referenced from Python
 
     @staticmethod
-    cdef LinkedList from_variant(VariantList* variant)
+    cdef LinkedList from_variant(CyLinkedList* variant)

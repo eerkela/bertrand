@@ -4,6 +4,7 @@
 
 #include <cstddef>  // size_t
 #include <utility>  // std::pair
+#include "../../util/python.h"  // lt()
 #include "../core/node.h"  // Keyed<>
 #include "../core/view.h"  // ListView, ViewTraits
 
@@ -105,7 +106,7 @@ protected:
         // the smaller of the two elements to the merged result, repeating until one of
         // the sublists has been exhausted, giving a sorted list of size `length * 2`.
         while (left.first != nullptr && right.first != nullptr) {
-            bool comp = left.first->lt(right.first->value());  // left < right
+            bool comp = util::lt(left.first->value(), right.first->value());
 
             // append smaller of two candidates to the merged list
             if (reverse ^ comp) {  // [not] left < right

@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_LIST_LIST_H
-#define BERTRAND_STRUCTS_LIST_LIST_H
+// include guard: BERTRAND_STRUCTS_LINKED_LIST_H
+#ifndef BERTRAND_STRUCTS_LINKED_LIST_H
+#define BERTRAND_STRUCTS_LINKED_LIST_H
 
 #include <sstream>  // std::ostringstream
 #include "../util/except.h"  // type_error()
@@ -14,6 +14,7 @@
 #include "algorithms/extend.h"
 #include "algorithms/index.h"
 #include "algorithms/insert.h"
+#include "algorithms/lexical_compare.h"
 #include "algorithms/pop.h"
 #include "algorithms/position.h"
 #include "algorithms/remove.h"
@@ -27,40 +28,13 @@ namespace bertrand {
 namespace structs {
 
 
-////////////////////////////////////
-////    FORWARD DECLARATIONS    ////
-////////////////////////////////////
-
-
-template <typename Derived>
-class Concatenateable;
-
-
-template <typename Derived>
-class Repeatable;
-
-
-template <typename Derived>
-class Lexicographic;
-
-
-//////////////////////
-////    PUBLIC    ////
-//////////////////////
-
-
 /* A modular linked list class that mimics the Python list interface in C++. */
 template <
     typename NodeType,
     typename SortPolicy = linked::MergeSort,
     typename LockPolicy = util::BasicLock
 >
-class LinkedList :
-    public LinkedBase<linked::ListView<NodeType>, LockPolicy>,
-    public Concatenateable<LinkedList<NodeType, SortPolicy, LockPolicy>>,
-    public Repeatable<LinkedList<NodeType, SortPolicy, LockPolicy>>,
-    public Lexicographic<LinkedList<NodeType, SortPolicy, LockPolicy>>
-{
+class LinkedList : public LinkedBase<linked::ListView<NodeType>, LockPolicy> {
     using Base = LinkedBase<linked::ListView<NodeType>, LockPolicy>;
 
 public:
@@ -269,626 +243,335 @@ public:
     ////    OPERATOR OVERLOADS    ////
     //////////////////////////////////
 
-    // TODO: move these into algorithms/concatenate.h, repeat.h, and lexical_compare.h
+    /* NOTE: operators are implemented as non-member functions for commutativity.
+     * Namely, the supported operators are as follows:
+     *      (+) for concatenating the elements of one container to another
+     *      (*) for repeating the elements of a container a specified number of times
+     *      (<) for lexicographic less-than comparison between containers
+     *      (<=) for lexicographic less-than-or-equal-to comparison between containers
+     *      (==) for lexicographic equality comparison between containers
+     *      (!=) for lexicographic inequality comparison between containers
+     *      (>=) for lexicographic greater-than-or-equal-to comparison between containers
+     *      (>) for lexicographic greater-than comparison between containers
+     *
+     * These all work similarly to their Python equivalents except that they can accept
+     * any iterable container in either C++ or Python to compare against.  This
+     * symmetry is provided by the universal utility functions in structs/util/iter.h
+     * and structs/util/python.h.
+     */
 
 };
 
 
-/////////////////////////////
-////    CONCATENATION    ////
-/////////////////////////////
-
-
-/* A mixin that adds operator overloads that mimic the behavior of Python lists with
-respect to concatenation, repetition, and lexicographic comparison. */
-template <typename Derived>
-struct Concatenateable {
-    static constexpr bool enable = std::is_base_of_v<Concatenateable<Derived>, Derived>;
-
-    /* Overload the + operator to allow concatenation of Derived types from both
-    Python and C++. */
-    template <typename T>
-    friend Derived operator+(const Derived& lhs, const T& rhs);
-    template <typename T>
-    friend T operator+(const T& lhs, const Derived& rhs);
-
-    /* Overload the += operator to allow in-place concatenation of Derived types from
-    both Python and C++. */
-    template <typename T>
-    friend Derived& operator+=(Derived& lhs, const T& rhs);
-
-};
-
-
-/* Allow Python-style concatenation between Linked data structures and arbitrary
-Python/C++ containers. */
-template <typename T, typename Derived>
-inline auto operator+(const Derived& lhs, const T& rhs)
-    -> std::enable_if_t<Concatenateable<Derived>::enable, Derived>
-{
-    std::optional<Derived> result = lhs.copy();
-    if (!result.has_value()) {
-        throw std::runtime_error("could not copy list");
-    }
-    result.value().extend(rhs);  // must be specialized for T
-    return Derived(std::move(result.value()));
+/* Apply a lexicographic `<` comparison between the elements of a LinkedList and
+another container.  */
+template <typename Container, typename... Ts>
+inline bool operator<(const LinkedList<Ts...>& lhs, const Container& rhs) {
+    return linked::lexical_lt(lhs, rhs);
 }
 
 
-/* Allow Python-style concatenation between list-like C++ containers and Linked data
-structures. */
-template <typename T, typename Derived>
-inline auto operator+(const T& lhs, const Derived& rhs)
-    -> std::enable_if_t<
-        // first, check that T is a list-like container with a range-based insert
-        // method that returns an iterator.  This is true for all STL containers.
-        std::is_same_v<
-            decltype(
-                std::declval<T>().insert(
-                    std::declval<T>().end(),
-                    std::declval<Derived>().begin(),
-                    std::declval<Derived>().end()
-                )
-            ),
-            typename T::iterator
-        >,
-        // next, check that Derived inherits from Concatenateable
-        std::enable_if_t<Concatenateable<Derived>::enable, T>
-    >
-{
-    T result = lhs;
-    result.insert(result.end(), rhs.begin(), rhs.end());  // STL compliant
-    return result;
+/* Apply a lexicographic `<` comparison between the elements of a LinkedList and
+another container (reversed).  */
+template <typename Container, typename... Ts>
+inline bool operator<(const Container& lhs, const LinkedList<Ts...>& rhs) {
+    return linked::lexical_lt(lhs, rhs);
 }
 
 
-/* Allow Python-style concatenation between Python sequences and Linked data
-structures. */
-template <typename T, typename Derived, bool Enable = Concatenateable<Derived>::enable>
-inline auto operator+(const PyObject* lhs, const Derived& rhs)
-    -> std::enable_if_t<Enable, PyObject*>
-{
-    // Check that lhs is a Python sequence
-    if (!PySequence_Check(lhs)) {
-        std::ostringstream msg;
-        msg << "can only concatenate sequence (not '";
-        msg << lhs->ob_type->tp_name << "') to sequence";
-        throw util::type_error(msg.str());
-    }
-
-    // unpack list into Python sequence
-    PyObject* seq = PySequence_List(rhs.iter.python());  // new ref
-    if (seq == nullptr) {
-        return nullptr;  // propagate error
-    }
-
-    // concatenate using Python API
-    PyObject* concat = PySequence_Concat(lhs, seq);
-    Py_DECREF(seq);
-    return concat;
+/* Apply a lexicographic `<=` comparison between the elements of a LinkedList and
+another container.  */
+template <typename Container, typename... Ts>
+inline bool operator<=(const LinkedList<Ts...>& lhs, const Container& rhs) {
+    return linked::lexical_le(lhs, rhs);
 }
 
 
-/* Allow in-place concatenation for Linked data structures using the += operator. */
-template <typename T, typename Derived>
-inline auto operator+=(Derived& lhs, const T& rhs)
-    -> std::enable_if_t<Concatenateable<Derived>::enable, Derived&>
-{
-    lhs.extend(rhs);  // must be specialized for T
-    return lhs;
+/* Apply a lexicographic `<=` comparison between the elements of a LinkedList and
+another container (reversed).  */
+template <typename Container, typename... Ts>
+inline bool operator<=(const Container& lhs, const LinkedList<Ts...>& rhs) {
+    return linked::lexical_lt(lhs, rhs);
 }
 
 
-//////////////////////////
-////    REPETITION    ////
-//////////////////////////
-
-
-// TODO: we could probably optimize repetition by allocating a contiguous block of
-// nodes equal to list.size() * rhs.  We could also remove the extra copy in *= by
-// using an iterator to the end of the list and reusing it for each iteration.
-
-
-/* A mixin that adds operator overloads that mimic the behavior of Python lists with
-respect to concatenation, repetition, and lexicographic comparison. */
-template <typename Derived>
-struct Repeatable {
-    static constexpr bool enable = std::is_base_of_v<Repeatable<Derived>, Derived>;
-
-    // NOTE: We use a dummy typename to avoid forward declarations of operator* and
-    // operator*=.  It doesn't actually affect the implementation of either overload.
-
-    /* Overload the * operator to allow repetition of Derived types from both Python
-    and C++. */
-    template <typename>
-    friend Derived operator*(const Derived& lhs, const ssize_t rhs);
-    template <typename>
-    friend Derived operator*(const Derived& lhs, const PyObject* rhs);
-    template <typename>
-    friend Derived operator*(const ssize_t lhs, const Derived& rhs);
-    template <typename>
-    friend Derived operator*(const PyObject* lhs, const Derived& rhs);
-
-    /* Overload the *= operator to allow in-place repetition of Derived types from
-    both Python and C++. */
-    template <typename>
-    friend Derived& operator*=(Derived& lhs, const ssize_t rhs);
-    template <typename>
-    friend Derived& operator*=(Derived& lhs, const PyObject* rhs);
-
-};
-
-
-/* Allow Python-style repetition for Linked data structures using the * operator. */
-template <typename = void, typename Derived>
-auto operator*(const Derived& lhs, const ssize_t rhs)
-    -> std::enable_if_t<Repeatable<Derived>::enable, Derived>
-{
-    // handle empty repitition
-    if (rhs <= 0 || lhs.size() == 0) {
-        return Derived(lhs.max_size(), lhs.specialization());
-    }
-
-    // copy lhs
-    std::optional<Derived> result = lhs.copy();
-    if (!result.has_value()) {
-        throw std::runtime_error("could not copy list");
-    }
-
-    // extend copy rhs - 1 times
-    for (ssize_t i = 1; i < rhs; ++i) {
-        result.value().extend(lhs);
-    }
-
-    // move result into return value
-    return Derived(std::move(result.value()));
+/* Apply a lexicographic `==` comparison between the elements of a LinkedList and
+another container.  */
+template <typename Container, typename... Ts>
+inline bool operator==(const LinkedList<Ts...>& lhs, const Container& rhs) {
+    return linked::lexical_eq(lhs, rhs);
 }
 
 
-/* Allow Python-style repetition for Linked data structures using the * operator. */
-template <typename = void, typename Derived>
-inline auto operator*(const ssize_t lhs, const Derived& rhs)
-    -> std::enable_if_t<Repeatable<Derived>::enable, Derived>
-{
-    return rhs * lhs;  // symmetric
+/* Apply a lexicographic `==` comparison between the elements of a LinkedList and
+another container (reversed).  */
+template <typename Container, typename... Ts>
+inline bool operator==(const Container& lhs, const LinkedList<Ts...>& rhs) {
+    return linked::lexical_eq(lhs, rhs);
 }
 
 
-/* Allow Python-style repetition for Linked data structures using the * operator. */
-template <typename = void, typename Derived>
-auto operator*(const Derived& lhs, const PyObject* rhs)
-    -> std::enable_if_t<Repeatable<Derived>::enable, Derived>
-{
-    // Check that rhs is a Python integer
-    if (!PyLong_Check(rhs)) {
-        std::ostringstream msg;
-        msg << "can't multiply sequence by non-int of type '";
-        msg << rhs->ob_type->tp_name << "'";
-        throw util::type_error(msg.str());
-    }
-
-    // convert to C++ integer
-    ssize_t val = PyLong_AsSsize_t(rhs);
-    if (val == -1 && PyErr_Occurred()) {
-        throw util::catch_python<util::type_error>();
-    }
-
-    // delegate to C++ overload
-    return lhs * val;
+/* Apply a lexicographic `!=` comparison between the elements of a LinkedList and
+another container.  */
+template <typename Container, typename... Ts>
+inline bool operator!=(const LinkedList<Ts...>& lhs, const Container& rhs) {
+    return !linked::lexical_eq(lhs, rhs);
 }
 
 
-/* Allow Python-style repetition for Linked data structures using the * operator. */
-template <typename = void, typename Derived>
-inline auto operator*(const PyObject* lhs, const Derived& rhs)
-    -> std::enable_if_t<Repeatable<Derived>::enable, Derived>
-{
-    return rhs * lhs;  // symmetric
+/* Apply a lexicographic `!=` comparison between the elements of a LinkedList and
+another container (reversed).  */
+template <typename Container, typename... Ts>
+inline bool operator!=(const Container& lhs, const LinkedList<Ts...>& rhs) {
+    return !linked::lexical_eq(lhs, rhs);
 }
 
 
-/* Allow in-place repetition for Linked data structures using the *= operator. */
-template <typename = void, typename Derived>
-auto operator*=(Derived& lhs, const ssize_t rhs)
-    -> std::enable_if_t<Repeatable<Derived>::enable, Derived&>
-{
-    // handle empty repitition
-    if (rhs <= 0 || lhs.size() == 0) {
-        lhs.clear();
-        return lhs;
-    }
-
-    // copy lhs
-    std::optional<Derived> copy = lhs.copy();
-    if (!copy.has_value()) {
-        throw std::runtime_error("could not copy list");
-    }
-
-    // extend lhs rhs - 1 times
-    for (ssize_t i = 1; i < rhs; ++i) {
-        lhs.extend(copy.value());
-    }
-    return lhs;
+/* Apply a lexicographic `>=` comparison between the elements of a LinkedList and
+another container.  */
+template <typename Container, typename... Ts>
+inline bool operator>=(const LinkedList<Ts...>& lhs, const Container& rhs) {
+    return linked::lexical_ge(lhs, rhs);
 }
 
 
-/* Allow in-place repetition for Linked data structures using the *= operator. */
-template <typename = void, typename Derived>
-inline auto operator*=(Derived& lhs, const PyObject* rhs)
-    -> std::enable_if_t<Repeatable<Derived>::enable, Derived&>
-{
-    // Check that rhs is a Python integer
-    if (!PyLong_Check(rhs)) {
-        std::ostringstream msg;
-        msg << "can't multiply sequence by non-int of type '";
-        msg << rhs->ob_type->tp_name << "'";
-        throw util::type_error(msg.str());
-    }
-
-    // convert to C++ integer
-    ssize_t val = PyLong_AsSsize_t(rhs);
-    if (val == -1 && PyErr_Occurred()) {
-        throw util::catch_python<util::type_error>();
-    }
-
-    // delegate to C++ overload
-    return lhs *= val;
+/* Apply a lexicographic `>=` comparison between the elements of a LinkedList and
+another container (reversed).  */
+template <typename Container, typename... Ts>
+inline bool operator>=(const Container& lhs, const LinkedList<Ts...>& rhs) {
+    return linked::lexical_ge(lhs, rhs);
 }
 
 
-/////////////////////////////////////////
-////    LEXICOGRAPHIC COMPARISONS    ////
-/////////////////////////////////////////
-
-
-/* A mixin that adds operator overloads that mimic the behavior of Python lists with
-respect to concatenation, repetition, and lexicographic comparison. */
-template <typename Derived>
-struct Lexicographic {
-    static constexpr bool enable = std::is_base_of_v<Lexicographic<Derived>, Derived>;
-
-    /* Overload the < operator to allow lexicographic comparison between Derived types
-    and arbitrary C++ containers/Python sequences. */
-    template <typename T>
-    friend bool operator<(const Derived& lhs, const T& rhs);
-    template <typename T>
-    friend bool operator<(const T& lhs, const Derived& rhs);
-
-    /* Overload the <= operator to allow lexicographic comparison between Derived types
-    and arbitrary C++ containers/Python sequences. */
-    template <typename T>
-    friend bool operator<=(const Derived& lhs, const T& rhs);
-    template <typename T>
-    friend bool operator<=(const T& lhs, const Derived& rhs);
-
-    /* Overload the == operator to allow lexicographic comparison between Derived types
-    and arbitrary C++ containers/Python sequences. */
-    template <typename T>
-    friend bool operator==(const Derived& lhs, const T& rhs);
-    template <typename T>
-    friend bool operator==(const T& lhs, const Derived& rhs);
-
-    /* Overload the != operator to allow lexicographic comparison between Derived types
-    and arbitrary C++ containers/Python sequences. */
-    template <typename T>
-    friend bool operator!=(const Derived& lhs, const T& rhs);
-    template <typename T>
-    friend bool operator!=(const T& lhs, const Derived& rhs);
-
-    /* Overload the > operator to allow lexicographic comparison between Derived types
-    and arbitrary C++ containers/Python sequences. */
-    template <typename T>
-    friend bool operator>(const Derived& lhs, const T& rhs);
-    template <typename T>
-    friend bool operator>(const T& lhs, const Derived& rhs);
-
-    /* Overload the >= operator to allow lexicographic comparison between Derived types
-    and arbitrary C++ containers/Python sequences. */
-    template <typename T>
-    friend bool operator>=(const Derived& lhs, const T& rhs);
-    template <typename T>
-    friend bool operator>=(const T& lhs, const Derived& rhs);
-
-};
-
-
-/* Allow lexicographic < comparison between Linked data structures and compatible C++
-containers. */
-template <typename T, typename Derived, bool Enable = Lexicographic<Derived>::enable>
-auto operator<(const Derived& lhs, const T& rhs) -> std::enable_if_t<Enable, bool> {
-    // get coupled iterators
-    auto iter_lhs = std::begin(lhs);
-    auto end_lhs = std::end(lhs);
-    auto iter_rhs = std::begin(rhs);
-    auto end_rhs = std::end(rhs);
-
-    // loop until one of the sequences is exhausted
-    while (iter_lhs != end_lhs && iter_rhs != end_rhs) {
-        if (*iter_lhs < *iter_rhs) return true;
-        if (*iter_rhs < *iter_lhs) return false;
-        ++iter_lhs;
-        ++iter_rhs;
-    }
-
-    // check if lhs is shorter than rhs
-    return (iter_lhs == end_lhs && iter_rhs != end_rhs);
+/* Apply a lexicographic `>` comparison between the elements of a LinkedList and
+another container.  */
+template <typename Container, typename... Ts>
+inline bool operator>(const LinkedList<Ts...>& lhs, const Container& rhs) {
+    return linked::lexical_gt(lhs, rhs);
 }
 
 
-/* Allow lexicographic < comparison between Linked data structures and Python
-sequences. */
-template <typename Derived>
-auto operator<(const Derived& lhs, const PyObject* rhs)
-    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
-{
-    using Node = typename Derived::Node;
-
-    // check that rhs is a Python sequence
-    if (!PySequence_Check(rhs)) {
-        std::ostringstream msg;
-        msg << "can only compare list to sequence (not '";
-        msg << rhs->ob_type->tp_name << "')";
-        throw util::type_error(msg.str());
-    }
-
-    // get coupled iterators
-    auto iter_lhs = std::begin(lhs);
-    auto end_lhs = std::end(lhs);
-    auto iter_proxy = util::iter(rhs);
-    auto iter_rhs = iter_proxy.begin();
-    auto end_rhs = iter_proxy.end();
-
-    // loop until one of the sequences is exhausted
-    while (iter_lhs != end_lhs && iter_rhs != end_rhs) {
-        Node* node = *iter_lhs;  // TODO: not actually a Node
-        if (node->lt(*iter_rhs)) {
-            return true;
-        }
-
-        // compare rhs < lhs
-        int comp = PyObject_RichCompareBool(*iter_rhs, node->value(), Py_LT);
-        if (comp == -1) {
-            throw util::catch_python<util::type_error>();
-        } else if (comp == 1) {
-            return false;
-        }
-
-        // advance iterators
-        ++iter_lhs;
-        ++iter_rhs;
-    }
-
-    // check if lhs is shorter than rhs
-    return (iter_lhs == end_lhs && iter_rhs != end_rhs);
+/* Apply a lexicographic `>` comparison between the elements of a LinkedList and
+another container (reversed).  */
+template <typename Container, typename... Ts>
+inline bool operator>(const Container& lhs, const LinkedList<Ts...>& rhs) {
+    return linked::lexical_gt(lhs, rhs);
 }
 
 
-/* Allow lexicographic < comparison between compatible C++ containers and Linked data
-structures. */
-template <typename T, typename Derived>
-inline auto operator<(const T& lhs, const Derived& rhs)
-    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
-{
-    return rhs > lhs;  // implies lhs < rhs
-}
+// /////////////////////////////
+// ////    CONCATENATION    ////
+// /////////////////////////////
 
 
-/* Allow lexicographic <= comparison between Linked data structures and compatible C++
-containers. */
-template <typename T, typename Derived>
-auto operator<=(const Derived& lhs, const T& rhs)
-    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
-{
-    // get coupled iterators
-    auto iter_lhs = std::begin(lhs);
-    auto end_lhs = std::end(lhs);
-    auto iter_rhs = std::begin(rhs);
-    auto end_rhs = std::end(rhs);
-
-    // loop until one of the sequences is exhausted
-    while (iter_lhs != end_lhs && iter_rhs != end_rhs) {
-        if ((*iter_lhs)->value() < *iter_rhs) return true;
-        if (*iter_rhs < (*iter_lhs)->value()) return false;
-        ++iter_lhs;
-        ++iter_rhs;
-    }
-
-    // check if lhs is exhausted
-    return (iter_lhs == end_lhs);
-}
+// /* Allow Python-style concatenation between Linked data structures and arbitrary
+// Python/C++ containers. */
+// template <typename T, typename Derived>
+// inline auto operator+(const Derived& lhs, const T& rhs)
+//     -> std::enable_if_t<Concatenateable<Derived>::enable, Derived>
+// {
+//     std::optional<Derived> result = lhs.copy();
+//     if (!result.has_value()) {
+//         throw std::runtime_error("could not copy list");
+//     }
+//     result.value().extend(rhs);  // must be specialized for T
+//     return Derived(std::move(result.value()));
+// }
 
 
-/* Allow lexicographic <= comparison between Linked data structures and Python
-sequences. */
-template <typename Derived>
-auto operator<=(const Derived& lhs, const PyObject* rhs)
-    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
-{
-    using Node = typename Derived::Node;
-
-    // check that rhs is a Python sequence
-    if (!PySequence_Check(rhs)) {
-        std::ostringstream msg;
-        msg << "can only compare list to sequence (not '";
-        msg << rhs->ob_type->tp_name << "')";
-        throw util::type_error(msg.str());
-    }
-
-    // get coupled iterators
-    auto iter_lhs = std::begin(lhs);
-    auto end_lhs = std::end(lhs);
-    auto iter_proxy = util::iter(rhs);
-    auto iter_rhs = iter_proxy.begin();
-    auto end_rhs = iter_proxy.end();
-
-    // loop until one of the sequences is exhausted
-    while (iter_lhs != end_lhs && iter_rhs != end_rhs) {
-        Node* node = *iter_lhs;
-        if (node->lt(*iter_rhs)) {
-            return true;
-        }
-
-        // compare rhs < lhs
-        int comp = PyObject_RichCompareBool(*iter_rhs, node->value(), Py_LT);
-        if (comp == -1) {
-            throw std::runtime_error("could not compare list elements");
-        } else if (comp == 1) {
-            return false;
-        }
-
-        // advance iterators
-        ++iter_lhs;
-        ++iter_rhs;
-    }
-
-    // check if lhs is exhausted
-    return (iter_lhs == end_lhs);
-}
+// /* Allow Python-style concatenation between list-like C++ containers and Linked data
+// structures. */
+// template <typename T, typename Derived>
+// inline auto operator+(const T& lhs, const Derived& rhs)
+//     -> std::enable_if_t<
+//         // first, check that T is a list-like container with a range-based insert
+//         // method that returns an iterator.  This is true for all STL containers.
+//         std::is_same_v<
+//             decltype(
+//                 std::declval<T>().insert(
+//                     std::declval<T>().end(),
+//                     std::declval<Derived>().begin(),
+//                     std::declval<Derived>().end()
+//                 )
+//             ),
+//             typename T::iterator
+//         >,
+//         // next, check that Derived inherits from Concatenateable
+//         std::enable_if_t<Concatenateable<Derived>::enable, T>
+//     >
+// {
+//     T result = lhs;
+//     result.insert(result.end(), rhs.begin(), rhs.end());  // STL compliant
+//     return result;
+// }
 
 
-/* Allow lexicographic <= comparison between compatible C++ containers and Linked data
-structures. */
-template <typename T, typename Derived>
-inline auto operator<=(const T& lhs, const Derived& rhs)
-    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
-{
-    return rhs >= lhs;  // implies lhs <= rhs
-}
+// /* Allow Python-style concatenation between Python sequences and Linked data
+// structures. */
+// template <typename T, typename Derived, bool Enable = Concatenateable<Derived>::enable>
+// inline auto operator+(const PyObject* lhs, const Derived& rhs)
+//     -> std::enable_if_t<Enable, PyObject*>
+// {
+//     // Check that lhs is a Python sequence
+//     if (!PySequence_Check(lhs)) {
+//         std::ostringstream msg;
+//         msg << "can only concatenate sequence (not '";
+//         msg << lhs->ob_type->tp_name << "') to sequence";
+//         throw util::type_error(msg.str());
+//     }
+
+//     // unpack list into Python sequence
+//     PyObject* seq = PySequence_List(rhs.iter.python());  // new ref
+//     if (seq == nullptr) {
+//         return nullptr;  // propagate error
+//     }
+
+//     // concatenate using Python API
+//     PyObject* concat = PySequence_Concat(lhs, seq);
+//     Py_DECREF(seq);
+//     return concat;
+// }
 
 
-/* Allow == comparison between Linked data structures and compatible C++ containers. */
-template <typename T, typename Derived>
-auto operator==(const Derived& lhs, const T& rhs)
-    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
-{
-    using Node = typename Derived::Node;
-
-    if (lhs.size() != rhs.size()) {
-        return false;
-    }
-
-    // compare elements in order
-    auto iter_rhs = std::begin(rhs);
-    for (const Node& item : lhs) {
-        if (item->value() != *iter_rhs) {
-            return false;
-        }
-        ++iter_rhs;
-    }
-
-    return true;
-}
+// /* Allow in-place concatenation for Linked data structures using the += operator. */
+// template <typename T, typename Derived>
+// inline auto operator+=(Derived& lhs, const T& rhs)
+//     -> std::enable_if_t<Concatenateable<Derived>::enable, Derived&>
+// {
+//     lhs.extend(rhs);  // must be specialized for T
+//     return lhs;
+// }
 
 
-/* Allow == comparison betwen Linked data structures and Python sequences. */
-template <typename Derived>
-auto operator==(const Derived& lhs, const PyObject* rhs)
-    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
-{
-    using Node = typename Derived::Node;
-
-    // check that rhs is a Python sequence
-    if (!PySequence_Check(rhs)) {
-        std::ostringstream msg;
-        msg << "can only compare list to sequence (not '";
-        msg << rhs->ob_type->tp_name << "')";
-        throw util::type_error(msg.str());
-    }
-
-    // check that lhs and rhs have the same length
-    Py_ssize_t len = PySequence_Length(rhs);
-    if (len == -1) {
-        std::ostringstream msg;
-        msg << "could not get length of sequence (of type '";
-        msg << rhs->ob_type->tp_name << "')";
-        throw util::type_error(msg.str());
-    } else if (lhs.size() != static_cast<size_t>(len)) {
-        return false;
-    }
-
-    // compare elements in order
-    auto iter_rhs = util::iter(rhs).begin();
-    for (const Node& item : lhs) {
-        if (item->ne(*iter_rhs)) {
-            return false;
-        }
-        ++iter_rhs;
-    }
-
-    return true;
-}
+// //////////////////////////
+// ////    REPETITION    ////
+// //////////////////////////
 
 
-/* Allow == comparison between compatible C++ containers and Linked data structures. */
-template <typename T, typename Derived>
-inline auto operator==(const T& lhs, const Derived& rhs)
-    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
-{
-    return rhs == lhs;
-}
+// // TODO: we could probably optimize repetition by allocating a contiguous block of
+// // nodes equal to list.size() * rhs.  We could also remove the extra copy in *= by
+// // using an iterator to the end of the list and reusing it for each iteration.
 
 
-/* Allow != comparison between Linked data structures and compatible C++ containers. */
-template <typename T, typename Derived>
-inline auto operator!=(const Derived& lhs, const T& rhs)
-    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
-{
-    return !(lhs == rhs);
-}
+// /* Allow Python-style repetition for Linked data structures using the * operator. */
+// template <typename = void, typename Derived>
+// auto operator*(const Derived& lhs, const ssize_t rhs)
+//     -> std::enable_if_t<Repeatable<Derived>::enable, Derived>
+// {
+//     // handle empty repitition
+//     if (rhs <= 0 || lhs.size() == 0) {
+//         return Derived(lhs.max_size(), lhs.specialization());
+//     }
+
+//     // copy lhs
+//     std::optional<Derived> result = lhs.copy();
+//     if (!result.has_value()) {
+//         throw std::runtime_error("could not copy list");
+//     }
+
+//     // extend copy rhs - 1 times
+//     for (ssize_t i = 1; i < rhs; ++i) {
+//         result.value().extend(lhs);
+//     }
+
+//     // move result into return value
+//     return Derived(std::move(result.value()));
+// }
 
 
-/* Allow != comparison between compatible C++ containers Linked data structures. */
-template <typename T, typename Derived>
-inline auto operator!=(const T& lhs, const Derived& rhs)
-    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
-{
-    return !(lhs == rhs);
-}
+// /* Allow Python-style repetition for Linked data structures using the * operator. */
+// template <typename = void, typename Derived>
+// inline auto operator*(const ssize_t lhs, const Derived& rhs)
+//     -> std::enable_if_t<Repeatable<Derived>::enable, Derived>
+// {
+//     return rhs * lhs;  // symmetric
+// }
 
 
-/* Allow lexicographic >= comparison between Linked data structures and compatible C++
-containers. */
-template <typename T, typename Derived>
-inline auto operator>=(const Derived& lhs, const T& rhs)
-    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
-{
-    return !(lhs < rhs);
-}
+// /* Allow Python-style repetition for Linked data structures using the * operator. */
+// template <typename = void, typename Derived>
+// auto operator*(const Derived& lhs, const PyObject* rhs)
+//     -> std::enable_if_t<Repeatable<Derived>::enable, Derived>
+// {
+//     // Check that rhs is a Python integer
+//     if (!PyLong_Check(rhs)) {
+//         std::ostringstream msg;
+//         msg << "can't multiply sequence by non-int of type '";
+//         msg << rhs->ob_type->tp_name << "'";
+//         throw util::type_error(msg.str());
+//     }
+
+//     // convert to C++ integer
+//     ssize_t val = PyLong_AsSsize_t(rhs);
+//     if (val == -1 && PyErr_Occurred()) {
+//         throw util::catch_python<util::type_error>();
+//     }
+
+//     // delegate to C++ overload
+//     return lhs * val;
+// }
 
 
-/* Allow lexicographic >= comparison between compatible C++ containers and Linked data
-structures. */
-template <typename T, typename Derived>
-inline auto operator>=(const T& lhs, const Derived& rhs)
-    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
-{
-    return !(lhs < rhs);
-}
+// /* Allow Python-style repetition for Linked data structures using the * operator. */
+// template <typename = void, typename Derived>
+// inline auto operator*(const PyObject* lhs, const Derived& rhs)
+//     -> std::enable_if_t<Repeatable<Derived>::enable, Derived>
+// {
+//     return rhs * lhs;  // symmetric
+// }
 
 
-/* Allow lexicographic > comparison between Linked data structures and compatible C++
-containers. */
-template <typename T, typename Derived>
-inline auto operator>(const Derived& lhs, const T& rhs)
-    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
-{
-    return !(lhs <= rhs);
-}
+// /* Allow in-place repetition for Linked data structures using the *= operator. */
+// template <typename = void, typename Derived>
+// auto operator*=(Derived& lhs, const ssize_t rhs)
+//     -> std::enable_if_t<Repeatable<Derived>::enable, Derived&>
+// {
+//     // handle empty repitition
+//     if (rhs <= 0 || lhs.size() == 0) {
+//         lhs.clear();
+//         return lhs;
+//     }
+
+//     // copy lhs
+//     std::optional<Derived> copy = lhs.copy();
+//     if (!copy.has_value()) {
+//         throw std::runtime_error("could not copy list");
+//     }
+
+//     // extend lhs rhs - 1 times
+//     for (ssize_t i = 1; i < rhs; ++i) {
+//         lhs.extend(copy.value());
+//     }
+//     return lhs;
+// }
 
 
-/* Allow lexicographic > comparison between compatible C++ containers and Linked data
-structures. */
-template <typename T, typename Derived>
-inline auto operator>(const T& lhs, const Derived& rhs)
-    -> std::enable_if_t<Lexicographic<Derived>::enable, bool>
-{
-    return !(lhs <= rhs);
-}
+// /* Allow in-place repetition for Linked data structures using the *= operator. */
+// template <typename = void, typename Derived>
+// inline auto operator*=(Derived& lhs, const PyObject* rhs)
+//     -> std::enable_if_t<Repeatable<Derived>::enable, Derived&>
+// {
+//     // Check that rhs is a Python integer
+//     if (!PyLong_Check(rhs)) {
+//         std::ostringstream msg;
+//         msg << "can't multiply sequence by non-int of type '";
+//         msg << rhs->ob_type->tp_name << "'";
+//         throw util::type_error(msg.str());
+//     }
 
+//     // convert to C++ integer
+//     ssize_t val = PyLong_AsSsize_t(rhs);
+//     if (val == -1 && PyErr_Occurred()) {
+//         throw util::catch_python<util::type_error>();
+//     }
+
+//     // delegate to C++ overload
+//     return lhs *= val;
+// }
 
 
 }  // namespace structs
 }  // namespace bertrand
 
 
-#endif  // BERTRAND_STRUCTS_LIST_LIST_H include guard
+#endif  // BERTRAND_STRUCTS_LINKED_LIST_H

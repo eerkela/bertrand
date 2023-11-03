@@ -7,6 +7,7 @@
 #include <type_traits>  // std::enable_if_t<>
 #include "../../util/iter.h"  // iter()
 #include "../../util/repr.h"  // repr()
+#include "../../util/python.h"  // eq()
 #include "../core/node.h"  // NodeTraits
 #include "../core/view.h"  // ViewTraits
 
@@ -30,7 +31,7 @@ namespace linked {
         // find item in list
         for (auto it = iter(view).forward(); it != it.end(); ++it) {
             Node* node = it.curr();
-            if (node->eq(item)) {
+            if (util::eq(node->value(), item)) {
                 view.recycle(it.drop());
                 return;
             }

@@ -93,7 +93,7 @@ cdef class LinkedList:
 
     Attributes
     ----------
-    variant : VariantList*
+    variant : Slot[CyLinkedList]
         A low-level C++ wrapper around the list's contents.  This is a pointer
         to a C++ object that wraps a set of templated :class:`ListView` classes
         as a single variant type, which binds the correct implementation for
@@ -151,7 +151,7 @@ cdef class LinkedList:
             )
 
     @staticmethod
-    cdef LinkedList from_variant(VariantList* variant):
+    cdef LinkedList from_variant(CyLinkedList* variant):
         """Create a new LinkedList from a C++ variant."""
         cdef LinkedList result = LinkedList.__new__(LinkedList)  # bypasses __init__()
         result.variant.move_ptr(variant)  # Cython-compatible move assignment
@@ -726,25 +726,7 @@ cdef class LinkedList:
         -----
         Comparisons are O(n).
         """
-        # if isinstance(other, type(self)):
-        #     return self.variant.ptr().lt(deref((<LinkedList>other).variant.ptr()))
-        # if isinstance(other, list):
-        #     return self.variant.ptr().lt(<PyObject*>other)
-
-        # return NotImplemented
-
-        if not isinstance(other, type(self)):
-            return NotImplemented
-
-        # compare elements in order
-        for a, b in zip(self, other):
-            if a < b:
-                return True
-            elif a > b:
-                return False
-
-        # if all elements are equal, the shorter list is smaller
-        return len(self) < len(other)
+        return self.variant.ptr().lt(<PyObject*>other)
 
     def __le__(self, other: object) -> bool:
         """Check if this list is lexographically less than or equal to another
@@ -768,18 +750,7 @@ cdef class LinkedList:
         -----
         Comparisons are O(n).
         """
-        if not isinstance(other, type(self)):
-            return NotImplemented
-
-        # compare elements in order
-        for a, b in zip(self, other):
-            if a < b:
-                return True
-            elif a > b:
-                return False
-
-        # if all elements are equal, the shorter list is smaller
-        return len(self) <= len(other)
+        return self.variant.ptr().le(<PyObject*>other)
 
     def __eq__(self, other: object) -> bool:
         """Compare two lists for equality.
@@ -799,13 +770,7 @@ cdef class LinkedList:
         -----
         Comparisons are O(n).
         """
-        if not isinstance(other, type(self)):
-            return NotImplemented
-
-        if len(self) != len(other):
-            return False
-
-        return all(a == b for a, b in zip(self, other))
+        return self.variant.ptr().eq(<PyObject*>other)
 
     def __gt__(self, other: object) -> bool:
         """Check if this list is lexographically greater than another list.
@@ -828,18 +793,7 @@ cdef class LinkedList:
         -----
         Comparisons are O(n).
         """
-        if not isinstance(other, type(self)):
-            return NotImplemented
-
-        # compare elements in order
-        for a, b in zip(self, other):
-            if a > b:
-                return True
-            elif a < b:
-                return False
-
-        # if all elements are equal, the longer list is greater
-        return len(self) > len(other)
+        return self.variant.ptr().gt(<PyObject*>other)
 
     def __ge__(self, other: object) -> bool:
         """Check if this list is lexographically greater than or equal to
@@ -863,18 +817,7 @@ cdef class LinkedList:
         -----
         Comparisons are O(n).
         """
-        if not isinstance(other, type(self)):
-            return NotImplemented
-
-        # compare elements in order
-        for a, b in zip(self, other):
-            if a > b:
-                return True
-            elif a < b:
-                return False
-
-        # if all elements are equal, the longer list is greater
-        return len(self) >= len(other)
+        return self.variant.ptr().ge(<PyObject*>other)
 
     def __bool__(self) -> bool:
         """Treat empty lists as Falsy in boolean logic.

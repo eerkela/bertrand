@@ -7,6 +7,7 @@
 #include <stdexcept>  // std::invalid_argument
 #include <type_traits>  // std::enable_if_t<>
 #include "position.h"  // normalize_index()
+#include "../../util/python.h"  // eq()
 #include "../../util/repr.h"  // repr()
 #include "../core/view.h"  // ViewTraits
 
@@ -60,7 +61,7 @@ namespace linked {
                 size_t last_observed;
                 while (idx >= norm_start) {
                     const Node* node = it.curr();
-                    if (node->eq(item)) {
+                    if (util::eq(node->value(), item)) {
                         found = true;
                         last_observed = idx;
                     }
@@ -87,7 +88,7 @@ namespace linked {
         // search until we hit item or stop index
         while (idx < norm_stop) {
             const Node* node = it.curr();
-            if (node->eq(item)) {
+            if (util::eq(node->value(), item)) {
                 return idx;
             }
             ++it;

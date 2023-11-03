@@ -19,13 +19,10 @@
 #include "list.h"  // LinkedList
 
 
-// TODO: Figure out how to carry operator overloads up to the VariantList level and
-// make them callable from Python.
-
-
 /* Namespaces reflect file system and Python import path. */
 namespace bertrand {
 namespace structs {
+namespace linked {
 namespace cython {
 
 
@@ -36,11 +33,9 @@ namespace cython {
 
 /* A std::variant encapsulating all the possible list types that are constructable
 from Python. */
-using ListAlternative = std::variant<
+using ListVariant = std::variant<
     LinkedList<linked::SingleNode<PyObject*>, linked::MergeSort, util::BasicLock>,
-    // LinkedList<SingleNode, linked::MergeSort, DiagnosticLock>,
     LinkedList<linked::DoubleNode<PyObject*>, linked::MergeSort, util::BasicLock>
-    // LinkedList<DoubleNode, linked::MergeSort, DiagnosticLock>,
 >;
 
 
@@ -187,9 +182,9 @@ private:
 
 /* A class that binds the appropriate methods for the given view as a std::variant
 of templated `ListView` types. */
-class VariantList {
+class CyLinkedList {
 private:
-    using Self = SelfRef<VariantList>;
+    using Self = SelfRef<CyLinkedList>;
     using WeakRef = Self::WeakRef;
     using SingleList = LinkedList<
         linked::SingleNode<PyObject*>, linked::MergeSort, util::BasicLock
@@ -200,7 +195,7 @@ private:
 
     /* Select a variant based on constructor arguments. */
     template <typename... Args>
-    inline static ListAlternative select_variant(bool singly_linked, Args&&... args) {
+    inline static ListVariant select_variant(bool singly_linked, Args&&... args) {
         if (singly_linked) {
              return SingleList(std::forward<Args>(args)...);
         }
@@ -208,21 +203,21 @@ private:
     }
 
 public:
-    using Lock = VariantLock<VariantList>;
+    using Lock = VariantLock<CyLinkedList>;
 
     template <typename T>
     class Index;
     template <typename... Args>
     class Slice;
 
-    ListAlternative variant;
+    ListVariant variant;
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
     /* Implement LinkedList.__init__() for cases where an input iterable is given. */
-    VariantList(
+    CyLinkedList(
         PyObject* iterable,
         std::optional<size_t> max_size,
         PyObject* spec,
@@ -233,24 +228,24 @@ public:
     {}
 
     /* Implement LinkedList.__init__() for cases where no iterable is given. */
-    VariantList(std::optional<size_t> max_size, PyObject* spec, bool singly_linked) :
+    CyLinkedList(std::optional<size_t> max_size, PyObject* spec, bool singly_linked) :
         variant(select_variant(singly_linked, max_size, spec)),
         lock(*this), weak_ref(*this)
     {}
 
-    /* Construct a new VariantList from an existing C++ LinkedList. */
+    /* Construct a new CyLinkedList from an existing C++ LinkedList. */
     template <typename List>
-    explicit VariantList(List&& list) :
+    explicit CyLinkedList(List&& list) :
         variant(std::move(list)), lock(*this), weak_ref(*this)
     {}
 
     /* Move constructor. */
-    explicit VariantList(VariantList&& other) :
+    explicit CyLinkedList(CyLinkedList&& other) :
         variant(std::move(other.variant)), lock(*this), weak_ref(*this)
     {}
 
     /* Move assignment operator. */
-    VariantList& operator=(VariantList&& other) {
+    CyLinkedList& operator=(CyLinkedList&& other) {
         variant = std::move(other.variant);
         return *this;
     }
@@ -396,10 +391,10 @@ public:
     }
 
     /* Implement LinkedList.copy() for all variants. */
-    inline util::Slot<VariantList> copy() {
+    inline util::Slot<CyLinkedList> copy() {
         return std::visit(
             [&](auto& list) {
-                util::Slot<VariantList> slot;
+                util::Slot<CyLinkedList> slot;
                 slot.construct(std::move(list.copy()));
                 return slot;
             },
@@ -434,14 +429,14 @@ public:
         return Slice(weak_ref(), std::forward<Args>(args)...);
     }
 
-    /* A proxy that represents a value at a particular index within a VariantList. */
+    /* A proxy that represents a value at a particular index within a CyLinkedList. */
     template <typename T>
     class Index {
     public:
 
         /* Implement LinkedList.__getitem__() for all variants. */
         PyObject* get() {
-            VariantList* parent = ref.get();
+            CyLinkedList* parent = ref.get();
             if (parent == nullptr) {
                 return nullptr;  // propagate
             }
@@ -455,7 +450,7 @@ public:
 
         /* Implement LinkedList.__setitem__() for all variants (single index). */
         void set(PyObject* value) {
-            VariantList* parent = ref.get();
+            CyLinkedList* parent = ref.get();
             if (parent == nullptr) {
                 return;  // propagate
             }
@@ -464,7 +459,7 @@ public:
 
         /* Implement LinkedList.__delitem__() for all variants (single index). */
         void del() {
-            VariantList* parent = ref.get();
+            CyLinkedList* parent = ref.get();
             if (parent == nullptr) {
                 return;  // propagate
             }
@@ -472,7 +467,7 @@ public:
         }
 
     private:
-        friend VariantList;
+        friend CyLinkedList;
         WeakRef ref;
         T index;
 
@@ -480,16 +475,16 @@ public:
         Index(WeakRef self, T index) : ref(self), index(index) {}
     };
 
-    /* A proxy that represents a slice within a VariantList. */
+    /* A proxy that represents a slice within a CyLinkedList. */
     template <typename... Args>
     class Slice {
     public:
 
         /* Implement LinkedList.__getitem__() for all variants. */
-        util::Slot<VariantList> get() {
+        util::Slot<CyLinkedList> get() {
             return std::visit(
                 [&](auto& list) {
-                    util::Slot<VariantList> slot;
+                    util::Slot<CyLinkedList> slot;
                     slot.construct(
                         std::apply(
                             [&](Args... args) {
@@ -537,7 +532,7 @@ public:
         }
 
     private:
-        friend VariantList;
+        friend CyLinkedList;
         WeakRef ref;
         std::tuple<Args...> args;  // deferred arguments to list.slice()
 
@@ -553,10 +548,10 @@ public:
 
     /* Allow concatenation using the + operator. */
     template <typename T>
-    inline util::Slot<VariantList> concat(T rhs) {
+    inline util::Slot<CyLinkedList> concat(T rhs) {
         return std::visit(
             [&](auto& list) {
-                util::Slot<VariantList> slot;
+                util::Slot<CyLinkedList> slot;
                 slot.construct(list + rhs);
                 return slot;
             },
@@ -566,7 +561,7 @@ public:
 
     /* Allow concatenation using the + operator (symmetric). */
     template <typename T>
-    inline util::Slot<T> concatenate(T lhs, VariantList& rhs) {
+    inline util::Slot<T> concatenate(T lhs, CyLinkedList& rhs) {
         return std::visit(
             [&](auto& list) {
                 util::Slot<T> slot;
@@ -579,11 +574,11 @@ public:
 
     /* Allow repetition using the * operator. */
     template <typename T>
-    inline util::Slot<VariantList> repeat(VariantList& lhs, T rhs) {
+    inline util::Slot<CyLinkedList> repeat(CyLinkedList& lhs, T rhs) {
         return std::visit(
             [&](auto& list) {
-                util::Slot<VariantList> slot;
-                slot.construct(VariantList(list * rhs));
+                util::Slot<CyLinkedList> slot;
+                slot.construct(CyLinkedList(list * rhs));
                 return slot;
             },
             lhs.variant
@@ -592,11 +587,11 @@ public:
 
     /* Allow repetition using the * operator (symmetric). */
     template <typename T>
-    inline util::Slot<VariantList> repeat(T lhs, VariantList& rhs) {
+    inline util::Slot<CyLinkedList> repeat(T lhs, CyLinkedList& rhs) {
         return std::visit(
             [&](auto& list) {
-                util::Slot<VariantList> slot;
-                slot.construct(VariantList(lhs * list));
+                util::Slot<CyLinkedList> slot;
+                slot.construct(CyLinkedList(lhs * list));
                 return slot;
             },
             rhs.variant
@@ -605,80 +600,44 @@ public:
 
     /* Allow in-place repetition using the *= operator. */
     template <typename T>
-    inline void irepeat(VariantList& lhs, T rhs) {
+    inline void irepeat(CyLinkedList& lhs, T rhs) {
         std::visit([&](auto& list) { list *= rhs; }, lhs.variant);
     }
 
     /* Allow lexicographic < comparisons. */
-    template <typename T>
-    inline bool lt(T rhs) {
-        return std::visit([&](auto& list) { return list < rhs; }, variant);
-    }
-
-    /* Allow lexicographic < comparisons (symmetric). */
-    template <typename T>
-    inline bool rlt(T lhs) {
-        return std::visit([&](auto& list) { return lhs < list; }, variant);
+    template <typename Container>
+    inline bool lt(const Container& c) {
+        return std::visit([&](auto& list) { return list < c; }, variant);
     }
 
     /* Allow lexicographic <= comparisons. */
-    template <typename T>
-    inline bool lexical_le(VariantList& lhs, T rhs) {
-        return std::visit([&](auto& list) { return list <= rhs; }, lhs.variant);
-    }
-
-    /* Allow lexicographic <= comparisons (symmetric). */
-    template <typename T>
-    inline bool lexical_le(T lhs, VariantList& rhs) {
-        return std::visit([&](auto& list) { return lhs <= list; }, rhs.variant);
+    template <typename Container>
+    inline bool le(const Container& c) {
+        return std::visit([&](auto& list) { return list <= c; }, variant);
     }
 
     /* Allow lexicographic == comparisons. */
-    template <typename T>
-    inline bool lexical_eq(VariantList& lhs, T rhs) {
-        return std::visit([&](auto& list) { return list == rhs; }, lhs.variant);
-    }
-
-    /* Allow lexicographic == comparisons (symmetric). */
-    template <typename T>
-    inline bool lexical_eq(T lhs, VariantList& rhs) {
-        return std::visit([&](auto& list) { return lhs == list; }, rhs.variant);
+    template <typename Container>
+    inline bool eq(const Container& c) {
+        return std::visit([&](auto& list) { return list == c; }, variant);
     }
 
     /* Allow lexicographic != comparisons. */
-    template <typename T>
-    inline bool lexical_ne(VariantList& lhs, T rhs) {
-        return std::visit([&](auto& list) { return list != rhs; }, lhs.variant);
-    }
-
-    /* Allow lexicographic != comparisons (symmetric). */
-    template <typename T>
-    inline bool lexical_ne(T lhs, VariantList& rhs) {
-        return std::visit([&](auto& list) { return lhs != list; }, rhs.variant);
+    template <typename Container>
+    inline bool ne(const Container& c) {
+        return std::visit([&](auto& list) { return list != c; }, variant);
     }
 
     /* Allow lexicographic >= comparisons. */
-    template <typename T>
-    inline bool lexical_ge(VariantList& lhs, T rhs) {
-        return std::visit([&](auto& list) { return list >= rhs; }, lhs.variant);
-    }
-
-    /* Allow lexicographic >= comparisons (symmetric). */
-    template <typename T>
-    inline bool lexical_ge(T lhs, VariantList& rhs) {
-        return std::visit([&](auto& list) { return lhs >= list; }, rhs.variant);
+    template <typename Container>
+    inline bool ge(const Container& c) {
+        return std::visit([&](auto& list) { return list >= c; }, variant);
     }
 
     /* Allow lexicographic > comparisons. */
-    template <typename T>
-    inline bool lexical_gt(VariantList& lhs, T rhs) {
-        return std::visit([&](auto& list) { return list > rhs; }, lhs.variant);
-    }
-
-    /* Allow lexicographic > comparisons (symmetric). */
-    template <typename T>
-    inline bool lexical_gt(T lhs, VariantList& rhs) {
-        return std::visit([&](auto& list) { return lhs > list; }, rhs.variant);
+    template <typename Container>
+    inline bool gt(const Container& c) {
+        return std::visit([&](auto& list) { return list > c; }, variant);
     }
 
 protected:
@@ -689,12 +648,8 @@ protected:
 };
 
 
-//////////////////////////////////
-////    OPERATOR OVERLOADS    ////
-//////////////////////////////////
-
-
 }  // namespace cython
+}  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
 

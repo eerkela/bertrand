@@ -5,6 +5,7 @@
 #include <cstddef>  // size_t
 #include <type_traits>  // std::enable_if_t<>
 #include <utility>  // std::pair
+#include "../../util/python.h"  // eq()
 #include "../core/view.h"  // ViewTraits
 #include "position.h"  // normalize_index()
 
@@ -55,7 +56,7 @@ namespace linked {
                 size_t count = 0;
                 while (idx >= norm_start) {
                     const Node* node = it.curr();
-                    count += node->eq(item);  // branchless
+                    count += util::eq(node->value(), item);  // branchless
                     ++it;
                     --idx;
                 }
@@ -75,7 +76,7 @@ namespace linked {
         size_t count = 0;
         while (idx < norm_stop) {
             const Node* node = it.curr();
-            count += node->eq(item);  // branchless
+            count += util::eq(node->value(), item);  // branchless
             ++it;
             ++idx;
         }
