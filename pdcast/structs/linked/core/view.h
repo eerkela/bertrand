@@ -240,6 +240,43 @@ public:
             std::nullopt;
     }
 
+    // TODO: what if reserve() produced an RAII guard that holds the view at a given
+    // size until it falls out of scope?  You would have to call a separate method to
+    // finalize the operation, otherwise it would shrink back to its original size.
+
+    // MemGuard guard = view.reserve(100);
+    // ... do stuff ...
+    // guard.finalize();  // do not shrink when guard falls out of scope
+    // return view;
+
+    // finalize() could accept its own size parameter, which would allow us to
+    // preallocate more memory than we need and release it later.  It defaults to the
+    // reserved size, which is the most common use case.  If it is not called, then
+    // the guard will try to shrink the view back to its original size, and will throw
+    // an exception if it is unable to do so, reminding the user to call finalize().
+
+    // TODO: if transitioning to MemGuard, view.reserve() should be able to take
+    // optional sizes.  If a nullopt is given, then it just won't actually reserve
+    // any memory, and will allow the view to grow dynamically.  The finalize() method
+    // just wouldn't do anything in this case.
+
+    // The problem is that any iterators over the list will always be invalidated by
+    // resizing, so we need to be careful about when and how we do it.  MemGuard could
+    // maybe help with this.  It would be used whenever we need to make sure that the
+    // node addresses remain stable for a given operation (basically any time iterators
+    // are involved).  For example, if we're replacing a slice within the list, we
+    // would need to make sure that we never automatically grow/shrink the list during
+    // the operation, since that would invalidate the slice iterator.  We could do this
+    // by calling reserve() with the current size of the list and then holding a guard
+    // until the operation is complete.
+
+    // TODO: in fact, if we build this in at an even deeper level, then we might be
+    // able to bake it into the iterators themselves, such that they prevent the
+    // resize() method from being called while they are active.  This would guarantee
+    // that the node addresses remain stable for the iterator's lifetime, and would
+    // throw errors if this is violated.  In fact, it might just involve toggling the
+    // `frozen` flag on the allocator.
+
     /* Reserve memory for a given number of nodes ahead of time. */
     inline void reserve(size_t capacity) const {
         this->allocator.reserve(capacity);
@@ -255,6 +292,8 @@ public:
             this->allocator.reserve(this->size() + size.value());
         }
     }
+
+    // TODO: maybe defragment() should also shrink the array if it is below threshold?
 
     /* Rearrange the nodes in memory to match their positions within the list. */
     inline void defragment() {
@@ -397,6 +436,16 @@ public:
         return allocator.temp;
     }
 
+    /* Check whether a given index is closer to the tail of the list than it is to the
+    head.
+    
+    NOTE: this is used to optimize certain operations for doubly-linked lists, which
+    can be traversed in either direction.  If the index is closer to the tail, then we
+    can save time by traversing backward rather than forward from the head. */
+    inline bool closer_to_tail(size_t index) const noexcept {
+        return index > (size() + 1) / 2;
+    }
+
 protected:
     mutable Allocator allocator;  // low-level memory management
 
@@ -531,8 +580,33 @@ public:
     using Base::Base;
     using Base::operator=;
 
+    /* Construct a SetView from an input iterable. */
+    template <typename Container>
+    SetView(
+        Container& iterable,
+        std::optional<size_t> max_size = std::nullopt,
+        PyObject* spec = nullptr,
+        bool reverse = false
+    ) : Base::allocator(
+            Base::get_init_size(iterable, max_size),
+            max_size.has_value(),
+            spec
+        )
+    {
+        for (auto item : util::iter(iterable)) {
+            Node* curr = node<true>(item);  // exist_ok = True
+            if (curr->next() == nullptr) {
+                if (reverse) {
+                    Base::link(nullptr, curr, Base::head());
+                } else {
+                    Base::link(Base::tail(), curr, nullptr);
+                }
+            }
+        }
+    }
+
     /* Construct a new node for the set.
-    
+
     NOTE: this accepts an optional `exist_ok` template parameter that controls whether
     or not the allocator will throw an exception if the value already exists in the set.
     The default is false, meaning that an exception will be thrown if a duplicate node

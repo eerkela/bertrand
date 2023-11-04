@@ -24,7 +24,30 @@ namespace linked {
     inline auto insert(View& view, Index index, Item& item)
         -> std::enable_if_t<ViewTraits<View>::listlike, void>
     {
-        position(view, index).insert(item);
+        // normalize index
+        size_t norm_index = normalize_index(index, view.size(), true);
+
+        // NOTE: Iterators require the memory addresses of each node to remain stable
+        // over its lifetime.  As a result, we cannot blindly allocate a new node while
+        // iterating over the list due to potential growth of the allocator array,
+        // which invalidates all iterators.  Instead, we must reserve space for the new
+        // node ahead of time, preventing the table from growing during iteration.
+        view.reserve(view.size() + 1);
+
+        // get iterator to index
+        if constexpr (NodeTraits<typename View::Node>::has_prev) {
+            if (view.closer_to_tail(norm_index)) {
+                auto it = view.rbegin();
+                for (size_t i = view.size() - 1; i > norm_index; --i) ++it;
+                it.insert(view.node(item));
+                return;
+            }
+        }
+
+        // forward traversal
+        auto it = view.begin();
+        for (size_t i = 0; i < norm_index; ++i) ++it;
+        it.insert(view.node(item));
     }
 
 

@@ -2,528 +2,297 @@
 #ifndef BERTRAND_STRUCTS_SET_H
 #define BERTRAND_STRUCTS_SET_H
 
-#include <cstddef>  // for size_t
-#include <memory>
-#include <utility>  // std::pair
-#include <variant>  // std::variant
+#include <cstddef>  // size_t
 #include <Python.h>  // CPython API
+#include "core/view.h"  // SetView
+#include "base.h"  // LinkedBase
 
-// Algorithms
 #include "algorithms/add.h"
-#include "algorithms/clear.h"
-#include "algorithms/compare.h"
+#include "algorithms/contains.h"
+#include "algorithms/count.h"
 #include "algorithms/discard.h"
+#include "algorithms/distance.h"
 #include "algorithms/index.h"
+#include "algorithms/insert.h"
 #include "algorithms/move.h"
+#include "algorithms/pop.h"
+#include "algorithms/position.h"
+// #include "algorithms/relative.h"
+#include "algorithms/remove.h"
+#include "algorithms/reverse.h"
+#include "algorithms/rotate.h"
+#include "algorithms/set_compare.h"
+#include "algorithms/slice.h"
+#include "algorithms/sort.h"
 #include "algorithms/union.h"
 #include "algorithms/update.h"
 
-// Core
-#include "core/allocate.h"  // Allocator policies
-#include "core/node.h"  // Nodes
-#include "core/view.h"  // Views
 
-// List
-#include "list.h"  // VariantList
+namespace bertrand {
+namespace structs {
+namespace linked {
 
 
-//////////////////////
-////    PUBLIC    ////
-//////////////////////
+/* A module linked set class that mimics the Python set interface in C++. */
+template <
+    typename NodeType,
+    typename SortPolicy = linked::MergeSort,
+    typename LockPolicy = util::BasicLock
+>
+class LinkedSet : public LinkedBase<linked::SetView<NodeType>, LockPolicy> {
+    using Base = LinkedBase<linked::SetView<NodeType>, LockPolicy>;
 
-
-class VariantSet : public VariantList {
 public:
-    using Base = VariantList;
+    using View = linked::SetView<NodeType>;
+    using Node = typename View::Node;
+    using Value = typename View::Value;
 
-    /* Construct a new VariantSet from an existing SetView.  This is called to
-    construct a new `VariantSet` from the output of `SetView.copy()` or
-    `get_slice()`. */
-    template <typename View>
-    VariantSet(View&& view) : Base(view) {}
+    template <linked::Direction dir>
+    using Iterator = typename View::template Iterator<dir>;
+    template <linked::Direction dir>
+    using ConstIterator = typename View::template ConstIterator<dir>;
 
-    /* Construct an empty SetView to match the given template parameters.  This
-    is called during `LinkedSet.__init__()` when no iterable is given. */
-    VariantSet(bool doubly_linked, Py_ssize_t max_size, PyObject* spec) {
-        if (doubly_linked) {
-            if (max_size < 0) {
-                this->variant = SetView<DoubleNode, DynamicAllocator>(max_size, spec);
-            } else {
-                this->variant = SetView<DoubleNode, FixedAllocator>(max_size, spec);
-            }
-        } else {
-            if (max_size < 0) {
-                this->variant = SetView<SingleNode, DynamicAllocator>(max_size, spec);
-            } else {
-                this->variant = SetView<SingleNode, FixedAllocator>(max_size, spec);
-            }
-        }
-        this->_doubly_linked = doubly_linked;
-    }
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
 
-    /* Unpack an iterable into a new SetView and wrap it as a VariantSet.  This
-    is called to construct a LinkedSet from an initializer sequence. */
-    VariantSet(
-        PyObject* iterable,
-        bool doubly_linked,
-        bool reverse,
-        Py_ssize_t max_size,
-        PyObject* spec
-    ) : self(nullptr)
-    {
-        if (doubly_linked) {
-            if (max_size < 0) {
-                this->variant = SetView<DoubleNode, DynamicAllocator>(
-                    iterable, reverse, max_size, spec
-                );
-            } else {
-                this->variant = SetView<DoubleNode, FixedAllocator>(
-                    iterable, reverse, max_size, spec
-                );
-            }
-        } else {
-            if (max_size < 0) {
-                this->variant = SetView<SingleNode, DynamicAllocator>(
-                    iterable, reverse, max_size, spec
-                );
-            } else {
-                this->variant = SetView<SingleNode, FixedAllocator>(
-                    iterable, reverse, max_size, spec
-                );
-            }
-        }
-        this->_doubly_linked = doubly_linked;
-    }
+    // inherit constructors from LinkedBase
+    using Base::Base;
+    using Base::operator=;
 
     /////////////////////////////
     ////    SET INTERFACE    ////
     /////////////////////////////
 
-    /* Dispatch to the correct implementation of add() for each variant. */
-    inline void add(PyObject* item, bool left) {
-        std::visit(
-            [&](auto& view) {
-                Ops::add(&view, item, left);
-            },
-            this->variant
-        );
+    /* LinkedSets implement the full Python set interface with equivalent semantics to
+     * the built-in Python set type, as well as a few addons from `collections.deque`.
+     * There are only a few differences:
+     *
+     *      1.  The add() and update() methods accept a second boolean argument that
+     *          signals whether the item(s) should be inserted at the beginning of the
+     *          list or at the end.  This is similar to the appendleft() and
+     *          extendleft() methods of `collections.deque`.
+     *      TODO
+     */
+
+    /* Add an item to the set if it is not already present. */
+    inline void add(Value& item, bool left = false) {
+        linked::add(this->view, item, left);
     }
 
-    /* Dispatch to the correct implementation of discard() for each variant. */
-    inline void discard(PyObject* item) {
-        std::visit(
-            [&](auto& view) {
-                Ops::discard(&view, item);
-            },
-            this->variant
-        );
+    /* Insert an item at a specific index of the set. */
+    inline void insert(size_t index, Value& item) {
+        linked::insert(this->view, index, item);
     }
 
-    /* Dispatch to the correct implementation of isdisjoint() for each variant. */
-    inline int isdisjoint(PyObject* other) {
-        return std::visit(
-            [&](auto& view) {
-                return Ops::isdisjoint(&view, other);
-            },
-            this->variant
-        );
+    /* Extend a set by adding elements from an iterable that are not already present. */
+    template <typename Container>
+    inline void update(Container& items, bool left = false) {
+        linked::update(this->view, items, left);
     }
 
-    /* Dispatch to the correct implementation of issubset() for each variant. */
-    inline int issubset(PyObject* other, bool strict) {
-        return std::visit(
-            [&](auto& view) {
-                return Ops::issubset(&view, other, strict);
-            },
-            this->variant
-        );
+    /* Get the index of an item within the set. */
+    template <typename Index>
+    inline size_t index(Value& item, Index start = 0, Index stop = -1) const {
+        return linked::index(this->view, item, start, stop);
     }
 
-    /* Dispatch to the correct implementation of issuperset() for each variant. */
-    inline int issuperset(PyObject* other, bool strict) {
-        return std::visit(
-            [&](auto& view) {
-                return Ops::issuperset(&view, other, strict);
-            },
-            this->variant
-        );
+    /* Count the number of occurrences of an item within the set. */
+    template <typename Index>
+    inline size_t count(Value& item, Index start = 0, Index stop = -1) const {
+        return linked::count(this->view, item, start, stop);
     }
 
-    /* Dispatch to the correct implementation of union() for each variant. */
-    inline VariantSet* union_(PyObject* other, bool left) {
-        return std::visit(
-            [&](auto& view) -> VariantSet* {
-                auto result = Ops::union_(&view, other, left);
-                if (result == nullptr) {
-                    return nullptr;  // propagate Python errors
-                }
-                return new VariantSet(std::move(*result));
-            },
-            this->variant
-        );
+    /* Remove an item from the set. */
+    inline void remove(Value& item) {
+        linked::remove(this->view, item);
     }
 
-    /* Dispatch to the correct implementation of intersection() for each variant. */
-    inline VariantSet* intersection(PyObject* other) {
-        return std::visit(
-            [&](auto& view) -> VariantSet* {
-                auto result = Ops::intersection(&view, other);
-                if (result == nullptr) {
-                    return nullptr;  // propagate Python errors
-                }
-                return new VariantSet(std::move(*result));
-            },
-            this->variant
-        );
+    /* Remove an item from the set if it is present. */
+    inline void discard(Value& item) {
+        linked::discard(this->view, item);
     }
 
-    /* Dispatch to the correct implementation of difference() for each variant. */
-    inline VariantSet* difference(PyObject* other) {
-        return std::visit(
-            [&](auto& view) -> VariantSet* {
-                auto result = Ops::difference(&view, other);
-                if (result == nullptr) {
-                    return nullptr;  // propagate Python errors
-                }
-                return new VariantSet(std::move(*result));
-            },
-            this->variant
-        );
+    /* Remove an item from the set and return its value. */
+    template <typename Index>
+    inline Value pop(Index index = -1) {
+        return linked::pop(this->view, index);
     }
 
-    /* Dispatch to the correct implementation of symmetric_difference() for each
-    variant. */
-    inline VariantSet* symmetric_difference(PyObject* other) {
-        return std::visit(
-            [&](auto& view) -> VariantSet* {
-                auto result = Ops::symmetric_difference(&view, other);
-                if (result == nullptr) {
-                    return nullptr;  // propagate Python errors
-                }
-                return new VariantSet(std::move(*result));
-            },
-            this->variant
-        );
+    /* Remove all elements from the set. */
+    inline void clear() {
+        this->view.clear();
     }
 
-    /* Dispatch to the correct implementation of update() for each variant. */
-    inline void update(PyObject* items, bool left) {
-        std::visit(
-            [&](auto& view) {
-                Ops::update(&view, items, left);
-            },
-            this->variant
-        );
+    /* Return a shallow copy of the set. */
+    inline LinkedSet copy() const {
+        return LinkedSet(this->view.copy());
     }
 
-    /* Dispatch to the correct implementation of intersection_update() for each
-    variant. */
-    inline void intersection_update(PyObject* other) {
-        std::visit(
-            [&](auto& view) {
-                Ops::intersection_update(&view, other);
-            },
-            this->variant
-        );
+    /* Sort the set in-place according to an optional key func. */
+    template <typename Func>
+    inline void sort(Func key = nullptr, bool reverse = false) {
+        linked::sort<SortPolicy>(this->view, key, reverse);
     }
 
-    /* Dispatch to the correct implementation of difference_update() for each
-    variant. */
-    inline void difference_update(PyObject* other) {
-        std::visit(
-            [&](auto& view) {
-                Ops::difference_update(&view, other);
-            },
-            this->variant
-        );
+    /* Reverse the order of elements in the set in-place. */
+    inline void reverse() {
+        linked::reverse(this->view);
     }
 
-    /* Dispatch to the correct implementation of symmetric_difference_update() for
-    each variant. */
-    inline void symmetric_difference_update(PyObject* other) {
-        std::visit(
-            [&](auto& view) {
-                Ops::symmetric_difference_update(&view, other);
-            },
-            this->variant
-        );
+    /* Shift all elements in the set to the right by the specified number of steps. */
+    inline void rotate(int steps = 1) {
+        linked::rotate(this->view, steps);
     }
 
-    /////////////////////////////
-    ////    EXTRA METHODS    ////
-    /////////////////////////////
-
-    /* Dispatch to the correct implementation of edge() for each variant. */
-    inline Py_ssize_t distance(PyObject* item1, PyObject* item2) {
-        return std::visit(
-            [&](auto& view) {
-                return Ops::distance(&view, item1, item2);
-            },
-            this->variant
-        );
+    /* Get the linear distance between two elements within the set. */
+    inline long long distance(Value& from, Value& to) const {
+        return linked::distance(this->view, from, to);
     }
 
-    /* Dispatch to the correct implementation of swap() for each variant. */
-    inline void swap(PyObject* item1, PyObject* item2) {
-        std::visit(
-            [&](auto& view) {
-                Ops::swap(&view, item1, item2);
-            },
-            this->variant
-        );
+    /* Swap the positions of two elements within the set. */
+    inline void swap(Value& item1, Value& item2) {
+        linked::swap(this->view, item1, item2);
     }
 
-    /* Dispatch to the correct implementation of move() for each variant. */
-    inline void move(PyObject* item, Py_ssize_t steps) {
-        std::visit(
-            [&](auto& view) {
-                Ops::move(&view, item, steps);
-            },
-            this->variant
-        );
+    /* Move an item within the set by the specified number of steps. */
+    template <typename Steps>
+    inline void move(Value& item, Steps steps) {
+        linked::move(this->view, item, steps);
     }
 
-    /* Dispatch to the correct implementation of move_to_index() for each variant. */
-    template <typename T>
-    inline void move_to_index(PyObject* item, T index) {
-        std::visit(
-            [&](auto& view) {
-                Ops::move(&view, item, index);
-            },
-            this->variant
-        );
+    /* Move an item within the set to the specified index. */
+    template <typename Index>
+    inline void move_to_index(Value& item, Index index) {
+        linked::move_to_index(this->view, item, index);
     }
 
-    /* A proxy object that weakly references a VariantSet and exposes additional
-    methods for efficient operations with respect to a particular value. */
-    class RelativeProxy {
-    public:
-        /* Disabled copy/move constructors.  These are potentially dangerous since
-        we're using a raw PyObject* pointer. */
-        RelativeProxy(const RelativeProxy&) = delete;
-        RelativeProxy(RelativeProxy&&) = delete;
-        RelativeProxy& operator=(const RelativeProxy&) = delete;
-        RelativeProxy& operator=(RelativeProxy&&) = delete;
-
-        /* Construct a proxy for the set that allows efficient operations relative
-        to a particular sentinel value. */
-        RelativeProxy(
-            std::shared_ptr<VariantSet> variant,
-            PyObject* sentinel,
-            Py_ssize_t offset
-        ) : variant(variant), sentinel(sentinel), offset(offset)
-        {
-            Py_INCREF(this->sentinel);
-        }
-
-        /* Decrement the reference count of the sentinel value on destruction. */
-        ~RelativeProxy() {
-            Py_DECREF(this->sentinel);
-        }
-
-        /* Dispatch to the correct implementation of Relative::get() for each
-        variant. */
-        PyObject* get() {
-            // get a strong reference to the VariantSet
-            auto ref = strong_ref();
-            if (ref == nullptr) {
-                return nullptr;  // propagate
-            }
-
-            // dispatch to view.relative()
-            return std::visit(
-                [&](auto& view) {
-                    return view.relative(sentinel, offset, Relative::get);
-                },
-                ref->variant
-            );
-        }
-
-        /* Dispatch to the correct implementation of Relative::insert() for each
-        variant. */
-        void insert(PyObject* value) {
-            // get a strong reference to the VariantSet
-            auto ref = strong_ref();
-            if (ref == nullptr) {
-                return;  // propagate
-            }
-
-            std::visit(
-                [&](auto& view) {
-                    view.relative(sentinel, offset, Relative::insert, item);
-                },
-                ref->variant
-            );
-        }
-
-        /* Dispatch to the correct implementation of Relative::add() for each
-        variant. */
-        void add(PyObject* value) {
-            // get a strong reference to the VariantSet
-            auto ref = strong_ref();
-            if (ref == nullptr) {
-                return;  // propagate
-            }
-
-            std::visit(
-                [&](auto& view) {
-                    view.relative(sentinel, offset, Relative::add, item);
-                },
-                ref->variant
-            );
-        }
-
-        /* Dispatch to the correct implementation of Relative::extend() for each
-        variant. */
-        void extend(PyObject* items, bool reverse) {
-            // get a strong reference to the VariantSet
-            auto ref = strong_ref();
-            if (ref == nullptr) {
-                return;  // propagate
-            }
-
-            std::visit(
-                [&](auto& view) {
-                    view.relative(sentinel, offset, Relative::extend, items, reverse);
-                },
-                ref->variant
-            );
-        }
-
-        /* Dispatch to the correct implementation of Relative::update() for each
-        variant. */
-        void update(PyObject* items, bool reverse) {
-            // get a strong reference to the VariantSet
-            auto ref = strong_ref();
-            if (ref == nullptr) {
-                return;  // propagate
-            }
-
-            std::visit(
-                [&](auto& view) {
-                    view.relative(sentinel, offset, Relative::update, items, reverse);
-                },
-                ref->variant
-            );
-        }
-
-        /* Dispatch to the correct implementation of Relative::remove() for each
-        variant. */
-        void remove() {
-            // get a strong reference to the VariantSet
-            auto ref = strong_ref();
-            if (ref == nullptr) {
-                return;  // propagate
-            }
-
-            // dispatch to view.relative()
-            std::visit(
-                [&](auto& view) {
-                    view.relative(sentinel, offset, Relative::remove);
-                },
-                ref->variant
-            );
-        }
-
-        /* Dispatch to the correct implementation of Relative::discard() for each
-        variant. */
-        void discard() {
-            // get a strong reference to the VariantSet
-            auto ref = strong_ref();
-            if (ref == nullptr) {
-                return;  // propagate
-            }
-
-            // dispatch to view.relative()
-            std::visit(
-                [&](auto& view) {
-                    view.relative(sentinel, offset, Relative::discard);
-                },
-                ref->variant
-            );
-        }
-
-        /* Dispatch to the correct implementation of Relative::pop() for each
-        variant. */
-        PyObject* pop() {
-            // get a strong reference to the VariantSet
-            auto ref = strong_ref();
-            if (ref == nullptr) {
-                return nullptr;  // propagate
-            }
-
-            // dispatch to view.relative()
-            return std::visit(
-                [&](auto& view) {
-                    return view.relative(sentinel, offset, Relative::pop);
-                },
-                ref->variant
-            );
-        }
-
-        /* Dispatch to the correct implementation of Relative::clear() for each
-        variant. */
-        void clear(Py_ssize_t length) {
-            // get a strong reference to the VariantSet
-            auto ref = strong_ref();
-            if (ref == nullptr) {
-                return;  // propagate
-            }
-
-            // dispatch to view.relative()
-            std::visit(
-                [&](auto& view) {
-                    view.relative(sentinel, offset, Relative::clear, length);
-                },
-                ref->variant
-            );
-        }
-
-        /* Dispatch to the correct implementation of Relative::move() for each
-        variant. */
-        void move(PyObject* value) {
-            // get a strong reference to the VariantSet
-            auto ref = strong_ref();
-            if (ref == nullptr) {
-                return;  // propagate
-            }
-
-            // dispatch to view.relative()
-            std::visit(
-                [&](auto& view) {
-                    view.relative(sentinel, offset, Relative::move, value);
-                },
-                ref->variant
-            );
-        }
-
-    private:
-        const std::weak_ptr<VariantSet> variant;
-        PyObject* const sentinel;
-        const Py_ssize_t offset;
-
-        /* Generate a strong reference to the VariantSet. */
-        std::shared_ptr<VariantSet> strong_ref() {
-            auto strong_ref = variant.lock();
-            if (strong_ref == nullptr) {
-                PyErr_SetString(
-                    PyExc_ReferenceError,
-                    "RelativeProxy references a set that no longer exists"
-                );
-            }
-            return strong_ref;
-        }
-    };
-
-    /* Construct a RelativeProxy for relative operations within a linked set. */
-    inline RelativeProxy relative(PyObject* sentinel, Py_ssize_t offset) {
-        // lazily initialize self pointer
-        if (this->self == nullptr) {
-            this->self = std::make_shared<VariantSet>(*this);
-        }
-        return RelativeProxy(this->self, sentinel, offset);
+    /* Check whether the set has no elements in common with another container. */
+    template <typename Container>
+    inline bool isdisjoint(const Container& other) const {
+        return linked::isdisjoint(this->view, other);
     }
+
+    /* Check whether all items within the set are also present in another container. */
+    template <typename Container>
+    inline bool issubset(const Container& other) const {
+        return linked::issubset(this->view, other);
+    }
+
+    /* Check whether the set contains all items within another container. */
+    template <typename Container>
+    inline bool issuperset(const Container& other) const {
+        return linked::issuperset(this->view, other);
+    }
+
+    /* Return a new set with elements from this set and all other container(s). */
+    template <typename... Containers>
+    inline LinkedSet union_(const Containers&&... others) const {
+        return LinkedSet(linked::union_(this->view, others...));
+    }
+
+    /* Return a new set with elements from this set that are common to all other
+    container(s).  */
+    template <typename... Containers>
+    inline LinkedSet intersection(const Containers&&... others) const {
+        return LinkedSet(linked::intersection(this->view, others...));
+    }
+
+    /* Return a new set with elements in this set that are not in the other
+    container(s). */
+    template <typename... Containers>
+    inline LinkedSet difference(const Containers&&... others) const {
+        return LinkedSet(linked::difference(this->view, others...));
+    }
+
+    /* Return a new set with elements in either this set or another container, but not
+    both. */
+    template <typename... Containers>
+    inline LinkedSet symmetric_difference(const Containers&&... others) const {
+        return LinkedSet(linked::symmetric_difference(this->view, others...));
+    }
+
+
+    ///////////////////////
+    ////    PROXIES    ////
+    ///////////////////////
+
+    /* Proxies allow access to a particular element or slice of a set, allowing
+     * convenient, Python-like syntax for set operations.
+     *
+     * ElementProxies are returned by the array index operator [] when given with a
+     * single numeric argument.  This argument can be negative following the same
+     * semantics as built-in Python lists (i.e. -1 refers to the last element, and
+     * overflow results in an error).  Each proxy offers the following methods:
+     *
+     *      Value get(): return the value at the current index.
+     *      void set(Value& value): set the value at the current index.
+     *      void del(): delete the value at the current index.
+     *      void insert(Value& value): insert a value at the current index.
+     *      Value pop(): remove the value at the current index and return it.
+     *      operator Value(): implicitly coerce the proxy to its value in function
+     *          calls and other contexts.
+     *      operator=(Value& value): set the value at the current index using
+     *          assignment syntax.
+     *
+     * SliceProxies are returned by the `slice()` factory method, which can accept
+     * either a Python slice object or separate start, stop, and step arguments, each
+     * of which are optional, and can be negative following the same semantics as
+     * above.  Each proxy exposes the following methods:
+     *
+     *      LinkedSet get(): return a new set containing the contents of the slice.
+     *      void set(PyObject* items): overwrite the contents of the slice with the
+     *          contents of the iterable.
+     *      void del(): remove the slice from the set.
+     *      Iterator iter(): return a coupled iterator over the slice.
+     *          NOTE: slice iterators may not yield results in the same order as the
+     *          step size would indicate.  This is because slices are traversed in
+     *          such a way as to minimize the number of nodes that must be visited and
+     *          avoid backtracking.  See linked/algorithms/slice.h for more details.
+     *      Iterator begin():  return an iterator to the first element of the slice.
+     *          See note above.
+     *      Iterator end(): return an iterator to terminate the slice.
+     *
+     * RelativeProxies are returned by the `relative()` factory method, which accepts
+     * any value within the set.  The value is searched and used as a reference point
+     * for relative indexing.  The resulting proxies can then be used to manipulate the
+     * set locally around the sentinel value, which can be faster than operating on the
+     * whole set at once.  For instance, a relative insertion can be O(1), whereas a
+     * whole-set insertion is O(n).  Each proxy exposes the following methods:
+     *
+     *      TODO
+     */
+
+
+    //////////////////////////////////
+    ////    OPERATOR OVERLOADS    ////
+    //////////////////////////////////
+
+    /* NOTE: operators are implemented as non-member functions for commutativity.
+     * Namely, the supported operators are as follows:
+     *      (|)     union
+     *      (&)     intersection
+     *      (-)     difference
+     *      (^)     symmetric difference
+     *      (<)     proper subset comparison
+     *      (<=)    subset comparison
+     *      (==)    equality comparison
+     *      (!=)    inequality comparison
+     *      (>=)    superset comparison
+     *      (>)     proper superset comparison
+     *
+     * These all work similarly to their Python equivalents except that they can accept
+     * any iterable container in either C++ or Python to compare against.  This
+     * symmetry is provided by the universal utility functions in structs/util/iter.h
+     * and structs/util/python.h.
+     */
+
 };
+
+
+}  // namespace linked
+}  // namespace structs
+}  // namespace bertrand
 
 
 #endif  // BERTRAND_STRUCTS_SET_H include guard

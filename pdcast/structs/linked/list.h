@@ -2,8 +2,8 @@
 #ifndef BERTRAND_STRUCTS_LINKED_LIST_H
 #define BERTRAND_STRUCTS_LINKED_LIST_H
 
-#include <sstream>  // std::ostringstream
-#include "../util/except.h"  // type_error()
+#include <cstddef>  // size_t
+#include <Python.h>  // CPython API
 #include "core/view.h"  // ListView
 #include "base.h"  // LinkedBase
 
@@ -55,50 +55,17 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Construct an empty list. */
-    LinkedList(
-        std::optional<size_t> max_size = std::nullopt,
-        PyObject* spec = nullptr
-    ) : Base(max_size, spec)
-    {}
-
-    /* Construct a list from an input iterable. */
-    LinkedList(
-        PyObject* iterable,
-        std::optional<size_t> max_size = std::nullopt,
-        PyObject* spec = nullptr,
-        bool reverse = false
-    ) : Base(iterable, max_size, spec, reverse)
-    {}
-
-    /* Construct a list from a base view. */
-    LinkedList(View&& view) : Base(std::move(view)) {}
-
-    /* Copy constructor. */
-    LinkedList(const LinkedList& other) : Base(other.view) {}
-
-    /* Move constructor. */
-    LinkedList(LinkedList&& other) : Base(std::move(other.view)) {}
-
-    /* Copy assignment operator. */
-    LinkedList& operator=(const LinkedList& other) {
-        Base::operator=(other);
-        return *this;
-    }
-
-    /* Move assignment operator. */
-    LinkedList& operator=(LinkedList&& other) {
-        Base::operator=(std::move(other));
-        return *this;
-    }
+    // inherit constructors from LinkedBase
+    using Base::Base;
+    using Base::operator=;
 
     //////////////////////////////
     ////    LIST INTERFACE    ////
     //////////////////////////////
 
-    /* LinkedLists implement the full Python list interface with equivalent semantics
-     * to the built-in Python list type, as well as a few addons from
-     * `collections.deque`.  There are only a few differences:
+    /* LinkedLists implement the full Python list interface with equivalent semantics to
+     * the built-in Python list type, as well as a few addons from `collections.deque`.
+     * There are only a few differences:
      *
      *      1.  The append() and extend() methods accept a second boolean argument that
      *          signals whether the item(s) should be inserted at the beginning of the
@@ -117,30 +84,55 @@ public:
      * notwithstanding.)
      */
 
-    /* Append an item to the end of a list. */
+    /* Add an item to the end of the list. */
     inline void append(Value& item, bool left = false) {
         linked::append(this->view, item, left);
     }
 
-    /* Insert an item into a list at the specified index. */
+    // TODO: insert() does not correctly handle negative indices
+    // >>> l
+    // LinkedList(['a', 'b', 'c', 'd', 'e', 'f', 'g'])
+    // >>> l.insert(-1, "x")
+    //     -> create: 'x'
+    // >>> l
+    // LinkedList(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'x'])
+
+    // should be LinkedList(['a', 'b', 'c', 'd', 'e', 'f', 'x', 'g'])
+
+    // ALSO:
+    // >>> l
+    // LinkedList(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'x'])
+    // >>> l.insert(-1, "y")
+    //     -> allocate: 16 nodes
+    //     -> deallocate: 8 nodes
+    //     -> create: 'y'
+    // >>> l
+    // LinkedList(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'x'])
+
+    // 'y' does not appear in the list (possibly related to slicing bug on resizes)
+    // -> could be that the iterator is being invalidated by resize.  If so, this could
+    // be a headache.  We might want to totally decouple convenience methods from
+    // iterators in general.
+
+    /* Insert an item into the list at the specified index. */
     template <typename Index>
     inline void insert(Index index, Value& item) {
         linked::insert(this->view, index, item);
     }
 
-    /* Extend a list by appending elements from the iterable. */
+    /* Extend the list by appending elements from an iterable. */
     template <typename Container>
     inline void extend(Container& items, bool left = false) {
         linked::extend(this->view, items, left);
     }
 
-    /* Get the index of an item within a list. */
+    /* Get the index of an item within the list. */
     template <typename Index>
     inline size_t index(Value& item, Index start = 0, Index stop = -1) const {
         return linked::index(this->view, item, start, stop);
     }
 
-    /* Count the number of occurrences of an item within a list. */
+    /* Count the number of occurrences of an item within the list. */
     template <typename Index>
     inline size_t count(Value& item, Index start = 0, Index stop = -1) const {
         return linked::count(this->view, item, start, stop);
@@ -151,18 +143,18 @@ public:
         return linked::contains(this->view, item);
     }
 
-    /* Remove the first occurrence of an item from a list. */
+    /* Remove the first occurrence of an item from the list. */
     inline void remove(Value& item) {
         linked::remove(this->view, item);
     }
 
-    /* Remove an item from a list and return its value. */
+    /* Remove an item from the list and return its value. */
     template <typename Index>
-    inline Value pop(Index index) {
+    inline Value pop(Index index = -1) {
         return linked::pop(this->view, index);
     }
 
-    /* Remove all elements from a list. */
+    /* Remove all elements from the list. */
     inline void clear() {
         this->view.clear();
     }
@@ -172,18 +164,18 @@ public:
         return LinkedList(this->view.copy());
     }
 
-    /* Sort a list in-place. */
+    /* Sort the list in-place according to an optional key func. */
     template <typename Func>
     inline void sort(Func key = nullptr, bool reverse = false) {
         linked::sort<SortPolicy>(this->view, key, reverse);
     }
 
-    /* Reverse a list in-place. */
+    /* Reverse the order of elements in the list in-place. */
     inline void reverse() {
         linked::reverse(this->view);
     }
 
-    /* Rotate a list to the right by the specified number of steps. */
+    /* Shift all elements in the list to the right by the specified number of steps. */
     inline void rotate(long long steps = 1) {
         linked::rotate(this->view, steps);
     }
@@ -201,9 +193,9 @@ public:
      * overflow results in an error).  Each proxy offers the following methods:
      *
      *      Value get(): return the value at the current index.
-     *      void set(Value value): set the value at the current index.
+     *      void set(Value& value): set the value at the current index.
      *      void del(): delete the value at the current index.
-     *      void insert(Value value): insert a value at the current index.
+     *      void insert(Value& value): insert a value at the current index.
      *      Value pop(): remove the value at the current index and return it.
      *      operator Value(): implicitly coerce the proxy to its value in function
      *          calls and other contexts.
@@ -247,14 +239,14 @@ public:
 
     /* NOTE: operators are implemented as non-member functions for commutativity.
      * Namely, the supported operators are as follows:
-     *      (+) for concatenating the elements of one container to another
-     *      (*) for repeating the elements of a container a specified number of times
-     *      (<) for lexicographic less-than comparison between containers
-     *      (<=) for lexicographic less-than-or-equal-to comparison between containers
-     *      (==) for lexicographic equality comparison between containers
-     *      (!=) for lexicographic inequality comparison between containers
-     *      (>=) for lexicographic greater-than-or-equal-to comparison between containers
-     *      (>) for lexicographic greater-than comparison between containers
+     *      (+)     concatenation
+     *      (*)     repetition
+     *      (<)     lexicographic less-than comparison
+     *      (<=)    lexicographic less-than-or-equal-to comparison
+     *      (==)    lexicographic equality comparison
+     *      (!=)    lexicographic inequality comparison
+     *      (>=)    lexicographic greater-than-or-equal-to comparison
+     *      (>)     lexicographic greater-than comparison
      *
      * These all work similarly to their Python equivalents except that they can accept
      * any iterable container in either C++ or Python to compare against.  This

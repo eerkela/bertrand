@@ -17,6 +17,16 @@
 #include "node.h"  // NodeTraits
 
 
+// TODO: Maybe allocators themselves should be read-write lockable?  This would
+// guarantee that the memory itself is thread-safe (i.e. no resizing while an iterator
+// exists).  Iterators would automatically lock the allocator in shared mode when they
+// are constructed and unlock it when they are destroyed.  The resize() operation would
+// try to lock the allocator in exclusive mode, and would block until all iterators are
+// destroyed.  This would also allow for concurrent iteration over the same list, which
+// 
+
+
+
 namespace bertrand {
 namespace structs {
 namespace linked {

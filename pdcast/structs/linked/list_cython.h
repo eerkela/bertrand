@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_LIST_H
-#define BERTRAND_STRUCTS_LIST_H
+// include guard: BERTRAND_STRUCTS_LINKED_LIST_CYTHON_H
+#ifndef BERTRAND_STRUCTS_LINKED_LIST_CYTHON_H
+#define BERTRAND_STRUCTS_LINKED_LIST_CYTHON_H
 
 #include <cstddef>  // size_t
 #include <memory>  // std::shared_ptr, std::weak_ptr
@@ -647,4 +647,4 @@ protected:
 }  // namespace bertrand
 
 
-#endif  // BERTRAND_STRUCTS_LIST_H include guard
+#endif  // BERTRAND_STRUCTS_LINKED_LIST_CYTHON_H

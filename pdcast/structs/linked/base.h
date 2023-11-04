@@ -43,6 +43,53 @@ public:
     allocation/deallocation and links between nodes. */
     View view;
 
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct an empty list. */
+    LinkedBase(
+        std::optional<size_t> max_size = std::nullopt,
+        PyObject* spec = nullptr
+    ) : view(max_size, spec)
+    {}
+
+    /* Construct a list from an input iterable. */
+    LinkedBase(
+        PyObject* iterable,
+        std::optional<size_t> max_size = std::nullopt,
+        PyObject* spec = nullptr,
+        bool reverse = false
+    ) : view(iterable, max_size, spec, reverse)
+    {}
+
+    /* Construct a list from a base view. */
+    LinkedBase(View&& view) : view(std::move(view)) {}
+
+    // TODO: construct from iterators?
+
+    /* Copy constructor. */
+    LinkedBase(const LinkedBase& other) : view(other.view) {}
+
+    /* Move constructor. */
+    LinkedBase(LinkedBase&& other) : view(std::move(other.view)) {}
+
+    /* Copy assignment operator. */
+    LinkedBase& operator=(const LinkedBase& other) {
+        view = other.view;
+        return *this;
+    }
+
+    /* Move assignment operator. */
+    LinkedBase& operator=(LinkedBase&& other) {
+        view = std::move(other.view);
+        return *this;
+    }
+
+    //////////////////////////////
+    ////    SHARED METHODS    ////
+    //////////////////////////////
+
     /* Check if the list contains any elements. */
     inline bool empty() const noexcept {
         return view.size() == 0;
@@ -138,47 +185,6 @@ public:
      * lock.contention()  // average time spent acquiring the lock
      * lock.reset_diagnostics()  // reset the above values to zero
      */
-
-protected:
-
-    /* Construct an empty list. */
-    LinkedBase(
-        std::optional<size_t> max_size = std::nullopt,
-        PyObject* spec = nullptr
-    ) : view(max_size, spec)
-    {}
-
-    /* Construct a list from an input iterable. */
-    LinkedBase(
-        PyObject* iterable,
-        std::optional<size_t> max_size = std::nullopt,
-        PyObject* spec = nullptr,
-        bool reverse = false
-    ) : view(iterable, max_size, spec, reverse)
-    {}
-
-    /* Construct a list from a base view. */
-    LinkedBase(View&& view) : view(std::move(view)) {}
-
-    // TODO: construct from iterators?
-
-    /* Copy constructor. */
-    LinkedBase(const LinkedBase& other) : view(other.view) {}
-
-    /* Move constructor. */
-    LinkedBase(LinkedBase&& other) : view(std::move(other.view)) {}
-
-    /* Copy assignment operator. */
-    LinkedBase& operator=(const LinkedBase& other) {
-        view = other.view;
-        return *this;
-    }
-
-    /* Move assignment operator. */
-    LinkedBase& operator=(LinkedBase&& other) {
-        view = std::move(other.view);
-        return *this;
-    }
 
 };
 

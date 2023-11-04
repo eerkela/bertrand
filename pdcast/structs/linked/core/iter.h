@@ -143,7 +143,32 @@ public:
         return _next;
     }
 
-    /* Insert a node at the current position. */
+    /* NOTE: View iterators also provide the following convenience methods for
+     * efficiently changing the state of the list.  These are not part of the standard
+     * iterator protocol, but they are useful for implementing algorithms that modify
+     * the list while iterating over it, such as index-based insertions, removals, etc.
+     * Here's a basic diagram showing how they work.  The current iterator position is
+     * denoted by the caret (^):
+     *
+     * original:    a -> b -> c
+     *                   ^
+     * insert(d):   a -> d -> b -> c
+     *                   ^
+     * drop():      a -> b -> c             (returns dropped node)
+     *                   ^
+     * replace(e):  a -> e -> c             (returns replaced node)
+     *                   ^
+     *
+     * NOTE: these methods are only available on mutable iterators, and care must be
+     * taken to ensure that the iterator is not invalidated by the operation.  This can
+     * happen if the operation triggers a reallocation of the underlying data (via the
+     * allocator's resize() method).  In this case, the Node pointers stored in the
+     * iterator will no longer be valid, and accessing them can lead to undefined
+     * behavior.
+     */
+
+    /* Insert a node in between the previous and current nodes, implicitly rewinding
+    the iterator. */
     template <bool cond = !constant>
     inline std::enable_if_t<cond, void> insert(Node* node) {
         // link new node
@@ -153,7 +178,7 @@ public:
             view.link(_prev, node, _curr);
         }
 
-        // update iterator
+        // move current node to subsequent node, new node replaces curr
         if constexpr (direction == Direction::backward) {
             if constexpr (has_stack) {
                 this->stack.push(_prev);
@@ -165,14 +190,14 @@ public:
         _curr = node;
     }
 
-    /* Remove the node at the current position. */
+    /* Remove the node at the current position, implicitly advancing the iterator. */
     template <bool cond = !constant>
     inline std::enable_if_t<cond, Node*> drop() {
         // unlink current node
         Node* removed = _curr;
         view.unlink(_prev, _curr, _next);
 
-        // update iterator
+        // move subsequent node to current node, then get following node
         if constexpr (dir == Direction::backward) {
             _curr = _prev;
             if (_prev != nullptr) {
@@ -198,16 +223,17 @@ public:
         return removed;
     }
 
-    /* Replace the node at the current position. */
+    /* Replace the node at the current position without advancing the iterator. */
     template <bool cond = !constant>
-    inline std::enable_if_t<cond, void> replace(Node* node) {
+    inline std::enable_if_t<cond, Node*> replace(Node* node) {
         // swap current node
         view.unlink(_prev, _curr, _next);
         view.link(_prev, node, _next);
 
         // update iterator
-        view.recycle(_curr);
+        Node* result = _curr;
         _curr = node;
+        return result;
     }
 
     /* Create an empty iterator. */

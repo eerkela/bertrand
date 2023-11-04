@@ -600,6 +600,12 @@ namespace linked {
             return Bidirectional(Forward(list.view, indices, length()));
         }
 
+        /* Disallow SliceProxies from being stored as lvalues. */
+        SliceProxy(const SliceProxy&) = delete;
+        SliceProxy(SliceProxy&&) = delete;
+        SliceProxy& operator=(const SliceProxy&) = delete;
+        SliceProxy& operator=(SliceProxy&&) = delete;
+
     private:
         template <typename _List, typename... Args>
         friend auto slice(_List& list, Args&&... args) -> std::enable_if_t<

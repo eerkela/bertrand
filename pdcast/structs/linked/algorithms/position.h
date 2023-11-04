@@ -12,6 +12,13 @@
 #include "../core/view.h"  // ViewTraits
 
 
+// TODO: ElementProxy.insert() should be deleted.  The problem is that allocating a
+// new node can cause the table to grow, which invalidates the iterator.  This
+// causes an interminable conflict, so we should just disallow it.  What we should do
+// instead is reserve space for the new node ahead of time, then generate an iterator
+// and do the insertion manually in the linked::insert() method.
+
+
 namespace bertrand {
 namespace structs {
 namespace linked {
@@ -99,25 +106,20 @@ namespace linked {
     auto position(View& view, Index index)
         -> std::enable_if_t<ViewTraits<View>::listlike, ElementProxy<View>>
     {
-        using Node = typename View::Node;
-
         // normalize index
         size_t norm_index = normalize_index(index, view.size(), false);
 
         // get iterator to index
-        if constexpr (NodeTraits<Node>::has_prev) {
-            size_t threshold = (view.size() - (view.size() > 0)) / 2;
-            if (norm_index > threshold) {
-                using Iterator = typename View::template Iterator<Direction::backward>;
-                Iterator iter = view.rbegin();
-                for (size_t i = view.size() - 1; i > norm_index; --i) ++iter;
-                return ElementProxy<View>(view, iter);
+        if constexpr (NodeTraits<typename View::Node>::has_prev) {
+            if (view.closer_to_tail(norm_index)) {
+                auto it = view.rbegin();
+                for (size_t i = view.size() - 1; i > norm_index; --i) ++it;
+                return ElementProxy<View>(view, it);
             }
         }
 
         // forward traversal
-        using Iterator = typename View::template Iterator<Direction::forward>;
-        Iterator it = view.begin();
+        auto it = view.begin();
         for (size_t i = 0; i < norm_index; ++i) ++it;
         return ElementProxy<View>(view, it);
     }
@@ -147,35 +149,18 @@ namespace linked {
         /* Set the value at the current index. */
         inline void set(const Value value) {
             Node* node = view.node(value);
-            iter.replace(node);
-        }
-
-        /* Insert a value at the current index. */
-        inline void insert(const Value value) {
-            Node* node = view.node(value);
-            iter.insert(node);
+            view.recycle(iter.replace(node));
         }
 
         /* Delete the value at the current index. */
         inline void del() {
-            iter.drop();
-        }
-
-        /* Remove the node at the current index and return its value. */
-        inline Value pop() {
-            Node* node = iter.drop();
-            Value result = node->value();
-            if constexpr (util::is_pyobject<Value>) {
-                Py_INCREF(result);
-            }
-            view.recycle(node);
-            return result;
+            view.recycle(iter.drop());
         }
 
         /* Implicitly convert the proxy to the value where applicable.
 
-        This is syntactic sugar for get() such that `Value value = list[i]` is
-        equivalent to `Value value = list[i].get()`.  The same implicit conversion
+        This is syntactic sugar for the get() method, such that `Value value = list[i]`
+        is equivalent to `Value value = list[i].get()`.  The same implicit conversion
         is also applied if the proxy is passed to a function that expects a value,
         unless that function is marked as `explicit`. */
         inline operator Value() const {
@@ -184,12 +169,18 @@ namespace linked {
 
         /* Assign the value at the current index.
 
-        This is syntactic sugar for set() such that `list[i] = value` is equivalent to
-        `list[i].set(value)`. */
+        This is syntactic sugar for the set() method, such that `list[i] = value` is
+        equivalent to `list[i].set(value)`. */
         inline ElementProxy& operator=(const Value& value) {
             set(value);
             return *this;
         }
+
+        /* Disallow ElementProxies from being stored as lvalues. */
+        ElementProxy(const ElementProxy&) = delete;
+        ElementProxy(ElementProxy&&) = delete;
+        ElementProxy& operator=(const ElementProxy&) = delete;
+        ElementProxy& operator=(ElementProxy&&) = delete;
 
     private:
         View& view;

@@ -25,33 +25,48 @@ namespace linked {
         using Node = typename View::Node;
         view.reserve(items);  // attempt to reserve memory ahead of time
 
-        // note original head/tail in case of error
-        Node* original = left ? view.head() : view.tail();
+        // TODO: make this safe against resizing.
+
+        size_t idx = 0;
         try {
             for (auto item : util::iter(items)) {
                 linked::append(view, item, left);
+                ++idx;
             }
         } catch (...) {  // error recovery - remove all appended nodes
             if (left) {
-                // if we linked to head, remove until we reach the original head
-                Node* curr = view.head();
-                while (curr != original) {
-                    Node* next = curr->next();
-                    view.unlink(nullptr, curr, next);
-                    view.recycle(curr);
-                    curr = next;
+                for (size_t i = 0; i < idx; ++i) {
+                    Node* node = view.head();
+                    view.unlink(nullptr, node, node->next());
+                    view.recycle(node);
                 }
             } else {
-                // otherwise, start from original tail and remove until end of list
-                Node* curr = original->next();
-                while (curr != nullptr) {
-                    Node* next = curr->next();
-                    view.unlink(original, curr, next);
-                    view.recycle(curr);
-                    curr = next;
+                if constexpr (NodeTraits<Node>::has_prev) {
+                    for (size_t i = 0; i < idx; ++i) {
+                        Node* node = view.tail();
+                        view.unlink(node->prev(), node, nullptr);
+                        view.recycle(node);
+                    }
+                } else {
+                    // NOTE: this branch is not memory safe.  If a resize is triggered
+                    // during iteration, the iterator will be invalidated.
+                    size_t i = 0;
+                    Node* prev = nullptr;
+                    Node* curr = view.head();
+                    while (i < view.size() - idx) {
+                        prev = curr;
+                        curr = curr->next();
+                        ++i;
+                    }
+                    while (curr != nullptr) {
+                        Node* next = curr->next();
+                        view.unlink(prev, curr, next);
+                        view.recycle(curr);
+                        curr = next;
+                    }
                 }
             }
-            throw;  // propagate original error
+            throw;  // propagate
         }
     }
 

@@ -21,6 +21,9 @@ namespace linked {
     {
         using Node = typename View::Node;
         Node* node = view.node<true>(item);  // exist_ok = true
+
+
+        // TODO: node->prev() might not exist
         if (!node->prev() && !node->next()) {
             if (left) {
                 view.link(nullptr, node, view.head());

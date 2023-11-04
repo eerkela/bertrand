@@ -20,7 +20,35 @@ namespace linked {
     inline auto pop(View& view, Index index)
         -> std::enable_if_t<ViewTraits<View>::listlike, typename View::Value>
     {
-        return position(view, index).pop();
+        using Node = typename View::Node;
+        using Value = typename View::Value;
+
+        // normalize index
+        size_t norm_index = normalize_index(index, view.size(), true);
+
+        // payload for return value
+        auto execute = [&view] (Node* node) {
+            Value result = node->value();
+            if constexpr (util::is_pyobject<Value>) {
+                Py_INCREF(result);  // return new reference
+            }
+            view.recycle(node);
+            return result;
+        };
+
+        // get iterator to index
+        if constexpr (NodeTraits<Node>::has_prev) {
+            if (view.closer_to_tail(norm_index)) {
+                auto it = view.rbegin();
+                for (size_t i = view.size() - 1; i > norm_index; --i) ++it;
+                return execute(it.drop());
+            }
+        }
+
+        // forward traversal
+        auto it = view.begin();
+        for (size_t i = 0; i < norm_index; ++i) ++it;
+        return execute(it.drop());
     }
 
 
