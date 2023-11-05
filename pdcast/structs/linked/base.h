@@ -33,6 +33,7 @@ public:
     using View = ViewType;
     using Node = typename View::Node;
     using Value = typename View::Value;
+    using MemGuard = typename View::MemGuard;
 
     template <Direction dir>
     using Iterator = typename View::template Iterator<dir>;
@@ -110,12 +111,22 @@ public:
         return view.max_size();
     }
 
+    /* Check whether the allocator supports dynamic resizing. */
+    inline bool dynamic() const noexcept {
+        return view.dynamic();
+    }
+
+    /* Check whether the allocator is currently frozen for memory stability. */
+    inline bool frozen() const noexcept {
+        return view.frozen();
+    }
+
     /* Reserve memory for a specific number of nodes ahead of time. */
-    inline void reserve(size_t capacity) {
+    inline MemGuard reserve(std::optional<size_t> capacity = std::nullopt) {
         // NOTE: the new capacity is absolute, not relative to the current capacity.  If
         // a capacity of 25 is requested (for example), then the allocator array will be
         // resized to house at least 25 nodes, regardless of the current capacity.
-        view.reserve(capacity);
+        return view.reserve(capacity);
     }
 
     /* Rearrange the allocator array to reflect the current list order. */

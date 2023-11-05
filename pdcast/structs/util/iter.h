@@ -109,7 +109,7 @@ public:
     using reference             = typename Iterator::reference;
 
     // couple the begin() and end() iterators into a single object
-    CoupledIterator(const Iterator& first, const Iterator& second) :
+    CoupledIterator(Iterator&& first, Iterator&& second) :
         first(std::move(first)), second(std::move(second))
     {}
 

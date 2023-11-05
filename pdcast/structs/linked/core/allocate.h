@@ -12,7 +12,7 @@
 #include <Python.h>  // CPython API
 #include "../util/except.h"  // catch_python(), type_error()
 #include "../util/math.h"  // next_power_of_two()
-#include "../util/python.h"  // std::hash<PyObject*>, std::equal_to<PyObject*>
+#include "../util/python.h"  // std::hash<PyObject*>, eq(), len()
 #include "../util/repr.h"  // repr()
 #include "node.h"  // NodeTraits
 
@@ -62,15 +62,13 @@ public:
     using Node = NodeType;
 
 protected:
-
-    /* Allocate a temporary node for use in algorithms. */
-    inline static Node* allocate_temp() {
-        Node* result = static_cast<Node*>(malloc(sizeof(Node)));
-        if (result == nullptr) {
-            throw std::bad_alloc();
-        }
-        return result;
-    }
+    // bitfield for storing boolean flags related to allocator state, as follows:
+    // 0b01: dynamic - checks if the array supports dynamic resizing
+    // 0b10: frozen - checks if the array is temporarily frozen for memory stability
+    unsigned char flags;
+    union {
+        mutable Node _temp;  // uninitialized temporary node for internal use
+    };
 
     /* Allocate a contiguous block of uninitialized nodes with the specified size. */
     inline static Node* allocate_array(size_t capacity) {
@@ -121,28 +119,23 @@ protected:
 public:
     Node* head;  // head of the list
     Node* tail;  // tail of the list
-    Node* temp;  // temporary node for use in insertions/custom algorithms
     size_t capacity;  // number of nodes in the array
     size_t occupied;  // number of nodes currently in use - equivalent to list.size()
-    bool frozen;  // indicates if the array is frozen at its current capacity
     PyObject* specialization;  // type specialization for PyObject* values
 
     /* Create an allocator with an optional fixed size. */
     BaseAllocator(
         size_t default_capacity,
-        std::optional<size_t> capacity,
-        bool frozen,
+        size_t capacity,
+        bool fixed,
         PyObject* specialization
-    ) :
+    ) : flags(0b01 * !fixed),  // fixed=true turns off dynamic resizing
         head(nullptr),
         tail(nullptr),
-        temp(allocate_temp()),
-        capacity(capacity.value_or(default_capacity)),
+        capacity(capacity),
         occupied(0),
-        frozen(frozen),
         specialization(specialization)
     {
-        
         if constexpr (DEBUG) {
             std::cout << "    -> allocate: " << this->capacity << " nodes" << std::endl;
         }
@@ -153,12 +146,11 @@ public:
 
     /* Copy constructor. */
     BaseAllocator(const BaseAllocator& other) :
+        flags(other.flags),
         head(nullptr),
         tail(nullptr),
-        temp(allocate_temp()),
         capacity(other.capacity),
         occupied(other.occupied),
-        frozen(other.frozen),
         specialization(other.specialization)
     {
         if constexpr (DEBUG) {
@@ -169,19 +161,18 @@ public:
 
     /* Move constructor. */
     BaseAllocator(BaseAllocator&& other) noexcept :
+        flags(other.flags),
         head(other.head),
         tail(other.tail),
-        temp(allocate_temp()),
         capacity(other.capacity),
         occupied(other.occupied),
-        frozen(other.frozen),
         specialization(other.specialization)
     {
+        other.flags = 0b00;
         other.head = nullptr;
         other.tail = nullptr;
         other.capacity = 0;
         other.occupied = 0;
-        other.frozen = false;
         other.specialization = nullptr;
     }
 
@@ -204,9 +195,9 @@ public:
         }
 
         // copy from other
+        flags = other.flags;
         capacity = other.capacity;
         occupied = other.occupied;
-        frozen = other.frozen;
         specialization = Py_XNewRef(other.specialization);
 
         return *this;
@@ -229,19 +220,19 @@ public:
         }
 
         // transfer ownership
+        flags = other.flags;
         head = other.head;
         tail = other.tail;
         capacity = other.capacity;
         occupied = other.occupied;
-        frozen = other.frozen;
         specialization = other.specialization;
 
         // reset other
+        other.flags = 0b00;
         other.head = nullptr;
         other.tail = nullptr;
         other.capacity = 0;
         other.occupied = 0;
-        other.frozen = false;
         other.specialization = nullptr;
         return *this;
     }
@@ -249,7 +240,6 @@ public:
     /* Destroy an allocator and release its resources. */
     ~BaseAllocator() noexcept {
         Py_XDECREF(specialization);
-        free(temp);
     }
 
     /* Enforce strict type checking for python values within the list. */
@@ -290,10 +280,107 @@ public:
         specialization = spec;
     }
 
+    /* Check whether the allocator supports dynamic resizing. */
+    inline bool dynamic() const noexcept {
+        return static_cast<bool>(flags & 0b01);
+    }
+
+    /* Check whether the allocator is temporarily frozen for memory stability. */
+    inline bool frozen() const noexcept {
+        return static_cast<bool>(flags & 0b10);
+    }
+
+    /* Get a temporary node for internal use. */
+    inline Node* temp() const noexcept {
+        return &_temp;
+    }
+
     /* Get the total amount of dynamic memory allocated by this allocator. */
     inline size_t nbytes() const {
         return sizeof(Node);  // temporary node
     }
+
+};
+
+
+/* An RAII-style memory guard that temporarily prevents an allocator from being resized
+or defragmented within a certain context. */
+template <typename Allocator>
+class MemGuard {
+    static_assert(
+        std::is_base_of_v<BaseAllocator<typename Allocator::Node>, Allocator>,
+        "Allocator must inherit from BaseAllocator"
+    );
+
+    friend Allocator;
+    Allocator* allocator;
+
+    /* Freeze the allocator. */
+    inline void freeze() noexcept {
+        allocator->flags |= 0b10;  // set frozen bitflag
+    }
+
+    /* Unfreeze the allocator. */
+    inline void unfreeze() noexcept {
+        allocator->flags &= ~(0b10);  // clear frozen bitflag
+    }
+
+    /* Destroy the outermost MemGuard. */
+    inline void destroy() noexcept {
+        unfreeze();
+        if constexpr (DEBUG) {
+            std::cout << "UNFREEZE: " << allocator->capacity << " NODES";
+            std::cout << std::endl;
+        }
+        allocator->shrink();  // every allocator implements this
+    }
+
+    /* Create an active MemGuard for an allocator, freezing it at its current
+    capacity. */
+    MemGuard(Allocator* allocator) noexcept : allocator(allocator) {
+        freeze();
+        if constexpr (DEBUG) {
+            std::cout << "FREEZE: " << allocator->capacity << " NODES";
+            std::cout << std::endl;
+        }
+    }
+
+    /* Create an inactive MemGuard for an allocator. */
+    MemGuard() noexcept : allocator(nullptr) {}
+
+public:
+
+    /* Check whether the guard is active. */
+    inline bool active() const noexcept { return allocator != nullptr; }
+
+    /* Unfreeze and potentially shrink the allocator when the outermost MemGuard falls
+    out of scope. */
+    ~MemGuard() noexcept { if (active()) destroy(); }
+
+    /* Move constructor. */
+    MemGuard(MemGuard&& other) noexcept : allocator(other.allocator) {
+        other.allocator = nullptr;
+    }
+
+    /* Move assignment operator. */
+    MemGuard& operator=(MemGuard&& other) noexcept {
+        // check for self-assignment
+        if (this == &other) {
+            return *this;
+        }
+
+        // destroy current
+        if (active()) destroy();
+
+        // transfer ownership
+        allocator = other.allocator;
+        other.allocator = nullptr;
+        return *this;
+    }
+
+    /* Copy constructor/assignment deleted for safety. */
+    MemGuard(const MemGuard& other) = delete;
+    MemGuard& operator=(const MemGuard& other) = delete;
 
 };
 
@@ -308,9 +395,11 @@ template <typename NodeType>
 class ListAllocator : public BaseAllocator<NodeType> {
 public:
     using Node = NodeType;
+    using MemGuard = linked::MemGuard<ListAllocator>;
     static constexpr size_t DEFAULT_CAPACITY = 8;  // minimum array size
 
 private:
+    friend MemGuard;
     using Base = BaseAllocator<Node>;
 
     Node* array;  // dynamic array of nodes
@@ -383,14 +472,27 @@ private:
         free_list.second = nullptr;
     }
 
+    /* Shrink a dynamic allocator if it is under the minimum load factor.
+
+    NOTE: this is called automatically when an active MemGuard falls out of scope,
+    guaranteeing that the load factor for a dynamic list is never less than 25% of its
+    capacity. */
+    inline void shrink() {
+        if (this->occupied <= this->capacity / 4) {
+            size_t size = util::next_power_of_two(2 * this->occupied);
+            size = size < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : size;
+            resize(size);
+        }
+    }
+
 public:
 
     /* Create an allocator with an optional fixed size. */
     ListAllocator(
-        std::optional<size_t> capacity,
-        bool frozen,
+        size_t capacity,
+        bool fixed,
         PyObject* specialization
-    ) : Base(DEFAULT_CAPACITY, capacity, frozen, specialization),
+    ) : Base(DEFAULT_CAPACITY, capacity, fixed, specialization),
         array(Base::allocate_array(this->capacity)),
         free_list(std::make_pair(nullptr, nullptr))
     {}
@@ -419,6 +521,8 @@ public:
         other.free_list.first = nullptr;
         other.free_list.second = nullptr;
     }
+
+    // TODO: assignment operators should check for frozen state?
 
     /* Copy assignment operator. */
     ListAllocator& operator=(const ListAllocator& other) {
@@ -513,17 +617,18 @@ public:
 
         // check if we need to grow the array
         if (this->occupied == this->capacity) {
-            if (this->frozen) {
+            if (this->frozen() || !this->dynamic()) {
                 std::ostringstream msg;
-                msg << "array cannot grow beyond size " << this->capacity;
+                msg << "array is frozen at size: " << this->capacity;
                 throw std::runtime_error(msg.str());
             }
             resize(this->capacity * 2);
         }
 
         // append to end of allocated section
-        Node* node = &array[this->occupied++];
+        Node* node = &array[this->occupied];
         Base::init_node(node, std::forward<Args>(args)...);
+        ++this->occupied;
         return node;
     }
 
@@ -533,15 +638,18 @@ public:
         if constexpr (DEBUG) {
             std::cout << "    -> recycle: " << util::repr(node->value()) << std::endl;
         }
+        --this->occupied;
         node->~Node();
 
         // check if we need to shrink the array
-        if (!this->frozen &&
+        if (!this->frozen() &&
+            this->dynamic() &&
             this->capacity != DEFAULT_CAPACITY &&
             this->occupied == this->capacity / 4
         ) {
             resize(this->capacity / 2);
         } else {
+            // append to free list
             if (free_list.first == nullptr) {
                 free_list.first = node;
                 free_list.second = node;
@@ -550,7 +658,6 @@ public:
                 free_list.second = node;
             }
         }
-        --this->occupied;
     }
 
     /* Remove all elements from the list. */
@@ -564,7 +671,7 @@ public:
         this->occupied = 0;
         free_list.first = nullptr;
         free_list.second = nullptr;
-        if (!this->frozen) {
+        if (!this->frozen() && this->dynamic()) {
             this->capacity = DEFAULT_CAPACITY;
             free(array);
             array = Base::allocate_array(this->capacity);
@@ -572,33 +679,58 @@ public:
     }
 
     /* Resize the array to store a specific number of nodes. */
-    void reserve(size_t new_size) {
-        // ensure new capacity is large enough to store all nodes
+    MemGuard reserve(size_t new_size) {
+        if (this->frozen() || !this->dynamic()) {
+            return MemGuard();
+        }
+
+        // ensure new capacity is large enough to store all existing nodes
         if (new_size < this->occupied) {
             throw std::invalid_argument(
                 "new capacity cannot be smaller than current size"
             );
         }
 
-        // do not shrink the array
-        if (new_size <= this->capacity) {
-            return;
-        }
-
-        // frozen arrays cannot grow
-        if (this->frozen) {
-            std::ostringstream msg;
-            msg << "array cannot grow beyond size " << this->capacity;
-            throw std::runtime_error(msg.str());
-        }
-
         // resize to the next power of two
-        resize(util::next_power_of_two(new_size));
+        size_t new_capacity = util::next_power_of_two(
+            new_size < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : new_size
+        );
+        if (new_capacity > this->capacity) {
+            resize(new_capacity);
+        }
+
+        // freeze allocator until guard falls out of scope
+        return MemGuard(this);
+    }
+
+    /* Attempt to resize the array based on an optional size. */
+    MemGuard try_reserve(std::optional<size_t> new_size) {
+        if (!new_size.has_value()) {
+            return MemGuard();
+        }
+        return reserve(new_size.value());
+    }
+
+    /* Attempt to reserve memory to hold all the elements of a given container if it
+    implements a `size()` method or is a Python object with a corresponding `__len__()`
+    attribute.  Otherwise, produce an empty MemGuard. */
+    template <typename Container>
+    inline MemGuard try_reserve(Container& container) {
+        std::optional<size_t> length = util::len(container);
+        if (!length.has_value()) {
+            return MemGuard();
+        }
+        return reserve(this->occupied + length.value());
     }
 
     /* Consolidate the nodes within the array, arranging them in the same order as
     they appear within the list. */
     inline void defragment() {
+        if (this->frozen()) {
+            std::ostringstream msg;
+            msg << "array cannot be defragmented while a MemGuard is active";
+            throw std::runtime_error(msg.str());
+        }
         resize(this->capacity);  // in-place resize
     }
 
@@ -953,15 +1085,15 @@ public:
     template <bool exist_ok = false, typename... Args>
     Node* create(Args&&... args) {
         // allocate into temporary node
-        Base::init_node(this->temp, std::forward<Args>(args)...);
+        Base::init_node(this->temp(), std::forward<Args>(args)...);
 
         // check if we need to grow the array
         size_t total_load = this->occupied + tombstones;
         if (total_load >= this->capacity / 2) {
-            if (this->frozen) {
+            if (this->frozen()) {
                 if (this->occupied == this->capacity / 2) {
                     std::ostringstream msg;
-                    msg << "array cannot grow beyond size " << this->capacity;
+                    msg << "array is frozen at size: " << this->capacity;
                     throw std::runtime_error(msg.str());
                 } else if (tombstones > this->capacity / 16) {
                     resize(exponent);  // clear tombstones
@@ -974,7 +1106,7 @@ public:
         }
 
         // search for node within hash table
-        size_t hash = this->temp->hash();
+        size_t hash = this->temp()->hash();
         size_t step = (hash % prime) | 1;  // double hashing
         size_t idx = modulo(hash, this->capacity);
         Node& lookup = array[idx];
@@ -988,13 +1120,13 @@ public:
 
         // handle collisions, replacing tombstones if they are encountered
         while (flag == 0b10) {
-            if (lookup.eq(this->temp->value())) {
-                this->temp->~Node();  // in-place destructor
+            if (lookup.eq(this->temp()->value())) {
+                this->temp()->~Node();  // in-place destructor
                 if constexpr (exist_ok) {
                     return &lookup;
                 } else {
                     std::ostringstream msg;
-                    msg << "duplicate key: " << util::repr(this->temp->value());
+                    msg << "duplicate key: " << util::repr(this->temp()->value());
                     throw std::invalid_argument(msg.str());
                 }
             }
@@ -1009,7 +1141,7 @@ public:
         }
 
         // move temp into empty bucket/tombstone
-        new (&lookup) Node(std::move(*this->temp));
+        new (&lookup) Node(std::move(*this->temp()));
         bits |= (0b10 << mod);  // mark constructed flag
         if (flag == 0b01) {
             flag &= 0b10 << mod;  // clear tombstone flag
@@ -1050,7 +1182,7 @@ public:
 
                 // check whether to shrink array or clear out tombstones
                 size_t threshold = this->capacity / 8;
-                if (!this->frozen &&
+                if (!this->frozen() &&
                     this->capacity != DEFAULT_CAPACITY &&
                     this->occupied < threshold  // load factor < 0.125
                 ) {
@@ -1088,7 +1220,7 @@ public:
         tombstones = 0;
         prime = PRIMES[0];
         exponent = 0;
-        if (!this->frozen) {
+        if (!this->frozen()) {
             this->capacity = DEFAULT_CAPACITY;
             free(array);
             free(flags);
@@ -1112,9 +1244,9 @@ public:
         }
 
         // frozen arrays cannot grow
-        if (this->frozen) {
+        if (this->frozen()) {
             std::ostringstream msg;
-            msg << "array cannot grow beyond size " << this->capacity;
+            msg << "array is frozen at size: " << this->capacity;
             throw std::runtime_error(msg.str());
         }
 

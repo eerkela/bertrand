@@ -27,12 +27,8 @@ namespace linked {
         // normalize index
         size_t norm_index = normalize_index(index, view.size(), true);
 
-        // NOTE: Iterators require the memory addresses of each node to remain stable
-        // over its lifetime.  As a result, we cannot blindly allocate a new node while
-        // iterating over the list due to potential growth of the allocator array,
-        // which invalidates all iterators.  Instead, we must reserve space for the new
-        // node ahead of time, preventing the table from growing during iteration.
-        view.reserve(view.size() + 1);
+        // reserve space for new node and freeze allocator
+        typename View::MemGuard guard(view.reserve(view.size() + 1));
 
         // get iterator to index
         if constexpr (NodeTraits<typename View::Node>::has_prev) {

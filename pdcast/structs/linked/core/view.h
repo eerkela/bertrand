@@ -40,14 +40,14 @@ nodes, iteration over them, and references to the head/tail of the list as well 
 current size.  They are lightweight wrappers around a raw memory allocator that exposes
 the following interface:
 
-class Allocator {
+template <typename NodeType>
+class Allocator : public BaseAllocator<NodeType> {
 public:
     Node* head;
     Node* tail;
     size_t capacity;  // total number of nodes in existence
     size_t occupied;  // equivalent to view.size()
     PyObject* specialization;
-    bool frozen;  // indicates whether or not the data structure can grow dynamically
 
     Node* create(Args...);  // forward to Node constructor
     void recycle(Node* node);
@@ -70,6 +70,7 @@ class BaseView : public ViewTag {
 public:
     using Node = typename Allocator::Node;
     using Value = typename Node::Value;
+    using MemGuard = typename Allocator::MemGuard;
 
     template <Direction dir>
     using Iterator = linked::Iterator<BaseView, dir>;
@@ -82,7 +83,11 @@ public:
 
     /* Construct an empty view. */
     BaseView(std::optional<size_t> max_size = std::nullopt, PyObject* spec = nullptr) :
-        allocator(max_size, max_size.has_value(), spec)
+        allocator(
+            max_size.value_or(Allocator::DEFAULT_CAPACITY),
+            max_size.has_value(),
+            spec
+        )
     {}
 
     // TODO: allow this constructor to accept rvalue initializers.
@@ -230,74 +235,69 @@ public:
 
     /* Get the current capacity of the allocator array. */
     inline size_t capacity() const noexcept {
-        return this->allocator.capacity;
+        return allocator.capacity;
     }
 
     /* Get the maximum size of the list. */
     inline std::optional<size_t> max_size() const noexcept {
-        return this->allocator.frozen ?
-            std::make_optional(this->allocator.capacity) :
-            std::nullopt;
+        return allocator.dynamic() ?
+            std::nullopt :
+            std::make_optional(allocator.capacity);
     }
 
-    // TODO: what if reserve() produced an RAII guard that holds the view at a given
-    // size until it falls out of scope?  You would have to call a separate method to
-    // finalize the operation, otherwise it would shrink back to its original size.
+    /* Check whether the allocator supports dynamic resizing. */
+    inline bool dynamic() const noexcept {
+        return allocator.dynamic();
+    }
 
-    // MemGuard guard = view.reserve(100);
-    // ... do stuff ...
-    // guard.finalize();  // do not shrink when guard falls out of scope
-    // return view;
-
-    // finalize() could accept its own size parameter, which would allow us to
-    // preallocate more memory than we need and release it later.  It defaults to the
-    // reserved size, which is the most common use case.  If it is not called, then
-    // the guard will try to shrink the view back to its original size, and will throw
-    // an exception if it is unable to do so, reminding the user to call finalize().
-
-    // TODO: if transitioning to MemGuard, view.reserve() should be able to take
-    // optional sizes.  If a nullopt is given, then it just won't actually reserve
-    // any memory, and will allow the view to grow dynamically.  The finalize() method
-    // just wouldn't do anything in this case.
-
-    // The problem is that any iterators over the list will always be invalidated by
-    // resizing, so we need to be careful about when and how we do it.  MemGuard could
-    // maybe help with this.  It would be used whenever we need to make sure that the
-    // node addresses remain stable for a given operation (basically any time iterators
-    // are involved).  For example, if we're replacing a slice within the list, we
-    // would need to make sure that we never automatically grow/shrink the list during
-    // the operation, since that would invalidate the slice iterator.  We could do this
-    // by calling reserve() with the current size of the list and then holding a guard
-    // until the operation is complete.
+    /* Check whether the allocator is currently frozen for memory stability. */
+    inline bool frozen() const noexcept {
+        return allocator.frozen();
+    }
 
     // TODO: in fact, if we build this in at an even deeper level, then we might be
     // able to bake it into the iterators themselves, such that they prevent the
     // resize() method from being called while they are active.  This would guarantee
     // that the node addresses remain stable for the iterator's lifetime, and would
-    // throw errors if this is violated.  In fact, it might just involve toggling the
-    // `frozen` flag on the allocator.
+    // throw errors if this is violated.
 
-    /* Reserve memory for a given number of nodes ahead of time. */
-    inline void reserve(size_t capacity) const {
-        this->allocator.reserve(capacity);
+    /* Reserve memory for a given number of nodes ahead of time.
+    
+    NOTE: this method produces a MemGuard object that holds the view at the new capacity
+    until it falls out of scope.  This prevents the view from dynamically resizing and
+    guarantees that the node addresses remain stable over the intervening context,
+    which is necessary for any algorithm that iterates over the list while modifying
+    it.  The guard also attempts to shrink the view back to a reasonable size upon
+    destruction if the load factor is below its minimum threshold (as defined by the
+    allocator).  This allows users to preallocate more memory than they need and
+    automatically release it later to prevent memory bloat (with hysteresis to avoid
+    thrashing).  Lastly, guards can be nested if and only if none of the inner guards
+    cause the view to grow beyond its current capacity. */
+    inline MemGuard reserve(std::optional<size_t> capacity = std::nullopt) const {
+        return allocator.reserve(capacity.value_or(size()));
     }
 
-    /* Reserve memory to hold all the elements of a given container if it implements a
-    `size()` method or is a Python object with a corresponding `__len__()` attribute.
-    Does nothing otherwise. */
+    /* Optionally reserve memory for a given number of nodes.  Produces an empty
+    MemGuard if the input is null.
+
+    NOTE: empty MemGuards are essentially no-ops that do not resize the view or prevent
+    it from growing dynamically.  This is useful if the new capacity is not always
+    known ahead of time, but may be under certain conditions. */
+    inline MemGuard try_reserve(std::optional<size_t> capacity) const {
+        return allocator.try_reserve(capacity);
+    }
+
+    /* Attempt to reserve memory to hold all the elements of a given container if it
+    implements a `size()` method or is a Python object with a `__len__()` attribute.
+    Otherwise, produce an empty MemGuard. */
     template <typename Container>
-    inline void reserve(const Container& container) const {
-        std::optional<size_t> size = util::len(container);
-        if (size.has_value()) {
-            this->allocator.reserve(this->size() + size.value());
-        }
+    inline MemGuard try_reserve(Container& container) const {
+        return allocator.try_reserve(container);
     }
 
-    // TODO: maybe defragment() should also shrink the array if it is below threshold?
-
-    /* Rearrange the nodes in memory to match their positions within the list. */
+    /* Rearrange the nodes in memory to optimize performance. */
     inline void defragment() {
-        this->allocator.defragment();
+        allocator.defragment();
     }
 
     /* Get the total amount of dynamic memory consumed by the list.  This does not
@@ -433,7 +433,7 @@ public:
 
     /* Get the allocator's temporary node. */
     inline Node* temp() const noexcept {
-        return allocator.temp;
+        return allocator.temp();
     }
 
     /* Check whether a given index is closer to the tail of the list than it is to the
@@ -452,27 +452,23 @@ protected:
     /* Get the size at which to initialize a list based on a given iterable and
     optional fixed size parameter. */
     template <typename Container>
-    static std::optional<size_t> get_init_size(
-        Container&& container,
-        std::optional<size_t> max_size
-    ) {
+    static size_t get_init_size(Container&& container, std::optional<size_t> max_size) {
         // if max_size is specified, use that
         if (max_size.has_value()) {
-            return max_size;
+            return max_size.value();
         }
 
         // otherwise, try to get the size of the container and round up
         std::optional<size_t> size = util::len(container);
         if (size.has_value()) {
             size_t rounded = util::next_power_of_two(size.value());
-            return std::make_optional(rounded < Allocator::DEFAULT_CAPACITY ?
+            return rounded < Allocator::DEFAULT_CAPACITY ?
                 Allocator::DEFAULT_CAPACITY :
-                rounded
-            );
+                rounded;
         }
 
         // if all else fails, use default size specified by allocator
-        return std::nullopt;
+        return Allocator::DEFAULT_CAPACITY;
     }
 
 };

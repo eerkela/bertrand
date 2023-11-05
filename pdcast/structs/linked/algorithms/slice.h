@@ -320,11 +320,11 @@ namespace linked {
             }
 
             /* Copy constructor. */
-            Iterator(const Iterator& other) noexcept :
-                Base(other), indices(other.indices), _idx(other._idx),
-                length_override(other.length_override),
-                implicit_skip(other.implicit_skip)
-            {}
+            // Iterator(const Iterator& other) noexcept :
+            //     Base(other), indices(other.indices), _idx(other._idx),
+            //     length_override(other.length_override),
+            //     implicit_skip(other.implicit_skip)
+            // {}
 
             /* Move constructor. */
             Iterator(Iterator&& other) noexcept :
@@ -401,38 +401,39 @@ namespace linked {
 
         /* Extract a slice from a linked list. */
         List get() const {
-            // TODO: might be able to allocate a list directly and then just access its
-            // view to do the linking.   Or append directly to the list.
+            // TODO: should add a constructor that allows us to allocate an empty list
+            // of a given size without locking it to that size.
 
-            // allocate a new list to hold the slice
-            std::optional<size_t> max_size = list.max_size(); 
-            if (max_size.has_value()) {
-                max_size = static_cast<size_t>(length());  // adjust to slice length
-            }
-            View result(max_size, list.specialization());
+            std::optional<size_t> max_size = list.dynamic() ?
+                std::nullopt :
+                std::make_optional(length());
+            List result(max_size, list.specialization());
 
-            // if slice is empty, return empty view
+            // trivial case: empty slice
             if (empty()) {
-                return List(std::move(result));
+                return result;
             }
+
+            // preallocate memory for nodes
+            typename View::MemGuard guard(result.reserve(length()));
 
             // copy nodes from original view into result
-            result.reserve(length());  // preallocate for efficiency
             for (auto iter = this->iter(); iter != iter.end(); ++iter) {
-                Node* copy = result.node(*(iter.curr()));
+                Node* copy = result.view.node(*(iter.curr()));
                 if (inverted()) {
-                    result.link(nullptr, copy, result.head());
+                    result.view.link(nullptr, copy, result.view.head());
                 } else {
-                    result.link(result.tail(), copy, nullptr);
+                    result.view.link(result.view.tail(), copy, nullptr);
                 }
             }
-            return List(std::move(result));
+            return result;
         }
 
-        // TODO:
-        // l = LinkedList("abcdef")
-        // l[2:2] = "xyz"
-        // LinkedList(['a', 'b', 'x', 'y', 'c', 'd', 'e', 'f'])  // missing 'z'
+        // TODO: accept any iterable, not just a python sequence.
+        // -> PySequence() should be generalized to an unpack() method that exhausts
+        // an iterator range into a temporary sequence using either PySequence_FAST()
+        // or std::vector, with only basic operations (basically just size and
+        // indexing)
 
         /* Replace a slice within a linked list. */
         void set(PyObject* items) {
@@ -468,6 +469,11 @@ namespace linked {
 
             // allocate recovery array
             RecoveryArray recovery(length());
+
+            // hold allocator at current size (or grow if performing a slice insertion)
+            typename View::MemGuard guard(
+                list.reserve(list.size() + sequence.size() - length())
+            );
 
             // loop 1: remove current nodes in slice
             for (auto iter = this->iter(); iter != iter.end(); ++iter) {
@@ -521,10 +527,12 @@ namespace linked {
                 return;
             }
 
+            // hold allocator at current size until all nodes are removed
+            typename View::MemGuard guard(list.reserve());
+
             // recycle every node in slice
-            for (auto iter = this->iter(); iter != iter.end(); ++iter) {
-                Node* node = iter.drop();  // remove from list
-                list.view.recycle(node);
+            for (auto it = this->iter(); it != it.end(); ++it) {
+                list.view.recycle(it.drop());
             }
         }
 

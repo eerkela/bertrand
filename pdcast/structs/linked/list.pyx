@@ -866,6 +866,62 @@ cdef class LinkedList:
     #############################
 
     @property
+    def dynamic(self) -> bool:
+        """Indicates whether the list's allocator supports dynamic resizing (True), or
+        is fixed to a particular size (False).
+
+        Returns
+        -------
+        bool
+            True if the list can dynamically grow and shrink, or False if it has a
+            fixed size.
+
+        Notes
+        -----
+        This is always false if ``max_size`` was given to the constructor, which
+        prevents the list from growing beyond a fixed size.
+        """
+        return self.variant.ptr().dynamic()
+
+    @property
+    def frozen(self) -> bool:
+        """Indicates whether the list's allocator is temporarily frozen for memory
+        stability.
+
+        This is only intended for debugging purposes.
+
+        Returns
+        -------
+        bool
+            ``True`` if the memory addresses of the list's nodes are guaranteed to
+            remain stable within the current context, or ``False`` if they may be
+            reallocated.
+
+        Notes
+        -----
+        Due to the nature of linked data structures, traversal over the list requires
+        knowing the exact memory address of each node.  However, some allocation
+        strategies can result in the movement of nodes during resize/defragment calls,
+        which invalidates any existing pointers/iterators over the list.  This presents
+        a problem for any code that needs to modify a list while iterating over it.
+
+        Thankfully, this can be avoided by temporarily freezing the allocator, which
+        can be done through the :meth:`reserve() <LinkedList.reserve>` method and
+        associated context manager.  This will prevent any reallocation from occurring
+        until the context is exited, which guarantees that the memory addresses of the
+        list's nodes will remain stable for the duration.  The
+        :attr:`frozen <LinkedList.frozen>` property indicates whether this is the case
+        within the current context.
+
+        Generally speaking, users should never need to worry about this.  The built-in
+        algorithms are designed to be safe at all times, and will automatically reserve
+        memory in the optimal way for each operation.  However, if you are writing
+        custom algorithms that need to keep track of raw node pointers, then you may
+        need to use this flag to ensure that your pointers remain valid.
+        """
+        return self.variant.ptr().frozen()
+
+    @property
     def nbytes(self) -> int:
         """The total memory consumption of the list in bytes.
 
@@ -1054,18 +1110,18 @@ cdef class LinkedList:
         def __init__(
             self,
             items: Iterable[object] | None = None,
-            doubly_linked: bool = False,
-            reverse: bool = False,
             max_size: int = None,
+            reverse: bool = False,
+            singly_linked: bool = False,
         ) -> None:
             """Disable the `spec` argument for strictly-typed lists."""
             cls.__init__(
                 self,
                 items,
-                doubly_linked=doubly_linked,
-                reverse=reverse,
                 max_size=max_size,
-                spec=key
+                reverse=reverse,
+                spec=key,
+                singly_linked=singly_linked,
             )
 
         def specialize(self, spec: object) -> None:

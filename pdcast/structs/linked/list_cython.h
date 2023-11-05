@@ -274,6 +274,16 @@ public:
         return std::visit([&](auto& list) { return list.max_size(); }, variant);
     }
 
+    /* Check whether the list's allocator supports dynamic resizing. */
+    inline bool dynamic() const noexcept {
+        return std::visit([&](auto& list) { return list.dynamic(); }, variant);
+    }
+
+    /* Check whether the list's allocator is currently frozen for memory stability. */
+    inline bool frozen() const noexcept {
+        return std::visit([&](auto& list) { return list.frozen(); }, variant);
+    }
+
     /* Reserve space for a list of a given size. */
     inline void reserve(size_t capacity) {
         std::visit([&](auto& list) { list.reserve(capacity); }, variant);

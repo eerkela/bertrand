@@ -114,14 +114,14 @@ namespace linked {
             if (view.closer_to_tail(norm_index)) {
                 auto it = view.rbegin();
                 for (size_t i = view.size() - 1; i > norm_index; --i) ++it;
-                return ElementProxy<View>(view, it);
+                return ElementProxy<View>(view, std::move(it));
             }
         }
 
         // forward traversal
         auto it = view.begin();
         for (size_t i = 0; i < norm_index; ++i) ++it;
-        return ElementProxy<View>(view, it);
+        return ElementProxy<View>(view, std::move(it));
     }
 
 
@@ -191,7 +191,9 @@ namespace linked {
             -> std::enable_if_t<ViewTraits<_View>::listlike, ElementProxy<_View>>;
 
         template <Direction dir>
-        ElementProxy(View& view, Iterator<dir>& iter) : view(view), iter(iter) {}
+        ElementProxy(View& view, Iterator<dir>&& iter) :
+            view(view), iter(std::move(iter))
+        {}
     };
 
 

@@ -314,13 +314,15 @@ cdef extern from "list_cython.h" namespace "bertrand::structs::linked::cython":
         size_t size()
         size_t capacity()
         optional[size_t] max_size()
+        bint dynamic()
+        bint frozen()
         void reserve(size_t capacity) except +
         void defragment() except +
         PyObject* specialization()
-        void specialize(PyObject* spec) except +*
+        void specialize(PyObject* spec) except +
         size_t nbytes()
-        PyObject* iter() except +*
-        PyObject* riter() except +*
+        PyObject* iter() except +
+        PyObject* riter() except +
 
         # thread locks
         cppclass Lock:
@@ -333,32 +335,32 @@ cdef extern from "list_cython.h" namespace "bertrand::structs::linked::cython":
         const Lock lock
 
         # list interface
-        void append(PyObject* item, bint left) except +*
-        void insert[T](T index, PyObject* item) except +*
-        void extend(PyObject* items, bint left) except +*
-        size_t index[T](PyObject* item, T start, T stop) except +*
-        size_t count[T](PyObject* item, T start, T stop) except +*
-        int contains(PyObject* item) except +*
-        void remove(PyObject*) except *
-        PyObject* pop[T](T index) except NULL
+        void append(PyObject* item, bint left) except +
+        void insert[T](T index, PyObject* item) except +
+        void extend(PyObject* items, bint left) except +
+        size_t index[T](PyObject* item, T start, T stop) except +
+        size_t count[T](PyObject* item, T start, T stop) except +
+        int contains(PyObject* item) except +
+        void remove(PyObject*) except +
+        PyObject* pop[T](T index) except +
         Slot[CyLinkedList] copy() except +
         void clear()
-        void sort(PyObject* key, bint reverse) except +*
+        void sort(PyObject* key, bint reverse) except +
         void reverse()
         void rotate(ssize_t steps)
 
         # indexing
         cppclass Index:
-            PyObject* get() except +*
-            void set(PyObject* item) except +*
-            void delete "del" () except +*  # del() shadows Cython `delete` keyword
+            PyObject* get() except +
+            void set(PyObject* item) except +
+            void delete "del" () except +  # del() shadows Cython `delete` keyword
         Index operator[](PyObject* index)
 
         # slicing
         cppclass Slice:
             Slot[CyLinkedList] get() except +
-            void set(PyObject* items) except +*
-            void delete "del" () except +*  # del() shadows Cython `delete` keyword
+            void set(PyObject* items) except +
+            void delete "del" () except +  # del() shadows Cython `delete` keyword
         Slice slice(PyObject* py_slice)
 
         # operator overloads

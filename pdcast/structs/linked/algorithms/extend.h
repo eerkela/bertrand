@@ -4,7 +4,7 @@
 
 #include <Python.h>  // CPython API
 #include "../../util/iter.h" // iter()
-#include "../../util/python.h"  // is_pyobject<>
+#include "../../util/python.h"  // is_pyobject<>, len()
 #include "../core/view.h"  // ViewTraits
 #include "append.h"  // append()
 
@@ -23,47 +23,45 @@ namespace linked {
         -> std::enable_if_t<ViewTraits<View>::listlike, void>
     {
         using Node = typename View::Node;
-        view.reserve(items);  // attempt to reserve memory ahead of time
+        using MemGuard = typename View::MemGuard;
 
-        // TODO: make this safe against resizing.
+        // NOTE: handling memory is a bit tricky here.  First, we want to optimize to
+        // preallocate memory ahead of time if possible.  However, the container may
+        // not have a definite size, so we also need to allow dynamic growth as
+        // elements are added.  Secondly, if an error is encountered, we need to delay
+        // any resize until after the exception is handled.  This allows us to safely
+        // iterate over the list and remove any nodes that were previously added.
 
+        // preallocate if possible (unless size is unknown)
+        MemGuard guard(view.try_reserve(items));
+
+        // append each item
         size_t idx = 0;
         try {
             for (auto item : util::iter(items)) {
                 linked::append(view, item, left);
                 ++idx;
             }
-        } catch (...) {  // error recovery - remove all appended nodes
+
+        // clean up nodes on error
+        } catch (...) {
+            if (idx == 0) throw;  // nothing to clean up
+            MemGuard hold(view.reserve());  // hold allocator at current size
+
+            // if appending to head, remove first idx nodes
             if (left) {
-                for (size_t i = 0; i < idx; ++i) {
-                    Node* node = view.head();
-                    view.unlink(nullptr, node, node->next());
-                    view.recycle(node);
-                }
+                auto it = view.begin();
+                for (size_t i = 0; i < idx; ++i) view.recycle(it.drop());
+
+            // otherwise, remove last idx nodes
             } else {
                 if constexpr (NodeTraits<Node>::has_prev) {
-                    for (size_t i = 0; i < idx; ++i) {
-                        Node* node = view.tail();
-                        view.unlink(node->prev(), node, nullptr);
-                        view.recycle(node);
-                    }
+                    auto it = view.rbegin();
+                    for (size_t i = 0; i < idx; ++i) view.recycle(it.drop());
                 } else {
-                    // NOTE: this branch is not memory safe.  If a resize is triggered
-                    // during iteration, the iterator will be invalidated.
-                    size_t i = 0;
-                    Node* prev = nullptr;
-                    Node* curr = view.head();
-                    while (i < view.size() - idx) {
-                        prev = curr;
-                        curr = curr->next();
-                        ++i;
-                    }
-                    while (curr != nullptr) {
-                        Node* next = curr->next();
-                        view.unlink(prev, curr, next);
-                        view.recycle(curr);
-                        curr = next;
-                    }
+                    auto it = view.begin();  // forward traversal
+                    for (size_t i = 0; i < view.size() - idx; ++i) ++it;
+                    for (size_t i = 0; i < idx; ++i) view.recycle(it.drop());
                 }
             }
             throw;  // propagate

@@ -353,8 +353,8 @@ protected:
     };
 
     /* Initialize the union with a forward iterator. */
-    _Bidirectional(const Iterator<Direction::forward>& iter) {
-        new (&forward) Iterator<Direction::forward>(iter);
+    _Bidirectional(Iterator<Direction::forward>&& iter) {
+        new (&forward) Iterator<Direction::forward>(std::move(iter));
     }
 
     /* Copy constructor. */
@@ -399,17 +399,17 @@ protected:
     };
 
     /* Initialize the union with a forward iterator. */
-    _Bidirectional(const Iterator<Direction::forward>& iter) :
+    _Bidirectional(Iterator<Direction::forward>&& iter) :
         direction(Direction::forward)
     {
-        new (&forward) Iterator<Direction::forward>(iter);
+        new (&forward) Iterator<Direction::forward>(std::move(iter));
     }
 
     /* Initialize the union with a backward iterator. */
-    _Bidirectional(const Iterator<Direction::backward>& iter) :
+    _Bidirectional(Iterator<Direction::backward>&& iter) :
         direction(Direction::backward)
     {
-        new (&backward) Iterator<Direction::backward>(iter);
+        new (&backward) Iterator<Direction::backward>(std::move(iter));
     }
 
     /* Copy constructor. */
@@ -502,7 +502,7 @@ public:
 
     /* Initialize the union using an existing iterator. */
     template <Direction dir>
-    explicit Bidirectional(const Iterator<dir>& it) : Base(it) {}
+    explicit Bidirectional(Iterator<dir>&& it) : Base(std::move(it)) {}
 
     /* Copy constructor. */
     Bidirectional(const Bidirectional& other) : Base(other) {}
@@ -510,7 +510,7 @@ public:
     /* Move constructor. */
     Bidirectional(Bidirectional&& other) noexcept : Base(std::move(other)) {}
 
-    // destructor is automatically called by base class
+    // destructor inherited from base class
 
     /////////////////////////////////
     ////    ITERATOR PROTOCOL    ////
