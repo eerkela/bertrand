@@ -240,9 +240,7 @@ public:
 
     /* Get the maximum size of the list. */
     inline std::optional<size_t> max_size() const noexcept {
-        return allocator.dynamic() ?
-            std::nullopt :
-            std::make_optional(allocator.capacity);
+        return dynamic() ? std::nullopt : std::make_optional(allocator.capacity);
     }
 
     /* Check whether the allocator supports dynamic resizing. */

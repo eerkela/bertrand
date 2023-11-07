@@ -28,7 +28,7 @@ namespace linked {
         size_t norm_index = normalize_index(index, view.size(), true);
 
         // reserve space for new node and freeze allocator
-        typename View::MemGuard guard(view.reserve(view.size() + 1));
+        typename View::MemGuard guard = view.reserve(view.size() + 1);
 
         // get iterator to index
         if constexpr (NodeTraits<typename View::Node>::has_prev) {

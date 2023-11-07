@@ -33,7 +33,7 @@ namespace linked {
         // iterate over the list and remove any nodes that were previously added.
 
         // preallocate if possible (unless size is unknown)
-        MemGuard guard(view.try_reserve(items));
+        MemGuard guard = view.try_reserve(items);
 
         // append each item
         size_t idx = 0;
@@ -46,7 +46,7 @@ namespace linked {
         // clean up nodes on error
         } catch (...) {
             if (idx == 0) throw;  // nothing to clean up
-            MemGuard hold(view.reserve());  // hold allocator at current size
+            MemGuard hold = view.reserve();  // hold allocator at current size
 
             // if appending to head, remove first idx nodes
             if (left) {

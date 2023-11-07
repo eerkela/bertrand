@@ -11,7 +11,7 @@
 #include "../../util/iter.h"  // iter()
 #include "../../util/except.h"  // type_error()
 #include "../../util/math.h"  // py_modulo()
-#include "../../util/python.h"  // PySequence
+#include "../../util/sequence.h"  // PySequence
 
 
 namespace bertrand {
@@ -261,18 +261,9 @@ namespace linked {
 
         public:
 
-            /* Dereference to get the value at the current node. */
-            inline Value operator*() const noexcept {
-                return this->_curr->value();
-            }
-
             /* Prefix increment to advance the iterator to the next node in the slice. */
             inline Iterator& operator++() noexcept {
                 ++this->_idx;
-                if (this->_idx == length_override) {
-                    return *this;  // don't jump on last iteration
-                }
-
                 if constexpr (dir == Direction::backward) {
                     for (size_t i = implicit_skip; i < indices.abs_step; ++i) {
                         this->_next = this->_curr;
@@ -401,26 +392,24 @@ namespace linked {
 
         /* Extract a slice from a linked list. */
         List get() const {
-            // TODO: should add a constructor that allows us to allocate an empty list
-            // of a given size without locking it to that size.
-
+            // NOTE: if original list has fixed size, then so will the slice.  We just
+            // have to adjust the max_size parameter to use the smaller slice length
+            // rather than the original list size.
             std::optional<size_t> max_size = list.dynamic() ?
                 std::nullopt :
                 std::make_optional(length());
             List result(max_size, list.specialization());
 
             // trivial case: empty slice
-            if (empty()) {
-                return result;
-            }
+            if (empty()) return result;
 
             // preallocate memory for nodes
-            typename View::MemGuard guard(result.reserve(length()));
+            typename View::MemGuard guard = result.reserve(length());
 
             // copy nodes from original view into result
             for (auto iter = this->iter(); iter != iter.end(); ++iter) {
                 Node* copy = result.view.node(*(iter.curr()));
-                if (inverted()) {
+                if (inverted()) {  // correct for inverted traversal
                     result.view.link(nullptr, copy, result.view.head());
                 } else {
                     result.view.link(result.view.tail(), copy, nullptr);
@@ -436,18 +425,16 @@ namespace linked {
         // indexing)
 
         /* Replace a slice within a linked list. */
-        void set(PyObject* items) {
-            // unpack iterable into reversible sequence
-            util::PySequence sequence(items, "can only assign an iterable");
+        template <typename Container>
+        void set(const Container& items) {
+            // unpack iterable into temporary sequence (unless it is already a sequence)
+            auto sequence = util::sequence(items);
 
             // trvial case: both slice and sequence are empty
-            if (empty() && sequence.size() == 0) {
-                return;
-            }
+            if (empty() && sequence.size() == 0) return;
 
             // check slice length matches sequence length
-            if (length() != sequence.size() && step() != 1) {
-                // NOTE: Python allows forced insertion if and only if the step size is 1
+            if (step() != 1 && length() != sequence.size()) {
                 std::ostringstream msg;
                 msg << "attempt to assign sequence of size " << sequence.size();
                 msg << " to extended slice of size " << length();
@@ -456,79 +443,111 @@ namespace linked {
 
             // temporary array to undo changes in case of error
             struct RecoveryArray {
-                Node* nodes;  // Node[length()]
+                Node* array;
                 RecoveryArray(size_t length) {
-                    nodes = static_cast<Node*>(malloc(sizeof(Node) * length));
-                    if (nodes == nullptr) {
-                        throw std::bad_alloc();
-                    }
+                    array = static_cast<Node*>(malloc(sizeof(Node) * length));
+                    if (array == nullptr) throw std::bad_alloc();
                 }
-                ~RecoveryArray() { free(nodes); }
-                Node& operator[](size_t index) { return nodes[index]; }
+                Node& operator[](size_t index) { return array[index]; }
+                ~RecoveryArray() { free(array); }  // does not call destructors
             };
 
             // allocate recovery array
             RecoveryArray recovery(length());
 
             // hold allocator at current size (or grow if performing a slice insertion)
-            typename View::MemGuard guard(
-                list.reserve(list.size() + sequence.size() - length())
-            );
+            typename View::MemGuard guard = 
+                list.reserve(list.size() + sequence.size() - length());
 
             // loop 1: remove current nodes in slice
-            for (auto iter = this->iter(); iter != iter.end(); ++iter) {
-                Node* node = iter.drop();  // remove node from list
-                new (&recovery[iter.idx()]) Node(*node);  // copy into recovery array
+            for (auto it = this->begin(), end = this->end(); it != end; ++it) {
+                Node* node = it.drop();
+                new (&recovery[it.idx()]) Node(std::move(*node));  // move to recovery
                 list.view.recycle(node);  // recycle original node
             }
 
             // loop 2: insert new nodes from sequence into vacated slice
-            for (auto iter = this->iter(sequence.size()); iter != iter.end(); ++iter) {
-                PyObject* item;
-                if (inverted()) {  // count from back
-                    item = sequence[sequence.size() - 1 - iter.idx()];
-                } else {  // count from front
-                    item = sequence[iter.idx()];
+            size_t idx = 0;
+            try {
+                // NOTE: we iterate over the sequence, not the slice, in order to allow
+                // for Python-style slice insertions (e.g. slice[1:2] = [1, 2, 3]).  In
+                // these cases, Python allows the slice and sequence lengths to differ,
+                // and continues inserting items until the sequence is exhausted.
+                auto iter = util::iter(sequence);
+                auto seq = inverted() ? iter.reverse() : iter.forward();
+                for (auto it = this->begin(); seq != seq.end(); ++seq, ++idx) {
+                    it.insert(list.view.node(*seq));
+                    if (idx < length()) ++it;
                 }
 
-                // allocate a new node for the list
-                try {
-                    Node* node = list.view.node(item);
-                    iter.insert(node);
+            // rewind if an error occurs
+            } catch (...) {
+                // NOTE: we can use the recovery array to restore the original list in
+                // the event of error.  This is an extremely delicate process, as we
+                // must ensure that all existing nodes are cleaned up, no matter where
+                // the error occurred.  We must also avoid memory leaks, and ensure
+                // that all nodes are properly recycled and destroyed.
 
-                // rewind if an error occurs
-                } catch (...) {
-                    // loop 3: remove nodes that have already been added to list
-                    for (auto it = this->iter(iter.idx()); it != it.end(); ++it) {
-                        Node* node = it.drop();
-                        list.view.recycle(node);
-                    }
-
-                    // loop 4: reinsert original nodes from recovery array
-                    for (auto it = this->iter(); it != it.end(); ++it) {
-                        Node* recovery_node = &recovery[it.idx()];
-                        it.insert(list.view.node(*recovery_node));  // copy into list
-                        recovery_node->~Node();  // destroy recovery node
-                    }
-                    throw;  // propagate
+                // loop 3: remove nodes that have already been added to list
+                size_t i = 0;
+                for (auto it = this->begin(); i < idx; ++i, ++it) {
+                    list.view.recycle(it.drop());
                 }
+
+                // loop 4: reinsert original nodes from recovery array
+                for (auto it = this->begin(), end = this->end(); it != end; ++it) {
+                    Node& recovery_node = recovery[it.idx()];
+                    it.insert(list.view.node(std::move(recovery_node)));
+                    recovery_node.~Node();  // destroy recovery node
+                }
+                throw;  // propagate
             }
+
+
+            // for (auto iter = this->iter(sequence.size()); iter != iter.end(); ++iter) {
+            //     PyObject* item;
+            //     if (inverted()) {  // count from back
+            //         item = sequence[sequence.size() - 1 - iter.idx()];
+            //     } else {  // count from front
+            //         item = sequence[iter.idx()];
+            //     }
+
+            //     // allocate a new node for the list
+            //     try {
+            //         Node* node = list.view.node(item);
+            //         iter.insert(node);
+
+            //     // rewind if an error occurs
+            //     } catch (...) {
+            //         // loop 3: remove nodes that have already been added to list
+            //         for (auto it = this->iter(iter.idx()); it != it.end(); ++it) {
+            //             Node* node = it.drop();
+            //             list.view.recycle(node);
+            //         }
+
+            //         // loop 4: reinsert original nodes from recovery array
+            //         for (auto it = this->iter(); it != it.end(); ++it) {
+            //             Node* recovery_node = &recovery[it.idx()];
+            //             it.insert(list.view.node(*recovery_node));  // copy into list
+            //             recovery_node->~Node();  // destroy recovery node
+            //         }
+            //         throw;  // propagate
+            //     }
+            // }
 
             // loop 3: deallocate removed nodes
             for (size_t i = 0; i < length(); i++) {
-                (&recovery[i])->~Node();  // release recovery node
+                recovery[i].~Node();  // release recovery node
             }
         }
 
         /* Delete a slice within a linked list. */
         void del() {
             // trivial case: slice is empty
-            if (empty()) {
-                return;
-            }
+            if (empty()) return;
 
             // hold allocator at current size until all nodes are removed
-            typename View::MemGuard guard(list.reserve());
+            typename View::MemGuard guard = list.reserve();
 
             // recycle every node in slice
             for (auto it = this->iter(); it != it.end(); ++it) {
@@ -549,7 +568,7 @@ namespace linked {
             size_t len = length.value();
 
             // backward traversal
-            if constexpr (Node::doubly_linked) {
+            if constexpr (NodeTraits<Node>::has_prev) {
                 using Backward = Iterator<Direction::backward>;
                 if (backward()) {
                     return util::CoupledIterator<Bidirectional<Iterator>>(
@@ -570,13 +589,8 @@ namespace linked {
         inline auto begin() const {
             using Forward = Iterator<Direction::forward>;
 
-            // account for empty sequence
-            if (empty()) {
-                return Bidirectional(Forward(list.view, indices, length()));
-            }
-
             // backward traversal
-            if constexpr (Node::doubly_linked) {
+            if constexpr (NodeTraits<Node>::has_prev) {
                 using Backward = Iterator<Direction::backward>;
                 if (backward()) {
                     return Bidirectional(Backward(list.view, origin(), indices, length()));
@@ -591,13 +605,8 @@ namespace linked {
         inline auto end() const {
             using Forward = Iterator<Direction::forward>;
 
-            // return same orientation as begin()
-            if (empty()) {
-                return Bidirectional(Forward(list.view, indices, length()));
-            }
-
             // backward traversal
-            if constexpr (Node::doubly_linked) {
+            if constexpr (NodeTraits<Node>::has_prev) {
                 using Backward = Iterator<Direction::backward>;
                 if (backward()) {
                     return Bidirectional(Backward(list.view, indices, length()));
@@ -638,7 +647,7 @@ namespace linked {
             }
 
             // find origin node
-            if constexpr (Node::doubly_linked) {
+            if constexpr (NodeTraits<Node>::has_prev) {
                 if (backward()) {  // backward traversal
                     Node* next = nullptr;
                     Node* curr = list.view.tail();
