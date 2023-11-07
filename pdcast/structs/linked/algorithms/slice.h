@@ -249,100 +249,66 @@ namespace linked {
         using Node = typename View::Node;
         using Value = typename View::Value;
 
-        template <Direction dir>
-        using ViewIterator = typename View::template Iterator<dir>;
+        List& list;
+        const SliceIndices<View> indices;
+        mutable bool found;  // indicates whether we've cached the origin node
+        mutable Node* _origin;  // node that immediately precedes slice (can be NULL)
+
+        /* Find and cache the origin node for the slice. */
+        Node* origin() const {
+            if (found) return _origin;  // return cached origin
+
+            // find origin node
+            if constexpr (NodeTraits<Node>::has_prev) {
+                if (backward()) {  // backward traversal
+                    auto it = list.view.rbegin();
+                    for (size_t i = 1; i < list.view.size() - first(); ++i) ++it;
+                    found = true;
+                    _origin = it.next();
+                    return _origin;
+                }
+            }
+
+            // forward traversal
+            auto it = list.view.begin();
+            for (size_t i = 0; i < first(); ++i) ++it;
+            found = true;
+            _origin = it.prev();
+            return _origin;
+        }
+
+        /* Force use of slice() factory function. */
+        template <typename _List, typename... Args>
+        friend auto slice(_List& list, Args&&... args) -> std::enable_if_t<
+            ViewTraits<typename _List::View>::listlike,
+            SliceProxy<_List>
+        >;
+
+        /* Construct a SliceProxy with at least one element. */
+        SliceProxy(List& list, SliceIndices<View>&& indices) :
+            list(list), indices(indices), found(false), _origin(nullptr)
+        {}
 
     public:
 
+        /* Disallow SliceProxies from being stored as lvalues. */
+        SliceProxy(const SliceProxy&) = delete;
+        SliceProxy(SliceProxy&&) = delete;
+        SliceProxy& operator=(const SliceProxy&) = delete;
+        SliceProxy& operator=(SliceProxy&&) = delete;
+
         /* A specialized iterator built for slice traversal. */
         template <Direction dir>
-        class Iterator : public ViewIterator<dir> {
-            using Base = ViewIterator<dir>;
-
-        public:
-
-            /* Prefix increment to advance the iterator to the next node in the slice. */
-            inline Iterator& operator++() noexcept {
-                ++this->_idx;
-                if constexpr (dir == Direction::backward) {
-                    for (size_t i = implicit_skip; i < indices.abs_step; ++i) {
-                        this->_next = this->_curr;
-                        this->_curr = this->_prev;
-                        this->_prev = this->_curr->prev();
-                    }
-                } else {
-                    for (size_t i = implicit_skip; i < indices.abs_step; ++i) {
-                        this->_prev = this->_curr;
-                        this->_curr = this->_next;
-                        this->_next = this->_curr->next();
-                    }
-                }
-                return *this;
-            }
-
-            /* Inequality comparison to terminate the slice. */
-            template <Direction T>
-            inline bool operator!=(const Iterator<T>& other) const noexcept {
-                return _idx != other._idx;
-            }
-
-            //////////////////////////////
-            ////    HELPER METHODS    ////
-            //////////////////////////////
-
-            /* Get the current index of the iterator within the list. */
-            inline size_t index() const noexcept {
-                if constexpr (dir == Direction::backward) {
-                    return indices.first - (indices.abs_step * _idx);
-                } else {
-                    return indices.first + (indices.abs_step * _idx);
-                }
-            }
-
-            /* Get the current iteration step of the iterator. */
-            inline size_t idx() const noexcept {
-                return _idx;
-            }
-
-            /* Remove the node at the current position. */
-            inline Node* drop() {
-                ++implicit_skip;
-                return Base::drop();
-            }
-
-            /* Copy constructor. */
-            // Iterator(const Iterator& other) noexcept :
-            //     Base(other), indices(other.indices), _idx(other._idx),
-            //     length_override(other.length_override),
-            //     implicit_skip(other.implicit_skip)
-            // {}
-
-            /* Move constructor. */
-            Iterator(Iterator&& other) noexcept :
-                Base(std::move(other)), indices(std::move(other.indices)),
-                _idx(other._idx), length_override(other.length_override),
-                implicit_skip(other.implicit_skip)
-            {}
-
-        protected:
+        class Iterator : public View::template Iterator<dir> {
+            using Base = typename View::template Iterator<dir>;
             friend SliceProxy;
             const SliceIndices<View>& indices;
-            size_t _idx;
-            size_t length_override;
-            size_t implicit_skip;
-
-            ////////////////////////////
-            ////    CONSTRUCTORS    ////
-            ////////////////////////////
+            size_t idx;
+            size_t skip;
 
             /* Get an iterator to the start of the slice. */
-            Iterator(
-                View& view,
-                Node* origin,
-                const SliceIndices<View>& indices,
-                size_t length_override
-            ) : Base(view), indices(indices), _idx(0), length_override(length_override),
-                implicit_skip(0)
+            Iterator(View& view, const SliceIndices<View>& indices, Node* origin) :
+                Base(view), indices(indices), idx(0), skip(0)
             {
                 if constexpr (dir == Direction::backward) {
                     this->_next = origin;
@@ -368,15 +334,94 @@ namespace linked {
             }
 
             /* Get an empty iterator to terminate the slice. */
-            Iterator(
-                View& view,
-                const SliceIndices<View>& indices,
-                size_t length_override
-            ) : Base(view), indices(indices), _idx(length_override),
-                length_override(length_override), implicit_skip(0)
+            Iterator(View& view, const SliceIndices<View>& indices) :
+                Base(view), indices(indices), idx(indices.length), skip(0)
             {}
 
+        public:
+
+            /* Copy constructor. */
+            Iterator(const Iterator& other) noexcept :
+                Base(other), indices(other.indices), idx(other.idx), skip(other.skip)
+            {}
+
+            /* Move constructor. */
+            Iterator(Iterator&& other) noexcept :
+                Base(std::move(other)), indices(std::move(other.indices)),
+                idx(other.idx), skip(other.skip)
+            {}
+
+            /* Prefix increment to advance the iterator to the next node in the slice. */
+            inline Iterator& operator++() noexcept {
+                ++idx;
+                if (idx == indices.length) {
+                    return *this;  // don't advance past end of slice
+                }
+
+                if constexpr (dir == Direction::backward) {
+                    for (size_t i = skip; i < indices.abs_step; ++i) {
+                        this->_next = this->_curr;
+                        this->_curr = this->_prev;
+                        this->_prev = this->_curr->prev();
+                    }
+                } else {
+                    for (size_t i = skip; i < indices.abs_step; ++i) {
+                        this->_prev = this->_curr;
+                        this->_curr = this->_next;
+                        this->_next = this->_curr->next();
+                    }
+                }
+                return *this;
+            }
+
+            /* Inequality comparison to terminate the slice. */
+            template <Direction T>
+            inline bool operator!=(const Iterator<T>& other) const noexcept {
+                return idx != other.idx;
+            }
+
+            /* Get the current iteration step of the iterator. */
+            inline size_t index() const noexcept {
+                return idx;
+            }
+
+            /* Remove the node at the current position. */
+            inline Node* drop() {
+                ++skip;
+                return Base::drop();
+            }
+
         };
+
+        /* Return an iterator to the start of the slice. */
+        inline auto begin() const {
+            // backward traversal
+            if constexpr (NodeTraits<Node>::has_prev) {
+                using Backward = Iterator<Direction::backward>;
+                if (backward()) {
+                    return Bidirectional(Backward(list.view, indices, origin()));
+                }
+            }
+
+            // forward traversal
+            using Forward = Iterator<Direction::forward>;
+            return Bidirectional(Forward(list.view, indices, origin()));        
+        }
+
+        /* Return an iterator to the end of the slice. */
+        inline auto end() const {
+            // backward traversal
+            if constexpr (NodeTraits<Node>::has_prev) {
+                using Backward = Iterator<Direction::backward>;
+                if (backward()) {
+                    return Bidirectional(Backward(list.view, indices));
+                }
+            }
+
+            // forward traversal
+            using Forward = Iterator<Direction::forward>;
+            return Bidirectional(Forward(list.view, indices));
+        }
 
         /* Pass through to SliceIndices. */
         inline long long start() const { return indices.start; }
@@ -407,8 +452,8 @@ namespace linked {
             typename View::MemGuard guard = result.reserve(length());
 
             // copy nodes from original view into result
-            for (auto iter = this->iter(); iter != iter.end(); ++iter) {
-                Node* copy = result.view.node(*(iter.curr()));
+            for (auto it = this->begin(), end = this->end(); it != end; ++it) {
+                Node* copy = result.view.node(*(it.curr()));
                 if (inverted()) {  // correct for inverted traversal
                     result.view.link(nullptr, copy, result.view.head());
                 } else {
@@ -417,12 +462,6 @@ namespace linked {
             }
             return result;
         }
-
-        // TODO: accept any iterable, not just a python sequence.
-        // -> PySequence() should be generalized to an unpack() method that exhausts
-        // an iterator range into a temporary sequence using either PySequence_FAST()
-        // or std::vector, with only basic operations (basically just size and
-        // indexing)
 
         /* Replace a slice within a linked list. */
         template <typename Container>
@@ -462,7 +501,7 @@ namespace linked {
             // loop 1: remove current nodes in slice
             for (auto it = this->begin(), end = this->end(); it != end; ++it) {
                 Node* node = it.drop();
-                new (&recovery[it.idx()]) Node(std::move(*node));  // move to recovery
+                new (&recovery[it.index()]) Node(std::move(*node));  // move to recovery
                 list.view.recycle(node);  // recycle original node
             }
 
@@ -475,9 +514,8 @@ namespace linked {
                 // and continues inserting items until the sequence is exhausted.
                 auto iter = util::iter(sequence);
                 auto seq = inverted() ? iter.reverse() : iter.forward();
-                for (auto it = this->begin(); seq != seq.end(); ++seq, ++idx) {
+                for (auto it = this->begin(); seq != seq.end(); ++it, ++seq, ++idx) {
                     it.insert(list.view.node(*seq));
-                    if (idx < length()) ++it;
                 }
 
             // rewind if an error occurs
@@ -496,44 +534,12 @@ namespace linked {
 
                 // loop 4: reinsert original nodes from recovery array
                 for (auto it = this->begin(), end = this->end(); it != end; ++it) {
-                    Node& recovery_node = recovery[it.idx()];
+                    Node& recovery_node = recovery[it.index()];
                     it.insert(list.view.node(std::move(recovery_node)));
                     recovery_node.~Node();  // destroy recovery node
                 }
                 throw;  // propagate
             }
-
-
-            // for (auto iter = this->iter(sequence.size()); iter != iter.end(); ++iter) {
-            //     PyObject* item;
-            //     if (inverted()) {  // count from back
-            //         item = sequence[sequence.size() - 1 - iter.idx()];
-            //     } else {  // count from front
-            //         item = sequence[iter.idx()];
-            //     }
-
-            //     // allocate a new node for the list
-            //     try {
-            //         Node* node = list.view.node(item);
-            //         iter.insert(node);
-
-            //     // rewind if an error occurs
-            //     } catch (...) {
-            //         // loop 3: remove nodes that have already been added to list
-            //         for (auto it = this->iter(iter.idx()); it != it.end(); ++it) {
-            //             Node* node = it.drop();
-            //             list.view.recycle(node);
-            //         }
-
-            //         // loop 4: reinsert original nodes from recovery array
-            //         for (auto it = this->iter(); it != it.end(); ++it) {
-            //             Node* recovery_node = &recovery[it.idx()];
-            //             it.insert(list.view.node(*recovery_node));  // copy into list
-            //             recovery_node->~Node();  // destroy recovery node
-            //         }
-            //         throw;  // propagate
-            //     }
-            // }
 
             // loop 3: deallocate removed nodes
             for (size_t i = 0; i < length(); i++) {
@@ -550,127 +556,9 @@ namespace linked {
             typename View::MemGuard guard = list.reserve();
 
             // recycle every node in slice
-            for (auto it = this->iter(); it != it.end(); ++it) {
+            for (auto it = this->begin(), end = this->end(); it != end; ++it) {
                 list.view.recycle(it.drop());
             }
-        }
-
-        /* Return a coupled pair of iterators with a possible length override. */
-        inline auto iter(std::optional<size_t> length = std::nullopt) const {
-            using Forward = Iterator<Direction::forward>;
-
-            // default to length of slice
-            if (!length.has_value()) {
-                return util::CoupledIterator<Bidirectional<Iterator>>(begin(), end());  
-            }
-
-            // use length override if given
-            size_t len = length.value();
-
-            // backward traversal
-            if constexpr (NodeTraits<Node>::has_prev) {
-                using Backward = Iterator<Direction::backward>;
-                if (backward()) {
-                    return util::CoupledIterator<Bidirectional<Iterator>>(
-                        Bidirectional(Backward(list.view, origin(), indices, len)),
-                        Bidirectional(Backward(list.view, indices, len))
-                    );
-                }
-            }
-
-            // forward traversal
-            return util::CoupledIterator<Bidirectional<Iterator>>(
-                Bidirectional(Forward(list.view, origin(), indices, len)),
-                Bidirectional(Forward(list.view, indices, len))
-            );
-        }
-
-        /* Return an iterator to the start of the slice. */
-        inline auto begin() const {
-            using Forward = Iterator<Direction::forward>;
-
-            // backward traversal
-            if constexpr (NodeTraits<Node>::has_prev) {
-                using Backward = Iterator<Direction::backward>;
-                if (backward()) {
-                    return Bidirectional(Backward(list.view, origin(), indices, length()));
-                }
-            }
-
-            // forward traversal
-            return Bidirectional(Forward(list.view, origin(), indices, length()));        
-        }
-
-        /* Return an iterator to the end of the slice. */
-        inline auto end() const {
-            using Forward = Iterator<Direction::forward>;
-
-            // backward traversal
-            if constexpr (NodeTraits<Node>::has_prev) {
-                using Backward = Iterator<Direction::backward>;
-                if (backward()) {
-                    return Bidirectional(Backward(list.view, indices, length()));
-                }
-            }
-
-            // forward traversal
-            return Bidirectional(Forward(list.view, indices, length()));
-        }
-
-        /* Disallow SliceProxies from being stored as lvalues. */
-        SliceProxy(const SliceProxy&) = delete;
-        SliceProxy(SliceProxy&&) = delete;
-        SliceProxy& operator=(const SliceProxy&) = delete;
-        SliceProxy& operator=(SliceProxy&&) = delete;
-
-    private:
-        template <typename _List, typename... Args>
-        friend auto slice(_List& list, Args&&... args) -> std::enable_if_t<
-            ViewTraits<typename _List::View>::listlike,
-            SliceProxy<_List>
-        >;
-
-        List& list;
-        const SliceIndices<View> indices;
-        mutable bool found;  // indicates whether we've cached the origin node
-        mutable Node* _origin;  // node that immediately precedes slice (can be NULL)
-
-        /* Construct a SliceProxy with at least one element. */
-        SliceProxy(List& list, SliceIndices<View>&& indices) :
-            list(list), indices(indices), found(false), _origin(nullptr)
-        {}
-
-        /* Find and cache the origin node for the slice. */
-        Node* origin() const {
-            if (found) {
-                return _origin;
-            }
-
-            // find origin node
-            if constexpr (NodeTraits<Node>::has_prev) {
-                if (backward()) {  // backward traversal
-                    Node* next = nullptr;
-                    Node* curr = list.view.tail();
-                    for (size_t i = list.view.size() - 1; i > first(); i--) {
-                        next = curr;
-                        curr = curr->prev();
-                    }
-                    found = true;
-                    _origin = next;
-                    return _origin;
-                }
-            }
-
-            // forward traversal
-            Node* prev = nullptr;
-            Node* curr = list.view.head();
-            for (size_t i = 0; i < first(); i++) {
-                prev = curr;
-                curr = curr->next();
-            }
-            found = true;
-            _origin = prev;
-            return _origin;
         }
 
     };

@@ -8,6 +8,7 @@
 #include <Python.h>  // CPython API
 #include "../../util/base.h"  // is_pyobject<>
 #include "../../util/except.h"  // type_error()
+#include "../../util/python.h"  // lt(), ge(), plus()
 #include "../core/iter.h"  // Direction, Bidirectional
 #include "../core/view.h"  // ViewTraits
 
@@ -61,14 +62,14 @@ namespace linked {
         }
 
         // comparisons are kept at the python level until we're ready to return
-        PyObject* py_zero = PyLong_FromSize_t(0);  // new reference
-        PyObject* py_size = PyLong_FromSize_t(size);  // new reference
+        PyObject* py_zero = PyLong_FromSize_t(0);  // new ref
+        PyObject* py_size = PyLong_FromSize_t(size);  // new ref
         int lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
 
         // wraparound negative indices
         bool release_index = false;
         if (lt_zero) {
-            index = PyNumber_Add(index, py_size);  // new reference
+            index = PyNumber_Add(index, py_size);  // new ref
             lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
             release_index = true;  // remember to DECREF index later
         }
@@ -93,7 +94,6 @@ namespace linked {
         Py_DECREF(py_zero);
         Py_DECREF(py_size);
         if (release_index) Py_DECREF(index);
-
         return result;
     }
 

@@ -13,6 +13,9 @@
 #include "iter.h"  // iter(), PyIterator
 
 
+#include <limits>  // std::numeric_limits<>
+
+
 /* NOTE: This file contains a collection of helper classes for interacting with the
  * Python C API using C++ RAII principles.  This allows automated handling of reference
  * counts and other memory management concerns, and simplifies overall communication
@@ -53,21 +56,22 @@ namespace detail {
 
     /* Try to convert a C++ argument into an equivalent Python object. */
     template <typename T>
-    PyObject* as_pyobject(T& obj) {
-        static constexpr bool is_bool = std::is_same_v<T, bool>;
-        static constexpr bool is_integer = std::is_integral_v<T>;
-        static constexpr bool is_float = std::is_floating_point_v<T>;
+    PyObject* as_pyobject(T&& obj) {
+        // object must be a basic type
+        static constexpr bool is_bool = std::is_same_v<std::decay_t<T>, bool>;
+        static constexpr bool is_integer = std::is_integral_v<std::decay_t<T>>;
+        static constexpr bool is_float = std::is_floating_point_v<std::decay_t<T>>;
         static_assert(
             is_bool || is_integer || is_float,
             "cannot convert C++ object to PyObject* pointer"
         );
 
-        // booleans -> Python bool
+        // boolean -> Python bool
         if constexpr (is_bool) {
             return Py_NewRef(obj ? Py_True : Py_False);
         }
 
-        // integers -> Python int
+        // integer -> Python int
         else if constexpr (is_integer) {
             if constexpr (std::is_unsigned_v<T>) {
                 PyObject* result = PyLong_FromUnsignedLongLong(obj);
@@ -84,7 +88,7 @@ namespace detail {
             }
         }
 
-        // floats -> Python float
+        // float -> Python float
         else {
             PyObject* result = PyFloat_FromDouble(obj);
             if (result == nullptr) {
@@ -98,29 +102,39 @@ namespace detail {
     /* Wrap a pure C++/Python operation to allow mixed input. */
     template <typename LHS, typename RHS, typename F>
     auto wrap(F func, LHS lhs, RHS rhs) {
+        // case 1: both arguments are Python objects
         if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
             return func(lhs, rhs);
-        } else if constexpr (is_pyobject<LHS>) {
+        }
+
+        // case 2: left argument is Python object
+        else if constexpr (is_pyobject<LHS>) {
             PyObject* b = as_pyobject(rhs);
             try {
-                PyObject* result = func(lhs, b);
+                auto result = func(lhs, b);
                 Py_DECREF(b);
                 return result;
             } catch (...) {
                 Py_DECREF(b);
                 throw;
             }
-        } else if constexpr (is_pyobject<RHS>) {
+        }
+
+        // case 3: right argument is Python object
+        else if constexpr (is_pyobject<RHS>) {
             PyObject* a = as_pyobject(lhs);
             try {
-                PyObject* result = func(a, rhs);
+                auto result = func(a, rhs);
                 Py_DECREF(a);
                 return result;
             } catch (...) {
                 Py_DECREF(a);
                 throw;
             }
-        } else {
+        }
+
+        // case 4: neither argument is Python object
+        else {
             return func(lhs, rhs);
         }
     }
@@ -224,115 +238,98 @@ inline std::optional<size_t> len(const T& x) {
 ////////////////////////////////
 
 
-/* Pure C++/Python implementations for binary operators. */
-namespace detail {
-
-
-    template <typename LHS, typename RHS>
-    auto bit_and(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
-            PyObject* result = PyNumber_And(lhs, rhs);
-            if (result == nullptr) {
-                throw catch_python<type_error>();
-            }
-            return result;  // new reference
-        } else {
-            return lhs & rhs;
-        }
-    }
-
-
-    template <typename LHS, typename RHS>
-    auto bit_or(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
-            PyObject* result = PyNumber_Or(lhs, rhs);
-            if (result == nullptr) {
-                throw catch_python<type_error>();
-            }
-            return result;  // new reference
-        } else {
-            return lhs | rhs;
-        }
-    }
-
-
-    template <typename LHS, typename RHS>
-    auto bit_xor(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
-            PyObject* result = PyNumber_Xor(lhs, rhs);
-            if (result == nullptr) {
-                throw catch_python<type_error>();
-            }
-            return result;  // new reference
-        } else {
-            return lhs ^ rhs;
-        }
-    }
-
-
-    template <typename LHS, typename RHS>
-    auto lshift(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
-            PyObject* result = PyNumber_Lshift(lhs, rhs);
-            if (result == nullptr) {
-                throw catch_python<type_error>();
-            }
-            return result;  // new reference
-        } else {
-            return lhs << rhs;
-        }
-    }
-
-
-    template <typename LHS, typename RHS>
-    auto rshift(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
-            PyObject* result = PyNumber_Rshift(lhs, rhs);
-            if (result == nullptr) {
-                throw catch_python<type_error>();
-            }
-            return result;  // new reference
-        } else {
-            return lhs >> rhs;
-        }
-    }
-
-
-}  // namespace detail
-
-
 /* Apply a bitwise `&` operation between two C++ or Python objects. */
 template <typename LHS, typename RHS>
 inline auto bit_and(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::bit_and<const LHS&, const RHS&>, lhs, rhs);
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            PyObject* result = PyNumber_And(a, b);
+            if (result == nullptr) {
+                throw catch_python<type_error>();
+            }
+            return result;  // new reference
+        } else {
+            return a & b;
+        }
+    };
+
+    return detail::wrap(execute, lhs, rhs);
 }
 
 
 /* Apply a bitwise `|` operation between two C++ or Python objects. */
 template <typename LHS, typename RHS>
 inline auto bit_or(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::bit_or<const LHS&, const RHS&>, lhs, rhs);
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            PyObject* result = PyNumber_Or(a, b);
+            if (result == nullptr) {
+                throw catch_python<type_error>();
+            }
+            return result;  // new reference
+        } else {
+            return a | b;
+        }
+    };
+
+    return detail::wrap(execute, lhs, rhs);
 }
 
 
 /* Apply a bitwise `^` operation between two C++ or Python objects. */
 template <typename LHS, typename RHS>
 inline auto bit_xor(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::bit_xor<const LHS&, const RHS&>, lhs, rhs);
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            PyObject* result = PyNumber_Xor(a, b);
+            if (result == nullptr) {
+                throw catch_python<type_error>();
+            }
+            return result;  // new reference
+        } else {
+            return a ^ b;
+        }
+    };
+
+    return detail::wrap(execute, lhs, rhs);
 }
 
 
 /* Apply a bitwise `<<` operation between two C++ or Python objects. */
 template <typename LHS, typename RHS>
 inline auto lshift(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::lshift<const LHS&, const RHS&>, lhs, rhs);
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            PyObject* result = PyNumber_Lshift(a, b);
+            if (result == nullptr) {
+                throw catch_python<type_error>();
+            }
+            return result;  // new reference
+        } else {
+            return a << b;
+        }
+    };
+
+    return detail::wrap(execute, lhs, rhs);
 }
 
 
 /* Apply a bitwise `>>` operation between two C++ or Python objects. */
 template <typename LHS, typename RHS>
 inline auto rshift(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::rshift<const LHS&, const RHS&>, lhs, rhs);
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            PyObject* result = PyNumber_Rshift(a, b);
+            if (result == nullptr) {
+                throw catch_python<type_error>();
+            }
+            return result;  // new reference
+        } else {
+            return a >> b;
+        }
+    };
+
+    return detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -341,135 +338,117 @@ inline auto rshift(const LHS& lhs, const RHS& rhs) {
 ///////////////////////////
 
 
-/* Pure C++/Python implementations for comparison operators. */
-namespace detail {
-
-
-    template <typename LHS, typename RHS>
-    inline bool lt(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
-            int result = PyObject_RichCompareBool(lhs, rhs, Py_LT);
-            if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<type_error>();
-            }
-            return static_cast<bool>(result);
-        } else {
-            return lhs < rhs;
-        }
-    }
-
-
-    template <typename LHS, typename RHS>
-    inline bool le(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
-            int result = PyObject_RichCompareBool(lhs, rhs, Py_LE);
-            if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<type_error>();
-            }
-            return static_cast<bool>(result);
-        } else {
-            return lhs <= rhs;
-        }
-    }
-
-
-    template <typename LHS, typename RHS>
-    inline bool eq(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
-            int result = PyObject_RichCompareBool(lhs, rhs, Py_EQ);
-            if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<type_error>();
-            }
-            return static_cast<bool>(result);
-        } else {
-            return lhs == rhs;
-        }
-    }
-
-
-    template <typename LHS, typename RHS>
-    inline bool ne(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
-            int result = PyObject_RichCompareBool(lhs, rhs, Py_NE);
-            if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<type_error>();
-            }
-            return static_cast<bool>(result);
-        } else {
-            return lhs != rhs;
-        }
-    }
-
-
-    template <typename LHS, typename RHS>
-    inline bool ge(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
-            int result = PyObject_RichCompareBool(lhs, rhs, Py_GE);
-            if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<type_error>();
-            }
-            return static_cast<bool>(result);
-        } else {
-            return lhs >= rhs;
-        }
-    }
-
-
-    template <typename LHS, typename RHS>
-    inline bool gt(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
-            int result = PyObject_RichCompareBool(lhs, rhs, Py_GT);
-            if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<type_error>();
-            }
-            return static_cast<bool>(result);
-        } else {
-            return lhs > rhs;
-        }
-    }
-
-}  // namespace detail
-
-
 /* Apply a `<` comparison between any combination of C++ or Python objects. */
 template <typename LHS, typename RHS>
 inline bool lt(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::lt<const LHS&, const RHS&>, lhs, rhs);
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            int result = PyObject_RichCompareBool(a, b, Py_LT);
+            if (result == -1 && PyErr_Occurred()) {
+                throw catch_python<type_error>();
+            }
+            return static_cast<bool>(result);
+        } else {
+            return a < b;
+        }
+    };
+
+    return detail::wrap(execute, lhs, rhs);
 }
 
 
 /* Apply a `<=` comparison between any combination of C++ or Python objects. */
 template <typename LHS, typename RHS>
 inline bool le(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::le<const LHS&, const RHS&>, lhs, rhs);
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            int result = PyObject_RichCompareBool(a, b, Py_LE);
+            if (result == -1 && PyErr_Occurred()) {
+                throw catch_python<type_error>();
+            }
+            return static_cast<bool>(result);
+        } else {
+            return a <= b;
+        }
+    };
+
+    return detail::wrap(execute, lhs, rhs);
 }
 
 
 /* Apply an `==` comparison between any combination of C++ or Python objects. */
 template <typename LHS, typename RHS>
 inline bool eq(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::eq<const LHS&, const RHS&>, lhs, rhs);
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            int result = PyObject_RichCompareBool(a, b, Py_EQ);
+            if (result == -1 && PyErr_Occurred()) {
+                throw catch_python<type_error>();
+            }
+            return static_cast<bool>(result);
+        } else {
+            return a == b;
+        }
+    };
+
+    return detail::wrap(execute, lhs, rhs);
 }
 
 
 /* Apply a `!=` comparison between any combination of C++ or Python objects. */
 template <typename LHS, typename RHS>
 inline bool ne(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::ne<const LHS&, const RHS&>, lhs, rhs);
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            int result = PyObject_RichCompareBool(a, b, Py_NE);
+            if (result == -1 && PyErr_Occurred()) {
+                throw catch_python<type_error>();
+            }
+            return static_cast<bool>(result);
+        } else {
+            return a != b;
+        }
+    };
+
+    return detail::wrap(execute, lhs, rhs);
 }
 
 
 /* Apply a `>=` comparison between any combination of C++ or Python objects. */
 template <typename LHS, typename RHS>
 inline bool ge(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::ge<const LHS&, const RHS&>, lhs, rhs);
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            int result = PyObject_RichCompareBool(a, b, Py_GE);
+            if (result == -1 && PyErr_Occurred()) {
+                throw catch_python<type_error>();
+            }
+            return static_cast<bool>(result);
+        } else {
+            return a >= b;
+        }
+    };
+
+    return detail::wrap(execute, lhs, rhs);
 }
 
 
 /* Apply a `>` comparison between any combination of C++ or Python objects. */
 template <typename LHS, typename RHS>
 inline bool gt(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::gt<const LHS&, const RHS&>, lhs, rhs);
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            int result = PyObject_RichCompareBool(a, b, Py_GT);
+            if (result == -1 && PyErr_Occurred()) {
+                throw catch_python<type_error>();
+            }
+            return static_cast<bool>(result);
+        } else {
+            return a > b;
+        }
+    };
+
+    return detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -478,80 +457,99 @@ inline bool gt(const LHS& lhs, const RHS& rhs) {
 ////////////////////
 
 
-/* Pure C++/Python implementations for math operators. */
-namespace detail {
-
-
-    template <typename LHS, typename RHS>
-    auto plus(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
-            PyObject* result = PyNumber_Add(lhs, rhs);
+/* Apply a `+` operation between any combination of C++ or Python objects. */
+template <typename LHS, typename RHS>
+inline auto plus(const LHS& lhs, const RHS& rhs) {
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            PyObject* result = PyNumber_Add(a, b);
             if (result == nullptr) {
                 throw catch_python<type_error>();
             }
             return result;  // new reference
         } else {
-            return lhs + rhs;
+            return a + b;
         }
-    }
+    };
+
+    return detail::wrap(execute, lhs, rhs);
+}
 
 
-    template <typename LHS, typename RHS>
-    auto minus(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
-            PyObject* result = PyNumber_Subtract(lhs, rhs);
+/* Apply a `-` operation between any combination of C++ or Python objects. */
+template <typename LHS, typename RHS>
+inline auto minus(const LHS& lhs, const RHS& rhs) {
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            PyObject* result = PyNumber_Subtract(a, b);
             if (result == nullptr) {
                 throw catch_python<type_error>();
             }
             return result;  // new reference
         } else {
-            return lhs - rhs;
+            return a - b;
         }
-    }
+    };
+
+    return detail::wrap(execute, lhs, rhs);
+}
 
 
-    template <typename LHS, typename RHS>
-    auto multiply(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
-            PyObject* result = PyNumber_Multiply(lhs, rhs);
+/* Apply a `*` operation between any combination of C++ or Python objects. */
+template <typename LHS, typename RHS>
+inline auto multiply(const LHS& lhs, const RHS& rhs) {
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            PyObject* result = PyNumber_Multiply(a, b);
             if (result == nullptr) {
                 throw catch_python<type_error>();
             }
             return result;  // new reference
         } else {
-            return lhs * rhs;
+            return a * b;
         }
-    }
+    };
+
+    return detail::wrap(execute, lhs, rhs);
+}
 
 
-    template <typename LHS, typename RHS>
-    auto power(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
-            PyObject* result = PyNumber_Power(lhs, rhs, Py_None);
+/* Apply a `**` operation between any combination of C++ or Python objects. */
+template <typename LHS, typename RHS>
+inline auto power(const LHS& lhs, const RHS& rhs) {
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            PyObject* result = PyNumber_Power(a, b, Py_None);
             if (result == nullptr) {
                 throw catch_python<type_error>();
             }
             return result;  // new reference
         } else {
-            return lhs ** rhs;
+            return a ** b;
         }
-    }
+    };
+
+    return detail::wrap(execute, lhs, rhs);
+}
 
 
-    template <typename LHS, typename RHS>
-    auto divide(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
+/* Apply a `/` operation between any combination of C++ or Python objects,
+with C++ semantics. */
+template <typename LHS, typename RHS>
+inline auto divide(const LHS& lhs, const RHS& rhs) {
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             // NOTE: C++ division operator truncates integers toward zero, whereas Python
             // returns a float.
-            if (PyLong_Check(lhs) && PyLong_Check(rhs)) {
+            if (PyLong_Check(a) && PyLong_Check(b)) {
 
                 // try converting to long long and dividing directly
-                auto happy_path = [&lhs, &rhs]() {
-                    long long x = PyLong_AsLongLong(lhs);
+                auto happy_path = [&a, &b]() {
+                    long long x = PyLong_AsLongLong(a);
                     if (x == -1 && PyErr_Occurred()) {
                         return nullptr;  // fall back
                     }
-                    long long y = PyLong_AsLongLong(rhs);
+                    long long y = PyLong_AsLongLong(b);
                     if (y == 0) {
                         throw std::runtime_error("division by zero");
                     } else if (y == -1 && PyErr_Occurred()) {
@@ -568,7 +566,7 @@ namespace detail {
 
                 // happy path overflows - fall back to Python API
                 PyErr_Clear();
-                result = PyNumber_FloorDivide(lhs, rhs);
+                result = PyNumber_FloorDivide(a, b);
                 if (result == nullptr) {
                     throw catch_python<type_error>();
                 }
@@ -576,16 +574,12 @@ namespace detail {
                 // if result < 0, check remainder != 0 and correct
                 try {
                     if (util::lt(result, 0)) {
-                        PyObject* remainder = PyNumber_Remainder(lhs, rhs);
+                        PyObject* remainder = PyNumber_Remainder(a, b);
                         if (remainder == nullptr) throw catch_python<type_error>();
                         try {
                             bool nonzero = util::ne(remainder, 0);
                             if (nonzero) {
-                                PyObject* corrected = detail::wrap(
-                                    detail::plus<LHS, RHS>,
-                                    result,
-                                    1
-                                );
+                                PyObject* corrected = plus(result, 1);
                                 Py_DECREF(remainder);
                                 Py_DECREF(result);
                                 return corrected;
@@ -605,7 +599,7 @@ namespace detail {
 
             // Otherwise, both operators have the same semantics
             } else {
-                PyObject* result = PyNumber_TrueDivide(lhs, rhs);
+                PyObject* result = PyNumber_TrueDivide(a, b);
                 if (result == nullptr) {
                     throw catch_python<type_error>();
                 }
@@ -613,25 +607,31 @@ namespace detail {
             }
 
         } else {
-            return lhs / rhs;
+            return a / b;
         }
-    }
+    };
+
+    return detail::wrap(execute, lhs, rhs);
+}
 
 
-    template <typename LHS, typename RHS>
-    auto modulo(LHS lhs, RHS rhs) {
-        if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
+/* Apply a `%` operation between any combination of C++ or Python objects,
+with C++ semantics. */
+template <typename LHS, typename RHS>
+inline auto modulo(const LHS& lhs, const RHS& rhs) {
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             // NOTE: C++ modulus operator always retains the sign of the numerator, whereas
             // Python retains the sign of the denominator.
-            if (util::lt(lhs, 0)) {
-                if (util::lt(rhs, 0)) {  // (a < 0, b < 0)  ===  a % b
-                    PyObject* result = PyNumber_Remainder(lhs, rhs);
+            if (util::lt(a, 0)) {
+                if (util::lt(b, 0)) {  // (a < 0, b < 0)  ===  a % b
+                    PyObject* result = PyNumber_Remainder(a, b);
                     if (result == nullptr) throw catch_python<type_error>();
                     return result;
                 } else {  // (a < 0, b >= 0)  ===  -(-a % b)
-                    PyObject* a = util::neg(lhs);
+                    PyObject* a = util::neg(a);
                     try {
-                        PyObject* c = PyNumber_Remainder(a, rhs);
+                        PyObject* c = PyNumber_Remainder(a, b);
                         if (c == nullptr) throw catch_python<type_error>();
                         try {
                             PyObject* result = util::neg(c);
@@ -649,10 +649,10 @@ namespace detail {
                     }
                 }
             } else {
-                if (util::lt(rhs, 0)) {  // (a >= 0, b < 0)  ===  a % -b
-                    PyObject* b = util::neg(rhs);
+                if (util::lt(b, 0)) {  // (a >= 0, b < 0)  ===  a % -b
+                    PyObject* b = util::neg(b);
                     try {
-                        PyObject* result = PyNumber_Remainder(lhs, b);
+                        PyObject* result = PyNumber_Remainder(a, b);
                         if (result == nullptr) throw catch_python<type_error>();
                         Py_DECREF(b);
                         return result;
@@ -661,63 +661,18 @@ namespace detail {
                         throw;
                     }
                 } else {  // (a >= 0, b >= 0)  ===  a % b
-                    PyObject* result = PyNumber_Remainder(lhs, rhs);
+                    PyObject* result = PyNumber_Remainder(a, b);
                     if (result == nullptr) throw catch_python<type_error>();
                     return result;
                 }
             }
 
         } else {
-            return lhs % rhs;
+            return a % b;
         }
-    }
+    };
 
-
-}  // namespace detail
-
-
-
-/* Apply a `+` operation between any combination of C++ or Python objects. */
-template <typename LHS, typename RHS>
-inline auto plus(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::plus<const LHS&, const RHS&>, lhs, rhs);
-}
-
-
-/* Apply a `-` operation between any combination of C++ or Python objects. */
-template <typename LHS, typename RHS>
-inline auto minus(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::minus<const LHS&, const RHS&>, lhs, rhs);
-}
-
-
-/* Apply a `*` operation between any combination of C++ or Python objects. */
-template <typename LHS, typename RHS>
-inline auto multiply(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::multiply<const LHS&, const RHS&>, lhs, rhs);
-}
-
-
-/* Apply a `**` operation between any combination of C++ or Python objects. */
-template <typename LHS, typename RHS>
-inline auto power(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::power<const LHS&, const RHS&>, lhs, rhs);
-}
-
-
-/* Apply a `/` operation between any combination of C++ or Python objects,
-with C++ semantics. */
-template <typename LHS, typename RHS>
-inline auto divide(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::divide<const LHS&, const RHS&>, lhs, rhs);
-}
-
-
-/* Apply a `%` operation between any combination of C++ or Python objects,
-with C++ semantics. */
-template <typename LHS, typename RHS>
-inline auto modulo(const LHS& lhs, const RHS& rhs) {
-    return detail::wrap(detail::modulo<const LHS&, const RHS&>, lhs, rhs);
+    return detail::wrap(execute, lhs, rhs);
 }
 
 
