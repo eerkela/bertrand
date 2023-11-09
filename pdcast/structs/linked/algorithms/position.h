@@ -13,13 +13,6 @@
 #include "../core/view.h"  // ViewTraits
 
 
-// TODO: ElementProxy.insert() should be deleted.  The problem is that allocating a
-// new node can cause the table to grow, which invalidates the iterator.  This
-// causes an interminable conflict, so we should just disallow it.  What we should do
-// instead is reserve space for the new node ahead of time, then generate an iterator
-// and do the insertion manually in the linked::insert() method.
-
-
 namespace bertrand {
 namespace structs {
 namespace linked {
@@ -32,8 +25,7 @@ namespace linked {
 
     /* Normalize a numeric index, applying Python-style wraparound and bounds
     checking. */
-    template <typename Index>
-    size_t normalize_index(Index index, size_t size, bool truncate) {
+    size_t normalize_index(long long index, size_t size, bool truncate) {
         // wraparound negative indices
         bool lt_zero = index < 0;
         if (lt_zero) {
@@ -42,7 +34,7 @@ namespace linked {
         }
 
         // boundscheck
-        if (lt_zero || index >= static_cast<Index>(size)) {
+        if (lt_zero || index >= static_cast<long long>(size)) {
             if (truncate) {
                 return lt_zero ? 0 : size - 1;
             }
@@ -56,7 +48,6 @@ namespace linked {
 
     /* Normalize a Python integer for use as an index to a list. */
     size_t normalize_index(PyObject* index, size_t size, bool truncate) {
-        // check that index is a Python integer
         if (!PyLong_Check(index)) {
             throw util::type_error("index must be a Python integer");
         }
@@ -64,18 +55,18 @@ namespace linked {
         // comparisons are kept at the python level until we're ready to return
         PyObject* py_zero = PyLong_FromSize_t(0);  // new ref
         PyObject* py_size = PyLong_FromSize_t(size);  // new ref
-        int lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
+        bool lt_zero = util::lt(index, py_zero);
 
         // wraparound negative indices
         bool release_index = false;
         if (lt_zero) {
-            index = PyNumber_Add(index, py_size);  // new ref
-            lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
+            index = util::plus(index, py_size);  // new ref
+            lt_zero = util::lt(index, py_zero);
             release_index = true;  // remember to DECREF index later
         }
 
         // boundscheck - value is bad
-        if (lt_zero || PyObject_RichCompareBool(index, py_size, Py_GE)) {
+        if (lt_zero || util::ge(index, py_size)) {
             Py_DECREF(py_zero);
             Py_DECREF(py_size);
             if (release_index) Py_DECREF(index);
@@ -99,11 +90,8 @@ namespace linked {
 
 
     /* Get a proxy for a value at a particular index of the list. */
-    template <
-        typename View,
-        typename Index
-    >
-    auto position(View& view, Index index)
+    template <typename View>
+    auto position(View& view, long long index)
         -> std::enable_if_t<ViewTraits<View>::listlike, ElementProxy<View>>
     {
         // normalize index
@@ -186,8 +174,8 @@ namespace linked {
         View& view;
         Bidirectional<Iterator> iter;
 
-        template <typename _View, typename _Index>
-        friend auto position(_View& view, _Index index)
+        template <typename _View>
+        friend auto position(_View& view, long long index)
             -> std::enable_if_t<ViewTraits<_View>::listlike, ElementProxy<_View>>;
 
         template <Direction dir>

@@ -3,6 +3,7 @@
 #define BERTRAND_STRUCTS_LINKED_LIST_H
 
 #include <cstddef>  // size_t
+#include <optional>  // std::optional
 #include <Python.h>  // CPython API
 #include "core/view.h"  // ListView
 #include "base.h"  // LinkedBase
@@ -28,6 +29,7 @@
 
 namespace bertrand {
 namespace structs {
+namespace linked {
 
 
 /* A modular linked list class that mimics the Python list interface in C++. */
@@ -48,8 +50,6 @@ public:
     using Iterator = typename View::template Iterator<dir>;
     template <linked::Direction dir>
     using ConstIterator = typename View::template ConstIterator<dir>;
-
-    // TODO: type aliases for doubly_linked, etc.
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -89,34 +89,8 @@ public:
         linked::append(this->view, item, left);
     }
 
-    // TODO: insert() does not correctly handle negative indices
-    // >>> l
-    // LinkedList(['a', 'b', 'c', 'd', 'e', 'f', 'g'])
-    // >>> l.insert(-1, "x")
-    //     -> create: 'x'
-    // >>> l
-    // LinkedList(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'x'])
-
-    // should be LinkedList(['a', 'b', 'c', 'd', 'e', 'f', 'x', 'g'])
-
-    // ALSO:
-    // >>> l
-    // LinkedList(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'x'])
-    // >>> l.insert(-1, "y")
-    //     -> allocate: 16 nodes
-    //     -> deallocate: 8 nodes
-    //     -> create: 'y'
-    // >>> l
-    // LinkedList(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'x'])
-
-    // 'y' does not appear in the list (possibly related to slicing bug on resizes)
-    // -> could be that the iterator is being invalidated by resize.  If so, this could
-    // be a headache.  We might want to totally decouple convenience methods from
-    // iterators in general.
-
     /* Insert an item into the list at the specified index. */
-    template <typename Index>
-    inline void insert(Index index, Value& item) {
+    inline void insert(long long index, Value& item) {
         linked::insert(this->view, index, item);
     }
 
@@ -127,14 +101,20 @@ public:
     }
 
     /* Get the index of an item within the list. */
-    template <typename Index>
-    inline size_t index(Value& item, Index start = 0, Index stop = -1) const {
+    inline size_t index(
+        const Value& item,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
         return linked::index(this->view, item, start, stop);
     }
 
     /* Count the number of occurrences of an item within the list. */
-    template <typename Index>
-    inline size_t count(Value& item, Index start = 0, Index stop = -1) const {
+    inline size_t count(
+        const Value& item,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
         return linked::count(this->view, item, start, stop);
     }
 
@@ -149,8 +129,7 @@ public:
     }
 
     /* Remove an item from the list and return its value. */
-    template <typename Index>
-    inline Value pop(Index index = -1) {
+    inline Value pop(long long index = -1) {
         return linked::pop(this->view, index);
     }
 
@@ -222,8 +201,7 @@ public:
      */
 
     /* Get a proxy for a value at a particular index of the list. */
-    template <typename Index>
-    inline linked::ElementProxy<View> operator[](Index index) {
+    inline linked::ElementProxy<View> operator[](long long index) {
         return linked::position(this->view, index);
     }
 
@@ -441,6 +419,7 @@ inline bool operator>(const Container& lhs, const LinkedList<Ts...>& rhs) {
 }
 
 
+}  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
 

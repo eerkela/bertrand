@@ -1,12 +1,11 @@
 """Cython headers for pdcast/util/structs/list/double.pyx"""
 from cpython.ref cimport PyObject
 from libcpp.optional cimport optional, nullopt
-from libcpp.stack cimport stack
 
 from .base cimport Slot
 
 
-# NOTE: LinkedList is a compound class with both a C++ and Cython implementation. Both
+# NOTE: LinkedList is a compound class with both a C++ and Python implementation.  Both
 # versions are virtually identical, but the C++ implementation can store non-Python
 # values and has slightly higher performance due to reduced indirection.  Otherwise,
 # they are exactly the same, and can be easily ported from one to another.  In fact,
@@ -86,7 +85,7 @@ cdef extern from "core/view.h":
         IteratorFactory.Iterator rend()
 
 
-cdef extern from "list.h" namespace "bertrand::structs":
+cdef extern from "list.h" namespace "bertrand::structs::linked":
     # NOTE: C++ LinkedLists are renamed to avoid conflict with the Cython class of the
     # same name.
     cdef cppclass CppLinkedList "LinkedList" [T, Node = *, Sort = *, Lock = *]:
@@ -206,17 +205,17 @@ cdef extern from "list.h" namespace "bertrand::structs":
     # Cython, but are supported on the C++ implementation.
 
     # concatenation operator (+)
-    CppLinkedList[T, Node, Sort, Lock] operator+[T, Node, Sort, Lock, Rhs](
+    CppLinkedList[T, Node, Sort, Lock] operator+[T, Node, Sort, Lock, RHS](
         CppLinkedList[T, Node, Sort, Lock],
-        Rhs rhs
+        RHS rhs
     ) except +
-    Lhs operator+[T, Node, Sort, Lock, Lhs](
-        Lhs lhs,
+    LHS operator+[T, Node, Sort, Lock, LHS](
+        LHS lhs,
         CppLinkedList[T, Node, Sort, Lock],
     ) except +
-    # CppLinkedList[T, Node, Sort, Lock]& operator+=[T, Node, Sort, Lock, Rhs](
+    # CppLinkedList[T, Node, Sort, Lock]& operator+=[T, Node, Sort, Lock, RHS](
     #     CppLinkedList[T, Node, Sort, Lock],
-    #     Rhs rhs
+    #     RHS rhs
     # ) except +
 
     # repetition operator (*)
@@ -246,44 +245,44 @@ cdef extern from "list.h" namespace "bertrand::structs":
     # ) except +
 
     # lexical comparisons
-    bint operator<[T, Node, Sort, Lock, Rhs](
+    bint operator<[T, Node, Sort, Lock, RHS](
         CppLinkedList[T, Node, Sort, Lock],
-        Rhs rhs
+        RHS rhs
     ) except +
-    bint operator<[T, Node, Sort, Lock, Lhs](
-        Lhs lhs,
+    bint operator<[T, Node, Sort, Lock, LHS](
+        LHS lhs,
         CppLinkedList[T, Node, Sort, Lock]
     ) except +
-    bint operator<=[T, Node, Sort, Lock, Rhs](
+    bint operator<=[T, Node, Sort, Lock, RHS](
         CppLinkedList[T, Node, Sort, Lock],
-        Rhs rhs
+        RHS rhs
     ) except +
-    bint operator<=[T, Node, Sort, Lock, Lhs](
-        Lhs lhs,
+    bint operator<=[T, Node, Sort, Lock, LHS](
+        LHS lhs,
         CppLinkedList[T, Node, Sort, Lock]
     ) except +
-    bint operator==[T, Node, Sort, Lock, Rhs](
+    bint operator==[T, Node, Sort, Lock, RHS](
         CppLinkedList[T, Node, Sort, Lock],
-        Rhs rhs
+        RHS rhs
     ) except +
-    bint operator!=[T, Node, Sort, Lock, Lhs](
-        Lhs lhs,
+    bint operator!=[T, Node, Sort, Lock, LHS](
+        LHS lhs,
         CppLinkedList[T, Node, Sort, Lock]
     ) except +
-    bint operator>=[T, Node, Sort, Lock, Rhs](
+    bint operator>=[T, Node, Sort, Lock, RHS](
         CppLinkedList[T, Node, Sort, Lock],
-        Rhs rhs
+        RHS rhs
     ) except +
-    bint operator>=[T, Node, Sort, Lock, Lhs](
-        Lhs lhs,
+    bint operator>=[T, Node, Sort, Lock, LHS](
+        LHS lhs,
         CppLinkedList[T, Node, Sort, Lock]
     ) except +
-    bint operator>[T, Node, Sort, Lock, Rhs](
+    bint operator>[T, Node, Sort, Lock, RHS](
         CppLinkedList[T, Node, Sort, Lock],
-        Rhs rhs
+        RHS rhs
     ) except +
-    bint operator>[T, Node, Sort, Lock, Lhs](
-        Lhs lhs,
+    bint operator>[T, Node, Sort, Lock, LHS](
+        LHS lhs,
         CppLinkedList[T, Node, Sort, Lock]
     ) except +
 
@@ -299,24 +298,24 @@ cdef extern from "list_cython.h" namespace "bertrand::structs::linked::cython":
         CyLinkedList(
             optional[size_t] max_size,
             PyObject* spec,
-            bint doubly_linked
+            bint singly_linked
         ) except +
         CyLinkedList(
             PyObject* iterable,
             optional[size_t] max_size,
             PyObject* spec,
             bint reverse,
-            bint doubly_linked
+            bint singly_linked
         ) except +
 
-        # low level methods
+        # low-level interface
         bint empty()
         size_t size()
         size_t capacity()
         optional[size_t] max_size()
         bint dynamic()
         bint frozen()
-        void reserve(size_t capacity) except +
+        void reserve(size_t capacity) except +  # TODO: not void
         void defragment() except +
         PyObject* specialization()
         void specialize(PyObject* spec) except +
@@ -336,13 +335,21 @@ cdef extern from "list_cython.h" namespace "bertrand::structs::linked::cython":
 
         # list interface
         void append(PyObject* item, bint left) except +
-        void insert[T](T index, PyObject* item) except +
+        void insert(long long index, PyObject* item) except +
         void extend(PyObject* items, bint left) except +
-        size_t index[T](PyObject* item, T start, T stop) except +
-        size_t count[T](PyObject* item, T start, T stop) except +
+        size_t index(
+            const PyObject* item,
+            optional[long long] start,
+            optional[long long] stop
+        ) except +
+        size_t count(
+            const PyObject* item,
+            optional[long long] start,
+            optional[long long] stop
+        ) except +
         int contains(PyObject* item) except +
         void remove(PyObject*) except +
-        PyObject* pop[T](T index) except +
+        PyObject* pop(long long index) except +
         Slot[CyLinkedList] copy() except +
         void clear()
         void sort(PyObject* key, bint reverse) except +
@@ -354,7 +361,7 @@ cdef extern from "list_cython.h" namespace "bertrand::structs::linked::cython":
             PyObject* get() except +
             void set(PyObject* item) except +
             void delete "del" () except +  # del() shadows Cython `delete` keyword
-        Index operator[](PyObject* index)
+        Index operator[](long long index)
 
         # slicing
         cppclass Slice:

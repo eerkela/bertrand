@@ -15,10 +15,7 @@ namespace linked {
 
 
     /* Add multiple items to the end of a list, set, or dictionary. */
-    template <
-        typename View,
-        typename Container
-    >
+    template <typename View, typename Container>
     auto extend(View& view, Container& items, bool left)
         -> std::enable_if_t<ViewTraits<View>::listlike, void>
     {

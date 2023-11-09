@@ -34,7 +34,7 @@ namespace linked {
         if constexpr (NodeTraits<typename View::Node>::has_prev) {
             if (view.closer_to_tail(norm_index)) {
                 auto it = view.rbegin();
-                for (size_t i = view.size() - 1; i > norm_index; --i) ++it;
+                for (size_t i = view.size(); i > norm_index; --i) ++it;
                 it.insert(view.node(item));
                 return;
             }

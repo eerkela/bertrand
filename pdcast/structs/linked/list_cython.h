@@ -3,7 +3,6 @@
 #define BERTRAND_STRUCTS_LINKED_LIST_CYTHON_H
 
 #include <cstddef>  // size_t
-#include <memory>  // std::shared_ptr, std::weak_ptr
 #include <optional>  // std::optional
 #include <stdexcept>  // std::runtime_error
 #include <utility>  // std::pair
@@ -16,10 +15,10 @@
 #include "core/node.h"  // Nodes
 #include "core/view.h"  // Views
 
+#include "base.h"  // SelfRef, VariantLock
 #include "list.h"  // LinkedList
 
 
-/* Namespaces reflect file system and Python import path. */
 namespace bertrand {
 namespace structs {
 namespace linked {
@@ -37,132 +36,6 @@ using ListVariant = std::variant<
     LinkedList<linked::SingleNode<PyObject*>, linked::MergeSort, util::BasicLock>,
     LinkedList<linked::DoubleNode<PyObject*>, linked::MergeSort, util::BasicLock>
 >;
-
-
-////////////////////////
-////    FUNCTORS    ////
-////////////////////////
-
-
-/* A functor that generates weak references for the templated object. */
-template <typename T>
-class SelfRef {
-public:
-
-    /* A weak reference to the associated object. */
-    class WeakRef {
-    public:
-
-        /* Check whether the referenced object still exists. */
-        bool exists() const {
-            return !ref.expired();
-        }
-
-        /* Follow the weak reference, yielding a pointer to the referenced object if it
-        still exists.  Otherwise, sets a Python error and return nullptr.  */
-        T* get() const {
-            if (ref.expired()) {
-                throw std::runtime_error("referenced object no longer exists");
-            }
-            return ref.lock().get();
-        }
-
-    private:
-        friend SelfRef;
-        std::weak_ptr<T> ref;
-
-        template <typename... Args>
-        WeakRef(Args... args) : ref(std::forward<Args>(args)...) {}
-    };
-
-    /* Get a weak reference to the associated object. */
-    WeakRef operator()() const {
-        return WeakRef(_self);
-    }
-
-private:
-    friend T;
-    const std::shared_ptr<T> _self;
-
-    // NOTE: custom deleter prevents the shared_ptr from trying to delete the object
-    // when it goes out of scope, which can cause a segfault due to a double free.
-
-    SelfRef(T& self) : _self(&self, [](auto&) {}) {}
-};
-
-
-/* A functor that allows the list to be locked for use in a multithreaded
-environment. */
-template <typename T>
-class VariantLock {
-public:
-
-    /* Return a Python context manager containing an exclusive lock on the mutex. */
-    inline PyObject* operator()() const {
-        return std::visit(
-            [&](auto& obj) {
-                return obj.lock.python();
-            }, 
-            ref.variant
-        );
-    }
-
-    /* Return a Python context manager containing a shared lock on the mutex. */
-    inline PyObject* shared() const {
-        return std::visit(
-            [&](auto& obj) {
-                return obj.lock.shared_python();
-            }, 
-            ref.variant
-        );
-    }
-
-    /* Get the total number of times the mutex has been locked. */
-    inline size_t count() const {
-        return std::visit(
-            [&](auto& obj) {
-                return obj.lock.count();
-            },
-            ref.variant
-        );
-    }
-
-    /* Get the total length of time spent waiting to acquire the lock. */
-    inline size_t duration() const {
-        return std::visit(
-            [&](auto& obj) {
-                return obj.lock.duration();
-            },
-            ref.variant
-        );
-    }
-
-    /* Get the average time spent waiting to acquire the lock. */
-    inline double contention() const {
-        return std::visit(
-            [&](auto& obj) {
-                return obj.lock.average();
-            },
-            ref.variant
-        );
-    }
-
-    /* Reset the internal diagnostic counters. */
-    inline void reset_diagnostics() const {
-        std::visit(
-            [&](auto& obj) {
-                obj.lock.reset_diagnostics();
-            },
-            ref.variant
-        );
-    }
-
-private:
-    friend T;
-    T& ref;
-
-    VariantLock(T& variant) : ref(variant) {}
-};
 
 
 //////////////////////
@@ -205,7 +78,6 @@ private:
 public:
     using Lock = VariantLock<CyLinkedList>;
 
-    template <typename T>
     class Index;
     template <typename... Args>
     class Slice;
@@ -347,8 +219,7 @@ public:
     }
 
     /* Implement LinkedList.insert() for all variants. */
-    template <typename T>
-    inline void insert(T index, PyObject* item) {
+    inline void insert(long long index, PyObject* item) {
         std::visit([&](auto& list) { list.insert(index, item); }, variant);
     }
 
@@ -358,8 +229,11 @@ public:
     }
 
     /* Implement LinkedList.index() for all variants. */
-    template <typename T>
-    inline size_t index(PyObject* item, T start, T stop) {
+    inline size_t index(
+        PyObject* item,
+        std::optional<long long> start,
+        std::optional<long long> stop
+    ) const {
         return std::visit(
             [&](auto& list) {
                 return list.index(item, start, stop);
@@ -369,8 +243,11 @@ public:
     }
 
     /* Implement LinkedList.count() for all variants. */
-    template <typename T>
-    inline size_t count(PyObject* item, T start, T stop) {
+    inline size_t count(
+        PyObject* item,
+        std::optional<long long> start,
+        std::optional<long long> stop
+    ) const {
         return std::visit(
             [&](auto& list) {
                 return list.count(item, start, stop);
@@ -380,7 +257,7 @@ public:
     }
 
     /* Implement LinkedList.__contains__() for all variants. */
-    inline bool contains(PyObject* item) {
+    inline bool contains(PyObject* item) const {
         return std::visit([&](auto& list) { return list.contains(item); }, variant);
     }
 
@@ -390,8 +267,7 @@ public:
     }
 
     /* Implement LinkedList.pop() for all variants. */
-    template <typename T>
-    inline PyObject* pop(T index) {
+    inline PyObject* pop(long long index) {
         return std::visit([&](auto& list) { return list.pop(index); }, variant);
     }
 
@@ -401,7 +277,7 @@ public:
     }
 
     /* Implement LinkedList.copy() for all variants. */
-    inline util::Slot<CyLinkedList> copy() {
+    inline util::Slot<CyLinkedList> copy() const {
         return std::visit(
             [&](auto& list) {
                 util::Slot<CyLinkedList> slot;
@@ -428,8 +304,7 @@ public:
     }
 
     /* Implement LinkedList.__getitem__() for all variants (single index). */
-    template <typename T>
-    inline Index<T> operator[](T index) {
+    inline Index operator[](long long index) {
         return Index(weak_ref(), index);
     }
 
@@ -440,7 +315,6 @@ public:
     }
 
     /* A proxy that represents a value at a particular index within a CyLinkedList. */
-    template <typename T>
     class Index {
     public:
 
@@ -479,10 +353,10 @@ public:
     private:
         friend CyLinkedList;
         WeakRef ref;
-        T index;
+        long long index;
 
         /* Create a deferred index proxy. */
-        Index(WeakRef self, T index) : ref(self), index(index) {}
+        Index(WeakRef self, long long index) : ref(self), index(index) {}
     };
 
     /* A proxy that represents a slice within a CyLinkedList. */

@@ -3,13 +3,14 @@
 #define BERTRAND_STRUCTS_ALGORITHMS_INDEX_H
 
 #include <cstddef>  // size_t
+#include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
 #include <type_traits>  // std::enable_if_t<>
-#include "position.h"  // normalize_index()
 #include "../../util/python.h"  // eq()
 #include "../../util/repr.h"  // repr()
 #include "../core/view.h"  // ViewTraits
+#include "slice.h"  // normalize_slice()
 
 
 namespace bertrand {
@@ -18,18 +19,19 @@ namespace linked {
 
 
     /* Get the index of an item within a linked list. */
-    template <
-        typename View,
-        typename Index,
-        typename Item = typename View::Value
-    >
-    auto index(const View& view, Item& item, Index start, Index stop)
+    template <typename View, typename Item = typename View::Value>
+    auto index(
+        const View& view,
+        const Item& item,
+        std::optional<long long> start,
+        std::optional<long long> stop
+    )
         -> std::enable_if_t<ViewTraits<View>::listlike, size_t>
     {
         using Node = typename View::Node;
 
         // convenience function for throwing not-found error
-        auto not_found = [](Item& item) {
+        auto not_found = [](const Item& item) {
             std::ostringstream msg;
             msg << util::repr(item) << " is not in list";
             return std::invalid_argument(msg.str());
@@ -39,8 +41,9 @@ namespace linked {
         if (view.size() == 0) throw not_found(item);
 
         // normalize start/stop indices
-        size_t norm_start = normalize_index(start, view.size(), true);
-        size_t norm_stop = normalize_index(stop, view.size(), true);
+        SliceIndices<View> indices = normalize_slice(view, start, stop);
+        size_t norm_start = indices.start;
+        size_t norm_stop = indices.stop;
         if (norm_start > norm_stop) {
             throw std::invalid_argument(
                 "start index cannot be greater than stop index"
@@ -50,23 +53,20 @@ namespace linked {
         // if list is doubly-linked and stop is closer to tail than start is to head,
         // then we iterate backward from the tail
         if constexpr (NodeTraits<Node>::has_prev) {
-            if ((view.size() - 1 - norm_stop) < norm_start) {
+            if (indices.backward) {
                 // get backwards iterator to stop index
-                auto it = view.rbegin();
                 size_t idx = view.size() - 1;
-                while (idx >= norm_stop) ++it, --idx;
+                auto it = view.rbegin();
+                for (; idx > norm_stop; --idx, ++it);
 
                 // search until we hit start index
                 bool found = false;
                 size_t last_observed;
-                while (idx >= norm_start) {
-                    const Node* node = it.curr();
-                    if (util::eq(node->value(), item)) {
+                for (; idx >= norm_start; --idx, ++it) {
+                    if (util::eq(*it, item)) {
                         found = true;
                         last_observed = idx;
                     }
-                    ++it;
-                    --idx;
                 }
                 if (found) {
                     return last_observed;
@@ -77,22 +77,16 @@ namespace linked {
             }
         }
 
-        // otherwise, we iterate forward from the head
-        auto it = view.begin();
+        // otherwise, get forwards iterator to start index
         size_t idx = 0;
-        while (idx < norm_start) {
-            ++it;
-            ++idx;
-        }
+        auto it = view.begin();
+        for (; idx < norm_start; ++idx, ++it);
 
         // search until we hit item or stop index
-        while (idx < norm_stop) {
-            const Node* node = it.curr();
-            if (util::eq(node->value(), item)) {
+        for (; idx < norm_stop; ++idx, ++it) {
+            if (util::eq(*it, item)) {
                 return idx;
             }
-            ++it;
-            ++idx;
         }
 
         // item not found
@@ -101,12 +95,13 @@ namespace linked {
 
 
     /* Get the index of an item within a linked set or dictionary. */
-    template <
-        typename View,
-        typename Index,
-        typename Item = typename View::Value
-    >
-    auto index(View& view, Item& item, Index start, Index stop)
+    template <typename View, typename Item = typename View::Value>
+    auto index(
+        const View& view,
+        const Item& item,
+        std::optional<long long> start,
+        std::optional<long long> stop
+    )
         -> std::enable_if_t<ViewTraits<View>::setlike, size_t>
     {
         using Node = typename View::Node;
@@ -122,8 +117,9 @@ namespace linked {
         if (view.size() == 0) throw not_found(item);
 
         // normalize start/stop indices
-        size_t norm_start = normalize_index(start, view.size(), true);
-        size_t norm_stop = normalize_index(stop, view.size(), true);
+        SliceIndices<View> indices = normalize_slice(view, start, stop);
+        size_t norm_start = indices.start;
+        size_t norm_stop = indices.stop;
         if (norm_start > norm_stop) {
             throw std::invalid_argument(
                 "start index cannot be greater than stop index"
@@ -137,43 +133,31 @@ namespace linked {
         // if list is doubly-linked and stop is closer to tail than start is to head,
         // then we iterate backward from the tail
         if constexpr (NodeTraits<Node>::has_prev) {
-            if ((view.size() - 1 - norm_stop) < norm_start) {
+            if (indices.backward) {
                 // get backwards iterator to stop index
-                auto it = view.rbegin();
                 size_t idx = view.size() - 1;
-                while (idx >= norm_stop) {
-                    if (it.curr() == node) throw not_found(item);  // comes after stop
-                    ++it;
-                    --idx;
-                }
+                auto it = view.rbegin();
+                for (; idx > norm_start; --idx) ++it;
 
                 // search until we hit start index
-                while (idx >= norm_start) {
+                for (; idx >= norm_stop; --idx, ++it) {
                     if (it.curr() == node) return idx;
-                    ++it;
-                    --idx;
                 }
-
                 throw not_found(item);  // item comes before start
             }
         }
 
         // otherwise, we iterate forward from the head
-        auto it = view.begin();
         size_t idx = 0;
-        while (idx < norm_start) {
+        auto it = view.begin();
+        for (; idx < norm_start; ++idx, ++it) {
             if (it.curr() == node) throw not_found(item);  // comes before start
-            ++it;
-            ++idx;
         }
 
         // search until we hit item or stop index
-        while (idx < norm_stop) {
+        for (; idx < norm_stop; ++idx, ++it) {
             if (it.curr() == node) return idx;
-            ++it;
-            ++idx;
         }
-
         throw not_found(item);  // item comes after stop
     }
 

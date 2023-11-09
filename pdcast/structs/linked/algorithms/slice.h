@@ -30,7 +30,7 @@ namespace linked {
     checking. */
     template <typename View>
     SliceIndices<View> normalize_slice(
-        View& view,
+        const View& view,
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt,
         std::optional<long long> step = std::nullopt
@@ -39,10 +39,9 @@ namespace linked {
         long long size = static_cast<long long>(view.size());
         long long default_start = step.value_or(0) < 0 ? size - 1 : 0;
         long long default_stop = step.value_or(0) < 0 ? -1 : size;
-        long long default_step = 1;
 
         // normalize step
-        long long step_ = step.value_or(default_step);
+        long long step_ = step.value_or(1);
         if (step_ == 0) {
             throw std::invalid_argument("slice step cannot be zero");
         }
@@ -83,7 +82,7 @@ namespace linked {
     /* Normalize a Python slice object, applying Python-style wraparound and bounds
     checking. */
     template <typename View>
-    SliceIndices<View> normalize_slice(View& view, PyObject* py_slice) {
+    SliceIndices<View> normalize_slice(const View& view, PyObject* py_slice) {
         // check that input is a Python slice object
         if (!PySlice_Check(py_slice)) {
             throw util::type_error("index must be a Python slice");
@@ -182,14 +181,17 @@ namespace linked {
     private:
         template <typename _View>
         friend SliceIndices<_View> normalize_slice(
-            _View& view,
+            const _View& view,
             std::optional<long long> start,
             std::optional<long long> stop,
             std::optional<long long> step
         );
 
         template <typename _View>
-        friend SliceIndices<_View> normalize_slice(_View& view, PyObject* py_slice);
+        friend SliceIndices<_View> normalize_slice(
+            const _View& view,
+            PyObject* py_slice
+        );
 
         SliceIndices(
             long long start,
@@ -303,12 +305,12 @@ namespace linked {
             using Base = typename View::template Iterator<dir>;
             friend SliceProxy;
             const SliceIndices<View>& indices;
-            size_t idx;
+            size_t _idx;
             size_t skip;
 
             /* Get an iterator to the start of the slice. */
             Iterator(View& view, const SliceIndices<View>& indices, Node* origin) :
-                Base(view), indices(indices), idx(0), skip(0)
+                Base(view), indices(indices), _idx(0), skip(0)
             {
                 if constexpr (dir == Direction::backward) {
                     this->_next = origin;
@@ -335,26 +337,26 @@ namespace linked {
 
             /* Get an empty iterator to terminate the slice. */
             Iterator(View& view, const SliceIndices<View>& indices) :
-                Base(view), indices(indices), idx(indices.length), skip(0)
+                Base(view), indices(indices), _idx(indices.length), skip(0)
             {}
 
         public:
 
             /* Copy constructor. */
             Iterator(const Iterator& other) noexcept :
-                Base(other), indices(other.indices), idx(other.idx), skip(other.skip)
+                Base(other), indices(other.indices), _idx(other._idx), skip(other.skip)
             {}
 
             /* Move constructor. */
             Iterator(Iterator&& other) noexcept :
                 Base(std::move(other)), indices(std::move(other.indices)),
-                idx(other.idx), skip(other.skip)
+                _idx(other._idx), skip(other.skip)
             {}
 
             /* Prefix increment to advance the iterator to the next node in the slice. */
             inline Iterator& operator++() noexcept {
-                ++idx;
-                if (idx == indices.length) {
+                ++_idx;
+                if (_idx == indices.length) {
                     return *this;  // don't advance past end of slice
                 }
 
@@ -377,12 +379,21 @@ namespace linked {
             /* Inequality comparison to terminate the slice. */
             template <Direction T>
             inline bool operator!=(const Iterator<T>& other) const noexcept {
-                return idx != other.idx;
+                return _idx != other._idx;
             }
 
             /* Get the current iteration step of the iterator. */
+            inline size_t idx() const noexcept {
+                return _idx;
+            }
+
+            /* Get the current index of the iterator within the list. */
             inline size_t index() const noexcept {
-                return idx;
+                if (dir == Direction::backward) {
+                    return indices.first - _idx * indices.abs_step;
+                } else {
+                    return indices.first + _idx * indices.abs_step;
+                }
             }
 
             /* Remove the node at the current position. */
@@ -501,7 +512,7 @@ namespace linked {
             // loop 1: remove current nodes in slice
             for (auto it = this->begin(), end = this->end(); it != end; ++it) {
                 Node* node = it.drop();
-                new (&recovery[it.index()]) Node(std::move(*node));  // move to recovery
+                new (&recovery[it.idx()]) Node(std::move(*node));  // move to recovery
                 list.view.recycle(node);  // recycle original node
             }
 
@@ -534,7 +545,7 @@ namespace linked {
 
                 // loop 4: reinsert original nodes from recovery array
                 for (auto it = this->begin(), end = this->end(); it != end; ++it) {
-                    Node& recovery_node = recovery[it.index()];
+                    Node& recovery_node = recovery[it.idx()];
                     it.insert(list.view.node(std::move(recovery_node)));
                     recovery_node.~Node();  // destroy recovery node
                 }

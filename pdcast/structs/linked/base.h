@@ -3,9 +3,11 @@
 #define BERTRAND_STRUCTS_BASE_H
 
 #include <cstddef>      // size_t
+#include <memory>  // std::shared_ptr, std::weak_ptr
 #include <optional>     // std::optional
 #include <stdexcept>    // std::runtime_error
 #include <string_view>  // std::string_view
+#include <variant>  // std::visit
 #include "core/iter.h"  // Direction
 #include "../util/iter.h"  // iter(), IterProxy
 #include "../util/python.h"  // PyIterator
@@ -15,6 +17,12 @@
 
 namespace bertrand {
 namespace structs {
+namespace linked {
+
+
+////////////////////
+////    BASE    ////
+////////////////////
 
 
 /* Empty tag class marking a linked data structure.
@@ -200,6 +208,139 @@ public:
 };
 
 
+//////////////////////////////
+////    CYTHON HELPERS    ////
+//////////////////////////////
+
+
+namespace cython {
+
+
+/* A functor that generates weak references for a type-erased Cython variant. */
+template <typename T>
+class SelfRef {
+public:
+
+    /* A weak reference to the associated object. */
+    class WeakRef {
+    public:
+
+        /* Check whether the referenced object still exists. */
+        bool exists() const {
+            return !ref.expired();
+        }
+
+        /* Follow the weak reference, yielding a pointer to the referenced object if it
+        still exists.  Otherwise, sets a Python error and return nullptr.  */
+        T* get() const {
+            if (ref.expired()) {
+                throw std::runtime_error("referenced object no longer exists");
+            }
+            return ref.lock().get();
+        }
+
+    private:
+        friend SelfRef;
+        std::weak_ptr<T> ref;
+
+        template <typename... Args>
+        WeakRef(Args... args) : ref(std::forward<Args>(args)...) {}
+    };
+
+    /* Get a weak reference to the associated object. */
+    WeakRef operator()() const {
+        return WeakRef(_self);
+    }
+
+private:
+    friend T;
+    const std::shared_ptr<T> _self;
+
+    // NOTE: custom deleter prevents the shared_ptr from trying to delete the object
+    // when it goes out of scope, which can cause a segfault due to a double free.
+
+    SelfRef(T& self) : _self(&self, [](auto&) {}) {}
+};
+
+
+/* A functor that allows a type-erased Cython variant to be locked for use in a
+multithreaded environment. */
+template <typename T>
+class VariantLock {
+public:
+
+    /* Return a Python context manager containing an exclusive lock on the mutex. */
+    inline PyObject* operator()() const {
+        return std::visit(
+            [&](auto& obj) {
+                return obj.lock.python();
+            }, 
+            ref.variant
+        );
+    }
+
+    /* Return a Python context manager containing a shared lock on the mutex. */
+    inline PyObject* shared() const {
+        return std::visit(
+            [&](auto& obj) {
+                return obj.lock.shared_python();
+            }, 
+            ref.variant
+        );
+    }
+
+    /* Get the total number of times the mutex has been locked. */
+    inline size_t count() const {
+        return std::visit(
+            [&](auto& obj) {
+                return obj.lock.count();
+            },
+            ref.variant
+        );
+    }
+
+    /* Get the total length of time spent waiting to acquire the lock. */
+    inline size_t duration() const {
+        return std::visit(
+            [&](auto& obj) {
+                return obj.lock.duration();
+            },
+            ref.variant
+        );
+    }
+
+    /* Get the average time spent waiting to acquire the lock. */
+    inline double contention() const {
+        return std::visit(
+            [&](auto& obj) {
+                return obj.lock.average();
+            },
+            ref.variant
+        );
+    }
+
+    /* Reset the internal diagnostic counters. */
+    inline void reset_diagnostics() const {
+        std::visit(
+            [&](auto& obj) {
+                obj.lock.reset_diagnostics();
+            },
+            ref.variant
+        );
+    }
+
+private:
+    friend T;
+    T& ref;
+
+    VariantLock(T& variant) : ref(variant) {}
+};
+
+
+}  // namespace cython
+
+
+}  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
 

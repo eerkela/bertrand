@@ -23,7 +23,7 @@ from typing import Iterable, Iterator
 
 
 
-cdef class LinkedSet(LinkedList):
+cdef class LinkedSet:
     """A pure Cython/C++ implementation of an ordered set using a linked list
     and a hash table for fast access to each node.
 
@@ -63,7 +63,7 @@ cdef class LinkedSet(LinkedList):
 
     Attributes
     ----------
-    view : VariantSet*
+    variant : Slot[CyLinkedSet]
         A low-level C++ wrapper around the set's contents.  This is a pointer to
         a C++ object that wraps a set of templated :class:`SetView` classes
         as a single variant type, which binds the correct implementation for
@@ -91,12 +91,19 @@ cdef class LinkedSet(LinkedList):
     def __init__(
         self,
         items: Iterable[object] | None = None,
-        doubly_linked: bool = True,
-        reverse: bool = False,
-        max_size: int = -1,
+        max_size: int = None,
         spec: object | None = None,
+        reverse: bool = False,
+        singly_linked: bool = False,
     ):
+        cdef optional[size_t] c_max_size
         cdef PyObject* c_spec
+
+        # make max_size C-compatible
+        if max_size is None:
+            c_max_size = nullopt
+        else:
+            c_max_size = <size_t>max_size
 
         # make specialization C-compatible
         if spec is None:
@@ -104,156 +111,259 @@ cdef class LinkedSet(LinkedList):
         else:
             c_spec = <PyObject*>spec  # borrowed reference
 
-        # init empty
+        # init variant
         if items is None:
-            self.view = new VariantSet(doubly_linked, max_size, c_spec)
-
-        # unpack iterable
+            self.variant.construct(max_size, c_spec, <bint>singly_linked)
         else:
-            self.view = new VariantSet(
-                <PyObject*>items, doubly_linked, reverse, max_size, c_spec
+            self.variant.construct(
+                <PyObject*>items, max_size, c_spec, <bint>reverse, <bint>singly_linked
             )
 
-    def __dealloc__(self):
-        del self.view
-
     @staticmethod
-    cdef LinkedSet from_view(VariantSet* view):
-        """Create a new LinkedSet from a C++ view."""
+    cdef LinkedSet from_variant(CyLinkedSet* variant):
+        """Create a new LinkedSet from a C++ variant."""
         cdef LinkedSet result = LinkedSet.__new__(LinkedSet)  # bypass __init__()
-        result.view = view
+        result.variant.move_ptr(variant)  # Cython-compatible move assignment
         return result
 
     ##############################
     ####    LIST INTERFACE    ####
     ##############################
 
-    # NOTE: since LinkedSets are just variations on LinkedLists, they support
-    # all of the same operations as normal Python lists.  The only difference
-    # is that they require their values to be hashable and unique, and will
-    # either silently ignore or throw exceptions if this is not the case.
+    def insert(self, index: int, item: object) -> None:
+        """TODO
+        """
+        self.variant.ptr().insert(<PyObject*>index, <PyObject*>item)
+
+    def index(self, item: object, start: int = 0, stop: int = -1) -> int:
+        """TODO
+        """
+        return self.variant.ptr().index(<PyObject*>item, start, stop)
 
     def count(self, item: object, start: int = 0, stop: int = -1) -> int:
-        """Count the number of occurrences of an item in the set.
+        """TODO
+        """
+        return self.variant.ptr().count(<PyObject*>item, start, stop)
 
-        Parameters
-        ----------
-        item : Any
-            The item to count.
+    def pop(self, index: int = -1) -> object:
+        """TODO
+        """
+        return <object>self.variant.ptr().pop(index)
+
+    def copy(self) -> LinkedSet:
+        """TODO
+        """
+        return LinkedList.from_variant(self.variant.ptr().copy().ptr())
+
+    def clear(self) -> None:
+        """TODO
+        """
+        self.variant.ptr().clear()
+
+    def sort(self, *, key: object = None, reverse: bool = False) -> None:
+        """TODO
+        """
+        if key is None:
+            self.variant.ptr().sort(<PyObject*>NULL, <bint>reverse)
+        else:
+            self.variant.ptr().sort(<PyObject*>key, <bint>reverse)
+
+    def reverse(self) -> None:
+        """TODO
+        """
+        self.variant.ptr().reverse()
+
+    def rotate(self, steps: int = 1) -> None:
+        """TODO
+        """
+        self.variant.ptr().rotate(<long long>steps)
+
+    def __bool__(self) -> bool:
+        """Treat empty lists as Falsy in boolean logic.
+
+        Returns
+        -------
+        bool
+            Indicates whether the list is empty.
+        """
+        return not bool(self.variant.ptr().empty())
+
+    def __len__(self) -> int:
+        """Get the total number of items in the list.
 
         Returns
         -------
         int
-            The number of occurrences of the item in the set.
-
-        Notes
-        -----
-        If start and stop indices are not given, then counting devolves into a
-        simple membership check across the whole set, which is O(1).  Otherwise,
-        it is O(n) on average, where ``n`` is the number of items in the set.
+            The number of items in the list.
         """
-        # dispatch to count.h
-        return (<VariantSet*>self.view).count(<PyObject*>item, start, stop)
+        return self.variant.ptr().size()
 
-    def remove(self, item: object) -> None:
-        """Remove an item from the set.
+    def __iter__(self) -> Iterator[object]:
+        """Iterate through the list items in order.
 
-        Parameters
-        ----------
-        item : Any
-            The item to remove from the set.
-
-        Raises
+        Yields
         ------
-        ValueError
-            If the item is not contained in the set.
+        Any
+            The next item in the list.
 
         Notes
         -----
-        If the set is doubly-linked, then removals are O(1) due to the extra
-        hash table.  Otherwise, if the set is singly-linked, then they are O(n)
-        on average, where ``n`` is the number of items in the set.
+        Iterating through a :class:`LinkedList` is O(n).
         """
-        # delegate to remove.h
-        (<VariantSet*>self.view).remove(<PyObject*>item)
+        return <object>(self.variant.ptr().iter())
 
-    def __mul__(self, repeat: int) -> LinkedSet:
-        """Repeat the list a specified number of times.
+    def __reversed__(self) -> Iterator[object]:
+        """Iterate through the list in reverse order.
+
+        Yields
+        ------
+        Any
+            The next item in the reversed list.
+
+        Notes
+        -----
+        Iterating through a doubly-linked list in reverse is O(n), while for
+        singly-linked lists it is O(2n).  This is because of the need to build a
+        temporary stack to store each element, which forces a second iteration.
+        """
+        return <object>(self.variant.ptr().riter())
+
+    def __getitem__(self, key: int | slice) -> object | LinkedList:
+        """Index the list for a particular item or slice.
 
         Parameters
         ----------
-        repeat : int
-            The number of times to repeat the list.
+        key : int or slice
+            The index or slice to retrieve from the list.  If this is a slice,
+            the result will be a new :class:`LinkedList` containing the
+            specified items.  This can be negative, following the same
+            convention as Python's standard :class:`list <python:list>`.
 
         Returns
         -------
-        LinkedList
-            A new list containing successive copies of this list, repeated the
-            given number of times.  Due to the uniqueness constraint, this will
-            always be either an empty list or a copy of this list.
+        scalar or LinkedList
+            The item or list of items corresponding to the specified index or
+            slice.
 
         Raises
         ------
-        ValueError
-            If `repeat` is not 0 or 1.
+        IndexError
+            If the index is out of bounds.
+
+        See Also
+        --------
+        LinkedList.__setitem__ :
+            Set the value of an item or slice in the list.
+        LinkedList.__delitem__ :
+            Delete an item or slice from the list.
 
         Notes
         -----
-        Due to the uniqueness constraint, repetition is always O(1) for
-        :class:`LinkedSets <LinkedSet>`.
+        Integer-based indexing is O(n) on average.
+
+        Slicing is optimized to always begin iterating from the end nearest to
+        a slice boundary, and to never backtrack.  It collects all values in a
+        single iteration and stops as soon as the slice is complete.
         """
-        if repeat == 0:
-            return type(self)()
-        if repeat == 1:
-            return self.copy()
+        if isinstance(key, slice):
+            return LinkedList.from_variant(
+                self.variant.ptr().slice(<PyObject*>key).get().ptr()
+            )
 
-        raise ValueError("repetition count must be 0 or 1")
+        return <object>(deref(self.variant.ptr())[<PyObject*>key].get())
 
-    def __imul__(self, repeat: int) -> LinkedSet:
-        """Repeat the list a specified number of times in-place.
+    def __setitem__(self, key: int | slice, value: object | Iterable[object]) -> None:
+        """Set the value of an item or slice in the list.
 
         Parameters
         ----------
-        repeat : int
-            The number of times to repeat the list.
-
-        Returns
-        -------
-        LinkedList
-            This list, repeated the given number of times.  Due to the
-            uniqueness constraint, this will always be either an empty list or
-            the list itself.
+        key : int or slice
+            The index or slice to set in the list.  This can be negative,
+            following the same convention as Python's standard
+            :class:`list <python:list>`.
+        value : Any | Iterable[Any]
+            The value or values to set at the specified index or slice.  If
+            ``key`` is a slice, then ``value`` must be an iterable of the same
+            length.
 
         Raises
         ------
+        IndexError
+            If the index is out of bounds.
         ValueError
-            If `repeat` is not 0 or 1.
+            If the length of ``value`` does not match the length of the slice.
+
+        See Also
+        --------
+        LinkedList.__getitem__ :
+            Index the list for a particular item or slice.
+        LinkedList.__delitem__ :
+            Delete an item or slice from the list.
 
         Notes
         -----
-        Due to the uniqueness constraint, repetition is always O(1) for
-        :class:`LinkedSets <LinkedSet>`.
-        """
-        if repeat == 0:
-            self.clear()
-        elif repeat != 1:
-            raise ValueError("repetition count must be 0 or 1")
+        Integer-based assignment is O(n) on average.
 
-        return self
+        Slice assignment is optimized to always begin iterating from the end
+        nearest to a slice boundary, and to never backtrack.  It assigns all
+        values in a single iteration and stops as soon as the slice is
+        complete.
+        """
+        if isinstance(key, slice):
+            self.variant.ptr().slice(<PyObject*>key).set(<PyObject*>value)
+        else:
+            deref(self.variant.ptr())[<PyObject*>key].set(<PyObject*>value)
+
+    def __delitem__(self, key: int | slice) -> None:
+        """Delete an item or slice from the list.
+
+        Parameters
+        ----------
+        key : int or slice
+            The index or slice to delete from the list.  This can be negative,
+            following the same convention as Python's standard
+            :class:`list <python:list>`.
+
+        Raises
+        ------
+        IndexError
+            If the index is out of bounds.
+
+        See Also
+        --------
+        LinkedList.__getitem__ :
+            Index the list for a particular item or slice.
+        LinkedList.__setitem__ :
+            Set the value of an item or slice in the list.
+
+        Notes
+        -----
+        Integer-based deletion is O(n) on average.
+
+        Slice deletion is optimized to always begin iterating from the end
+        nearest to a slice boundary, and to never backtrack.  It deletes all
+        values in a single iteration and stops as soon as the slice is
+        complete.
+        """
+        if isinstance(key, slice):
+            self.variant.ptr().slice(<PyObject*>key).delete()
+        else:
+            deref(self.variant.ptr())[<PyObject*>key].delete()
 
     #############################
     ####    SET INTERFACE    ####
     #############################
 
-    # NOTE: LinkedSets also conform to the standard library's set interface,
-    # making them interchangeable with their built-in counterparts.
-
     def add(self, item: object, left: bool = False) -> None:
         """An alias for :meth:`LinkedSet.append` that is consistent with the
         standard library :class:`set <python:set>` interface.
         """
-        # dispatch to add.h
-        (<VariantSet*>self.view).add(<PyObject*>item, <bint>left)
+        self.variant.ptr().add(<PyObject*>item, <bint>left)
+
+    def remove(self, item: object) -> None:
+        """TODO
+        """
+        self.variant.ptr().remove(<PyObject*>item)
 
     def discard(self, item: object) -> None:
         """Remove an item from the set if it is present.
@@ -270,8 +380,7 @@ cdef class LinkedSet(LinkedList):
         except that it does not raise an error if the item is not contained in
         the set.
         """
-        # dispatch to discard.h
-        (<VariantSet*>self.view).discard(<PyObject*>item)
+        self.variant.ptr().discard(<PyObject*>item)
 
     def union(self, *others: Iterable[object], left: bool = False) -> LinkedSet:
         """Return a new set with elements from this set and all others.
@@ -292,12 +401,9 @@ cdef class LinkedSet(LinkedList):
         This translates to a series of :meth:`extend() <LinkedSet.extend>`
         calls for each iterable.
         """
-        cdef VariantSet* result = <VariantSet*>self.view.copy()
-
-        for items in others:
-            result.update(<PyObject*>items, <bint>left)
-
-        return LinkedSet.from_view(result)
+        return LinkedSet.from_variant(
+            self.variant.ptr().set_union(<PyObject*>others, <bint>left)
+        )
 
     def intersection(self, *others: Iterable[object]) -> LinkedSet:
         """Return a new set with elements common to this set and all others.
@@ -313,12 +419,9 @@ cdef class LinkedSet(LinkedList):
             A new set containing the intersection of this set with each of the
             inputs.
         """
-        cdef VariantSet* result = <VariantSet*>self.view.copy()
-
-        for items in others:
-            result.intersection_update(<PyObject*>items)
-
-        return LinkedSet.from_view(result)
+        return LinkedSet.from_variant(
+            self.variant.ptr().set_intersection(<PyObject*>others)
+        )
 
     def difference(self, *others: Iterable[object]) -> LinkedSet:
         """Return a new set with elements in this set that are not in others.
@@ -334,12 +437,9 @@ cdef class LinkedSet(LinkedList):
             A new set containing the difference of this set with each of the
             inputs.
         """
-        cdef VariantSet* result = <VariantSet*>self.view.copy()
-
-        for items in others:
-            result.difference_update(<PyObject*>items)
-
-        return LinkedSet.from_view(result)
+        return LinkedSet.from_variant(
+            self.variant.ptr().set_difference(<PyObject*>others)
+        )
 
     def symmetric_difference(self, other: Iterable[object]) -> LinkedSet:
         """Return a new set with elements in either this set or ``other``, but
@@ -356,8 +456,8 @@ cdef class LinkedSet(LinkedList):
             A new set containing the symmetric difference of this set with the
             input.
         """
-        return LinkedSet.from_view(
-            (<VariantSet*>self.view).symmetric_difference(<PyObject*>other)
+        return LinkedSet.from_variant(
+            self.variant.ptr().symmetric_difference(<PyObject*>other)
         )
 
     def update(self, *others: Iterable[object], left: bool = False) -> None:
@@ -374,8 +474,7 @@ cdef class LinkedSet(LinkedList):
         translates to a series of :meth:`extend() <LinkedSet.extend>` calls for
         each iterable.
         """
-        for items in others:
-            (<VariantSet*>self.view).update(<PyObject*>items, <bint>left)
+        self.variant.ptr().update(<PyObject*>others, <bint>left)
 
     def intersection_update(self, *others: Iterable[object]) -> None:
         """Update the set, keeping only elements found in all others.
@@ -390,8 +489,7 @@ cdef class LinkedSet(LinkedList):
         This behaves just like the standard :meth:`set.intersection_update()`
         method.
         """
-        for other in others:
-            (<VariantSet*>self.view).intersection_update(<PyObject*>other)
+        self.variant.ptr().intersection_update(<PyObject*>others)
 
     def difference_update(self, *others: Iterable[object]) -> None:
         """Update the set, removing elements found in others.
@@ -406,8 +504,7 @@ cdef class LinkedSet(LinkedList):
         This behaves just like the standard :meth:`set.difference_update()`
         method.
         """
-        for other in others:
-            (<VariantSet*>self.view).difference_update(<PyObject*>other)
+        self.variant.ptr().difference_update(<PyObject*>others)
 
     def symmetric_difference_update(self, other: Iterable[object]) -> None:
         """Update the set, keeping only elements found in either set, but not
@@ -423,7 +520,7 @@ cdef class LinkedSet(LinkedList):
         This behaves just like the standard
         :meth:`set.symmetric_difference_update()` method.
         """
-        (<VariantSet*>self.view).symmetric_difference_update(<PyObject*>other)
+        self.variant.ptr().symmetric_difference_update(<PyObject*>other)
 
     def isdisjoint(self, other: Iterable[object]) -> bool:
         """Check if this set is disjoint with another iterable.
@@ -442,7 +539,7 @@ cdef class LinkedSet(LinkedList):
         -----
         This is equivalent to ``len(self.intersection(other)) == 0``.
         """
-        return (<VariantSet*>self.view).isdisjoint(<PyObject*>other)
+        return self.variant.ptr().isdisjoint(<PyObject*>other)
 
     def issubset(self, other: Iterable[object]) -> bool:
         """Check if this set is a subset of another iterable.
@@ -461,7 +558,7 @@ cdef class LinkedSet(LinkedList):
         -----
         This is equivalent to ``len(self.difference(other)) == 0``.
         """
-        return (<VariantSet*>self.view).issubset(<PyObject*>other, <bint>False)
+        return self.variant.ptr().issubset(<PyObject*>other)
 
     def issuperset(self, other: Iterable[object]) -> bool:
         """Check if this set is a superset of another iterable.
@@ -480,7 +577,7 @@ cdef class LinkedSet(LinkedList):
         -----
         This is equivalent to ``len(self.symmetric_difference(other)) == 0``.
         """
-        return (<VariantSet*>self.view).issuperset(<PyObject*>other, <bint>False)
+        return self.variant.ptr().issuperset(<PyObject*>other)
 
     def __or__(self, other: set | LinkedSet) -> LinkedSet:
         """Return the union of this set and another iterable.
@@ -495,11 +592,8 @@ cdef class LinkedSet(LinkedList):
         LinkedSet
             A new set containing the union of this set and the other iterable.
         """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        return LinkedSet.from_view(
-            (<VariantSet*>self.view).union_(<PyObject*>other, <bint>False)
+        return LinkedSet.from_variant(
+            self.variant.ptr().set_union(<PyObject*>other, <bint>False)
         )
 
     def __ior__(self, other: set | LinkedSet) -> LinkedSet:
@@ -515,10 +609,7 @@ cdef class LinkedSet(LinkedList):
         LinkedSet
             A combination of this set with the elements of the other set.
         """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        (<VariantSet*>self.view).update(<PyObject*>other, <bint>False)
+        self.variant.ptr().update(<PyObject*>other, <bint>False)
         return self
 
     def __and__(self, other: set | LinkedSet) -> LinkedSet:
@@ -535,11 +626,8 @@ cdef class LinkedSet(LinkedList):
             A new set containing the intersection of this set and the other
             iterable.
         """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        return LinkedSet.from_view(
-            (<VariantSet*>self.view).intersection(<PyObject*>other)
+        return LinkedSet.from_variant(
+            self.variant.ptr().intersection(<PyObject*>other)
         )
 
     def __iand__(self, other: set | LinkedSet) -> LinkedSet:
@@ -555,10 +643,7 @@ cdef class LinkedSet(LinkedList):
         LinkedSet
             A combination of this set with the elements of the other set.
         """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        (<VariantSet*>self.view).intersection_update(<PyObject*>other)
+        self.variant.ptr().intersection_update(<PyObject*>other)
         return self
 
     def __sub__(self, other: set | LinkedSet) -> LinkedSet:
@@ -575,11 +660,8 @@ cdef class LinkedSet(LinkedList):
             A new set containing the difference of this set and the other
             iterable.
         """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        return LinkedSet.from_view(
-            (<VariantSet*>self.view).difference(<PyObject*>other)
+        return LinkedSet.from_variant(
+            self.variant.ptr().difference(<PyObject*>other)
         )
 
     def __isub__(self, other: set | LinkedSet) -> LinkedSet:
@@ -595,10 +677,7 @@ cdef class LinkedSet(LinkedList):
         LinkedSet
             A combination of this set with the elements of the other set.
         """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        (<VariantSet*>self.view).difference_update(<PyObject*>other)
+        self.variant.ptr().difference_update(<PyObject*>other)
         return self
 
     def __xor__(self, other: set | LinkedSet) -> LinkedSet:
@@ -615,11 +694,8 @@ cdef class LinkedSet(LinkedList):
             A new set containing the symmetric difference of this set and the
             other iterable.
         """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        return LinkedSet.from_view(
-            (<VariantSet*>self.view).symmetric_difference(<PyObject*>other)
+        return LinkedSet.from_variant(
+            self.variant.ptr().symmetric_difference(<PyObject*>other)
         )
 
     def __ixor__(self, other: set | LinkedSet) -> LinkedSet:
@@ -637,10 +713,7 @@ cdef class LinkedSet(LinkedList):
             A combination of this set with the symmetric difference of the
             other set.
         """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        (<VariantSet*>self.view).symmetric_difference_update(<PyObject*>other)
+        self.variant.ptr().symmetric_difference_update(<PyObject*>other)
         return self
 
     def __lt__(self, other: set | LinkedSet) -> bool:
@@ -656,11 +729,7 @@ cdef class LinkedSet(LinkedList):
         bool
             Whether this set is a proper subset of the other set.
         """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        # setting `strict` to `True` makes this a proper subset check
-        return bool((<VariantSet*>self.view).issubset(<PyObject*>other, <bint>True))
+        return bool(self.variant.ptr().issubset(<PyObject*>other))
 
     def __le__(self, other: set | LinkedSet) -> bool:
         """Return whether this set is a subset of another.
@@ -675,13 +744,7 @@ cdef class LinkedSet(LinkedList):
         bool
             Whether this set is a subset of the other set.
         """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        # setting `strict` to `False` allows for equality between sets
-        return bool((<VariantSet*>self.view).issubset(<PyObject*>other, <bint>False))
-
-    # TODO: implement equals on the View itself.
+        return bool(self.variant.ptr().issubset(<PyObject*>other))
 
     def __eq__(self, other: set | LinkedSet) -> bool:
         """Return whether this set is equal to another.
@@ -696,10 +759,7 @@ cdef class LinkedSet(LinkedList):
         bool
             Whether this set is equal to the other set.
         """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        return len(self) == len(other) and all(item in self for item in other)
+        return bool(self.variant.ptr().equals(<PyObject*>other))
 
     def __ge__(self, other: set | LinkedSet) -> bool:
         """Return whether this set is a superset of another.
@@ -714,11 +774,7 @@ cdef class LinkedSet(LinkedList):
         bool
             Whether this set is a superset of the other set.
         """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        # setting `strict` to `False` allows for equality between sets
-        return bool((<VariantSet*>self.view).issuperset(<PyObject*>other, <bint>False))
+        return bool(self.variant.ptr().issuperset(<PyObject*>other))
 
     def __gt__(self, other: set | LinkedSet) -> bool:
         """Return whether this set is a proper superset of another.
@@ -733,11 +789,7 @@ cdef class LinkedSet(LinkedList):
         bool
             Whether this set is a proper superset of the other set.
         """
-        if not isinstance(other, (set, LinkedSet)):
-            return NotImplemented
-
-        # setting `strict` to `True` makes this a proper superset check
-        return bool((<VariantSet*>self.view).issuperset(<PyObject*>other, <bint>True))
+        return bool(self.variant.ptr().issuperset(<PyObject*>other))
 
     def __contains__(self, item: object) -> bool:
         """Check if the item is contained in the set.
@@ -756,7 +808,52 @@ cdef class LinkedSet(LinkedList):
         -----
         Membership checks are O(1) due to the integrated hash table.
         """
-        return (<VariantSet*>self.view).contains(<PyObject*>item)
+        return self.variant.ptr().contains(<PyObject*>item)
+
+    def __str__(self):
+        """Return a standard string representation of the list.
+
+        Returns
+        -------
+        str
+            A string representation of the list.
+
+        Notes
+        -----
+        Creating a string representation of a list is O(n).
+        """
+        return f"{{{', '.join(str(item) for item in self)}}}"
+
+    def __repr__(self):
+        """Return an annotated string representation of the list.
+
+        Returns
+        -------
+        str
+            An annotated string representation of the list.
+
+        Notes
+        -----
+        Creating a string representation of a list is O(n).
+        """
+        prefix = f"{type(self).__name__}"
+
+        # append specialization if given
+        specialization = self.specialization
+        if specialization is not None:
+            prefix += f"{{{repr(specialization)}}}"
+
+        # abbreviate in order to avoid spamming the console
+        if len(self) > 64:
+            contents = ", ".join(repr(item) for item in self[:32])
+            contents += ", ..., "
+            contents += ", ".join(repr(item) for item in self[-32:])
+        else:
+            contents = ", ".join(repr(item) for item in self)
+
+        return f"{prefix}({{{contents}}})"
+
+    __hash__ = None  # mutable containers are not hashable
 
     ###################################
     ####    RELATIVE OPERATIONS    ####
@@ -798,8 +895,7 @@ cdef class LinkedSet(LinkedList):
         This method is equivalent to ``self.index(item2) - self.index(item1)``,
         except that it gathers both indices in a single iteration.
         """
-        # dispatch to index.h
-        return (<VariantSet*>self.view).distance(<PyObject*>item1, <PyObject*>item2)
+        return self.variant.ptr().distance(<PyObject*>item1, <PyObject*>item2)
 
     def swap(self, item1: object, item2: object) -> None:
         """Swap the positions of two items in the set.
@@ -820,8 +916,7 @@ cdef class LinkedSet(LinkedList):
         -----
         Swaps are O(1) if the set is doubly-linked, and O(n) otherwise.
         """
-        # dispatch to move.h
-        (<VariantSet*>self.view).swap(<PyObject*>item1, <PyObject*>item2)
+        self.variant.ptr().swap(<PyObject*>item1, <PyObject*>item2)
 
     def move(self, item: object, steps: int = 1) -> None:
         """Move an item within the set by the specified number of steps.
@@ -858,8 +953,7 @@ cdef class LinkedSet(LinkedList):
         Calling this method with negative steps is equivalent to calling
         :meth:`moveleft() <LinkedSet.moveleft>` with ``steps=-steps``.
         """
-        # dispatch to move.h
-        (<VariantSet*>self.view).move(<PyObject*>item, <Py_ssize_t>steps)
+        self.variant.ptr().move(<PyObject*>item, <Py_ssize_t>steps)
 
     def move_to_index(self, item: object, index: int = 0) -> None:
         """Move an item to a specific index in the set.
@@ -886,8 +980,324 @@ cdef class LinkedSet(LinkedList):
         Moves are O(1) for either end of the set, and scale up to O(n)
         towards the middle of the list.
         """
-        # dispatch to move.h
-        (<VariantSet*>self.view).move_to_index(<PyObject*>item, <Py_ssize_t>index)
+        self.variant.ptr().move_to_index(<PyObject*>item, <Py_ssize_t>index)
+
+    #############################
+    ####    EXTRA METHODS    ####
+    #############################
+
+    @property
+    def dynamic(self) -> bool:
+        """Indicates whether the list's allocator supports dynamic resizing (True), or
+        is fixed to a particular size (False).
+
+        Returns
+        -------
+        bool
+            True if the list can dynamically grow and shrink, or False if it has a
+            fixed size.
+
+        Notes
+        -----
+        This is always false if ``max_size`` was given to the constructor, which
+        prevents the list from growing beyond a fixed size.
+        """
+        return self.variant.ptr().dynamic()
+
+    @property
+    def frozen(self) -> bool:
+        """Indicates whether the list's allocator is temporarily frozen for memory
+        stability.
+
+        This is only intended for debugging purposes.
+
+        Returns
+        -------
+        bool
+            ``True`` if the memory addresses of the list's nodes are guaranteed to
+            remain stable within the current context, or ``False`` if they may be
+            reallocated.
+
+        Notes
+        -----
+        Due to the nature of linked data structures, traversal over the list requires
+        knowing the exact memory address of each node.  However, some allocation
+        strategies can result in the movement of nodes during resize/defragment calls,
+        which invalidates any existing pointers/iterators over the list.  This presents
+        a problem for any code that needs to modify a list while iterating over it.
+
+        Thankfully, this can be avoided by temporarily freezing the allocator, which
+        can be done through the :meth:`reserve() <LinkedList.reserve>` method and
+        associated context manager.  This will prevent any reallocation from occurring
+        until the context is exited, which guarantees that the memory addresses of the
+        list's nodes will remain stable for the duration.  The
+        :attr:`frozen <LinkedList.frozen>` property indicates whether this is the case
+        within the current context.
+
+        Generally speaking, users should never need to worry about this.  The built-in
+        algorithms are designed to be safe at all times, and will automatically reserve
+        memory in the optimal way for each operation.  However, if you are writing
+        custom algorithms that need to keep track of raw node pointers, then you may
+        need to use this flag to ensure that your pointers remain valid.
+        """
+        return self.variant.ptr().frozen()
+
+    @property
+    def nbytes(self) -> int:
+        """The total memory consumption of the list in bytes.
+
+        Returns
+        -------
+        int
+            The total number of bytes consumed by the list, including all its
+            nodes (but not their values).
+        """
+        return self.variant.ptr().nbytes()
+
+    @property
+    def specialization(self) -> Any:
+        """Return the type specialization that is being enforced by the list.
+
+        Returns
+        -------
+        Any
+            The type specialization of the list, or ``None`` if the list is
+            generic.
+
+        See Also
+        --------
+        LinkedList.specialize :
+            Specialize the list with a particular type.
+
+        Notes
+        -----
+        This is equivalent to the ``spec`` argument passed to the constructor
+        and/or :meth:`specialize() <LinkedList.specialize>` method.
+        """
+        cdef PyObject* spec = self.variant.ptr().specialization()
+        if spec is NULL:
+            return None
+
+        return <object>spec
+
+    def specialize(self, spec: object) -> None:
+        """Specialize the list with a particular type.
+
+        Parameters
+        ----------
+        spec : Any
+            The type to enforce for elements of the list.  This can be in any
+            format recognized by :func:`isinstance() <python:isinstance>`.  If
+            it is set to ``None``, then type checking will be disabled for the
+            list.
+
+        Raises
+        ------
+        TypeError
+            If the list contains elements that do not match the specified type.
+
+        Notes
+        -----
+        Specializing a list is O(n).
+
+        The way type specialization works is by adding an extra
+        :func:`isinstance() <python:isinstance>` check during node allocation.
+        If the type of the new item does not match the specialized type, then
+        an exception will be raised and the type will not be added to the list.
+        This ensures that the list is type-safe at all times.
+
+        If the list is not empty when this method is called, then the type of
+        each existing item will be checked against the new type.  If any of
+        them do not match, then the specialization will be aborted and an
+        error will be raised.  The list is not modified during this process.
+
+        .. note::
+
+            Typed lists are slightly slower at appending items due to the extra
+            type check.  Otherwise, they have identical performance to their
+            untyped equivalents.
+        """
+        if spec is None:
+            self.variant.ptr().specialize(<PyObject*>NULL)
+        else:
+            self.variant.ptr().specialize(<PyObject*>spec)
+
+    def __class_getitem__(cls, key: object) -> type:
+        """Subscribe a :class:`LinkedList` to a particular type specialization.
+
+        Parameters
+        ----------
+        key : Any
+            The type to enforce for elements of the list.  This can be in any
+            format recognized by :func:`isinstance() <python:isinstance>`,
+            including tuples and
+            :func:`runtime-checkable <python:typing.runtime_checkable>`
+            :class:`typing.Protocol <python:typing.Protocol>` objects.
+
+        See Also
+        --------
+        LinkedList.specialize :
+            Specialize a list at runtime.
+
+        Returns
+        -------
+        type
+            A variant of the linked list that is permanently specialized to the
+            templated type.  Constructing such a list is equivalent to calling
+            the constructor with the ``spec`` argument, except that the
+            specialization cannot be changed for the lifetime of the object.
+
+        Notes
+        -----
+        :class:`LinkedLists <LinkedList>` provide 3 separate mechanisms for
+        enforcing type safety:
+
+            #.  The :meth:`specialize() <LinkedList.specialize>` method, which
+                allows runtime specialization of a list with a particular type.
+                If the list is not empty when this method is called, it will
+                loop through the list and check whether the contents satisfy
+                the specialized type, and then enforce that type for any future
+                additions to the list.
+            #.  The ``spec`` argument to the constructor, which allows
+                specialization at the time of list creation.  This is
+                equivalent to calling :meth:`specialize() <LinkedList.specialize>`
+                immediately after construction, but avoids an extra loop.
+            #.  Direct subscription via the
+                :meth:`__class_getitem__() <python:object.__class_getitem__>`
+                syntax.  This is equivalent to using the ``spec`` argument to
+                create a typed list, except that the specialization is
+                permanent and cannot be changed afterwards.  This is the most
+                restrictive form of type safety, but also allows users to be
+                absolutely sure about the list's contents.
+
+        In any case, a list's specialization can be checked at any time by
+        accessing its :attr:`specialization` attribute, which can be used in
+        :func:`isinstance() <python:isinstance>` and
+        :func:`issubclass() <python:issubclass>` checks directly.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> d = LinkedList[int]([1, 2, 3])
+            TypedList[<class 'int'>]([1, 2, 3])
+            >>> d.specialization
+            <class 'int'>
+            >>> d.append(4)
+            >>> d
+            TypedList[<class 'int'>]([1, 2, 3, 4])
+            >>> d.append("foo")
+            Traceback (most recent call last):
+                ...
+            TypeError: 'foo' is not of type <class 'int'>
+            >>> d.specialize((int, str))
+            Traceback (most recent call last):
+                ...
+            TypeError: TypedList is already specialized to <class 'int'>
+
+        Because type specialization is enforced through the
+        :func:`isinstance() <python:isinstance>` function, it is possible to
+        specialize a list with any type that implements the
+        :func:`__instancecheck__() <python:object.__instancecheck__>` special
+        method, including :func:`runtime-checkable <python:typing.runtime_checkable>`
+        :class:`typing.Protocol <python:typing.Protocol>` objects.
+
+        .. doctest::
+
+            >>> from typing import Iterable
+
+            >>> d = LinkedList[Iterable]()
+            >>> d.append([1, 2, 3])
+            >>> d
+            TypedList[typing.Iterable]([[1, 2, 3]])
+            >>> d.append("foo")
+            >>> d
+            TypedList[typing.Iterable]([[1, 2, 3], 'foo'])
+            >>> d.append(4)
+            Traceback (most recent call last):
+                ...
+            TypeError: 4 is not of type typing.Iterable
+
+        .. note::
+
+            Type checking with
+            :func:`runtime-checkable <python:typing.runtime_checkable>` protocols
+            can significantly slow down list appends and inserts.  Other operations
+            are unaffected, however.
+        """
+        if key is None:
+            return cls
+
+        def __init__(
+            self,
+            items: Iterable[object] | None = None,
+            max_size: int = None,
+            reverse: bool = False,
+            singly_linked: bool = False,
+        ) -> None:
+            """Disable the `spec` argument for strictly-typed lists."""
+            cls.__init__(
+                self,
+                items,
+                max_size=max_size,
+                reverse=reverse,
+                spec=key,
+                singly_linked=singly_linked,
+            )
+
+        def specialize(self, spec: object) -> None:
+            """Disable runtime specialization for strictly-typed lists."""
+            raise TypeError(f"{cls.__name__} is already specialized to {repr(key)}")
+
+        # dynamically create the new class
+        return type(
+            cls.__name__,
+            (cls,),
+            {"__init__": __init__, "specialize": specialize}
+        )
+
+    def lock(self) -> object:
+        """Generate a context manager that temporarily locks a list for use in a
+        multithreaded environment.
+
+        Returns
+        -------
+        ThreadGuard
+            A Python-style context manager that acquires an internal mutex upon entering
+            a context block and releases it after exiting.  Any operations within the
+            context block are guaranteed to be atomic.
+
+        Notes
+        -----
+        By default, :class:`LinkedList`-based data structures are not considered to be
+        thread-safe.  Instead, they are optimized for maximum single-threaded
+        performance, and do not introduce any more overhead than is necessary.
+
+        Examples
+        --------
+        This method allows users to choose when and where to enforce thread-safety for
+        their specific use case.
+
+        .. doctest::
+
+            >>> l = LinkedList("abcdef")
+            >>> with l.lock():
+            >>>     # anything inside the context block is guaranteed to be atomic
+            >>>     l.append("x")
+            >>> 
+            >>> # anything outside the context block is not
+            >>> l.append("y")
+        """
+        return <object>(self.variant.ptr().lock())
+
+
+###################################
+####    RELATIVE OPERATIONS    ####
+###################################
+
+
+cdef class RelativeProxy:
+
 
     def move_relative(self, item: object, sentinel: object, offset: int = 1) -> None:
         """Move an item to the right of a given sentinel value.
@@ -927,8 +1337,7 @@ cdef class LinkedSet(LinkedList):
         Calling this method with negative steps is equivalent to calling
         :meth:`movebefore() <LinkedSet.movebefore>` with ``steps=-steps``.
         """
-        # dispatch to move.h
-        (<VariantSet*>self.view).move_relative(
+        self.variant.ptr().move_relative(
             <PyObject*>item,
             <PyObject*>sentinel,
             <Py_ssize_t>offset
@@ -972,8 +1381,7 @@ cdef class LinkedSet(LinkedList):
         lookup followed by an :meth:`insert() <LinkedSet.insert>` call, which
         would be O(2n) on average.
         """
-        # dispatch to insert.h
-        (<VariantSet*>self.view).insert_relative(
+        self.variant.ptr().insert_relative(
             <PyObject*>sentinel,
             <PyObject*>item,
             <ssize_t>offset
@@ -1019,7 +1427,7 @@ cdef class LinkedSet(LinkedList):
         average.
         """
         # dispatch to extend.h
-        (<VariantSet*>self.view).extend_relative(
+        self.variant.ptr().extend_relative(
             <PyObject*>sentinel,
             <PyObject*>items,
             <Py_ssize_t>offset,
@@ -1051,7 +1459,7 @@ cdef class LinkedSet(LinkedList):
         -----
         """
         # dispatch to remove.h
-        (<VariantSet*>self.view).remove_relative(
+        self.variant.ptr().remove_relative(
             <PyObject*>sentinel, <Py_ssize_t>offset
         )
 
@@ -1085,7 +1493,7 @@ cdef class LinkedSet(LinkedList):
         Removals are O(steps).
         """
         # dispatch to discard.h
-        (<VariantSet*>self.view).discard_relative(
+        self.variant.ptr().discard_relative(
             <PyObject*>sentinel, <Py_ssize_t>offset
         )
 
@@ -1124,7 +1532,7 @@ cdef class LinkedSet(LinkedList):
         Pops are O(steps).
         """
         # dispatch to pop.h
-        return <object>(<VariantSet*>self.view).pop_relative(
+        return <object>self.variant.ptr().pop_relative(
             <PyObject*>sentinel, <Py_ssize_t>offset
         )
 
@@ -1161,55 +1569,10 @@ cdef class LinkedSet(LinkedList):
         Clearing is O(length).
         """
         # dispatch to clear.h
-        (<VariantSet*>self.view).clear_relative(
+        self.variant.ptr().clear_relative(
             <PyObject*>sentinel,
             <Py_ssize_t>offset,
             <Py_ssize_t>length
         )
 
-    ####################
-    ####    MISC    ####
-    ####################
 
-    def __str__(self):
-        """Return a standard string representation of the set.
-
-        Returns
-        -------
-        str
-            A string representation of the set.
-
-        Notes
-        -----
-        Creating a string representation of a set is O(n).
-        """
-        return f"{{{', '.join(str(item) for item in self)}}}"
-
-    def __repr__(self):
-        """Return an annotated string representation of the set.
-
-        Returns
-        -------
-        str
-            An annotated string representation of the set.
-
-        Notes
-        -----
-        Creating a string representation of a set is O(n).
-        """
-        prefix = f"{type(self).__name__}"
-
-        # append specialization if given
-        specialization = self.specialization
-        if specialization is not None:
-            prefix += f"[{', '.join(repr(s) for s in specialization)}]"
-
-        # abbreviate in order to avoid spamming the console
-        if len(self) > 64:
-            contents = ", ".join(repr(item) for item in self[:32])
-            contents += ", ..., "
-            contents += ", ".join(repr(item) for item in self[-32:])
-        else:
-            contents = ", ".join(repr(item) for item in self)
-
-        return f"{prefix}({{{contents}}})"

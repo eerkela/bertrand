@@ -187,8 +187,8 @@ public:
 
     /* Return a new set with elements from this set and all other container(s). */
     template <typename... Containers>
-    inline LinkedSet union_(const Containers&&... others) const {
-        return LinkedSet(linked::union_(this->view, others...));
+    inline LinkedSet set_union(const Containers&&... others) const {
+        return LinkedSet(linked::set_union(this->view, others...));
     }
 
     /* Return a new set with elements from this set that are common to all other
@@ -211,7 +211,6 @@ public:
     inline LinkedSet symmetric_difference(const Containers&&... others) const {
         return LinkedSet(linked::symmetric_difference(this->view, others...));
     }
-
 
     ///////////////////////
     ////    PROXIES    ////

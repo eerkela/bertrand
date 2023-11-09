@@ -12,19 +12,13 @@ namespace linked {
 
 
     /* Add an item to the end of a linked set or dictionary. */
-    template <
-        typename View,
-        typename Item = typename View::Value
-    >
+    template <typename View, typename Item = typename View::Value>
     inline auto add(View& view, Item& item, bool left)
         -> std::enable_if_t<ViewTraits<View>::setlike, void>
     {
         using Node = typename View::Node;
         Node* node = view.node<true>(item);  // exist_ok = true
-
-
-        // TODO: node->prev() might not exist
-        if (!node->prev() && !node->next()) {
+        if (node->next() == nullptr && node != view.tail()) {  // node not in view
             if (left) {
                 view.link(nullptr, node, view.head());
             } else {
@@ -45,7 +39,7 @@ namespace linked {
     {
         using Node = typename View::Node;
         Node* node = view.node<true>(key, value);  // 2-argument init, exist_ok = true
-        if (!node->prev() && !node->next()) {
+        if (node->next() == nullptr && node != view.tail()) {  // node not in view
             if (left) {
                 view.link(nullptr, node, view.head());
             } else {
@@ -58,7 +52,6 @@ namespace linked {
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
-
 
 
 #endif // BERTRAND_STRUCTS_ALGORITHMS_ADD_H

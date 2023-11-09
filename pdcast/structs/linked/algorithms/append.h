@@ -12,10 +12,7 @@ namespace linked {
 
 
     /* Add an item to the end of a linked list, set, or dictionary. */
-    template <
-        typename View,
-        typename Item = typename View::Value
-    >
+    template <typename View, typename Item = typename View::Value>
     inline auto append(View& view, Item& item, bool left)
         -> std::enable_if_t<ViewTraits<View>::listlike, void>
     {

@@ -16,8 +16,8 @@ namespace linked {
 
 
     /* Pop an item from a linked list, set, or dictionary at the given index. */
-    template <typename View, typename Index>
-    inline auto pop(View& view, Index index)
+    template <typename View>
+    inline auto pop(View& view, long long index)
         -> std::enable_if_t<ViewTraits<View>::listlike, typename View::Value>
     {
         using Node = typename View::Node;

@@ -1,5 +1,6 @@
 """Cython headers for pdcast/util/structs/base.h"""
 from cpython.ref cimport PyObject
+from libcpp.optional cimport optional, nullopt
 
 
 cdef extern from "../util/slot.h" namespace "bertrand::structs::util":

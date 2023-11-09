@@ -131,9 +131,7 @@ cdef class LinkedList:
         cdef PyObject* c_spec
 
         # make max_size C-compatible
-        if max_size is None:
-            c_max_size = nullopt
-        else:
+        if max_size is not None:
             c_max_size = <size_t>max_size
 
         # make specialization C-compatible
@@ -143,9 +141,9 @@ cdef class LinkedList:
             c_spec = <PyObject*>spec  # borrowed reference
 
         # init variant
-        if items is None:  # empty
+        if items is None:
             self.variant.construct(c_max_size, c_spec, <bint>singly_linked)
-        else:  # unpack iterable
+        else:
             self.variant.construct(
                 <PyObject*>items, c_max_size, c_spec, <bint>reverse, <bint>singly_linked
             )
@@ -176,7 +174,6 @@ cdef class LinkedList:
         -----
         Appends are O(1) for both ends of the list.
         """
-        # dispatch to append.h
         self.variant.ptr().append(<PyObject*>item, <bint>left)
 
     def insert(self, index: int, item: object) -> None:
@@ -195,8 +192,7 @@ cdef class LinkedList:
         -----
         Inserts are O(n) on average.
         """
-        # dispatch to insert.h
-        self.variant.ptr().insert(<PyObject*>index, <PyObject*>item)
+        self.variant.ptr().insert(<long long>index, <PyObject*>item)
 
     def extend(self, items: Iterable[object], left: bool = False) -> None:
         """Add multiple items to the end of the list.
@@ -218,10 +214,9 @@ cdef class LinkedList:
         class.  Just like that class, the series of left appends results in
         reversing the order of elements in ``items``.
         """
-        # dispatch to extend.h
         self.variant.ptr().extend(<PyObject*>items, <bint>left)
 
-    def index(self, item: object, start: int = 0, stop: int = -1) -> int:
+    def index(self, item: object, start: int = None, stop: int = None) -> int:
         """Get the index of an item within the list.
 
         Parameters
@@ -243,10 +238,15 @@ cdef class LinkedList:
         -----
         Indexing is O(n) on average.
         """
-        # dispatch to index.h
-        return self.variant.ptr().index(<PyObject*>item, start, stop)
+        cdef optional[long long] c_start, c_stop
+        if start is not None:
+            c_start = <long long>start
+        if stop is not None:
+            c_stop = <long long>stop
 
-    def count(self, item: object, start: int = 0, stop: int = -1) -> int:
+        return self.variant.ptr().index(<PyObject*>item, c_start, c_stop)
+
+    def count(self, item: object, start: int = None, stop: int = None) -> int:
         """Count the number of occurrences of an item in the list.
 
         Parameters
@@ -263,8 +263,13 @@ cdef class LinkedList:
         -----
         Counting is O(n).
         """
-        # dispatch to count.h
-        return self.variant.ptr().count(<PyObject*>item, start, stop)
+        cdef optional[long long] c_start, c_stop
+        if start is not None:
+            c_start = <long long>start
+        if stop is not None:
+            c_stop = <long long>stop
+
+        return self.variant.ptr().count(<PyObject*>item, c_start, c_stop)
 
     def remove(self, item: object) -> None:
         """Remove an item from the list.
@@ -283,7 +288,6 @@ cdef class LinkedList:
         -----
         Removals are O(n) on average.
         """
-        # delegate to remove.h
         self.variant.ptr().remove(<PyObject*>item)
 
     def pop(self, index: int = -1) -> object:
@@ -316,8 +320,7 @@ cdef class LinkedList:
 
         Otherwise, pops are O(n) for nodes in the middle of the list.
         """
-        # dispatch to pop.h
-        return <object>self.variant.ptr().pop(index)
+        return <object>self.variant.ptr().pop(<long long>index)
 
     def copy(self) -> LinkedList:
         """Create a shallow copy of the list.
@@ -380,7 +383,6 @@ cdef class LinkedList:
         opens up the possibility of anticipating errors and handling them
         gracefully.
         """
-        # dispatch to sort.h
         if key is None:
             self.variant.ptr().sort(<PyObject*>NULL, <bint>reverse)
         else:
@@ -393,7 +395,6 @@ cdef class LinkedList:
         -----
         Reversing a :class:`LinkedList` is O(n).
         """
-        # dispatch to reverse.h
         self.variant.ptr().reverse()
 
     def rotate(self, steps: int = 1) -> None:
@@ -413,8 +414,7 @@ cdef class LinkedList:
         This method is consistent with the standard library's
         :class:`collections.deque <python:collections.deque>` class.
         """
-        # dispatch to rotate.h
-        self.variant.ptr().rotate(<ssize_t>steps)
+        self.variant.ptr().rotate(<long long>steps)
 
     def __len__(self) -> int:
         """Get the total number of items in the list.
@@ -498,7 +498,7 @@ cdef class LinkedList:
                 self.variant.ptr().slice(<PyObject*>key).get().ptr()
             )
 
-        return <object>(deref(self.variant.ptr())[<PyObject*>key].get())
+        return <object>(deref(self.variant.ptr())[<long long>key].get())
 
     def __setitem__(self, key: int | slice, value: object | Iterable[object]) -> None:
         """Set the value of an item or slice in the list.
@@ -540,7 +540,7 @@ cdef class LinkedList:
         if isinstance(key, slice):
             self.variant.ptr().slice(<PyObject*>key).set(<PyObject*>value)
         else:
-            deref(self.variant.ptr())[<PyObject*>key].set(<PyObject*>value)
+            deref(self.variant.ptr())[<long long>key].set(<PyObject*>value)
 
     def __delitem__(self, key: int | slice) -> None:
         """Delete an item or slice from the list.
@@ -576,7 +576,7 @@ cdef class LinkedList:
         if isinstance(key, slice):
             self.variant.ptr().slice(<PyObject*>key).delete()
         else:
-            deref(self.variant.ptr())[<PyObject*>key].delete()
+            deref(self.variant.ptr())[<long long>key].delete()
 
     def __contains__(self, item: object) -> bool:
         """Check if the item is contained in the list.

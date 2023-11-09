@@ -13,10 +13,7 @@ namespace linked {
 
 
     /* Remove an item from a linked set or dictionary if it is present. */
-    template <
-        typename View,
-        typename Item = typename View::Value
-    >
+    template <typename View, typename Item = typename View::Value>
     auto discard(View& view, Item& item)
         -> std::enable_if_t<ViewTraits<View>::setlike, void>
     {
@@ -24,9 +21,7 @@ namespace linked {
 
         // search for node
         Node* curr = view.search(item);
-        if (curr == nullptr) {
-            return;  // item not found
-        }
+        if (curr == nullptr) return;  // item not found
 
         // get neighboring nodes
         Node* prev;
