@@ -2,113 +2,82 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_COMPARE_H
 #define BERTRAND_STRUCTS_ALGORITHMS_COMPARE_H
 
-#include <Python.h>  // CPython API
-#include "../core/allocate.h"  // DynamicAllocator
-#include "../core/view.h"  // views
+#include <type_traits>  // std::enable_if_t<>
+#include <unordered_set>  // std::unordered_set
+#include "../../util/iter.h"  // iter()
+#include "../core/view.h"  // ViewTraits
 
 
-namespace Ops {
+namespace bertrand {
+namespace structs {
+namespace linked {
+
 
     /* Check whether a linked set or dictionary has any elements in common with
-    an arbitrary Python iterable. */
-    template <typename View>
-    int isdisjoint(View* view, PyObject* items) {
-        // CPython API equivalent of `iter(items)`
-        PyObject* iterator = PyObject_GetIter(items);
-        if (iterator == nullptr) {
-            return -1;  // propagate error
+    a given container. */
+    template <typename View, typename Container>
+    auto isdisjoint(const View& view, const Container& items)
+        -> std::enable_if_t<ViewTraits<View>::setlike, bool>
+    {
+        for (auto item : util::iter(items)) {
+            if (view.search(item) != nullptr) return false;
         }
-
-        // iterate over items and check if any are in view
-        while (true) {
-            PyObject* item = PyIter_Next(iterator);  // next(iterator)
-            if (item == nullptr) {  // end of iterator or error
-                if (PyErr_Occurred()) {
-                    Py_DECREF(iterator);
-                    return -1;
-                }
-                break;
-            }
-
-            // check if item is in view
-            if (view->search(item) != nullptr) {
-                Py_DECREF(item);
-                Py_DECREF(iterator);
-                return 0;
-            }
-
-            // advance to next item
-            Py_DECREF(item);
-        }
-
-        // release iterator
-        Py_DECREF(iterator);
-        return 1;  // no items in common
+        return true;
     }
 
-    /* Check whether a linked set or dictionary represents a subset of an arbitrary
-    Python iterable. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    int issubset(ViewType<NodeType, Allocator>* view, PyObject* items, bool strict) {
-        using View = ViewType<NodeType, Allocator>;
+
+    /* Check whether the elements of a linked set or dictionary represent a subset of a
+    given container. */
+    template <typename View, typename Container>
+    auto issubset(const View& view, const Container& items, bool strict)
+        -> std::enable_if_t<ViewTraits<View>::setlike, bool>
+    {
         using Node = typename View::Node;
 
-        // unpack items into temporary view
-        SetView<NodeType, DynamicAllocator> temp_view(items);
-
-        // if strict, check that view is smaller than temporary view
-        if (strict && view->size >= temp_view->size) {
-            return 0;
-        }
-
-        // iterate over view and check if all elements are in temporary view
-        Node* curr = view->head;
-        while (curr != nullptr) {
-            if (temp_view->search(curr) == nullptr) {
-                return 0;
+        // use auxiliary set to keep track of visited nodes as we iterate over items
+        std::unordered_set<Node*> found;
+        bool larger = false;
+        for (auto item : util::iter(items)) {
+            Node* node = view.search(item);
+            if (node == nullptr) {
+                larger = true;
+            } else {
+                found.insert(node);
             }
-            curr = static_cast<Node*>(curr->next);
         }
 
-        return 1;
+        // check that we found all nodes in view
+        if (found.size() != view.size()) return false;
+
+        // if strict, assert that container has at least one extra element
+        return !strict || larger;
     }
 
-    /* Check whether a linked set or dictionary represents a superset of an arbitrary
-    Python iterable. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    int issuperset(ViewType<NodeType, Allocator>* view, PyObject* items, bool strict) {
-        using View = ViewType<NodeType, Allocator>;
+
+    /* Check whether the elements of a linked set or dictionary represent a superset of
+    a given container. */
+    template <typename View, typename Container>
+    auto issuperset(const View& view, const Container& items, bool strict)
+        -> std::enable_if_t<ViewTraits<View>::setlike, bool>
+    {
         using Node = typename View::Node;
 
-        // unpack items into temporary view
-        SetView<NodeType, DynamicAllocator> temp_view(items);
-
-        // if strict, check that view is larger than temporary view
-        if (strict && view->size <= temp_view->size) {
-            return 0;
+        // use auxiliary set to keep track of visited nodes as we iterate over items
+        std::unordered_set<Node*> found;
+        for (auto item : util::iter(items)) {
+            Node* node = view.search(item);
+            if (node == nullptr) return false;
+            found.insert(node);
         }
 
-        // iterate over temporary view and check if all elements are in view
-        Node* curr = temp_view->head;
-        while (curr != nullptr) {
-            if (view->search(curr) == nullptr) {
-                return 0;
-            }
-            curr = static_cast<Node*>(curr->next);
-        }
-
-        return 1;
+        // if strict, assert that view has at least one extra element
+        return !strict || found.size() < view.size();
     }
 
-}
+
+}  // namespace linked
+}  // namespace structs
+}  // namespace bertrand
 
 
 #endif // BERTRAND_STRUCTS_ALGORITHMS_COMPARE_H include guard

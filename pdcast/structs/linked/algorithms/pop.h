@@ -27,7 +27,7 @@ namespace linked {
         size_t norm_index = normalize_index(index, view.size(), true);
 
         // payload for return value
-        auto execute = [&view] (Node* node) {
+        auto execute = [&view](Node* node) {
             Value result = node->value();
             if constexpr (util::is_pyobject<Value>) {
                 Py_INCREF(result);  // return new reference

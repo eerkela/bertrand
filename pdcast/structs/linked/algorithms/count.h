@@ -40,6 +40,9 @@ namespace linked {
             );
         }
 
+        // trivial case: empty slice
+        if (norm_start == norm_stop) return 0;
+
         // if list is doubly-linked and stop is closer to tail than start is to head,
         // then we iterate backward from the tail
         if constexpr (NodeTraits<Node>::has_prev) {
@@ -96,6 +99,9 @@ namespace linked {
                 "start index cannot be greater than stop index"
             );
         }
+
+        // trivial case: empty slice
+        if (norm_start == norm_stop) return 0;
 
         // check if item is contained in hash table
         Node* node = view.search(item);

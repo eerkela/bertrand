@@ -7,7 +7,10 @@
 #include "../core/view.h"  // views
 
 
-namespace Ops {
+namespace bertrand {
+namespace structs {
+namespace linked {
+
 
     /* Get the union between a linked set or dictionary and an arbitrary Python
     iterable. */
@@ -82,6 +85,7 @@ namespace Ops {
         return result;
     }
 
+
     /* Get the difference between a linked set or dictionary and an arbitrary Python
     iterable. */
     template <
@@ -123,6 +127,7 @@ namespace Ops {
 
         return result;
     }
+
 
     /* Get the intersection between a linked set or dictionary and an arbitrary Python
     iterable. */
@@ -166,6 +171,7 @@ namespace Ops {
 
         return result;
     }
+
 
     /* Get the symmetric difference between a linked set or dictionary and an arbitrary
     Python iterable. */
@@ -222,7 +228,10 @@ namespace Ops {
         return result;
     }
 
-}
+
+}  // namespace linked
+}  // namespace structs
+}  // namespace bertrand
 
 
 ///////////////////////
