@@ -33,15 +33,15 @@ namespace linked {
         MemGuard guard = view.try_reserve(items);
 
         // append each item
-        size_t idx = 0;
+        size_t size = view.size();
         try {
             for (auto item : util::iter(items)) {
                 linked::append(view, item, left);
-                ++idx;
             }
 
         // clean up nodes on error
         } catch (...) {
+            size_t idx = view.size() - size;  // number of nodes to remove
             if (idx == 0) throw;  // nothing to clean up
             MemGuard hold = view.reserve();  // hold allocator at current size
 
