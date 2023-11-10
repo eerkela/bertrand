@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_ALGORITHMS_DISCARD_H
-#define BERTRAND_STRUCTS_ALGORITHMS_DISCARD_H
+// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_DISCARD_H
+#ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_DISCARD_H
+#define BERTRAND_STRUCTS_LINKED_ALGORITHMS_DISCARD_H
 
 #include <type_traits>  // std::enable_if_t<>
 #include "../core/node.h"  // NodeTrats
@@ -44,4 +44,4 @@ namespace linked {
 }  // namespace bertrand
 
 
-#endif  // BERTRAND_STRUCTS_ALGORITHMS_DISCARD_H include guard
+#endif  // BERTRAND_STRUCTS_LINKED_ALGORITHMS_DISCARD_H

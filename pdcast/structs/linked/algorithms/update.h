@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_ALGORITHMS_UPDATE_H
-#define BERTRAND_STRUCTS_ALGORITHMS_UPDATE_H
+// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_UPDATE_H
+#ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_UPDATE_H
+#define BERTRAND_STRUCTS_LINKED_ALGORITHMS_UPDATE_H
 
 #include <cstddef>  // size_t
 #include <type_traits>  // std::enable_if_t<>
@@ -226,4 +226,4 @@ namespace linked {
 }  // namespace bertrand
 
 
-#endif // BERTRAND_STRUCTS_ALGORITHMS_UPDATE_H include guard
+#endif // BERTRAND_STRUCTS_LINKED_ALGORITHMS_UPDATE_H

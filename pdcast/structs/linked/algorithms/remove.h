@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_ALGORITHMS_REMOVE_H
-#define BERTRAND_STRUCTS_ALGORITHMS_REMOVE_H
+// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_REMOVE_H
+#ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_REMOVE_H
+#define BERTRAND_STRUCTS_LINKED_ALGORITHMS_REMOVE_H
 
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
@@ -77,4 +77,4 @@ namespace linked {
 }  // namespace bertrand
 
 
-#endif  // BERTRAND_STRUCTS_ALGORITHMS_REMOVE_H include guard
+#endif  // BERTRAND_STRUCTS_LINKED_ALGORITHMS_REMOVE_H

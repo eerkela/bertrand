@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_DICT_H
-#define BERTRAND_STRUCTS_DICT_H
+// include guard: BERTRAND_STRUCTS_LINKED_DICT_H
+#ifndef BERTRAND_STRUCTS_LINKED_DICT_H
+#define BERTRAND_STRUCTS_LINKED_DICT_H
 
 #include <cstddef>  // for size_t
 #include <utility>  // std::pair
@@ -210,4 +210,4 @@ private:
 
 
 
-#endif // BERTRAND_STRUCTS_DICT_H include guard
+#endif // BERTRAND_STRUCTS_LINKED_DICT_H

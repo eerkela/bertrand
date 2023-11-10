@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_SET_H
-#define BERTRAND_STRUCTS_SET_H
+// include guard: BERTRAND_STRUCTS_LINKED_SET_H
+#ifndef BERTRAND_STRUCTS_LINKED_SET_H
+#define BERTRAND_STRUCTS_LINKED_SET_H
 
 #include <cstddef>  // size_t
 #include <Python.h>  // CPython API
@@ -294,4 +294,4 @@ public:
 }  // namespace bertrand
 
 
-#endif  // BERTRAND_STRUCTS_SET_H include guard
+#endif  // BERTRAND_STRUCTS_LINKED_SET_H

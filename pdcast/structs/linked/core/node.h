@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_CORE_NODE_H
-#define BERTRAND_STRUCTS_CORE_NODE_H
+// include guard: BERTRAND_STRUCTS_LINKED_CORE_NODE_H
+#ifndef BERTRAND_STRUCTS_LINKED_CORE_NODE_H
+#define BERTRAND_STRUCTS_LINKED_CORE_NODE_H
 
 #include <queue>  // std::queue
 #include <mutex>  // std::mutex
@@ -9,7 +9,7 @@
 #include <type_traits>  // std::enable_if_t<>, std::is_convertible_v<>, etc.
 #include <Python.h>  // CPython API
 #include "../util/except.h"  // catch_python(), type_error()
-#include "../util/func.h"  // ReturnType
+#include "../util/func.h"  // FuncTraits
 #include "../util/repr.h"  // repr()
 
 
@@ -628,7 +628,7 @@ public:
 
 /* A node decorator that attaches a second value to each node, allowing the list to act
 as a dictionary. */
-template <typename Wrapped, typename MappedType = PyObject*>
+template <typename Wrapped, typename MappedType>
 class Mapped : public Wrapped {
     using KeyType = typename Wrapped::Value;
     static constexpr bool py_mapped = std::is_convertible_v<MappedType, PyObject*>;
@@ -782,124 +782,6 @@ public:
 };
 
 
-
-
-// TODO: Threaded nodes are more trouble than they're worth.  Just add a different
-// LockPolicy that uses a shared_mutex instead.
-
-
-/* A node decorator that adds a separate mutex to each node, for use in heavily
-multithreaded contexts. */
-template <typename Wrapped>
-struct Threaded : public Wrapped {
-    using Node = Threaded<Wrapped>;
-
-    mutable std::mutex mutex;
-
-    // NOTE: the idea here is that we implement standard next()/prev() getters
-    // on all nodes.  For most nodes, these just cast the associated pointer to
-    // the correct type and return it.  For threaded nodes, however, we also
-    // lock the node's mutex before returning the pointer.  This allows us to
-    // abstract away the mutex locking/unlocking from the user.
-
-    // This would be paired with head() and tail() accessors on the list itself,
-    // which do the same thing.  Same with the search() method.
-
-    // Since these methods encompass the entire traversal mechanism for the list,
-    // we can effectively automate the locking/unlocking process and rely on
-    // polymorphism to handle it for us.
-
-    // We would still have to put in some constexpr checks to make sure that
-    // nodes are properly unlocked after we're done with them, but otherwise,
-    // this would create a linked list where every node is individually locked
-    // and unlocked, which would allow concurrent access to several different
-    // parts of the list at the same time.
-
-    // NOTE: Here's how the accessors would work:
-    // - calling the accessor without arguments would act as a getter
-    // - calling the accessor with arguments would act as a setter
-
-    // Node* curr = view->head();
-    // Node* next = curr->next();
-
-    // Node* temp = view->node(item);
-    // curr->next(temp);  // assigns temp to curr->next  
-
-    /* Access the next node in the list. */
-    inline Node* next() {
-        Node* result = static_cast<Node*>(Wrapped::next());
-        if (result != nullptr) {
-            result->mutex.lock();  // lock the next node's mutex on access
-        }
-        return result;
-    }
-
-    // NOTE: prev() is conditionally compiled based on whether the templated node type
-    // is doubly-linked (i.e. has a prev() method).  This is done using SFINAE.
-
-    /* Access the previous node in the list. */
-    inline auto prev() -> std::enable_if_t<
-        std::is_same_v<decltype(std::declval<Wrapped>().prev()), Wrapped*>,
-        Node*
-    > {
-        Node* result = static_cast<Node*>(Wrapped::prev());
-        if (result != nullptr) {
-            result->mutex.lock();  // lock the previous node's mutex on access
-        }
-        return result;
-    }
-
-    /* Unlock this node's mutex. */
-    inline void unlock() {
-        mutex.unlock();
-    }
-
-};
-
-
-/* A node decorator that adds a frequency count to the underyling node type. */
-template <typename Wrapped>
-struct Counted : public Wrapped {
-    size_t frequency;
-
-    /* Initialize a newly-allocated node. */
-    inline static Counted<Wrapped>* init(Counted<Wrapped>* node, PyObject* value) {
-        node = (Counted<Wrapped>*)Wrapped::init(node, value);
-        if (node == nullptr) {  // Error during decorated init()
-            return nullptr;  // propagate
-        }
-
-        // initialize frequency
-        node->frequency = 1;
-
-        // return initialized node
-        return node;
-    }
-
-    /* Initialize a copied node. */
-    inline static Counted<Wrapped>* init_copy(
-        Counted<Wrapped>* new_node,
-        Counted<Wrapped>* old_node
-    ) {
-        // delegate to templated init_copy() method
-        new_node = (Counted<Wrapped>*)Wrapped::init_copy(new_node, old_node);
-        if (new_node == nullptr) {  // Error during templated init_copy()
-            return nullptr;  // propagate
-        }
-
-        // copy frequency
-        new_node->frequency = old_node->frequency;
-        return new_node;
-    }
-
-    /* Tear down a node before freeing it. */
-    inline static void teardown(Counted<Wrapped>* node) {
-        node->frequency = 0; // reset frequency
-        Wrapped::teardown(node);
-    }
-};
-
-
 //////////////////////
 ////    TRAITS    ////
 //////////////////////
@@ -995,4 +877,4 @@ public:
 }  // namespace bertrand
 
 
-#endif // BERTRAND_STRUCTS_CORE_NODE_H include guard
+#endif // BERTRAND_STRUCTS_LINKED_CORE_NODE_H

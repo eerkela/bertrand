@@ -1,6 +1,6 @@
-// include guard: BERTRAND_STRUCTS_LINKED_VIEW_H
-#ifndef BERTRAND_STRUCTS_LINKED_VIEW_H
-#define BERTRAND_STRUCTS_LINKED_VIEW_H
+// include guard: BERTRAND_STRUCTS_LINKED_CORE_VIEW_H
+#ifndef BERTRAND_STRUCTS_LINKED_CORE_VIEW_H
+#define BERTRAND_STRUCTS_LINKED_CORE_VIEW_H
 
 #include <cstddef>  // size_t
 #include <optional>  // std::optional
@@ -1424,4 +1424,4 @@ public:
 }  // namespace bertrand
 
 
-#endif // BERTRAND_STRUCTS_LINKED_VIEW_H
+#endif // BERTRAND_STRUCTS_LINKED_CORE_VIEW_H

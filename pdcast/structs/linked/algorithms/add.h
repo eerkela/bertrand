@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_ALGORITHMS_ADD_H
-#define BERTRAND_STRUCTS_ALGORITHMS_ADD_H
+// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_ADD_H
+#ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_ADD_H
+#define BERTRAND_STRUCTS_LINKED_ALGORITHMS_ADD_H
 
 #include <type_traits>  // std::enable_if_t<>
 #include "../core/view.h"  // views
@@ -54,4 +54,4 @@ namespace linked {
 }  // namespace bertrand
 
 
-#endif // BERTRAND_STRUCTS_ALGORITHMS_ADD_H
+#endif // BERTRAND_STRUCTS_LINKED_ALGORITHMS_ADD_H

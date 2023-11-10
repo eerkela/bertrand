@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_ALGORITHMS_POSITION_H
-#define BERTRAND_STRUCTS_ALGORITHMS_POSITION_H
+// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_POSITION_H
+#ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_POSITION_H
+#define BERTRAND_STRUCTS_LINKED_ALGORITHMS_POSITION_H
 
 #include <cstddef>  // size_t
 #include <stdexcept>  // std::out_of_range
@@ -190,4 +190,4 @@ namespace linked {
 }  // namespace bertrand
 
 
-#endif // BERTRAND_STRUCTS_ALGORITHMS_APPEND_H include guard
+#endif // BERTRAND_STRUCTS_LINKED_ALGORITHMS_POSITION_H

@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_ALGORITHMS_COMPARE_H
-#define BERTRAND_STRUCTS_ALGORITHMS_COMPARE_H
+// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_SET_COMPARE_H
+#ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_SET_COMPARE_H
+#define BERTRAND_STRUCTS_LINKED_ALGORITHMS_SET_COMPARE_H
 
 #include <type_traits>  // std::enable_if_t<>
 #include <unordered_set>  // std::unordered_set
@@ -80,4 +80,4 @@ namespace linked {
 }  // namespace bertrand
 
 
-#endif // BERTRAND_STRUCTS_ALGORITHMS_COMPARE_H include guard
+#endif // BERTRAND_STRUCTS_LINKED_ALGORITHMS_SET_COMPARE_H

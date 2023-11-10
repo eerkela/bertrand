@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_ALGORITHMS_POP_H
-#define BERTRAND_STRUCTS_ALGORITHMS_POP_H
+// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_POP_H
+#ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_POP_H
+#define BERTRAND_STRUCTS_LINKED_ALGORITHMS_POP_H
 
 #include <tuple>  // std::tuple
 #include <type_traits>  // std::enable_if_t<>
@@ -95,4 +95,4 @@ namespace linked {
 }  // namespace bertrand
 
 
-#endif // BERTRAND_STRUCTS_ALGORITHMS_POP_H include guard
+#endif // BERTRAND_STRUCTS_LINKED_ALGORITHMS_POP_H

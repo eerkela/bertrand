@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_CORE_THREAD_H
-#define BERTRAND_STRUCTS_CORE_THREAD_H
+// include guard: BERTRAND_STRUCTS_UTIL_THREAD_H
+#ifndef BERTRAND_STRUCTS_UTIL_THREAD_H
+#define BERTRAND_STRUCTS_UTIL_THREAD_H
 
 #include <chrono>  // std::chrono
 #include <memory>  // std::shared_ptr, std::weak_ptr
@@ -1011,4 +1011,4 @@ public:
 }  // namespace bertrand
 
 
-#endif  // BERTRAND_STRUCTS_CORE_THREAD_H include guard
+#endif  // BERTRAND_STRUCTS_UTIL_THREAD_H

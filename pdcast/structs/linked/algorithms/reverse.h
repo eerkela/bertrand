@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_ALGORITHMS_REVERSE_H
-#define BERTRAND_STRUCTS_ALGORITHMS_REVERSE_H
+// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_REVERSE_H
+#ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_REVERSE_H
+#define BERTRAND_STRUCTS_LINKED_ALGORITHMS_REVERSE_H
 
 #include <type_traits>  // std::enable_if_t<>
 #include "../core/view.h"  // ViewTraits
@@ -52,4 +52,4 @@ namespace linked {
 }  // namespace bertrand
 
 
-#endif // BERTRAND_STRUCTS_ALGORITHMS_REVERSE_H include guard
+#endif // BERTRAND_STRUCTS_LINKED_ALGORITHMS_REVERSE_H

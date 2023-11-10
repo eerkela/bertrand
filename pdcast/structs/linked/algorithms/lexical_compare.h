@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_ALGORITHMS_LEXICAL_COMPARE_H
-#define BERTRAND_STRUCTS_ALGORITHMS_LEXICAL_COMPARE_H
+// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_LEXICAL_COMPARE_H
+#ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_LEXICAL_COMPARE_H
+#define BERTRAND_STRUCTS_LINKED_ALGORITHMS_LEXICAL_COMPARE_H
 
 #include "../../util/iter.h"  // iter()
 #include "../../util/python.h"  // lt()
@@ -130,4 +130,4 @@ namespace linked {
 }  // namespace bertrand
 
 
-#endif // BERTRAND_STRUCTS_ALGORITHMS_COMPARE_H include guard
+#endif // BERTRAND_STRUCTS_LINKED_ALGORITHMS_LEXICAL_COMPARE_H

@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_ALGORITHMS_CONTAINS_H
-#define BERTRAND_STRUCTS_ALGORITHMS_CONTAINS_H
+// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_CONTAINS_H
+#ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_CONTAINS_H
+#define BERTRAND_STRUCTS_LINKED_ALGORITHMS_CONTAINS_H
 
 #include <type_traits>  // std::enable_if_t<>
 #include "../../util/python.h"  // eq()
@@ -38,4 +38,4 @@ namespace linked {
 }  // namespace bertrand
 
 
-#endif // BERTRAND_STRUCTS_ALGORITHMS_CONTAINS_H include guard
+#endif // BERTRAND_STRUCTS_LINKED_ALGORITHMS_CONTAINS_H

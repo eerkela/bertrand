@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_ALGORITHMS_EXTEND_H
-#define BERTRAND_STRUCTS_ALGORITHMS_EXTEND_H
+// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_EXTEND_H
+#ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_EXTEND_H
+#define BERTRAND_STRUCTS_LINKED_ALGORITHMS_EXTEND_H
 
 #include <Python.h>  // CPython API
 #include "../../util/iter.h" // iter()
@@ -71,4 +71,4 @@ namespace linked {
 }  // namespace bertrand
 
 
-#endif // BERTRAND_STRUCTS_ALGORITHMS_EXTEND_H include guard
+#endif // BERTRAND_STRUCTS_LINKED_ALGORITHMS_EXTEND_H

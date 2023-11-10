@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_BASE_H
-#define BERTRAND_STRUCTS_BASE_H
+// include guard: BERTRAND_STRUCTS_LINKED_BASE_H
+#ifndef BERTRAND_STRUCTS_LINKED_BASE_H
+#define BERTRAND_STRUCTS_LINKED_BASE_H
 
 #include <cstddef>      // size_t
 #include <memory>  // std::shared_ptr, std::weak_ptr
@@ -345,4 +345,4 @@ private:
 }  // namespace bertrand
 
 
-#endif  // BERTRAND_STRUCTS_BASE_H
+#endif  // BERTRAND_STRUCTS_LINKED_BASE_H

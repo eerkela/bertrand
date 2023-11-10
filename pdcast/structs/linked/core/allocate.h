@@ -1,6 +1,6 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALLOCATE_H
-#ifndef BERTRAND_STRUCTS_LINKED_ALLOCATE_H
-#define BERTRAND_STRUCTS_LINKED_ALLOCATE_H
+// include guard: BERTRAND_STRUCTS_LINKED_CORE_ALLOCATE_H
+#ifndef BERTRAND_STRUCTS_LINKED_CORE_ALLOCATE_H
+#define BERTRAND_STRUCTS_LINKED_CORE_ALLOCATE_H
 
 #include <cstddef>  // size_t
 #include <cstdlib>  // malloc(), calloc(), free()
@@ -1291,4 +1291,4 @@ public:
 }  // namespace bertrand
 
 
-#endif  // BERTRAND_STRUCTS_LINKED_ALLOCATE_H
+#endif  // BERTRAND_STRUCTS_LINKED_CORE_ALLOCATE_H

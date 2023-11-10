@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_CORE_ITER_H
-#define BERTRAND_STRUCTS_CORE_ITER_H
+// include guard: BERTRAND_STRUCTS_LINKED_CORE_ITER_H
+#ifndef BERTRAND_STRUCTS_LINKED_CORE_ITER_H
+#define BERTRAND_STRUCTS_LINKED_CORE_ITER_H
 
 #include <stack>  // std::stack
 #include <Python.h>  // CPython API
@@ -702,4 +702,4 @@ public:
 }  // namespace bertrand
 
 
-#endif  // BERTRAND_STRUCTS_CORE_ITER_H include guard
+#endif  // BERTRAND_STRUCTS_LINKED_CORE_ITER_H

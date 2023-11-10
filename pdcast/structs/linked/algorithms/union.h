@@ -1,6 +1,6 @@
-// include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_ALGORITHMS_UNION_H
-#define BERTRAND_STRUCTS_ALGORITHMS_UNION_H
+// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_UNION_H
+#ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_UNION_H
+#define BERTRAND_STRUCTS_LINKED_ALGORITHMS_UNION_H
 
 #include <Python.h>  // CPython API
 #include "../core/allocate.h"  // DynamicAllocator
@@ -260,4 +260,4 @@ void _copy_into(View* view, Node* node, bool left) {
 }
 
 
-#endif  // BERTRAND_STRUCTS_ALGORITHMS_UNION_H include guard
+#endif  // BERTRAND_STRUCTS_LINKED_ALGORITHMS_UNION_H
