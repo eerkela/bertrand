@@ -215,7 +215,12 @@ public:
 
     /* Implement LinkedList.append() for all variants. */
     inline void append(PyObject* item, bool left) {
-        std::visit([&](auto& list) { list.append(item, left); }, variant);
+        std::visit(
+            [&item, &left](auto& list) {
+                list.append(item, left);
+            },
+            this->variant
+        );
     }
 
     /* Implement LinkedList.insert() for all variants. */
@@ -310,7 +315,7 @@ public:
 
     /* Implement LinkedList.__getitem__() for all variants (slice). */
     template <typename... Args>
-    inline Slice<Args...> slice(Args... args) {
+    inline Slice<Args...> slice(Args&&... args) {
         return Slice(weak_ref(), std::forward<Args>(args)...);
     }
 
@@ -320,34 +325,22 @@ public:
 
         /* Implement LinkedList.__getitem__() for all variants. */
         PyObject* get() {
-            CyLinkedList* parent = ref.get();
-            if (parent == nullptr) {
-                return nullptr;  // propagate
-            }
             return std::visit(
                 [&](auto& list) -> PyObject* {
                     return list[index].get();
                 },
-                parent->variant
+                ref.get()->variant
             );
         }
 
         /* Implement LinkedList.__setitem__() for all variants (single index). */
         void set(PyObject* value) {
-            CyLinkedList* parent = ref.get();
-            if (parent == nullptr) {
-                return;  // propagate
-            }
-            std::visit([&](auto& list) { list[index].set(value); }, parent->variant);
+            std::visit([&](auto& list) { list[index].set(value); }, ref.get()->variant);
         }
 
         /* Implement LinkedList.__delitem__() for all variants (single index). */
         void del() {
-            CyLinkedList* parent = ref.get();
-            if (parent == nullptr) {
-                return;  // propagate
-            }
-            std::visit([&](auto& list) { list[index].del(); }, parent->variant);
+            std::visit([&](auto& list) { list[index].del(); }, ref.get()->variant);
         }
 
     private:
@@ -364,14 +357,14 @@ public:
     class Slice {
     public:
 
-        /* Implement LinkedList.__getitem__() for all variants. */
+        /* Implement LinkedList.__getitem__() for all variants (slice). */
         util::Slot<CyLinkedList> get() {
             return std::visit(
                 [&](auto& list) {
                     util::Slot<CyLinkedList> slot;
                     slot.construct(
                         std::apply(
-                            [&](Args... args) {
+                            [&](auto&&... args) {
                                 return list.slice(std::forward<Args>(args)...).get();
                             },
                             args
@@ -389,7 +382,8 @@ public:
                 [&](auto& list) {
                     // construct proxy using deferred arguments
                     auto proxy = std::apply(
-                        [&](Args... args) { return list.slice(args...); }, args
+                        [&](auto&&... args) { return list.slice(args...); },
+                        args
                     );
  
                     // replace slice
@@ -405,7 +399,8 @@ public:
                 [&](auto& list) {
                     // generate proxy
                     auto proxy = std::apply(
-                        [&](Args... args) { return list.slice(args...); }, args
+                        [&](auto&&... args) { return list.slice(args...); },
+                        args
                     );
 
                     // drop slice
@@ -421,7 +416,7 @@ public:
         std::tuple<Args...> args;  // deferred arguments to list.slice()
 
         /* Create a deferred slice proxy. */
-        Slice(WeakRef self, Args... args) :
+        Slice(WeakRef self, Args&&... args) :
             ref(self), args(std::make_tuple(std::forward<Args>(args)...))
         {}
     };

@@ -115,7 +115,6 @@ public:
 
     /* Create an allocator with an optional fixed size. */
     BaseAllocator(
-        size_t default_capacity,
         size_t capacity,
         bool fixed,
         PyObject* specialization
@@ -482,7 +481,7 @@ public:
         size_t capacity,
         bool fixed,
         PyObject* specialization
-    ) : Base(DEFAULT_CAPACITY, capacity, fixed, specialization),
+    ) : Base(capacity, fixed, specialization),
         array(Base::allocate_array(this->capacity)),
         free_list(std::make_pair(nullptr, nullptr))
     {}
@@ -956,7 +955,7 @@ public:
         std::optional<size_t> capacity,
         bool frozen,
         PyObject* specialization
-    ) : Base(DEFAULT_CAPACITY, adjust_size(capacity), frozen, specialization),
+    ) : Base(adjust_size(capacity), frozen, specialization),
         array(Base::allocate_array(this->capacity)),
         flags(allocate_flags(this->capacity)),
         tombstones(0),
@@ -1259,12 +1258,12 @@ public:
     }
 
     /* Search for a node by reusing a hash from another node. */
-    template <typename Nod, std::enable_if_t<std::is_base_of_v<NodeTag, Node>, int> = 0>
-    inline Node* search(Node* node) const {
-        if constexpr (NodeTraits<Node>::has_hash) {
+    template <typename N, std::enable_if_t<std::is_base_of_v<NodeTag, N>, int> = 0>
+    inline Node* search(N* node) const {
+        if constexpr (NodeTraits<N>::has_hash) {
             return _search(node->hash(), node->value());
         } else {
-            size_t hash = std::hash<Value>{}(node->value());
+            size_t hash = std::hash<typename N::Value>{}(node->value());
             return _search(hash, node->value());
         }
     }

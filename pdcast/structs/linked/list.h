@@ -8,6 +8,10 @@
 #include "core/view.h"  // ListView
 #include "base.h"  // LinkedBase
 
+
+#include "../util/args.h"  // PyArgs
+
+
 #include "algorithms/add.h"
 #include "algorithms/append.h"
 #include "algorithms/concatenate.h"
@@ -207,8 +211,11 @@ public:
 
     /* Get a proxy for a slice within the list. */
     template <typename... Args>
-    inline linked::SliceProxy<LinkedList> slice(Args&&... args) {
-        return linked::slice(*this, std::forward<Args>(args)...);
+    inline linked::SliceProxy<View, LinkedList> slice(Args&&... args) {
+        return linked::slice<View, LinkedList>(
+            this->view,
+            std::forward<Args>(args)...
+        );
     }
 
     //////////////////////////////////
@@ -417,6 +424,730 @@ template <typename Container, typename... Ts>
 inline bool operator>(const Container& lhs, const LinkedList<Ts...>& rhs) {
     return linked::lexical_gt(lhs, rhs);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/////////////////////////////////
+////    PYTHON EQUIVALENT    ////
+/////////////////////////////////
+
+
+// TODO: initializers should be const-correct at all levels
+// -> const PyObject* iterable, const PyObject* spec
+
+
+/* A class that binds the appropriate methods for the given view as a std::variant
+of templated `ListView` types. */
+class PyLinkedList {
+    using SelfRef = cython::SelfRef<PyLinkedList>;
+    using WeakRef = typename SelfRef::WeakRef;
+    using SingleList = LinkedList<
+        linked::SingleNode<PyObject*>,
+        linked::MergeSort,
+        util::BasicLock
+    >;
+    using DoubleList = LinkedList<
+        linked::DoubleNode<PyObject*>,
+        linked::MergeSort,
+        util::BasicLock
+    >;
+
+    /* A discriminated union representing all the LinkedList implementations that are
+    constructable from Python. */
+    using Variant = std::variant<
+        SingleList,
+        DoubleList
+    >;
+
+    /* Select the appropriate variant based on constructor arguments. */
+    template <typename... Args>
+    inline static Variant select_variant(bool singly_linked, Args&&... args) {
+        if (singly_linked) {
+            return SingleList(std::forward<Args>(args)...);
+        } else {
+            return DoubleList(std::forward<Args>(args)...);
+        }
+    }
+
+    PyObject_HEAD
+
+    /* A self-referential shared_ptr to this object that is valid as long as the object
+    has not been garbage collected.  This allows proxies to detect whether the list is
+    still alive before calling any methods, preventing segfaults. */
+    const SelfRef ref;
+
+    /* A functor for locking/unlocking the list in a multithreaded context. */
+    const cython::VariantLock<PyLinkedList> lock;  // TODO: this might just be a Python attribute
+
+    /* A type-erased reference to the underlying C++ view. */
+    Variant variant;
+
+
+    /* Construct an empty PyLinkedList. */
+    PyLinkedList(
+        std::optional<size_t> max_size,
+        PyObject* spec,
+        bool singly_linked
+    ) : ref(*this), lock(*this), variant(select_variant(singly_linked, max_size, spec))
+    {}
+
+    /* Construct a PyLinkedList from an input iterable. */
+    PyLinkedList(
+        PyObject* iterable,
+        std::optional<size_t> max_size,
+        PyObject* spec,
+        bool reverse,
+        bool singly_linked
+    ) : ref(*this), lock(*this),
+        variant(select_variant(singly_linked, iterable, max_size, spec, reverse))
+    {}
+
+    /* Construct a new PyLinkedList from an existing C++ LinkedList. */
+    template <typename List>
+    explicit PyLinkedList(List&& list) :
+        ref(*this), lock(*this), variant(std::move(list))
+    {}
+
+    /* Move constructor. */
+    explicit PyLinkedList(PyLinkedList&& other) :
+        ref(*this), lock(*this), variant(std::move(other.variant))
+    {}
+
+    /* Move assignment operator. */
+    PyLinkedList& operator=(PyLinkedList&& other) {
+        variant = std::move(other.variant);
+        return *this;
+    }
+
+    /* Copy constructor/assignment deleted for simplicity. */
+    PyLinkedList(const PyLinkedList&) = delete;
+    PyLinkedList& operator=(const PyLinkedList&) = delete;
+
+public:
+
+    ////////////////////////////
+    ////    VIEW METHODS    ////
+    ////////////////////////////
+
+    // TODO: we could also move most of this over into a mixin that uses CRTP to
+    // access the appropriate variant.  We could place this in base.h, alongside
+    // LinkedBase.
+
+    /* Getter for `LinkedList.capacity` in Python. */
+    inline static PyObject* capacity(PyLinkedList* self, PyObject* /* ignored */) {
+        size_t result = std::visit(
+            [](auto& list) {
+                return list.capacity();
+            },
+            self->variant
+        );
+        return PyLong_FromSize_t(result);
+    }
+
+    /* Getter for `LinkedList.max_size` in Python. */
+    inline static PyObject* max_size(PyLinkedList* self, PyObject* /* ignored */) {
+        std::optional<size_t> result = std::visit(
+            [](auto& list) {
+                return list.max_size();
+            },
+            self->variant
+        );
+        if (!result.has_value()) {
+            Py_RETURN_NONE;
+        } else {
+            return PyLong_FromSize_t(result.value());
+        }
+    }
+
+    /* Getter for `LinkedList.dynamic` in Python. */
+    inline static PyObject* dynamic(PyLinkedList* self, PyObject* /* ignored */) {
+        bool result = std::visit(
+            [](auto& list) {
+                return list.dynamic();
+            },
+            self->variant
+        );
+        return PyBool_FromLong(result);
+    }
+
+    /* Getter for `LinkedList.frozen` in Python. */
+    inline static PyObject* frozen(PyLinkedList* self, PyObject* /* ignored */) {
+        bool result = std::visit(
+            [](auto& list) {
+                return list.frozen();
+            },
+            self->variant
+        );
+        return PyBool_FromLong(result);
+    }
+
+    /* Getter for `LinkedList.nbytes` in Python. */
+    inline static PyObject* nbytes(PyLinkedList* self, PyObject* /* ignored */) {
+        size_t result = std::visit(
+            [](auto& list) {
+                return list.nbytes();
+            },
+            self->variant
+        );
+        return PyLong_FromSize_t(result);
+    }
+
+    /* Getter for `LinkedList.specialization` in Python. */
+    inline static PyObject* specialization(PyLinkedList* self, PyObject* /* ignored */) {
+        PyObject* result = std::visit(
+            [](auto& list) {
+                return list.specialization();
+            },
+            self->variant
+        );
+        Py_XINCREF(result);
+        return result;
+    }
+
+    // TODO: For reserve() to be available at the Python level, we need to create a
+    // Python wrapper like we did with threading locks/iterators.
+
+    // /* Implement `LinkedList.reserve()` in Python. */
+    // inline PyObject* reserve(size_t size) {
+    //     std::visit(
+    //         [&size](auto& list) {
+    //             return list.reserve(size);
+    //         },
+    //         this->variant
+    //     );
+    // }
+
+    /* Implement `LinkedList.defragment()` in Python. */
+    inline static PyObject* defragment(PyLinkedList* self, PyObject* /* ignored */) {
+        std::visit(
+            [](auto& list) {
+                list.defragment();
+            },
+            self->variant
+        );
+        Py_RETURN_NONE;  // void
+    }
+
+    /* Implement `LinkedList.specialize()` in Python. */
+    inline static PyObject* specialize(PyLinkedList* self, PyObject* spec) {
+        std::visit(
+            [&spec](auto& list) {
+                list.specialize(spec);
+            },
+            self->variant
+        );
+        Py_RETURN_NONE;  // void
+    }
+
+    // /* Implement `LinkedList.__class_getitem__()` in Python. */
+    // inline PyObject* __class_getitem__() {
+    //     // TODO: Create a new PyTypeObject for the specialized type
+    // }
+
+    /* Implement `LinkedList.__len__()` in Python. */
+    inline static Py_ssize_t __len__(PyLinkedList* self) noexcept {
+        return std::visit(
+            [](auto& list) {
+                return list.size();
+            },
+            self->variant
+        );
+    }
+
+    /* Implement `LinkedList.__bool__()` in Python. */
+    inline bool __bool__() const noexcept {
+        return std::visit(
+            [](auto& list) {
+                return !list.empty();
+            },
+            this->variant
+        );
+    }
+
+    /* Implement `LinkedList.__iter__()` in Python. */
+    inline PyObject* __iter__() {
+        return std::visit(
+            [](auto& list) {
+                return util::iter(list).python();
+            },
+            this->variant
+        );
+    }
+
+    /* Implement `LinkedList.__reversed__()` in Python. */
+    inline PyObject* __reversed__() {
+        return std::visit(
+            [](auto& list) {
+                return util::iter(list).rpython();
+            },
+            this->variant
+        );
+    }
+
+    ////////////////////////////
+    ////    LIST METHODS    ////
+    ////////////////////////////
+
+    /* Implement `LinkedList.append()` in Python. */
+    inline static PyObject* append(
+        PyLinkedList* self,
+        PyObject* const* args,
+        Py_ssize_t nargs,
+        PyObject* kwnames
+    ) {
+        try {
+            // parse arguments
+            util::PyArgs pyargs(args, nargs, kwnames);
+            PyObject* item = pyargs.parse("item");
+            bool left = pyargs.parse("left", false, [](PyObject* obj) -> bool {
+                int result = PyObject_IsTrue(obj);
+                if (result == -1) {
+                    throw util::catch_python<util::type_error>();
+                }
+                return static_cast<bool>(result);
+            });
+
+            // invoke C++ method
+            std::visit(
+                [&item, &left](auto& list) {
+                    list.append(item, static_cast<bool>(left));
+                },
+                self->variant
+            );
+
+            // exit normally
+            Py_RETURN_NONE;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            // TODO
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedList.insert()` in Python. */
+    inline void insert(long long index, PyObject* item) {
+        std::visit(
+            [&index, &item](auto& list) {
+                list.insert(index, item);
+            },
+            this->variant
+        );
+    }
+
+    /* Implement `LinkedList.extend()` in Python. */
+    inline void extend(PyObject* items, bool left = false) {
+        std::visit(
+            [&items, &left](auto& list) {
+                list.extend(items, left);
+            },
+            this->variant
+        );
+    }
+
+    /* Implement `LinkedList.index()` in Python. */
+    inline size_t index(
+        PyObject* item,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        return std::visit(
+            [&item, &start, &stop](auto& list) {
+                return list.index(item, start, stop);
+            },
+            this->variant
+        );
+    }
+
+    /* Implement `LinkedList.count()` in Python. */
+    inline size_t count(
+        PyObject* item,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        return std::visit(
+            [&item, &start, &stop](auto& list) {
+                return list.count(item, start, stop);
+            },
+            this->variant
+        );
+    }
+
+    /* Implement `LinkedList.remove()` in Python. */
+    inline void remove(PyObject* item) {
+        std::visit(
+            [&item](auto& list) {
+                list.remove(item);
+            },
+            this->variant
+        );
+    }
+
+    /* Implement `LinkedList.pop()` in Python. */
+    inline PyObject* pop(long long index = -1) {
+        return std::visit(
+            [&index](auto& list) {
+                return list.pop(index);
+            },
+            this->variant
+        );
+    }
+
+    /* Implement `LinkedList.clear()` in Python. */
+    inline void clear() {
+        std::visit(
+            [](auto& list) {
+                list.clear();
+            },
+            this->variant
+        );
+    }
+
+    // /* Implement `LinkedList.copy()` in Python. */
+    // inline PyObject* copy() const {
+    //     // TODO: return a new PyLinkedList, properly reference counted.
+    // }
+
+    /* Implement `LinkedList.sort()` in Python. */
+    inline void sort(PyObject* key = nullptr, bool reverse = false) {
+        std::visit(
+            [&key, &reverse](auto& list) {
+                list.sort(key, reverse);
+            },
+            this->variant
+        );
+    }
+
+    /* Implement `LinkedList.reverse()` in Python. */
+    inline void reverse() {
+        std::visit(
+            [](auto& list) {
+                list.reverse();
+            },
+            this->variant
+        );
+    }
+
+    /* Implement `LinkedList.rotate()` in Python. */
+    inline void rotate(long long steps = 1) {
+        std::visit(
+            [&steps](auto& list) {
+                list.rotate(steps);
+            },
+            this->variant
+        );
+    }
+
+    /* Implement `LinkedList.__contains__()` in Python. */
+    inline static int __contains__(PyLinkedList* self, PyObject* item) {
+        return std::visit(
+            [&item](auto& list) {
+                return list.contains(item);
+            },
+            self->variant
+        );
+    }
+
+    /* Implement `LinkedList.__getitem__()` in Python (scalar). */
+    inline static PyObject* __getitem_scalar__(PyLinkedList* self, Py_ssize_t index) {
+        return std::visit(
+            [&index](auto& list) {
+                return list[index].get();
+            },
+            self->variant
+        );
+    }
+
+    /* Implement `LinkedList.__setitem__()/__delitem__()` in Python (scalar). */
+    inline static int __setitem_scalar__(
+        PyLinkedList* self,
+        Py_ssize_t index,
+        PyObject* item
+    ) {
+        try {
+            std::visit(
+                [&index, &item](auto& list) {
+                    if (item == nullptr) {
+                        list[index].del();
+                    } else {
+                        list[index].set(item);
+                    }
+                },
+                self->variant
+            );
+            return 0;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            // TODO
+            return -1;
+        }
+    }
+
+    /* Implement `LinkedList.__getitem__()` in Python (slice). */
+    inline static PyObject* __getitem_slice__(PyLinkedList* self, PyObject* slice) {
+        // TODO: return a new PyLinkedList, properly reference counted.
+        return nullptr;
+    }
+
+    /* Implement `LinkedList.__setitem__()/__delitem__()` in Python (slice). */
+    inline static int __setitem_slice__(
+        PyLinkedList* self,
+        PyObject* slice,
+        PyObject* items
+    ) {
+        try {
+            std::visit(
+                [&slice, &items](auto& list) {
+                    if (items == nullptr) {
+                        list.slice(slice).del();
+                    } else {
+                        list.slice(slice).set(items);
+                    }
+                },
+                self->variant
+            );
+            return 0;
+        } catch (...) {
+            // TODO
+            return -1;
+        }
+    }
+
+    /* Implement `LinkedList.__add__()/__radd__()` (sequence protocol) in Python. */
+    inline static PyObject* __add__(PyLinkedList* self, PyObject* other) {
+        // TODO: return a new PyLinkedList, properly reference counted.
+        return nullptr;
+    }
+
+    /* Implement `LinkedList.__iadd__()` (sequence protocol) in Python. */
+    inline static PyObject* __iadd__(PyLinkedList* self, PyObject* other) {
+        std::visit(
+            [&other](auto& list) {
+                list += other;
+            },
+            self->variant
+        );
+        Py_INCREF(self);
+        return reinterpret_cast<PyObject*>(self);
+    }
+
+    /* Implement `LinkedList.__mul__()__rmul__()` in Python. */
+    inline static PyObject* __mul__(PyLinkedList* self, Py_ssize_t count) {
+        // TODO: return a new PyLinkedList, properly reference counted.
+        return nullptr;
+    }
+
+    /* Implement `LinkedList.__imul__()` in Python. */
+    inline static PyObject* __imul__(PyLinkedList* self, Py_ssize_t count) {
+        std::visit(
+            [&count](auto& list) {
+                list *= count;
+            },
+            self->variant
+        );
+        Py_INCREF(self);
+        return reinterpret_cast<PyObject*>(self);
+    }
+
+    /* Implement `LinkedList.__lt__()/__le__()/__eq__()/__ne__()/__ge__()/__gt__()` in
+    Python. */
+    inline static PyObject* __richcompare__(
+        PyLinkedList* self,
+        PyObject* other,
+        int cmp
+    ) {
+        try {
+            bool result = std::visit(
+                [&other, &cmp](auto& list) {
+                    switch (cmp) {
+                        case Py_LT:
+                            return list < other;
+                        case Py_LE:
+                            return list <= other;
+                        case Py_EQ:
+                            return list == other;
+                        case Py_NE:
+                            return list != other;
+                        case Py_GE:
+                            return list >= other;
+                        case Py_GT:
+                            return list > other;
+                        default:
+                            throw util::catch_python<util::type_error>();
+                    }
+                },
+                self->variant
+            );
+            return PyBool_FromLong(result);
+        } catch (...) {
+            // TODO
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedList.__str__()` in Python. */
+    inline static PyObject* __str__(PyLinkedList* self) {
+        // TODO: return a formatted string representation of the list
+        return nullptr;
+    }
+
+    /* Implement `LinkedList.__repr__()` in Python. */
+    inline static PyObject* __repr__(PyLinkedList* self) {
+         // TODO: return a formatted string representation of the list
+         return nullptr;
+    }
+
+    /* Deallocate the LinkedList when its reference count falls to zero. */
+    inline static void dealloc(PyLinkedList* self) {
+        // TODO: figure out how to do this properly
+        PyObject_GC_UnTrack(self);
+        type.tp_free(reinterpret_cast<PyObject*>(self));
+    }
+
+    /* Traversal function for cyclic garbage collection. */
+    inline static int gc(PyLinkedList* self, visitproc visit, void* arg) {
+        // TODO: figure out how to do this properly
+        return 0;
+    }
+
+private:
+
+    /* Vtable containing Python method definitions for the LinkedList. */
+    inline static PyMethodDef methods[] = {
+        {
+            "defragment",
+            (PyCFunction) defragment,
+            METH_NOARGS,
+            "docstring for defragment()"
+        },
+        {
+            "specialize",
+            (PyCFunction) specialize,
+            METH_O,
+            "docstring for specialize()"
+        },
+        {
+            "append",
+            (PyCFunction) append,
+            METH_FASTCALL | METH_KEYWORDS,
+            "docstring for append()"
+        },
+        {NULL}  // sentinel
+    };
+
+    /* Vtable containing Python @property definitions for the LinkedList. */
+    inline static PyGetSetDef properties[] = {
+        {
+            "capacity",
+            (getter) capacity,
+            NULL,
+            "docstring for capacity",
+        },
+        {
+            "max_size",
+            (getter) max_size,
+            NULL,
+            "docstring for max_size"
+        },
+        {
+            "dynamic",
+            (getter) dynamic,
+            NULL,
+            "docstring for dynamic"
+        },
+        {
+            "frozen",
+            (getter) frozen,
+            NULL,
+            "docstring for frozen"
+        },
+        {
+            "nbytes",
+            (getter) nbytes,
+            NULL,
+            "docstring for nbytes"
+        },
+        {
+            "specialization",
+            (getter) specialization,
+            NULL,
+            "docstring for specialization"
+        },
+        {NULL}  // sentinel
+    };
+
+    /* Vtable containing special methods related to Python's mapping protocol. */
+    inline static PyMappingMethods mapping = [] {
+        PyMappingMethods slots;
+        slots.mp_length = (lenfunc) __len__;
+        slots.mp_subscript = (binaryfunc) __getitem_slice__;
+        slots.mp_ass_subscript = (objobjargproc) __setitem_slice__;
+        return slots;
+    }();
+
+    /* Vtable containing special methods related to Python's sequence protocol. */
+    inline static PySequenceMethods sequence = [] {
+        PySequenceMethods slots;
+        slots.sq_length = (lenfunc) __len__;
+        slots.sq_concat = (binaryfunc) __add__;
+        slots.sq_repeat = (ssizeargfunc) __mul__;
+        slots.sq_item = (ssizeargfunc) __getitem_scalar__;
+        slots.sq_ass_item = (ssizeobjargproc) __setitem_scalar__;
+        slots.sq_contains = (objobjproc) __contains__;
+        slots.sq_inplace_concat = (binaryfunc) __iadd__;
+        slots.sq_inplace_repeat = (ssizeargfunc) __imul__;
+        return slots;
+    }();
+
+
+    /* Initialize a PyTypeObject to represent the list in Python. */
+    static PyTypeObject init_type() {
+        PyTypeObject slots;
+        slots.tp_name = "LinkedList";
+        slots.tp_basicsize = sizeof(PyLinkedList);
+        slots.tp_itemsize = 0;  // TODO: maybe this should be nonzero?
+        slots.tp_dealloc = (destructor) dealloc;
+        slots.tp_repr = (reprfunc) __repr__;
+        slots.tp_as_sequence = &sequence;
+        slots.tp_as_mapping = &mapping;
+        slots.tp_hash = (hashfunc) PyObject_HashNotImplemented;
+        slots.tp_str = (reprfunc) __str__;
+        slots.tp_flags = (
+            Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_IMMUTABLETYPE |
+            Py_TPFLAGS_SEQUENCE
+            // add Py_TPFLAGS_MANAGED_WEAKREF for Python 3.12+
+        );
+        slots.tp_doc = "docstring for LinkedList";
+        slots.tp_traverse = (traverseproc) gc;
+        slots.tp_richcompare = (richcmpfunc) __richcompare__;
+        return slots;
+    };
+
+    /* The final Python type. */
+    inline static PyTypeObject type = init_type();
+
+};
+
+
+
+
+
+
+
+
 
 
 }  // namespace linked

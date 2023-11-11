@@ -268,7 +268,6 @@ public:
 manager. */
 template <typename GuardType, typename LockType>
 class PyGuard : GuardTag {
-
     PyObject_HEAD
     Slot<GuardType> guard;
     const LockType* lock;

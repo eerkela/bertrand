@@ -22,7 +22,7 @@ namespace linked {
     /* Forward declarations. */
     template <typename View>
     class SliceIndices;
-    template <typename List>
+    template <typename View, typename List>
     class SliceProxy;
 
 
@@ -111,14 +111,12 @@ namespace linked {
 
 
     /* Get a proxy for a slice within the list. */
-    template <typename List, typename... Args>
-    auto slice(List& list, Args&&... args)
-        -> std::enable_if_t<ViewTraits<typename List::View>::listlike, SliceProxy<List>>
+    template <typename View, typename List = View, typename... Args>
+    auto slice(View& view, Args&&... args)
+        -> std::enable_if_t<ViewTraits<View>::listlike, SliceProxy<View, List>>
     {
-        return SliceProxy(
-            list,
-            normalize_slice(list.view, std::forward<Args>(args)...)
-        );
+        using Slice = SliceProxy<View, List>;
+        return Slice(view, normalize_slice(view, std::forward<Args>(args)...));
     }
 
 
@@ -245,13 +243,12 @@ namespace linked {
 
 
     /* A proxy for a slice within a list, as returned by the slice() factory method. */
-    template <typename List>
+    template <typename View, typename List>
     class SliceProxy {
-        using View = typename List::View;
         using Node = typename View::Node;
         using Value = typename View::Value;
 
-        List& list;
+        View& view;
         const SliceIndices<View> indices;
         mutable bool found;  // indicates whether we've cached the origin node
         mutable Node* _origin;  // node that immediately precedes slice (can be NULL)
@@ -263,8 +260,8 @@ namespace linked {
             // find origin node
             if constexpr (NodeTraits<Node>::has_prev) {
                 if (backward()) {  // backward traversal
-                    auto it = list.view.rbegin();
-                    for (size_t i = 1; i < list.view.size() - first(); ++i) ++it;
+                    auto it = view.rbegin();
+                    for (size_t i = 1; i < view.size() - first(); ++i) ++it;
                     found = true;
                     _origin = it.next();
                     return _origin;
@@ -272,7 +269,7 @@ namespace linked {
             }
 
             // forward traversal
-            auto it = list.view.begin();
+            auto it = view.begin();
             for (size_t i = 0; i < first(); ++i) ++it;
             found = true;
             _origin = it.prev();
@@ -280,15 +277,13 @@ namespace linked {
         }
 
         /* Force use of slice() factory function. */
-        template <typename _List, typename... Args>
-        friend auto slice(_List& list, Args&&... args) -> std::enable_if_t<
-            ViewTraits<typename _List::View>::listlike,
-            SliceProxy<_List>
-        >;
+        template <typename _View, typename _List, typename... Args>
+        friend auto slice(_View& view, Args&&... args)
+            -> std::enable_if_t<ViewTraits<_View>::listlike, SliceProxy<_View, _List>>;
 
         /* Construct a SliceProxy with at least one element. */
-        SliceProxy(List& list, SliceIndices<View>&& indices) :
-            list(list), indices(indices), found(false), _origin(nullptr)
+        SliceProxy(View& view, SliceIndices<View>&& indices) :
+            view(view), indices(indices), found(false), _origin(nullptr)
         {}
 
     public:
@@ -410,13 +405,13 @@ namespace linked {
             if constexpr (NodeTraits<Node>::has_prev) {
                 using Backward = Iterator<Direction::backward>;
                 if (backward()) {
-                    return Bidirectional(Backward(list.view, indices, origin()));
+                    return Bidirectional(Backward(view, indices, origin()));
                 }
             }
 
             // forward traversal
             using Forward = Iterator<Direction::forward>;
-            return Bidirectional(Forward(list.view, indices, origin()));        
+            return Bidirectional(Forward(view, indices, origin()));        
         }
 
         /* Return an iterator to the end of the slice. */
@@ -425,13 +420,13 @@ namespace linked {
             if constexpr (NodeTraits<Node>::has_prev) {
                 using Backward = Iterator<Direction::backward>;
                 if (backward()) {
-                    return Bidirectional(Backward(list.view, indices));
+                    return Bidirectional(Backward(view, indices));
                 }
             }
 
             // forward traversal
             using Forward = Iterator<Direction::forward>;
-            return Bidirectional(Forward(list.view, indices));
+            return Bidirectional(Forward(view, indices));
         }
 
         /* Pass through to SliceIndices. */
@@ -451,27 +446,39 @@ namespace linked {
             // NOTE: if original list has fixed size, then so will the slice.  We just
             // have to adjust the max_size parameter to use the smaller slice length
             // rather than the original list size.
-            std::optional<size_t> max_size = list.dynamic() ?
+            std::optional<size_t> max_size = view.dynamic() ?
                 std::nullopt :
                 std::make_optional(length());
-            List result(max_size, list.specialization());
+            View result(max_size, view.specialization());
 
             // trivial case: empty slice
-            if (empty()) return result;
+            if (empty()) {
+                if constexpr (std::is_same_v<View, List>) {
+                    return result;
+                } else {
+                    return List(std::move(result));
+                }
+            }
 
             // preallocate memory for nodes
             typename View::MemGuard guard = result.reserve(length());
 
             // copy nodes from original view into result
             for (auto it = this->begin(), end = this->end(); it != end; ++it) {
-                Node* copy = result.view.node(*(it.curr()));
+                Node* copy = result.node(*(it.curr()));
                 if (inverted()) {  // correct for inverted traversal
-                    result.view.link(nullptr, copy, result.view.head());
+                    result.link(nullptr, copy, result.head());
                 } else {
-                    result.view.link(result.view.tail(), copy, nullptr);
+                    result.link(result.tail(), copy, nullptr);
                 }
             }
-            return result;
+
+            // return as List
+            if constexpr (std::is_same_v<View, List>) {
+                return result;
+            } else {
+                return List(std::move(result));
+            }
         }
 
         /* Replace a slice within a linked list. */
@@ -507,13 +514,13 @@ namespace linked {
 
             // hold allocator at current size (or grow if performing a slice insertion)
             typename View::MemGuard guard = 
-                list.reserve(list.size() + sequence.size() - length());
+                view.reserve(view.size() + sequence.size() - length());
 
             // loop 1: remove current nodes in slice
             for (auto it = this->begin(), end = this->end(); it != end; ++it) {
                 Node* node = it.drop();
                 new (&recovery[it.idx()]) Node(std::move(*node));  // move to recovery
-                list.view.recycle(node);  // recycle original node
+                view.recycle(node);  // recycle original node
             }
 
             // loop 2: insert new nodes from sequence into vacated slice
@@ -526,7 +533,7 @@ namespace linked {
                 auto iter = util::iter(sequence);
                 auto seq = inverted() ? iter.reverse() : iter.forward();
                 for (auto it = this->begin(); seq != seq.end(); ++it, ++seq, ++idx) {
-                    it.insert(list.view.node(*seq));
+                    it.insert(view.node(*seq));
                 }
 
             // rewind if an error occurs
@@ -540,13 +547,13 @@ namespace linked {
                 // loop 3: remove nodes that have already been added to list
                 size_t i = 0;
                 for (auto it = this->begin(); i < idx; ++i, ++it) {
-                    list.view.recycle(it.drop());
+                    view.recycle(it.drop());
                 }
 
                 // loop 4: reinsert original nodes from recovery array
                 for (auto it = this->begin(), end = this->end(); it != end; ++it) {
                     Node& recovery_node = recovery[it.idx()];
-                    it.insert(list.view.node(std::move(recovery_node)));
+                    it.insert(view.node(std::move(recovery_node)));
                     recovery_node.~Node();  // destroy recovery node
                 }
                 throw;  // propagate
@@ -564,11 +571,11 @@ namespace linked {
             if (empty()) return;
 
             // hold allocator at current size until all nodes are removed
-            typename View::MemGuard guard = list.reserve();
+            typename View::MemGuard guard = view.reserve();
 
             // recycle every node in slice
             for (auto it = this->begin(), end = this->end(); it != end; ++it) {
-                list.view.recycle(it.drop());
+                view.recycle(it.drop());
             }
         }
 
