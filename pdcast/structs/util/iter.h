@@ -493,7 +493,7 @@ public:
     }
 
     /* Call next(iter) from Python. */
-    inline static PyObject* iter_next(PyIterator* self) {
+    inline static PyObject* __next__(PyIterator* self) {
         Iterator& begin = reinterpret_cast<Iterator&>(self->first);
         Iterator& end = reinterpret_cast<Iterator&>(self->second);
 
@@ -508,6 +508,8 @@ public:
         return Py_NewRef(result);  // new reference
     }
 
+private:
+
     /* Free the Python iterator when its reference count falls to zero. */
     inline static void dealloc(PyIterator* self) {
         reinterpret_cast<Iterator&>(self->first).~Iterator();
@@ -515,28 +517,29 @@ public:
         Type.tp_free(self);
     }
 
-private:
     /* Initialize a PyTypeObject to represent this iterator from Python. */
     static PyTypeObject init_type() {
-        PyTypeObject type_obj;  // zero-initialize
-        type_obj.tp_name = PyName<Iterator>.data();
-        type_obj.tp_doc = "Python-compatible wrapper around a C++ iterator.";
-        type_obj.tp_basicsize = sizeof(PyIterator);
-        type_obj.tp_flags = (
-            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
-            Py_TPFLAGS_DISALLOW_INSTANTIATION
-        );
-        type_obj.tp_alloc = PyType_GenericAlloc;
-        type_obj.tp_new = PyType_GenericNew;
-        type_obj.tp_iter = PyObject_SelfIter;
-        type_obj.tp_iternext = (iternextfunc) iter_next;
-        type_obj.tp_dealloc = (destructor) dealloc;
+        PyTypeObject slots = {
+            .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+            .tp_name = PyName<Iterator>.data(),
+            .tp_basicsize = sizeof(PyIterator),
+            .tp_dealloc = (destructor) dealloc,
+            .tp_flags = (
+                Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
+                Py_TPFLAGS_DISALLOW_INSTANTIATION
+            ),
+            .tp_doc = "Python-compatible wrapper around a C++ iterator.",
+            .tp_iter = PyObject_SelfIter,
+            .tp_iternext = (iternextfunc) __next__,
+            .tp_alloc = PyType_GenericAlloc,
+            .tp_new = PyType_GenericNew,
+        };
 
         // register iterator type with Python
-        if (PyType_Ready(&type_obj) < 0) {
+        if (PyType_Ready(&slots) < 0) {
             throw std::runtime_error("could not initialize PyIterator type");
         }
-        return type_obj;
+        return slots;
     }
 
     /* C-style Python type declaration. */

@@ -300,7 +300,7 @@ public:
     }
 
     /* Enter the context manager's block, acquiring a new lock. */
-    inline static PyObject* enter(PyGuard* self, PyObject* args) {
+    inline static PyObject* __enter__(PyGuard* self, PyObject* args) {
         if constexpr (GuardTraits<GuardType>::mode == LockMode::EXCLUSIVE) {
             self->guard.construct(self->lock->operator()());
         } else if constexpr (GuardTraits<GuardType>::mode == LockMode::SHARED) {
@@ -312,16 +312,18 @@ public:
     }
 
     /* Exit the context manager's block, releasing the lock. */
-    inline static PyObject* exit(PyGuard* self, PyObject* args) {
+    inline static PyObject* __exit__(PyGuard* self, PyObject* /* ignored */) {
         self->guard.destroy();
         Py_DECREF(self);
         Py_RETURN_NONE;
     }
 
     /* Check if the lock is acquired. */
-    inline static PyObject* locked(PyGuard* self, PyObject* args) {
+    inline static PyObject* locked(PyGuard* self, PyObject* /* ignored */) {
         return PyBool_FromLong(self->guard.constructed());
     }
+
+private:
 
     /* Release the lock when the context manager is garbage collected, if it hasn't
     been released already. */
@@ -330,35 +332,35 @@ public:
         Type.tp_free(self);
     }
 
-private:
-
     /* Vtable containing Python methods for the context manager. */
-    inline static PyMethodDef methods[4] = {
-        {"__enter__", (PyCFunction) enter, METH_NOARGS, "Enter the context manager."},
-        {"__exit__", (PyCFunction) exit, METH_VARARGS, "Exit the context manager."},
+    inline static PyMethodDef methods[] = {
+        {"__enter__", (PyCFunction) __enter__, METH_NOARGS, "Enter the context manager."},
+        {"__exit__", (PyCFunction) __exit__, METH_VARARGS, "Exit the context manager."},
         {"locked", (PyCFunction) locked, METH_NOARGS, "Check if the lock is acquired."},
         {NULL}  // sentinel
     };
 
     /* Initialize a PyTypeObject to represent this lock from Python. */
     static PyTypeObject init_type() {
-        PyTypeObject type_obj;  // zero-initialize
-        type_obj.tp_name = PyName<GuardType>.data();
-        type_obj.tp_doc = "Python-compatible wrapper around a C++ lock guard.";
-        type_obj.tp_basicsize = sizeof(PyGuard);
-        type_obj.tp_flags = (
-            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
-            Py_TPFLAGS_DISALLOW_INSTANTIATION
-        );
-        type_obj.tp_alloc = PyType_GenericAlloc;
-        type_obj.tp_methods = methods;
-        type_obj.tp_dealloc = (destructor) dealloc;
+        PyTypeObject slots = {
+            .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+            .tp_name = PyName<GuardType>.data(),
+            .tp_basicsize = sizeof(PyGuard),
+            .tp_dealloc = (destructor) dealloc,
+            .tp_flags = (
+                Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
+                Py_TPFLAGS_DISALLOW_INSTANTIATION
+            ),
+            .tp_doc = "Python-compatible wrapper around a C++ lock guard.",
+            .tp_methods = methods,
+            .tp_alloc = PyType_GenericAlloc,
+        };
 
         // register iterator type with Python
-        if (PyType_Ready(&type_obj) < 0) {
+        if (PyType_Ready(&slots) < 0) {
             throw std::runtime_error("could not initialize PyGuard type");
         }
-        return type_obj;
+        return slots;
     }
 
     /* C-style Python type declaration. */

@@ -4,8 +4,6 @@
 
 #include <sstream>  // std::ostringstream
 #include <string_view>  // std::string_view
-#include <unordered_map>  // std::unordered_map
-#include <vector>
 #include <Python.h>  // CPython API
 #include "func.h"  // FuncTraits
 
@@ -335,7 +333,9 @@ public:
     }
 
     /* Free the memory allocated for the keyword argument names. */
-    ~PyArgs() noexcept { free(kwnames); }  // no need to call destructor
+    ~PyArgs() noexcept {
+        if (kwnames != nullptr) free(kwnames);  // no need to call destructors
+    }
 
     /* Extract an argument from the pool, using an optional conversion function. */
     template <
