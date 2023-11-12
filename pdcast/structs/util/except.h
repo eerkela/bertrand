@@ -2,10 +2,12 @@
 #ifndef BERTRAND_STRUCTS_UTIL_EXCEPT_H
 #define BERTRAND_STRUCTS_UTIL_EXCEPT_H
 
-#include <stdexcept>  // std::runtime_error
+#include <ios>  // std::ios::failure
+#include <new>  // std::bad_alloc
+#include <stdexcept>  // std::invalid_argument, std::domain_error, ...
 #include <string>  // std::string
-#include <type_traits>  // std::is_constructible_v<>
-#include <typeinfo>  // std::bad_typeid
+#include <type_traits>  // std::is_convertible_v<>
+#include <typeinfo>  // std::bad_typeid, std::bad_cast
 #include <Python.h>  // CPython API
 
 
@@ -20,6 +22,94 @@
 namespace bertrand {
 namespace structs {
 namespace util {
+
+
+/* Base class for all Python-compatible C++ exceptions. */
+class Exception : public std::exception {
+private:
+    std::string message;
+    PyObject* py_exc;
+
+public:
+    using std::exception::exception;
+    using std::exception::operator=;
+
+    /* Allow construction from a custom error message. */
+    Exception(const char* what, PyObject* py_exc) : message(what) {}
+    Exception(const std::string& what, PyObject* py_exc) : message(what) {}
+    Exception(const std::string_view& what, PyObject* py_exc) : message(what) {}
+    inline const char* what() const noexcept override { return message.c_str(); }
+    inline std::string str() const noexcept { return std::string(message); }
+    inline void to_python() const noexcept { PyErr_SetString(py_exc, what()); }
+};
+
+
+/* Python-style MemoryError. */
+struct MemoryError : public Exception {
+    using Exception::Exception;
+    using Exception::operator=;
+    using Exception::what;
+
+    MemoryError(const char* what) : Exception(what, PyExc_MemoryError) {}
+    MemoryError(const std::string& what) : Exception(what, PyExc_MemoryError) {}
+    MemoryError(const std::string_view& what) : Exception(what, PyExc_MemoryError) {}
+};
+
+
+/* Python-style TypeError. */
+struct TypeError : public Exception {
+    using Exception::Exception;
+    using Exception::operator=;
+    using Exception::what;
+
+    TypeError(const char* what) : Exception(what, PyExc_TypeError) {}
+    TypeError(const std::string& what) : Exception(what, PyExc_TypeError) {}
+    TypeError(const std::string_view& what) : Exception(what, PyExc_TypeError) {}
+};
+
+
+/* Python-style ValueError. */
+struct ValueError : public Exception {
+    using Exception::Exception;
+    using Exception::operator=;
+    using Exception::what;
+
+    ValueError(const char* what) : Exception(what, PyExc_ValueError) {}
+    ValueError(const std::string& what) : Exception(what, PyExc_ValueError) {}
+    ValueError(const std::string_view& what) : Exception(what, PyExc_ValueError) {}
+};
+
+
+/* Python-style IndexError. */
+struct IndexError : public Exception {
+    using Exception::Exception;
+    using Exception::operator=;
+    using Exception::what;
+
+    IndexError(const char* what) : Exception(what, PyExc_IndexError) {}
+    IndexError(const std::string& what) : Exception(what, PyExc_IndexError) {}
+    IndexError(const std::string_view& what) : Exception(what, PyExc_IndexError) {}
+};
+
+
+/* Python-style RuntimeError. */
+struct RuntimeError : public Exception {
+    using Exception::Exception;
+    using Exception::operator=;
+    using Exception::what;
+
+    RuntimeError(const char* what) : Exception(what, PyExc_RuntimeError) {}
+    RuntimeError(const std::string& what) : Exception(what, PyExc_RuntimeError) {}
+    RuntimeError(const std::string_view& what) : Exception(what, PyExc_RuntimeError) {}
+};
+
+
+// reference: https://docs.python.org/3/c-api/exceptions.html?highlight=pyexc#standardwarningcategories
+
+
+// TODO: can maybe even store the traceback and just use PyErr_Restore() to send it to
+// Python
+
 
 
 /* Subclass of std::bad_typeid() to allow automatic conversion to Python TypeError() by
@@ -38,27 +128,27 @@ public:
 };
 
 
-/* Convert the most recent Python error into an instance of the templated C++
-exception, preserving the error message. */
-template <typename Exception>
-Exception catch_python() {
+/* Convert the most recent Python error into an equivalent C++ exception, preserving
+the error message.  Requires the GIL. */
+template <typename Exc = Exception>
+Exc catch_python() {
     // sanity check
-    static_assert(
-        std::is_constructible_v<Exception, std::string>,
-        "Exception type must be constructible from std::string"
-    );
+    // static_assert(
+    //     std::is_convertible_v<Exc, Exception>,
+    //     "Exception type must inherit from util::Exception"
+    // );
 
-    // Get the most recent Python error
-    PyObject* exc_type;  // PyErr_Fetch() initializes these and clears error indicator
-    PyObject* exc_value;
-    PyObject* exc_traceback;
-    PyErr_Fetch(&exc_type, &exc_value, &exc_traceback);
-    PyErr_NormalizeException(&exc_type, &exc_value, &exc_traceback);
+    // catch the most recent Python error
+    PyObject* type;
+    PyObject* value;
+    PyObject* traceback;
+    PyErr_Fetch(&type, &value, &traceback);
+    PyErr_NormalizeException(&type, &value, &traceback);
 
     // Get the error message from the exception if one exists
     std::string msg("Unknown error");
-    if (exc_type != nullptr) {
-        PyObject* str = PyObject_Str(exc_value);
+    if (type != nullptr) {
+        PyObject* str = PyObject_Str(value);
         if (str == nullptr) {
             msg = "Unknown error (could not get exception message)";
         } else if (!PyUnicode_Check(str)) {
@@ -74,13 +164,63 @@ Exception catch_python() {
         Py_XDECREF(str);  // release python string
     }
 
-    // Decrement reference counts
-    Py_XDECREF(exc_type);
-    Py_XDECREF(exc_value);
-    Py_XDECREF(exc_traceback);
+    // throw away Python exception
+    Py_XDECREF(type);
+    Py_XDECREF(value);
+    Py_XDECREF(traceback);
 
     // return as templated exception type
-    return Exception(msg);
+    if constexpr (std::is_same_v<Exc, Exception>) {
+        return Exc(msg, type);
+    } else {
+        return Exc(msg);
+    }
+}
+
+
+/* Convert the most recent C++ exception into an equivalent Python error, preserving
+the error message.  Requires the GIL. */
+inline void throw_python() {
+    // catch the most recent C++ error
+    try {
+        throw;
+    }
+
+    // handle custom Exceptions
+    catch (const Exception& e) {
+        e.to_python();
+    }
+
+    // Cython-style exception handling (matches existing rules)
+    // https://cython.readthedocs.io/en/latest/src/userguide/wrapping_CPlusPlus.html#exceptions
+    catch (const std::bad_alloc& e) {
+        PyErr_SetString(PyExc_MemoryError, e.what());  // bad_alloc -> MemoryError
+    } catch (const std::bad_cast& e) {
+        PyErr_SetString(PyExc_TypeError, e.what());  // bad_cast -> TypeError
+    } catch (const std::bad_typeid& e) {
+        PyErr_SetString(PyExc_TypeError, e.what());  // bad_typeid -> TypeError
+    } catch (const std::domain_error& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());  // domain_error -> ValueError
+    } catch (const std::invalid_argument& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());  // invalid_argument -> ValueError
+    } catch (const std::ios_base::failure& e) {
+        PyErr_SetString(PyExc_IOError, e.what());  // ios_base::failure -> IOError
+    } catch (const std::out_of_range& e) {
+        PyErr_SetString(PyExc_IndexError, e.what());  // out_of_range -> IndexError
+    } catch (const std::overflow_error& e) {
+        PyErr_SetString(PyExc_OverflowError, e.what());  // overflow_error -> OverflowError
+    } catch (const std::range_error& e) {
+        PyErr_SetString(PyExc_ArithmeticError, e.what());  // range_error -> ArithmeticError
+    } catch (const std::underflow_error& e) {
+        PyErr_SetString(PyExc_ArithmeticError, e.what());  // underflow_error -> ArithmeticError
+    }
+
+    // all other exceptions map to RuntimeError
+    catch (const std::exception& exc) {
+        PyErr_SetString(PyExc_RuntimeError, exc.what());
+    } catch (...) {
+        PyErr_SetString(PyExc_RuntimeError, "Unknown error");
+    }
 }
 
 

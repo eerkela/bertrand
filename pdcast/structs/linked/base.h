@@ -340,6 +340,212 @@ private:
 }  // namespace cython
 
 
+//////////////////////////////
+////    PYTHON WRAPPER    ////
+//////////////////////////////
+
+
+// TODO: SelfRef is only needed for RelativeProxies, which are not yet implemented.
+
+// TODO: VariantLock should be an inner class within PyLinkedBase, and should be
+// exposed as a PyObject* member attribute.
+
+
+/* A CRTP-enabled base class that exposes properties inherited from LinkedBase to
+Python. */
+template <typename Derived>
+class PyLinkedBase {
+public:
+
+    /* Getter for `LinkedList.capacity` in Python. */
+    inline static PyObject* capacity(Derived* self, PyObject* /* ignored */) noexcept {
+        size_t result = std::visit(
+            [](auto& list) {
+                return list.capacity();
+            },
+            self->variant
+        );
+        return PyLong_FromSize_t(result);
+    }
+
+    /* Getter for `LinkedList.max_size` in Python. */
+    inline static PyObject* max_size(Derived* self, PyObject* /* ignored */) noexcept {
+        std::optional<size_t> result = std::visit(
+            [](auto& list) {
+                return list.max_size();
+            },
+            self->variant
+        );
+        if (result.has_value()) {
+            return PyLong_FromSize_t(result.value());
+        } else {
+            Py_RETURN_NONE;
+        }
+    }
+
+    /* Getter for `LinkedList.dynamic` in Python. */
+    inline static PyObject* dynamic(Derived* self, PyObject* /* ignored */) noexcept {
+        bool result = std::visit(
+            [](auto& list) {
+                return list.dynamic();
+            },
+            self->variant
+        );
+        return PyBool_FromLong(result);
+    }
+
+    /* Getter for `LinkedList.frozen` in Python. */
+    inline static PyObject* frozen(Derived* self, PyObject* /* ignored */) noexcept {
+        bool result = std::visit(
+            [](auto& list) {
+                return list.frozen();
+            },
+            self->variant
+        );
+        return PyBool_FromLong(result);
+    }
+
+    /* Getter for `LinkedList.nbytes` in Python. */
+    inline static PyObject* nbytes(Derived* self, PyObject* /* ignored */) noexcept {
+        size_t result = std::visit(
+            [](auto& list) {
+                return list.nbytes();
+            },
+            self->variant
+        );
+        return PyLong_FromSize_t(result);
+    }
+
+    /* Getter for `LinkedList.specialization` in Python. */
+    inline static PyObject* specialization(Derived* self, PyObject* /* ignored */) noexcept {
+        PyObject* result = std::visit(
+            [](auto& list) {
+                return list.specialization();
+            },
+            self->variant
+        );
+        return Py_XNewRef(result);
+    }
+
+    // TODO: For reserve() to be available at the Python level, we need to create a
+    // Python wrapper like we did with threading locks/iterators.
+
+    // /* Implement `LinkedList.reserve()` in Python. */
+    // inline PyObject* reserve(size_t size) {
+    //     std::visit(
+    //         [&size](auto& list) {
+    //             return list.reserve(size);
+    //         },
+    //         this->variant
+    //     );
+    // }
+
+    /* Implement `LinkedList.defragment()` in Python. */
+    inline static PyObject* defragment(Derived* self, PyObject* /* ignored */) {
+        std::visit(
+            [](auto& list) {
+                list.defragment();
+            },
+            self->variant
+        );
+        Py_RETURN_NONE;  // void
+    }
+
+    /* Implement `LinkedList.specialize()` in Python. */
+    inline static PyObject* specialize(Derived* self, PyObject* spec) {
+        std::visit(
+            [&spec](auto& list) {
+                list.specialize(spec);
+            },
+            self->variant
+        );
+        Py_RETURN_NONE;  // void
+    }
+
+    // /* Implement `LinkedList.__class_getitem__()` in Python. */
+    // inline PyObject* __class_getitem__() {
+    //     // TODO: Create a new heap type for the specialization
+    // }
+
+    /* Implement `LinkedList.__len__()` in Python. */
+    inline static Py_ssize_t __len__(Derived* self) noexcept {
+        return std::visit(
+            [](auto& list) {
+                return list.size();
+            },
+            self->variant
+        );
+    }
+
+    /* Implement `LinkedList.__iter__()` in Python. */
+    inline static PyObject* __iter__(Derived* self) noexcept {
+        return std::visit(
+            [](auto& list) {
+                return util::iter(list).python();
+            },
+            self->variant
+        );
+    }
+
+    /* Implement `LinkedList.__reversed__()` in Python. */
+    inline static PyObject* __reversed__(Derived* self, PyObject* /* ignored */) noexcept {
+        return std::visit(
+            [](auto& list) {
+                return util::iter(list).rpython();
+            },
+            self->variant
+        );
+    }
+
+protected:
+    const cython::VariantLock<PyLinkedBase> lock;
+    PyLinkedBase() : lock(*this) {}
+
+    /* Allocate a new LinkedList instance from Python and register it with the cyclic
+    garbage collector. */
+    inline static PyObject* __new__(
+        PyTypeObject* type,
+        PyObject* /* ignored */,
+        PyObject* /* ignored */
+    ) {
+        Derived* self = reinterpret_cast<Derived*>(type->tp_alloc(type, 0));
+        if (self == nullptr) return nullptr;
+        PyObject_GC_Track(self);  // register with cyclic garbage collector
+        return reinterpret_cast<PyObject*>(self);
+    }
+
+    /* Deallocate the LinkedList when its Python reference count falls to zero. */
+    inline static void __dealloc__(Derived* self) {
+        PyObject_GC_UnTrack(self);  // unregister from cyclic garbage collector
+        self->~Derived();  // hook into C++ destructor
+        Py_TYPE(self)->tp_free(reinterpret_cast<PyObject*>(self));
+    }
+
+    /* Traversal function for Python's cyclic garbage collector. */
+    inline static int __traverse__(Derived* self, visitproc visit, void* arg) {
+        return std::visit(
+            [&](auto& list) {
+                for (auto item : list) Py_VISIT(item);
+                return 0;
+            },
+            self->variant
+        );
+    }
+
+    /* Clear function for Python's cyclic garbage collector. */
+    inline static int __clear__(Derived* self) {
+        return std::visit(
+            [&](auto& list) {
+                for (auto item : list) Py_CLEAR(item);
+                return 0;
+            },
+            self->variant
+        );
+    }
+
+};
+
+
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
