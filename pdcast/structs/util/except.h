@@ -27,7 +27,7 @@ namespace util {
 /* Base class for all Python-compatible C++ exceptions. */
 class Exception : public std::exception {
 private:
-    std::string message;
+    const std::string message;
     PyObject* py_exc;
 
 public:
@@ -35,12 +35,23 @@ public:
     using std::exception::operator=;
 
     /* Allow construction from a custom error message. */
-    Exception(const char* what, PyObject* py_exc) : message(what) {}
-    Exception(const std::string& what, PyObject* py_exc) : message(what) {}
-    Exception(const std::string_view& what, PyObject* py_exc) : message(what) {}
+    explicit Exception(const char* what, PyObject* py_exc) :
+        message(what), py_exc(py_exc)
+    {}
+    explicit Exception(const std::string& what, PyObject* py_exc) :
+        message(what), py_exc(py_exc)
+    {}
+    explicit Exception(const std::string_view& what, PyObject* py_exc) :
+        message(what), py_exc(py_exc)
+    {}
+
+    /* Get error message. */
     inline const char* what() const noexcept override { return message.c_str(); }
-    inline std::string str() const noexcept { return std::string(message); }
-    inline void to_python() const noexcept { PyErr_SetString(py_exc, what()); }
+    inline const std::string str() const noexcept { return message; }
+    inline const std::string_view view() const noexcept { return message; }
+
+    /* Convert to an equivalent Python error. */
+    inline void to_python() const noexcept { PyErr_SetString(py_exc, this->what()); }
 };
 
 
@@ -50,9 +61,9 @@ struct MemoryError : public Exception {
     using Exception::operator=;
     using Exception::what;
 
-    MemoryError(const char* what) : Exception(what, PyExc_MemoryError) {}
-    MemoryError(const std::string& what) : Exception(what, PyExc_MemoryError) {}
-    MemoryError(const std::string_view& what) : Exception(what, PyExc_MemoryError) {}
+    explicit MemoryError(const char* what) : Exception(what, PyExc_MemoryError) {}
+    explicit MemoryError(const std::string& what) : Exception(what, PyExc_MemoryError) {}
+    explicit MemoryError(const std::string_view& what) : Exception(what, PyExc_MemoryError) {}
 };
 
 
@@ -60,7 +71,6 @@ struct MemoryError : public Exception {
 struct TypeError : public Exception {
     using Exception::Exception;
     using Exception::operator=;
-    using Exception::what;
 
     TypeError(const char* what) : Exception(what, PyExc_TypeError) {}
     TypeError(const std::string& what) : Exception(what, PyExc_TypeError) {}
@@ -72,7 +82,6 @@ struct TypeError : public Exception {
 struct ValueError : public Exception {
     using Exception::Exception;
     using Exception::operator=;
-    using Exception::what;
 
     ValueError(const char* what) : Exception(what, PyExc_ValueError) {}
     ValueError(const std::string& what) : Exception(what, PyExc_ValueError) {}
@@ -84,7 +93,6 @@ struct ValueError : public Exception {
 struct IndexError : public Exception {
     using Exception::Exception;
     using Exception::operator=;
-    using Exception::what;
 
     IndexError(const char* what) : Exception(what, PyExc_IndexError) {}
     IndexError(const std::string& what) : Exception(what, PyExc_IndexError) {}
@@ -96,7 +104,6 @@ struct IndexError : public Exception {
 struct RuntimeError : public Exception {
     using Exception::Exception;
     using Exception::operator=;
-    using Exception::what;
 
     RuntimeError(const char* what) : Exception(what, PyExc_RuntimeError) {}
     RuntimeError(const std::string& what) : Exception(what, PyExc_RuntimeError) {}
@@ -111,32 +118,15 @@ struct RuntimeError : public Exception {
 // Python
 
 
-
-/* Subclass of std::bad_typeid() to allow automatic conversion to Python TypeError() by
-Cython. */
-class type_error : public std::bad_typeid {
-private:
-    std::string message;
-
-public:
-    using std::bad_typeid::bad_typeid;  // inherit default constructors
-
-    /* Allow construction from a custom error message. */
-    type_error(const std::string& what) : message(what) {}
-    type_error(const char* what) : message(what) {}
-    const char* what() const noexcept override { return message.c_str(); }
-};
-
-
 /* Convert the most recent Python error into an equivalent C++ exception, preserving
 the error message.  Requires the GIL. */
 template <typename Exc = Exception>
 Exc catch_python() {
     // sanity check
-    // static_assert(
-    //     std::is_convertible_v<Exc, Exception>,
-    //     "Exception type must inherit from util::Exception"
-    // );
+    static_assert(
+        std::is_convertible_v<Exc, Exception>,
+        "Exception type must inherit from util::Exception"
+    );
 
     // catch the most recent Python error
     PyObject* type;

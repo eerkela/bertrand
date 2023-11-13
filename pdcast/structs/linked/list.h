@@ -4,13 +4,13 @@
 
 #include <cstddef>  // size_t
 #include <optional>  // std::optional
+#include <ostream>  // std::ostream
+#include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
+#include "../util/args.h"  // PyArgs
+#include "../util/except.h"  // catch_python
 #include "core/view.h"  // ListView
 #include "base.h"  // LinkedBase
-
-
-#include "../util/args.h"  // PyArgs
-
 
 #include "algorithms/add.h"
 #include "algorithms/append.h"
@@ -29,6 +29,7 @@
 #include "algorithms/rotate.h"
 #include "algorithms/slice.h"
 #include "algorithms/sort.h"
+#include "algorithms/repr.h"
 
 
 namespace bertrand {
@@ -240,6 +241,26 @@ public:
      */
 
 };
+
+
+/////////////////////////////////////
+////    STRING REPRESENTATION    ////
+/////////////////////////////////////
+
+
+/* Override the << operator to print the abbreviated contents of a list to an output
+stream (equivalent to Python repr()). */
+template <typename... Ts>
+std::ostream& operator<<(std::ostream& stream, const LinkedList<Ts...>& list) {
+    stream << linked::repr(
+        list.view,
+        "LinkedList",
+        "[",
+        "]",
+        64
+    );
+    return stream;
+}
 
 
 /////////////////////////////
@@ -460,50 +481,18 @@ class PyLinkedList : public PyLinkedBase<PyLinkedList> {
     >;
 
     friend Base;
-
-    PyObject_HEAD
     Variant variant;
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Select the appropriate variant based on constructor arguments. */
-    template <typename... Args>
-    inline static Variant get_variant(bool singly_linked, Args&&... args) {
-        if (singly_linked) {
-            return SingleList(std::forward<Args>(args)...);
-        } else {
-            return DoubleList(std::forward<Args>(args)...);
-        }
-    }
-
-    /* Construct an empty PyLinkedList. */
-    PyLinkedList(
-        std::optional<size_t> max_size,
-        PyObject* spec,
-        bool singly_linked
-    ) : Base(), variant(get_variant(singly_linked, max_size, spec))
-    {}
-
-    /* Construct a PyLinkedList by unpacking an input iterable. */
-    PyLinkedList(
-        PyObject* iterable,
-        std::optional<size_t> max_size,
-        PyObject* spec,
-        bool reverse,
-        bool singly_linked
-    ) : Base(), variant(get_variant(singly_linked, iterable, max_size, spec, reverse))
-    {}
 
     /* Construct a PyLinkedList around an existing C++ LinkedList. */
     template <typename List>
-    explicit PyLinkedList(List&& list) : Base(), variant(std::move(list)) {}
+    inline void from_cpp(List&& list) {
+        new (&variant) Variant(std::forward<List>(list));
+    }
 
 public:
 
     /* Initialize a LinkedList instance from Python. */
-    inline static int __init__(
+    static int __init__(
         PyLinkedList* self,
         PyObject* args,
         PyObject* kwargs
@@ -514,13 +503,13 @@ public:
             // parse arguments
             Args pyargs(args, kwargs);
             PyObject* iterable = pyargs.parse(
-                "iterable", Base::none_to_null, (PyObject*) nullptr
+                "iterable", Base::none_to_null, (PyObject*)nullptr
             );
             std::optional<size_t> max_size = pyargs.parse(
                 "max_size",
                 [](PyObject* obj) -> std::optional<size_t> {
                     if (obj == Py_None) return std::nullopt;
-                    long long result = Base::parse_index(obj);
+                    long long result = Base::parse_int(obj);
                     if (result < 0) throw ValueError("max_size cannot be negative");
                     return std::make_optional(static_cast<size_t>(result));
                 },
@@ -533,9 +522,21 @@ public:
 
             // initialize
             if (iterable == nullptr) {
-                new (self) PyLinkedList(max_size, spec, singly_linked);
+                if (singly_linked) {
+                    new (&self->variant) Variant(SingleList(max_size, spec));
+                } else {
+                    new (&self->variant) Variant(DoubleList(max_size, spec));
+                }
             } else {
-                new (self) PyLinkedList(iterable, max_size, spec, reverse, singly_linked);
+                if (singly_linked) {
+                    new (&self->variant) Variant(
+                        SingleList(iterable, max_size, spec, reverse)
+                    );
+                } else {
+                    new (&self->variant) Variant(
+                        DoubleList(iterable, max_size, spec, reverse)
+                    );
+                }
             }
 
             // exit normally
@@ -560,7 +561,7 @@ public:
             // parse arguments
             Args pyargs(args, nargs, kwnames);
             PyObject* item = pyargs.parse("item");
-            bool left = pyargs.parse("left", Base::is_truthy,false);
+            bool left = pyargs.parse("left", Base::is_truthy, false);
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -592,7 +593,7 @@ public:
         try {
             // parse arguments
             Args pyargs(args, nargs, kwnames);
-            long long index = pyargs.parse("index", Base::parse_index);
+            long long index = pyargs.parse("index", Base::parse_int);
             PyObject* item = pyargs.parse("item");
             pyargs.finalize();
 
@@ -660,12 +661,8 @@ public:
             // parse arguments
             Args pyargs(args, nargs, kwnames);
             PyObject* item = pyargs.parse("item");
-            Index start = pyargs.parse(
-                "start", Base::parse_opt_index, Index()
-            );
-            Index stop = pyargs.parse(
-                "stop", Base::parse_opt_index, Index()
-            );
+            Index start = pyargs.parse("start", Base::parse_opt_int, Index());
+            Index stop = pyargs.parse("stop", Base::parse_opt_int, Index());
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -699,12 +696,8 @@ public:
             // parse arguments
             Args pyargs(args, nargs, kwnames);
             PyObject* item = pyargs.parse("item");
-            Index start = pyargs.parse(
-                "start", Base::parse_opt_index, Index()
-            );
-            Index stop = pyargs.parse(
-                "stop", Base::parse_opt_index, Index()
-            );
+            Index start = pyargs.parse("start", Base::parse_opt_int, Index());
+            Index stop = pyargs.parse("stop", Base::parse_opt_int, Index());
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -757,7 +750,7 @@ public:
             // parse arguments
             Args pyargs(args, nargs);
             long long index = pyargs.parse(
-                "index", Base::parse_index, (long long) -1
+                "index", Base::parse_int, (long long) -1
             );
             pyargs.finalize();
 
@@ -809,7 +802,7 @@ public:
         try {
             return std::visit(
                 [&result](auto& list) {
-                    new (result) PyLinkedList(list.copy());
+                    result->from_cpp(list.copy());
                     return reinterpret_cast<PyObject*>(result);
                 },
                 self->variant
@@ -895,7 +888,7 @@ public:
         try {
             // parse arguments
             Args pyargs(args, nargs);
-            long long steps = pyargs.parse("steps", Base::parse_index, (long long) 1);
+            long long steps = pyargs.parse("steps", Base::parse_int, (long long) 1);
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -939,7 +932,7 @@ public:
         try {
             // check for integer index
             if (PyIndex_Check(key)) {
-                long long index = Base::parse_index(key);
+                long long index = Base::parse_int(key);
                 PyObject* result = std::visit(
                     [&index](auto& list) {
                         return list[index].get();
@@ -957,7 +950,7 @@ public:
                 if (result == nullptr) throw util::catch_python();
                 return std::visit(
                     [&result, &key](auto& list) {
-                        new (result) PyLinkedList(list.slice(key).get());
+                        result->from_cpp(list.slice(key).get());
                         return reinterpret_cast<PyObject*>(result);
                     },
                     self->variant
@@ -988,7 +981,7 @@ public:
         try {
             // check for integer index
             if (PyIndex_Check(key)) {
-                long long index = Base::parse_index(key);
+                long long index = Base::parse_int(key);
                 std::visit(
                     [&index, &items](auto& list) {
                         if (items == nullptr) {
@@ -1031,21 +1024,8 @@ public:
         }
     }
 
-    /* Implement `LinkedList.__add__()/__radd__()` in Python. */
-    static PyObject* __add__(PyObject* lhs, PyObject* rhs) {
-        // differentiate between left/right operands
-        PyLinkedList* self;
-        PyObject* other;
-        if (PyObject_TypeCheck(lhs, &PyLinkedList::Type)) {
-            self = reinterpret_cast<PyLinkedList*>(lhs);
-            other = rhs;
-        } else if (PyObject_TypeCheck(rhs, &Type)) {
-            self = reinterpret_cast<PyLinkedList*>(rhs);
-            other = lhs;
-        } else {
-            Py_RETURN_NOTIMPLEMENTED;  // continue with overload resolution
-        }
-
+    /* Implement `LinkedList.__add__()` in Python. */
+    static PyObject* __add__(PyLinkedList* self, PyObject* other) {
         // allocate new Python list
         PyLinkedList* result = reinterpret_cast<PyLinkedList*>(
             Base::__new__(&Type, nullptr, nullptr)
@@ -1056,7 +1036,7 @@ public:
         try {
             return std::visit(
                 [&other, &result](auto& list) {
-                    new (result) PyLinkedList(list + other);
+                    result->from_cpp(list + other);
                     return reinterpret_cast<PyObject*>(result);
                 },
                 self->variant
@@ -1100,7 +1080,7 @@ public:
         try {
             return std::visit(
                 [&count, &result](auto& list) {
-                    new (result) PyLinkedList(list * count);
+                    result->from_cpp(list * count);
                     return reinterpret_cast<PyObject*>(result);
                 },
                 self->variant
@@ -1201,21 +1181,12 @@ public:
     static PyObject* __repr__(PyLinkedList* self) {
         try {
             std::ostringstream stream;
-            stream << "LinkedList([";
             std::visit(
                 [&stream](auto& list) {
-                    auto it = list.begin();
-                    if (it != list.end()) {
-                        stream << util::repr(*it);
-                        ++it;
-                    }
-                    for (; it != list.end(); ++it) {
-                        stream << ", " << util::repr(*it);
-                    }
+                    stream << list;
                 },
                 self->variant
             );
-            stream << "])";
             return PyUnicode_FromString(stream.str().c_str());
 
         // translate C++ errors into Python exceptions
@@ -1440,7 +1411,7 @@ private:
     }();
 
     /* Initialize a PyTypeObject to represent the list in Python. */
-    static PyTypeObject init_type() {
+    static PyTypeObject build_type() {
         return {
             .ob_base = PyObject_HEAD_INIT(NULL)
             .tp_name = "LinkedList",
@@ -1469,10 +1440,43 @@ private:
         };
     };
 
+
+public:
+
     /* The final Python type. */
-    inline static PyTypeObject Type = init_type();
+    inline static PyTypeObject Type = build_type();
 
 };
+
+
+/* Python module definition. */
+static struct PyModuleDef module_ = {
+    PyModuleDef_HEAD_INIT,
+    .m_name = "list_python",
+    .m_doc = "docstring for list module",
+    .m_size = -1,
+};
+
+
+/* Python import hook. */
+PyMODINIT_FUNC PyInit_list_python(void) {
+    // initialize type objects
+    if (PyType_Ready(&PyLinkedList::Type) < 0) return nullptr;
+
+    // initialize module
+    PyObject* mod = PyModule_Create(&module_);
+    if (mod == nullptr) return nullptr;
+
+    // link type to module
+    Py_INCREF(&PyLinkedList::Type);
+    if (PyModule_AddObject(mod, "LinkedList", (PyObject*) &PyLinkedList::Type) < 0) {
+        Py_DECREF(&PyLinkedList::Type);
+        Py_DECREF(mod);
+        return nullptr;
+    }
+
+    return mod;
+}
 
 
 }  // namespace linked

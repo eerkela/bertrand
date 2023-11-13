@@ -6,7 +6,7 @@
 #include <vector>  // std::vector
 #include <Python.h>  // CPython API
 #include "base.h"  // is_pyobject<>
-#include "except.h"  // catch_python<>, type_error
+#include "except.h"  // catch_python<>, TypeError
 #include "iter.h"  // iter()
 
 
@@ -37,7 +37,7 @@ class PySequence {
     inline PyObject* unpack(const T& iterable) {
         PyObject* seq = PySequence_Fast(iterable, "could not unpack Python iterable");
         if (seq == nullptr) {
-            throw catch_python<type_error>();
+            throw catch_python<TypeError>();
         }
         return seq;
     }

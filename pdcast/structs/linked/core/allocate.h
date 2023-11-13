@@ -10,10 +10,10 @@
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
 #include <Python.h>  // CPython API
-#include "../util/except.h"  // catch_python(), type_error()
-#include "../util/math.h"  // next_power_of_two()
-#include "../util/python.h"  // std::hash<PyObject*>, eq(), len()
-#include "../util/repr.h"  // repr()
+#include "../../util/except.h"  // catch_python(), TypeError()
+#include "../../util/math.h"  // next_power_of_two()
+#include "../../util/python.h"  // std::hash<PyObject*>, eq(), len()
+#include "../../util/repr.h"  // repr()
 #include "node.h"  // NodeTraits
 
 
@@ -83,7 +83,7 @@ protected:
             msg << repr(node->value()) << " is not of type ";
             msg << repr(specialization);
             node->~Node();  // in-place destructor
-            throw util::type_error(msg.str());
+            throw util::TypeError(msg.str());
         }
 
         if constexpr (DEBUG) {
@@ -246,7 +246,7 @@ public:
         if (specialization != nullptr) {
             int comp = PyObject_RichCompareBool(spec, specialization, Py_EQ);
             if (comp == -1) {  // comparison raised an exception
-                throw util::catch_python<util::type_error>();
+                throw util::catch_python<util::TypeError>();
             } else if (comp == 1) {
                 return;
             }
@@ -256,7 +256,7 @@ public:
         Node* curr = head;
         while (curr != nullptr) {
             if (!curr->typecheck(spec)) {
-                throw util::type_error("node type does not match specialization");
+                throw util::TypeError("node type does not match specialization");
             }
             curr = curr->next();
         }

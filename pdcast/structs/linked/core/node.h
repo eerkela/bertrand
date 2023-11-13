@@ -8,9 +8,9 @@
 #include <stdexcept>  // std::invalid_argument
 #include <type_traits>  // std::enable_if_t<>, std::is_convertible_v<>, etc.
 #include <Python.h>  // CPython API
-#include "../util/except.h"  // catch_python(), type_error()
-#include "../util/func.h"  // FuncTraits
-#include "../util/repr.h"  // repr()
+#include "../../util/except.h"  // catch_python(), TypeError()
+#include "../../util/func.h"  // FuncTraits
+#include "../../util/repr.h"  // repr()
 
 
 namespace bertrand {
@@ -49,7 +49,7 @@ public:
     inline std::enable_if_t<cond, bool> typecheck(PyObject* specialization) const {
         int comp = PyObject_IsInstance(_value, specialization);
         if (comp == -1) {
-            throw util::catch_python<util::type_error>();
+            throw util::catch_python<util::TypeError>();
         }
         return static_cast<bool>(comp);
     }
@@ -415,7 +415,7 @@ private:
             // apply key function to node value
             PyObject* val = PyObject_CallFunctionObjArgs(func, arg, nullptr);
             if (val == nullptr) {
-                throw util::catch_python<util::type_error>();
+                throw util::catch_python<util::TypeError>();
             }
             return val;  // new reference
 
@@ -524,7 +524,7 @@ class Hashed : public Wrapped {
                 // NOTE: we have to make sure to release any resources that were
                 // acquired during the wrapped constructor
                 node->~Hashed();
-                throw util::catch_python<util::type_error>();
+                throw util::catch_python<util::TypeError>();
             }
             return static_cast<size_t>(hash_val);  // for compatibility with std::hash
         } else {
@@ -647,7 +647,7 @@ class Mapped : public Wrapped {
         if (!PyTuple_Check(tuple) || PyTuple_Size(tuple) != 2) {
             std::ostringstream msg;
             msg << "Expected tuple of size 2 (key, value), not: " << util::repr(tuple);
-            throw util::type_error(msg.str());
+            throw util::TypeError(msg.str());
         }
 
         // unpack tuple and return pair

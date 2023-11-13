@@ -6,7 +6,9 @@
 #include <sstream>  // std::ostringstream
 #include <string_view>  // std::string_view
 #include <Python.h>  // CPython API
+#include "except.h"  // TypeError
 #include "func.h"  // FuncTraits
+
 
 
 namespace bertrand {
@@ -34,14 +36,6 @@ protected:
     /* Initialize basic arg/kwarg counts for the parser. */
     BaseArgs(const Py_ssize_t n_args, const Py_ssize_t n_kwargs = 0) :
         n_args(n_args), n_kwargs(n_kwargs), idx(0)
-    {};
-
-    /* Initialize arg/kwarg counts by subtracting n_kwargs from n_args. */
-    BaseArgs(
-        const Py_ssize_t n_args,
-        const Py_ssize_t n_kwargs,
-        const bool subtract_kwargs  // empty tag
-    ) : n_args(n_args - n_kwargs), n_kwargs(n_kwargs), idx(0)
     {};
 
 public:
@@ -107,9 +101,9 @@ public:
     inline void finalize() {
         if (idx < n_args + n_kwargs) {
             std::ostringstream msg;
-            msg << "Function takes at most " << idx << "arguments, but ";
+            msg << "Function takes at most " << idx << " arguments, but ";
             msg << n_args + n_kwargs << " were given";
-            throw std::runtime_error(msg.str());
+            throw TypeError(msg.str());
         }
     }
 
@@ -290,7 +284,7 @@ public:
 
     /* Create a parser for the given arguments. */
     PyArgs(PyObject* const* args, Py_ssize_t nargs, PyObject* kwnames) :
-        Base(nargs, kwnames == nullptr ? 0 : PyTuple_GET_SIZE(kwnames), true),
+        Base(nargs, kwnames == nullptr ? 0 : PyTuple_GET_SIZE(kwnames)),
         args(args),
         kwnames(nullptr)
     {

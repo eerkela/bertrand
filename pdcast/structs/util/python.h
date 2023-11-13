@@ -9,7 +9,7 @@
 #include <type_traits>  // std::is_convertible_v<>, std::remove_cv_t<>, etc.
 #include <Python.h>  // CPython API
 #include "base.h"  // is_pyobject<>
-#include "except.h"  // catch_python
+#include "except.h"  // catch_python, TypeError
 #include "iter.h"  // iter(), PyIterator
 
 
@@ -34,7 +34,7 @@ namespace std {
             using namespace bertrand::structs::util;
             Py_hash_t val = PyObject_Hash(obj);
             if (val == -1 && PyErr_Occurred()) {
-                throw catch_python<type_error>();  // propagate error
+                throw catch_python<TypeError>();  // propagate error
             }
             return static_cast<size_t>(val);
         }
@@ -76,13 +76,13 @@ namespace detail {
             if constexpr (std::is_unsigned_v<T>) {
                 PyObject* result = PyLong_FromUnsignedLongLong(obj);
                 if (result == nullptr) {
-                    throw catch_python<type_error>();
+                    throw catch_python<TypeError>();
                 }
                 return result;
             } else {
                 PyObject* result = PyLong_FromLongLong(obj);
                 if (result == nullptr) {
-                    throw catch_python<type_error>();
+                    throw catch_python<TypeError>();
                 }
                 return result;
             }
@@ -92,7 +92,7 @@ namespace detail {
         else {
             PyObject* result = PyFloat_FromDouble(obj);
             if (result == nullptr) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return result;
         }
@@ -154,7 +154,7 @@ inline auto abs(const T& x) {
     if constexpr (is_pyobject<T>) {
         PyObject* val = PyNumber_Absolute(x);
         if (val == nullptr) {
-            throw catch_python<type_error>();
+            throw catch_python<TypeError>();
         }
         return val;  // new reference
     } else {
@@ -169,7 +169,7 @@ inline auto invert(const T& x) {
     if constexpr (is_pyobject<T>) {
         PyObject* val = PyNumber_Invert(x);
         if (val == nullptr) {
-            throw catch_python<type_error>();
+            throw catch_python<TypeError>();
         }
         return val;  // new reference
     } else {
@@ -184,7 +184,7 @@ inline auto neg(const T& x) {
     if constexpr (is_pyobject<T>) {
         PyObject* val = PyNumber_Negative(x);
         if (val == nullptr) {
-            throw catch_python<type_error>();
+            throw catch_python<TypeError>();
         }
         return val;  // new reference
     } else {
@@ -199,7 +199,7 @@ inline auto pos(const T& x) {
     if constexpr (is_pyobject<T>) {
         PyObject* val = PyNumber_Positive(x);
         if (val == nullptr) {
-            throw catch_python<type_error>();
+            throw catch_python<TypeError>();
         }
         return val;  // new reference
     } else {
@@ -221,7 +221,7 @@ inline std::optional<size_t> len(const T& x) {
         if (PyObject_HasAttrString(x, "__len__")) {
             Py_ssize_t size = PyObject_Length(x);
             if (size == -1 && PyErr_Occurred()) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return std::make_optional(static_cast<size_t>(size));
         } else {
@@ -245,7 +245,7 @@ inline auto bit_and(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_And(a, b);
             if (result == nullptr) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return result;  // new reference
         } else {
@@ -264,7 +264,7 @@ inline auto bit_or(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_Or(a, b);
             if (result == nullptr) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return result;  // new reference
         } else {
@@ -283,7 +283,7 @@ inline auto bit_xor(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_Xor(a, b);
             if (result == nullptr) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return result;  // new reference
         } else {
@@ -302,7 +302,7 @@ inline auto lshift(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_Lshift(a, b);
             if (result == nullptr) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return result;  // new reference
         } else {
@@ -321,7 +321,7 @@ inline auto rshift(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_Rshift(a, b);
             if (result == nullptr) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return result;  // new reference
         } else {
@@ -345,7 +345,7 @@ inline bool lt(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             int result = PyObject_RichCompareBool(a, b, Py_LT);
             if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return static_cast<bool>(result);
         } else {
@@ -364,7 +364,7 @@ inline bool le(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             int result = PyObject_RichCompareBool(a, b, Py_LE);
             if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return static_cast<bool>(result);
         } else {
@@ -383,7 +383,7 @@ inline bool eq(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             int result = PyObject_RichCompareBool(a, b, Py_EQ);
             if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return static_cast<bool>(result);
         } else {
@@ -402,7 +402,7 @@ inline bool ne(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             int result = PyObject_RichCompareBool(a, b, Py_NE);
             if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return static_cast<bool>(result);
         } else {
@@ -421,7 +421,7 @@ inline bool ge(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             int result = PyObject_RichCompareBool(a, b, Py_GE);
             if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return static_cast<bool>(result);
         } else {
@@ -440,7 +440,7 @@ inline bool gt(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             int result = PyObject_RichCompareBool(a, b, Py_GT);
             if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return static_cast<bool>(result);
         } else {
@@ -464,7 +464,7 @@ inline auto plus(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_Add(a, b);
             if (result == nullptr) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return result;  // new reference
         } else {
@@ -483,7 +483,7 @@ inline auto minus(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_Subtract(a, b);
             if (result == nullptr) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return result;  // new reference
         } else {
@@ -502,7 +502,7 @@ inline auto multiply(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_Multiply(a, b);
             if (result == nullptr) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return result;  // new reference
         } else {
@@ -521,7 +521,7 @@ inline auto power(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_Power(a, b, Py_None);
             if (result == nullptr) {
-                throw catch_python<type_error>();
+                throw catch_python<TypeError>();
             }
             return result;  // new reference
         } else {
@@ -568,14 +568,14 @@ inline auto divide(const LHS& lhs, const RHS& rhs) {
                 PyErr_Clear();
                 result = PyNumber_FloorDivide(a, b);
                 if (result == nullptr) {
-                    throw catch_python<type_error>();
+                    throw catch_python<TypeError>();
                 }
 
                 // if result < 0, check remainder != 0 and correct
                 try {
                     if (util::lt(result, 0)) {
                         PyObject* remainder = PyNumber_Remainder(a, b);
-                        if (remainder == nullptr) throw catch_python<type_error>();
+                        if (remainder == nullptr) throw catch_python<TypeError>();
                         try {
                             bool nonzero = util::ne(remainder, 0);
                             if (nonzero) {
@@ -601,7 +601,7 @@ inline auto divide(const LHS& lhs, const RHS& rhs) {
             } else {
                 PyObject* result = PyNumber_TrueDivide(a, b);
                 if (result == nullptr) {
-                    throw catch_python<type_error>();
+                    throw catch_python<TypeError>();
                 }
                 return result;  // new reference
             }
@@ -626,13 +626,13 @@ inline auto modulo(const LHS& lhs, const RHS& rhs) {
             if (util::lt(a, 0)) {
                 if (util::lt(b, 0)) {  // (a < 0, b < 0)  ===  a % b
                     PyObject* result = PyNumber_Remainder(a, b);
-                    if (result == nullptr) throw catch_python<type_error>();
+                    if (result == nullptr) throw catch_python<TypeError>();
                     return result;
                 } else {  // (a < 0, b >= 0)  ===  -(-a % b)
                     PyObject* a = util::neg(a);
                     try {
                         PyObject* c = PyNumber_Remainder(a, b);
-                        if (c == nullptr) throw catch_python<type_error>();
+                        if (c == nullptr) throw catch_python<TypeError>();
                         try {
                             PyObject* result = util::neg(c);
                             Py_DECREF(c);
@@ -653,7 +653,7 @@ inline auto modulo(const LHS& lhs, const RHS& rhs) {
                     PyObject* b = util::neg(b);
                     try {
                         PyObject* result = PyNumber_Remainder(a, b);
-                        if (result == nullptr) throw catch_python<type_error>();
+                        if (result == nullptr) throw catch_python<TypeError>();
                         Py_DECREF(b);
                         return result;
                     } catch (...) {
@@ -662,7 +662,7 @@ inline auto modulo(const LHS& lhs, const RHS& rhs) {
                     }
                 } else {  // (a >= 0, b >= 0)  ===  a % b
                     PyObject* result = PyNumber_Remainder(a, b);
-                    if (result == nullptr) throw catch_python<type_error>();
+                    if (result == nullptr) throw catch_python<TypeError>();
                     return result;
                 }
             }

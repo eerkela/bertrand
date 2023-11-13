@@ -7,7 +7,7 @@
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
 #include "../../util/base.h"  // is_pyobject<>
-#include "../../util/except.h"  // type_error()
+#include "../../util/except.h"  // TypeError
 #include "../../util/python.h"  // lt(), ge(), plus()
 #include "../core/iter.h"  // Direction, Bidirectional
 #include "../core/view.h"  // ViewTraits
@@ -49,7 +49,7 @@ namespace linked {
     /* Normalize a Python integer for use as an index to a list. */
     size_t normalize_index(PyObject* index, size_t size, bool truncate) {
         if (!PyLong_Check(index)) {
-            throw util::type_error("index must be a Python integer");
+            throw util::TypeError("index must be a Python integer");
         }
 
         // comparisons are kept at the python level until we're ready to return

@@ -7,6 +7,7 @@
 #include <Python.h>  // CPython API
 #include <utility>  // std::declval, std::move
 #include "base.h"  // is_pyobject<>
+#include "except.h"  // catch_python, TypeError
 #include "func.h"  // identity, FuncTraits<>
 #include "name.h"  // TypeName<>, PyName<>
 #include "slot.h"  // Slot<>
@@ -1178,7 +1179,7 @@ public:
                 curr = PyIter_Next(py_iterator);  // get first item
                 if (curr == nullptr && PyErr_Occurred()) {
                     Py_DECREF(py_iterator);
-                    throw catch_python<std::runtime_error>();
+                    throw catch_python<RuntimeError>();
                 }
             }
         }
@@ -1223,7 +1224,7 @@ public:
     inline PyObject* python() {
         PyObject* iter = PyObject_GetIter(this->container);
         if (iter == nullptr && PyErr_Occurred()) {
-            throw catch_python<type_error>();
+            throw catch_python<TypeError>();
         }
         return iter;
     }
@@ -1232,12 +1233,12 @@ public:
     inline PyObject* rpython() {
         PyObject* attr = PyObject_GetAttrString(this->container, "__reversed__");
         if (attr == nullptr && PyErr_Occurred()) {
-            throw catch_python<type_error>();
+            throw catch_python<TypeError>();
         }
         PyObject* iter = PyObject_CallObject(attr, nullptr);
         Py_DECREF(attr);
         if (iter == nullptr && PyErr_Occurred()) {
-            throw catch_python<type_error>();
+            throw catch_python<TypeError>();
         }
         return iter;  // new reference
     }

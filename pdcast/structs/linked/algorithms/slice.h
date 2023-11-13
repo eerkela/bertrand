@@ -9,7 +9,7 @@
 #include "../core/iter.h"  // Bidirectional<>
 #include "../core/view.h"  // ViewTraits
 #include "../../util/iter.h"  // iter()
-#include "../../util/except.h"  // type_error()
+#include "../../util/except.h"  // TypeError()
 #include "../../util/math.h"  // py_modulo()
 #include "../../util/sequence.h"  // PySequence
 
@@ -85,7 +85,7 @@ namespace linked {
     SliceIndices<View> normalize_slice(const View& view, PyObject* py_slice) {
         // check that input is a Python slice object
         if (!PySlice_Check(py_slice)) {
-            throw util::type_error("index must be a Python slice");
+            throw util::TypeError("index must be a Python slice");
         }
 
         size_t size = view.size();

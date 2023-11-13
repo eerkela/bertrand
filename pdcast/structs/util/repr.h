@@ -6,7 +6,7 @@
 #include <string>  // std::string
 #include <typeinfo>  // typeid()
 #include <Python.h>  // PyObject_Repr, PyUnicode_AsUTF8
-#include "except.h"  // catch_python
+#include "except.h"  // catch_python, RuntimeError
 
 
 /* Python's repr() function is extremely useful for debugging, but there is no direct
@@ -110,11 +110,11 @@ std::string repr(const T& obj) {
     }
     PyObject* py_repr = PyObject_Repr(obj);
     if (py_repr == nullptr) {
-        throw catch_python<std::runtime_error>();
+        throw catch_python<RuntimeError>();
     }
     const char* c_repr = PyUnicode_AsUTF8(py_repr);
     if (c_repr == nullptr) {
-        throw catch_python<std::runtime_error>();
+        throw catch_python<RuntimeError>();
     }
     Py_DECREF(py_repr);
     return std::string(c_repr);

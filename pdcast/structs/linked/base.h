@@ -5,6 +5,7 @@
 #include <cstddef>      // size_t
 #include <memory>  // std::shared_ptr, std::weak_ptr
 #include <optional>     // std::optional
+#include <sstream>
 #include <stdexcept>    // std::runtime_error
 #include <string_view>  // std::string_view
 #include <variant>  // std::visit
@@ -351,13 +352,27 @@ private:
 // exposed as a PyObject* member attribute.
 
 
+// TODO: reference counting and argument parsing appear to be incorrect.  No LinkedList
+// I create from python is deallocated after deletion, and argument parsing does not
+// seem to correctly handle keyword arguments.
+
+
 /* A CRTP-enabled base class that exposes properties inherited from LinkedBase to
 Python. */
 template <typename Derived>
 class PyLinkedBase {
+    PyObject_HEAD
+
 public:
 
-    /* Copy/move constructors/assignment operators deleted for simplicity. */
+    /* C++ constructors/assignment operators deleted for compatibility with Python
+    API.
+
+    NOTE: the Python C API does not always respect C++ construction semantics, and can
+    lead to some very subtle bugs related to memory initialization, particularly as it
+    relates to Python object headers and stack-allocated memory.  We're better off
+    disabling C++ constructors entirely in favor of explicit factory methods instead. */
+    PyLinkedBase() = delete;
     PyLinkedBase(const PyLinkedBase&) = delete;
     PyLinkedBase(PyLinkedBase&&) = delete;
     PyLinkedBase& operator=(const PyLinkedBase&) = delete;
@@ -430,7 +445,10 @@ public:
             },
             self->variant
         );
-        return Py_XNewRef(result);
+        if (result == nullptr) {
+            Py_RETURN_NONE;
+        }
+        return Py_NewRef(result);
     }
 
     // TODO: For reserve() to be available at the Python level, we need to create a
@@ -519,8 +537,8 @@ public:
     }
 
 protected:
-    const cython::VariantLock<PyLinkedBase> lock;
-    PyLinkedBase() : lock(*this) {}
+    using Lock = cython::VariantLock<PyLinkedBase>;
+    Lock lock;
 
     /* Allocate a new LinkedList instance from Python and register it with the cyclic
     garbage collector. */
@@ -531,7 +549,7 @@ protected:
     ) {
         Derived* self = reinterpret_cast<Derived*>(type->tp_alloc(type, 0));
         if (self == nullptr) return nullptr;
-        PyObject_GC_Track(self);  // register with cyclic garbage collector
+        new (&self->lock) Lock(*self);  // initialize lock functor
         return reinterpret_cast<PyObject*>(self);
     }
 
@@ -581,7 +599,7 @@ protected:
     }
 
     /* Convert a python integer into a long long index. */
-    inline static long long parse_index(PyObject* obj) {
+    inline static long long parse_int(PyObject* obj) {
         PyObject* integer = PyNumber_Index(obj);
         if (integer == nullptr) throw util::catch_python();
         long long result = PyLong_AsLongLong(integer);
@@ -591,8 +609,8 @@ protected:
     }
 
     /* Convert a python integer into an optional long long index. */
-    inline static std::optional<long long> parse_opt_index(PyObject* obj) {
-        return obj == Py_None ? std::nullopt : std::make_optional(parse_index(obj));
+    inline static std::optional<long long> parse_opt_int(PyObject* obj) {
+        return obj == Py_None ? std::nullopt : std::make_optional(parse_int(obj));
     }
 
     //////////////////////////
@@ -715,10 +733,8 @@ int
 
 Notes
 -----
-This includes the overhead associated with Python's dynamic type system (i.e.
-the size of the ``PyObject`` header at each index), but does not account for
-any additional dynamic memory allocated by the values themselves (e.g. via heap
-allocations, resizable buffers, etc.).
+This does not account for any additional dynamic memory allocated by the values
+themselves (e.g. via heap allocations, resizable buffers, etc.).
 )doc"
         };
 
