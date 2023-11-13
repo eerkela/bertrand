@@ -357,6 +357,12 @@ template <typename Derived>
 class PyLinkedBase {
 public:
 
+    /* Copy/move constructors/assignment operators deleted for simplicity. */
+    PyLinkedBase(const PyLinkedBase&) = delete;
+    PyLinkedBase(PyLinkedBase&&) = delete;
+    PyLinkedBase& operator=(const PyLinkedBase&) = delete;
+    PyLinkedBase& operator=(PyLinkedBase&&) = delete;
+
     /* Getter for `LinkedList.capacity` in Python. */
     inline static PyObject* capacity(Derived* self, PyObject* /* ignored */) noexcept {
         size_t result = std::visit(
@@ -431,7 +437,7 @@ public:
     // Python wrapper like we did with threading locks/iterators.
 
     // /* Implement `LinkedList.reserve()` in Python. */
-    // inline PyObject* reserve(size_t size) {
+    // static PyObject* reserve(size_t size) {
     //     std::visit(
     //         [&size](auto& list) {
     //             return list.reserve(size);
@@ -441,29 +447,44 @@ public:
     // }
 
     /* Implement `LinkedList.defragment()` in Python. */
-    inline static PyObject* defragment(Derived* self, PyObject* /* ignored */) {
-        std::visit(
-            [](auto& list) {
-                list.defragment();
-            },
-            self->variant
-        );
-        Py_RETURN_NONE;  // void
+    static PyObject* defragment(Derived* self, PyObject* /* ignored */) {
+        try {
+            std::visit(
+                [](auto& list) {
+                    list.defragment();
+                },
+                self->variant
+            );
+            Py_RETURN_NONE;  // void
+
+        // translate C++ exceptions into Python errors
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
     }
 
     /* Implement `LinkedList.specialize()` in Python. */
-    inline static PyObject* specialize(Derived* self, PyObject* spec) {
-        std::visit(
-            [&spec](auto& list) {
-                list.specialize(spec);
-            },
-            self->variant
-        );
-        Py_RETURN_NONE;  // void
+    static PyObject* specialize(Derived* self, PyObject* spec) {
+        try {
+            std::visit(
+                [&spec](auto& list) {
+                    list.specialize(spec);
+                },
+                self->variant
+            );
+            Py_RETURN_NONE;  // void
+
+        // translate C++ exceptions into Python errors
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
+        
     }
 
     // /* Implement `LinkedList.__class_getitem__()` in Python. */
-    // inline PyObject* __class_getitem__() {
+    // static PyObject* __class_getitem__() {
     //     // TODO: Create a new heap type for the specialization
     // }
 
@@ -515,14 +536,14 @@ protected:
     }
 
     /* Deallocate the LinkedList when its Python reference count falls to zero. */
-    inline static void __dealloc__(Derived* self) {
+    inline static void __dealloc__(Derived* self) noexcept {
         PyObject_GC_UnTrack(self);  // unregister from cyclic garbage collector
         self->~Derived();  // hook into C++ destructor
         Py_TYPE(self)->tp_free(reinterpret_cast<PyObject*>(self));
     }
 
     /* Traversal function for Python's cyclic garbage collector. */
-    inline static int __traverse__(Derived* self, visitproc visit, void* arg) {
+    inline static int __traverse__(Derived* self, visitproc visit, void* arg) noexcept {
         return std::visit(
             [&](auto& list) {
                 for (auto item : list) Py_VISIT(item);
@@ -533,7 +554,7 @@ protected:
     }
 
     /* Clear function for Python's cyclic garbage collector. */
-    inline static int __clear__(Derived* self) {
+    inline static int __clear__(Derived* self) noexcept {
         return std::visit(
             [&](auto& list) {
                 for (auto item : list) Py_CLEAR(item);
@@ -542,6 +563,378 @@ protected:
             self->variant
         );
     }
+
+    ////////////////////////////////
+    ////    ARGUMENT HELPERS    ////
+    ////////////////////////////////
+
+    /* Convert Python None into C++ nullptr. */
+    inline static PyObject* none_to_null(PyObject* obj) {
+        return obj == Py_None ? nullptr : obj;
+    }
+
+    /* Check if a Python object is truthy. */
+    inline static bool is_truthy(PyObject* obj) {
+        int result = PyObject_IsTrue(obj);
+        if (result == -1) throw util::catch_python();
+        return static_cast<bool>(result);
+    }
+
+    /* Convert a python integer into a long long index. */
+    inline static long long parse_index(PyObject* obj) {
+        PyObject* integer = PyNumber_Index(obj);
+        if (integer == nullptr) throw util::catch_python();
+        long long result = PyLong_AsLongLong(integer);
+        Py_DECREF(integer);
+        if (result == -1 && PyErr_Occurred()) throw util::catch_python();
+        return result;
+    }
+
+    /* Convert a python integer into an optional long long index. */
+    inline static std::optional<long long> parse_opt_index(PyObject* obj) {
+        return obj == Py_None ? std::nullopt : std::make_optional(parse_index(obj));
+    }
+
+    //////////////////////////
+    ////    DOCSTRINGS    ////
+    //////////////////////////
+
+    /* Compile-time docstrings for all public Python methods. */
+    struct docs {
+
+        static constexpr std::string_view capacity {R"doc(
+Get the current capacity of the allocator array.
+
+Returns
+-------
+int
+    The total number of allocated nodes.
+
+Notes
+-----
+This will always be greater than or equal to the current size of the list, in
+accordance with the allocator's growth strategy.  If ``dynamic`` is not set,
+then it will always be equal to the maximum size of the list.
+)doc"
+        };
+
+        static constexpr std::string_view max_size {R"doc(
+Get the maximum size of the list.
+
+Returns
+-------
+int or None
+    The maximum size of the list, or None if the list is unbounded.
+
+Notes
+-----
+This is equivalent to the following:
+
+.. code-block:: python
+
+    if list.dynamic:
+        return None
+    else:
+        return list.capacity
+)doc"
+        };
+
+        static constexpr std::string_view dynamic {R"doc(
+Check whether the allocator supports dynamic resizing.
+
+Returns
+-------
+bool
+    True if the list can dynamically grow and shrink, or False if it has a
+    fixed size.
+
+Examples
+--------
+This defaults to True unless a maximum size is specified during construction.
+For instance:
+
+.. doctest::
+
+    >>> from bertrand.structs import LinkedList
+    >>> LinkedList("abcdef").dynamic
+    True
+    >>> LinkedList("abcdef", 10).dynamic
+    False
+)doc"
+        };
+
+        static constexpr std::string_view frozen {R"doc(
+Check whether the allocator is temporarily frozen for memory stability.
+
+Returns
+-------
+bool
+    True if the memory addresses of the list's nodes are guaranteed to remain
+    stable within the current context, or False if they may be reallocated.
+
+Notes
+-----
+Dynamically-growing data structures may need to reallocate their internal memory
+array when they reach a certain load factor.  When this occurs, the nodes are
+physically transferred to a new memory location and the old addresses are freed.
+If any external pointers/references to the old locations exist, then they will
+become dangling through this process, and can lead to undefined behavior if
+dereferenced.  This is particularly a problem for algorithms that iterate over
+a list while modifying it, as arbitrarily adding or removing nodes can trigger
+a resize that will invalidate the iterator.
+
+Thankfully, this can be avoided by temporarily freezing the allocator, which
+can be done through the ``reserve()`` method, like so:
+
+.. code-block:: python
+
+    with list.reserve():
+        # nodes are guaranteed to remain stable within this context
+        assert list.frozen  # True
+    # nodes may be reallocated after this point
+    assert not list.frozen  # False
+
+This guarantees that the list's memory addresses will not change within the
+frozen context, consequently making iteration safe to perform.
+
+Users should not usually need to worry about this, as all of the built-in
+algorithms are designed with this in mind.  However, it is important to be
+aware of this behavior when writing custom extensions, as it can lead to subtle
+bugs if not handled properly.
+)doc"
+        };
+
+        static constexpr std::string_view nbytes {R"doc(
+The total memory consumption of the list (in bytes).
+
+Returns
+-------
+int
+    The total number of bytes consumed by the list, including all its control
+    structures and nodes.
+
+Notes
+-----
+This includes the overhead associated with Python's dynamic type system (i.e.
+the size of the ``PyObject`` header at each index), but does not account for
+any additional dynamic memory allocated by the values themselves (e.g. via heap
+allocations, resizable buffers, etc.).
+)doc"
+        };
+
+        static constexpr std::string_view specialization {R"doc(
+Get the type specialization currently enforced by the list.
+
+Returns
+-------
+type
+    The current specialization for elements of this list, or ``None`` if the
+    list is generic.
+
+Notes
+-----
+This is equivalent to the ``spec`` argument passed to the constructor and/or
+``specialize()`` method.
+
+When a specialization is set, the list will enforce strict type checking for
+any node that is added to it.  If a node does not contain a value matching the
+specialization as supplied to ``isinstance()``, then it will be rejected and
+an error will be raised.  This is useful for ensuring that all elements of a
+list are of a consistent type, and can be used to prevent accidental type
+errors from propagating through the list.  It also preserves as much
+performance as possible by applying type checks at node insertion time, leaving
+the rest of the list's algorithms at their native speed.
+)doc"
+        };
+
+        static constexpr std::string_view defragment {R"doc(
+Reallocate the allocator array in-place to consolidate memory and improve cache
+performance.
+
+Notes
+-----
+Occasionally, as elements are added and removed from the list, the allocator
+array can become fragmented, with nodes scattered throughout memory.  This can
+degrade performance by increasing the number of cache misses and probing steps
+that must be performed to access each node.  This method optimizes the list by
+rearranging the existing nodes into a more contiguous layout, so that they can
+be accessed more efficiently.
+
+This method is relatively expensive, as it incurs a full loop through the list.
+For performance-critical applications, it is recommended to call it only when
+the list is expected to be in a fragmented state, or during a period of low
+activity where the cost can be amortized.
+)doc"
+        };
+
+        static constexpr std::string_view reserve {R"doc(
+Allocate enough memory to store the specified number of nodes and then freeze
+the allocator at the new size.
+
+Parameters
+----------
+int or None
+    The new size of the list after the allocator is resized.  If this is set to
+    ``None``, then the allocator will be frozen at its current size.
+
+Raises
+------
+MemoryError
+    If the system runs out of memory, or if the resize would cause a frozen
+    list to exceed its current capacity.
+
+Returns
+-------
+MemGuard
+    A context manager that freezes and unfreezes the allocator when entering
+    and exiting the context.  Any operations within the guarded context are
+    guaranteed to be memory-stable.
+
+Notes
+-----
+This method uses a non-pessimized growth strategy to allocate the required
+memory, which is more efficient than the more direct approach used by other C++
+data structures like ``std::vector``.  It is thus safe to call this method
+repeatedly without incurring a large performance penalty.
+
+The way this works is by rounding the requested size up to the nearest power of
+two and then growing the allocator if and only if that size is greater than the
+current capacity.  This ensures that the allocator will never be resized more
+than once, and preserves the allocator's ordinary geometric growth strategy for
+maximum efficiency.
+
+After resizing the allocator, this method produces a memory guard that freezes
+it at the new size.  The guard can be used as a context manager that freezes
+the allocator at the new size when entering the context and unfreezes it on
+exit.  This allows the user to guarantee memory stability for any operations
+performed within the context, which is useful for low-level algorithms that
+need to avoid dynamic resizing and reallocation.
+
+Upon exiting the guarded context, the allocator will be unfrozen, and will be
+allowed to grow or shrink as needed.  If the current occupancy is below the
+minimum load factor (12.5-25%, typically), then the allocator will also be
+shrunk to fit.  This prevents unnecessary memory bloat and includes hysteresis
+to prevent thrashing.
+
+Examples
+--------
+.. doctest::
+
+    >>> from bertrand.structs import LinkedList
+    >>> l = LinkedList("abcdef")
+    >>> l.capacity
+    8
+    >>> with l.reserve(100):
+    ...     print(l.capacity)
+    128
+    >>> l.capacity
+    16
+
+)doc"
+        };
+
+        static constexpr std::string_view specialize {R"doc(
+Enforce strict type checking for elements of the list.
+
+Parameters
+----------
+spec : type
+    The type to enforce for all elements of the list.  This can be in any
+    format recognized by :func:`isinstance() <python::isinstance>`.  If it is
+    set to ``None``, then type checking will be disabled for the list.
+
+Raises
+------
+TypeError
+    If the list contains elements that do not match the specified type.
+
+Notes
+-----
+If the list is not empty when this method is called, then the type of each
+existing item will be checked against the new type.  If any of them do not
+match, then the specialization will be aborted and an error will be raised.
+The list is not modified during this process.
+
+Any elements added to the list after this method is called must conform to the
+specified type, otherwise an error will be raised.  The list is thus considered
+to be type-safe as long as the specialization is active.
+)doc"
+        };
+
+        static constexpr std::string_view __class_getitem__ {R"doc(
+Subscript the container to create a permanently-specialized type.
+
+Parameters
+----------
+spec : Any
+    The type to enforce for elements of the list.  This can be in any format
+    recognized by :func:`isinstance() <python:isinstance>`, including tuples and
+    :func:`runtime-checkable <python:typing.runtime_checkable>`
+    :class:`typing.Protocol <python:typing.Protocol>` objects.
+
+Returns
+-------
+type
+    A new heap type that enforces the specified type specialization for all
+    elements of the list.  These types cannot be re-specialized after creation.
+
+Notes
+-----
+Constructing a permanently-specialized type is equivalent to calling the
+constructor with the optional ``spec`` argument, except that the specialization
+cannot be changed for the lifetime of the object.  This allows the user to be
+absolutely sure that the list will always contain elements of the specified
+type, and can be useful for creating custom data structures that are guaranteed
+to be type-safe at the Python level.
+
+Examples
+--------
+.. doctest::
+
+    >>> l = LinkedList[int]([1, 2, 3])
+    >>> l.specialization
+    <class 'int'>
+    >>> l
+    LinkedList[<class 'int'>]([1, 2, 3])
+    >>> l.append(4)
+    >>> l
+    LinkedList[<class 'int'>]([1, 2, 3, 4])
+    >>> l.append("a")
+    Traceback (most recent call last):
+        ...
+    TypeError: 'a' is not of type <class 'int'>
+    >>> l.specialize(str)
+    Traceback (most recent call last):
+        ...
+    TypeError: LinkedList is already specialized to <class 'int'>
+
+Because type specialization is enforced through the built-in
+:func:`isinstance() <python:isinstance>` function, it is possible to subscript
+a list with any type that implements the
+:meth:`__instancecheck__() <python:object.__instancecheck__>` special method,
+including :func:`runtime-checkable <python:typing.runtime_checkable>`
+:class:`typing.Protocol <python:typing.Protocol>` objects.
+
+.. doctest::
+
+    >>> from typing import Iterable
+
+    >> l = LinkedList[Iterable]()
+    >>> l.append([1, 2, 3])
+    >>> l
+    LinkedList[typing.Iterable]([[1, 2, 3]])
+    >>> l.append("abc")
+    >>> l
+    LinkedList[typing.Iterable]([[1, 2, 3], 'abc'])
+    >>> l.append(4)
+    Traceback (most recent call last):
+        ...
+    TypeError: 4 is not of type typing.Iterable
+
+)doc"
+        };
+
+    };
 
 };
 

@@ -500,40 +500,53 @@ class PyLinkedList : public PyLinkedBase<PyLinkedList> {
     template <typename List>
     explicit PyLinkedList(List&& list) : Base(), variant(std::move(list)) {}
 
-    /* Copy/move constructors/assignment operators deleted for simplicity. */
-    PyLinkedList(const PyLinkedList&) = delete;
-    PyLinkedList(PyLinkedList&&) = delete;
-    PyLinkedList& operator=(const PyLinkedList&) = delete;
-    PyLinkedList& operator=(PyLinkedList&&) = delete;
-
-    ///////////////////////
-    ////    HELPERS    ////
-    ///////////////////////
-
-    /* Check if a Python object is truthy. */
-    inline static bool is_truthy(PyObject* obj) {
-        int result = PyObject_IsTrue(obj);
-        if (result == -1) throw util::catch_python();
-        return static_cast<bool>(result);
-    }
-
-    /* Convert a python integer into a long long index. */
-    inline static long long parse_index(PyObject* obj) {
-        PyObject* integer = PyNumber_Index(obj);
-        if (integer == nullptr) throw util::catch_python();
-        long long result = PyLong_AsLongLong(integer);
-        Py_DECREF(integer);
-        if (result == -1 && PyErr_Occurred()) throw util::catch_python();
-        return result;
-    }
-
-    /* Convert a python integer into an optional long long index. */
-    inline static std::optional<long long> parse_opt_index(PyObject* obj) {
-        return obj == Py_None ? std::nullopt : std::make_optional(parse_index(obj));
-    }
-
-
 public:
+
+    /* Initialize a LinkedList instance from Python. */
+    inline static int __init__(
+        PyLinkedList* self,
+        PyObject* args,
+        PyObject* kwargs
+    ) {
+        using Args = util::PyArgs<util::CallProtocol::KWARGS>;
+        using util::ValueError;
+        try {
+            // parse arguments
+            Args pyargs(args, kwargs);
+            PyObject* iterable = pyargs.parse(
+                "iterable", Base::none_to_null, (PyObject*) nullptr
+            );
+            std::optional<size_t> max_size = pyargs.parse(
+                "max_size",
+                [](PyObject* obj) -> std::optional<size_t> {
+                    if (obj == Py_None) return std::nullopt;
+                    long long result = Base::parse_index(obj);
+                    if (result < 0) throw ValueError("max_size cannot be negative");
+                    return std::make_optional(static_cast<size_t>(result));
+                },
+                std::optional<size_t>()
+            );
+            PyObject* spec = pyargs.parse("spec", Base::none_to_null, (PyObject*) nullptr);
+            bool reverse = pyargs.parse("reverse", Base::is_truthy, false);
+            bool singly_linked = pyargs.parse("singly_linked", Base::is_truthy, false);
+            pyargs.finalize();
+
+            // initialize
+            if (iterable == nullptr) {
+                new (self) PyLinkedList(max_size, spec, singly_linked);
+            } else {
+                new (self) PyLinkedList(iterable, max_size, spec, reverse, singly_linked);
+            }
+
+            // exit normally
+            return 0;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return -1;
+        }
+    }
 
     /* Implement `LinkedList.append()` in Python. */
     static PyObject* append(
@@ -547,7 +560,7 @@ public:
             // parse arguments
             Args pyargs(args, nargs, kwnames);
             PyObject* item = pyargs.parse("item");
-            bool left = pyargs.parse("left", is_truthy,false);
+            bool left = pyargs.parse("left", Base::is_truthy,false);
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -579,7 +592,7 @@ public:
         try {
             // parse arguments
             Args pyargs(args, nargs, kwnames);
-            long long index = pyargs.parse("index", parse_index);
+            long long index = pyargs.parse("index", Base::parse_index);
             PyObject* item = pyargs.parse("item");
             pyargs.finalize();
 
@@ -613,7 +626,7 @@ public:
             // parse arguments
             Args pyargs(args, nargs, kwnames);
             PyObject* items = pyargs.parse("items");
-            bool left = pyargs.parse("left", is_truthy, false);
+            bool left = pyargs.parse("left", Base::is_truthy, false);
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -648,10 +661,10 @@ public:
             Args pyargs(args, nargs, kwnames);
             PyObject* item = pyargs.parse("item");
             Index start = pyargs.parse(
-                "start", parse_opt_index, Index()
+                "start", Base::parse_opt_index, Index()
             );
             Index stop = pyargs.parse(
-                "stop", parse_opt_index, Index()
+                "stop", Base::parse_opt_index, Index()
             );
             pyargs.finalize();
 
@@ -687,10 +700,10 @@ public:
             Args pyargs(args, nargs, kwnames);
             PyObject* item = pyargs.parse("item");
             Index start = pyargs.parse(
-                "start", parse_opt_index, Index()
+                "start", Base::parse_opt_index, Index()
             );
             Index stop = pyargs.parse(
-                "stop", parse_opt_index, Index()
+                "stop", Base::parse_opt_index, Index()
             );
             pyargs.finalize();
 
@@ -744,7 +757,7 @@ public:
             // parse arguments
             Args pyargs(args, nargs);
             long long index = pyargs.parse(
-                "index", parse_index, (long long) -1
+                "index", Base::parse_index, (long long) -1
             );
             pyargs.finalize();
 
@@ -785,7 +798,7 @@ public:
     }
 
     /* Implement `LinkedList.copy()` in Python. */
-    inline static PyObject* copy(PyLinkedList* self, PyObject* /* ignored */) {
+    static PyObject* copy(PyLinkedList* self, PyObject* /* ignored */) {
         // allocate new Python list
         PyLinkedList* result = reinterpret_cast<PyLinkedList*>(
             Base::__new__(&Type, nullptr, nullptr)
@@ -811,60 +824,122 @@ public:
     }
 
     /* Implement `LinkedList.sort()` in Python. */
-    inline void sort(PyObject* key = nullptr, bool reverse = false) {
+    static PyObject* sort(
+        PyLinkedList* self,
+        PyObject* const* args,
+        Py_ssize_t nargs,
+        PyObject* kwnames
+    ) {
+        using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
+        try {
+            // parse arguments
+            Args pyargs(args, nargs, kwnames);
+            if (pyargs.positional() != 0) {
+                PyErr_Format(
+                    PyExc_TypeError,
+                    "sort() takes no positional arguments",
+                    pyargs.positional()
+                );
+                return nullptr;
+            }
+            PyObject* key = pyargs.parse("key", Base::none_to_null, (PyObject*) nullptr);
+            bool reverse = pyargs.parse("reverse", Base::is_truthy, false);
+            pyargs.finalize();
 
+            // invoke equivalent C++ method
+            std::visit(
+                [&key, &reverse](auto& list) {
+                    list.sort(key, reverse);
+                },
+                self->variant
+            );
 
+            // exit normally
+            Py_RETURN_NONE;
 
-        std::visit(
-            [&key, &reverse](auto& list) {
-                list.sort(key, reverse);
-            },
-            this->variant
-        );
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
     }
 
     /* Implement `LinkedList.reverse()` in Python. */
-    inline void reverse() {
-        std::visit(
-            [](auto& list) {
-                list.reverse();
-            },
-            this->variant
-        );
+    static PyObject* reverse(PyLinkedList* self, PyObject* /* ignored */) {
+        try {
+            // invoke equivalent C++ method
+            std::visit(
+                [](auto& list) {
+                    list.reverse();
+                },
+                self->variant
+            );
+
+            // exit normally
+            Py_RETURN_NONE;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
     }
 
     /* Implement `LinkedList.rotate()` in Python. */
-    inline void rotate(long long steps = 1) {
-        std::visit(
-            [&steps](auto& list) {
-                list.rotate(steps);
-            },
-            this->variant
-        );
+    static PyObject* rotate(
+        PyLinkedList* self, 
+        PyObject* const* args,
+        Py_ssize_t nargs
+    ) {
+        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        try {
+            // parse arguments
+            Args pyargs(args, nargs);
+            long long steps = pyargs.parse("steps", Base::parse_index, (long long) 1);
+            pyargs.finalize();
+
+            // invoke equivalent C++ method
+            std::visit(
+                [&steps](auto& list) {
+                    list.rotate(steps);
+                },
+                self->variant
+            );
+
+            // exit normally
+            Py_RETURN_NONE;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
     }
 
     /* Implement `LinkedList.__contains__()` in Python. */
-    inline static int __contains__(PyLinkedList* self, PyObject* item) {
-        return std::visit(
-            [&item](auto& list) {
-                return list.contains(item);
-            },
-            self->variant
-        );
+    static int __contains__(PyLinkedList* self, PyObject* item) {
+        try {
+            // invoke equivalent C++ method
+            return std::visit(
+                [&item](auto& list) {
+                    return list.contains(item);
+                },
+                self->variant
+            );
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return -1;
+        }
     }
 
     /* Implement `LinkedList.__getitem__()` in Python. */
-    inline static PyObject* __getitem__(PyLinkedList* self, PyObject* key) {
+    static PyObject* __getitem__(PyLinkedList* self, PyObject* key) {
         try {
             // check for integer index
             if (PyIndex_Check(key)) {
-                PyObject* integer = PyNumber_Index(key);
-                if (integer == nullptr) return nullptr;  // propagate
-                long long index = PyLong_AsLongLong(integer);
-                Py_DECREF(integer);
-                if (index == -1 && PyErr_Occurred()) return nullptr;  // propagate
-
-                // call scalar C++ method
+                long long index = Base::parse_index(key);
                 PyObject* result = std::visit(
                     [&index](auto& list) {
                         return list[index].get();
@@ -874,17 +949,20 @@ public:
                 return Py_XNewRef(result);  // return borrowed reference
             }
 
-            // // check for slice
-            // if (PySlice_Check(key)) {
-            //     // TODO: figure out how to wrap this as a PyLinkedList
-            //     PyObject* result = std::visit(
-            //         [&key](auto& list) {
-            //             return list.slice(key).get();
-            //         },
-            //         self->variant
-            //     );
-            //     return Py_XNewRef(result);  // return new reference
-            // }
+            // check for slice
+            if (PySlice_Check(key)) {
+                PyLinkedList* result = reinterpret_cast<PyLinkedList*>(
+                    Base::__new__(&Type, nullptr, nullptr)
+                );
+                if (result == nullptr) throw util::catch_python();
+                return std::visit(
+                    [&result, &key](auto& list) {
+                        new (result) PyLinkedList(list.slice(key).get());
+                        return reinterpret_cast<PyObject*>(result);
+                    },
+                    self->variant
+                );
+            }
 
             // unrecognized key type
             PyErr_Format(
@@ -896,13 +974,13 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            // TODO
+            util::throw_python();
             return nullptr;
         }
     }
 
     /* Implement `LinkedList.__setitem__()/__delitem__()` in Python (slice). */
-    inline static int __setitem__(
+    static int __setitem__(
         PyLinkedList* self,
         PyObject* key,
         PyObject* items
@@ -910,13 +988,7 @@ public:
         try {
             // check for integer index
             if (PyIndex_Check(key)) {
-                PyObject* integer = PyNumber_Index(key);
-                if (integer == nullptr) return -1;  // propagate
-                long long index = PyLong_AsLongLong(integer);
-                Py_DECREF(integer);
-                if (index == -1 && PyErr_Occurred()) return -1;  // propagate
-
-                // call scalar C++ method
+                long long index = Base::parse_index(key);
                 std::visit(
                     [&index, &items](auto& list) {
                         if (items == nullptr) {
@@ -954,13 +1026,13 @@ public:
             return -1;
 
         } catch (...) {
-            // TODO
+            util::throw_python();
             return -1;
         }
     }
 
     /* Implement `LinkedList.__add__()/__radd__()` in Python. */
-    inline static PyObject* __add__(PyObject* lhs, PyObject* rhs) {
+    static PyObject* __add__(PyObject* lhs, PyObject* rhs) {
         // differentiate between left/right operands
         PyLinkedList* self;
         PyObject* other;
@@ -989,27 +1061,36 @@ public:
                 },
                 self->variant
             );
+
+        // translate C++ errors into Python exceptions
         } catch (...) {
-            // TODO
             Py_DECREF(result);
+            util::throw_python();
             return nullptr;
         }
     }
 
     /* Implement `LinkedList.__iadd__()` in Python. */
-    inline static PyObject* __iadd__(PyLinkedList* self, PyObject* other) {
-        std::visit(
-            [&other](auto& list) {
-                list += other;
-            },
-            self->variant
-        );
-        Py_INCREF(self);
-        return reinterpret_cast<PyObject*>(self);
+    static PyObject* __iadd__(PyLinkedList* self, PyObject* other) {
+        try {
+            std::visit(
+                [&other](auto& list) {
+                    list += other;
+                },
+                self->variant
+            );
+            Py_INCREF(self);
+            return reinterpret_cast<PyObject*>(self);
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
     }
 
     /* Implement `LinkedList.__mul__()__rmul__()` in Python. */
-    inline static PyObject* __mul__(PyLinkedList* self, Py_ssize_t count) {
+    static PyObject* __mul__(PyLinkedList* self, Py_ssize_t count) {
         PyLinkedList* result = reinterpret_cast<PyLinkedList*>(
             Base::__new__(&Type, nullptr, nullptr)
         );
@@ -1024,28 +1105,37 @@ public:
                 },
                 self->variant
             );
+
+        // translate C++ errors into Python exceptions
         } catch (...) {
-            // TODO
             Py_DECREF(result);
+            util::throw_python();
             return nullptr;
         }
     }
 
     /* Implement `LinkedList.__imul__()` in Python. */
-    inline static PyObject* __imul__(PyLinkedList* self, Py_ssize_t count) {
-        std::visit(
-            [&count](auto& list) {
-                list *= count;
-            },
-            self->variant
-        );
-        Py_INCREF(self);
-        return reinterpret_cast<PyObject*>(self);
+    static PyObject* __imul__(PyLinkedList* self, Py_ssize_t count) {
+        try {
+            std::visit(
+                [&count](auto& list) {
+                    list *= count;
+                },
+                self->variant
+            );
+            Py_INCREF(self);
+            return reinterpret_cast<PyObject*>(self);
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
     }
 
     /* Implement `LinkedList.__lt__()/__le__()/__eq__()/__ne__()/__ge__()/__gt__()` in
     Python. */
-    inline static PyObject* __richcompare__(
+    static PyObject* __richcompare__(
         PyLinkedList* self,
         PyObject* other,
         int cmp
@@ -1067,150 +1157,78 @@ public:
                         case Py_GT:
                             return list > other;
                         default:
-                            throw util::catch_python<util::type_error>();
+                            throw util::ValueError("invalid comparison operator");
                     }
                 },
                 self->variant
             );
             return PyBool_FromLong(result);
         } catch (...) {
-            // TODO
+            util::throw_python();
             return nullptr;
         }
     }
 
     /* Implement `LinkedList.__str__()` in Python. */
-    inline static PyObject* __str__(PyLinkedList* self) {
-        std::ostringstream stream;
-        stream << "[";
-        std::visit(
-            [&stream](auto& list) {
-                auto it = list.begin();
-                if (it != list.end()) {
-                    stream << util::repr(*it);
-                    ++it;
-                }
-                for (; it != list.end(); ++it) {
-                    stream << ", " << util::repr(*it);
-                }
-            },
-            self->variant
-        );
-        stream << "]";
-        return PyUnicode_FromString(stream.str().c_str());
+    static PyObject* __str__(PyLinkedList* self) {
+        try {
+            std::ostringstream stream;
+            stream << "[";
+            std::visit(
+                [&stream](auto& list) {
+                    auto it = list.begin();
+                    if (it != list.end()) {
+                        stream << util::repr(*it);
+                        ++it;
+                    }
+                    for (; it != list.end(); ++it) {
+                        stream << ", " << util::repr(*it);
+                    }
+                },
+                self->variant
+            );
+            stream << "]";
+            return PyUnicode_FromString(stream.str().c_str());
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
     }
 
     /* Implement `LinkedList.__repr__()` in Python. */
-    inline static PyObject* __repr__(PyLinkedList* self) {
-        std::ostringstream stream;
-        stream << "LinkedList([";
-        std::visit(
-            [&stream](auto& list) {
-                auto it = list.begin();
-                if (it != list.end()) {
-                    stream << util::repr(*it);
-                    ++it;
-                }
-                for (; it != list.end(); ++it) {
-                    stream << ", " << util::repr(*it);
-                }
-            },
-            self->variant
-        );
-        stream << "])";
-        return PyUnicode_FromString(stream.str().c_str());
+    static PyObject* __repr__(PyLinkedList* self) {
+        try {
+            std::ostringstream stream;
+            stream << "LinkedList([";
+            std::visit(
+                [&stream](auto& list) {
+                    auto it = list.begin();
+                    if (it != list.end()) {
+                        stream << util::repr(*it);
+                        ++it;
+                    }
+                    for (; it != list.end(); ++it) {
+                        stream << ", " << util::repr(*it);
+                    }
+                },
+                self->variant
+            );
+            stream << "])";
+            return PyUnicode_FromString(stream.str().c_str());
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
     }
 
 private:
 
-    /* Initialize a LinkedList instance from Python. */
-    inline static int __init__(
-        PyLinkedList* self,
-        PyObject* args,
-        PyObject* kwargs
-    ) {
-        using Args = util::PyArgs<util::CallProtocol::KWARGS>;
-        using util::catch_python, util::type_error;
-
-        try {
-            Args pyargs(args, kwargs);
-
-            // arg 1: const PyObject* iterable = nulltpr
-            PyObject* iterable = pyargs.parse(
-                "iterable",
-                [](PyObject* obj) -> PyObject* {
-                    return obj == Py_None ? nullptr : obj;
-                },
-                (PyObject*) nullptr
-            );
-
-            // arg 2: std::optional<size_t> max_size = std::nullopt
-            std::optional<size_t> max_size = pyargs.parse(
-                "max_size",
-                [](PyObject* obj) -> std::optional<size_t> {
-                    if (obj == Py_None) return std::nullopt;
-                    PyObject* integer = PyNumber_Index(obj);
-                    if (integer == nullptr) throw catch_python<type_error>();
-                    size_t result = PyLong_AsSize_t(integer);
-                    Py_DECREF(integer);
-                    if (result == static_cast<size_t>(-1) && PyErr_Occurred()) {
-                        throw catch_python<type_error>();
-                    }
-                    return std::make_optional(result);
-                },
-                (std::optional<size_t>) std::nullopt
-            );
-
-            // arg 3: const PyObject* spec = nullptr
-            PyObject* spec = pyargs.parse(
-                "spec",
-                [](PyObject* obj) -> PyObject* {
-                    return obj == Py_None ? nullptr : obj;
-                },
-                (PyObject*) nullptr
-            );
-
-            // arg 4: bool reverse = false
-            bool reverse = pyargs.parse(
-                "reverse",
-                [](PyObject* obj) -> bool {
-                    int result = PyObject_IsTrue(obj);
-                    if (result == -1) throw catch_python<type_error>();
-                    return static_cast<bool>(result);
-                },
-                false
-            );
-
-            // arg 5: bool singly_linked = false
-            bool singly_linked = pyargs.parse(
-                "singly_linked",
-                [](PyObject* obj) -> bool {
-                    int result = PyObject_IsTrue(obj);
-                    if (result == -1) throw catch_python<type_error>();
-                    return static_cast<bool>(result);
-                },
-                false
-            );
-
-            // initialize
-            if (iterable == nullptr) {
-                new (self) PyLinkedList(max_size, spec, singly_linked);
-            } else {
-                new (self) PyLinkedList(iterable, max_size, spec, reverse, singly_linked);
-            }
-
-            // exit normally
-            return 0;
-
-        // translate C++ errors into Python exceptions
-        } catch (...) {
-            // TODO
-            return -1;
-        }
-    }
-
     /* Implement `PySequence_GetItem()` in CPython API. */
-    inline static PyObject* __getitem_scalar__(PyLinkedList* self, Py_ssize_t index) {
+    static PyObject* __getitem_scalar__(PyLinkedList* self, Py_ssize_t index) {
         try {
             PyObject* result = std::visit(
                 [&index](auto& list) {
@@ -1222,13 +1240,13 @@ private:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            // TODO
+            util::throw_python();
             return nullptr;
         }
     }
 
     /* Implement `PySequence_SetItem()` in CPython API. */
-    inline static int __setitem_scalar__(
+    static int __setitem_scalar__(
         PyLinkedList* self,
         Py_ssize_t index,
         PyObject* item
@@ -1248,13 +1266,81 @@ private:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            // TODO
+            util::throw_python();
             return -1;
         }
     }
 
+    /* docstrings for public Python attributes. */
+    struct docs {
+
+    };
+
+    ////////////////////////////////
+    ////    PYTHON INTERNALS    ////
+    ////////////////////////////////
+
+    /* Vtable containing Python @property definitions for the LinkedList. */
+    inline static PyGetSetDef properties[] = {
+        {
+            "capacity",
+            (getter) Base::capacity,
+            NULL,
+            PyDoc_STR(Base::docs::capacity.data()),
+        },
+        {
+            "max_size",
+            (getter) Base::max_size,
+            NULL,
+            PyDoc_STR(Base::docs::max_size.data())
+        },
+        {
+            "dynamic",
+            (getter) Base::dynamic,
+            NULL,
+            PyDoc_STR(Base::docs::dynamic.data())
+        },
+        {
+            "frozen",
+            (getter) Base::frozen,
+            NULL,
+            PyDoc_STR(Base::docs::frozen.data())
+        },
+        {
+            "nbytes",
+            (getter) Base::nbytes,
+            NULL,
+            PyDoc_STR(Base::docs::nbytes.data())
+        },
+        {
+            "specialization",
+            (getter) Base::specialization,
+            NULL,
+            PyDoc_STR(Base::docs::specialization.data())
+        },
+        {NULL}  // sentinel
+    };
+
     /* Vtable containing Python method definitions for the LinkedList. */
     inline static PyMethodDef methods[] = {
+        {
+            "__reversed__",
+            (PyCFunction) Base::__reversed__,
+            METH_NOARGS,
+            "docstring for __reversed__()"
+        },
+        {
+            "defragment",
+            (PyCFunction) Base::defragment,
+            METH_NOARGS,
+            PyDoc_STR(Base::docs::defragment.data())
+        },
+        {
+            "specialize",
+            (PyCFunction) Base::specialize,
+            METH_O,
+            PyDoc_STR(Base::docs::specialize.data())
+        },
         {
             "append",
             (PyCFunction) append,
@@ -1310,63 +1396,22 @@ private:
             "docstring for copy()"
         },
         {
-            "__reversed__",
-            (PyCFunction) Base::__reversed__,
+            "sort",
+            (PyCFunction) sort,
+            METH_FASTCALL | METH_KEYWORDS,
+            "docstring for sort()"
+        },
+        {
+            "reverse",
+            (PyCFunction) reverse,
             METH_NOARGS,
-            "docstring for __reversed__()"
+            "docstring for reverse()"
         },
         {
-            "defragment",
-            (PyCFunction) Base::defragment,
-            METH_NOARGS,
-            "docstring for defragment()"
-        },
-        {
-            "specialize",
-            (PyCFunction) Base::specialize,
-            METH_O,
-            "docstring for specialize()"
-        },
-        {NULL}  // sentinel
-    };
-
-    /* Vtable containing Python @property definitions for the LinkedList. */
-    inline static PyGetSetDef properties[] = {
-        {
-            "capacity",
-            (getter) Base::capacity,
-            NULL,
-            "docstring for capacity",
-        },
-        {
-            "max_size",
-            (getter) Base::max_size,
-            NULL,
-            "docstring for max_size"
-        },
-        {
-            "dynamic",
-            (getter) Base::dynamic,
-            NULL,
-            "docstring for dynamic"
-        },
-        {
-            "frozen",
-            (getter) Base::frozen,
-            NULL,
-            "docstring for frozen"
-        },
-        {
-            "nbytes",
-            (getter) Base::nbytes,
-            NULL,
-            "docstring for nbytes"
-        },
-        {
-            "specialization",
-            (getter) Base::specialization,
-            NULL,
-            "docstring for specialization"
+            "rotate",
+            (PyCFunction) rotate,
+            METH_FASTCALL,
+            "docstring for rotate()"
         },
         {NULL}  // sentinel
     };

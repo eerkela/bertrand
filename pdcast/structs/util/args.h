@@ -113,6 +113,12 @@ public:
         }
     }
 
+    /* Get the number of positional arguments that were supplied to the parser. */
+    inline Py_ssize_t positional() const noexcept { return n_args; }
+
+    /* Get the number of keyword arguments that were supplied to the parser. */
+    inline Py_ssize_t keyword() const noexcept { return n_kwargs; }
+
 };
 
 
