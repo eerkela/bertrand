@@ -35,7 +35,7 @@ namespace linked {
         size_t norm_start = indices.start;
         size_t norm_stop = indices.stop;
         if (norm_start > norm_stop) {
-            throw std::invalid_argument(
+            throw std::out_of_range(
                 "start index cannot be greater than stop index"
             );
         }
@@ -95,7 +95,7 @@ namespace linked {
         size_t norm_start = indices.start;
         size_t norm_stop = indices.stop;
         if (norm_start > norm_stop) {
-            throw std::invalid_argument(
+            throw std::out_of_range(
                 "start index cannot be greater than stop index"
             );
         }

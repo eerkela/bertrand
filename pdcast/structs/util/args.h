@@ -16,6 +16,11 @@ namespace structs {
 namespace util {
 
 
+////////////////////////////////
+////    ARGUMENT PARSERS    ////
+////////////////////////////////
+
+
 /* enum describing the different call protocols that can be parsed. */
 enum class CallProtocol {
     ARGS,
@@ -313,6 +318,42 @@ public:
     }
 
 };
+
+
+//////////////////////////////////
+////    CONVERSION HELPERS    ////
+//////////////////////////////////
+
+
+/* Convert Python None into C++ nullptr. */
+inline static PyObject* none_to_null(PyObject* obj) {
+    return obj == Py_None ? nullptr : obj;
+}
+
+
+/* Check if a Python object is truthy. */
+inline static bool is_truthy(PyObject* obj) {
+    int result = PyObject_IsTrue(obj);
+    if (result == -1) throw util::catch_python();
+    return static_cast<bool>(result);
+}
+
+
+/* Convert a python integer into a long long index. */
+inline static long long parse_int(PyObject* obj) {
+    PyObject* integer = PyNumber_Index(obj);
+    if (integer == nullptr) throw util::catch_python();
+    long long result = PyLong_AsLongLong(integer);
+    Py_DECREF(integer);
+    if (result == -1 && PyErr_Occurred()) throw util::catch_python();
+    return result;
+}
+
+
+/* Convert a python integer into an optional long long index. */
+inline static std::optional<long long> parse_opt_int(PyObject* obj) {
+    return obj == Py_None ? std::nullopt : std::make_optional(parse_int(obj));
+}
 
 
 } // namespace util

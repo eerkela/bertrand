@@ -34,7 +34,7 @@ namespace linked {
         auto not_found = [](const Item& item) {
             std::ostringstream msg;
             msg << util::repr(item) << " is not in list";
-            return std::invalid_argument(msg.str());
+            return std::out_of_range(msg.str());
         };
 
         // trivial case: empty list
@@ -113,7 +113,7 @@ namespace linked {
         auto not_found = [](Item& item) {
             std::ostringstream msg;
             msg << util::repr(item) << " is not in set";
-            return std::invalid_argument(msg.str());
+            return std::out_of_range(msg.str());
         };
 
         // trivial case: empty set

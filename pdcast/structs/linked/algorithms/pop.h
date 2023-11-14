@@ -2,6 +2,7 @@
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_POP_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_POP_H
 
+#include <stdexcept>  // std::out_of_range
 #include <tuple>  // std::tuple
 #include <type_traits>  // std::enable_if_t<>
 #include <Python.h>  // CPython API
@@ -22,6 +23,9 @@ namespace linked {
     {
         using Node = typename View::Node;
         using Value = typename View::Value;
+
+        // trivial case: empty list
+        if (view.size() == 0) throw std::out_of_range("pop from empty list");
 
         // normalize index
         size_t norm_index = normalize_index(index, view.size(), true);
@@ -62,6 +66,9 @@ namespace linked {
         -> std::enable_if_t<ViewTraits<View>::dictlike, Value>
     {
         using Node = typename View::Node;
+
+        // trivial case: empty list
+        if (view.size() == 0) throw std::out_of_range("pop from empty list");
 
         // search for node
         Node* curr = view.search(key);

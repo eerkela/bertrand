@@ -452,10 +452,6 @@ inline bool operator>(const Container& lhs, const LinkedList<Ts...>& rhs) {
 //////////////////////////////
 
 
-// TODO: initializers should be const-correct at all levels
-// -> const PyObject* iterable, const PyObject* spec
-
-
 /* A class that binds the appropriate methods for the given view as a std::variant
 of templated `ListView` types. */
 class PyLinkedList : public PyLinkedBase<PyLinkedList> {
@@ -503,21 +499,21 @@ public:
             // parse arguments
             Args pyargs(args, kwargs);
             PyObject* iterable = pyargs.parse(
-                "iterable", Base::none_to_null, (PyObject*)nullptr
+                "iterable", util::none_to_null, (PyObject*)nullptr
             );
             std::optional<size_t> max_size = pyargs.parse(
                 "max_size",
                 [](PyObject* obj) -> std::optional<size_t> {
                     if (obj == Py_None) return std::nullopt;
-                    long long result = Base::parse_int(obj);
+                    long long result = util::parse_int(obj);
                     if (result < 0) throw ValueError("max_size cannot be negative");
                     return std::make_optional(static_cast<size_t>(result));
                 },
                 std::optional<size_t>()
             );
-            PyObject* spec = pyargs.parse("spec", Base::none_to_null, (PyObject*) nullptr);
-            bool reverse = pyargs.parse("reverse", Base::is_truthy, false);
-            bool singly_linked = pyargs.parse("singly_linked", Base::is_truthy, false);
+            PyObject* spec = pyargs.parse("spec", util::none_to_null, (PyObject*) nullptr);
+            bool reverse = pyargs.parse("reverse", util::is_truthy, false);
+            bool singly_linked = pyargs.parse("singly_linked", util::is_truthy, false);
             pyargs.finalize();
 
             // initialize
@@ -561,7 +557,7 @@ public:
             // parse arguments
             Args pyargs(args, nargs, kwnames);
             PyObject* item = pyargs.parse("item");
-            bool left = pyargs.parse("left", Base::is_truthy, false);
+            bool left = pyargs.parse("left", util::is_truthy, false);
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -593,7 +589,7 @@ public:
         try {
             // parse arguments
             Args pyargs(args, nargs, kwnames);
-            long long index = pyargs.parse("index", Base::parse_int);
+            long long index = pyargs.parse("index", util::parse_int);
             PyObject* item = pyargs.parse("item");
             pyargs.finalize();
 
@@ -627,7 +623,7 @@ public:
             // parse arguments
             Args pyargs(args, nargs, kwnames);
             PyObject* items = pyargs.parse("items");
-            bool left = pyargs.parse("left", Base::is_truthy, false);
+            bool left = pyargs.parse("left", util::is_truthy, false);
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -661,8 +657,8 @@ public:
             // parse arguments
             Args pyargs(args, nargs, kwnames);
             PyObject* item = pyargs.parse("item");
-            Index start = pyargs.parse("start", Base::parse_opt_int, Index());
-            Index stop = pyargs.parse("stop", Base::parse_opt_int, Index());
+            Index start = pyargs.parse("start", util::parse_opt_int, Index());
+            Index stop = pyargs.parse("stop", util::parse_opt_int, Index());
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -696,8 +692,8 @@ public:
             // parse arguments
             Args pyargs(args, nargs, kwnames);
             PyObject* item = pyargs.parse("item");
-            Index start = pyargs.parse("start", Base::parse_opt_int, Index());
-            Index stop = pyargs.parse("stop", Base::parse_opt_int, Index());
+            Index start = pyargs.parse("start", util::parse_opt_int, Index());
+            Index stop = pyargs.parse("stop", util::parse_opt_int, Index());
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -750,7 +746,7 @@ public:
             // parse arguments
             Args pyargs(args, nargs);
             long long index = pyargs.parse(
-                "index", Base::parse_int, (long long) -1
+                "index", util::parse_int, (long long) -1
             );
             pyargs.finalize();
 
@@ -835,8 +831,8 @@ public:
                 );
                 return nullptr;
             }
-            PyObject* key = pyargs.parse("key", Base::none_to_null, (PyObject*) nullptr);
-            bool reverse = pyargs.parse("reverse", Base::is_truthy, false);
+            PyObject* key = pyargs.parse("key", util::none_to_null, (PyObject*) nullptr);
+            bool reverse = pyargs.parse("reverse", util::is_truthy, false);
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -888,7 +884,7 @@ public:
         try {
             // parse arguments
             Args pyargs(args, nargs);
-            long long steps = pyargs.parse("steps", Base::parse_int, (long long) 1);
+            long long steps = pyargs.parse("steps", util::parse_int, (long long) 1);
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -932,7 +928,7 @@ public:
         try {
             // check for integer index
             if (PyIndex_Check(key)) {
-                long long index = Base::parse_int(key);
+                long long index = util::parse_int(key);
                 PyObject* result = std::visit(
                     [&index](auto& list) {
                         return list[index].get();
@@ -981,7 +977,7 @@ public:
         try {
             // check for integer index
             if (PyIndex_Check(key)) {
-                long long index = Base::parse_int(key);
+                long long index = util::parse_int(key);
                 std::visit(
                     [&index, &items](auto& list) {
                         if (items == nullptr) {
@@ -1245,147 +1241,328 @@ private:
     /* docstrings for public Python attributes. */
     struct docs {
 
+        static constexpr std::string_view append {R"doc(
+Insert an item at the end of the list.
+
+Parameters
+----------
+item : Any
+    The item to insert.
+left : bool, default False
+    If True, insert the item at the beginning of the list instead of the end.
+
+Notes
+-----
+If ``left=True``, this method behaves like the
+:meth:`appendleft() <python:collections.deque.appendleft>` method of
+:class:`collections.deque`.
+
+Appends are O(1) for both ends of the list.
+)doc"
+        };
+
+        static constexpr std::string_view insert {R"doc(
+Insert an item at the specified index of the list.
+
+Parameters
+----------
+index : int
+    The index at which to insert the item.  This can be negative, following the
+    same conventions as Python's built-in list indexing.
+item : Any
+    The item to insert.
+
+Notes
+-----
+Insertions are O(n) on average, halved to O(n/2) if the list is doubly-linked.
+)doc"
+        };
+
+        static constexpr std::string_view extend {R"doc(
+Extend the list by appending all the items from the specified iterable.
+
+Parameters
+----------
+items : Iterable[Any]
+    The items to append.
+left : bool, default False
+    If True, insert the items at the beginning of the list instead of the end.
+
+Notes
+-----
+If ``left=True``, this method behaves like the
+:meth:`extendleft() <python:collections.deque.extendleft>` method of
+:class:`collections.deque`.  Just like that method, the series of left appends
+results in reversing the order of elements in ``items``.
+
+If an error occurs while extending the list, then the operation will be undone,
+returning the list to its original state.
+
+Extends are O(m), where ``m`` is the length of ``items``.
+)doc"
+        };
+
+        static constexpr std::string_view index {R"doc(
+Get the index of an item within the list.
+
+Parameters
+----------
+item : Any
+    The item to search for.
+start : int, default None
+    The index at which to start searching.  If not specified, the search will
+    start at the beginning of the list.
+stop : int, default None
+    The index at which to stop searching.  If not specified, the search will
+    continue until the end of the list.
+
+Returns
+-------
+int
+    The index of the first occurrence of ``item`` within the list.
+
+Raises
+------
+ValueError
+    If ``item`` is not found within the list.
+IndexError
+    If ``stop`` is less than ``start``.
+
+Notes
+-----
+The ``start`` and ``stop`` indices can be negative, following the same
+conventions as Python's built-in list indexing.  However, the stop index must
+always be greater than or equal to the start index, otherwise an error will be
+raised.
+
+Indexing is O(n) on average.
+)doc"
+        };
+
+        static constexpr std::string_view count {R"doc(
+Count the number of occurrences of an item within the list.
+
+Parameters
+----------
+item : Any
+    The item to search for.
+start : int, default None
+    The index at which to start searching.  If not specified, the search will
+    start at the beginning of the list.
+stop : int, default None
+    The index at which to stop searching.  If not specified, the search will
+    continue until the end of the list.
+
+Returns
+-------
+int
+    The number of occurrences of ``item`` within the given range.
+
+Raises
+------
+IndexError
+    If ``stop`` is less than ``start``.
+
+Notes
+-----
+The ``start`` and ``stop`` indices can be negative, following the same
+conventions as Python's built-in list indexing.  However, the stop index must
+always be greater than or equal to the start index, otherwise an error will be
+raised.
+
+Counting is O(n).
+)doc"
+        };
+
+        static constexpr std::string_view remove {R"doc(
+Remove the first occurrence of an item from the list.
+
+Parameters
+----------
+item : Any
+    The item to remove.
+
+Raises
+------
+ValueError
+    If ``item`` is not found within the list.
+
+Notes
+-----
+Removals are O(n) on average.
+)doc"
+        };
+
+        static constexpr std::string_view pop {R"doc(
+Remove and return the item at the specified index.
+
+Parameters
+----------
+index : int, default -1
+    The index of the item to remove.  If not specified, the last item will be
+    removed.
+
+Returns
+-------
+Any
+    The item that was removed.
+
+Raises
+------
+IndexError
+    If the list is empty or if ``index`` is out of bounds.
+
+Notes
+-----
+Pops have different performance characteristics based on whether they occur at
+the front or back of the list.  Popping from the front of a list is O(1) for
+both singly- and doubly-linked lists.  Popping from the back, however, is only
+O(1) for doubly-linked lists.  It is O(n) for singly-linked lists because the
+whole list must be traversed to find the new tail.
+
+Pops towards the middle of the list are O(n) in both cases.
+)doc"
+        };
+
+        static constexpr std::string_view clear {R"doc(
+Remove all items from the list in-place.
+
+Notes
+-----
+Clearing is O(n).
+)doc"
+        };
+
+        static constexpr std::string_view copy {R"doc(
+Return a shallow copy of the list.
+
+Returns
+-------
+LinkedList
+    A new list containing the same items.
+
+Notes
+-----
+Copying is O(n).
+)doc"
+        };
+
+        static constexpr std::string_view sort {R"doc(
+Sort the list in-place.
+
+Parameters
+----------
+key : Callable, optional
+    A function that takes an item from the list and returns a value to use
+    during sorting.  If this is not given, then the items will be compared
+    directly via the ``<`` operator.
+reverse : bool, default False
+    If True, sort the list in descending order.  Otherwise, sort in ascending
+    order.
+
+Notes
+-----
+Sorting is O(n log n), using an iterative merge sort algorithm that avoids
+recursion.  The sort is stable, meaning that the relative order of items that
+compare equal will not change, and it is performed in-place for minimal memory
+overhead.
+
+If a ``key`` function is provided, then the keys will be computed once and
+reused for all iterations of the sorting algorithm.  Otherwise, each element
+will be compared directly using the ``<`` operator.  If ``reverse=True``, then
+the value of the comparison will be inverted (i.e. ``not a < b``).
+
+One quirk of this implementation is how it handles errors.  By default, if a
+comparison throws an exception, then the sort will be aborted and the list will
+be left in a partially-sorted state.  This is consistent with the behavior of
+Python's built-in :meth:`list.sort() <python:list.sort>` method.  However, when
+a ``key`` function is provided, we actually end up sorting an auxiliary list of
+``(key, value)`` pairs, which is then reflected in the original list.  This
+means that if a comparison throws an exception, the original list will not be
+changed.  This holds even if the ``key`` is a simple identity function
+(``lambda x: x``), which opens up the possibility of anticipating errors and
+handling them gracefully.
+)doc"
+        };
+
+        static constexpr std::string_view reverse {R"doc(
+Reverse the order of items in the list in-place.
+
+Notes
+-----
+Reversing a list is O(n) for both singly- and doubly-linked lists.
+)doc"
+        };
+
+        static constexpr std::string_view rotate {R"doc(
+Rotate each item to the right by the specified number of steps.
+
+Parameters
+----------
+steps : int, default 1
+    The number of steps to rotate the list.  If this is positive, the list will
+    be rotated to the right.  If this is negative, the list will be rotated to
+    the left.
+
+Notes
+-----
+This method is consistent with :meth:`collections.deque.rotate`.
+
+Rotations are O(steps).
+)doc"
+        };
+
     };
 
     ////////////////////////////////
     ////    PYTHON INTERNALS    ////
     ////////////////////////////////
 
+    #define BASE_PROPERTY(NAME) \
+        { #NAME, (getter) Base::NAME, NULL, PyDoc_STR(Base::docs::NAME.data()) } \
+
+    #define BASE_METHOD(NAME, ARG_PROTOCOL) \
+        { #NAME, (PyCFunction) Base::NAME, ARG_PROTOCOL, PyDoc_STR(Base::docs::NAME.data()) } \
+
+    #define METHOD(NAME, ARG_PROTOCOL) \
+        { #NAME, (PyCFunction) NAME, ARG_PROTOCOL, PyDoc_STR(docs::NAME.data()) } \
+
     /* Vtable containing Python @property definitions for the LinkedList. */
     inline static PyGetSetDef properties[] = {
-        {
-            "capacity",
-            (getter) Base::capacity,
-            NULL,
-            PyDoc_STR(Base::docs::capacity.data()),
-        },
-        {
-            "max_size",
-            (getter) Base::max_size,
-            NULL,
-            PyDoc_STR(Base::docs::max_size.data())
-        },
-        {
-            "dynamic",
-            (getter) Base::dynamic,
-            NULL,
-            PyDoc_STR(Base::docs::dynamic.data())
-        },
-        {
-            "frozen",
-            (getter) Base::frozen,
-            NULL,
-            PyDoc_STR(Base::docs::frozen.data())
-        },
-        {
-            "nbytes",
-            (getter) Base::nbytes,
-            NULL,
-            PyDoc_STR(Base::docs::nbytes.data())
-        },
-        {
-            "specialization",
-            (getter) Base::specialization,
-            NULL,
-            PyDoc_STR(Base::docs::specialization.data())
-        },
+        BASE_PROPERTY(capacity),
+        BASE_PROPERTY(max_size),
+        BASE_PROPERTY(dynamic),
+        BASE_PROPERTY(frozen),
+        BASE_PROPERTY(nbytes),
+        BASE_PROPERTY(specialization),
         {NULL}  // sentinel
     };
 
     /* Vtable containing Python method definitions for the LinkedList. */
     inline static PyMethodDef methods[] = {
-        {
-            "__reversed__",
-            (PyCFunction) Base::__reversed__,
-            METH_NOARGS,
-            "docstring for __reversed__()"
-        },
-        {
-            "defragment",
-            (PyCFunction) Base::defragment,
-            METH_NOARGS,
-            PyDoc_STR(Base::docs::defragment.data())
-        },
-        {
-            "specialize",
-            (PyCFunction) Base::specialize,
-            METH_O,
-            PyDoc_STR(Base::docs::specialize.data())
-        },
-        {
-            "append",
-            (PyCFunction) append,
-            METH_FASTCALL | METH_KEYWORDS,
-            "docstring for append()"
-        },
-        {
-            "insert",
-            (PyCFunction) insert,
-            METH_FASTCALL | METH_KEYWORDS,
-            "docstring for insert()"
-        },
-        {
-            "extend",
-            (PyCFunction) extend,
-            METH_FASTCALL | METH_KEYWORDS,
-            "docstring for extend()"
-        },
-        {
-            "index",
-            (PyCFunction) index,
-            METH_FASTCALL | METH_KEYWORDS,
-            "docstring for index()"
-        },
-        {
-            "count",
-            (PyCFunction) count,
-            METH_FASTCALL | METH_KEYWORDS,
-            "docstring for count()"
-        },
-        {
-            "remove",
-            (PyCFunction) remove,
-            METH_O,
-            "docstring for remove()"
-        },
-        {
-            "pop",
-            (PyCFunction) pop,
-            METH_FASTCALL,
-            "docstring for pop()"
-        },
-        {
-            "clear",
-            (PyCFunction) clear,
-            METH_NOARGS,
-            "docstring for clear()"
-        },
-        {
-            "copy",
-            (PyCFunction) copy,
-            METH_NOARGS,
-            "docstring for copy()"
-        },
-        {
-            "sort",
-            (PyCFunction) sort,
-            METH_FASTCALL | METH_KEYWORDS,
-            "docstring for sort()"
-        },
-        {
-            "reverse",
-            (PyCFunction) reverse,
-            METH_NOARGS,
-            "docstring for reverse()"
-        },
-        {
-            "rotate",
-            (PyCFunction) rotate,
-            METH_FASTCALL,
-            "docstring for rotate()"
-        },
+        BASE_METHOD(reserve, METH_FASTCALL),
+        BASE_METHOD(defragment, METH_NOARGS),
+        BASE_METHOD(specialize, METH_O),
+        BASE_METHOD(__reversed__, METH_NOARGS),
+        BASE_METHOD(__class_getitem__, METH_CLASS | METH_O),
+        METHOD(append, METH_FASTCALL | METH_KEYWORDS),
+        METHOD(insert, METH_FASTCALL | METH_KEYWORDS),
+        METHOD(extend, METH_FASTCALL | METH_KEYWORDS),
+        METHOD(index, METH_FASTCALL | METH_KEYWORDS),
+        METHOD(count, METH_FASTCALL | METH_KEYWORDS),
+        METHOD(remove, METH_O),
+        METHOD(pop, METH_FASTCALL),
+        METHOD(clear, METH_NOARGS),
+        METHOD(copy, METH_NOARGS),
+        METHOD(sort, METH_FASTCALL | METH_KEYWORDS),
+        METHOD(reverse, METH_NOARGS),
+        METHOD(rotate, METH_FASTCALL),
         {NULL}  // sentinel
     };
+
+    #undef PROPERTY
+    #undef BASE_METHOD
+    #undef METHOD
 
     /* Vtable containing special methods related to Python's mapping protocol. */
     inline static PyMappingMethods mapping = [] {

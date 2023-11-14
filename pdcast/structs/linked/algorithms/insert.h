@@ -14,6 +14,19 @@ namespace bertrand {
 namespace structs {
 namespace linked {
 
+    // TODO:
+    // >>> l
+    // LinkedList(["a", "b", "c", "d", "e", "f"])
+    // >>> l.insert(6, "g")
+    // >>> l
+    // LinkedList(["a", "b", "c", "d", "e", "g", "f"])
+
+    // >>> p
+    // ["a", "b", "c", "d", "e", "f"]
+    // >>> p.insert(6, "g")
+    // >>> p
+    // ["a", "b", "c", "d", "e", "f", "g"]
+
 
     /* Insert an item into a linked list, set, or dictionary at the given index. */
     template <

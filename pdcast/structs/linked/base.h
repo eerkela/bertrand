@@ -352,11 +352,6 @@ private:
 // exposed as a PyObject* member attribute.
 
 
-// TODO: reference counting and argument parsing appear to be incorrect.  No LinkedList
-// I create from python is deallocated after deletion, and argument parsing does not
-// seem to correctly handle keyword arguments.
-
-
 /* A CRTP-enabled base class that exposes properties inherited from LinkedBase to
 Python. */
 template <typename Derived>
@@ -454,15 +449,25 @@ public:
     // TODO: For reserve() to be available at the Python level, we need to create a
     // Python wrapper like we did with threading locks/iterators.
 
-    // /* Implement `LinkedList.reserve()` in Python. */
-    // static PyObject* reserve(size_t size) {
-    //     std::visit(
-    //         [&size](auto& list) {
-    //             return list.reserve(size);
-    //         },
-    //         this->variant
-    //     );
-    // }
+    /* Implement `LinkedList.reserve()` in Python. */
+    static PyObject* reserve(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        using Index = std::optional<long long>;
+        try {
+            // parse arguments
+            Args pyargs = Args(args, nargs);
+            Index capacity = pyargs.parse("capacity", util::parse_opt_int, Index());
+            pyargs.finalize();
+
+            // TODO: Convert the C++ MemGuard into a Python context manager
+            return nullptr;
+
+        // translate C++ exceptions into Python errors
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
+    }
 
     /* Implement `LinkedList.defragment()` in Python. */
     static PyObject* defragment(Derived* self, PyObject* /* ignored */) {
@@ -501,10 +506,15 @@ public:
         
     }
 
-    // /* Implement `LinkedList.__class_getitem__()` in Python. */
-    // static PyObject* __class_getitem__() {
-    //     // TODO: Create a new heap type for the specialization
-    // }
+    // TODO: For __class_getitem__() to work at the Python level, we need to create a
+    // new heap type for the specialization and override the __init__() and specialize()
+    // methods.
+
+    /* Implement `LinkedList.__class_getitem__()` in Python. */
+    static PyObject* __class_getitem__(PyObject* type, PyObject* spec) {
+        // TODO: Create a new heap type for the specialization
+        return nullptr;
+    }
 
     /* Implement `LinkedList.__len__()` in Python. */
     inline static Py_ssize_t __len__(Derived* self) noexcept {
@@ -580,37 +590,6 @@ protected:
             },
             self->variant
         );
-    }
-
-    ////////////////////////////////
-    ////    ARGUMENT HELPERS    ////
-    ////////////////////////////////
-
-    /* Convert Python None into C++ nullptr. */
-    inline static PyObject* none_to_null(PyObject* obj) {
-        return obj == Py_None ? nullptr : obj;
-    }
-
-    /* Check if a Python object is truthy. */
-    inline static bool is_truthy(PyObject* obj) {
-        int result = PyObject_IsTrue(obj);
-        if (result == -1) throw util::catch_python();
-        return static_cast<bool>(result);
-    }
-
-    /* Convert a python integer into a long long index. */
-    inline static long long parse_int(PyObject* obj) {
-        PyObject* integer = PyNumber_Index(obj);
-        if (integer == nullptr) throw util::catch_python();
-        long long result = PyLong_AsLongLong(integer);
-        Py_DECREF(integer);
-        if (result == -1 && PyErr_Occurred()) throw util::catch_python();
-        return result;
-    }
-
-    /* Convert a python integer into an optional long long index. */
-    inline static std::optional<long long> parse_opt_int(PyObject* obj) {
-        return obj == Py_None ? std::nullopt : std::make_optional(parse_int(obj));
     }
 
     //////////////////////////
@@ -947,6 +926,28 @@ including :func:`runtime-checkable <python:typing.runtime_checkable>`
         ...
     TypeError: 4 is not of type typing.Iterable
 
+)doc"
+        };
+
+        static constexpr std::string_view __reversed__ {R"doc(
+Get a reverse iterator over the list.
+
+Returns
+-------
+iter
+    A reverse iterator over the list.
+
+Notes
+-----
+This method is used by the built-in :func:`reversed() <python:reversed>`
+function to iterate over the list in reverse order.
+
+Note that reverse iteration has different performance characteristics for
+doubly-linked lists vs singly-linked ones.  For the former, we can iterate in
+either direction with equal efficiency, but for the latter, we must construct
+a temporary stack to store the nodes in reverse order.  This can be expensive
+in both time and memory, requiring two full iterations over the list rather
+than one.
 )doc"
         };
 

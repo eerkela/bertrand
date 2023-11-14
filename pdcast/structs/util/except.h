@@ -191,8 +191,8 @@ inline void throw_python() {
         PyErr_SetString(PyExc_TypeError, e.what());  // bad_typeid -> TypeError
     } catch (const std::domain_error& e) {
         PyErr_SetString(PyExc_ValueError, e.what());  // domain_error -> ValueError
-    } catch (const std::invalid_argument& e) {
-        PyErr_SetString(PyExc_ValueError, e.what());  // invalid_argument -> ValueError
+    } catch (const std::invalid_argument& e) {  // invalid_argument -> ValueError
+        PyErr_SetString(PyExc_ValueError, e.what());  
     } catch (const std::ios_base::failure& e) {
         PyErr_SetString(PyExc_IOError, e.what());  // ios_base::failure -> IOError
     } catch (const std::out_of_range& e) {
@@ -209,7 +209,7 @@ inline void throw_python() {
     catch (const std::exception& exc) {
         PyErr_SetString(PyExc_RuntimeError, exc.what());
     } catch (...) {
-        PyErr_SetString(PyExc_RuntimeError, "Unknown error");
+        PyErr_SetString(PyExc_RuntimeError, "Unknown C++ error");
     }
 }
 
