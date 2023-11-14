@@ -1241,6 +1241,58 @@ private:
     /* docstrings for public Python attributes. */
     struct docs {
 
+        static constexpr std::string_view LinkedList {R"doc(
+A doubly-linked list.
+
+This class is a drop-in replacement for a built-in :class:`list` or
+:class:`collections.deque` object, supporting all the same operations.  It is
+also available in C++ under the same name, with equivalent semantics.
+
+Parameters
+----------
+items : Iterable[Any], optional
+    The items to initialize the list with.  If not specified, the list will be
+    empty.
+max_size : int, optional
+    The maximum number of items that the list can hold.  If not specified, the
+    list will be unbounded.
+spec : Any, optional
+    A specific type to enforce for elements of the list, allowing the creation
+    of type-safe containers.  This can be in any format recognized by
+    :func:`isinstance() <python:isinstance>`.  The default is ``None``, which
+    disables strict type checking for the list.  See the :meth:`specialize()`
+    method for more details.
+reverse : bool, default False
+    If True, reverse the order of ``items`` during list construction.  This is
+    more efficient than calling :meth:`reverse()` after construction.
+singly_linked : bool, default False
+    If True, use a singly-linked list instead of a doubly-linked list.  This
+    trades some performance in certain operations for increased memory
+    efficiency.  Regardless of this setting, the list will still support all
+    the same operations as a doubly-linked list.
+
+Notes
+-----
+These data structures are highly optimized for performance, and are generally
+on par with the built-in :class:`list` and :class:`collections.deque` types.
+They retains the usual tradeoffs of linked lists vs arrays (e.g. random access,
+vs constant-time insertions, etc.), but attempts to minimize compromises
+wherever possible.  Users should not notice a significant difference on
+average.
+
+The data structure itself is implemented entirely in C++, and can be used
+natively at the C++ level.  The Python wrapper is directly equivalent to the
+C++ class, and is provided for convenience.  Technically speaking, the Python
+class represents a ``std::variant`` of possible C++ implementations, each of
+which is templated for maximum performance.  The Python class is therefore
+slightly slower than the C++ class due to extra indirection, but the difference
+is negligible, and can mostly be attributed to the Python interpreter itself.
+
+Due to the symmetry between Python and C++, users should be able to easily port
+code that relies on this data structure with only minimal changes.
+)doc"
+        };
+
         static constexpr std::string_view append {R"doc(
 Insert an item at the end of the list.
 
@@ -1591,7 +1643,7 @@ Rotations are O(steps).
     static PyTypeObject build_type() {
         return {
             .ob_base = PyObject_HEAD_INIT(NULL)
-            .tp_name = "LinkedList",
+            .tp_name = "bertrand.structs.LinkedList",
             .tp_basicsize = sizeof(PyLinkedList),
             .tp_itemsize = 0,
             .tp_dealloc = (destructor) Base::__dealloc__,
@@ -1605,7 +1657,7 @@ Rotations are O(steps).
                 Py_TPFLAGS_IMMUTABLETYPE | Py_TPFLAGS_SEQUENCE
                 // add Py_TPFLAGS_MANAGED_WEAKREF for Python 3.12+
             ),
-            .tp_doc = "docstring for LinkedList",
+            .tp_doc = PyDoc_STR(docs::LinkedList.data()),
             .tp_traverse = (traverseproc) Base::__traverse__,
             .tp_clear = (inquiry) Base::__clear__,
             .tp_richcompare = (richcmpfunc) __richcompare__,
@@ -1616,7 +1668,6 @@ Rotations are O(steps).
             .tp_new = (newfunc) Base::__new__,
         };
     };
-
 
 public:
 

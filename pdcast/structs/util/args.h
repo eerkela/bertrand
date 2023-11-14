@@ -97,13 +97,16 @@ public:
         // call subclass hook
         Derived* self = static_cast<Derived*>(this);
         Out result = self->template hook<Func, ReturnType>(name, convert);
-        ++idx;
         return result.value_or(default_value);
     }
 
     /* Finalize the argument list, throwing an error if any additional arguments are
     present.  */
     inline void finalize() {
+        // TODO: this error message could probably be more informative.  Ordinary
+        // Python functions will raise a TypeError with a message like "f() takes 2
+        // positional arguments but 3 were given", or "__init__() got an unexpected 
+        // keyword argument 'spec'", etc.
         if (idx < n_args + n_kwargs) {
             std::ostringstream msg;
             msg << "Function takes at most " << idx << " arguments, but ";
@@ -142,7 +145,7 @@ class PyArgs<CallProtocol::ARGS> : public BaseArgs<PyArgs<CallProtocol::ARGS>> {
 
         // check for positional argument
         if (this->idx < this->n_args) {
-            PyObject* val = PyTuple_GET_ITEM(args, this->idx);
+            PyObject* val = PyTuple_GET_ITEM(args, this->idx++);
             if constexpr (pyobject) {
                 return std::make_optional(val);
             } else {
@@ -176,7 +179,7 @@ class PyArgs<CallProtocol::KWARGS> : public BaseArgs<PyArgs<CallProtocol::KWARGS
 
         // check for positional argument
         if (this->idx < this->n_args) {
-            PyObject* val = PyTuple_GET_ITEM(args, this->idx);
+            PyObject* val = PyTuple_GET_ITEM(args, this->idx++);
             if constexpr (pyobject) {
                 return std::make_optional(val);
             } else {
@@ -188,6 +191,7 @@ class PyArgs<CallProtocol::KWARGS> : public BaseArgs<PyArgs<CallProtocol::KWARGS
         if (kwargs != nullptr) {
             PyObject* val = PyDict_GetItemString(kwargs, name.data());
             if (val != nullptr) {
+                ++this->idx;
                 if constexpr (pyobject) {
                     return std::make_optional(val);
                 } else {
@@ -225,7 +229,7 @@ class PyArgs<CallProtocol::FASTCALL> : public BaseArgs<PyArgs<CallProtocol::FAST
 
         // check for positional argument
         if (this->idx < this->n_args) {
-            PyObject* val = args[this->idx];
+            PyObject* val = args[this->idx++];
             if constexpr (pyobject) {
                 return std::make_optional(val);
             } else {
@@ -261,7 +265,7 @@ class PyArgs<CallProtocol::VECTORCALL> : public BaseArgs<PyArgs<CallProtocol::VE
 
         // check for positional argument
         if (this->idx < this->n_args) {
-            PyObject* val = args[this->idx];
+            PyObject* val = args[this->idx++];
             if constexpr (pyobject) {
                 return std::make_optional(val);
             } else {
@@ -273,6 +277,7 @@ class PyArgs<CallProtocol::VECTORCALL> : public BaseArgs<PyArgs<CallProtocol::VE
         for (Py_ssize_t i = 0; i < n_kwargs; ++i) {
             if (kwnames[i] == name) {
                 PyObject* val = args[this->n_args + i];
+                ++this->idx;
                 if constexpr (pyobject) {
                     return std::make_optional(val);
                 } else {

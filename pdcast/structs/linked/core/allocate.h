@@ -44,6 +44,15 @@ via std::is_base_of, without requiring any foreknowledge of template parameters.
 class AllocatorTag {};
 
 
+
+// TODO: init signature should take permanent specializations into account.  This could
+// be another bit flag in the allocator that causes specialize() to throw an error.
+
+
+// Allocator(capacity, dynamic, specialization, permanent)
+// View(capacity, dynamic, specialization, permanent)
+
+
 /* Base class that implements shared functionality for all allocators and provides the
 minimum necessary attributes for compatibility with higher-level views. */
 template <typename NodeType>
@@ -256,7 +265,10 @@ public:
         Node* curr = head;
         while (curr != nullptr) {
             if (!curr->typecheck(spec)) {
-                throw util::TypeError("node type does not match specialization");
+                std::ostringstream msg;
+                msg << util::repr(curr->value()) << " is not of type ";
+                msg << util::repr(spec);
+                throw util::TypeError(msg.str());
             }
             curr = curr->next();
         }
