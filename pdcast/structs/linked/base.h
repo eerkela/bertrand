@@ -298,7 +298,6 @@ public:
 
     /* Wrap LinkedList.lock functor as a managed @property in Python. */
     inline static PyObject* lock(Derived* self, void* /* ignored */) noexcept {
-        printf("hello, world!\n");
         return std::visit(
             [](auto& list) {
                 using Lock = typename std::decay_t<decltype(list)>::Lock;

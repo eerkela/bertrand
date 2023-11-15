@@ -11,6 +11,7 @@
 #include <thread>  // std::thread
 #include <type_traits>  // std::is_same_v, std::is_base_of_v, std::enable_if_t, etc.
 #include <unordered_set>  // std::unordered_set
+#include "except.h"  // throw_python()
 #include "slot.h"  // Slot
 #include "string.h"  // PyName
 
@@ -766,16 +767,6 @@ public:
 ///////////////////////////////
 
 
-// TODO: lock always fails on the second attempt:
-
-
-// >>> with l.lock():
-// ...    pass
-// >>> with l.lock():
-// segmentation fault
-
-
-
 /* A lock decorator that produces Python-compatible lock guards as context managers. */
 template <typename LockType>
 class PyLock {
@@ -798,11 +789,11 @@ public:
     public:
 
         /* Force users to use create() factory method. */
-        // PyGuard() = delete;
-        // PyGuard(const PyGuard&) = delete;
-        // PyGuard(PyGuard&&) = delete;
-        // PyGuard& operator=(const PyGuard&) = delete;
-        // PyGuard& operator=(PyGuard&&) = delete;
+        PyGuard() = delete;
+        PyGuard(const PyGuard&) = delete;
+        PyGuard(PyGuard&&) = delete;
+        PyGuard& operator=(const PyGuard&) = delete;
+        PyGuard& operator=(PyGuard&&) = delete;
 
         /* Enter the context manager's block, acquiring a new lock. */
         static PyObject* __enter__(PyGuard* self, PyObject* /* ignored */) {
@@ -816,12 +807,19 @@ public:
             }
 
             // acquire the lock
-            if constexpr (GuardTraits<GuardType>::mode == LockMode::EXCLUSIVE) {
-                new (&(self->guard)) GuardType(self->lock->operator()());
-            } else if constexpr (GuardTraits<GuardType>::mode == LockMode::SHARED) {
-                new (&(self->guard)) GuardType(self->lock->shared());
-            } else {
-                PyErr_SetString(PyExc_RuntimeError, "unrecognized lock mode");
+            try {
+                if constexpr (GuardTraits<GuardType>::mode == LockMode::EXCLUSIVE) {
+                    new (&self->guard) GuardType(self->lock->operator()());
+                } else if constexpr (GuardTraits<GuardType>::mode == LockMode::SHARED) {
+                    new (&self->guard) GuardType(self->lock->shared());
+                } else {
+                    PyErr_SetString(PyExc_RuntimeError, "unrecognized lock mode");
+                    return nullptr;
+                }
+
+            // translate C++ exceptions to Python errors
+            } catch (...) {
+                util::throw_python();
                 return nullptr;
             }
 
@@ -836,7 +834,6 @@ public:
                 self->guard.~GuardType();
                 self->has_guard = false;
             }
-            Py_DECREF(self);
             Py_RETURN_NONE;
         }
 
@@ -868,7 +865,7 @@ public:
 
         /* Release the lock when the context manager is garbage collected, if it hasn't
         been released already. */
-        inline static void dealloc(PyGuard* self) {
+        inline static void __dealloc__(PyGuard* self) {
             if (self->has_guard) {
                 self->guard.~GuardType();
                 self->has_guard = false;
@@ -926,7 +923,7 @@ bool
                 .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
                 .tp_name = PyName<GuardType>.data(),
                 .tp_basicsize = sizeof(PyGuard),
-                .tp_dealloc = (destructor) dealloc,
+                .tp_dealloc = (destructor) __dealloc__,
                 .tp_flags = (
                     Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
                     Py_TPFLAGS_DISALLOW_INSTANTIATION
@@ -956,11 +953,11 @@ bool
     lead to some very subtle bugs related to memory initialization, particularly as it
     relates to Python object headers and stack-allocated memory.  We're better off
     disabling C++ constructors entirely in favor of explicit factory methods instead. */
-    // PyLock() = delete;
-    // PyLock(const PyLock&) = delete;
-    // PyLock(PyLock&&) = delete;
-    // PyLock& operator=(const PyLock&) = delete;
-    // PyLock& operator=(PyLock&&) = delete;
+    PyLock() = delete;
+    PyLock(const PyLock&) = delete;
+    PyLock(PyLock&&) = delete;
+    PyLock& operator=(const PyLock&) = delete;
+    PyLock& operator=(PyLock&&) = delete;
 
     /* Construct a Python wrapper around a C++ lock functor. */
     inline static PyObject* create(LockType& lock) {
