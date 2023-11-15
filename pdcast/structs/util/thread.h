@@ -7,6 +7,7 @@
 #include <mutex>  // std::mutex, std::lock_guard, std::unique_lock
 #include <optional>  // std::optional
 #include <shared_mutex>  // std::shared_mutex, std::shared_lock
+#include <string_view>  // std::string_view
 #include <thread>  // std::thread
 #include <type_traits>  // std::is_same_v, std::is_base_of_v, std::enable_if_t, etc.
 #include <unordered_set>  // std::unordered_set
@@ -110,7 +111,6 @@ public:
     using mutex_type = Mutex;
     static constexpr LockMode mode = lock_mode;
     static constexpr bool recursive = false;
-    static constexpr bool python = false;
 
     /* Acquire a mutex during construction, locking it. */
     Guard(mutex_type& mtx) : guard(mtx) {}
@@ -154,7 +154,6 @@ public:
     using mutex_type = Mutex;
     static constexpr LockMode mode = LockMode::SHARED;
     static constexpr bool recursive = false;
-    static constexpr bool python = false;
 
     /* Acquire a mutex during construction, locking it. */
     Guard(mutex_type& mtx) : guard(mtx) {}
@@ -211,7 +210,6 @@ public:
     using mutex_type = typename GuardType::mutex_type;
     static constexpr LockMode mode = GuardType::mode;
     static constexpr bool recursive = true;
-    static constexpr bool python = GuardType::python;
 
     /* Acquire a mutex during construction, locking it. */
     RecursiveGuard(LockType& lock, mutex_type& mtx) : lock(lock), guard(mtx) {}
@@ -264,110 +262,6 @@ public:
 };
 
 
-/* A wrapper around a C++ lock guard that allows it to be used as a Python context
-manager. */
-template <typename GuardType, typename LockType>
-class PyGuard : GuardTag {
-    PyObject_HEAD
-    Slot<GuardType> guard;
-    const LockType* lock;
-
-    /* Force users to use init() factory method. */
-    PyGuard() = delete;
-    PyGuard(const PyGuard&) = delete;
-    PyGuard(PyGuard&&) = delete;
-
-public:
-    using mutex_type = typename GuardType::mutex_type;
-    static constexpr LockMode mode = GuardType::mode;
-    static constexpr bool recursive = GuardType::recursive;
-    static constexpr bool python = true;
-
-    /* Construct a Python lock from a C++ lock guard. */
-    inline static PyObject* init(const LockType* lock) {
-        // create new iterator instance
-        PyGuard* result = PyObject_New(PyGuard, &Type);
-        if (result == nullptr) {
-            throw std::runtime_error("could not allocate Python iterator");
-        }
-
-        // initialize (NOTE: PyObject_New() does not call stack constructors)
-        new (&(result->guard)) Slot<GuardType>();
-        result->lock = lock;
-
-        // return as PyObject*
-        return reinterpret_cast<PyObject*>(result);
-    }
-
-    /* Enter the context manager's block, acquiring a new lock. */
-    inline static PyObject* __enter__(PyGuard* self, PyObject* args) {
-        if constexpr (GuardTraits<GuardType>::mode == LockMode::EXCLUSIVE) {
-            self->guard.construct(self->lock->operator()());
-        } else if constexpr (GuardTraits<GuardType>::mode == LockMode::SHARED) {
-            self->guard.construct(self->lock->shared());
-        } else {
-            throw std::runtime_error("unrecognized lock mode");
-        }
-        return Py_NewRef(self);
-    }
-
-    /* Exit the context manager's block, releasing the lock. */
-    inline static PyObject* __exit__(PyGuard* self, PyObject* /* ignored */) {
-        self->guard.destroy();
-        Py_DECREF(self);
-        Py_RETURN_NONE;
-    }
-
-    /* Check if the lock is acquired. */
-    inline static PyObject* locked(PyGuard* self, PyObject* /* ignored */) {
-        return PyBool_FromLong(self->guard.constructed());
-    }
-
-private:
-
-    /* Release the lock when the context manager is garbage collected, if it hasn't
-    been released already. */
-    inline static void dealloc(PyGuard* self) {
-        self->guard.destroy();
-        Type.tp_free(self);
-    }
-
-    /* Vtable containing Python methods for the context manager. */
-    inline static PyMethodDef methods[] = {
-        {"__enter__", (PyCFunction) __enter__, METH_NOARGS, "Enter the context manager."},
-        {"__exit__", (PyCFunction) __exit__, METH_VARARGS, "Exit the context manager."},
-        {"locked", (PyCFunction) locked, METH_NOARGS, "Check if the lock is acquired."},
-        {NULL}  // sentinel
-    };
-
-    /* Initialize a PyTypeObject to represent this lock from Python. */
-    static PyTypeObject init_type() {
-        PyTypeObject slots = {
-            .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
-            .tp_name = PyName<GuardType>.data(),
-            .tp_basicsize = sizeof(PyGuard),
-            .tp_dealloc = (destructor) dealloc,
-            .tp_flags = (
-                Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
-                Py_TPFLAGS_DISALLOW_INSTANTIATION
-            ),
-            .tp_doc = "Python-compatible wrapper around a C++ lock guard.",
-            .tp_methods = methods,
-            .tp_alloc = PyType_GenericAlloc,
-        };
-
-        // register iterator type with Python
-        if (PyType_Ready(&slots) < 0) {
-            throw std::runtime_error("could not initialize PyGuard type");
-        }
-        return slots;
-    }
-
-    /* C-style Python type declaration. */
-    inline static PyTypeObject Type = init_type();
-};
-
-
 /* A collection of traits for introspecting custom lock guards at compile time. */
 template <typename GuardType>
 class GuardTraits {
@@ -384,7 +278,6 @@ public:
     static constexpr bool exclusive = (mode == LockMode::EXCLUSIVE);
     static constexpr bool shared = (mode == LockMode::SHARED);
     static constexpr bool recursive = GuardType::recursive;
-    static constexpr bool python = GuardType::python;
 };
 
 
@@ -868,28 +761,494 @@ public:
 };
 
 
+///////////////////////////////
+////    PYTHON WRAPPERS    ////
+///////////////////////////////
+
+
+// TODO: lock always fails on the second attempt:
+
+
+// >>> with l.lock():
+// ...    pass
+// >>> with l.lock():
+// segmentation fault
+
+
+
 /* A lock decorator that produces Python-compatible lock guards as context managers. */
 template <typename LockType>
-class PyLock : public LockType {
+class PyLock {
+    using Traits = LockTraits<LockType>;
+
+    PyObject_HEAD
+    LockType* lock;
+
 public:
 
+    /* A wrapper around a C++ thread guard that allows it to be used as a Python
+    context manager. */
+    template <typename GuardType>
+    class PyGuard {
+        PyObject_HEAD
+        LockType* lock;
+        bool has_guard;
+        union { GuardType guard; };
+
+    public:
+
+        /* Force users to use create() factory method. */
+        // PyGuard() = delete;
+        // PyGuard(const PyGuard&) = delete;
+        // PyGuard(PyGuard&&) = delete;
+        // PyGuard& operator=(const PyGuard&) = delete;
+        // PyGuard& operator=(PyGuard&&) = delete;
+
+        /* Enter the context manager's block, acquiring a new lock. */
+        static PyObject* __enter__(PyGuard* self, PyObject* /* ignored */) {
+            // check if the lock has already been acquired
+            if (self->has_guard) {
+                PyErr_SetString(
+                    PyExc_RuntimeError,
+                    "lock has already been acquired by this context manager"
+                );
+                return nullptr;
+            }
+
+            // acquire the lock
+            if constexpr (GuardTraits<GuardType>::mode == LockMode::EXCLUSIVE) {
+                new (&(self->guard)) GuardType(self->lock->operator()());
+            } else if constexpr (GuardTraits<GuardType>::mode == LockMode::SHARED) {
+                new (&(self->guard)) GuardType(self->lock->shared());
+            } else {
+                PyErr_SetString(PyExc_RuntimeError, "unrecognized lock mode");
+                return nullptr;
+            }
+
+            // return new reference
+            self->has_guard = true;
+            return Py_NewRef(self);
+        }
+
+        /* Exit the context manager's block, releasing the lock. */
+        inline static PyObject* __exit__(PyGuard* self, PyObject* /* ignored */) {
+            if (self->has_guard) {
+                self->guard.~GuardType();
+                self->has_guard = false;
+            }
+            Py_DECREF(self);
+            Py_RETURN_NONE;
+        }
+
+        /* Check if the lock is acquired. */
+        inline static PyObject* locked(PyGuard* self, void* /* ignored */) {
+            return PyBool_FromLong(self->has_guard);
+        }
+
+    private:
+        friend PyLock;
+
+        /* Construct a Python lock from a C++ lock guard. */
+        inline static PyObject* create(LockType* lock) {
+            // allocate
+            PyGuard* result = PyObject_New(PyGuard, &Type);
+            if (result == nullptr) {
+                PyErr_SetString(
+                    PyExc_RuntimeError,
+                    "could not allocate Python lock guard"
+                );
+                return nullptr;
+            }
+
+            // initialize
+            result->lock = lock;
+            result->has_guard = false;
+            return reinterpret_cast<PyObject*>(result);
+        }
+
+        /* Release the lock when the context manager is garbage collected, if it hasn't
+        been released already. */
+        inline static void dealloc(PyGuard* self) {
+            if (self->has_guard) {
+                self->guard.~GuardType();
+                self->has_guard = false;
+            }
+            Type.tp_free(self);
+        }
+
+        struct docs {
+
+            static constexpr std::string_view __enter__ {R"doc(
+Enter the context manager's context block, acquiring a lock on the mutex.
+
+Returns
+-------
+PyGuard
+    The context manager itself, which may be aliased using the `as` keyword.
+
+)doc"
+            };
+
+            static constexpr std::string_view __exit__ {R"doc(
+Exit the context manager's context block, releasing the lock.
+)doc"
+            };
+
+            static constexpr std::string_view locked {R"doc(
+Check if the lock is acquired within the current context.
+
+Returns
+-------
+bool
+    True if the lock is currently active, False otherwise.
+
+)doc"
+            };
+
+        };
+
+        /* Vtable containing Python @properties for the context manager. */
+        inline static PyGetSetDef properties[] = {
+            {"locked", (getter) locked, NULL, docs::locked.data()},
+            {NULL}  // sentinel
+        };
+
+        /* Vtable containing Python methods for the context manager. */
+        inline static PyMethodDef methods[] = {
+            {"__enter__", (PyCFunction) __enter__, METH_NOARGS, docs::__enter__.data()},
+            {"__exit__", (PyCFunction) __exit__, METH_VARARGS, docs::__exit__.data()},
+            {NULL}  // sentinel
+        };
+
+        /* Initialize a PyTypeObject to represent this lock from Python. */
+        static PyTypeObject init_type() {
+            PyTypeObject slots = {
+                .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+                .tp_name = PyName<GuardType>.data(),
+                .tp_basicsize = sizeof(PyGuard),
+                .tp_dealloc = (destructor) dealloc,
+                .tp_flags = (
+                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
+                    Py_TPFLAGS_DISALLOW_INSTANTIATION
+                ),
+                .tp_doc = "Python-compatible wrapper around a C++ lock guard.",
+                .tp_methods = methods,
+                .tp_getset = properties,
+            };
+
+            // register Python type
+            if (PyType_Ready(&slots) < 0) {
+                throw std::runtime_error("could not initialize PyGuard type");
+            }
+            return slots;
+        }
+
+    public:
+
+        /* Final Python type. */
+        inline static PyTypeObject Type = init_type();
+    };
+
+    /* C++ constructors/assignment operators deleted for compatibility with Python
+    API.
+
+    NOTE: the Python C API does not always respect C++ construction semantics, and can
+    lead to some very subtle bugs related to memory initialization, particularly as it
+    relates to Python object headers and stack-allocated memory.  We're better off
+    disabling C++ constructors entirely in favor of explicit factory methods instead. */
+    // PyLock() = delete;
+    // PyLock(const PyLock&) = delete;
+    // PyLock(PyLock&&) = delete;
+    // PyLock& operator=(const PyLock&) = delete;
+    // PyLock& operator=(PyLock&&) = delete;
+
+    /* Construct a Python wrapper around a C++ lock functor. */
+    inline static PyObject* create(LockType& lock) {
+        // allocate
+        PyLock* result = PyObject_New(PyLock, &Type);
+        if (result == nullptr) {
+            PyErr_SetString(PyExc_RuntimeError, "could not allocate Python lock proxy");
+            return nullptr;
+        }
+
+        // initialize
+        result->lock = &lock;
+        return reinterpret_cast<PyObject*>(result);
+    }
+
     /* Wrap an exclusive lock as a Python context manager. */
-    template <bool cond = LockTraits<LockType>::exclusive, typename... Args>
-    inline auto python(Args&&... args) const
-        -> std::enable_if_t<cond, PyObject*>
-    {
-        using Guard = typename LockTraits<LockType>::ExclusiveGuard;
-        return PyGuard<Guard, LockType>::init(this);
+    inline static PyObject* __call__(PyLock* self, PyObject* args, PyObject* kwargs) {
+        if constexpr (!Traits::exclusive) {
+            PyErr_SetString(
+                PyExc_TypeError,
+                "lock cannot be acquired in exclusive mode"
+            );
+            return nullptr;
+        } else {
+            using Guard = typename LockTraits<LockType>::ExclusiveGuard;
+            return PyGuard<Guard>::create(self->lock);
+        }
     }
 
     /* Wrap a shared lock as a Python context manager. */
-    template <bool cond = LockTraits<LockType>::shared, typename... Args>
-    inline auto shared_python(Args&&... args) const
-        -> std::enable_if_t<cond, PyObject*>
-    {
-        using Guard = typename LockTraits<LockType>::SharedGuard;
-        return PyGuard<Guard, LockType>::init(this);
+    inline static PyObject* shared(PyLock* self, PyObject* /* ignored */) {
+        if constexpr (!Traits::shared) {
+            PyErr_SetString(
+                PyExc_TypeError,
+                "lock cannot be acquired in shared mode"
+            );
+            return nullptr;
+        } else {
+            using Guard = typename LockTraits<LockType>::SharedGuard;
+            return PyGuard<Guard>::create(self->lock);
+        }
     }
+
+    /* Get the total number of times the mutex has been locked. */
+    inline static PyObject* count(PyLock* self, void* /* ignored */) {
+        if constexpr (!Traits::diagnostic) {
+            PyErr_SetString(PyExc_TypeError, "lock does not track diagnostics");
+            return nullptr;
+        } else {
+            return PyLong_FromSize_t(self->lock->count());
+        }
+    }
+
+    // TODO: duration should maybe accept a unit as a string.  Internally, we always
+    // store with nanosecond duration, but we can convert to other units for display
+    // purposes.  The duration() method always returns a double.  We offer a second
+    // method ns() that returns the nanosecond duration as an integer.
+
+    /* Get the total time spent waiting to acquire the lock. */
+    inline static PyObject* duration(PyLock* self, void* /* ignored */) {
+        if constexpr (!Traits::diagnostic) {
+            PyErr_SetString(PyExc_TypeError, "lock does not track diagnostics");
+            return nullptr;
+        } else {
+            return PyFloat_FromDouble(self->lock->duration().count());
+        }
+    }
+
+    // TODO: if duration accepts an optional unit, then contention should too.
+
+    /* Get the average time spent waiting to acquire the lock. */
+    inline static PyObject* contention(PyLock* self, void* /* ignored */) {
+        if constexpr (!Traits::diagnostic) {
+            PyErr_SetString(PyExc_TypeError, "lock does not track diagnostics");
+            return nullptr;
+        } else {
+            return PyFloat_FromDouble(self->lock->contention().count());
+        }
+    }
+
+    /* Reset the internal diagnostic counters. */
+    inline static PyObject* reset_diagnostics(PyLock* self, PyObject* /* ignored */) {
+        if constexpr (!Traits::diagnostic) {
+            PyErr_SetString(PyExc_TypeError, "lock does not track diagnostics");
+            return nullptr;
+        } else {
+            self->lock->reset_diagnostics();
+            Py_RETURN_NONE;
+        }
+    }
+
+private:
+
+    /* Deallocate the lock functor. */
+    inline static void __dealloc__(PyLock* self) {
+        Type.tp_free(self);  // no additional cleanup required
+    }
+
+    /* Docstrings for public attributes of the lock functor. */
+    struct docs {
+
+        static constexpr std::string_view shared {R"doc(
+Acquire a shared lock on the mutex.
+
+Returns
+-------
+context manager
+    A context manager that acquires the lock upon entering its context and releases it
+    upon exiting.
+
+Raises
+------
+TypeError
+    If the lock cannot be acquired in shared mode.
+
+Notes
+-----
+This method is only available if the underlying lock functor supports shared locks.
+Otherwise, it will raise an error.
+
+Examples
+--------
+.. doctest::
+
+    >>> from bertrand.structs import LinkedList
+    >>> l = LinkedList("abc", lock={"shared": True})
+    >>> with l.lock.shared() as guard:  # blocks until lock is acquired
+    ...     # list may be accessed concurrently as long as no exclusive locks are held
+    ...     print(guard.locked)
+    ... print(guard.locked)
+    True
+    False
+
+)doc"
+        };
+
+        static constexpr std::string_view count {R"doc(
+Get the total number of times the mutex has been locked.
+
+Returns
+-------
+int
+    The total number of times the mutex has been locked in either shared or exclusive
+    mode.
+
+Raises
+------
+TypeError
+    If the lock does not track diagnostics.
+
+Examples
+--------
+.. doctest::
+
+    >>> from bertrand.structs import LinkedList
+    >>> l = LinkedList("abc", lock={"diagnostic": True})
+    >>> l.lock.count
+    0
+    >>> with l.lock() as guard:
+    ...     pass
+    >>> l.lock.count
+    1
+
+)doc"
+        };
+
+        static constexpr std::string_view duration {R"doc(
+Get the total time spent waiting to acquire the lock.
+
+Parameters
+----------
+unit : str, default "ns"
+    The unit to use for the returned duration.  Must be one of "ns", "us", "ms", "s",
+    "m", or "h".
+
+Returns
+-------
+float
+    The total time spent waiting to acquire the lock, in the specified units.
+
+Raises
+------
+TypeError
+    If the lock does not track diagnostics.
+
+Examples
+--------
+# TODO: add example showing contention between multiple threads
+
+)doc"
+        };
+
+        static constexpr std::string_view contention {R"doc(
+Get the average time spent waiting to acquire the lock.
+
+Parameters
+----------
+unit : str, default "ns"
+    The unit to use for the returned duration.  Must be one of "ns", "us", "ms", "s",
+    "m", or "h".
+
+Returns
+-------
+float
+    The average time spent waiting to acquire the lock, in the specified units.
+
+Raises
+------
+TypeError
+    If the lock does not track diagnostics.
+
+Examples
+--------
+# TODO: add example showing contention between multiple threads
+
+)doc"
+        };
+
+        static constexpr std::string_view reset_diagnostics {R"doc(
+Reset the internal diagnostic counters.
+
+Raises
+------
+TypeError
+    If the lock does not track diagnostics.
+
+Examples
+--------
+.. doctest::
+
+    >>> from bertrand.structs import LinkedList
+    >>> l = LinkedList("abc", lock={"diagnostic": True})
+    >>> with l.lock() as guard:
+    ...     pass
+    >>> l.lock.count
+    1
+    >>> l.lock.reset_diagnostics()
+    >>> l.lock.count
+    0
+
+)doc"
+        };
+
+    };
+
+    /* Vtable containing @property definitions for the Python lock. */
+    inline static PyGetSetDef properties[] = {
+        {"count", (getter) count, NULL, docs::count.data(), NULL},
+        {"duration", (getter) duration, NULL, docs::duration.data(), NULL},
+        {"contention", (getter) contention, NULL, docs::contention.data(), NULL},
+        {NULL}  // sentinel
+    };
+
+    /* Vtable containing Python methods for the context manager. */
+    inline static PyMethodDef methods[] = {
+        {"shared", (PyCFunction) shared, METH_NOARGS, docs::shared.data()},
+        {"reset_diagnostics", (PyCFunction) reset_diagnostics, METH_NOARGS, docs::reset_diagnostics.data()},
+        {NULL}  // sentinel
+    };
+
+    /* Initialize a PyTypeObject to represent this lock from Python. */
+    static PyTypeObject init_type() {
+        PyTypeObject slots = {
+            .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+            .tp_name = PyName<LockType>.data(),
+            .tp_basicsize = sizeof(PyLock),
+            .tp_dealloc = (destructor) __dealloc__,
+            .tp_call = (ternaryfunc) __call__,
+            .tp_flags = (
+                Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
+                Py_TPFLAGS_DISALLOW_INSTANTIATION
+            ),
+            .tp_doc = "Python-compatible wrapper around a C++ lock functor.",
+            .tp_methods = methods,
+            .tp_getset = properties,
+        };
+
+        // register Python type
+        if (PyType_Ready(&slots) < 0) {
+            throw std::runtime_error("could not initialize PyLock type");
+        }
+        return slots;
+    }
+
+public:
+
+    /* C-style Python type declaration. */
+    inline static PyTypeObject Type = init_type();
 
 };
 
@@ -981,29 +1340,21 @@ class LockTraits {
 
 public:
     using Mutex = typename LockType::Mutex;
-
-    /* Exclusive locks. */
-    static constexpr bool exclusive = _exclusive::value;
     using ExclusiveGuard = typename _exclusive::type;  // void if not exclusive
+    using SharedGuard = typename _shared::type;  // void if not shared
+    using TimeoutUnit = typename _timeout::type;  // ns if not spin
+    using WaitUnit = typename _wait::type;  // ns if not spin
+    using DiagnosticUnit = typename _diagnostic_unit::type;  // void if not diagnostic
 
-    /* Shared locks. */
+    static constexpr bool exclusive = _exclusive::value;
     static constexpr bool shared = _shared::value;
-    using SharedGuard = typename _shared::type;  // void if not exclusive
-
-    /* Recursive locks. */
     static constexpr bool recursive = LockType::recursive;
-
-    /* Spin locks. */
     static constexpr bool spin = LockType::spin;
     static constexpr int max_retries = _max_retries::value;  // -1 if not spin
-    using TimeoutUnit = typename _timeout::type;
     static constexpr TimeoutUnit timeout = _timeout::value;  // -1ns if not spin
-    using WaitUnit = typename _wait::type;
     static constexpr WaitUnit wait = _wait::value;  // -1ns if not spin
-
-    /* Diagnostic locks. */
     static constexpr bool diagnostic = LockType::diagnostic;
-    using DiagnosticUnit = typename _diagnostic_unit::type;  // void if not diagnostic
+
 };
 
 

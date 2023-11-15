@@ -1581,6 +1581,7 @@ Rotations are O(steps).
 
     /* Vtable containing Python @property definitions for the LinkedList. */
     inline static PyGetSetDef properties[] = {
+        BASE_PROPERTY(lock),
         BASE_PROPERTY(capacity),
         BASE_PROPERTY(max_size),
         BASE_PROPERTY(dynamic),

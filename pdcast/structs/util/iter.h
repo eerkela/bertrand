@@ -474,17 +474,15 @@ public:
 
     /* Construct a Python iterator from a C++ iterator range. */
     inline static PyObject* init(Iterator&& begin, Iterator&& end) {
-        // create new iterator instance
+        // allocate
         PyIterator* result = PyObject_New(PyIterator, &Type);
         if (result == nullptr) {
             throw std::runtime_error("could not allocate Python iterator");
         }
 
-        // initialize (NOTE: PyObject_New() does not call stack constructors)
+        // initialize
         new (&(result->first)) Iterator(std::move(begin));
         new (&(result->second)) Iterator(std::move(end));
-
-        // return as PyObject*
         return reinterpret_cast<PyObject*>(result);
     }
 

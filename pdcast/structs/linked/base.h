@@ -2,11 +2,10 @@
 #ifndef BERTRAND_STRUCTS_LINKED_BASE_H
 #define BERTRAND_STRUCTS_LINKED_BASE_H
 
-#include <cstddef>      // size_t
+#include <cstddef>  // size_t
 #include <memory>  // std::shared_ptr, std::weak_ptr
-#include <optional>     // std::optional
-#include <sstream>
-#include <stdexcept>    // std::runtime_error
+#include <optional>  // std::optional
+#include <stdexcept>  // std::runtime_error
 #include <string_view>  // std::string_view
 #include <variant>  // std::visit
 #include "core/iter.h"  // Direction
@@ -43,6 +42,7 @@ public:
     using Node = typename View::Node;
     using Value = typename View::Value;
     using MemGuard = typename View::MemGuard;
+    using Lock = LockType;
 
     template <Direction dir>
     using Iterator = typename View::template Iterator<dir>;
@@ -180,7 +180,7 @@ public:
     ///////////////////////////////
 
     /* Functor that produces threading locks for a linked data structure. */
-    util::PyLock<LockType> lock;
+    Lock lock;
     /* BasicLock:
      * lock()  // lock guard
      * lock.python()  // context manager
@@ -264,80 +264,6 @@ private:
 };
 
 
-/* A functor that allows a type-erased Cython variant to be locked for use in a
-multithreaded environment. */
-template <typename T>
-class VariantLock {
-public:
-
-    /* Return a Python context manager containing an exclusive lock on the mutex. */
-    inline PyObject* operator()() const {
-        return std::visit(
-            [&](auto& obj) {
-                return obj.lock.python();
-            }, 
-            ref.variant
-        );
-    }
-
-    /* Return a Python context manager containing a shared lock on the mutex. */
-    inline PyObject* shared() const {
-        return std::visit(
-            [&](auto& obj) {
-                return obj.lock.shared_python();
-            }, 
-            ref.variant
-        );
-    }
-
-    /* Get the total number of times the mutex has been locked. */
-    inline size_t count() const {
-        return std::visit(
-            [&](auto& obj) {
-                return obj.lock.count();
-            },
-            ref.variant
-        );
-    }
-
-    /* Get the total length of time spent waiting to acquire the lock. */
-    inline size_t duration() const {
-        return std::visit(
-            [&](auto& obj) {
-                return obj.lock.duration();
-            },
-            ref.variant
-        );
-    }
-
-    /* Get the average time spent waiting to acquire the lock. */
-    inline double contention() const {
-        return std::visit(
-            [&](auto& obj) {
-                return obj.lock.average();
-            },
-            ref.variant
-        );
-    }
-
-    /* Reset the internal diagnostic counters. */
-    inline void reset_diagnostics() const {
-        std::visit(
-            [&](auto& obj) {
-                obj.lock.reset_diagnostics();
-            },
-            ref.variant
-        );
-    }
-
-private:
-    friend T;
-    T& ref;
-
-    VariantLock(T& variant) : ref(variant) {}
-};
-
-
 }  // namespace cython
 
 
@@ -347,9 +273,6 @@ private:
 
 
 // TODO: SelfRef is only needed for RelativeProxies, which are not yet implemented.
-
-// TODO: VariantLock should be an inner class within PyLinkedBase, and should be
-// exposed as a PyObject* member attribute.
 
 
 /* A CRTP-enabled base class that exposes properties inherited from LinkedBase to
@@ -372,6 +295,18 @@ public:
     PyLinkedBase(PyLinkedBase&&) = delete;
     PyLinkedBase& operator=(const PyLinkedBase&) = delete;
     PyLinkedBase& operator=(PyLinkedBase&&) = delete;
+
+    /* Wrap LinkedList.lock functor as a managed @property in Python. */
+    inline static PyObject* lock(Derived* self, void* /* ignored */) noexcept {
+        printf("hello, world!\n");
+        return std::visit(
+            [](auto& list) {
+                using Lock = typename std::decay_t<decltype(list)>::Lock;
+                return util::PyLock<Lock>::create(list.lock);
+            },
+            self->variant
+        );
+    }
 
     /* Getter for `LinkedList.capacity` in Python. */
     inline static PyObject* capacity(Derived* self, PyObject* /* ignored */) noexcept {
@@ -556,8 +491,6 @@ public:
     }
 
 protected:
-    using Lock = cython::VariantLock<PyLinkedBase>;
-    Lock lock;
 
     /* Allocate a new LinkedList instance from Python and register it with the cyclic
     garbage collector. */
@@ -568,7 +501,6 @@ protected:
     ) {
         Derived* self = reinterpret_cast<Derived*>(type->tp_alloc(type, 0));
         if (self == nullptr) return nullptr;
-        new (&self->lock) Lock(*self);  // initialize lock functor
         return reinterpret_cast<PyObject*>(self);
     }
 
@@ -707,7 +639,7 @@ protected:
 
         /* Overridden type definition for permanently-specialized types. */
         inline static PyType_Spec specialized_spec = {
-            .name = "bertrand.structs.LinkedList",
+            .name = Derived::Type.tp_name,
             .basicsize = sizeof(Specialized),
             .itemsize = 0,
             .flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
@@ -722,6 +654,142 @@ protected:
 
     /* Compile-time docstrings for all public Python methods. */
     struct docs {
+
+        static constexpr std::string_view lock {R"doc(
+Access the list's internal thread lock.
+
+Returns
+-------
+PyLock
+    A proxy for a C++ lock functor that can be used to acquire threading locks
+    on the list.
+
+Notes
+-----
+By default, none of the list's methods are guaranteed to be thread-safe.  This
+guarantees the highest performance in a single-threaded context, but means that
+concurrent access from multiple threads can lead to undefined behavior.  To
+mitigate this and allow for parallelism, the list offers a built-in mutex that
+can be used to synchronize access between threads.
+
+Each list's lock can configured using constructor arguments, like so:
+
+.. doctest::
+
+    >>> from bertrand.structs import LinkedList
+    >>> from datetime import timedelta
+    >>> lock_config = {
+    ...     "shared": false,
+    ...     "recursive": false,
+    ...     "retries": -1,
+    ...     "timeout": timedelta(microseconds=-1),
+    ...     "wait": timedelta(microseconds=-1),
+    ...     "diagnostic": false
+    ... }
+    >>> l = LinkedList("abcdef", lock=lock_config)
+
+The meaning of each argument is as follows:
+
+    #. ``shared``: enables the ``lock.shared()`` method, allowing the lock to
+        be acquired by multiple readers at once.  This allows for concurrent
+        reads of the list as long as no writers are waiting to acquire the
+        lock in exclusive mode.
+    #. ``recursive``: Allows the lock to be acquired in nested contexts within
+        the same thread.  Only the outermost guard will actually acquire the
+        mutex.  Inner locks are no-ops.  Generally speaking, algorithms should
+        not rely on this behavior, and should be refactored to avoid recursive
+        locking if possible.  However, it can be useful for debugging purposes
+        when trying to track down the source of a deadlock, or when refactoring
+        the problematic code is not feasible.
+    #. ``retries``: The number of times to retry the lock before giving up.
+        This introduces a spin effect that can be useful for reducing the
+        latency of lock acquisition in low-contention scenarios.  If this is
+        set to a negative number (the default), then the lock will simply block
+        until it can be acquired.  If it is set to zero, then it will
+        immediately raise an error if the lock is unavailable.  Otherwise, it
+        will busy-wait until the lock is available, up to the specified number
+        of retries.
+    #. ``timeout``: The maximum amount of time to wait for the lock to become
+        available.  If this is set to a negative number (the default), then the
+        lock will wait indefinitely to acquire the lock.  If it is set to zero,
+        then it will immediately raise an error if the lock is unavailable.
+        Otherwise, it will allow the lock to wait up to the specified length of
+        time, and will raise an error if it times out.
+    #. ``wait``: The amount of time to wait between each acquisition attempt.
+        This is only used if ``retries`` is set to a positive number.  If this
+        is set to a negative number or zero (the default), then the lock will
+        immediately retry without waiting, causing a busy-wait cycle.
+        Otherwise, it will wait for the specified length of time and then retry
+        the lock.
+    #.  ``diagnostic``: Enables diagnostic tracking for the lock.  This will
+        track the number of times the lock has been acquired, as well as the
+        total amount of time spent waiting to acquire the lock.  This can be
+        used to track the average contention for the lock, which can be useful
+        when profiling multithreaded code.
+
+These arguments can be stacked together to create a wide variety of lock
+behaviors.  Consider the following configuration:
+
+.. code_block:: python
+
+    lock_config = {
+        "shared": True,
+        "recursive": True,
+        "timeout": timedelta(seconds=1),
+        "wait": timedelta(milliseconds=100),
+        "diagnostic": True
+    }
+
+This will create a shared lock that can be acquired by multiple readers, each
+of which can reacquire it recursively within the same thread.  It will wait up
+to one second to acquire the lock, and will retry every 100 milliseconds until
+it becomes available.  It will also track diagnostic information about the lock
+acquisition process as it is used.
+
+Examples
+--------
+The lock itself is a functor (function object) that is exposed as a read-only
+@property in Python.
+
+.. doctest::
+
+    >>> from bertrand.structs import LinkedList
+    >>> l = LinkedList("abcdef")
+    >>> l.lock
+    <PyLock object at 0x7f9c3c0b3a00>
+
+On access, it produces a Python proxy for the list's underlying C++ lock, which
+can be called like a normal method to acquire the lock in exclusive mode.
+
+.. doctest::
+
+    >>> l.lock()
+    <PyGuard object at 0x7f9c3c0b3a00>
+
+The returned guard can then be used as a context manager to lock the mutex.
+
+.. doctest::
+
+    >>> with l.lock():
+    ...     # do something with the list
+    ...     pass
+
+The mutex will be automatically unlocked when the context manager exits.
+
+Besides the lock itself, the functor also exposes a number of additional
+methods/properties based on the configuration options described above.  These
+are available from the proxy as member attributes.
+
+.. note::
+
+    The behavior of the context manager closely mimics that of a
+    ``std::unique_lock`` at the C++ level.  In fact, it is directly
+    equivalent in the back-end implementation.  When the context manager is
+    entered, it constructs a ``std::unique_lock`` on the underlying mutex, and
+    deletes it on exit.
+
+)doc"
+        };
 
         static constexpr std::string_view capacity {R"doc(
 Get the current capacity of the allocator array.
