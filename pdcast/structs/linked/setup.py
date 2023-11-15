@@ -2,8 +2,8 @@ from setuptools import setup, Extension
 
 
 linked_list = Extension(
-    "list_python",
-    sources=["list_python.cpp"],
+    "list",
+    sources=["list.cpp"],
 )
 
 

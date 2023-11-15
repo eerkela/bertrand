@@ -1681,14 +1681,14 @@ public:
 /* Python module definition. */
 static struct PyModuleDef module_ = {
     PyModuleDef_HEAD_INIT,
-    .m_name = "list_python",
+    .m_name = "list",
     .m_doc = "docstring for list module",
     .m_size = -1,
 };
 
 
 /* Python import hook. */
-PyMODINIT_FUNC PyInit_list_python(void) {
+PyMODINIT_FUNC PyInit_list(void) {
     // initialize type objects
     if (PyType_Ready(&PyLinkedList::Type) < 0) return nullptr;
 
