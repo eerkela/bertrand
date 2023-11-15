@@ -64,9 +64,10 @@ methods can be mixed, matched, and specialized alongside views to produce a vari
 flexible and highly-optimized data structures, without worrying about low-level
 implementation details.
 */
-template <typename Derived, typename Allocator>
+template <typename Derived, typename AllocatorType>
 class BaseView : public ViewTag {
 public:
+    using Allocator = AllocatorType;
     using Node = typename Allocator::Node;
     using Value = typename Node::Value;
     using MemGuard = typename Allocator::MemGuard;
@@ -75,6 +76,8 @@ public:
     using Iterator = linked::Iterator<BaseView, dir>;
     template <Direction dir>
     using ConstIterator = linked::Iterator<const BaseView, dir>;
+
+    mutable Allocator allocator;  // low-level memory management
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -251,12 +254,6 @@ public:
     inline bool frozen() const noexcept {
         return allocator.frozen();
     }
-
-    // TODO: in fact, if we build this in at an even deeper level, then we might be
-    // able to bake it into the iterators themselves, such that they prevent the
-    // resize() method from being called while they are active.  This would guarantee
-    // that the node addresses remain stable for the iterator's lifetime, and would
-    // throw errors if this is violated.
 
     /* Reserve memory for a given number of nodes ahead of time.
     
@@ -444,7 +441,6 @@ public:
     }
 
 protected:
-    mutable Allocator allocator;  // low-level memory management
 
     /* Get the size at which to initialize a list based on a given iterable and
     optional fixed size parameter. */

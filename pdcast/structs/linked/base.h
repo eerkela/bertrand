@@ -12,7 +12,7 @@
 #include "../util/iter.h"  // iter(), IterProxy
 #include "../util/python.h"  // PyIterator
 #include "../util/string.h"  // string concatenation
-#include "../util/thread.h"  // Lock, PyLock
+#include "../util/thread.h"  // PyLock
 
 
 namespace bertrand {
@@ -39,6 +39,7 @@ class LinkedBase : public LinkedTag {
 
 public:
     using View = ViewType;
+    using Allocator = typename View::Allocator;
     using Node = typename View::Node;
     using Value = typename View::Value;
     using MemGuard = typename View::MemGuard;
@@ -284,12 +285,7 @@ class PyLinkedBase {
 public:
 
     /* C++ constructors/assignment operators deleted for compatibility with Python
-    API.
-
-    NOTE: the Python C API does not always respect C++ construction semantics, and can
-    lead to some very subtle bugs related to memory initialization, particularly as it
-    relates to Python object headers and stack-allocated memory.  We're better off
-    disabling C++ constructors entirely in favor of explicit factory methods instead. */
+    API. */
     PyLinkedBase() = delete;
     PyLinkedBase(const PyLinkedBase&) = delete;
     PyLinkedBase(PyLinkedBase&&) = delete;
@@ -380,21 +376,34 @@ public:
         return Py_NewRef(result);
     }
 
-    // TODO: For reserve() to be available at the Python level, we need to create a
-    // Python wrapper like we did with threading locks/iterators.
-
     /* Implement `LinkedList.reserve()` in Python. */
     static PyObject* reserve(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
-        using Index = std::optional<long long>;
         try {
             // parse arguments
             Args pyargs = Args(args, nargs);
-            Index capacity = pyargs.parse("capacity", util::parse_opt_int, Index());
+            std::optional<long long> capacity = pyargs.parse(
+                "capacity",
+                util::parse_opt_int,
+                std::optional<long long>()
+            );
             pyargs.finalize();
 
-            // TODO: Convert the C++ MemGuard into a Python context manager
-            return nullptr;
+            // assert value is non-negative
+            if (capacity.value_or(0) < 0) {
+                PyErr_SetString(PyExc_ValueError, "capacity cannot be negative");
+                return nullptr;
+            }
+
+            // get context manager
+            return std::visit(
+                [&capacity](auto& list) {
+                    using Allocator = typename std::decay_t<decltype(list)>::Allocator;
+                    size_t size = capacity.value_or(list.size());
+                    return PyMemGuard<Allocator>::create(&list.view.allocator, size);
+                },
+                self->variant
+            );
 
         // translate C++ exceptions into Python errors
         } catch (...) {

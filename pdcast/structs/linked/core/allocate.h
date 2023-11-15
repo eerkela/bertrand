@@ -14,6 +14,7 @@
 #include "../../util/math.h"  // next_power_of_two()
 #include "../../util/python.h"  // std::hash<PyObject*>, eq(), len()
 #include "../../util/repr.h"  // repr()
+#include "../../util/name.h"  // PyName
 #include "node.h"  // NodeTraits
 
 
@@ -29,7 +30,7 @@ namespace linked {
 
 /* DEBUG=TRUE adds print statements for every call to malloc()/free() in order
 to help catch memory leaks. */
-const bool DEBUG = false;
+const bool DEBUG = true;
 
 
 ////////////////////
@@ -382,6 +383,186 @@ public:
     /* Copy constructor/assignment deleted for safety. */
     MemGuard(const MemGuard& other) = delete;
     MemGuard& operator=(const MemGuard& other) = delete;
+
+};
+
+
+/* A Python wrapper around a MemGuard that allows it to be used as a context manager. */
+template <typename Allocator>
+class PyMemGuard {
+    using MemGuard = linked::MemGuard<Allocator>;
+
+    PyObject_HEAD
+    Allocator* allocator;
+    size_t capacity;
+    bool has_guard;
+    union { MemGuard guard; };
+
+public:
+
+    /* Disable instantiation from C++. */
+    PyMemGuard() = delete;
+    PyMemGuard(const PyMemGuard&) = delete;
+    PyMemGuard(PyMemGuard&&) = delete;
+    PyMemGuard& operator=(const PyMemGuard&) = delete;
+    PyMemGuard& operator=(PyMemGuard&&) = delete;
+
+    /* Construct a Python MemGuard for a C++ allocator. */
+    inline static PyObject* create(Allocator* allocator, size_t capacity) {
+        // allocate
+        PyMemGuard* self = PyObject_New(PyMemGuard, &Type);
+        if (self == nullptr) {
+            PyErr_SetString(
+                PyExc_RuntimeError,
+                "failed to allocate PyMemGuard"
+            );
+            return nullptr;
+        }
+
+        // initialize
+        self->allocator = allocator;
+        self->capacity = capacity;
+        self->has_guard = false;
+        return reinterpret_cast<PyObject*>(self);
+    }
+
+    /* Enter the context manager's block, freezing the allocator. */
+    static PyObject* __enter__(PyMemGuard* self, PyObject* /* ignored */) {
+        // check if the allocator is already frozen
+        if (self->has_guard) {
+            PyErr_SetString(
+                PyExc_RuntimeError,
+                "allocator is already frozen"
+            );
+            return nullptr;
+        }
+
+        // freeze the allocator
+        try {
+            new (&self->guard) MemGuard(self->allocator->reserve(self->capacity));
+
+        // translate C++ exceptions into Python errors
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
+
+        // return new reference
+        self->has_guard = true;
+        return Py_NewRef(self);
+    }
+
+    /* Exit the context manager's block, unfreezing the allocator. */
+    inline static PyObject* __exit__(PyMemGuard* self, PyObject* /* ignored */) {
+        if (self->has_guard) {
+            self->guard.~MemGuard();
+            self->has_guard = false;
+        }
+        Py_RETURN_NONE;
+    }
+
+    /* Check if the allocator is currently frozen. */
+    inline static PyObject* locked(PyMemGuard* self, void* /* ignored */) {
+        return PyBool_FromLong(self->has_guard);
+    }
+
+private:
+
+    /* Unfreeze the allocator when the context manager is garbage collected, if it
+    hasn't been unfrozen already. */
+    inline static void __dealloc__(PyMemGuard* self) {
+        if (self->has_guard) {
+            self->guard.~MemGuard();
+            self->has_guard = false;
+        }
+        Type.tp_free(self);
+    }
+
+    /* Docstrings for public attributes of PyMemGuard. */
+    struct docs {
+
+        static constexpr std::string_view PyMemGuard {R"doc(
+A Python-compatible wrapper around a C++ MemGuard that allows it to be used as
+a context manager.
+
+Notes
+-----
+This class is only meant to be instantiated via the ``reserve()`` method of a
+linked data structure.  It is directly equivalent to constructing a C++
+RAII-style MemGuard within the guarded context.  The C++ guard is automatically
+destroyed upon exiting the context.
+
+)doc"
+        };
+
+        static constexpr std::string_view __enter__ {R"doc(
+Enter the context manager's block, freezing the allocator.
+
+Returns
+-------
+PyMemGuard
+    The context manager itself, which may be aliased using the `as` keyword.
+)doc"
+        };
+
+        static constexpr std::string_view __exit__ {R"doc(
+Exit the context manager's block, unfreezing the allocator.
+)doc"
+        };
+
+        static constexpr std::string_view locked {R"doc(
+Check if the allocator is currently frozen.
+
+Returns
+-------
+bool
+    True if the allocator is currently frozen, False otherwise.
+
+)doc"
+        };
+
+    };
+
+    /* Vtable containing Python @properties for the context manager. */
+    inline static PyGetSetDef properties[] = {
+        {"locked", (getter) locked, NULL, docs::locked.data()},
+        {NULL}  // sentinel
+    };
+
+    /* Vtable containing Python methods for the context manager. */
+    inline static PyMethodDef methods[] = {
+        {"__enter__", (PyCFunction) __enter__, METH_NOARGS, docs::__enter__.data()},
+        {"__exit__", (PyCFunction) __exit__, METH_VARARGS, docs::__exit__.data()},
+        {NULL}  // sentinel
+    };
+
+    /* Initialize a PyTypeObject to represent the guard from Python. */
+    static PyTypeObject init_type() {
+        PyTypeObject slots = {
+            .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+            .tp_name = util::PyName<MemGuard>.data(),
+            .tp_basicsize = sizeof(PyMemGuard),
+            .tp_dealloc = (destructor) __dealloc__,
+            .tp_flags = (
+                Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
+                Py_TPFLAGS_DISALLOW_INSTANTIATION
+            ),
+            .tp_doc = docs::PyMemGuard.data(),
+            .tp_methods = methods,
+            .tp_getset = properties,
+        };
+
+        // register Python type
+        if (PyType_Ready(&slots) < 0) {
+            throw std::runtime_error("could not initialize PyMemGuard type");
+        }
+        return slots;
+    }
+
+public:
+
+    /* Final Python type. */
+    inline static PyTypeObject Type = init_type();
 
 };
 

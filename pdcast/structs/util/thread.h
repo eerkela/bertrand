@@ -7,6 +7,7 @@
 #include <mutex>  // std::mutex, std::lock_guard, std::unique_lock
 #include <optional>  // std::optional
 #include <shared_mutex>  // std::shared_mutex, std::shared_lock
+#include <sstream>  // std::ostringstream
 #include <string_view>  // std::string_view
 #include <thread>  // std::thread
 #include <type_traits>  // std::is_same_v, std::is_base_of_v, std::enable_if_t, etc.
@@ -34,13 +35,13 @@ enum class LockMode {
 
 
 template <typename Mutex, LockMode lock_mode>
-class Guard;
+class ThreadGuard;
 template <typename GuardType, typename LockType>
-class RecursiveGuard;
+class RecursiveThreadGuard;
 template <typename GuardType, typename LockType>
-class PyGuard;
+class PyThreadGuard;
 template <typename GuardType>
-class GuardTraits;
+class ThreadGuardTraits;
 class BasicLock;
 class ReadWriteLock;
 template <typename LockType>
@@ -62,29 +63,29 @@ template <typename LockType>
 class LockTraits;
 
 
-//////////////////////
-////    GUARDS    ////
-//////////////////////
+/////////////////////////////
+////    THREAD GUARDS    ////
+/////////////////////////////
 
 
 /* The guards presented here are simple wrappers around C++-style `std::lock_guards`
  * and their related classes (std::unique_lock, std::shared_lock, etc.).  They are used
  * in the same way, but are customized to work with the lock functors defined below.
  *
- * Each type of guard specializes the same overall `Guard` interface, which is defined
- * as follows:
+ * Each type of guard specializes the same overall `ThreadGuard` interface, which is
+ * defined as follows:
  *
  *      template <typename Mutex, Lock mode = ...>
- *      class Guard {
+ *      class ThreadGuard {
  *      public:
  *          using mutex_type = Mutex;
  *          static constexpr Lock lock_mode = mode;
  *
- *          Guard(mutex_type& mtx);
- *          Guard(mutex_type& mtx, std::adopt_lock_t t);
- *          Guard(Guard&& other);
- *          Guard& operator=(Guard&& other);
- *          void swap(Guard& other);
+ *          ThreadGuard(mutex_type& mtx);
+ *          ThreadGuard(mutex_type& mtx, std::adopt_lock_t t);
+ *          ThreadGuard(ThreadGuard&& other);
+ *          ThreadGuard& operator=(ThreadGuard&& other);
+ *          void swap(ThreadGuard& other);
  *          bool locked();
  *          operator bool();  // equivalent to `locked()`
  *      };
@@ -100,12 +101,12 @@ class LockTraits;
 
 /* Empty type inherited by every custom lock guard.  This makes for easy assertions
 during SFINAE trait lookups. */ 
-class GuardTag {};
+class ThreadGuardTag {};
 
 
 /* An exclusive guard for a lock functor (default case). */
 template <typename Mutex, LockMode lock_mode = LockMode::EXCLUSIVE>
-class Guard : GuardTag {
+class ThreadGuard : ThreadGuardTag {
     std::unique_lock<Mutex> guard;
 
 public:
@@ -114,22 +115,22 @@ public:
     static constexpr bool recursive = false;
 
     /* Acquire a mutex during construction, locking it. */
-    Guard(mutex_type& mtx) : guard(mtx) {}
+    ThreadGuard(mutex_type& mtx) : guard(mtx) {}
 
     /* Acquire a pre-locked mutex. */
-    Guard(mutex_type& mtx, std::adopt_lock_t t) : guard(mtx, std::adopt_lock) {}
+    ThreadGuard(mutex_type& mtx, std::adopt_lock_t t) : guard(mtx, std::adopt_lock) {}
 
     /* Move constructor. */
-    Guard(Guard&& other) : guard(std::move(other.guard)) {}
+    ThreadGuard(ThreadGuard&& other) : guard(std::move(other.guard)) {}
 
     /* Move assignment operator. */
-    Guard& operator=(Guard&& other) {
+    ThreadGuard& operator=(ThreadGuard&& other) {
         guard = std::move(other.guard);
         return *this;
     }
 
     /* Swap state with another Guard. */
-    inline void swap(Guard& other) {
+    inline void swap(ThreadGuard& other) {
         guard.swap(other.guard);
     }
 
@@ -148,7 +149,7 @@ public:
 
 /* A shared guard for a lock functor. */
 template <typename Mutex>
-class Guard<Mutex, LockMode::SHARED> : GuardTag {
+class ThreadGuard<Mutex, LockMode::SHARED> : ThreadGuardTag {
     std::shared_lock<Mutex> guard;
 
 public:
@@ -157,22 +158,22 @@ public:
     static constexpr bool recursive = false;
 
     /* Acquire a mutex during construction, locking it. */
-    Guard(mutex_type& mtx) : guard(mtx) {}
+    ThreadGuard(mutex_type& mtx) : guard(mtx) {}
 
     /* Acquire a pre-locked mutex. */
-    Guard(mutex_type& mtx, std::adopt_lock_t t) : guard(mtx, std::adopt_lock) {}
+    ThreadGuard(mutex_type& mtx, std::adopt_lock_t t) : guard(mtx, std::adopt_lock) {}
 
     /* Move constructor. */
-    Guard(Guard&& other) : guard(std::move(other.guard)) {}
+    ThreadGuard(ThreadGuard&& other) : guard(std::move(other.guard)) {}
 
     /* Move assignment operator. */
-    Guard& operator=(Guard&& other) {
+    ThreadGuard& operator=(ThreadGuard&& other) {
         guard = std::move(other.guard);
         return *this;
     }
 
-    /* Swap state with another Guard. */
-    inline void swap(Guard& other) {
+    /* Swap state with another ThreadGuard. */
+    inline void swap(ThreadGuard& other) {
         guard.swap(other.guard);
     }
 
@@ -192,7 +193,7 @@ public:
 /* A decorator for the wrapped guard that manages the state of a recursive lock functor
 and allows a single thread to hold multiple locks at once. */
 template <typename GuardType, typename LockType>
-class RecursiveGuard : GuardTag {
+class RecursiveThreadGuard : ThreadGuardTag {
     LockType& lock;
     std::optional<GuardType> guard;
 
@@ -200,12 +201,12 @@ class RecursiveGuard : GuardTag {
 
     NOTE: recursive lock proxies have to specify RecursiveGuard as a friend class in
     order to access these constructors. */
-    RecursiveGuard(LockType& lock, GuardType&& guard) :
+    RecursiveThreadGuard(LockType& lock, GuardType&& guard) :
         lock(lock), guard(std::move(guard))
     {}
 
     /* Construct an empty inner guard for a recursive lock. */
-    RecursiveGuard(LockType& lock) : lock(lock) {}
+    RecursiveThreadGuard(LockType& lock) : lock(lock) {}
 
 public:
     using mutex_type = typename GuardType::mutex_type;
@@ -213,27 +214,27 @@ public:
     static constexpr bool recursive = true;
 
     /* Acquire a mutex during construction, locking it. */
-    RecursiveGuard(LockType& lock, mutex_type& mtx) : lock(lock), guard(mtx) {}
+    RecursiveThreadGuard(LockType& lock, mutex_type& mtx) : lock(lock), guard(mtx) {}
 
     /* Acquire a pre-locked mutex. */
-    RecursiveGuard(LockType& lock, mutex_type& mtx, std::adopt_lock_t t) :
+    RecursiveThreadGuard(LockType& lock, mutex_type& mtx, std::adopt_lock_t t) :
         lock(lock), guard(mtx, std::adopt_lock)
     {}
 
     /* Move constructor. */
-    RecursiveGuard(RecursiveGuard&& other) :
+    RecursiveThreadGuard(RecursiveThreadGuard&& other) :
         lock(other.lock), guard(std::move(other.guard))
     {}
 
     /* Move assignment operator. */
-    RecursiveGuard& operator=(RecursiveGuard&& other) {
+    RecursiveThreadGuard& operator=(RecursiveThreadGuard&& other) {
         lock = other.lock;
         guard = std::move(other.guard);
         return *this;
     }
 
     /* Destroy the guard proxy and reset the lock's owner. */
-    ~RecursiveGuard() {
+    ~RecursiveThreadGuard() {
         static_assert(
             mode == LockMode::EXCLUSIVE || mode == LockMode::SHARED,
             "unrecognized lock mode"
@@ -245,8 +246,8 @@ public:
         }
     }
 
-    /* Swap state with another RecursiveGuard. */
-    inline void swap(RecursiveGuard& other) {
+    /* Swap state with another RecursiveThreadGuard. */
+    inline void swap(RecursiveThreadGuard& other) {
         guard.swap(other.guard);
     }
 
@@ -263,13 +264,18 @@ public:
 };
 
 
+//////////////////////
+////    TRAITS    ////
+//////////////////////
+
+
 /* A collection of traits for introspecting custom lock guards at compile time. */
 template <typename GuardType>
-class GuardTraits {
+class ThreadGuardTraits {
     static_assert(
-        std::is_base_of_v<GuardTag, GuardType>,
-        "GuardType not recognized.  Did you forget to inherit from GuardTag or "
-        "specialize GuardTraits for this type?"
+        std::is_base_of_v<ThreadGuardTag, GuardType>,
+        "GuardType not recognized.  Did you forget to inherit from ThreadGuardTag or "
+        "specialize ThreadGuardTraits for this type?"
     );
 
 public:
@@ -318,7 +324,7 @@ class LockTag {};
 class BasicLock : LockTag {
 public:
     using Mutex = std::mutex;
-    using ExclusiveGuard = Guard<Mutex, LockMode::EXCLUSIVE>;
+    using ExclusiveGuard = ThreadGuard<Mutex, LockMode::EXCLUSIVE>;
     static constexpr bool recursive = false;
     static constexpr bool spin = false;
     static constexpr bool diagnostic = false;
@@ -348,8 +354,8 @@ protected:
 class ReadWriteLock : LockTag {
 public:
     using Mutex = std::shared_mutex;
-    using ExclusiveGuard = Guard<Mutex, LockMode::EXCLUSIVE>;
-    using SharedGuard = Guard<Mutex, LockMode::SHARED>;
+    using ExclusiveGuard = ThreadGuard<Mutex, LockMode::EXCLUSIVE>;
+    using SharedGuard = ThreadGuard<Mutex, LockMode::SHARED>;
     static constexpr bool recursive = false;
     static constexpr bool spin = false;
     static constexpr bool diagnostic = false;
@@ -448,7 +454,7 @@ class _RecursiveLock<LockType, true> : public LockType {
     friend class RecursiveGuard;
 
 public:
-    using SharedGuard = RecursiveGuard<_SharedGuard, RecursiveLock<LockType>>;
+    using SharedGuard = RecursiveThreadGuard<_SharedGuard, RecursiveLock<LockType>>;
 
     /* Acquire the lock in shared mode, allowing repeated locks within a single
     thread. */
@@ -493,7 +499,7 @@ class RecursiveLock : public _RecursiveLock<LockType, LockTraits<LockType>::shar
     friend class RecursiveGuard;
 
 public:
-    using ExclusiveGuard = RecursiveGuard<_ExclusiveGuard, RecursiveLock>;
+    using ExclusiveGuard = RecursiveThreadGuard<_ExclusiveGuard, RecursiveLock>;
     static constexpr bool recursive = true;
     static constexpr bool spin = LockTraits<LockType>::spin;
     static constexpr bool diagnostic = LockTraits<LockType>::diagnostic;
@@ -762,6 +768,111 @@ public:
 };
 
 
+//////////////////////
+////    TRAITS    ////
+//////////////////////
+
+
+/* A collection of traits for introspecting lock functors at compile time. */
+template <typename LockType>
+class LockTraits {
+    static_assert(
+        std::is_base_of_v<LockTag, LockType>,
+        "LockType not recognized.  Did you forget to inherit from LockTag or "
+        "specialize LockTraits for this type?"
+    );
+
+    /* Detects whether the templated lock has an overloaded call operator, indicating
+    an exclusive locking strategy. */
+    struct _exclusive {
+        template <typename T>
+        static constexpr auto test(T* t) -> decltype(t->operator()());
+        template <typename T>
+        static constexpr auto test(...) -> void;
+        using type = decltype(test<LockType>(nullptr));
+        static constexpr bool value = !std::is_void_v<type>;
+    };
+
+    /* Detects whether the templated lock has a shared() method, indicating a
+    read/write locking strategy. */
+    struct _shared {
+        template <typename T>
+        static constexpr auto test(T* t) -> decltype(t->shared());
+        template <typename T>
+        static constexpr auto test(...) -> void;
+        using type = decltype(test<LockType>(nullptr));
+        static constexpr bool value = !std::is_void_v<type>;
+    };
+
+    /* Get the maximum number of retries for the lock, if it has a corresponding
+    static member (defaults to -1 otherwise, indicating unlimited retries). */
+    struct _max_retries {
+        template <typename T, int max_retries = T::max_retries>
+        static constexpr auto test(int) -> std::integral_constant<int, max_retries>;
+        template <typename T>
+        static constexpr auto test(...) -> std::integral_constant<int, -1>;
+        static constexpr int value = decltype(test<LockType>(0))::value;
+    };
+
+    /* Get the timeout duration for the lock, if it has a corresponding static member
+    (defaults to -1ns otherwise, indicating an unlimited timeout duration). */
+    struct _timeout {
+        template <typename T>
+        static constexpr auto test() -> decltype(T::timeout) {
+            return T::timeout;
+        }
+        template <typename T>
+        static constexpr auto test(...) -> std::chrono::nanoseconds {
+            return std::chrono::nanoseconds(-1);
+        }
+        using type = decltype(test<LockType>());
+        static constexpr type value = test<LockType>();
+    };
+
+    /* Get the wait duration for the lock, if it has a corresponding static member
+    (defaults to -1ns otherwise, indicating a busy wait cycle). */
+    struct _wait {
+        template <typename T>
+        static constexpr auto test() -> decltype(T::wait) {
+            return T::wait;
+        }
+        template <typename T>
+        static constexpr auto test(...) {
+            return std::chrono::nanoseconds(-1);
+        }
+        using type = decltype(test<LockType>());
+        static constexpr type value = test<LockType>();
+    };
+
+    /* Get the unit used for diagnostic durations. */
+    struct _diagnostic_unit {
+        template <typename T>
+        static constexpr auto test(T* t) -> decltype(t->contention());
+        template <typename T>
+        static constexpr auto test(...) -> void;
+        using type = decltype(test<LockType>(nullptr));
+    };
+
+public:
+    using Mutex = typename LockType::Mutex;
+    using ExclusiveGuard = typename _exclusive::type;  // void if not exclusive
+    using SharedGuard = typename _shared::type;  // void if not shared
+    using TimeoutUnit = typename _timeout::type;  // ns if not spin
+    using WaitUnit = typename _wait::type;  // ns if not spin
+    using DiagnosticUnit = typename _diagnostic_unit::type;  // void if not diagnostic
+
+    static constexpr bool exclusive = _exclusive::value;
+    static constexpr bool shared = _shared::value;
+    static constexpr bool recursive = LockType::recursive;
+    static constexpr bool spin = LockType::spin;
+    static constexpr int max_retries = _max_retries::value;  // -1 if not spin
+    static constexpr TimeoutUnit timeout = _timeout::value;  // -1ns if not spin
+    static constexpr WaitUnit wait = _wait::value;  // -1ns if not spin
+    static constexpr bool diagnostic = LockType::diagnostic;
+
+};
+
+
 ///////////////////////////////
 ////    PYTHON WRAPPERS    ////
 ///////////////////////////////
@@ -780,7 +891,9 @@ public:
     /* A wrapper around a C++ thread guard that allows it to be used as a Python
     context manager. */
     template <typename GuardType>
-    class PyGuard {
+    class PyThreadGuard {
+        using Traits = ThreadGuardTraits<GuardType>;
+
         PyObject_HEAD
         LockType* lock;
         bool has_guard;
@@ -789,14 +902,14 @@ public:
     public:
 
         /* Force users to use create() factory method. */
-        PyGuard() = delete;
-        PyGuard(const PyGuard&) = delete;
-        PyGuard(PyGuard&&) = delete;
-        PyGuard& operator=(const PyGuard&) = delete;
-        PyGuard& operator=(PyGuard&&) = delete;
+        PyThreadGuard() = delete;
+        PyThreadGuard(const PyThreadGuard&) = delete;
+        PyThreadGuard(PyThreadGuard&&) = delete;
+        PyThreadGuard& operator=(const PyThreadGuard&) = delete;
+        PyThreadGuard& operator=(PyThreadGuard&&) = delete;
 
         /* Enter the context manager's block, acquiring a new lock. */
-        static PyObject* __enter__(PyGuard* self, PyObject* /* ignored */) {
+        static PyObject* __enter__(PyThreadGuard* self, PyObject* /* ignored */) {
             // check if the lock has already been acquired
             if (self->has_guard) {
                 PyErr_SetString(
@@ -808,9 +921,9 @@ public:
 
             // acquire the lock
             try {
-                if constexpr (GuardTraits<GuardType>::mode == LockMode::EXCLUSIVE) {
+                if constexpr (Traits::mode == LockMode::EXCLUSIVE) {
                     new (&self->guard) GuardType(self->lock->operator()());
-                } else if constexpr (GuardTraits<GuardType>::mode == LockMode::SHARED) {
+                } else if constexpr (Traits::mode == LockMode::SHARED) {
                     new (&self->guard) GuardType(self->lock->shared());
                 } else {
                     PyErr_SetString(PyExc_RuntimeError, "unrecognized lock mode");
@@ -829,7 +942,7 @@ public:
         }
 
         /* Exit the context manager's block, releasing the lock. */
-        inline static PyObject* __exit__(PyGuard* self, PyObject* /* ignored */) {
+        inline static PyObject* __exit__(PyThreadGuard* self, PyObject* /* ignored */) {
             if (self->has_guard) {
                 self->guard.~GuardType();
                 self->has_guard = false;
@@ -838,7 +951,7 @@ public:
         }
 
         /* Check if the lock is acquired. */
-        inline static PyObject* locked(PyGuard* self, void* /* ignored */) {
+        inline static PyObject* locked(PyThreadGuard* self, void* /* ignored */) {
             return PyBool_FromLong(self->has_guard);
         }
 
@@ -848,8 +961,8 @@ public:
         /* Construct a Python lock from a C++ lock guard. */
         inline static PyObject* create(LockType* lock) {
             // allocate
-            PyGuard* result = PyObject_New(PyGuard, &Type);
-            if (result == nullptr) {
+            PyThreadGuard* self = PyObject_New(PyThreadGuard, &Type);
+            if (self == nullptr) {
                 PyErr_SetString(
                     PyExc_RuntimeError,
                     "could not allocate Python lock guard"
@@ -858,14 +971,14 @@ public:
             }
 
             // initialize
-            result->lock = lock;
-            result->has_guard = false;
-            return reinterpret_cast<PyObject*>(result);
+            self->lock = lock;
+            self->has_guard = false;
+            return reinterpret_cast<PyObject*>(self);
         }
 
         /* Release the lock when the context manager is garbage collected, if it hasn't
         been released already. */
-        inline static void __dealloc__(PyGuard* self) {
+        inline static void __dealloc__(PyThreadGuard* self) {
             if (self->has_guard) {
                 self->guard.~GuardType();
                 self->has_guard = false;
@@ -873,14 +986,30 @@ public:
             Type.tp_free(self);
         }
 
+        /* Docstrings for public attributes of PyLock. */
         struct docs {
+
+            static constexpr std::string_view PyThreadGuard {R"doc(
+A Python-compatible wrapper around a C++ ThreadGuard that allows it to be used
+as a context manager.
+
+Notes
+-----
+This class is only meant to be instantiated via the ``lock`` functor of a
+custom data structure.  It is directly equivalent to constructing a C++
+RAII-style lock guard (e.g. a ``std::unique_lock`` or similar) within the
+guarded context.  The C++ guard is automatically destroyed upon exiting the
+context.
+
+)doc"
+            };
 
             static constexpr std::string_view __enter__ {R"doc(
 Enter the context manager's context block, acquiring a lock on the mutex.
 
 Returns
 -------
-PyGuard
+PyThreadGuard
     The context manager itself, which may be aliased using the `as` keyword.
 
 )doc"
@@ -922,20 +1051,20 @@ bool
             PyTypeObject slots = {
                 .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
                 .tp_name = PyName<GuardType>.data(),
-                .tp_basicsize = sizeof(PyGuard),
+                .tp_basicsize = sizeof(PyThreadGuard),
                 .tp_dealloc = (destructor) __dealloc__,
                 .tp_flags = (
                     Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
                     Py_TPFLAGS_DISALLOW_INSTANTIATION
                 ),
-                .tp_doc = "Python-compatible wrapper around a C++ lock guard.",
+                .tp_doc = docs::PyThreadGuard.data(),
                 .tp_methods = methods,
                 .tp_getset = properties,
             };
 
             // register Python type
             if (PyType_Ready(&slots) < 0) {
-                throw std::runtime_error("could not initialize PyGuard type");
+                throw std::runtime_error("could not initialize PyThreadGuard type");
             }
             return slots;
         }
@@ -983,7 +1112,7 @@ bool
             return nullptr;
         } else {
             using Guard = typename LockTraits<LockType>::ExclusiveGuard;
-            return PyGuard<Guard>::create(self->lock);
+            return PyThreadGuard<Guard>::create(self->lock);
         }
     }
 
@@ -997,7 +1126,7 @@ bool
             return nullptr;
         } else {
             using Guard = typename LockTraits<LockType>::SharedGuard;
-            return PyGuard<Guard>::create(self->lock);
+            return PyThreadGuard<Guard>::create(self->lock);
         }
     }
 
@@ -1246,111 +1375,6 @@ public:
 
     /* C-style Python type declaration. */
     inline static PyTypeObject Type = init_type();
-
-};
-
-
-//////////////////////
-////    TRAITS    ////
-//////////////////////
-
-
-/* A collection of traits for introspecting lock functors at compile time. */
-template <typename LockType>
-class LockTraits {
-    static_assert(
-        std::is_base_of_v<LockTag, LockType>,
-        "LockType not recognized.  Did you forget to inherit from LockTag or "
-        "specialize LockTraits for this type?"
-    );
-
-    /* Detects whether the templated lock has an overloaded call operator, indicating
-    an exclusive locking strategy. */
-    struct _exclusive {
-        template <typename T>
-        static constexpr auto test(T* t) -> decltype(t->operator()());
-        template <typename T>
-        static constexpr auto test(...) -> void;
-        using type = decltype(test<LockType>(nullptr));
-        static constexpr bool value = !std::is_void_v<type>;
-    };
-
-    /* Detects whether the templated lock has a shared() method, indicating a
-    read/write locking strategy. */
-    struct _shared {
-        template <typename T>
-        static constexpr auto test(T* t) -> decltype(t->shared());
-        template <typename T>
-        static constexpr auto test(...) -> void;
-        using type = decltype(test<LockType>(nullptr));
-        static constexpr bool value = !std::is_void_v<type>;
-    };
-
-    /* Get the maximum number of retries for the lock, if it has a corresponding
-    static member (defaults to -1 otherwise, indicating unlimited retries). */
-    struct _max_retries {
-        template <typename T, int max_retries = T::max_retries>
-        static constexpr auto test(int) -> std::integral_constant<int, max_retries>;
-        template <typename T>
-        static constexpr auto test(...) -> std::integral_constant<int, -1>;
-        static constexpr int value = decltype(test<LockType>(0))::value;
-    };
-
-    /* Get the timeout duration for the lock, if it has a corresponding static member
-    (defaults to -1ns otherwise, indicating an unlimited timeout duration). */
-    struct _timeout {
-        template <typename T>
-        static constexpr auto test() -> decltype(T::timeout) {
-            return T::timeout;
-        }
-        template <typename T>
-        static constexpr auto test(...) -> std::chrono::nanoseconds {
-            return std::chrono::nanoseconds(-1);
-        }
-        using type = decltype(test<LockType>());
-        static constexpr type value = test<LockType>();
-    };
-
-    /* Get the wait duration for the lock, if it has a corresponding static member
-    (defaults to -1ns otherwise, indicating a busy wait cycle). */
-    struct _wait {
-        template <typename T>
-        static constexpr auto test() -> decltype(T::wait) {
-            return T::wait;
-        }
-        template <typename T>
-        static constexpr auto test(...) {
-            return std::chrono::nanoseconds(-1);
-        }
-        using type = decltype(test<LockType>());
-        static constexpr type value = test<LockType>();
-    };
-
-    /* Get the unit used for diagnostic durations. */
-    struct _diagnostic_unit {
-        template <typename T>
-        static constexpr auto test(T* t) -> decltype(t->contention());
-        template <typename T>
-        static constexpr auto test(...) -> void;
-        using type = decltype(test<LockType>(nullptr));
-    };
-
-public:
-    using Mutex = typename LockType::Mutex;
-    using ExclusiveGuard = typename _exclusive::type;  // void if not exclusive
-    using SharedGuard = typename _shared::type;  // void if not shared
-    using TimeoutUnit = typename _timeout::type;  // ns if not spin
-    using WaitUnit = typename _wait::type;  // ns if not spin
-    using DiagnosticUnit = typename _diagnostic_unit::type;  // void if not diagnostic
-
-    static constexpr bool exclusive = _exclusive::value;
-    static constexpr bool shared = _shared::value;
-    static constexpr bool recursive = LockType::recursive;
-    static constexpr bool spin = LockType::spin;
-    static constexpr int max_retries = _max_retries::value;  // -1 if not spin
-    static constexpr TimeoutUnit timeout = _timeout::value;  // -1ns if not spin
-    static constexpr WaitUnit wait = _wait::value;  // -1ns if not spin
-    static constexpr bool diagnostic = LockType::diagnostic;
 
 };
 
