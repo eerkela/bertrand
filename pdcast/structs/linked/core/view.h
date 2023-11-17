@@ -77,7 +77,8 @@ public:
     template <Direction dir>
     using ConstIterator = linked::Iterator<const BaseView, dir>;
 
-    mutable Allocator allocator;  // low-level memory management
+    // low-level memory management
+    mutable Allocator allocator;
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

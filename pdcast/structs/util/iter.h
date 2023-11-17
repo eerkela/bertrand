@@ -457,7 +457,7 @@ class PyIterator {
     
     NOTE: PyObject_New() does not allow for traditional stack allocation like we would
     normally use to store the wrapped iterators.  Instead, we have to delay
-    construction until the init() method is called.  We could use pointers to
+    construction until the construct() method is called.  We could use pointers to
     heap-allocate memory for this, but this adds extra allocation overhead.  Using raw
     data buffers avoids this and places the iterators on the stack, where they
     belong.  They can be accessed via reinterpret_cast<Iterator&>. */
@@ -465,7 +465,7 @@ class PyIterator {
     alignas(Iterator) char first[sizeof(Iterator)];
     alignas(Iterator) char second[sizeof(Iterator)];
 
-    /* Force use of init() factory method. */
+    /* Force use of construct() factory method. */
     PyIterator() = delete;
     PyIterator(const PyIterator&) = delete;
     PyIterator(PyIterator&&) = delete;
@@ -473,7 +473,7 @@ class PyIterator {
 public:
 
     /* Construct a Python iterator from a C++ iterator range. */
-    inline static PyObject* init(Iterator&& begin, Iterator&& end) {
+    inline static PyObject* construct(Iterator&& begin, Iterator&& end) {
         // allocate
         PyIterator* result = PyObject_New(PyIterator, &Type);
         if (result == nullptr) {
@@ -487,8 +487,8 @@ public:
     }
 
     /* Construct a Python iterator from a coupled iterator. */
-    inline static PyObject* init(CoupledIterator<Iterator>&& iter) {
-        return init(iter.begin(), iter.end());
+    inline static PyObject* construct(CoupledIterator<Iterator>&& iter) {
+        return construct(iter.begin(), iter.end());
     }
 
     /* Call next(iter) from Python. */
@@ -510,7 +510,7 @@ public:
 private:
 
     /* Free the Python iterator when its reference count falls to zero. */
-    inline static void dealloc(PyIterator* self) {
+    inline static void __dealloc__(PyIterator* self) {
         reinterpret_cast<Iterator&>(self->first).~Iterator();
         reinterpret_cast<Iterator&>(self->second).~Iterator();
         Type.tp_free(self);
@@ -522,7 +522,7 @@ private:
             .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
             .tp_name = PyName<Iterator>.data(),
             .tp_basicsize = sizeof(PyIterator),
-            .tp_dealloc = (destructor) dealloc,
+            .tp_dealloc = (destructor) __dealloc__,
             .tp_flags = (
                 Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
                 Py_TPFLAGS_DISALLOW_INSTANTIATION
@@ -530,8 +530,6 @@ private:
             .tp_doc = "Python-compatible wrapper around a C++ iterator.",
             .tp_iter = PyObject_SelfIter,
             .tp_iternext = (iternextfunc) __next__,
-            .tp_alloc = PyType_GenericAlloc,
-            .tp_new = PyType_GenericNew,
         };
 
         // register iterator type with Python
@@ -540,6 +538,8 @@ private:
         }
         return slots;
     }
+
+public:
 
     /* C-style Python type declaration. */
     inline static PyTypeObject Type = init_type();
@@ -1011,7 +1011,7 @@ public:
             "container does not implement begin() and end()"
         );
         using PyIter = PyIterator<typename Traits::Begin::type>;
-        return PyIter::init(begin(), end());
+        return PyIter::construct(begin(), end());
     }
 
     /* Create a forward Python iterator over the container using the cbegin()/cend()
@@ -1022,7 +1022,7 @@ public:
             "container does not implement cbegin() and cend()"
         );
         using PyIter = PyIterator<typename Traits::CBegin::type>;
-        return PyIter::init(cbegin(), cend());
+        return PyIter::construct(cbegin(), cend());
     }
 
     /* Create a backward Python iterator over the container using the rbegin()/rend()
@@ -1033,7 +1033,7 @@ public:
             "container does not implement rbegin() and rend()"
         );
         using PyIter = PyIterator<typename Traits::RBegin::type>;
-        return PyIter::init(rbegin(), rend());
+        return PyIter::construct(rbegin(), rend());
     }
 
     /* Create a backward Python iterator over the container using the crbegin()/crend()
@@ -1044,7 +1044,7 @@ public:
             "container does not implement crbegin() and crend()"
         );
         using PyIter = PyIterator<typename Traits::CRBegin::type>;
-        return PyIter::init(crbegin(), crend());
+        return PyIter::construct(crbegin(), crend());
     }
 
 private:

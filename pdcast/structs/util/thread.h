@@ -135,13 +135,13 @@ public:
     }
 
     /* Check if the guard owns a lock on the associated mutex. */
-    inline bool locked() const noexcept {
+    inline bool active() const noexcept {
         return guard.owns_lock();
     }
 
     /* Check if the guard owns a lock on the associated mutex. */
     inline explicit operator bool() const noexcept {
-        return locked();
+        return active();
     }
 
 };
@@ -178,13 +178,13 @@ public:
     }
 
     /* Check if the guard owns a lock on the associated mutex. */
-    inline bool locked() const noexcept {
+    inline bool active() const noexcept {
         return guard.owns_lock();
     }
 
     /* Check if the guard owns a lock on the associated mutex. */
     inline explicit operator bool() const noexcept {
-        return locked();
+        return active();
     }
 
 };
@@ -252,13 +252,13 @@ public:
     }
 
     /* Check if the guard owns a lock on the associated mutex. */
-    inline bool locked() const noexcept {
-        return guard.has_value() && guard.value().locked();
+    inline bool active() const noexcept {
+        return guard.has_value() && guard.value().active();
     }
 
     /* Check if the guard owns a lock on the associated mutex. */
     inline explicit operator bool() const noexcept {
-        return locked();
+        return active();
     }
 
 };
@@ -901,7 +901,7 @@ public:
 
     public:
 
-        /* Force users to use create() factory method. */
+        /* Force users to use construct() factory method. */
         PyThreadGuard() = delete;
         PyThreadGuard(const PyThreadGuard&) = delete;
         PyThreadGuard(PyThreadGuard&&) = delete;
@@ -951,7 +951,7 @@ public:
         }
 
         /* Check if the lock is acquired. */
-        inline static PyObject* locked(PyThreadGuard* self, void* /* ignored */) {
+        inline static PyObject* active(PyThreadGuard* self, void* /* ignored */) {
             return PyBool_FromLong(self->has_guard);
         }
 
@@ -959,7 +959,7 @@ public:
         friend PyLock;
 
         /* Construct a Python lock from a C++ lock guard. */
-        inline static PyObject* create(LockType* lock) {
+        inline static PyObject* construct(LockType* lock) {
             // allocate
             PyThreadGuard* self = PyObject_New(PyThreadGuard, &Type);
             if (self == nullptr) {
@@ -1000,7 +1000,6 @@ custom data structure.  It is directly equivalent to constructing a C++
 RAII-style lock guard (e.g. a ``std::unique_lock`` or similar) within the
 guarded context.  The C++ guard is automatically destroyed upon exiting the
 context.
-
 )doc"
             };
 
@@ -1011,7 +1010,6 @@ Returns
 -------
 PyThreadGuard
     The context manager itself, which may be aliased using the `as` keyword.
-
 )doc"
             };
 
@@ -1020,14 +1018,13 @@ Exit the context manager's context block, releasing the lock.
 )doc"
             };
 
-            static constexpr std::string_view locked {R"doc(
+            static constexpr std::string_view active {R"doc(
 Check if the lock is acquired within the current context.
 
 Returns
 -------
 bool
     True if the lock is currently active, False otherwise.
-
 )doc"
             };
 
@@ -1035,7 +1032,7 @@ bool
 
         /* Vtable containing Python @properties for the context manager. */
         inline static PyGetSetDef properties[] = {
-            {"locked", (getter) locked, NULL, docs::locked.data()},
+            {"active", (getter) active, NULL, docs::active.data()},
             {NULL}  // sentinel
         };
 
@@ -1089,7 +1086,7 @@ bool
     PyLock& operator=(PyLock&&) = delete;
 
     /* Construct a Python wrapper around a C++ lock functor. */
-    inline static PyObject* create(LockType& lock) {
+    inline static PyObject* construct(LockType& lock) {
         // allocate
         PyLock* result = PyObject_New(PyLock, &Type);
         if (result == nullptr) {
@@ -1112,7 +1109,7 @@ bool
             return nullptr;
         } else {
             using Guard = typename LockTraits<LockType>::ExclusiveGuard;
-            return PyThreadGuard<Guard>::create(self->lock);
+            return PyThreadGuard<Guard>::construct(self->lock);
         }
     }
 
@@ -1126,7 +1123,7 @@ bool
             return nullptr;
         } else {
             using Guard = typename LockTraits<LockType>::SharedGuard;
-            return PyThreadGuard<Guard>::create(self->lock);
+            return PyThreadGuard<Guard>::construct(self->lock);
         }
     }
 
@@ -1219,7 +1216,6 @@ Examples
     ... print(guard.locked)
     True
     False
-
 )doc"
         };
 
@@ -1249,7 +1245,6 @@ Examples
     ...     pass
     >>> l.lock.count
     1
-
 )doc"
         };
 
@@ -1275,7 +1270,6 @@ TypeError
 Examples
 --------
 # TODO: add example showing contention between multiple threads
-
 )doc"
         };
 
@@ -1301,7 +1295,6 @@ TypeError
 Examples
 --------
 # TODO: add example showing contention between multiple threads
-
 )doc"
         };
 
@@ -1326,7 +1319,6 @@ Examples
     >>> l.lock.reset_diagnostics()
     >>> l.lock.count
     0
-
 )doc"
         };
 

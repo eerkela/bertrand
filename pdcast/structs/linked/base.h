@@ -297,7 +297,7 @@ public:
         return std::visit(
             [](auto& list) {
                 using Lock = typename std::decay_t<decltype(list)>::Lock;
-                return util::PyLock<Lock>::create(list.lock);
+                return util::PyLock<Lock>::construct(list.lock);
             },
             self->variant
         );
@@ -400,7 +400,7 @@ public:
                 [&capacity](auto& list) {
                     using Allocator = typename std::decay_t<decltype(list)>::Allocator;
                     size_t size = capacity.value_or(list.size());
-                    return PyMemGuard<Allocator>::create(&list.view.allocator, size);
+                    return PyMemGuard<Allocator>::construct(&list.view.allocator, size);
                 },
                 self->variant
             );
