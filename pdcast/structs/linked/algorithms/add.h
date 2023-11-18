@@ -17,7 +17,7 @@ namespace linked {
         -> std::enable_if_t<ViewTraits<View>::setlike, void>
     {
         using Node = typename View::Node;
-        Node* node = view.node<true>(item);  // exist_ok = true
+        Node* node = view.template node<true>(item);  // exist_ok = true
         if (node->next() == nullptr && node != view.tail()) {  // node not in view
             if (left) {
                 view.link(nullptr, node, view.head());
@@ -38,7 +38,7 @@ namespace linked {
         -> std::enable_if_t<ViewTraits<View>::dictlike, void>
     {
         using Node = typename View::Node;
-        Node* node = view.node<true>(key, value);  // 2-argument init, exist_ok = true
+        Node* node = view.template node<true>(key, value);  // 2-argument init
         if (node->next() == nullptr && node != view.tail()) {  // node not in view
             if (left) {
                 view.link(nullptr, node, view.head());

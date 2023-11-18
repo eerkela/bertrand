@@ -48,9 +48,7 @@ public:
     template <bool cond = py_val>
     inline std::enable_if_t<cond, bool> typecheck(PyObject* specialization) const {
         int comp = PyObject_IsInstance(_value, specialization);
-        if (comp == -1) {
-            throw util::catch_python<util::TypeError>();
-        }
+        if (comp == -1) throw util::catch_python<util::TypeError>();
         return static_cast<bool>(comp);
     }
 
@@ -58,73 +56,49 @@ protected:
 
     /* Initialize a node with a given value. */
     BaseNode(Value value) noexcept : _value(value) {
-        if constexpr (py_val) {
-            Py_XINCREF(value);
-        }
+        if constexpr (py_val) Py_XINCREF(value);
     }
 
     /* Copy constructor. */
     BaseNode(const BaseNode& other) noexcept : _value(other._value) {
-        if constexpr (py_val) {
-            Py_XINCREF(_value);
-        }
+        if constexpr (py_val) Py_XINCREF(_value);
     }
 
     /* Move constructor. */
     BaseNode(BaseNode&& other) noexcept : _value(std::move(other._value)) {
-        if constexpr (std::is_pointer_v<Value>) {
-            other._value = nullptr;
-        }
+        if constexpr (std::is_pointer_v<Value>) other._value = nullptr;
     }
 
     /* Copy assignment operator. */
     BaseNode& operator=(const BaseNode& other) noexcept {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
-        }
+        if (this == &other) return *this;  // check for self-assignment
 
         // clear current node
-        if constexpr (py_val) {
-            Py_XDECREF(_value);
-        }
+        if constexpr (py_val) Py_XDECREF(_value);
 
         // copy other node
         _value = other._value;
-        if constexpr (py_val) {
-            Py_XINCREF(_value);
-        }
+        if constexpr (py_val) Py_XINCREF(_value);
         return *this;
     }
 
     /* Move assignment operator. */
     BaseNode& operator=(BaseNode&& other) noexcept {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
-        }
+        if (this == &other) return *this;  // check for self-assignment
 
         // clear current node
-        if constexpr (py_val) {
-            Py_XDECREF(_value);
-        }
+        if constexpr (py_val) Py_XDECREF(_value);
 
         // move other node
         _value = std::move(other._value);
-        if constexpr (std::is_pointer_v<Value>) {
-            other._value = nullptr;
-        }
+        if constexpr (std::is_pointer_v<Value>) other._value = nullptr;
         return *this;
     }
 
     /* Destroy a node and release its resources. */
     ~BaseNode() noexcept {
-        if constexpr (py_val) {
-            Py_XDECREF(_value);
-        }
-        if constexpr (std::is_pointer_v<Value>) {
-            _value = nullptr;
-        }
+        if constexpr (py_val) Py_XDECREF(_value);
+        if constexpr (std::is_pointer_v<Value>) _value = nullptr;
     }
 
 };
@@ -171,10 +145,7 @@ public:
 
     /* Copy assignment operator. */
     SingleNode& operator=(const SingleNode& other) noexcept {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
-        }
+        if (this == &other) return *this;  // check for self-assignment
 
         // copy value from other node
         Base::operator=(other);
@@ -186,10 +157,7 @@ public:
 
     /* Move assignment operator. */
     SingleNode& operator=(SingleNode&& other) noexcept {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
-        }
+        if (this == &other) return *this;  // check for self-assignment
 
         // move value from other node
         Base::operator=(other);
@@ -221,9 +189,7 @@ public:
         SingleNode* curr,
         SingleNode* next
     ) noexcept {
-        if (prev != nullptr) {
-            prev->next(curr);
-        }
+        if (prev != nullptr) prev->next(curr);
         curr->next(next);
     }
 
@@ -233,24 +199,17 @@ public:
         SingleNode* curr,
         SingleNode* next
     ) noexcept {
-        if (prev != nullptr) {
-            prev->next(next);
-        }
-        curr->next(nullptr);
+        if (prev != nullptr) prev->next(next);
     }
 
     /* Break a linked list at a specific junction. */
     inline static void split(SingleNode* prev, SingleNode* curr) noexcept {
-        if (prev != nullptr) {
-            prev->next(nullptr);
-        }
+        if (prev != nullptr) prev->next(nullptr);
     }
 
     /* Join the list at a specific junction. */
     inline static void join(SingleNode* prev, SingleNode* curr) noexcept {
-        if (prev != nullptr) {
-            prev->next(curr);
-        }
+        if (prev != nullptr) prev->next(curr);
     }
 
 };
@@ -281,10 +240,7 @@ public:
 
     /* Copy assignment operator. */
     DoubleNode& operator=(const DoubleNode& other) {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
-        }
+        if (this == &other) return *this;  // check for self-assignment
 
         // copy value from other node and clear current node's next pointer
         Base::operator=(other);
@@ -296,10 +252,7 @@ public:
 
     /* Move assignment operator. */
     DoubleNode& operator=(DoubleNode&& other) {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
-        }
+        if (this == &other) return *this;  // check for self-assignment
 
         // move value/next from other node
         Base::operator=(other);
@@ -341,14 +294,10 @@ public:
         DoubleNode* curr,
         DoubleNode* next
     ) noexcept {
-        if (prev != nullptr) {
-            prev->next(curr);
-        }
+        if (prev != nullptr) prev->next(curr);
         curr->prev(prev);
         curr->next(next);
-        if (next != nullptr) {
-            next->prev(curr);
-        }
+        if (next != nullptr) next->prev(curr);
     }
 
     /* Unlink the node from its neighbors. */
@@ -357,32 +306,20 @@ public:
         DoubleNode* curr,
         DoubleNode* next
     ) noexcept {
-        if (prev != nullptr) {
-            prev->next(next);
-        }
-        if (next != nullptr) {
-            next->prev(prev);
-        }
+        if (prev != nullptr) prev->next(next);
+        if (next != nullptr) next->prev(prev);
     }
 
     /* Break a linked list at the specified nodes. */
     inline static void split(DoubleNode* prev, DoubleNode* curr) noexcept {
-        if (prev != nullptr) {
-            prev->next(nullptr);
-        }
-        if (curr != nullptr) {
-            curr->prev(nullptr);
-        }
+        if (prev != nullptr) prev->next(nullptr);
+        if (curr != nullptr) curr->prev(nullptr);
     }
 
     /* Join the list at the specified nodes. */
     inline static void join(DoubleNode* prev, DoubleNode* curr) noexcept {
-        if (prev != nullptr) {
-            prev->next(curr);
-        }
-        if (curr != nullptr) {
-            curr->prev(prev);
-        }
+        if (prev != nullptr) prev->next(curr);
+        if (curr != nullptr) curr->prev(prev);
     }
 
 };
@@ -446,10 +383,7 @@ public:
 
     /* Move assignment operator. */
     Keyed& operator=(Keyed&& other) noexcept {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
-        }
+        if (this == &other) return *this;  // check for self-assignment
 
         // move value from other node
         Base::operator=(other);
@@ -548,10 +482,7 @@ public:
 
     /* Copy assignment operator. */
     Hashed& operator=(const Hashed& other) {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
-        }
+        if (this == &other) return *this;  // check for self-assignment
 
         // copy wrapped node
         Wrapped::operator=(other);
@@ -563,10 +494,7 @@ public:
 
     /* Move assignment operator. */
     Hashed& operator=(Hashed&& other) {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
-        }
+        if (this == &other) return *this;  // check for self-assignment
 
         // move wrapped node
         Wrapped::operator=(other);
@@ -675,26 +603,19 @@ public:
 
     /* Copy constructor. */
     Mapped(const Mapped& other) noexcept : Wrapped(other), _mapped(other._mapped) {
-        if constexpr (py_mapped) {
-            Py_INCREF(_mapped);
-        }
+        if constexpr (py_mapped) Py_INCREF(_mapped);
     }
 
     /* Move constructor. */
     Mapped(Mapped&& other) noexcept :
         Wrapped(std::move(other)), _mapped(std::move(other._mapped))
     {
-        if constexpr (std::is_pointer_v<MappedValue>) {
-            other._mapped = nullptr;
-        }
+        if constexpr (std::is_pointer_v<MappedValue>) other._mapped = nullptr;
     }
 
     /* Copy assignment operator. */
     Mapped& operator=(const Mapped& other) noexcept {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
-        }
+        if (this == &other) return *this;  // check for self-assignment
 
         // copy wrapped node
         Wrapped::operator=(other);
@@ -709,10 +630,7 @@ public:
 
     /* Move assignment operator. */
     Mapped& operator=(Mapped&& other) noexcept {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
-        }
+        if (this == &other) return *this;  // check for self-assignment
 
         // move wrapped node
         Wrapped::operator=(other);
@@ -727,14 +645,21 @@ public:
 
     /* Destroy a mapped node and release its resources. */
     ~Mapped() noexcept {
-        if constexpr (py_mapped) {
-            Py_XDECREF(_mapped);
-        }
+        if constexpr (py_mapped) Py_XDECREF(_mapped);
     }
 
     /* Get the mapped value. */
     inline MappedValue mapped() const noexcept {
         return _mapped;
+    }
+
+    /* Overwrite the mapped value. */
+    inline void mapped(MappedValue&& mapped) noexcept {
+        if constexpr (py_mapped) {
+            Py_XDECREF(_mapped);
+            Py_XINCREF(mapped);
+        }
+        _mapped = std::forward<MappedValue>(mapped);
     }
 
     /* Get the next node in the list. */

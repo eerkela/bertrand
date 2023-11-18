@@ -4,7 +4,7 @@
 
 #include <cstddef>  // size_t
 #include <cstdlib>  // malloc(), calloc(), free()
-#include <functional>  // std::hash, std::equal_to
+#include <functional>  // std::hash
 #include <iostream>  // std::cout, std::endl
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
@@ -1313,6 +1313,10 @@ public:
             if (util::eq(lookup->value(), this->temp()->value())) {
                 this->temp()->~Node();  // clean up temp node
                 if constexpr (exist_ok) {
+                    // overwrite mapped value if applicable
+                    if constexpr (NodeTraits<Node>::has_mapped) {
+                        lookup.mapped(std::move(this->temp()->mapped()));
+                    }
                     return &lookup;
                 } else {
                     std::ostringstream msg;

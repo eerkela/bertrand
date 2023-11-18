@@ -83,7 +83,8 @@ namespace linked {
             for (auto item : util::iter(items)) {
                 Node* node = view.search(item);
                 if (node != nullptr) {
-                    view.recycle(node->prev(), node, node->next());
+                    view.unlink(node->prev(), node, node->next());
+                    view.recycle(node);
                 }
             }
             return;
@@ -99,7 +100,7 @@ namespace linked {
             // trivial case: no nodes to remove
             if (to_remove.empty()) return;
 
-            // we then iterate through the view and remove the marked nodes
+            // iterate through the view and remove the marked nodes
             for (auto it = view.begin(), end = view.end(); it != end;) {
                 if (to_remove.find(it.curr()) != to_remove.end()) {
                     view.recycle(it.drop());  // implicitly advances iterator
@@ -172,7 +173,7 @@ namespace linked {
 
                 // if node is not present, move it into the original view
                 if (node == nullptr) {
-                    node = view.node(std::move(*it));
+                    node = view.node(std::move(*(it.curr())));
                     if (left) {
                         view.link(nullptr, node, view.head());
                     } else {
@@ -195,7 +196,7 @@ namespace linked {
 
                 // if node is not present, move it into the original view
                 if (node == nullptr) {
-                    node = view.node(std::move(*it));
+                    node = view.node(std::move(*(it.curr())));
                     if (left) {
                         view.link(nullptr, node, view.head());
                     } else {

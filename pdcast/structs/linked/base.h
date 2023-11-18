@@ -70,13 +70,32 @@ public:
     {}
 
     /* Construct a list from an input iterable. */
+    template <typename Container>
     LinkedBase(
-        PyObject* iterable,
+        Container&& iterable,
         std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr,
         bool reverse = false
     ) : view(
-            iterable,
+            std::forward<Container>(iterable),
+            max_size.value_or(Allocator::DEFAULT_CAPACITY),
+            !max_size.has_value(),
+            spec,
+            reverse
+        )
+    {}
+
+    /* Construct a list from an iterator range. */
+    template <typename Iterator>
+    LinkedBase(
+        Iterator&& begin,
+        Iterator&& end,
+        std::optional<size_t> max_size = std::nullopt,
+        PyObject* spec = nullptr,
+        bool reverse = false
+    ) : view(
+            std::forward<Iterator>(begin),
+            std::forward<Iterator>(end),
             max_size.value_or(Allocator::DEFAULT_CAPACITY),
             !max_size.has_value(),
             spec,
@@ -87,8 +106,6 @@ public:
     /* Construct a list from a base view. */
     LinkedBase(View&& view) : view(std::move(view)) {}
 
-    // TODO: construct from iterators?
-
     /* Copy constructor. */
     LinkedBase(const LinkedBase& other) : view(other.view) {}
 
@@ -97,12 +114,14 @@ public:
 
     /* Copy assignment operator. */
     LinkedBase& operator=(const LinkedBase& other) {
+        if (this == &other) return *this;  // check for self-assignment
         view = other.view;
         return *this;
     }
 
     /* Move assignment operator. */
     LinkedBase& operator=(LinkedBase&& other) {
+        if (this == &other) return *this;  // check for self-assignment
         view = std::move(other.view);
         return *this;
     }

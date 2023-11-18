@@ -85,23 +85,20 @@ public:
     ////////////////////////////
 
     /* Construct an empty view. */
-    explicit BaseView(
-        size_t capacity = Allocator::DEFAULT_CAPACITY,
-        bool dynamic = true,
-        PyObject* spec = nullptr
-    ) : allocator(capacity, dynamic, spec)
+    BaseView(size_t capacity, bool dynamic, PyObject* spec) :
+        allocator(capacity, dynamic, spec)
     {}
 
-    // TODO: allow this constructor to accept rvalue initializers.
+    // TODO: union.h and update.h require a simple constructor for view
 
     /* Construct a view from an input iterable. */
     template <typename Container>
-    explicit BaseView(
-        Container& iterable,
-        size_t capacity = Allocator::DEFAULT_CAPACITY,
-        bool dynamic = true,
-        PyObject* spec = nullptr,
-        bool reverse = false
+    BaseView(
+        Container&& iterable,
+        size_t capacity,
+        bool dynamic,
+        PyObject* spec,
+        bool reverse
     ) : allocator(
             init_size(iterable, capacity, dynamic),
             dynamic,
@@ -109,10 +106,28 @@ public:
         )
     {
         for (auto item : util::iter(iterable)) {
-            // NOTE: node() constructor is fallible, but because all memory is managed
-            // by the encapsulated allocator, we don't need to worry about cleaning up
-            // the list in the event of an exception.
             Node* curr = node(item);
+            if (reverse) {
+                link(nullptr, curr, head());
+            } else {
+                link(tail(), curr, nullptr);
+            }
+        }
+    }
+
+    /* Construct a view from an iterator range. */
+    template <typename Iterator>
+    BaseView(
+        Iterator&& begin,
+        Iterator&& end,
+        size_t capacity,
+        bool dynamic,
+        PyObject* spec,
+        bool reverse
+    ) : allocator(capacity, dynamic, spec)
+    {
+        for (; begin != end; ++begin) {
+            Node* curr = node(*begin);
             if (reverse) {
                 link(nullptr, curr, head());
             } else {
@@ -452,10 +467,7 @@ protected:
         std::optional<size_t> size = util::len(container);
         if (size.has_value()) {  // use max of container size and specified capacity
             size_t val = size.value();
-            size_t rounded = util::next_power_of_two(val < capacity ? capacity : val);
-            return rounded < Allocator::DEFAULT_CAPACITY ?
-                Allocator::DEFAULT_CAPACITY :
-                rounded;
+            return val < capacity ? capacity : val;
         }
 
         // otherwise, use the specified capacity
@@ -568,19 +580,43 @@ public:
     /* Construct a SetView from an input iterable. */
     template <typename Container>
     SetView(
-        Container& iterable,
-        std::optional<size_t> max_size = std::nullopt,
-        PyObject* spec = nullptr,
-        bool reverse = false
+        Container&& iterable,
+        size_t capacity,
+        bool dynamic,
+        PyObject* spec,
+        bool reverse
     ) : Base::allocator(
-            Base::init_size(iterable, max_size),
-            max_size.has_value(),
+            Base::init_size(iterable, capacity, dynamic),
+            dynamic,
             spec
         )
     {
         for (auto item : util::iter(iterable)) {
             Node* curr = node<true>(item);  // exist_ok = True
-            if (curr->next() == nullptr) {
+            if (curr->next() == nullptr && curr != this->tail()) {
+                if (reverse) {
+                    Base::link(nullptr, curr, Base::head());
+                } else {
+                    Base::link(Base::tail(), curr, nullptr);
+                }
+            }
+        }
+    }
+
+    /* Construct a SetView from an iterator range. */
+    template <typename Iterator>
+    SetView(
+        Iterator&& begin,
+        Iterator&& end,
+        size_t capacity,
+        bool dynamic,
+        PyObject* spec,
+        bool reverse
+    ) : Base::allocator(capacity, dynamic, spec)
+    {
+        for (; begin != end; ++begin) {
+            Node* curr = node<true>(*begin);  // exist_ok = True
+            if (curr->next() == nullptr && curr != this->tail()) {
                 if (reverse) {
                     Base::link(nullptr, curr, Base::head());
                 } else {
@@ -649,19 +685,43 @@ public:
     /* Construct a DictView from an input iterable. */
     template <typename Container>
     DictView(
-        Container& iterable,
-        std::optional<size_t> max_size = std::nullopt,
-        PyObject* spec = nullptr,
-        bool reverse = false
+        Container&& iterable,
+        size_t capacity,
+        bool dynamic,
+        PyObject* spec,
+        bool reverse
     ) : Base::allocator(
-            Base::init_size(iterable, max_size),
-            max_size.has_value(),
+            Base::init_size(iterable, capacity, dynamic),
+            dynamic,
             spec
         )
     {
         for (auto item : util::iter(iterable)) {
             Node* curr = node<true>(item);  // exist_ok = True
-            if (curr->next() == nullptr) {
+            if (curr->next() == nullptr && curr != this->tail()) {
+                if (reverse) {
+                    Base::link(nullptr, curr, Base::head());
+                } else {
+                    Base::link(Base::tail(), curr, nullptr);
+                }
+            }
+        }
+    }
+
+    /* Construct a SetView from an iterator range. */
+    template <typename Iterator>
+    DictView(
+        Iterator&& begin,
+        Iterator&& end,
+        size_t capacity,
+        bool dynamic,
+        PyObject* spec,
+        bool reverse
+    ) : Base::allocator(capacity, dynamic, spec)
+    {
+        for (; begin != end; ++begin) {
+            Node* curr = node<true>(*begin);  // exist_ok = True
+            if (curr->next() == nullptr && curr != this->tail()) {
                 if (reverse) {
                     Base::link(nullptr, curr, Base::head());
                 } else {

@@ -2,9 +2,11 @@
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_UNION_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_UNION_H
 
-#include <Python.h>  // CPython API
-#include "../core/allocate.h"  // DynamicAllocator
-#include "../core/view.h"  // views
+#include <type_traits>  // std::enable_if_t<>
+#include "../../util/python.h"  // len()
+#include "../core/node.h"  // NodeTraits
+#include "../core/view.h"  // ViewTraits
+#include "update.h"  // update()
 
 
 namespace bertrand {
@@ -14,250 +16,163 @@ namespace linked {
 
     /* Get the union between a linked set or dictionary and an arbitrary Python
     iterable. */
-    template <typename View>
-    View* union_(View* view, PyObject* items, bool left) {
+    template <typename View, typename Container>
+    auto union_(const View& view, const Container& container, bool left)
+        -> std::enable_if_t<ViewTraits<View>::setlike, View>
+    {
         using Node = typename View::Node;
+        using MemGuard = typename View::MemGuard;
 
-        // CPython API equivalent of `iter(items)`
-        PyObject* iterator = PyObject_GetIter(items);
-        if (iterator == nullptr) {
-            return nullptr;  // propagate error
-        }
+        // try to get length of container
+        std::optional<size_t> length = util::len(container);
+        if (length.has_value()) {
+            // preallocate exact size
+            View copy(
+                view.size() + length.value(),
+                view.dynamic(),
+                view.specialization()
+            );
+            MemGuard hold = copy.reserve();  // hold allocator at current size
 
-        // copy view
-        View* result = view->copy();
-        if (result == nullptr) {
-            Py_DECREF(iterator);
-            return nullptr;  // propagate error
-        }
-
-        // iterate over items and add any elements that are missing from view
-        while (true) {
-            PyObject* item = PyIter_Next(iterator);  // next(iterator)
-            if (item == nullptr) {  // end of iterator or error
-                if (PyErr_Occurred()) {
-                    Py_DECREF(iterator);
-                    delete result;
-                    return nullptr;
+            // add elements from view
+            for (auto it = view.begin(), end = view.end(); it != end; ++it) {
+                Node* node = copy.node(*(it.curr()));
+                copy.link(copy.tail(), node, nullptr);
+            }
+    
+            // add elements from container
+            for (auto item : util::iter(container)) {
+                Node* node = copy.template node<true>(item);  // exist_ok = true
+                if (node->next() == nullptr && node != copy.tail()) {
+                    if (left) {
+                        copy.link(nullptr, node, copy.head());
+                    } else {
+                        copy.link(copy.tail(), node, nullptr);
+                    }
                 }
-                break;
             }
 
-            // allocate a new node
-            Node* node = result->node(item);
-            if (node == nullptr) {
-                Py_DECREF(iterator);
-                Py_DECREF(item);
-                delete result;
-                return nullptr;
-            }
-
-            // check if item is contained in hash table
-            Node* existing = result->search(node);
-            if (existing != nullptr) {
-                if constexpr (has_mapped<Node>::value) {
-                    Py_DECREF(existing->mapped);
-                    Py_INCREF(node->mapped);
-                    existing->mapped = node->mapped;
-                }
-                result->recycle(node);
-                Py_DECREF(item);
-                continue;  // advance to next item
-            }
-
-            // link to beginning/end of list
-            if (left) {
-                result->link(nullptr, node, result->head);
-            } else {
-                result->link(result->tail, node, nullptr);
-            }
-            if (PyErr_Occurred()) {  // check for errors during link()
-                Py_DECREF(iterator);
-                Py_DECREF(item);
-                delete result;
-                return nullptr;
-            }
-
-            // advance to next item
-            Py_DECREF(item);
+            return copy;
         }
 
-        return result;
+        // otherwise, copy existing view and update dynamically
+        View copy(view);
+        update(copy, container, left);
+        return copy;
     }
 
 
     /* Get the difference between a linked set or dictionary and an arbitrary Python
     iterable. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    ViewType<NodeType, Allocator>* difference(
-        ViewType<NodeType, Allocator>* view,
-        PyObject* items
-    ) {
-        using View = ViewType<NodeType, Allocator>;
+    template <typename View, typename Container>
+    auto difference(const View& view, const Container& items)
+        -> std::enable_if_t<ViewTraits<View>::setlike, View>
+    {
         using Node = typename View::Node;
+        using MemGuard = typename View::MemGuard;
 
-        // allocate a new view to hold the result
-        View* result;
-        try {
-            result = new View(view->max_size, view->specialization);
-        } catch (const std::bad_alloc&) {
-            PyErr_NoMemory();
-            return nullptr;
+        // preallocate to current size
+        View copy(view.size(), view.dynamic(), view.specialization());
+        MemGuard hold = copy.reserve();  // hold allocator at current size
+
+        // use auxiliary set to keep track of visited nodes as we iterate over items
+        std::unordered_set<Node*> found;
+        for (auto item : util::iter(items)) {
+            Node* node = view.search(item);
+            if (node != nullptr) found.insert(node);
         }
 
-        // unpack items into temporary set
-        SetView<NodeType, DynamicAllocator> temp_view(items);
-
-        // iterate over view and add all elements that are not in temp set to result
-        Node* curr = view->head;
-        while (curr != nullptr) {
-            if (temp_view->search(curr) == nullptr) {
-                _copy_into(result, curr, false);
-                if (PyErr_Occurred()) {
-                    delete result;
-                    return nullptr;
-                }
+        // iterate through view and add all elements that were not found
+        for (auto it = view.begin(), end = view.end(); it != end; ++it) {
+            if (found.find(it.curr()) == found.end()) {
+                Node* node = copy.node(*(it.curr()));
+                copy.link(copy.tail(), node, nullptr);
             }
-            curr = static_cast<Node*>(curr->next);
         }
-
-        return result;
+        return copy;
     }
 
 
     /* Get the intersection between a linked set or dictionary and an arbitrary Python
     iterable. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    ViewType<NodeType, Allocator>* intersection(
-        ViewType<NodeType, Allocator>* view,
-        PyObject* items
-    ) {
+    template <typename View, typename Container>
+    auto intersection(const View& view, const Container& items)
+        -> std::enable_if_t<ViewTraits<View>::setlike, View>
+    {
         using View = ViewType<NodeType, Allocator>;
         using Node = typename View::Node;
 
-        // generate a new view to hold the result
-        View* result;
-        try {
-            result = new View(view->max_size, view->specialization);
-        } catch (const std::bad_alloc&) {
-            PyErr_NoMemory();
-            return nullptr;
+        // preallocate to current size
+        View copy(view.size(), view.dynamic(), view.specialization());
+        MemGuard hold = copy.reserve();  // hold allocator at current size
+
+        // use auxiliary set to keep track of visited nodes as we iterate over items
+        std::unordered_set<Node*> found;
+        for (auto item : util::iter(items)) {
+            Node* node = view.search(item);
+            if (node != nullptr) found.insert(node);
         }
 
-        // unpack items into temporary view
-        ViewType<NodeType, DynamicAllocator> temp_view(items);
-
-        // iterate over view and add all elements in temp view to result
-        Node* curr = view->head;
-        while (curr != nullptr) {
-            Node* other = temp_view->search(curr);
-            if (other != nullptr) {
-                _copy_into(result, other, false);  // copy from temporary view
-                if (PyErr_Occurred()) {
-                    delete result;
-                    return nullptr;
-                }
+        // iterate through view and add all elements that were found
+        for (auto it = view.begin(), end = view.end(); it != end; ++it) {
+            if (found.find(it.curr()) != found.end()) {
+                Node* node = copy.node(*(it.curr()));
+                copy.link(copy.tail(), node, nullptr);
             }
-            curr = static_cast<Node*>(curr->next);
         }
-
-        return result;
+        return copy;
     }
 
 
     /* Get the symmetric difference between a linked set or dictionary and an arbitrary
     Python iterable. */
-    template <
-        template <typename, template <typename> class> class ViewType,
-        typename NodeType,
-        template <typename> class Allocator
-    >
-    ViewType<NodeType, Allocator>* symmetric_difference(
-        ViewType<NodeType, Allocator>* view,
-        PyObject* items
-    ) {
-        using View = ViewType<NodeType, Allocator>;
+    template <typename View, typename Container>
+    auto symmetric_difference(const View& view, const Container& items, bool left)
+        -> std::enable_if_t<ViewTraits<View>::setlike, View>
+    {
         using Node = typename View::Node;
-
-        // generate a new view to hold the result
-        View* result;
-        try {
-            result = new View(view->max_size, view->specialization);
-        } catch (const std::bad_alloc&) {
-            PyErr_NoMemory();
-            return nullptr;
-        }
+        using MemGuard = typename View::MemGuard;
 
         // unpack items into temporary view
-        ViewType<NodeType, DynamicAllocator> temp_view(items);
+        View temp_view(items);
 
-        // iterate over view and add all elements not in temp view to result
-        Node* curr = view->head;
-        while (curr != nullptr) {
-            if (temp_view->search(curr) == nullptr) {
-                _copy_into(result, curr, false);
-                if (PyErr_Occurred()) {
-                    delete result;
-                    return nullptr;
-                }
+        // preallocate to exact size
+        View copy(
+            view.size() + temp_view.size(),
+            view.dynamic(),
+            view.specialization()
+        );
+        MemGuard hold = copy.reserve();  // hold allocator at current size
+
+        // add all elements from view that are not in temp view
+        for (auto it = view.begin(), end = view.end(); it != end; ++it) {
+            Node* node = temp_view.search(it.curr());
+            if (node == nullptr) {
+                node = copy.node(*(it.curr()));
+                copy.link(copy.tail(), node, nullptr);
             }
-            curr = static_cast<Node*>(curr->next);
         }
 
-        // iterate over temp view and add all elements not in view to result
-        curr = temp_view->head;
-        while (curr != nullptr) {
-            if (view->search(curr) == nullptr) {
-                _copy_into(result, curr, false);
-                if (PyErr_Occurred()) {
-                    delete result;
-                    return nullptr;
+        // add all elements from temp view that are not in view
+        for (auto it = temp_view.begin(), end = temp_view.end(); it != end; ++it) {
+            Node* node = view.search(it.curr());
+            if (node == nullptr) {
+                node = copy.node(std::move(*(it.curr())));
+                if (left) {
+                    copy.link(nullptr, node, copy.head());
+                } else {
+                    copy.link(copy.tail(), node, nullptr);
                 }
             }
-            curr = static_cast<Node*>(curr->next);
         }
 
-        return result;
+        return copy;
     }
 
 
 }  // namespace linked
 }  // namespace structs
 }  // namespace bertrand
-
-
-///////////////////////
-////    PRIVATE    ////
-///////////////////////
-
-
-/* Copy a node from one view to another. */
-template <typename View, typename Node>
-void _copy_into(View* view, Node* node, bool left) {
-    Node* copied = view->copy(node);
-    if (copied == nullptr) {  // check for errors during init_copy()
-        return;  // propagate
-    }
-
-    // add node to result
-    if (left) {
-        view->link(nullptr, copied, view->head);
-    } else {
-        view->link(view->tail, copied, nullptr);
-    }
-    if (PyErr_Occurred()) {  // check for errors during link()
-        view->recycle(copied);
-        return;  // propagate
-    }
-}
 
 
 #endif  // BERTRAND_STRUCTS_LINKED_ALGORITHMS_UNION_H
