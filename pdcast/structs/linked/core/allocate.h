@@ -28,8 +28,8 @@ namespace linked {
 /////////////////////////
 
 
-/* DEBUG=TRUE adds print statements for every call to malloc()/free() in order
-to help catch memory leaks. */
+/* DEBUG=TRUE adds print statements for every memory allocation in order to help catch
+leaks. */
 const bool DEBUG = true;
 
 
@@ -47,10 +47,12 @@ class AllocatorTag {};
 
 /* Base class that implements shared functionality for all allocators and provides the
 minimum necessary attributes for compatibility with higher-level views. */
-template <typename NodeType>
+template <typename Derived, typename NodeType>
 class BaseAllocator : public AllocatorTag {
 public:
     using Node = NodeType;
+    class MemGuard;
+    class PyMemGuard;
 
 protected:
     // bitfield for storing boolean flags related to allocator state, as follows:
@@ -59,15 +61,15 @@ protected:
     // 0b100: if set, nodes cannot be re-specialization after list construction
     enum {
         FROZEN                  = 0b001,
-        FIXED_SIZE              = 0b010,
-        STRICTLY_TYPED          = 0b100
-    } BITFLAGS;
-    unsigned char flags;
-    union { mutable Node _temp; };  // temporary node for internal use
+        DYNAMIC                 = 0b010,
+        STRICTLY_TYPED          = 0b100  // (not used)
+    } CONFIG;
+    unsigned char config;
+    union { mutable Node _temp; };  // uninitialized temporary node for internal use
 
-    /* Allocate a contiguous block of uninitialized nodes with the specified size. */
-    inline static Node* allocate_array(size_t capacity) {
-        Node* result = static_cast<Node*>(malloc(capacity * sizeof(Node)));
+    /* Allocate a contiguous block of uninitialized items with the specified size. */
+    inline static Node* malloc_nodes(size_t capacity) {
+        Node* result = static_cast<Node*>(std::malloc(capacity * sizeof(Node)));
         if (result == nullptr) {
             throw std::bad_alloc();
         }
@@ -110,31 +112,38 @@ protected:
         }
     }
 
-    /* Throw an error indicating that the allocator cannot grow past its current
-    size. */
+    /* Shrink a dynamic allocator if it is under the minimum load factor.  This is
+    called automatically by recycle() as well as when a MemGuard falls out of scope,
+    guaranteeing the load factor is never less than 25% of the list's capacity. */
+    template <const size_t multiplier = 1>
+    inline bool shrink() {
+        if (!this->frozen() &&
+            this->dynamic() &&
+            this->capacity != Derived::DEFAULT_CAPACITY &&
+            this->occupied <= this->capacity / (4 * multiplier)
+        ) {
+            Derived* self = static_cast<Derived*>(this);
+            size_t size = util::next_power_of_two(this->occupied * (2 * multiplier));
+            size = size < Derived::DEFAULT_CAPACITY ? Derived::DEFAULT_CAPACITY : size;
+            self->resize(size);
+            return true;
+        }
+        return false;
+    }
+
+    /* Throw an error indicating that the allocator is frozen at its current size. */
     inline auto cannot_grow() const {
         std::ostringstream msg;
         msg << "array is frozen at size: " << capacity;
         return util::MemoryError(msg.str());
     }
 
-public:
-    Node* head;  // head of the list
-    Node* tail;  // tail of the list
-    size_t capacity;  // number of nodes in the array
-    size_t occupied;  // number of nodes currently in use - equivalent to list.size()
-    PyObject* specialization;  // type specialization for PyObject* values
-
-    // TODO: capacity is optional and defaults to nullopt.  If FIXED_SIZE is set, then
-    // capacity must be specified.  Otherwise, capacity is set to DEFAULT_CAPACITY.
-
     /* Create an allocator with an optional fixed size. */
     BaseAllocator(
         size_t capacity,
-        bool fixed,
+        bool dynamic,
         PyObject* specialization
-        // bool permanent
-    ) : flags(FIXED_SIZE * fixed),  // fixed=true turns off dynamic resizing
+    ) : config(DYNAMIC * dynamic),  // dynamic=false turns off dynamic resizing
         head(nullptr),
         tail(nullptr),
         capacity(capacity),
@@ -149,9 +158,16 @@ public:
         }
     }
 
+public:
+    Node* head;  // head of the list
+    Node* tail;  // tail of the list
+    size_t capacity;  // number of nodes in the array
+    size_t occupied;  // number of nodes currently in use - equivalent to list.size()
+    PyObject* specialization;  // type specialization for PyObject* values
+
     /* Copy constructor. */
     BaseAllocator(const BaseAllocator& other) :
-        flags(other.flags),
+        config(other.config),
         head(nullptr),
         tail(nullptr),
         capacity(other.capacity),
@@ -166,14 +182,14 @@ public:
 
     /* Move constructor. */
     BaseAllocator(BaseAllocator&& other) noexcept :
-        flags(other.flags),
+        config(other.config),
         head(other.head),
         tail(other.tail),
         capacity(other.capacity),
         occupied(other.occupied),
         specialization(other.specialization)
     {
-        other.flags = 0;
+        other.config = 0;
         other.head = nullptr;
         other.tail = nullptr;
         other.capacity = 0;
@@ -183,9 +199,11 @@ public:
 
     /* Copy assignment operator. */
     BaseAllocator& operator=(const BaseAllocator& other) {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
+        if (this == &other) return *this;  // check for self-assignment
+        if (frozen()) {
+            throw util::MemoryError(
+                "array cannot be reallocated while a MemGuard is active"
+            );
         }
 
         // destroy current
@@ -200,7 +218,7 @@ public:
         }
 
         // copy from other
-        flags = other.flags;
+        config = other.config;
         capacity = other.capacity;
         occupied = other.occupied;
         specialization = Py_XNewRef(other.specialization);
@@ -210,9 +228,11 @@ public:
 
     /* Move assignment operator. */
     BaseAllocator& operator=(BaseAllocator&& other) noexcept {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
+        if (this == &other) return *this;  // check for self-assignment
+        if (frozen()) {
+            throw util::MemoryError(
+                "array cannot be reallocated while a MemGuard is active"
+            );
         }
 
         // destroy current
@@ -225,7 +245,7 @@ public:
         }
 
         // transfer ownership
-        flags = other.flags;
+        config = other.config;
         head = other.head;
         tail = other.tail;
         capacity = other.capacity;
@@ -233,7 +253,7 @@ public:
         specialization = other.specialization;
 
         // reset other
-        other.flags = 0;
+        other.config = 0;
         other.head = nullptr;
         other.tail = nullptr;
         other.capacity = 0;
@@ -259,7 +279,8 @@ public:
     void recycle(Node* node) {
         // manually call destructor
         if constexpr (DEBUG) {
-            std::cout << "    -> recycle: " << util::repr(node->value()) << std::endl;
+            std::cout << "    -> recycle: " << util::repr(node->value());
+            std::cout << std::endl;
         }
         node->~Node();
         --occupied;
@@ -276,24 +297,60 @@ public:
         occupied = 0;
     }
 
+    /////////////////////////
+    ////    INHERITED    ////
+    /////////////////////////
+
     /* Resize the allocator to store a specific number of nodes. */
-    void reserve(size_t new_size) {
+    template <const size_t multiplier = 1>
+    MemGuard reserve(size_t new_size) {
         // ensure new capacity is large enough to store all existing nodes
         if (new_size < this->occupied) {
             throw std::invalid_argument(
                 "new capacity cannot be smaller than current size"
             );
         }
+
+        // if frozen, check new size against current capacity
+        if (this->frozen() || !this->dynamic()) {
+            if (new_size > this->capacity / multiplier) {
+                throw cannot_grow();  // throw error
+            } else {
+                return MemGuard();  // return empty guard
+            }
+        }
+
+        // otherwise, grow the array if necessary
+        Derived* self = static_cast<Derived*>(this);
+        size_t new_capacity = util::next_power_of_two(new_size * multiplier);
+        if (new_capacity > Derived::DEFAULT_CAPACITY && new_capacity > this->capacity) {
+            self->resize(new_capacity);
+        }
+
+        // freeze allocator until guard falls out of scope
+        return MemGuard(self);
     }
 
     /* Attempt to resize the allocator based on an optional size. */
-    void try_reserve(std::optional<size_t> new_size);
+    template <const size_t multiplier = 1>
+    inline MemGuard try_reserve(std::optional<size_t> new_size) {
+        if (!new_size.has_value()) {
+            return MemGuard();
+        }
+        return reserve<multiplier>(new_size.value());
+    }
 
     /* Attempt to reserve memory to hold all the elements of a given container if it
     implements a `size()` method or is a Python object with a corresponding `__len__()`
-    attribute. */
-    template <typename Container>
-    void try_reserve(Container& container);
+    attribute.  Otherwise, produce an empty MemGuard. */
+    template <typename Container, const size_t multiplier = 1>
+    inline MemGuard try_reserve(Container& container) {
+        std::optional<size_t> length = util::len(container);
+        if (!length.has_value()) {
+            return MemGuard();
+        }
+        return reserve(this->occupied + length.value());
+    }
 
     /* Rearrange the nodes in memory to reduce fragmentation. */
     void defragment() {
@@ -303,11 +360,10 @@ public:
             msg << "array cannot be reallocated while a MemGuard is active";
             throw util::MemoryError(msg.str());
         }
-    }
 
-    /////////////////////////
-    ////    INHERITED    ////
-    /////////////////////////
+        // invoke derived method
+        static_cast<Derived*>(this)->resize(capacity);  // in-place reallocate
+    }
 
     /* Enforce strict type checking for python values within the list. */
     void specialize(PyObject* spec) {
@@ -350,198 +406,189 @@ public:
         specialization = spec;
     }
 
-    /* Check whether the allocator supports dynamic resizing. */
-    inline bool dynamic() const noexcept {
-        return !static_cast<bool>(flags & FIXED_SIZE);
-    }
-
-    /* Check whether the allocator is temporarily frozen for memory stability. */
-    inline bool frozen() const noexcept {
-        return static_cast<bool>(flags & FROZEN);
-    }
-
     /* Get a temporary node for internal use. */
     inline Node* temp() const noexcept {
         return &_temp;
     }
 
+    /* Check whether the allocator supports dynamic resizing. */
+    inline bool dynamic() const noexcept {
+        return static_cast<bool>(config & DYNAMIC);
+    }
+
+    /* Check whether the allocator is temporarily frozen for memory stability. */
+    inline bool frozen() const noexcept {
+        return static_cast<bool>(config & FROZEN);
+    }
+
     /* Get the total amount of dynamic memory allocated by this allocator. */
-    inline size_t nbytes() const {
+    inline size_t nbytes() const noexcept {
         return (1 + this->capacity) * sizeof(Node);  // account for temporary node
     }
 
-};
+    //////////////////////////////
+    ////    NESTED CLASSES    ////
+    //////////////////////////////
 
+    /* An RAII-style memory guard that temporarily prevents an allocator from being resized
+    or defragmented within a certain context. */
+    class MemGuard {
+        friend BaseAllocator;
+        friend Derived;
+        friend PyMemGuard;
+        Derived* allocator;
 
-/* An RAII-style memory guard that temporarily prevents an allocator from being resized
-or defragmented within a certain context. */
-template <typename Allocator>
-class MemGuard {
-    static_assert(
-        std::is_base_of_v<BaseAllocator<typename Allocator::Node>, Allocator>,
-        "Allocator must inherit from BaseAllocator"
-    );
-
-    friend Allocator;
-    Allocator* allocator;
-
-    /* Create an active MemGuard for an allocator, freezing it at its current
-    capacity. */
-    MemGuard(Allocator* allocator) noexcept : allocator(allocator) {
-        allocator->flags |= Allocator::FROZEN;  // set frozen bitflag
-        if constexpr (DEBUG) {
-            std::cout << "FREEZE: " << allocator->capacity << " NODES";
-            std::cout << std::endl;
+        /* Create an active MemGuard for an allocator, freezing it at its current
+        capacity. */
+        MemGuard(Derived* allocator) noexcept : allocator(allocator) {
+            allocator->config |= FROZEN;  // set frozen bitflag
+            if constexpr (DEBUG) {
+                std::cout << "FREEZE: " << allocator->capacity << " NODES";
+                std::cout << std::endl;
+            }
         }
-    }
 
-    /* Create an inactive MemGuard for an allocator. */
-    MemGuard() noexcept : allocator(nullptr) {}
+        /* Create an inactive MemGuard for an allocator. */
+        MemGuard() noexcept : allocator(nullptr) {}
 
-    /* Destroy the outermost MemGuard. */
-    inline void destroy() noexcept {
-        allocator->flags &= ~(Allocator::FROZEN);  // clear frozen bitflag
-        if constexpr (DEBUG) {
-            std::cout << "UNFREEZE: " << allocator->capacity << " NODES";
-            std::cout << std::endl;
-        }
-        if (allocator->dynamic()) {
+        /* Destroy the outermost MemGuard. */
+        inline void destroy() noexcept {
+            allocator->config &= ~FROZEN;  // clear frozen bitflag
+            if constexpr (DEBUG) {
+                std::cout << "UNFREEZE: " << allocator->capacity << " NODES";
+                std::cout << std::endl;
+            }
             allocator->shrink();  // every allocator implements this
         }
-    }
 
-public:
+    public:
 
-    /* Copy constructor/assignment operator deleted for safety. */
-    MemGuard(const MemGuard& other) = delete;
-    MemGuard& operator=(const MemGuard& other) = delete;
+        /* Copy constructor/assignment operator deleted for safety. */
+        MemGuard(const MemGuard& other) = delete;
+        MemGuard& operator=(const MemGuard& other) = delete;
 
-    /* Move constructor. */
-    MemGuard(MemGuard&& other) noexcept : allocator(other.allocator) {
-        other.allocator = nullptr;
-    }
+        /* Move constructor. */
+        MemGuard(MemGuard&& other) noexcept : allocator(other.allocator) {
+            other.allocator = nullptr;
+        }
 
-    /* Move assignment operator. */
-    MemGuard& operator=(MemGuard&& other) noexcept {
-        // check for self-assignment
-        if (this == &other) {
+        /* Move assignment operator. */
+        MemGuard& operator=(MemGuard&& other) noexcept {
+            // check for self-assignment
+            if (this == &other) {
+                return *this;
+            }
+
+            // destroy current
+            if (active()) destroy();
+
+            // transfer ownership
+            allocator = other.allocator;
+            other.allocator = nullptr;
             return *this;
         }
 
-        // destroy current
-        if (active()) destroy();
+        /* Unfreeze and potentially shrink the allocator when the outermost MemGuard falls
+        out of scope. */
+        ~MemGuard() noexcept { if (active()) destroy(); }
 
-        // transfer ownership
-        allocator = other.allocator;
-        other.allocator = nullptr;
-        return *this;
-    }
+        /* Check whether the guard is active. */
+        inline bool active() const noexcept { return allocator != nullptr; }
 
-    /* Unfreeze and potentially shrink the allocator when the outermost MemGuard falls
-    out of scope. */
-    ~MemGuard() noexcept { if (active()) destroy(); }
+    };
 
-    /* Check whether the guard is active. */
-    inline bool active() const noexcept { return allocator != nullptr; }
+    /* A Python wrapper around a MemGuard that allows it to be used as a context manager. */
+    class PyMemGuard {
+        PyObject_HEAD
+        Derived* allocator;
+        size_t capacity;
+        bool has_guard;
+        union { MemGuard guard; };
 
-};
+    public:
 
+        /* Disable instantiation from C++. */
+        PyMemGuard() = delete;
+        PyMemGuard(const PyMemGuard&) = delete;
+        PyMemGuard(PyMemGuard&&) = delete;
+        PyMemGuard& operator=(const PyMemGuard&) = delete;
+        PyMemGuard& operator=(PyMemGuard&&) = delete;
 
-/* A Python wrapper around a MemGuard that allows it to be used as a context manager. */
-template <typename Allocator>
-class PyMemGuard {
-    using MemGuard = linked::MemGuard<Allocator>;
+        /* Construct a Python MemGuard for a C++ allocator. */
+        inline static PyObject* construct(Derived* allocator, size_t capacity) {
+            // allocate
+            PyMemGuard* self = PyObject_New(PyMemGuard, &Type);
+            if (self == nullptr) {
+                PyErr_SetString(
+                    PyExc_RuntimeError,
+                    "failed to allocate PyMemGuard"
+                );
+                return nullptr;
+            }
 
-    PyObject_HEAD
-    Allocator* allocator;
-    size_t capacity;
-    bool has_guard;
-    union { MemGuard guard; };
-
-public:
-
-    /* Disable instantiation from C++. */
-    PyMemGuard() = delete;
-    PyMemGuard(const PyMemGuard&) = delete;
-    PyMemGuard(PyMemGuard&&) = delete;
-    PyMemGuard& operator=(const PyMemGuard&) = delete;
-    PyMemGuard& operator=(PyMemGuard&&) = delete;
-
-    /* Construct a Python MemGuard for a C++ allocator. */
-    inline static PyObject* construct(Allocator* allocator, size_t capacity) {
-        // allocate
-        PyMemGuard* self = PyObject_New(PyMemGuard, &Type);
-        if (self == nullptr) {
-            PyErr_SetString(
-                PyExc_RuntimeError,
-                "failed to allocate PyMemGuard"
-            );
-            return nullptr;
-        }
-
-        // initialize
-        self->allocator = allocator;
-        self->capacity = capacity;
-        self->has_guard = false;
-        return reinterpret_cast<PyObject*>(self);
-    }
-
-    /* Enter the context manager's block, freezing the allocator. */
-    static PyObject* __enter__(PyMemGuard* self, PyObject* /* ignored */) {
-        // check if the allocator is already frozen
-        if (self->has_guard) {
-            PyErr_SetString(
-                PyExc_RuntimeError,
-                "allocator is already frozen"
-            );
-            return nullptr;
-        }
-
-        // freeze the allocator
-        try {
-            new (&self->guard) MemGuard(self->allocator->reserve(self->capacity));
-
-        // translate C++ exceptions into Python errors
-        } catch (...) {
-            util::throw_python();
-            return nullptr;
-        }
-
-        // return new reference
-        self->has_guard = true;
-        return Py_NewRef(self);
-    }
-
-    /* Exit the context manager's block, unfreezing the allocator. */
-    inline static PyObject* __exit__(PyMemGuard* self, PyObject* /* ignored */) {
-        if (self->has_guard) {
-            self->guard.~MemGuard();
+            // initialize
+            self->allocator = allocator;
+            self->capacity = capacity;
             self->has_guard = false;
+            return reinterpret_cast<PyObject*>(self);
         }
-        Py_RETURN_NONE;
-    }
 
-    /* Check if the allocator is currently frozen. */
-    inline static PyObject* active(PyMemGuard* self, void* /* ignored */) {
-        return PyBool_FromLong(self->has_guard);
-    }
+        /* Enter the context manager's block, freezing the allocator. */
+        static PyObject* __enter__(PyMemGuard* self, PyObject* /* ignored */) {
+            // check if the allocator is already frozen
+            if (self->has_guard) {
+                PyErr_SetString(
+                    PyExc_RuntimeError,
+                    "allocator is already frozen"
+                );
+                return nullptr;
+            }
 
-private:
+            // freeze the allocator
+            try {
+                new (&self->guard) MemGuard(self->allocator->reserve(self->capacity));
 
-    /* Unfreeze the allocator when the context manager is garbage collected, if it
-    hasn't been unfrozen already. */
-    inline static void __dealloc__(PyMemGuard* self) {
-        if (self->has_guard) {
-            self->guard.~MemGuard();
-            self->has_guard = false;
+            // translate C++ exceptions into Python errors
+            } catch (...) {
+                util::throw_python();
+                return nullptr;
+            }
+
+            // return new reference
+            self->has_guard = true;
+            return Py_NewRef(self);
         }
-        Type.tp_free(self);
-    }
 
-    /* Docstrings for public attributes of PyMemGuard. */
-    struct docs {
+        /* Exit the context manager's block, unfreezing the allocator. */
+        inline static PyObject* __exit__(PyMemGuard* self, PyObject* /* ignored */) {
+            if (self->has_guard) {
+                self->guard.~MemGuard();
+                self->has_guard = false;
+            }
+            Py_RETURN_NONE;
+        }
 
-        static constexpr std::string_view PyMemGuard {R"doc(
+        /* Check if the allocator is currently frozen. */
+        inline static PyObject* active(PyMemGuard* self, void* /* ignored */) {
+            return PyBool_FromLong(self->has_guard);
+        }
+
+    private:
+
+        /* Unfreeze the allocator when the context manager is garbage collected, if it
+        hasn't been unfrozen already. */
+        inline static void __dealloc__(PyMemGuard* self) {
+            if (self->has_guard) {
+                self->guard.~MemGuard();
+                self->has_guard = false;
+            }
+            Type.tp_free(self);
+        }
+
+        /* Docstrings for public attributes of PyMemGuard. */
+        struct docs {
+
+            static constexpr std::string_view PyMemGuard {R"doc(
 A Python-compatible wrapper around a C++ MemGuard that allows it to be used as
 a context manager.
 
@@ -552,9 +599,9 @@ linked data structure.  It is directly equivalent to constructing a C++
 RAII-style MemGuard within the guarded context.  The C++ guard is automatically
 destroyed upon exiting the context.
 )doc"
-        };
+            };
 
-        static constexpr std::string_view __enter__ {R"doc(
+            static constexpr std::string_view __enter__ {R"doc(
 Enter the context manager's block, freezing the allocator.
 
 Returns
@@ -562,14 +609,14 @@ Returns
 PyMemGuard
     The context manager itself, which may be aliased using the `as` keyword.
 )doc"
-        };
+            };
 
-        static constexpr std::string_view __exit__ {R"doc(
+            static constexpr std::string_view __exit__ {R"doc(
 Exit the context manager's block, unfreezing the allocator.
 )doc"
-        };
+            };
 
-        static constexpr std::string_view active {R"doc(
+            static constexpr std::string_view active {R"doc(
 Check if the allocator is currently frozen.
 
 Returns
@@ -577,50 +624,52 @@ Returns
 bool
     True if the allocator is currently frozen, False otherwise.
 )doc"
+            };
+
         };
 
-    };
-
-    /* Vtable containing Python @properties for the context manager. */
-    inline static PyGetSetDef properties[] = {
-        {"active", (getter) active, NULL, docs::active.data()},
-        {NULL}  // sentinel
-    };
-
-    /* Vtable containing Python methods for the context manager. */
-    inline static PyMethodDef methods[] = {
-        {"__enter__", (PyCFunction) __enter__, METH_NOARGS, docs::__enter__.data()},
-        {"__exit__", (PyCFunction) __exit__, METH_VARARGS, docs::__exit__.data()},
-        {NULL}  // sentinel
-    };
-
-    /* Initialize a PyTypeObject to represent the guard from Python. */
-    static PyTypeObject init_type() {
-        PyTypeObject slots = {
-            .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
-            .tp_name = util::PyName<MemGuard>.data(),
-            .tp_basicsize = sizeof(PyMemGuard),
-            .tp_dealloc = (destructor) __dealloc__,
-            .tp_flags = (
-                Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
-                Py_TPFLAGS_DISALLOW_INSTANTIATION
-            ),
-            .tp_doc = docs::PyMemGuard.data(),
-            .tp_methods = methods,
-            .tp_getset = properties,
+        /* Vtable containing Python @properties for the context manager. */
+        inline static PyGetSetDef properties[] = {
+            {"active", (getter) active, NULL, docs::active.data()},
+            {NULL}  // sentinel
         };
 
-        // register Python type
-        if (PyType_Ready(&slots) < 0) {
-            throw std::runtime_error("could not initialize PyMemGuard type");
+        /* Vtable containing Python methods for the context manager. */
+        inline static PyMethodDef methods[] = {
+            {"__enter__", (PyCFunction) __enter__, METH_NOARGS, docs::__enter__.data()},
+            {"__exit__", (PyCFunction) __exit__, METH_VARARGS, docs::__exit__.data()},
+            {NULL}  // sentinel
+        };
+
+        /* Initialize a PyTypeObject to represent the guard from Python. */
+        static PyTypeObject init_type() {
+            PyTypeObject slots = {
+                .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+                .tp_name = util::PyName<MemGuard>.data(),
+                .tp_basicsize = sizeof(PyMemGuard),
+                .tp_dealloc = (destructor) __dealloc__,
+                .tp_flags = (
+                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
+                    Py_TPFLAGS_DISALLOW_INSTANTIATION
+                ),
+                .tp_doc = docs::PyMemGuard.data(),
+                .tp_methods = methods,
+                .tp_getset = properties,
+            };
+
+            // register Python type
+            if (PyType_Ready(&slots) < 0) {
+                throw std::runtime_error("could not initialize PyMemGuard type");
+            }
+            return slots;
         }
-        return slots;
-    }
 
-public:
+    public:
 
-    /* Final Python type. */
-    inline static PyTypeObject Type = init_type();
+        /* Final Python type. */
+        inline static PyTypeObject Type = init_type();
+
+    };
 
 };
 
@@ -632,16 +681,16 @@ public:
 
 /* A custom allocator that uses a dynamic array to manage memory for each node. */
 template <typename NodeType>
-class ListAllocator : public BaseAllocator<NodeType> {
+class ListAllocator : public BaseAllocator<ListAllocator<NodeType>, NodeType> {
+    using Base = BaseAllocator<ListAllocator<NodeType>, NodeType>;
+    friend Base;
+    friend typename Base::MemGuard;
+
 public:
-    using Node = NodeType;
-    using MemGuard = linked::MemGuard<ListAllocator>;
+    using Node = typename Base::Node;
     static constexpr size_t DEFAULT_CAPACITY = 8;  // minimum array size
 
 private:
-    friend MemGuard;
-    using Base = BaseAllocator<Node>;
-
     Node* array;  // dynamic array of nodes
     std::pair<Node*, Node*> free_list;  // singly-linked list of open nodes
 
@@ -652,6 +701,18 @@ private:
     occupied section.  If this causes the array to exceed its capacity, then we
     allocate a new array with twice the length and copy all nodes in the same order
     as they appear in the list. */
+
+    /* Adjust the starting capacity of a dynamic list to a power of two. */
+    inline static size_t init_capacity(size_t capacity, bool dynamic) {
+        // if list is dynamic, round up to next power of two
+        if (dynamic) {
+            size_t result = util::next_power_of_two(capacity);
+            return result < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : result;
+        }
+
+        // otherwise, return as-is
+        return capacity;
+    }
 
     /* Copy/move the nodes from this allocator into the given array. */
     template <bool move>
@@ -691,7 +752,7 @@ private:
     /* Allocate a new array of a given size and transfer the contents of the list. */
     void resize(size_t new_capacity) {
         // allocate new array
-        Node* new_array = Base::allocate_array(new_capacity);
+        Node* new_array = Base::malloc_nodes(new_capacity);
         if constexpr (DEBUG) {
             std::cout << "    -> allocate: " << new_capacity << " nodes" << std::endl;
         }
@@ -712,35 +773,22 @@ private:
         free_list.second = nullptr;
     }
 
-    /* Shrink a dynamic allocator if it is under the minimum load factor.  This is
-    called automatically by recycle() as well as when a MemGuard falls out of scope,
-    guaranteeing the load factor is never less than 25% of the list's capacity. */
-    inline bool shrink() {
-        if (this->capacity != DEFAULT_CAPACITY && this->occupied <= this->capacity / 4) {
-            size_t size = util::next_power_of_two(2 * this->occupied);
-            size = size < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : size;
-            resize(size);
-            return true;
-        }
-        return false;
-    }
-
 public:
 
     /* Create an allocator with an optional fixed size. */
     ListAllocator(
         size_t capacity,
-        bool fixed,
+        bool dynamic,
         PyObject* specialization
-    ) : Base(capacity, fixed, specialization),
-        array(Base::allocate_array(this->capacity)),
+    ) : Base(init_capacity(capacity, dynamic), dynamic, specialization),
+        array(Base::malloc_nodes(this->capacity)),
         free_list(std::make_pair(nullptr, nullptr))
     {}
 
     /* Copy constructor. */
     ListAllocator(const ListAllocator& other) :
         Base(other),
-        array(Base::allocate_array(this->capacity)),
+        array(Base::malloc_nodes(this->capacity)),
         free_list(std::make_pair(nullptr, nullptr))
     {
         if (this->occupied) {
@@ -761,8 +809,6 @@ public:
         other.free_list.second = nullptr;
     }
 
-    // TODO: assignment operators should check for frozen state?
-
     /* Copy assignment operator. */
     ListAllocator& operator=(const ListAllocator& other) {
         if (this == &other) return *this;  // check for self-assignment
@@ -778,7 +824,7 @@ public:
         }
 
         // copy array
-        array = Base::allocate_array(this->capacity);
+        array = Base::malloc_nodes(this->capacity);
         if (this->occupied != 0) {
             std::pair<Node*, Node*> bounds(other.transfer<false>(array));
             this->head = bounds.first;
@@ -868,7 +914,7 @@ public:
         Base::recycle(node);
 
         // shrink array if necessary, else add to free list
-        if (this->frozen() || !this->dynamic() || !this->shrink()) {
+        if (!this->shrink()) {
             if (free_list.first == nullptr) {
                 free_list.first = node;
                 free_list.second = node;
@@ -890,59 +936,8 @@ public:
         if (!this->frozen() && this->dynamic()) {
             this->capacity = DEFAULT_CAPACITY;
             free(array);
-            array = Base::allocate_array(this->capacity);
+            array = Base::malloc_nodes(this->capacity);
         }
-    }
-
-    /* Resize the array to store a specific number of nodes. */
-    MemGuard reserve(size_t new_size) {
-        // invoke parent method
-        Base::reserve(new_size);
-
-        // if frozen, check new size against current capacity
-        if (this->frozen() || !this->dynamic()) {
-            if (new_size > this->capacity) {
-                throw Base::cannot_grow();  // throw error
-            } else {
-                return MemGuard();  // return empty guard
-            }
-        }
-
-        // otherwise, grow the array if necessary
-        size_t new_cap = util::next_power_of_two(new_size);
-        if (new_cap > DEFAULT_CAPACITY && new_cap > this->capacity) {
-            resize(new_cap);
-        }
-
-        // freeze allocator until guard falls out of scope
-        return MemGuard(this);
-    }
-
-    /* Attempt to resize the array based on an optional size. */
-    MemGuard try_reserve(std::optional<size_t> new_size) {
-        if (!new_size.has_value()) {
-            return MemGuard();
-        }
-        return reserve(new_size.value());
-    }
-
-    /* Attempt to reserve memory to hold all the elements of a given container if it
-    implements a `size()` method or is a Python object with a corresponding `__len__()`
-    attribute.  Otherwise, produce an empty MemGuard. */
-    template <typename Container>
-    inline MemGuard try_reserve(Container& container) {
-        std::optional<size_t> length = util::len(container);
-        if (!length.has_value()) {
-            return MemGuard();
-        }
-        return reserve(this->occupied + length.value());
-    }
-
-    /* Consolidate the nodes within the array, arranging them in the same order as
-    they appear within the list. */
-    inline void defragment() {
-        Base::defragment();
-        resize(this->capacity);  // in-place resize
     }
 
     /* Check whether the referenced node is being managed by this allocator. */
@@ -960,18 +955,19 @@ public:
 
 /* A custom allocator that uses a hash table to manage memory for each node. */
 template <typename NodeType>
-class HashAllocator : public BaseAllocator<NodeType> {
+class HashAllocator : public BaseAllocator<HashAllocator<NodeType>, NodeType> {
+    using Base = BaseAllocator<HashAllocator<NodeType>, NodeType>;
+    friend Base;
+    friend typename Base::MemGuard;
+
 public:
     using Node = NodeType;
+    using MemGuard = typename Base::MemGuard;
     static constexpr size_t DEFAULT_CAPACITY = 16;  // minimum array size
 
 private:
-    using Base = BaseAllocator<NodeType>;
     using Value = typename Node::Value;
     static constexpr unsigned char DEFAULT_EXPONENT = 4;  // log2(DEFAULT_CAPACITY)
-    static constexpr float MAX_LOAD_FACTOR = 0.5;  // grow if load factor exceeds threshold
-    static constexpr float MIN_LOAD_FACTOR = 0.125;  // shrink if load factor drops below threshold
-    static constexpr float MAX_TOMBSTONES = 0.125;  // clear tombstones if threshold is exceeded
     static constexpr size_t PRIMES[29] = {  // prime numbers to use for double hashing
         // HASH PRIME   // TABLE SIZE               // AI AUTOCOMPLETE
         13,             // 16 (2**4)                13
@@ -1006,7 +1002,11 @@ private:
         // NOTE: HASH PRIME is the first prime number larger than 0.7 * TABLE_SIZE
     };
 
-    // TODO: flags should be renamed
+    enum {
+        CONSTRUCTED         = 0b01,
+        TOMBSTONE           = 0b10,
+        MASK                = 0b11  // bitmask for the above flags (not used)
+    } FLAGS;
 
     Node* array;  // dynamic array of nodes
     uint32_t* flags;  // bit array indicating whether a node is occupied or deleted
@@ -1015,29 +1015,16 @@ private:
     unsigned char exponent;  // log2(capacity) - log2(DEFAULT_CAPACITY)
 
     /* Adjust the input to a constructor's `capacity` argument to account for double
-    hashing, maximum load factor, and strict power of two table sizes. */
-    inline static std::optional<size_t> adjust_size(std::optional<size_t> capacity) {
-        if (!capacity.has_value()) {
-            return std::nullopt;  // do not adjust
-        }
-
-        // check if capacity is a power of two
-        size_t value = capacity.value();
-        if (!util::is_power_of_two(value)) {
-            std::ostringstream msg;
-            msg << "capacity must be a power of two, got " << value;
-            throw std::invalid_argument(msg.str());
-        }
-
-        // double capacity to ensure load factor is at most 0.5
-        return std::make_optional(value * 2);
+    hashing, 50% maximum load factor, and strict power of two table sizes. */
+    inline static size_t init_capacity(size_t capacity) {
+        size_t result = util::next_power_of_two(capacity * 2);
+        return result < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : result;
     }
 
-    /* Allocate an auxiliary bit array indicating whether a given index is currently
-    occupied or is marked as a tombstone. */
-    inline static uint32_t* allocate_flags(const size_t capacity) {
-        size_t num_flags = (capacity - 1) / 16;
-        uint32_t* result = static_cast<uint32_t*>(calloc(num_flags, sizeof(uint32_t)));
+    /* Allocate an array of zero-initialized bit flags with the specified size. */
+    inline static uint32_t* calloc_flags(size_t size) {
+        size = (size + 15) / 16;  // (2 bits per node, 32-bit words)
+        uint32_t* result = static_cast<uint32_t*>(calloc(size, sizeof(uint32_t)));
         if (result == nullptr) {
             throw std::bad_alloc();
         }
@@ -1049,6 +1036,34 @@ private:
         return a & (b - 1);  // works for any power of two b
     }
 
+    /* Look up a value in the hash table by providing an explicit hash. */
+    Node* _search(const size_t hash, const Value& value) const {
+        // get index and step for double hashing
+        size_t step = (hash % prime) | 1;
+        size_t idx = modulo(hash, this->capacity);
+        Node& lookup = array[idx];
+        uint32_t& bits = flags[idx / 16];
+        unsigned char flag = (bits >> (idx % 16)) & MASK;
+
+        // NOTE: first bit flag indicates whether bucket is occupied by a valid node.
+        // Second indicates whether it is a tombstone.  Both are mutually exclusive.
+
+        // handle collisions
+        using util::eq;
+        while (flag) {
+            if (flag == CONSTRUCTED && eq(lookup->value(), value)) return &lookup;
+
+            // advance to next slot
+            idx = modulo(idx + step, this->capacity);
+            lookup = array[idx];
+            bits = flags[idx / 16];
+            flag = (bits >> (idx % 16)) & MASK;
+        }
+
+        // value not found
+        return nullptr;
+    }
+
     /* Copy/move the nodes from this allocator into the given array. */
     template <bool move>
     std::pair<Node*, Node*> transfer(Node* other, uint32_t* other_flags) const {
@@ -1057,7 +1072,6 @@ private:
 
         // move nodes into new array
         Node* curr = this->head;
-        std::equal_to<Value> eq;
         while (curr != nullptr) {
             // rehash node
             size_t hash;
@@ -1076,7 +1090,7 @@ private:
             uint32_t bits = other_flags[div] >> mod;
 
             // handle collisions (NOTE: no need to check for tombstones)
-            while (bits & 0b10) {  // node is constructed
+            while (bits & CONSTRUCTED) {
                 idx = modulo(idx + step, this->capacity);
                 lookup = &other[idx];
                 div = idx / 16;
@@ -1091,7 +1105,7 @@ private:
             } else {
                 new (lookup) Node(*curr);
             }
-            other_flags[div] |= 0b10 << mod;  // mark as constructed
+            other_flags[div] |= CONSTRUCTED << mod;  // mark as constructed
 
             // update head/tail pointers
             if (curr == this->head) {
@@ -1108,21 +1122,13 @@ private:
     }
 
     /* Allocate a new array of a given size and transfer the contents of the list. */
-    void resize(const unsigned char new_exponent) {
+    void resize(size_t new_capacity) {
         // allocate new array
-        size_t new_capacity = 1 << (new_exponent + DEFAULT_EXPONENT);
+        Node* new_array = Base::malloc_nodes(new_capacity);
+        uint32_t* new_flags = calloc_flags(new_capacity);
         if constexpr (DEBUG) {
             std::cout << "    -> allocate: " << new_capacity << " nodes" << std::endl;
         }
-        Node* new_array = Base::allocate_array(new_capacity);
-        uint32_t* new_flags = allocate_flags(new_capacity);
-
-        // update table parameters
-        size_t old_capacity = this->capacity;
-        this->capacity = new_capacity;
-        tombstones = 0;
-        prime = PRIMES[new_exponent];
-        exponent = new_exponent;
 
         // move nodes into new array
         std::pair<Node*, Node*> bounds(transfer<true>(new_array, new_flags));
@@ -1132,51 +1138,38 @@ private:
         // replace arrays
         free(array);
         free(flags);
+        if constexpr (DEBUG) {
+            std::cout << "    -> deallocate: " << this->capacity << " nodes" << std::endl;
+        }
         array = new_array;
         flags = new_flags;
-        if constexpr (DEBUG) {
-            std::cout << "    -> deallocate: " << old_capacity << " nodes" << std::endl;
-        }
+
+        // update table parameters
+        this->capacity = new_capacity;
+        tombstones = 0;
+        exponent = 0;
+        while (new_capacity >>= 1) ++exponent;
+        exponent -= DEFAULT_CAPACITY - 1;  // adjust for min capacity + max load factor
+        prime = PRIMES[exponent];
     }
 
-    /* Look up a value in the hash table by providing an explicit hash. */
-    Node* _search(const size_t hash, const Value& value) const {
-        // get index and step for double hashing
-        size_t step = (hash % prime) | 1;
-        size_t idx = modulo(hash, this->capacity);
-        Node& lookup = array[idx];
-        uint32_t& bits = flags[idx / 16];
-        unsigned char flag = (bits >> (idx % 16)) & 0b11;
-
-        // NOTE: first bit flag indicates whether bucket is occupied by a valid node.
-        // Second indicates whether it is a tombstone.  Both are mutually exclusive.
-
-        // handle collisions
-        std::equal_to<Value> eq;
-        while (flag > 0b00) {
-            if (flag == 0b10 && eq(lookup->value(), value)) return &lookup;
-
-            // advance to next slot
-            idx = modulo(idx + step, this->capacity);
-            lookup = array[idx];
-            bits = flags[idx / 16];
-            flag = (bits >> (idx % 16)) & 0b11;
-        }
-
-        // value not found
-        return nullptr;
+    /* Shrink a dynamic allocator if it is under the minimum load factor.  This is
+    called automatically by recycle() as well as when a MemGuard falls out of scope,
+    guaranteeing the load factor is never less than 12.5% of the set's capacity. */
+    inline bool shrink() {
+        return Base::template shrink<2>();  // account for 50% max load factor
     }
 
 public:
 
     /* Create an allocator with an optional fixed size. */
     HashAllocator(
-        std::optional<size_t> capacity,
-        bool frozen,
+        size_t capacity,
+        bool dynamic,
         PyObject* specialization
-    ) : Base(adjust_size(capacity), frozen, specialization),
-        array(Base::allocate_array(this->capacity)),
-        flags(allocate_flags(this->capacity)),
+    ) : Base(init_capacity(capacity), dynamic, specialization),
+        array(Base::malloc_nodes(this->capacity)),
+        flags(calloc_flags(this->capacity)),
         tombstones(0),
         prime(PRIMES[0]),
         exponent(0)
@@ -1185,14 +1178,14 @@ public:
     /* Copy constructor. */
     HashAllocator(const HashAllocator& other) :
         Base(other),
-        array(Base::allocate_array(this->capacity)),
-        flags(allocate_flags(this->capacity)),
+        array(Base::malloc_nodes(this->capacity)),
+        flags(calloc_flags(this->capacity)),
         tombstones(other.tombstones),
         prime(other.prime),
         exponent(other.exponent)
     {
         // copy over existing nodes in correct list order (head -> tail)
-        if (this->occupied != 0) {
+        if (this->occupied) {
             std::pair<Node*, Node*> bounds(other.transfer<false>(array));
             this->head = bounds.first;
             this->tail = bounds.second;
@@ -1217,10 +1210,7 @@ public:
 
     /* Copy assignment operator. */
     HashAllocator& operator=(const HashAllocator& other) {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
-        }
+        if (this == &other) return *this;  // check for self-assignment
 
         // invoke parent
         Base::operator=(other);
@@ -1232,9 +1222,9 @@ public:
         }
 
         // copy array
-        array = Base::allocate_array(this->capacity);
-        flags = allocate_flags(this->capacity);
-        if (this->occupied != 0) {
+        array = Base::malloc_nodes(this->capacity);
+        flags = calloc_flags(this->capacity);
+        if (this->occupied) {
             std::pair<Node*, Node*> bounds(other.transfer<false>(array));
             this->head = bounds.first;
             this->tail = bounds.second;
@@ -1247,10 +1237,7 @@ public:
 
     /* Move assignment operator. */
     HashAllocator& operator=(HashAllocator&& other) noexcept {
-        // check for self-assignment
-        if (this == &other) {
-            return *this;
-        }
+        if (this == &other) return *this;  // check for self-assignment
 
         // invoke parent
         Base::operator=(std::move(other));
@@ -1284,7 +1271,8 @@ public:
             free(array);
             free(flags);
             if constexpr (DEBUG) {
-                std::cout << "    -> deallocate: " << this->capacity << " nodes" << std::endl;
+                std::cout << "    -> deallocate: " << this->capacity << " nodes";
+                std::cout << std::endl;
             }
         }
     }
@@ -1302,12 +1290,12 @@ public:
                 if (this->occupied == this->capacity / 2) {
                     throw Base::cannot_grow();
                 } else if (tombstones > this->capacity / 16) {
-                    resize(exponent);  // clear tombstones
+                    resize(this->capacity);  // clear tombstones
                 }
                 // NOTE: allow a small amount of hysteresis (load factor up to 0.5625)
                 // to avoid pessimistic rehashing
             } else {
-                resize(exponent + 1);  // grow array
+                resize(this->capacity * 2);  // grow array
             }
         }
 
@@ -1316,18 +1304,14 @@ public:
         size_t step = (hash % prime) | 1;  // double hashing
         size_t idx = modulo(hash, this->capacity);
         Node& lookup = array[idx];
-        size_t div = idx / 16;
         size_t mod = idx % 16;
-        uint32_t& bits = flags[div];
-        unsigned char flag = (bits >> mod) & 0b11;
-
-        // NOTE: first bit flag indicates whether bucket is occupied by a valid node.
-        // Second indicates whether it is a tombstone.  Both are mutually exclusive.
+        uint32_t& bits = flags[idx / 16];
+        unsigned char flag = (bits >> mod) & MASK;
 
         // handle collisions, replacing tombstones if they are encountered
-        while (flag == 0b10) {
-            if (lookup.eq(this->temp()->value())) {
-                this->temp()->~Node();  // in-place destructor
+        while (flag == CONSTRUCTED) {
+            if (util::eq(lookup->value(), this->temp()->value())) {
+                this->temp()->~Node();  // clean up temp node
                 if constexpr (exist_ok) {
                     return &lookup;
                 } else {
@@ -1340,17 +1324,16 @@ public:
             // advance to next index
             idx = modulo(idx + step, this->capacity);
             lookup = array[idx];
-            div = idx / 16;
             mod = idx % 16;
-            bits = flags[div];
-            flag = (bits >> mod) & 0b11;
+            bits = flags[idx / 16];
+            flag = (bits >> mod) & MASK;
         }
 
         // move temp into empty bucket/tombstone
         new (&lookup) Node(std::move(*this->temp()));
-        bits |= (0b10 << mod);  // mark constructed flag
-        if (flag == 0b01) {
-            flag &= 0b10 << mod;  // clear tombstone flag
+        bits |= (CONSTRUCTED << mod);  // mark constructed flag
+        if (flag == TOMBSTONE) {
+            flag &= (~TOMBSTONE) << mod;  // clear tombstone flag
             --tombstones;
         }
         ++this->occupied;
@@ -1359,32 +1342,34 @@ public:
 
     /* Release a node from the list. */
     void recycle(Node* node) {
-        if constexpr (DEBUG) {
-            std::cout << "    -> recycle: " << util::repr(node->value()) << std::endl;
-        }
-
         // look up node in hash table
         size_t hash = node->hash();
         size_t step = (hash % prime) | 1;  // double hashing
         size_t idx = modulo(hash, this->capacity);
         Node& lookup = array[idx];
-        size_t div = idx / 16;
         size_t mod = idx % 16;
-        uint32_t& bits = flags[div];
-        unsigned char flag = (bits >> mod) & 0b11;
+        uint32_t& bits = flags[idx / 16];
+        unsigned char flag = (bits >> mod) & MASK;
 
         // NOTE: first bit flag indicates whether bucket is occupied by a valid node.
         // Second indicates whether it is a tombstone.  Both are mutually exclusive.
 
         // handle collisions
-        while (flag > 0b00) {
-            if (flag == 0b10 && lookup.eq(node->value())) {
+        while (flag) {
+            if (flag == CONSTRUCTED && lookup.eq(node->value())) {
+                Base::recycle(&lookup);  // invoke parent method
+
                 // mark as tombstone
-                lookup.~Node();  // in-place destructor
-                bits &= (0b01 << mod);  // clear constructed flag
-                bits |= (0b01 << mod);  // set tombstone flag
+                bits &= (~CONSTRUCTED) << mod;  // clear constructed flag
+                bits |= TOMBSTONE << mod;  // set tombstone flag
                 ++tombstones;
-                --this->occupied;
+
+                // shrink array or clear out tombstones if necessary
+                if (this->frozen() || !this->dynamic() || !this->shrink()) {
+                    if (!this->frozen() && tombstones >= this->capacity / 8) {
+                        resize(this->capacity);  // clear tombstones
+                    }
+                }
 
                 // check whether to shrink array or clear out tombstones
                 size_t threshold = this->capacity / 8;
@@ -1392,9 +1377,9 @@ public:
                     this->capacity != DEFAULT_CAPACITY &&
                     this->occupied < threshold  // load factor < 0.125
                 ) {
-                    resize(exponent - 1);
+                    resize(this->capacity / 2);
                 } else if (tombstones > threshold) {  // tombstones > 0.125
-                    resize(exponent);
+                    resize(this->capacity);
                 }
                 return;
             }
@@ -1402,10 +1387,9 @@ public:
             // advance to next index
             idx = modulo(idx + step, this->capacity);
             lookup = array[idx];
-            div = idx / 16;
             mod = idx % 16;
-            bits = flags[div];
-            flag = (bits >> mod) & 0b11;
+            bits = flags[idx / 16];
+            flag = (bits >> mod) & MASK;
         }
 
         // node not found
@@ -1416,60 +1400,54 @@ public:
 
     /* Remove all elements from the list. */
     void clear() noexcept {
-        // destroy all nodes
-        Base::destroy_list();
+        // invoke parent method
+        Base::clear();
 
-        // reset list parameters
-        this->head = nullptr;
-        this->tail = nullptr;
-        this->occupied = 0;
-        tombstones = 0;
-        prime = PRIMES[0];
-        exponent = 0;
+        // reset hash table parameters and shrink to default capacity
         if (!this->frozen()) {
+            exponent = 0;
+            prime = PRIMES[0];
+            tombstones = 0;
             this->capacity = DEFAULT_CAPACITY;
             free(array);
             free(flags);
-            array = Base::allocate_array(this->capacity);
-            flags = allocate_flags(this->capacity);
+            array = Base::malloc_nodes(this->capacity);
+            flags = calloc_flags(this->capacity);
         }
     }
 
     /* Resize the array to store a specific number of nodes. */
-    void reserve(size_t new_size) {
-        // ensure new capacity is large enough to store all nodes
-        if (new_size < this->occupied) {
-            throw std::invalid_argument(
-                "new capacity must not be smaller than current size"
-            );
-        }
-
-        // do not shrink the array
-        if (new_size <= this->capacity / 2) {
-            return;
-        }
-
-        // frozen arrays cannot grow
-        if (this->frozen()) {
-            throw Base::cannot_grow();
-        }
-
-        // resize to the next power of two
-        size_t rounded = util::next_power_of_two(new_size);
-        unsigned char new_exponent = 0;
-        while (rounded >>= 1) ++new_exponent;
-        new_exponent += 1;  // account for max load factor (0.5)
-        resize(new_exponent - DEFAULT_EXPONENT);
+    inline MemGuard reserve(size_t new_size) {
+        return Base::template reserve<2>(new_size);  // account for 50% max load factor
     }
 
-    /* Rehash the nodes within the array, removing tombstones. */
-    inline void defragment() {
-        resize(exponent);  // in-place resize
+    /* Attempt to resize the array based on an optional size. */
+    inline MemGuard try_reserve(std::optional<size_t> new_size) {
+        return Base::template try_reserve<2>(new_size);
+    }
+
+    /* Attempt to reserve memory to hold all the elements of a given container if it
+    implements a `size()` method or is a Python object with a corresponding `__len__()`
+    attribute.  Otherwise, produce an empty MemGuard. */
+    template <typename Container>
+    inline MemGuard try_reserve(Container& container) {
+        return Base::template try_reserve<2>(container);
+    }
+
+    /* Get the total amount of dynamic memory being managed by this allocator. */
+    inline size_t nbytes() const {
+        // NOTE: bit flags take 2 extra bits per node (4 nodes per byte)
+        return Base::nbytes() + this->capacity / 4;
     }
 
     /* Check whether the referenced node is being managed by this allocator. */
     inline bool owns(Node* node) const noexcept {
         return node >= array && node < array + this->capacity;  // pointer arithmetic
+    }
+
+    /* Search for a node by its value directly. */
+    inline Node* search(Value& key) const {
+        return _search(std::hash<Value>{}(key), key);
     }
 
     /* Search for a node by reusing a hash from another node. */
@@ -1481,17 +1459,6 @@ public:
             size_t hash = std::hash<typename N::Value>{}(node->value());
             return _search(hash, node->value());
         }
-    }
-
-    /* Search for a node by its value directly. */
-    inline Node* search(Value& key) const {
-        return _search(std::hash<Value>{}(key), key);
-    }
-
-    /* Get the total amount of dynamic memory being managed by this allocator. */
-    inline size_t nbytes() const {
-        // NOTE: bit flags take 2 extra bits per node (4 nodes per byte)
-        return Base::nbytes() + this->capacity / 4;
     }
 
 };

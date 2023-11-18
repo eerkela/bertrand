@@ -62,7 +62,11 @@ public:
     LinkedBase(
         std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr
-    ) : view(max_size, spec)
+    ) : view(
+            max_size.value_or(Allocator::DEFAULT_CAPACITY),
+            !max_size.has_value(),
+            spec
+        )
     {}
 
     /* Construct a list from an input iterable. */
@@ -71,7 +75,13 @@ public:
         std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr,
         bool reverse = false
-    ) : view(iterable, max_size, spec, reverse)
+    ) : view(
+            iterable,
+            max_size.value_or(Allocator::DEFAULT_CAPACITY),
+            !max_size.has_value(),
+            spec,
+            reverse
+        )
     {}
 
     /* Construct a list from a base view. */
@@ -398,9 +408,11 @@ public:
             // get context manager
             return std::visit(
                 [&capacity](auto& list) {
-                    using Allocator = typename std::decay_t<decltype(list)>::Allocator;
+                    using List = typename std::decay_t<decltype(list)>;
+                    using Allocator = typename List::Allocator;
+                    using PyMemGuard = typename Allocator::PyMemGuard;
                     size_t size = capacity.value_or(list.size());
-                    return PyMemGuard<Allocator>::construct(&list.view.allocator, size);
+                    return PyMemGuard::construct(&list.view.allocator, size);
                 },
                 self->variant
             );

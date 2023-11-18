@@ -19,16 +19,23 @@ namespace linked {
     auto repeat(const View& view, long long repetitions)
         -> std::enable_if_t<ViewTraits<View>::listlike, View>
     {
+        using Node = typename View::Node;
+
         // trivial case: empty repetition
         if (repetitions < 0 || view.size() == 0) {
-            return View(view.max_size(), view.specialization());  // empty view
+            return View(view.capacity(), view.dynamic(), view.specialization());
         }
 
-        // copy existing view and preallocate space for repetitions
-        View copy(view);
-        copy.reserve(view.size() * repetitions);
-        for (long long i = 1; i < repetitions; ++i) {
-            extend(copy, view, false);
+        // preallocate exact size
+        size_t reps = static_cast<size_t>(repetitions);
+        View copy(view.size() * reps, view.dynamic(), view.specialization());
+
+        // repeatedly copy nodes from original view
+        for (size_t i = 0; i < reps; ++i) {
+            for (auto it = view.begin(), end = view.end(); it != end; ++it) {
+                Node* node = copy.node(*(it.curr()));
+                copy.link(copy.tail(), node, nullptr);
+            }
         }
         return copy;
     }
@@ -70,16 +77,17 @@ namespace linked {
             return;
         }
 
+        // reserve exact size
+        size_t reps = static_cast<size_t>(repetitions);
+        view.reserve(view.size() * reps);
+
         // NOTE: If we're careful, we can do this without copying the view.  This is
-        // done by recording the original tail of the view and then repeatedly
-        // iterating through the beginning portion while extending the list.  If we
-        // preallocate the space for each repetition, then we don't even need to grow
-        // the allocator array.
+        // done by recording the original tail and repeatedly iterating through the
+        // beginning portion while extending the list.
 
         // copy nodes in-place
-        view.reserve(view.size() * static_cast<size_t>(repetitions));
         Node* tail = view.tail();
-        for (long long i = 1; i < repetitions; ++i) {
+        for (size_t i = 1; i < reps; ++i) {
             auto it = view.begin();
             for (; it.curr() != tail; ++it) {
                 Node* copy = view.node(*it.curr());  // copy constructor

@@ -39,7 +39,7 @@ auto sort(View& view, Func key, bool reverse)
     }
 
     // otherwise, decorate each node with the computed key function
-    ListView<KeyNode> decorated(view.size(), nullptr);  // allocated to exact size
+    ListView<KeyNode> decorated(view.size(), false, nullptr);  // exact size
     for (auto it = view.begin(), end = view.end(); it != end; ++it) {
         KeyNode* node = decorated.node(it.curr(), key);
         decorated.link(decorated.tail(), node, nullptr);

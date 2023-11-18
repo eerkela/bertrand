@@ -443,13 +443,10 @@ namespace linked {
 
         /* Extract a slice from a linked list. */
         List get() const {
-            // NOTE: if original list has fixed size, then so will the slice.  We just
-            // have to adjust the max_size parameter to use the smaller slice length
-            // rather than the original list size.
-            std::optional<size_t> max_size = view.dynamic() ?
-                std::nullopt :
-                std::make_optional(length());
-            View result(max_size, view.specialization());
+            // NOTE: we always preallocate with the exact size of the slice, preventing
+            // reallocations.  If the original list is of fixed size, then the slice
+            // will be as well.
+            View result(length(), view.dynamic(), view.specialization());
 
             // trivial case: empty slice
             if (empty()) {
@@ -459,9 +456,6 @@ namespace linked {
                     return List(std::move(result));
                 }
             }
-
-            // preallocate memory for nodes
-            typename View::MemGuard guard = result.reserve(length());
 
             // copy nodes from original view into result
             for (auto it = this->begin(), end = this->end(); it != end; ++it) {

@@ -85,26 +85,26 @@ public:
     ////////////////////////////
 
     /* Construct an empty view. */
-    BaseView(std::optional<size_t> max_size = std::nullopt, PyObject* spec = nullptr) :
-        allocator(
-            max_size.value_or(Allocator::DEFAULT_CAPACITY),
-            max_size.has_value(),
-            spec
-        )
+    explicit BaseView(
+        size_t capacity = Allocator::DEFAULT_CAPACITY,
+        bool dynamic = true,
+        PyObject* spec = nullptr
+    ) : allocator(capacity, dynamic, spec)
     {}
 
     // TODO: allow this constructor to accept rvalue initializers.
 
     /* Construct a view from an input iterable. */
     template <typename Container>
-    BaseView(
+    explicit BaseView(
         Container& iterable,
-        std::optional<size_t> max_size = std::nullopt,
+        size_t capacity = Allocator::DEFAULT_CAPACITY,
+        bool dynamic = true,
         PyObject* spec = nullptr,
         bool reverse = false
     ) : allocator(
-            get_init_size(iterable, max_size),
-            max_size.has_value(),
+            init_size(iterable, capacity, dynamic),
+            dynamic,
             spec
         )
     {
@@ -194,10 +194,8 @@ public:
 
     /* Make a shallow copy of the entire list. */
     inline Derived copy() const {
-        using util::iter;
-
-        Derived result(max_size(), specialization());
-        for (auto it = iter(*this).forward(); it != it.end(); ++it) {
+        Derived result(capacity(), dynamic(), specialization());
+        for (auto it = util::iter(*this).forward(); it != it.end(); ++it) {
             Node* copied = result.node(*it.curr());
             result.link(result.tail(), copied, nullptr);
         }
@@ -446,23 +444,22 @@ protected:
     /* Get the size at which to initialize a list based on a given iterable and
     optional fixed size parameter. */
     template <typename Container>
-    static size_t get_init_size(Container&& container, std::optional<size_t> max_size) {
-        // if max_size is specified, use that
-        if (max_size.has_value()) {
-            return max_size.value();
-        }
+    static size_t init_size(Container&& container, size_t capacity, bool dynamic) {
+        // trivial case: capacity is fixed
+        if (!dynamic) return capacity;
 
-        // otherwise, try to get the size of the container and round up
+        // get size of container if possible
         std::optional<size_t> size = util::len(container);
-        if (size.has_value()) {
-            size_t rounded = util::next_power_of_two(size.value());
+        if (size.has_value()) {  // use max of container size and specified capacity
+            size_t val = size.value();
+            size_t rounded = util::next_power_of_two(val < capacity ? capacity : val);
             return rounded < Allocator::DEFAULT_CAPACITY ?
                 Allocator::DEFAULT_CAPACITY :
                 rounded;
         }
 
-        // if all else fails, use default size specified by allocator
-        return Allocator::DEFAULT_CAPACITY;
+        // otherwise, use the specified capacity
+        return capacity;
     }
 
 };
@@ -576,7 +573,7 @@ public:
         PyObject* spec = nullptr,
         bool reverse = false
     ) : Base::allocator(
-            Base::get_init_size(iterable, max_size),
+            Base::init_size(iterable, max_size),
             max_size.has_value(),
             spec
         )
@@ -657,7 +654,7 @@ public:
         PyObject* spec = nullptr,
         bool reverse = false
     ) : Base::allocator(
-            Base::get_init_size(iterable, max_size),
+            Base::init_size(iterable, max_size),
             max_size.has_value(),
             spec
         )

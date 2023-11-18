@@ -276,47 +276,12 @@ LinkedList<Ts...> operator+(const LinkedList<Ts...>& lhs, const Container& rhs) 
 }
 
 
-/* Concatenate a LinkedList with an arbitrary C++/Python container to produce a new
-list (reversed). */
-template <typename Container, typename... Ts>
-LinkedList<Ts...> operator+(const Container& lhs, const LinkedList<Ts...>& rhs) {
-    return linked::concatenate(lhs, rhs.view);
-}
-
-
 /* Concatenate a LinkedList with an arbitrary C++/Python container in-place. */
 template <typename Container, typename... Ts>
 LinkedList<Ts...>& operator+=(LinkedList<Ts...>& lhs, const Container& rhs) {
     linked::extend(lhs.view, rhs, false);
     return lhs;
 }
-
-
-// /* Allow Python-style concatenation between list-like C++ containers and Linked data
-// structures. */
-// template <typename T, typename Derived>
-// inline auto operator+(const T& lhs, const Derived& rhs)
-//     -> std::enable_if_t<
-//         // first, check that T is a list-like container with a range-based insert
-//         // method that returns an iterator.  This is true for all STL containers.
-//         std::is_same_v<
-//             decltype(
-//                 std::declval<T>().insert(
-//                     std::declval<T>().end(),
-//                     std::declval<Derived>().begin(),
-//                     std::declval<Derived>().end()
-//                 )
-//             ),
-//             typename T::iterator
-//         >,
-//         // next, check that Derived inherits from Concatenateable
-//         std::enable_if_t<Concatenateable<Derived>::enable, T>
-//     >
-// {
-//     T result = lhs;
-//     result.insert(result.end(), rhs.begin(), rhs.end());  // STL compliant
-//     return result;
-// }
 
 
 //////////////////////////
