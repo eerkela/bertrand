@@ -19,6 +19,11 @@ namespace linked {
     // TODO: dict compatibility uses an unordered_map rather than unordered_set for
     // auxiliary data structures.
 
+    // TODO: if error correction in update() is supposed to work with dictionaries,
+    // then we need some way of storing the old values.  This could be done with a
+    // separate unordered_map.  We wouldn't be able to store node addresses though
+    // due to possible reallocations.  Instead, we'd have to store the values
+    // themselves.
 
     /* Update a set or dictionary, appending items that are not already present. */
     template <typename View, typename Container>
@@ -29,7 +34,7 @@ namespace linked {
         using MemGuard = typename View::MemGuard;
 
         // preallocate if possible (unless size is unknown)
-        MemGuard guard = view.try_reserve(items);
+        MemGuard outer = view.try_reserve(items);
 
         // add each item
         size_t size = view.size();
@@ -42,7 +47,7 @@ namespace linked {
         } catch (...) {
             size_t idx = view.size() - size;  // number of nodes to remove
             if (idx == 0) throw;  // nothing to clean up
-            MemGuard hold = view.reserve();  // hold allocator at current size
+            MemGuard inner = view.reserve();  // hold allocator at current size
 
             // if adding to head, remove first (view.size() - size) nodes
             if (left) {
@@ -149,7 +154,7 @@ namespace linked {
 
 
     /* Update a linked set or dictionary in-place, keeping only elements found in
-    either set or dictionary, but not both. */
+    either the set or a given container, but not both. */
     template <typename View, typename Container>
     auto symmetric_difference_update(View& view, const Container& items, bool left)
         -> std::enable_if_t<ViewTraits<View>::setlike, void>

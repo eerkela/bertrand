@@ -38,18 +38,13 @@ namespace linked {
 
 
 /* A modular linked list class that mimics the Python list interface in C++. */
-template <
-    typename NodeType,
-    typename SortPolicy = linked::MergeSort,
-    typename LockPolicy = util::BasicLock
->
+template <typename NodeType, typename LockPolicy = util::BasicLock>
 class LinkedList : public LinkedBase<linked::ListView<NodeType>, LockPolicy> {
     using Base = LinkedBase<linked::ListView<NodeType>, LockPolicy>;
 
 public:
     using View = linked::ListView<NodeType>;
-    using Node = typename View::Node;
-    using Value = typename Node::Value;
+    using Value = typename View::Node::Value;
 
     template <linked::Direction dir>
     using Iterator = typename View::template Iterator<dir>;
@@ -151,7 +146,7 @@ public:
     /* Sort the list in-place according to an optional key func. */
     template <typename Func>
     inline void sort(Func key = nullptr, bool reverse = false) {
-        linked::sort<SortPolicy>(this->view, key, reverse);
+        linked::sort<linked::MergeSort>(this->view, key, reverse);
     }
 
     /* Reverse the order of elements in the list in-place. */
@@ -417,102 +412,15 @@ inline bool operator>(const Container& lhs, const LinkedList<Ts...>& rhs) {
 //////////////////////////////
 
 
-/* A class that binds the appropriate methods for the given view as a std::variant
-of templated `ListView` types. */
-class PyLinkedList : public PyLinkedBase<PyLinkedList> {
-    using Base = PyLinkedBase<PyLinkedList>;
-    using SelfRef = cython::SelfRef<PyLinkedList>;
-    using WeakRef = typename SelfRef::WeakRef;
-    using SingleList = LinkedList<
-        linked::SingleNode<PyObject*>,
-        linked::MergeSort,
-        util::BasicLock
-    >;
-    using DoubleList = LinkedList<
-        linked::DoubleNode<PyObject*>,
-        linked::MergeSort,
-        util::BasicLock
-    >;
-
-    /* A discriminated union representing all the LinkedList implementations that are
-    constructable from Python. */
-    using Variant = std::variant<
-        SingleList,
-        DoubleList
-    >;
-
-    friend Base;
-    Variant variant;
-
-    /* Construct a PyLinkedList around an existing C++ LinkedList. */
-    template <typename List>
-    inline void from_cpp(List&& list) {
-        new (&variant) Variant(std::forward<List>(list));
-    }
-
+/* CRTP mixin class that contains the Python list interface for a linked data
+structure. */
+template <typename Derived>
+class PyListInterface {
 public:
-
-    /* Initialize a LinkedList instance from Python. */
-    static int __init__(
-        PyLinkedList* self,
-        PyObject* args,
-        PyObject* kwargs
-    ) {
-        using Args = util::PyArgs<util::CallProtocol::KWARGS>;
-        using util::ValueError;
-        try {
-            // parse arguments
-            Args pyargs(args, kwargs);
-            PyObject* iterable = pyargs.parse(
-                "iterable", util::none_to_null, (PyObject*)nullptr
-            );
-            std::optional<size_t> max_size = pyargs.parse(
-                "max_size",
-                [](PyObject* obj) -> std::optional<size_t> {
-                    if (obj == Py_None) return std::nullopt;
-                    long long result = util::parse_int(obj);
-                    if (result < 0) throw ValueError("max_size cannot be negative");
-                    return std::make_optional(static_cast<size_t>(result));
-                },
-                std::optional<size_t>()
-            );
-            PyObject* spec = pyargs.parse("spec", util::none_to_null, (PyObject*) nullptr);
-            bool reverse = pyargs.parse("reverse", util::is_truthy, false);
-            bool singly_linked = pyargs.parse("singly_linked", util::is_truthy, false);
-            pyargs.finalize();
-
-            // initialize
-            if (iterable == nullptr) {
-                if (singly_linked) {
-                    new (&self->variant) Variant(SingleList(max_size, spec));
-                } else {
-                    new (&self->variant) Variant(DoubleList(max_size, spec));
-                }
-            } else {
-                if (singly_linked) {
-                    new (&self->variant) Variant(
-                        SingleList(iterable, max_size, spec, reverse)
-                    );
-                } else {
-                    new (&self->variant) Variant(
-                        DoubleList(iterable, max_size, spec, reverse)
-                    );
-                }
-            }
-
-            // exit normally
-            return 0;
-
-        // translate C++ errors into Python exceptions
-        } catch (...) {
-            util::throw_python();
-            return -1;
-        }
-    }
 
     /* Implement `LinkedList.append()` in Python. */
     static PyObject* append(
-        PyLinkedList* self,
+        Derived* self,
         PyObject* const* args,
         Py_ssize_t nargs,
         PyObject* kwnames
@@ -545,7 +453,7 @@ public:
 
     /* Implement `LinkedList.insert()` in Python. */
     static PyObject* insert(
-        PyLinkedList* self,
+        Derived* self,
         PyObject* const* args,
         Py_ssize_t nargs,
         PyObject* kwnames
@@ -578,7 +486,7 @@ public:
 
     /* Implement `LinkedList.extend()` in Python. */
     static PyObject* extend(
-        PyLinkedList* self,
+        Derived* self,
         PyObject* const* args,
         Py_ssize_t nargs,
         PyObject* kwnames
@@ -611,7 +519,7 @@ public:
 
     /* Implement `LinkedList.index()` in Python. */
     static PyObject* index(
-        PyLinkedList* self,
+        Derived* self,
         PyObject* const* args,
         Py_ssize_t nargs,
         PyObject* kwnames
@@ -646,7 +554,7 @@ public:
 
     /* Implement `LinkedList.count()` in Python. */
     static PyObject* count(
-        PyLinkedList* self,
+        Derived* self,
         PyObject* const* args,
         Py_ssize_t nargs,
         PyObject* kwnames
@@ -680,7 +588,7 @@ public:
     }
 
     /* Implement `LinkedList.remove()` in Python. */
-    static PyObject* remove(PyLinkedList* self, PyObject* item) {
+    static PyObject* remove(Derived* self, PyObject* item) {
         try {
             // invoke equivalent C++ method
             std::visit(
@@ -701,11 +609,7 @@ public:
     }
 
     /* Implement `LinkedList.pop()` in Python. */
-    static PyObject* pop(
-        PyLinkedList* self,
-        PyObject* const* args,
-        Py_ssize_t nargs
-    ) {
+    static PyObject* pop(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
         try {
             // parse arguments
@@ -731,7 +635,7 @@ public:
     }
 
     /* Implement `LinkedList.clear()` in Python. */
-    static PyObject* clear(PyLinkedList* self, PyObject* /* ignored */) {
+    static PyObject* clear(Derived* self, PyObject* /* ignored */) {
         try {
             // invoke equivalent C++ method
             std::visit(
@@ -752,10 +656,10 @@ public:
     }
 
     /* Implement `LinkedList.copy()` in Python. */
-    static PyObject* copy(PyLinkedList* self, PyObject* /* ignored */) {
+    static PyObject* copy(Derived* self, PyObject* /* ignored */) {
         // allocate new Python list
-        PyLinkedList* result = reinterpret_cast<PyLinkedList*>(
-            Base::__new__(&Type, nullptr, nullptr)
+        Derived* result = reinterpret_cast<Derived*>(
+            Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
         if (result == nullptr) return nullptr;  // propagate
 
@@ -779,7 +683,7 @@ public:
 
     /* Implement `LinkedList.sort()` in Python. */
     static PyObject* sort(
-        PyLinkedList* self,
+        Derived* self,
         PyObject* const* args,
         Py_ssize_t nargs,
         PyObject* kwnames
@@ -819,7 +723,7 @@ public:
     }
 
     /* Implement `LinkedList.reverse()` in Python. */
-    static PyObject* reverse(PyLinkedList* self, PyObject* /* ignored */) {
+    static PyObject* reverse(Derived* self, PyObject* /* ignored */) {
         try {
             // invoke equivalent C++ method
             std::visit(
@@ -840,11 +744,7 @@ public:
     }
 
     /* Implement `LinkedList.rotate()` in Python. */
-    static PyObject* rotate(
-        PyLinkedList* self, 
-        PyObject* const* args,
-        Py_ssize_t nargs
-    ) {
+    static PyObject* rotate(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
         try {
             // parse arguments
@@ -871,7 +771,7 @@ public:
     }
 
     /* Implement `LinkedList.__contains__()` in Python. */
-    static int __contains__(PyLinkedList* self, PyObject* item) {
+    static int __contains__(Derived* self, PyObject* item) {
         try {
             // invoke equivalent C++ method
             return std::visit(
@@ -889,7 +789,7 @@ public:
     }
 
     /* Implement `LinkedList.__getitem__()` in Python. */
-    static PyObject* __getitem__(PyLinkedList* self, PyObject* key) {
+    static PyObject* __getitem__(Derived* self, PyObject* key) {
         try {
             // check for integer index
             if (PyIndex_Check(key)) {
@@ -905,8 +805,8 @@ public:
 
             // check for slice
             if (PySlice_Check(key)) {
-                PyLinkedList* result = reinterpret_cast<PyLinkedList*>(
-                    Base::__new__(&Type, nullptr, nullptr)
+                Derived* result = reinterpret_cast<Derived*>(
+                    Derived::__new__(&Derived::Type, nullptr, nullptr)
                 );
                 if (result == nullptr) throw util::catch_python();
                 return std::visit(
@@ -934,11 +834,7 @@ public:
     }
 
     /* Implement `LinkedList.__setitem__()/__delitem__()` in Python (slice). */
-    static int __setitem__(
-        PyLinkedList* self,
-        PyObject* key,
-        PyObject* items
-    ) {
+    static int __setitem__(Derived* self, PyObject* key, PyObject* items) {
         try {
             // check for integer index
             if (PyIndex_Check(key)) {
@@ -986,10 +882,10 @@ public:
     }
 
     /* Implement `LinkedList.__add__()` in Python. */
-    static PyObject* __add__(PyLinkedList* self, PyObject* other) {
+    static PyObject* __add__(Derived* self, PyObject* other) {
         // allocate new Python list
-        PyLinkedList* result = reinterpret_cast<PyLinkedList*>(
-            Base::__new__(&Type, nullptr, nullptr)
+        Derived* result = reinterpret_cast<Derived*>(
+            Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
         if (result == nullptr) return nullptr;  // propagate
 
@@ -1012,7 +908,7 @@ public:
     }
 
     /* Implement `LinkedList.__iadd__()` in Python. */
-    static PyObject* __iadd__(PyLinkedList* self, PyObject* other) {
+    static PyObject* __iadd__(Derived* self, PyObject* other) {
         try {
             std::visit(
                 [&other](auto& list) {
@@ -1031,9 +927,9 @@ public:
     }
 
     /* Implement `LinkedList.__mul__()__rmul__()` in Python. */
-    static PyObject* __mul__(PyLinkedList* self, Py_ssize_t count) {
-        PyLinkedList* result = reinterpret_cast<PyLinkedList*>(
-            Base::__new__(&Type, nullptr, nullptr)
+    static PyObject* __mul__(Derived* self, Py_ssize_t count) {
+        Derived* result = reinterpret_cast<Derived*>(
+            Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
         if (result == nullptr) return nullptr;  // propagate
 
@@ -1056,7 +952,7 @@ public:
     }
 
     /* Implement `LinkedList.__imul__()` in Python. */
-    static PyObject* __imul__(PyLinkedList* self, Py_ssize_t count) {
+    static PyObject* __imul__(Derived* self, Py_ssize_t count) {
         try {
             std::visit(
                 [&count](auto& list) {
@@ -1076,11 +972,7 @@ public:
 
     /* Implement `LinkedList.__lt__()/__le__()/__eq__()/__ne__()/__ge__()/__gt__()` in
     Python. */
-    static PyObject* __richcompare__(
-        PyLinkedList* self,
-        PyObject* other,
-        int cmp
-    ) {
+    static PyObject* __richcompare__(Derived* self, PyObject* other, int cmp) {
         try {
             bool result = std::visit(
                 [&other, &cmp](auto& list) {
@@ -1110,57 +1002,10 @@ public:
         }
     }
 
-    /* Implement `LinkedList.__str__()` in Python. */
-    static PyObject* __str__(PyLinkedList* self) {
-        try {
-            std::ostringstream stream;
-            stream << "[";
-            std::visit(
-                [&stream](auto& list) {
-                    auto it = list.begin();
-                    if (it != list.end()) {
-                        stream << util::repr(*it);
-                        ++it;
-                    }
-                    for (; it != list.end(); ++it) {
-                        stream << ", " << util::repr(*it);
-                    }
-                },
-                self->variant
-            );
-            stream << "]";
-            return PyUnicode_FromString(stream.str().c_str());
-
-        // translate C++ errors into Python exceptions
-        } catch (...) {
-            util::throw_python();
-            return nullptr;
-        }
-    }
-
-    /* Implement `LinkedList.__repr__()` in Python. */
-    static PyObject* __repr__(PyLinkedList* self) {
-        try {
-            std::ostringstream stream;
-            std::visit(
-                [&stream](auto& list) {
-                    stream << list;
-                },
-                self->variant
-            );
-            return PyUnicode_FromString(stream.str().c_str());
-
-        // translate C++ errors into Python exceptions
-        } catch (...) {
-            util::throw_python();
-            return nullptr;
-        }
-    }
-
-private:
+protected:
 
     /* Implement `PySequence_GetItem()` in CPython API. */
-    static PyObject* __getitem_scalar__(PyLinkedList* self, Py_ssize_t index) {
+    static PyObject* __getitem_scalar__(Derived* self, Py_ssize_t index) {
         try {
             PyObject* result = std::visit(
                 [&index](auto& list) {
@@ -1179,7 +1024,7 @@ private:
 
     /* Implement `PySequence_SetItem()` in CPython API. */
     static int __setitem_scalar__(
-        PyLinkedList* self,
+        Derived* self,
         Py_ssize_t index,
         PyObject* item
     ) {
@@ -1205,58 +1050,6 @@ private:
 
     /* docstrings for public Python attributes. */
     struct docs {
-
-        static constexpr std::string_view LinkedList {R"doc(
-A doubly-linked list.
-
-This class is a drop-in replacement for a built-in :class:`list` or
-:class:`collections.deque` object, supporting all the same operations.  It is
-also available in C++ under the same name, with equivalent semantics.
-
-Parameters
-----------
-items : Iterable[Any], optional
-    The items to initialize the list with.  If not specified, the list will be
-    empty.
-max_size : int, optional
-    The maximum number of items that the list can hold.  If not specified, the
-    list will be unbounded.
-spec : Any, optional
-    A specific type to enforce for elements of the list, allowing the creation
-    of type-safe containers.  This can be in any format recognized by
-    :func:`isinstance() <python:isinstance>`.  The default is ``None``, which
-    disables strict type checking for the list.  See the :meth:`specialize()`
-    method for more details.
-reverse : bool, default False
-    If True, reverse the order of ``items`` during list construction.  This is
-    more efficient than calling :meth:`reverse()` after construction.
-singly_linked : bool, default False
-    If True, use a singly-linked list instead of a doubly-linked list.  This
-    trades some performance in certain operations for increased memory
-    efficiency.  Regardless of this setting, the list will still support all
-    the same operations as a doubly-linked list.
-
-Notes
------
-These data structures are highly optimized for performance, and are generally
-on par with the built-in :class:`list` and :class:`collections.deque` types.
-They retains the usual tradeoffs of linked lists vs arrays (e.g. random access,
-vs constant-time insertions, etc.), but attempts to minimize compromises
-wherever possible.  Users should not notice a significant difference on
-average.
-
-The data structure itself is implemented entirely in C++, and can be used
-natively at the C++ level.  The Python wrapper is directly equivalent to the
-C++ class, and is provided for convenience.  Technically speaking, the Python
-class represents a ``std::variant`` of possible C++ implementations, each of
-which is templated for maximum performance.  The Python class is therefore
-slightly slower than the C++ class due to extra indirection, but the difference
-is negligible, and can mostly be attributed to the Python interpreter itself.
-
-Due to the symmetry between Python and C++, users should be able to easily port
-code that relies on this data structure with only minimal changes.
-)doc"
-        };
 
         static constexpr std::string_view append {R"doc(
 Insert an item at the end of the list.
@@ -1531,6 +1324,203 @@ Rotations are O(steps).
 
     };
 
+};
+
+
+/* A discriminated union of templated `LinkedList` types that can be used from
+Python. */
+class PyLinkedList :
+    public PyLinkedBase<PyLinkedList>,
+    public PyListInterface<PyLinkedList>
+{
+    using Base = PyLinkedBase<PyLinkedList>;
+    using IList = PyListInterface<PyLinkedList>;
+
+    /* A std::variant representing all the LinkedList implementations that are
+    constructable from Python. */
+    using SingleList = LinkedList<SingleNode<PyObject*>, util::BasicLock>;
+    using DoubleList = LinkedList<DoubleNode<PyObject*>, util::BasicLock>;
+    using Variant = std::variant<
+        SingleList,
+        DoubleList
+    >;
+
+    friend Base;
+    friend IList;
+    Variant variant;
+
+    /* Construct a PyLinkedList around an existing C++ LinkedList. */
+    template <typename List>
+    inline void from_cpp(List&& list) {
+        new (&variant) Variant(std::forward<List>(list));
+    }
+
+public:
+
+    /* Initialize a LinkedList instance from Python. */
+    static int __init__(
+        PyLinkedList* self,
+        PyObject* args,
+        PyObject* kwargs
+    ) {
+        using Args = util::PyArgs<util::CallProtocol::KWARGS>;
+        using util::ValueError;
+        try {
+            // parse arguments
+            Args pyargs(args, kwargs);
+            PyObject* iterable = pyargs.parse(
+                "iterable", util::none_to_null, (PyObject*)nullptr
+            );
+            std::optional<size_t> max_size = pyargs.parse(
+                "max_size",
+                [](PyObject* obj) -> std::optional<size_t> {
+                    if (obj == Py_None) return std::nullopt;
+                    long long result = util::parse_int(obj);
+                    if (result < 0) throw ValueError("max_size cannot be negative");
+                    return std::make_optional(static_cast<size_t>(result));
+                },
+                std::optional<size_t>()
+            );
+            PyObject* spec = pyargs.parse("spec", util::none_to_null, (PyObject*) nullptr);
+            bool reverse = pyargs.parse("reverse", util::is_truthy, false);
+            bool singly_linked = pyargs.parse("singly_linked", util::is_truthy, false);
+            pyargs.finalize();
+
+            // initialize
+            if (iterable == nullptr) {
+                if (singly_linked) {
+                    new (&self->variant) Variant(SingleList(max_size, spec));
+                } else {
+                    new (&self->variant) Variant(DoubleList(max_size, spec));
+                }
+            } else {
+                if (singly_linked) {
+                    new (&self->variant) Variant(
+                        SingleList(iterable, max_size, spec, reverse)
+                    );
+                } else {
+                    new (&self->variant) Variant(
+                        DoubleList(iterable, max_size, spec, reverse)
+                    );
+                }
+            }
+
+            // exit normally
+            return 0;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return -1;
+        }
+    }
+
+    /* Implement `LinkedList.__str__()` in Python. */
+    static PyObject* __str__(PyLinkedList* self) {
+        try {
+            std::ostringstream stream;
+            stream << "[";
+            std::visit(
+                [&stream](auto& list) {
+                    auto it = list.begin();
+                    if (it != list.end()) {
+                        stream << util::repr(*it);
+                        ++it;
+                    }
+                    for (; it != list.end(); ++it) {
+                        stream << ", " << util::repr(*it);
+                    }
+                },
+                self->variant
+            );
+            stream << "]";
+            return PyUnicode_FromString(stream.str().c_str());
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedList.__repr__()` in Python. */
+    static PyObject* __repr__(PyLinkedList* self) {
+        try {
+            std::ostringstream stream;
+            std::visit(
+                [&stream](auto& list) {
+                    stream << list;
+                },
+                self->variant
+            );
+            return PyUnicode_FromString(stream.str().c_str());
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
+    }
+
+private:
+
+    /* docstrings for public Python attributes. */
+    struct docs {
+
+        static constexpr std::string_view LinkedList {R"doc(
+A doubly-linked list.
+
+This class is a drop-in replacement for a built-in :class:`list` or
+:class:`collections.deque` object, supporting all the same operations.  It is
+also available in C++ under the same name, with equivalent semantics.
+
+Parameters
+----------
+items : Iterable[Any], optional
+    The items to initialize the list with.  If not specified, the list will be
+    empty.
+max_size : int, optional
+    The maximum number of items that the list can hold.  If not specified, the
+    list will be unbounded.
+spec : Any, optional
+    A specific type to enforce for elements of the list, allowing the creation
+    of type-safe containers.  This can be in any format recognized by
+    :func:`isinstance() <python:isinstance>`.  The default is ``None``, which
+    disables strict type checking for the list.  See the :meth:`specialize()`
+    method for more details.
+reverse : bool, default False
+    If True, reverse the order of ``items`` during list construction.  This is
+    more efficient than calling :meth:`reverse()` after construction.
+singly_linked : bool, default False
+    If True, use a singly-linked list instead of a doubly-linked list.  This
+    trades some performance in certain operations for increased memory
+    efficiency.  Regardless of this setting, the list will still support all
+    the same operations as a doubly-linked list.
+
+Notes
+-----
+These data structures are highly optimized for performance, and are generally
+on par with the built-in :class:`list` and :class:`collections.deque` types.
+They retains the usual tradeoffs of linked lists vs arrays (e.g. random access,
+vs constant-time insertions, etc.), but attempts to minimize compromises
+wherever possible.  Users should not notice a significant difference on
+average.
+
+The data structure itself is implemented entirely in C++, and can be used
+natively at the C++ level.  The Python wrapper is directly equivalent to the
+C++ class, and is provided for convenience.  Technically speaking, the Python
+class represents a ``std::variant`` of possible C++ implementations, each of
+which is templated for maximum performance.  The Python class is therefore
+slightly slower than the C++ class due to extra indirection, but the difference
+is negligible, and can mostly be attributed to the Python interpreter itself.
+
+Due to the symmetry between Python and C++, users should be able to easily port
+code that relies on this data structure with only minimal changes.
+)doc"
+        };
+
+    };
+
     ////////////////////////////////
     ////    PYTHON INTERNALS    ////
     ////////////////////////////////
@@ -1541,8 +1531,8 @@ Rotations are O(steps).
     #define BASE_METHOD(NAME, ARG_PROTOCOL) \
         { #NAME, (PyCFunction) Base::NAME, ARG_PROTOCOL, PyDoc_STR(Base::docs::NAME.data()) } \
 
-    #define METHOD(NAME, ARG_PROTOCOL) \
-        { #NAME, (PyCFunction) NAME, ARG_PROTOCOL, PyDoc_STR(docs::NAME.data()) } \
+    #define LIST_METHOD(NAME, ARG_PROTOCOL) \
+        { #NAME, (PyCFunction) IList::NAME, ARG_PROTOCOL, PyDoc_STR(IList::docs::NAME.data()) } \
 
     /* Vtable containing Python @property definitions for the LinkedList. */
     inline static PyGetSetDef properties[] = {
@@ -1563,24 +1553,24 @@ Rotations are O(steps).
         BASE_METHOD(specialize, METH_O),
         BASE_METHOD(__reversed__, METH_NOARGS),
         BASE_METHOD(__class_getitem__, METH_CLASS | METH_O),
-        METHOD(append, METH_FASTCALL | METH_KEYWORDS),
-        METHOD(insert, METH_FASTCALL | METH_KEYWORDS),
-        METHOD(extend, METH_FASTCALL | METH_KEYWORDS),
-        METHOD(index, METH_FASTCALL | METH_KEYWORDS),
-        METHOD(count, METH_FASTCALL | METH_KEYWORDS),
-        METHOD(remove, METH_O),
-        METHOD(pop, METH_FASTCALL),
-        METHOD(clear, METH_NOARGS),
-        METHOD(copy, METH_NOARGS),
-        METHOD(sort, METH_FASTCALL | METH_KEYWORDS),
-        METHOD(reverse, METH_NOARGS),
-        METHOD(rotate, METH_FASTCALL),
+        LIST_METHOD(append, METH_FASTCALL | METH_KEYWORDS),
+        LIST_METHOD(insert, METH_FASTCALL | METH_KEYWORDS),
+        LIST_METHOD(extend, METH_FASTCALL | METH_KEYWORDS),
+        LIST_METHOD(index, METH_FASTCALL | METH_KEYWORDS),
+        LIST_METHOD(count, METH_FASTCALL | METH_KEYWORDS),
+        LIST_METHOD(remove, METH_O),
+        LIST_METHOD(pop, METH_FASTCALL),
+        LIST_METHOD(clear, METH_NOARGS),
+        LIST_METHOD(copy, METH_NOARGS),
+        LIST_METHOD(sort, METH_FASTCALL | METH_KEYWORDS),
+        LIST_METHOD(reverse, METH_NOARGS),
+        LIST_METHOD(rotate, METH_FASTCALL),
         {NULL}  // sentinel
     };
 
     #undef PROPERTY
     #undef BASE_METHOD
-    #undef METHOD
+    #undef LIST_METHOD
 
     /* Vtable containing special methods related to Python's mapping protocol. */
     inline static PyMappingMethods mapping = [] {
@@ -1640,6 +1630,13 @@ public:
     /* The final Python type. */
     inline static PyTypeObject Type = build_type();
 
+    /* Check whether another PyObject* is of this type. */
+    inline static bool typecheck(PyObject* obj) {
+        int result = PyObject_IsInstance(obj, (PyObject*) &Type);
+        if (result == -1) throw util::catch_python();
+        return static_cast<bool>(result);
+    }
+
 };
 
 
@@ -1647,7 +1644,11 @@ public:
 static struct PyModuleDef module_ = {
     PyModuleDef_HEAD_INIT,
     .m_name = "list",
-    .m_doc = "docstring for list module",
+    .m_doc = (
+        "This module contains an optimized LinkedList data structure for use "
+        "in Python.  The exact same data structure is also available in C++ "
+        "under the same header path (bertrand/structs/linked/list.h)."
+    ),
     .m_size = -1,
 };
 
