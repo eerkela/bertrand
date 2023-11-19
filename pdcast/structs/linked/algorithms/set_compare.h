@@ -17,7 +17,7 @@ namespace linked {
     a given container. */
     template <typename View, typename Container>
     auto isdisjoint(const View& view, const Container& items)
-        -> std::enable_if_t<ViewTraits<View>::setlike, bool>
+        -> std::enable_if_t<ViewTraits<View>::hashed, bool>
     {
         for (auto item : util::iter(items)) {
             if (view.search(item) != nullptr) return false;
@@ -30,7 +30,7 @@ namespace linked {
     a given container. */
     template <typename View, typename Container>
     auto set_equal(const View& view, const Container& items)
-        -> std::enable_if_t<ViewTraits<View>::setlike, bool>
+        -> std::enable_if_t<ViewTraits<View>::hashed, bool>
     {
         using Node = typename View::Node;
 
@@ -51,7 +51,7 @@ namespace linked {
     of a given container. */
     template <typename View, typename Container>
     auto set_not_equal(const View& view, const Container& items)
-        -> std::enable_if_t<ViewTraits<View>::setlike, bool>
+        -> std::enable_if_t<ViewTraits<View>::hashed, bool>
     {
         using Node = typename View::Node;
 
@@ -72,7 +72,7 @@ namespace linked {
     given container. */
     template <typename View, typename Container>
     auto issubset(const View& view, const Container& items, bool strict)
-        -> std::enable_if_t<ViewTraits<View>::setlike, bool>
+        -> std::enable_if_t<ViewTraits<View>::hashed, bool>
     {
         using Node = typename View::Node;
 
@@ -100,7 +100,7 @@ namespace linked {
     a given container. */
     template <typename View, typename Container>
     auto issuperset(const View& view, const Container& items, bool strict)
-        -> std::enable_if_t<ViewTraits<View>::setlike, bool>
+        -> std::enable_if_t<ViewTraits<View>::hashed, bool>
     {
         using Node = typename View::Node;
 

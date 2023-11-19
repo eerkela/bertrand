@@ -19,7 +19,7 @@ namespace linked {
     /* Move an item within a linked set or dictionary. */
     template <typename View, typename Item = typename View::Value>
     auto move(View& view, Item& item, long long steps)
-        -> std::enable_if_t<ViewTraits<View>::setlike, void>
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
         using Node = typename View::Node;
 
@@ -44,13 +44,13 @@ namespace linked {
 
             // construct local iterator around node and walk to new position
             if (steps > 0) {
-                using Iter = Iterator<View, Direction::forward>;
+                using Iter = typename View::template Iterator<Direction::forward>;
                 auto it = Iter(view, old_prev, node, old_next);
                 for (auto end = view.end(); steps > 0 && it != end; --steps, ++it);
                 new_prev = it.curr();
                 new_next = it.next();
             } else {
-                using Iter = Iterator<View, Direction::backward>;
+                using Iter = typename View::template Iterator<Direction::backward>;
                 auto it = Iter(view, old_prev, node, old_next);
                 for (auto end = view.begin(); steps < 0 && it != end; ++steps, ++it);
                 new_prev = it.prev();
@@ -105,7 +105,7 @@ namespace linked {
     /* Move an item to a particular index of a linked set or dictionary. */
     template <typename View, typename Item = typename View::Value>
     auto move_to_index(View& view, Item& item, long long index)
-        -> std::enable_if_t<ViewTraits<View>::setlike, void>
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
         using Node = typename View::Node;
 

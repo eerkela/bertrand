@@ -15,7 +15,7 @@ namespace linked {
     /* Remove an item from a linked set or dictionary if it is present. */
     template <typename View, typename Item = typename View::Value>
     auto discard(View& view, Item& item)
-        -> std::enable_if_t<ViewTraits<View>::setlike, void>
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
         using Node = typename View::Node;
 

@@ -22,7 +22,7 @@ namespace linked {
 /* Sort a linked list, set, or dictionary in-place. */
 template <typename SortPolicy, typename View, typename Func>
 auto sort(View& view, Func key, bool reverse)
-    -> std::enable_if_t<ViewTraits<View>::listlike, void>
+    -> std::enable_if_t<ViewTraits<View>::linked, void>
 {
     using Node = typename View::Node;
     using KeyNode = Keyed<Node, Func>;

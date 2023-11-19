@@ -44,7 +44,7 @@ namespace linked {
     /* Remove an item from a linked set or dictionary. */
     template <typename View, typename Item = typename View::Value>
     auto remove(View& view, Item& item)
-        -> std::enable_if_t<ViewTraits<View>::setlike, void>
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
         using Node = typename View::Node;
 

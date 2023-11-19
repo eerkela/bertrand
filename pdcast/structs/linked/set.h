@@ -118,7 +118,7 @@ public:
         linked::symmetric_difference_update(this->view, items, left);
     }
 
-/* Get the index of an item within the list. */
+    /* Get the index of an item within the list. */
     inline size_t index(
         const Value& item,
         std::optional<long long> start = std::nullopt,
@@ -183,30 +183,52 @@ public:
     }
 
     /* Return a new set with elements from this set and all other container(s). */
-    template <typename... Containers>
-    inline LinkedSet union_(const Containers&&... others) const {
-        return LinkedSet(linked::union_(this->view, others...));
+    template <typename Container>
+    inline LinkedSet union_(Container&& other, bool left = false) const {
+        return LinkedSet(
+            linked::union_(
+                this->view, 
+                std::forward<Container>(other),
+                left
+            )
+        );
     }
 
     /* Return a new set with elements from this set that are common to all other
     container(s).  */
-    template <typename... Containers>
-    inline LinkedSet intersection(const Containers&&... others) const {
-        return LinkedSet(linked::intersection(this->view, others...));
+    template <typename Container>
+    inline LinkedSet intersection(Container&& other) const {
+        return LinkedSet(
+            linked::intersection(
+                this->view,
+                std::forward<Container>(other)
+            )
+        );
     }
 
     /* Return a new set with elements in this set that are not in the other
     container(s). */
-    template <typename... Containers>
-    inline LinkedSet difference(const Containers&&... others) const {
-        return LinkedSet(linked::difference(this->view, others...));
+    template <typename Container>
+    inline LinkedSet difference(Container&& other) const {
+        return LinkedSet(
+            linked::difference(
+                this->view,
+                std::forward<Container>(other)
+            )
+        );
     }
 
     /* Return a new set with elements in either this set or another container, but not
     both. */
-    template <typename... Containers>
-    inline LinkedSet symmetric_difference(const Containers&&... others) const {
-        return LinkedSet(linked::symmetric_difference(this->view, others...));
+    template <typename Container>
+    inline LinkedSet symmetric_difference(Container&& other, bool left = false) const {
+        return LinkedSet(
+            linked::symmetric_difference(
+                this->view,
+                std::forward<Container>(other),
+                left
+            )
+        );
     }
 
     /* Check whether the set has no elements in common with another container. */
@@ -1562,6 +1584,34 @@ class PyLinkedSet :
         new (&variant) Variant(std::forward<Set>(set));
     }
 
+    /* Construct a PyLinkedList from scratch using the given constructor arguments. */
+    static void construct(
+        PyLinkedSet* self,
+        PyObject* iterable,
+        std::optional<size_t> max_size,
+        PyObject* spec,
+        bool reverse,
+        bool singly_linked
+    ) {
+        if (iterable == nullptr) {
+            if (singly_linked) {
+                new (&self->variant) Variant(SingleSet(max_size, spec));
+            } else {
+                new (&self->variant) Variant(DoubleSet(max_size, spec));
+            }
+        } else {
+            if (singly_linked) {
+                new (&self->variant) Variant(
+                    SingleSet(iterable, max_size, spec, reverse)
+                );
+            } else {
+                new (&self->variant) Variant(
+                    DoubleSet(iterable, max_size, spec, reverse)
+                );
+            }
+        }
+    }
+
 public:
 
     /* Initialize a LinkedSet instance from Python. */
@@ -1595,23 +1645,7 @@ public:
             pyargs.finalize();
 
             // initialize
-            if (iterable == nullptr) {
-                if (singly_linked) {
-                    new (&self->variant) Variant(SingleSet(max_size, spec));
-                } else {
-                    new (&self->variant) Variant(DoubleSet(max_size, spec));
-                }
-            } else {
-                if (singly_linked) {
-                    new (&self->variant) Variant(
-                        SingleSet(iterable, max_size, spec, reverse)
-                    );
-                } else {
-                    new (&self->variant) Variant(
-                        DoubleSet(iterable, max_size, spec, reverse)
-                    );
-                }
-            }
+            construct(self, iterable, max_size, spec, reverse, singly_linked);
 
             // exit normally
             return 0;

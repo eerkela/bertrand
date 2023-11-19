@@ -16,7 +16,7 @@ namespace linked {
     /* Rotate a linked list to the right by the specified number of steps. */
     template <typename View>
     auto rotate(View& view, long long steps)
-        -> std::enable_if_t<ViewTraits<View>::listlike, void>
+        -> std::enable_if_t<ViewTraits<View>::linked, void>
     {
         using Node = typename View::Node;
 

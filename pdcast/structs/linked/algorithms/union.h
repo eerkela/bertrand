@@ -17,14 +17,14 @@ namespace linked {
     /* Get the union between a linked set or dictionary and an arbitrary Python
     iterable. */
     template <typename View, typename Container>
-    auto union_(const View& view, const Container& container, bool left)
-        -> std::enable_if_t<ViewTraits<View>::setlike, View>
+    auto union_(const View& view, const Container& items, bool left)
+        -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
         using Node = typename View::Node;
         using MemGuard = typename View::MemGuard;
 
-        // try to get length of container
-        std::optional<size_t> length = util::len(container);
+        // try to get length of items
+        std::optional<size_t> length = util::len(items);
         if (length.has_value()) {
             // preallocate exact size
             View copy(
@@ -40,8 +40,8 @@ namespace linked {
                 copy.link(copy.tail(), node, nullptr);
             }
     
-            // add elements from container
-            for (auto item : util::iter(container)) {
+            // add elements from items
+            for (auto item : util::iter(items)) {
                 Node* node = copy.template node<true>(item);  // exist_ok = true
                 if (node->next() == nullptr && node != copy.tail()) {
                     if (left) {
@@ -57,7 +57,7 @@ namespace linked {
 
         // otherwise, copy existing view and update dynamically
         View copy(view);
-        update(copy, container, left);
+        update(copy, items, left);
         return copy;
     }
 
@@ -66,7 +66,7 @@ namespace linked {
     iterable. */
     template <typename View, typename Container>
     auto difference(const View& view, const Container& items)
-        -> std::enable_if_t<ViewTraits<View>::setlike, View>
+        -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
         using Node = typename View::Node;
         using MemGuard = typename View::MemGuard;
@@ -76,7 +76,7 @@ namespace linked {
         MemGuard hold = copy.reserve();  // hold allocator at current size
 
         // use auxiliary set to keep track of visited nodes as we iterate over items
-        std::unordered_set<Node*> found;
+        std::unordered_set<const Node*> found;
         for (auto item : util::iter(items)) {
             Node* node = view.search(item);
             if (node != nullptr) found.insert(node);
@@ -97,7 +97,7 @@ namespace linked {
     iterable. */
     template <typename View, typename Container>
     auto intersection(const View& view, const Container& items)
-        -> std::enable_if_t<ViewTraits<View>::setlike, View>
+        -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
         using Node = typename View::Node;
         using MemGuard = typename View::MemGuard;
@@ -107,7 +107,7 @@ namespace linked {
         MemGuard hold = copy.reserve();  // hold allocator at current size
 
         // use auxiliary set to keep track of visited nodes as we iterate over items
-        std::unordered_set<Node*> found;
+        std::unordered_set<const Node*> found;
         for (auto item : util::iter(items)) {
             Node* node = view.search(item);
             if (node != nullptr) found.insert(node);
@@ -128,7 +128,7 @@ namespace linked {
     Python iterable. */
     template <typename View, typename Container>
     auto symmetric_difference(const View& view, const Container& items, bool left)
-        -> std::enable_if_t<ViewTraits<View>::setlike, View>
+        -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
         using Node = typename View::Node;
         using MemGuard = typename View::MemGuard;

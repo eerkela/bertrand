@@ -83,7 +83,7 @@ namespace linked {
         std::optional<long long> start,
         std::optional<long long> stop
     )
-        -> std::enable_if_t<ViewTraits<View>::setlike, size_t>
+        -> std::enable_if_t<ViewTraits<View>::hashed, size_t>
     {
         using Node = typename View::Node;
 

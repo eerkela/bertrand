@@ -92,7 +92,7 @@ namespace linked {
     /* Get a proxy for a value at a particular index of the list. */
     template <typename View>
     auto position(View& view, long long index)
-        -> std::enable_if_t<ViewTraits<View>::listlike, ElementProxy<View>>
+        -> std::enable_if_t<ViewTraits<View>::linked, ElementProxy<View>>
     {
         // normalize index
         size_t norm_index = normalize_index(index, view.size(), false);
@@ -176,7 +176,7 @@ namespace linked {
 
         template <typename _View>
         friend auto position(_View& view, long long index)
-            -> std::enable_if_t<ViewTraits<_View>::listlike, ElementProxy<_View>>;
+            -> std::enable_if_t<ViewTraits<_View>::linked, ElementProxy<_View>>;
 
         template <Direction dir>
         ElementProxy(View& view, Iterator<dir>&& iter) :

@@ -121,7 +121,7 @@ public:
     /* Inequality comparison to terminate the sequence. */
     template <Direction T>
     inline bool operator!=(const Iterator<View, T>& other) const noexcept {
-        return _curr != other._curr;
+        return _curr != other.curr();
     }
 
     //////////////////////////////

@@ -26,7 +26,7 @@ namespace linked {
         const char* rbracket,
         size_t max_entries
     )
-        -> std::enable_if_t<ViewTraits<View>::listlike, std::string>
+        -> std::enable_if_t<ViewTraits<View>::linked, std::string>
     {
         std::ostringstream stream;
 

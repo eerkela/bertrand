@@ -28,7 +28,7 @@ namespace linked {
     /* Update a set or dictionary, appending items that are not already present. */
     template <typename View, typename Container>
     auto update(View& view, const Container& items, bool left)
-        -> std::enable_if_t<ViewTraits<View>::setlike, void>
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
         using Node = typename View::Node;
         using MemGuard = typename View::MemGuard;
@@ -74,7 +74,7 @@ namespace linked {
     set or dictionary. */
     template <typename View, typename Container>
     auto difference_update(View& view, const Container& items)
-        -> std::enable_if_t<ViewTraits<View>::setlike, void>
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
         using Node = typename View::Node;
         using MemGuard = typename View::MemGuard;
@@ -121,7 +121,7 @@ namespace linked {
     both sets or dictionaries. */
     template <typename View, typename Container>
     auto intersection_update(View& view, const Container& items)
-        -> std::enable_if_t<ViewTraits<View>::setlike, void>
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
         using Node = typename View::Node;
         using MemGuard = typename View::MemGuard;
@@ -157,7 +157,7 @@ namespace linked {
     either the set or a given container, but not both. */
     template <typename View, typename Container>
     auto symmetric_difference_update(View& view, const Container& items, bool left)
-        -> std::enable_if_t<ViewTraits<View>::setlike, void>
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
         using Node = typename View::Node;
         using MemGuard = typename View::MemGuard;

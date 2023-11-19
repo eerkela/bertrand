@@ -35,7 +35,7 @@ namespace linked {
         typename Item = typename View::Value
     >
     inline auto insert(View& view, Index index, Item& item)
-        -> std::enable_if_t<ViewTraits<View>::listlike, void>
+        -> std::enable_if_t<ViewTraits<View>::linked, void>
     {
         // normalize index
         size_t norm_index = normalize_index(index, view.size(), true);

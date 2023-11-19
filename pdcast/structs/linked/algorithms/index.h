@@ -105,12 +105,12 @@ namespace linked {
         std::optional<long long> start,
         std::optional<long long> stop
     )
-        -> std::enable_if_t<ViewTraits<View>::setlike, size_t>
+        -> std::enable_if_t<ViewTraits<View>::hashed, size_t>
     {
         using Node = typename View::Node;
 
         // convenience function for throwing not-found error
-        auto not_found = [](Item& item) {
+        auto not_found = [](const Item& item) {
             std::ostringstream msg;
             msg << util::repr(item) << " is not in set";
             return std::out_of_range(msg.str());

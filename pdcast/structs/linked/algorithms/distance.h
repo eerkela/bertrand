@@ -17,7 +17,7 @@ namespace linked {
     /* Get the linear distance between two values in a linked set or dictionary. */
     template <typename View, typename Item = typename View::Value>
     auto distance(View& view, Item& item1, Item& item2)
-        -> std::enable_if_t<ViewTraits<View>::setlike, long long>
+        -> std::enable_if_t<ViewTraits<View>::hashed, long long>
     {
         using Node = typename View::Node;
 

@@ -608,31 +608,17 @@ protected:
                 pyargs.finalize();
 
                 // initialize
-                using Variant = typename Specialized::Variant;
-                using SingleList = typename Specialized::SingleList;
-                using DoubleList = typename Specialized::DoubleList;
-                PyObject* spec = PyObject_GetAttrString(
-                    reinterpret_cast<PyObject*>(Py_TYPE(self)),
-                    "_specialization"
+                Derived::construct(
+                    self,
+                    iterable,
+                    max_size,
+                    PyObject_GetAttrString(
+                        reinterpret_cast<PyObject*>(Py_TYPE(self)),
+                        "_specialization"
+                    ),
+                    reverse,
+                    singly_linked
                 );
-                if (spec == Py_None) spec = nullptr;
-                if (iterable == nullptr) {
-                    if (singly_linked) {
-                        new (&self->variant) Variant(SingleList(max_size, spec));
-                    } else {
-                        new (&self->variant) Variant(DoubleList(max_size, spec));
-                    }
-                } else {
-                    if (singly_linked) {
-                        new (&self->variant) Variant(
-                            SingleList(iterable, max_size, spec, reverse)
-                        );
-                    } else {
-                        new (&self->variant) Variant(
-                            DoubleList(iterable, max_size, spec, reverse)
-                        );
-                    }
-                }
 
                 // exit normally
                 return 0;

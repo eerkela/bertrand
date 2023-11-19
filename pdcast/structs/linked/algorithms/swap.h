@@ -18,7 +18,7 @@ namespace linked {
     /* Swap the positions of two values in a linked set or dictionary. */
     template <typename View, typename Item = typename View::Value>
     auto swap(View& view, Item& item1, Item& item2)
-        -> std::enable_if_t<ViewTraits<View>::setlike, void>
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
         using Node = typename View::Node;
 

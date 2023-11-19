@@ -14,7 +14,7 @@ namespace linked {
     /* Reverse a linked list in-place. */
     template <typename View>
     auto reverse(View& view)
-        -> std::enable_if_t<ViewTraits<View>::listlike, void>
+        -> std::enable_if_t<ViewTraits<View>::linked, void>
     {
         using Node = typename View::Node;
 

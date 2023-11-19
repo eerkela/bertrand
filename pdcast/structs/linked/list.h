@@ -1355,6 +1355,34 @@ class PyLinkedList :
         new (&variant) Variant(std::forward<List>(list));
     }
 
+    /* Construct a PyLinkedList from scratch using the given constructor arguments. */
+    static void construct(
+        PyLinkedList* self,
+        PyObject* iterable,
+        std::optional<size_t> max_size,
+        PyObject* spec,
+        bool reverse,
+        bool singly_linked
+    ) {
+        if (iterable == nullptr) {
+            if (singly_linked) {
+                new (&self->variant) Variant(SingleList(max_size, spec));
+            } else {
+                new (&self->variant) Variant(DoubleList(max_size, spec));
+            }
+        } else {
+            if (singly_linked) {
+                new (&self->variant) Variant(
+                    SingleList(iterable, max_size, spec, reverse)
+                );
+            } else {
+                new (&self->variant) Variant(
+                    DoubleList(iterable, max_size, spec, reverse)
+                );
+            }
+        }
+    }
+
 public:
 
     /* Initialize a LinkedList instance from Python. */
@@ -1388,23 +1416,7 @@ public:
             pyargs.finalize();
 
             // initialize
-            if (iterable == nullptr) {
-                if (singly_linked) {
-                    new (&self->variant) Variant(SingleList(max_size, spec));
-                } else {
-                    new (&self->variant) Variant(DoubleList(max_size, spec));
-                }
-            } else {
-                if (singly_linked) {
-                    new (&self->variant) Variant(
-                        SingleList(iterable, max_size, spec, reverse)
-                    );
-                } else {
-                    new (&self->variant) Variant(
-                        DoubleList(iterable, max_size, spec, reverse)
-                    );
-                }
-            }
+            construct(self, iterable, max_size, spec, reverse, singly_linked);
 
             // exit normally
             return 0;

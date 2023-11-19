@@ -13,7 +13,7 @@ namespace structs {
 namespace linked {
 
 
-    /* Concatenate a linked data structure with another iterable. */
+    /* Concatenate a linked list with another iterable. */
     template <typename View, typename Container>
     auto concatenate(const View& view, const Container& container)
         -> std::enable_if_t<ViewTraits<View>::listlike, View>

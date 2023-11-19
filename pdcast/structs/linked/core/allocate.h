@@ -1186,7 +1186,9 @@ public:
     {
         // copy over existing nodes in correct list order (head -> tail)
         if (this->occupied) {
-            std::pair<Node*, Node*> bounds(other.transfer<false>(array));
+            std::pair<Node*, Node*> bounds = (
+                other.template transfer<false>(array, flags)
+            );
             this->head = bounds.first;
             this->tail = bounds.second;
         }
@@ -1435,7 +1437,9 @@ public:
     attribute.  Otherwise, produce an empty MemGuard. */
     template <typename Container>
     inline MemGuard try_reserve(Container& container) {
-        return Base::template try_reserve<2>(container);
+        return Base::template try_reserve<Container, 2>(
+            std::forward<Container>(container)
+        );
     }
 
     /* Get the total amount of dynamic memory being managed by this allocator. */

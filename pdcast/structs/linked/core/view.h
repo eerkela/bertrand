@@ -29,7 +29,11 @@ namespace linked {
 
 NOTE: this class is inherited by all views, and can be used for easy SFINAE checks via
 std::is_base_of, without requiring any foreknowledge of template parameters. */
-class ViewTag {};
+struct ViewTag {
+    static constexpr bool listlike = false;
+    static constexpr bool setlike = false;
+    static constexpr bool dictlike = false;
+};
 
 
 /* Base class representing the low-level core of a linked data structure.
@@ -85,7 +89,11 @@ public:
     ////////////////////////////
 
     /* Construct an empty view. */
-    BaseView(size_t capacity, bool dynamic, PyObject* spec) :
+    BaseView(
+        size_t capacity = Allocator::DEFAULT_CAPACITY,
+        bool dynamic = true,
+        PyObject* spec = nullptr
+    ) :
         allocator(capacity, dynamic, spec)
     {}
 
@@ -95,10 +103,10 @@ public:
     template <typename Container>
     BaseView(
         Container&& iterable,
-        size_t capacity,
-        bool dynamic,
-        PyObject* spec,
-        bool reverse
+        size_t capacity = Allocator::DEFAULT_CAPACITY,
+        bool dynamic = true,
+        PyObject* spec = nullptr,
+        bool reverse = false
     ) : allocator(
             init_size(iterable, capacity, dynamic),
             dynamic,
@@ -120,10 +128,10 @@ public:
     BaseView(
         Iterator&& begin,
         Iterator&& end,
-        size_t capacity,
-        bool dynamic,
-        PyObject* spec,
-        bool reverse
+        size_t capacity = Allocator::DEFAULT_CAPACITY,
+        bool dynamic = true,
+        PyObject* spec = nullptr,
+        bool reverse = false
     ) : allocator(capacity, dynamic, spec)
     {
         for (; begin != end; ++begin) {
@@ -518,6 +526,8 @@ class ListView : public BaseView<ListView<NodeType>, ListAllocator<NodeType>> {
     using Base = BaseView<ListView<NodeType>, ListAllocator<NodeType>>;
 
 public:
+    static constexpr bool listlike = true;
+
     // inherit constructors
     using Base::Base;
     using Base::operator=;
@@ -571,6 +581,7 @@ class SetView : public BaseView<SetView<NodeType>, HashAllocator<Hashed<NodeType
     using Base = BaseView<SetView<NodeType>, HashAllocator<Hashed<NodeType>>>;
 
 public:
+    static constexpr bool setlike = true;
     using Node = Hashed<NodeType>;
 
     // inherit constructors
@@ -581,11 +592,11 @@ public:
     template <typename Container>
     SetView(
         Container&& iterable,
-        size_t capacity,
-        bool dynamic,
-        PyObject* spec,
-        bool reverse
-    ) : Base::Allocator(
+        size_t capacity = Base::Allocator::DEFAULT_CAPACITY,
+        bool dynamic = true,
+        PyObject* spec = nullptr,
+        bool reverse = false
+    ) : Base(
             Base::init_size(iterable, capacity, dynamic),
             dynamic,
             spec
@@ -608,11 +619,11 @@ public:
     SetView(
         Iterator&& begin,
         Iterator&& end,
-        size_t capacity,
-        bool dynamic,
-        PyObject* spec,
-        bool reverse
-    ) : Base::Allocator(capacity, dynamic, spec)
+        size_t capacity = Base::Allocator::DEFAULT_CAPACITY,
+        bool dynamic = true,
+        PyObject* spec = nullptr,
+        bool reverse = false
+    ) : Base(capacity, dynamic, spec)
     {
         for (; begin != end; ++begin) {
             Node* curr = node<true>(*begin);  // exist_ok = True
@@ -676,6 +687,7 @@ class DictView : public BaseView<
     >;
 
 public:
+    static constexpr bool dictlike = true;
     using Node = Mapped<Hashed<NodeType>, MappedType>;
 
     // inherit constructors
@@ -686,11 +698,11 @@ public:
     template <typename Container>
     DictView(
         Container&& iterable,
-        size_t capacity,
-        bool dynamic,
-        PyObject* spec,
-        bool reverse
-    ) : Base::Allocator(
+        size_t capacity = Base::Allocator::DEFAULT_CAPACITY,
+        bool dynamic = true,
+        PyObject* spec = nullptr,
+        bool reverse = false
+    ) : Base(
             Base::init_size(iterable, capacity, dynamic),
             dynamic,
             spec
@@ -713,11 +725,11 @@ public:
     DictView(
         Iterator&& begin,
         Iterator&& end,
-        size_t capacity,
-        bool dynamic,
-        PyObject* spec,
-        bool reverse
-    ) : Base::Allocator(capacity, dynamic, spec)
+        size_t capacity = Base::Allocator::DEFAULT_CAPACITY,
+        bool dynamic = true,
+        PyObject* spec = nullptr,
+        bool reverse = false
+    ) : Base(capacity, dynamic, spec)
     {
         for (; begin != end; ++begin) {
             Node* curr = node<true>(*begin);  // exist_ok = True
@@ -760,38 +772,12 @@ public:
 
 /* A collection of SFINAE traits for inspecting view types at compile time. */
 template <typename ViewType>
-class ViewTraits {
-
-    /* Detects whether the templated type has a search(Value&) method, indicating
-    set-like behavior. */
-    struct _setlike {
-        template <typename T>
-        static constexpr auto test(T* t) -> decltype(
-            t->search(std::declval<typename T::Value>()),
-            std::true_type()
-        );
-        template <typename T>
-        static constexpr auto test(...) -> std::false_type;
-        static constexpr bool value = decltype(test<ViewType>(nullptr))::value;
-    };
-
-    /* Detects whether the templated type has a lookup(Value&) method, indicating
-    dict-like behavior. */
-    struct _dictlike {
-        template <typename T>
-        static constexpr auto test(T* t) -> decltype(
-            t->lookup(std::declval<typename T::Value>()),
-            std::true_type()
-        );
-        template <typename T>
-        static constexpr auto test(...) -> std::false_type;
-        static constexpr bool value = decltype(test<ViewType>(nullptr))::value;
-    };
-
-public:
-    static constexpr bool listlike = std::is_base_of_v<ViewTag, ViewType>;
-    static constexpr bool setlike = listlike && _setlike::value;
-    static constexpr bool dictlike = listlike && _dictlike::value;
+struct ViewTraits {
+    static constexpr bool linked = std::is_base_of_v<ViewTag, ViewType>;
+    static constexpr bool listlike = linked && ViewType::listlike;
+    static constexpr bool setlike = linked && ViewType::setlike;
+    static constexpr bool dictlike = linked && ViewType::dictlike;
+    static constexpr bool hashed = setlike || dictlike;
 };
 
 

@@ -113,7 +113,7 @@ namespace linked {
     /* Get a proxy for a slice within the list. */
     template <typename View, typename List = View, typename... Args>
     auto slice(View& view, Args&&... args)
-        -> std::enable_if_t<ViewTraits<View>::listlike, SliceProxy<View, List>>
+        -> std::enable_if_t<ViewTraits<View>::linked, SliceProxy<View, List>>
     {
         using Slice = SliceProxy<View, List>;
         return Slice(view, normalize_slice(view, std::forward<Args>(args)...));
@@ -279,7 +279,7 @@ namespace linked {
         /* Force use of slice() factory function. */
         template <typename _View, typename _List, typename... Args>
         friend auto slice(_View& view, Args&&... args)
-            -> std::enable_if_t<ViewTraits<_View>::listlike, SliceProxy<_View, _List>>;
+            -> std::enable_if_t<ViewTraits<_View>::linked, SliceProxy<_View, _List>>;
 
         /* Construct a SliceProxy with at least one element. */
         SliceProxy(View& view, SliceIndices<View>&& indices) :

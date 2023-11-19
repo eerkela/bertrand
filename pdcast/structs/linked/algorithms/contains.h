@@ -27,7 +27,7 @@ namespace linked {
     /* Check if an item is contained within a linked set or dictionary. */
     template <typename View, typename Item = typename View::Value>
     inline auto contains(View& view, Item& item)
-        -> std::enable_if_t<ViewTraits<View>::setlike, bool>
+        -> std::enable_if_t<ViewTraits<View>::hashed, bool>
     {
         return view.search(item) != nullptr;
     }
