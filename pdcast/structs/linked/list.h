@@ -85,18 +85,18 @@ public:
      */
 
     /* Add an item to the end of the list. */
-    inline void append(Value& item, bool left = false) {
+    inline void append(const Value& item, bool left = false) {
         linked::append(this->view, item, left);
     }
 
-    /* Insert an item into the list at the specified index. */
-    inline void insert(long long index, Value& item) {
+    /* Insert an item at a specified index of the list. */
+    inline void insert(long long index, const Value& item) {
         linked::insert(this->view, index, item);
     }
 
     /* Extend the list by appending elements from an iterable. */
     template <typename Container>
-    inline void extend(Container& items, bool left = false) {
+    inline void extend(const Container& items, bool left = false) {
         linked::extend(this->view, items, left);
     }
 
@@ -119,12 +119,12 @@ public:
     }
 
     /* Check if the list contains a certain item. */
-    inline bool contains(Value& item) const {
+    inline bool contains(const Value& item) const {
         return linked::contains(this->view, item);
     }
 
     /* Remove the first occurrence of an item from the list. */
-    inline void remove(Value& item) {
+    inline void remove(const Value& item) {
         linked::remove(this->view, item);
     }
 
@@ -426,9 +426,10 @@ public:
         PyObject* kwnames
     ) {
         using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
+        static constexpr std::string_view meth_name{"append"};
         try {
             // parse arguments
-            Args pyargs(args, nargs, kwnames);
+            Args pyargs(meth_name, args, nargs, kwnames);
             PyObject* item = pyargs.parse("item");
             bool left = pyargs.parse("left", util::is_truthy, false);
             pyargs.finalize();
@@ -459,9 +460,10 @@ public:
         PyObject* kwnames
     ) {
         using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
+        static constexpr std::string_view meth_name{"insert"};
         try {
             // parse arguments
-            Args pyargs(args, nargs, kwnames);
+            Args pyargs(meth_name, args, nargs, kwnames);
             long long index = pyargs.parse("index", util::parse_int);
             PyObject* item = pyargs.parse("item");
             pyargs.finalize();
@@ -492,9 +494,10 @@ public:
         PyObject* kwnames
     ) {
         using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
+        static constexpr std::string_view meth_name{"extend"};
         try {
             // parse arguments
-            Args pyargs(args, nargs, kwnames);
+            Args pyargs(meth_name, args, nargs, kwnames);
             PyObject* items = pyargs.parse("items");
             bool left = pyargs.parse("left", util::is_truthy, false);
             pyargs.finalize();
@@ -526,9 +529,10 @@ public:
     ) {
         using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
         using Index = std::optional<long long>;
+        static constexpr std::string_view meth_name{"index"};
         try {
             // parse arguments
-            Args pyargs(args, nargs, kwnames);
+            Args pyargs(meth_name, args, nargs, kwnames);
             PyObject* item = pyargs.parse("item");
             Index start = pyargs.parse("start", util::parse_opt_int, Index());
             Index stop = pyargs.parse("stop", util::parse_opt_int, Index());
@@ -561,9 +565,10 @@ public:
     ) {
         using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
         using Index = std::optional<long long>;
+        static constexpr std::string_view meth_name{"count"};
         try {
             // parse arguments
-            Args pyargs(args, nargs, kwnames);
+            Args pyargs(meth_name, args, nargs, kwnames);
             PyObject* item = pyargs.parse("item");
             Index start = pyargs.parse("start", util::parse_opt_int, Index());
             Index stop = pyargs.parse("stop", util::parse_opt_int, Index());
@@ -611,9 +616,10 @@ public:
     /* Implement `LinkedList.pop()` in Python. */
     static PyObject* pop(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        static constexpr std::string_view meth_name{"pop"};
         try {
             // parse arguments
-            Args pyargs(args, nargs);
+            Args pyargs(meth_name, args, nargs);
             long long index = pyargs.parse(
                 "index", util::parse_int, (long long) -1
             );
@@ -689,19 +695,12 @@ public:
         PyObject* kwnames
     ) {
         using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
+        static constexpr std::string_view meth_name{"sort"};
         try {
             // parse arguments
-            Args pyargs(args, nargs, kwnames);
-            if (pyargs.positional() != 0) {
-                PyErr_Format(
-                    PyExc_TypeError,
-                    "sort() takes no positional arguments",
-                    pyargs.positional()
-                );
-                return nullptr;
-            }
-            PyObject* key = pyargs.parse("key", util::none_to_null, (PyObject*) nullptr);
-            bool reverse = pyargs.parse("reverse", util::is_truthy, false);
+            Args pyargs(meth_name, args, nargs, kwnames);
+            PyObject* key = pyargs.keyword("key", util::none_to_null, (PyObject*)nullptr);
+            bool reverse = pyargs.keyword("reverse", util::is_truthy, false);
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -746,9 +745,10 @@ public:
     /* Implement `LinkedList.rotate()` in Python. */
     static PyObject* rotate(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        static constexpr std::string_view meth_name{"rotate"};
         try {
             // parse arguments
-            Args pyargs(args, nargs);
+            Args pyargs(meth_name, args, nargs);
             long long steps = pyargs.parse("steps", util::parse_int, (long long) 1);
             pyargs.finalize();
 
@@ -1365,9 +1365,10 @@ public:
     ) {
         using Args = util::PyArgs<util::CallProtocol::KWARGS>;
         using util::ValueError;
+        static constexpr std::string_view meth_name{"__init__"};
         try {
             // parse arguments
-            Args pyargs(args, kwargs);
+            Args pyargs(meth_name, args, kwargs);
             PyObject* iterable = pyargs.parse(
                 "iterable", util::none_to_null, (PyObject*)nullptr
             );
@@ -1641,7 +1642,7 @@ public:
 
 
 /* Python module definition. */
-static struct PyModuleDef module_ = {
+static struct PyModuleDef module_list = {
     PyModuleDef_HEAD_INIT,
     .m_name = "list",
     .m_doc = (
@@ -1659,7 +1660,7 @@ PyMODINIT_FUNC PyInit_list(void) {
     if (PyType_Ready(&PyLinkedList::Type) < 0) return nullptr;
 
     // initialize module
-    PyObject* mod = PyModule_Create(&module_);
+    PyObject* mod = PyModule_Create(&module_list);
     if (mod == nullptr) return nullptr;
 
     // link type to module

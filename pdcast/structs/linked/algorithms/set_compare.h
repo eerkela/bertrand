@@ -26,6 +26,48 @@ namespace linked {
     }
 
 
+    /* Check whether the elements of a linked set or dictionary are equal to those of
+    a given container. */
+    template <typename View, typename Container>
+    auto set_equal(const View& view, const Container& items)
+        -> std::enable_if_t<ViewTraits<View>::setlike, bool>
+    {
+        using Node = typename View::Node;
+
+        // use auxiliary set to keep track of visited nodes as we iterate over items
+        std::unordered_set<Node*> found;
+        for (auto item : util::iter(items)) {
+            Node* node = view.search(item);
+            if (node == nullptr) return false;
+            found.insert(node);
+        }
+
+        // check that we found all nodes in view
+        return found.size() == view.size();
+    }
+
+
+    /* Check whether the elements of a linked set or dictionary are not equal to those
+    of a given container. */
+    template <typename View, typename Container>
+    auto set_not_equal(const View& view, const Container& items)
+        -> std::enable_if_t<ViewTraits<View>::setlike, bool>
+    {
+        using Node = typename View::Node;
+
+        // use auxiliary set to keep track of visited nodes as we iterate over items
+        std::unordered_set<Node*> found;
+        for (auto item : util::iter(items)) {
+            Node* node = view.search(item);
+            if (node != nullptr) return false;
+            found.insert(node);
+        }
+
+        // check that we did not find all nodes in view
+        return found.size() != view.size();
+    }
+
+
     /* Check whether the elements of a linked set or dictionary represent a subset of a
     given container. */
     template <typename View, typename Container>

@@ -7,9 +7,15 @@ linked_list = Extension(
 )
 
 
+linked_set = Extension(
+    "set",
+    sources=["set.cpp"],
+)
+
+
 setup(
     name='linked',
     version='0.1.0',
     description='A linked list implementation in C++',
-    ext_modules=[linked_list],
+    ext_modules=[linked_set],
 )

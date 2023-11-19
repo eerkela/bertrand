@@ -568,7 +568,7 @@ consistent with one another.  Finally, it removes an extra layer of indirection 
 lookups, which improves cache locality and overall performance. */
 template <typename NodeType = DoubleNode<PyObject*>>
 class SetView : public BaseView<SetView<NodeType>, HashAllocator<Hashed<NodeType>>> {
-    using Base = BaseView<SetView<Hashed<NodeType>>, HashAllocator<Hashed<NodeType>>>;
+    using Base = BaseView<SetView<NodeType>, HashAllocator<Hashed<NodeType>>>;
 
 public:
     using Node = Hashed<NodeType>;
@@ -585,7 +585,7 @@ public:
         bool dynamic,
         PyObject* spec,
         bool reverse
-    ) : Base::allocator(
+    ) : Base::Allocator(
             Base::init_size(iterable, capacity, dynamic),
             dynamic,
             spec
@@ -612,7 +612,7 @@ public:
         bool dynamic,
         PyObject* spec,
         bool reverse
-    ) : Base::allocator(capacity, dynamic, spec)
+    ) : Base::Allocator(capacity, dynamic, spec)
     {
         for (; begin != end; ++begin) {
             Node* curr = node<true>(*begin);  // exist_ok = True
@@ -690,7 +690,7 @@ public:
         bool dynamic,
         PyObject* spec,
         bool reverse
-    ) : Base::allocator(
+    ) : Base::Allocator(
             Base::init_size(iterable, capacity, dynamic),
             dynamic,
             spec
@@ -717,7 +717,7 @@ public:
         bool dynamic,
         PyObject* spec,
         bool reverse
-    ) : Base::allocator(capacity, dynamic, spec)
+    ) : Base::Allocator(capacity, dynamic, spec)
     {
         for (; begin != end; ++begin) {
             Node* curr = node<true>(*begin);  // exist_ok = True

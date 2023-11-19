@@ -99,8 +99,8 @@ namespace linked {
     auto intersection(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::setlike, View>
     {
-        using View = ViewType<NodeType, Allocator>;
         using Node = typename View::Node;
+        using MemGuard = typename View::MemGuard;
 
         // preallocate to current size
         View copy(view.size(), view.dynamic(), view.specialization());

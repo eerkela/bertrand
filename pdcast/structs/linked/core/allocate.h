@@ -1051,7 +1051,7 @@ private:
         // handle collisions
         using util::eq;
         while (flag) {
-            if (flag == CONSTRUCTED && eq(lookup->value(), value)) return &lookup;
+            if (flag == CONSTRUCTED && eq(lookup.value(), value)) return &lookup;
 
             // advance to next slot
             idx = modulo(idx + step, this->capacity);
@@ -1310,7 +1310,7 @@ public:
 
         // handle collisions, replacing tombstones if they are encountered
         while (flag == CONSTRUCTED) {
-            if (util::eq(lookup->value(), this->temp()->value())) {
+            if (util::eq(lookup.value(), this->temp()->value())) {
                 this->temp()->~Node();  // clean up temp node
                 if constexpr (exist_ok) {
                     // overwrite mapped value if applicable
@@ -1360,7 +1360,7 @@ public:
 
         // handle collisions
         while (flag) {
-            if (flag == CONSTRUCTED && lookup.eq(node->value())) {
+            if (flag == CONSTRUCTED && util::eq(lookup.value(), node->value())) {
                 Base::recycle(&lookup);  // invoke parent method
 
                 // mark as tombstone

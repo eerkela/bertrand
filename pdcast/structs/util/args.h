@@ -2,13 +2,15 @@
 #ifndef BERTRAND_STRUCTS_UTIL_ARGS_H
 #define BERTRAND_STRUCTS_UTIL_ARGS_H
 
+#include <cstdlib>  // std::malloc, std::free
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
 #include <string_view>  // std::string_view
+#include <unordered_set>  // std::unordered_set
 #include <Python.h>  // CPython API
 #include "except.h"  // TypeError
 #include "func.h"  // FuncTraits
-
+#include "iter.h"  // iter()
 
 
 namespace bertrand {
@@ -30,28 +32,37 @@ enum class CallProtocol {
 };
 
 
-/* CRTP Base class containing the public interface for all Python argument parsers. */
-template <typename Derived>
-class BaseArgs {
-protected:
+/* A utility class that allows for efficient parsing of Python arguments passed to an
+extension method. */
+template <CallProtocol>
+struct PyArgs;
+
+
+/* A parser for C methods implementing the METH_VARARGS protocol. */
+template <>
+struct PyArgs<CallProtocol::ARGS> {
+    const std::string_view& name;
+    PyObject* args;
     const Py_ssize_t n_args;
-    const Py_ssize_t n_kwargs;
-    Py_ssize_t idx;
+    Py_ssize_t arg_idx;
 
-    /* Initialize basic arg/kwarg counts for the parser. */
-    BaseArgs(const Py_ssize_t n_args, const Py_ssize_t n_kwargs = 0) :
-        n_args(n_args), n_kwargs(n_kwargs), idx(0)
-    {};
+    /* Create a parser for the given arguments. */
+    PyArgs(const std::string_view& name, PyObject* args) :
+        name(name), args(args), n_args(PyTuple_GET_SIZE(args)), arg_idx(0)
+    {}
 
-public:
+    #define PARSE_POSITIONAL \
+        /* check for positional argument */ \
+        if (arg_idx < n_args) { \
+            PyObject* val = PyTuple_GET_ITEM(args, arg_idx++); \
+            if constexpr (std::is_same_v<ReturnType, PyObject*>) { \
+                return val; \
+            } else { \
+                return convert(val); \
+            } \
+        } \
 
-    /* Copy/move constructors/assignment operators deleted for simplicity. */
-    BaseArgs(const BaseArgs&) = delete;
-    BaseArgs(BaseArgs&&) = delete;
-    BaseArgs& operator=(const BaseArgs&) = delete;
-    BaseArgs& operator=(BaseArgs&&) = delete;
-
-    /* Extract an argument from the pool, using an optional conversion function. */
+    /* Extract an argument from the pool using an optional conversion function. */
     template <
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
@@ -60,23 +71,16 @@ public:
         const std::string_view& name,
         Func convert = nullptr
     ) {
-        using Out = std::optional<ReturnType>;
-
-        // call subclass hook
-        Derived* self = static_cast<Derived*>(this);
-        Out result = self->template hook<Func, ReturnType>(name, convert);
-        if (result.has_value()) {
-            ++idx;
-            return result.value();
-        }
+        PARSE_POSITIONAL
 
         // no matching argument
         std::ostringstream msg;
-        msg << "Missing required argument: " << name;
+        msg << this->name << "() missing required positional argument: '" << name;
+        msg << "'";
         throw std::runtime_error(msg.str());
     }
 
-    /* Extract an argument from the pool, using an optional conversion function and
+    /* Extract an argument from the pool using an optional conversion function and
     default value. */
     template <
         typename Func = PyObject*,
@@ -88,224 +92,364 @@ public:
         Func convert,
         Type default_value
     ) {
-        using Out = std::optional<ReturnType>;
         static_assert(
             std::is_same_v<ReturnType, Type>,
             "Conversion function must return same type as default value."
         );
+        PARSE_POSITIONAL
 
-        // call subclass hook
-        Derived* self = static_cast<Derived*>(this);
-        Out result = self->template hook<Func, ReturnType>(name, convert);
-        return result.value_or(default_value);
+        // no matching argument
+        return default_value;
     }
 
-    /* Finalize the argument list, throwing an error if any additional arguments are
-    present.  */
+    /* finalize the argument list, throwing an error if any unexpected positional
+    arguments were supplied. */
     inline void finalize() {
-        // TODO: this error message could probably be more informative.  Ordinary
-        // Python functions will raise a TypeError with a message like "f() takes 2
-        // positional arguments but 3 were given", or "__init__() got an unexpected 
-        // keyword argument 'spec'", etc.
-        if (idx < n_args + n_kwargs) {
+        if (arg_idx < n_args) {
             std::ostringstream msg;
-            msg << "Function takes at most " << idx << " arguments, but ";
-            msg << n_args + n_kwargs << " were given";
+            msg << name << "() takes " << arg_idx << " positional ";
+            msg << (arg_idx == 1 ? "argument" : "arguments") << " but ";
+            msg << n_args << (n_args == 1 ? " was" : " were") << " given";
             throw TypeError(msg.str());
         }
     }
 
-    /* Get the number of positional arguments that were supplied to the parser. */
-    inline Py_ssize_t positional() const noexcept { return n_args; }
+    #undef PARSE_POSITIONAL
 
-    /* Get the number of keyword arguments that were supplied to the parser. */
-    inline Py_ssize_t keyword() const noexcept { return n_kwargs; }
-
-};
-
-
-/* A utility class that allows for efficient parsing of Python arguments passed to an
-extension method. */
-template <CallProtocol>
-class PyArgs;
-
-
-/* A parser for C methods implementing the METH_VARARGS protocol. */
-template <>
-class PyArgs<CallProtocol::ARGS> : public BaseArgs<PyArgs<CallProtocol::ARGS>> {
-    using Base = BaseArgs<PyArgs<CallProtocol::ARGS>>;
-
-    friend Base;
-    PyObject* args;
-
-    /* Hook for parse() overloads. */
-    template <typename Func, typename ReturnType>
-    std::optional<ReturnType> hook(const std::string_view& name, Func convert) {
-        static constexpr bool pyobject = std::is_same_v<ReturnType, PyObject*>;
-
-        // check for positional argument
-        if (this->idx < this->n_args) {
-            PyObject* val = PyTuple_GET_ITEM(args, this->idx++);
-            if constexpr (pyobject) {
-                return std::make_optional(val);
-            } else {
-                return std::make_optional(convert(val));
-            }
-        }
-
-        // no matching argument
-        return std::nullopt;
-    }
-
-public:
-    /* Create a parser for the given arguments. */
-    PyArgs(PyObject* args) : Base(PyTuple_GET_SIZE(args)), args(args) {}
 };
 
 
 /* A parser for C methods implementing the METH_VARARGS | METH_KEYWORDS protocol. */
 template <>
-class PyArgs<CallProtocol::KWARGS> : public BaseArgs<PyArgs<CallProtocol::KWARGS>> {
-    using Base = BaseArgs<PyArgs<CallProtocol::KWARGS>>;
-
-    friend Base;
+struct PyArgs<CallProtocol::KWARGS> {
+    const std::string_view& name;
     PyObject* args;
     PyObject* kwargs;
+    std::unordered_set<std::string_view> found;
+    const Py_ssize_t n_args;
+    const Py_ssize_t n_kwargs;
+    Py_ssize_t arg_idx;
 
-    /* Hook for parse() overloads. */
-    template <typename Func, typename ReturnType>
-    std::optional<ReturnType> hook(const std::string_view& name, Func convert) {
-        static constexpr bool pyobject = std::is_same_v<ReturnType, PyObject*>;
+    /* Create a parser for the given arguments. */
+    PyArgs(const std::string_view& name, PyObject* args, PyObject* kwargs) :
+        name(name), args(args), kwargs(kwargs), n_args(PyTuple_GET_SIZE(args)),
+        n_kwargs(kwargs == nullptr ? 0 : PyDict_Size(kwargs)), arg_idx(0)
+    {}
 
-        // check for positional argument
-        if (this->idx < this->n_args) {
-            PyObject* val = PyTuple_GET_ITEM(args, this->idx++);
-            if constexpr (pyobject) {
-                return std::make_optional(val);
-            } else {
-                return std::make_optional(convert(val));
-            }
+    //////////////////////////
+    ////    POSITIONAL    ////
+    //////////////////////////
+
+    #define PARSE_POSITIONAL \
+        /* check for positional argument */ \
+        if (arg_idx < n_args) { \
+            PyObject* val = PyTuple_GET_ITEM(args, arg_idx++); \
+            if constexpr (std::is_same_v<ReturnType, PyObject*>) { \
+                return val; \
+            } else { \
+                return convert(val); \
+            } \
+        } \
+
+    #define PARSE_KEYWORD \
+        /* check for keyword argument */ \
+        if (kwargs != nullptr) { \
+            PyObject* val = PyDict_GetItemString(kwargs, name.data()); \
+            if (val != nullptr) { \
+                found.insert(name); \
+                if constexpr (std::is_same_v<ReturnType, PyObject*>) { \
+                    return val; \
+                } else { \
+                    return convert(val); \
+                } \
+            } \
+        } \
+
+    /* Extract a positional argument from the pool using an optional conversion
+    function. */
+    template <
+        typename Func = PyObject*,
+        typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
+    >
+    ReturnType positional(
+        const std::string_view& name,
+        Func convert = nullptr
+    ) {
+        PARSE_POSITIONAL
+
+        // no matching argument
+        std::ostringstream msg;
+        msg << this->name << "() missing required positional argument: '" << name;
+        msg << "'";
+        throw std::runtime_error(msg.str());
+    }
+
+    /* Extract a positional argument from the pool using an optional conversion
+    function and default value. */
+    template <
+        typename Func = PyObject*,
+        typename Type = PyObject*,
+        typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
+    >
+    ReturnType positional(
+        const std::string_view& name,
+        Func convert,
+        Type default_value
+    ) {
+        static_assert(
+            std::is_same_v<ReturnType, Type>,
+            "Conversion function must return same type as default value."
+        );
+        PARSE_POSITIONAL
+
+        // no matching argument
+        return default_value;
+    }
+
+    /* Finalize the positional arguments to the function. */
+    inline void finalize_positional() {
+        if (arg_idx < n_args) {
+            std::ostringstream msg;
+            msg << name << "() takes " << arg_idx << " positional ";
+            msg << (arg_idx == 1 ? "argument" : "arguments") << " but ";
+            msg << n_args << (n_args == 1 ? " was" : " were") << " given";
+            throw TypeError(msg.str());
         }
+    }
 
-        // check for keyword argument
-        if (kwargs != nullptr) {
-            PyObject* val = PyDict_GetItemString(kwargs, name.data());
-            if (val != nullptr) {
-                ++this->idx;
-                if constexpr (pyobject) {
-                    return std::make_optional(val);
-                } else {
-                    return std::make_optional(convert(val));
+    ///////////////////////
+    ////    KEYWORD    ////
+    ///////////////////////
+
+    /* Extract a keyword argument from the pool using an optional conversion
+    function. */
+    template <
+        typename Func = PyObject*,
+        typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
+    >
+    ReturnType keyword(
+        const std::string_view& name,
+        Func convert = nullptr
+    ) {
+        PARSE_KEYWORD
+
+        // no matching argument
+        std::ostringstream msg;
+        msg << this->name << "() missing required keyword-only argument: '" << name;
+        msg << "'";
+        throw std::runtime_error(msg.str());
+    }
+
+    /* Extract a keyword argument from the pool using an optional conversion
+    function and default value. */
+    template <
+        typename Func = PyObject*,
+        typename Type = PyObject*,
+        typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
+    >
+    ReturnType keyword(
+        const std::string_view& name,
+        Func convert,
+        Type default_value
+    ) {
+        static_assert(
+            std::is_same_v<ReturnType, Type>,
+            "Conversion function must return same type as default value."
+        );
+        PARSE_KEYWORD
+
+        // no matching argument
+        return default_value;
+    }
+
+    /* Finalize the keyword arguments to the function. */
+    inline void finalize_keyword() {
+        if (static_cast<Py_ssize_t>(found.size()) < n_kwargs) {
+            for (PyObject* key : util::iter(kwargs)) {
+                std::string_view keyword{PyUnicode_AsUTF8(key)};
+                if (found.find(keyword) == found.end()) {
+                    std::ostringstream msg;
+                    msg << name << "() got an unexpected keyword argument: '";
+                    msg << keyword << "'";
+                    throw TypeError(msg.str());
                 }
             }
         }
-
-        // no matching argument
-        return std::nullopt;
     }
 
-public:
-    /* Create a parser for the given arguments. */
-    PyArgs(PyObject* args, PyObject* kwargs) :
-        Base(PyTuple_GET_SIZE(args), kwargs == nullptr ? 0 : PyDict_Size(kwargs)),
-        args(args),
-        kwargs(kwargs)
-    {}
+    //////////////////////
+    ////    EITHER    ////
+    //////////////////////
+
+    /* Extract an argument from the pool using an optional conversion function. */
+    template <
+        typename Func = PyObject*,
+        typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
+    >
+    ReturnType parse(
+        const std::string_view& name,
+        Func convert = nullptr
+    ) {
+        PARSE_KEYWORD
+        PARSE_POSITIONAL
+
+        // no matching argument
+        std::ostringstream msg;
+        msg << this->name << "() missing required argument: '" << name << "'";
+        throw std::runtime_error(msg.str());
+    }
+
+    /* Extract an argument from the pool using an optional conversion function and
+    default value. */
+    template <
+        typename Func = PyObject*,
+        typename Type = PyObject*,
+        typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
+    >
+    ReturnType parse(
+        const std::string_view& name,
+        Func convert,
+        Type default_value
+    ) {
+        static_assert(
+            std::is_same_v<ReturnType, Type>,
+            "Conversion function must return same type as default value."
+        );
+        PARSE_KEYWORD
+        PARSE_POSITIONAL
+
+        // no matching argument
+        return default_value;
+    }
+
+    /* Finalize the argument list, throwing an error if any unexpected arguments are
+    present. */
+    inline void finalize() {
+        finalize_positional();
+        finalize_keyword();
+    }
+
+    #undef PARSE_POSITIONAL
+    #undef PARSE_KEYWORD
+
 };
 
 
 /* A parser for C methods implementing the METH_FASTCALL protocol. */
 template <>
-class PyArgs<CallProtocol::FASTCALL> : public BaseArgs<PyArgs<CallProtocol::FASTCALL>> {
-    using Base = BaseArgs<PyArgs<CallProtocol::FASTCALL>>;
-
-    friend Base;
+struct PyArgs<CallProtocol::FASTCALL> {
+    const std::string_view& name;
     PyObject* const* args;
-
-    /* Hook for parse() overloads. */
-    template <typename Func, typename ReturnType>
-    std::optional<ReturnType> hook(const std::string_view& name, Func convert) {
-        static constexpr bool pyobject = std::is_same_v<ReturnType, PyObject*>;
-
-        // check for positional argument
-        if (this->idx < this->n_args) {
-            PyObject* val = args[this->idx++];
-            if constexpr (pyobject) {
-                return std::make_optional(val);
-            } else {
-                return std::make_optional(convert(val));
-            }
-        }
-
-        // no matching argument
-        return std::nullopt;
-    }
-
-public:
+    const Py_ssize_t n_args;
+    Py_ssize_t arg_idx;
 
     /* Create a parser for the given arguments. */
-    PyArgs(PyObject* const* args, Py_ssize_t nargs) : Base(nargs), args(args) {}
+    PyArgs(const std::string_view& name, PyObject* const* args, Py_ssize_t nargs) :
+        name(name), args(args), n_args(nargs), arg_idx(0)
+    {}
+
+    #define PARSE_POSITIONAL \
+        /* check for positional argument */ \
+        if (arg_idx < n_args) { \
+            PyObject* val = args[arg_idx++]; \
+            if constexpr (std::is_same_v<ReturnType, PyObject*>) { \
+                return val; \
+            } else { \
+                return convert(val); \
+            } \
+        } \
+
+    /* Extract an argument from the pool using an optional conversion function. */
+    template <
+        typename Func = PyObject*,
+        typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
+    >
+    ReturnType parse(
+        const std::string_view& name,
+        Func convert = nullptr
+    ) {
+        PARSE_POSITIONAL
+
+        // no matching argument
+        std::ostringstream msg;
+        msg << this->name << "() missing required positional argument: '" << name;
+        msg << "'";
+        throw std::runtime_error(msg.str());
+    }
+
+    /* Extract an argument from the pool using an optional conversion function and
+    default value. */
+    template <
+        typename Func = PyObject*,
+        typename Type = PyObject*,
+        typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
+    >
+    ReturnType parse(
+        const std::string_view& name,
+        Func convert,
+        Type default_value
+    ) {
+        static_assert(
+            std::is_same_v<ReturnType, Type>,
+            "Conversion function must return same type as default value."
+        );
+        PARSE_POSITIONAL
+
+        // no matching argument
+        return default_value;
+    }
+
+    /* Finalize the argument list, throwing an error if any unexpected positional
+    arguments are present. */
+    inline void finalize() {
+        if (arg_idx < n_args) {
+            std::ostringstream msg;
+            msg << name << "() takes " << arg_idx << " positional ";
+            msg << (arg_idx == 1 ? "argument" : "arguments") << " but ";
+            msg << n_args << (n_args == 1 ? " was" : " were") << " given";
+            throw TypeError(msg.str());
+        }
+    }
+
+    #undef PARSE_POSITIONAL
 
 };
 
 
 /* A parser for C methods implementing the METH_FASTCALL | METH_KEYWORDS protocol. */
 template <>
-class PyArgs<CallProtocol::VECTORCALL> : public BaseArgs<PyArgs<CallProtocol::VECTORCALL>> {
-    using Base = BaseArgs<PyArgs<CallProtocol::VECTORCALL>>;
-
-    friend Base;
+struct PyArgs<CallProtocol::VECTORCALL> {
+    const std::string_view& name;
     PyObject* const* args;
     std::string_view* kwnames;
-
-    /* Hook for parse() overloads. */
-    template <typename Func, typename ReturnType>
-    std::optional<ReturnType> hook(const std::string_view& name, Func convert) {
-        static constexpr bool pyobject = std::is_same_v<ReturnType, PyObject*>;
-
-        // check for positional argument
-        if (this->idx < this->n_args) {
-            PyObject* val = args[this->idx++];
-            if constexpr (pyobject) {
-                return std::make_optional(val);
-            } else {
-                return std::make_optional(convert(val));
-            }
-        }
-
-        // check for keyword argument
-        for (Py_ssize_t i = 0; i < n_kwargs; ++i) {
-            if (kwnames[i] == name) {
-                PyObject* val = args[this->n_args + i];
-                ++this->idx;
-                if constexpr (pyobject) {
-                    return std::make_optional(val);
-                } else {
-                    return std::make_optional(convert(val));
-                }
-            }
-        }
-
-        // no matching argument
-        return std::nullopt;
-    }
-
-public:
+    bool* found;
+    const Py_ssize_t n_args;
+    const Py_ssize_t n_kwargs;
+    Py_ssize_t arg_idx;
+    Py_ssize_t kwarg_idx;
 
     /* Create a parser for the given arguments. */
-    PyArgs(PyObject* const* args, Py_ssize_t nargs, PyObject* kwnames) :
-        Base(nargs, kwnames == nullptr ? 0 : PyTuple_GET_SIZE(kwnames)),
-        args(args),
-        kwnames(nullptr)
+    PyArgs(
+        const std::string_view& name,
+        PyObject* const* args,
+        Py_ssize_t nargs,
+        PyObject* kwnames
+    ) : name(name), args(args), kwnames(nullptr), found(nullptr), n_args(nargs),
+        n_kwargs(kwnames == nullptr ? 0 : PyTuple_GET_SIZE(kwnames)), arg_idx(0),
+        kwarg_idx(0)
     {
-        if (n_kwargs == 0) {
-            this->kwnames = nullptr;
-        } else {
+        if (n_kwargs != 0) {
+            // unpack keyword arguments into array of string_views
             this->kwnames = static_cast<std::string_view*>(
-                malloc(n_kwargs * sizeof(std::string_view))
+                std::malloc(n_kwargs * sizeof(std::string_view))
             );
             if (this->kwnames == nullptr) throw std::bad_alloc();
+            this->found = static_cast<bool*>(
+                std::malloc(n_kwargs * sizeof(bool))
+            );
+            if (this->found == nullptr) throw std::bad_alloc();
             for (Py_ssize_t i = 0; i < n_kwargs; ++i) {
+                this->found[i] = false;
                 PyObject* str = PyTuple_GET_ITEM(kwnames, i);
                 Py_ssize_t len;
                 new (this->kwnames + i) std::string_view{
@@ -313,14 +457,212 @@ public:
                     static_cast<size_t>(len)
                 };
             }
-
         }
     }
 
     /* Free the memory allocated for the keyword argument names. */
     ~PyArgs() noexcept {
-        if (kwnames != nullptr) free(kwnames);  // no need to call destructors
+        if (kwnames != nullptr) {
+            std::free(kwnames);  // no need to call destructors
+            std::free(found);
+        }
     }
+
+    //////////////////////////
+    ////    POSITIONAL    ////
+    //////////////////////////
+
+    #define PARSE_POSITIONAL \
+        /* check for positional argument */ \
+        if (arg_idx < n_args) { \
+            PyObject* val = args[arg_idx++]; \
+            if constexpr (std::is_same_v<ReturnType, PyObject*>) { \
+                return val; \
+            } else { \
+                return convert(val); \
+            } \
+        } \
+
+    #define PARSE_KEYWORD \
+        /* check for keyword argument */ \
+        for (Py_ssize_t i = 0; i < n_kwargs; ++i) { \
+            if (kwnames[i] == name) { \
+                found[i] = true; \
+                ++kwarg_idx; \
+                PyObject* val = args[n_args + i]; \
+                if constexpr (std::is_same_v<ReturnType, PyObject*>) { \
+                    return val; \
+                } else { \
+                    return convert(val); \
+                } \
+            } \
+        } \
+
+    /* Extract a positional argument from the pool using an optional conversion
+    function. */
+    template <
+        typename Func = PyObject*,
+        typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
+    >
+    ReturnType positional(
+        const std::string_view& name,
+        Func convert = nullptr
+    ) {
+        PARSE_POSITIONAL
+
+        // no matching argument
+        std::ostringstream msg;
+        msg << this->name << "() missing required positional argument: '" << name;
+        msg << "'";
+        throw std::runtime_error(msg.str());
+    }
+
+    /* Extract a positional argument from the pool using an optional conversion
+    function and default value. */
+    template <
+        typename Func = PyObject*,
+        typename Type = PyObject*,
+        typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
+    >
+    ReturnType positional(
+        const std::string_view& name,
+        Func convert,
+        Type default_value
+    ) {
+        static_assert(
+            std::is_same_v<ReturnType, Type>,
+            "Conversion function must return same type as default value."
+        );
+        PARSE_POSITIONAL
+
+        // no matching argument
+        return default_value;
+    }
+
+    /* Finalize the positional arguments to the function. */
+    inline void finalize_positional() {
+        if (arg_idx < n_args) {
+            std::ostringstream msg;
+            msg << name << "() takes " << arg_idx << " positional ";
+            msg << (arg_idx == 1 ? "argument" : "arguments") << " but ";
+            msg << n_args << (n_args == 1 ? " was" : " were") << " given";
+            throw TypeError(msg.str());
+        }
+    }
+
+    ///////////////////////
+    ////    KEYWORD    ////
+    ///////////////////////
+
+    /* Extract a keyword argument from the pool using an optional conversion
+    function. */
+    template <
+        typename Func = PyObject*,
+        typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
+    >
+    ReturnType keyword(
+        const std::string_view& name,
+        Func convert = nullptr
+    ) {
+        PARSE_KEYWORD
+
+        // no matching argument
+        std::ostringstream msg;
+        msg << this->name << "() missing required keyword argument: '" << name;
+        msg << "'";
+        throw std::runtime_error(msg.str());
+    }
+
+    /* Extract a keyword argument from the pool using an optional conversion
+    function and default value. */
+    template <
+        typename Func = PyObject*,
+        typename Type = PyObject*,
+        typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
+    >
+    ReturnType keyword(
+        const std::string_view& name,
+        Func convert,
+        Type default_value
+    ) {
+        static_assert(
+            std::is_same_v<ReturnType, Type>,
+            "Conversion function must return same type as default value."
+        );
+        PARSE_KEYWORD
+
+        // no matching argument
+        return default_value;
+    }
+
+    /* Finalize the keyword arguments to the function. */
+    inline void finalize_keyword() {
+        if (kwarg_idx < n_kwargs) {
+            for (Py_ssize_t i = 0; i < n_kwargs; ++i) {
+                if (!found[i]) {
+                    std::ostringstream msg;
+                    msg << name << "() got an unexpected keyword argument: '";
+                    msg << kwnames[i] << "'";
+                    throw TypeError(msg.str());
+                }
+            }
+        }
+    }
+
+    //////////////////////
+    ////    EITHER    ////
+    //////////////////////
+
+    /* Extract an argument from the pool using an optional conversion function. */
+    template <
+        typename Func = PyObject*,
+        typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
+    >
+    ReturnType parse(
+        const std::string_view& name,
+        Func convert = nullptr
+    ) {
+        PARSE_KEYWORD
+        PARSE_POSITIONAL
+
+        // no matching argument
+        std::ostringstream msg;
+        msg << this->name << "() missing required argument: '" << name << "'";
+        throw std::runtime_error(msg.str());
+    }
+
+    /* Extract an argument from the pool using an optional conversion function and
+    default value. */
+    template <
+        typename Func = PyObject*,
+        typename Type = PyObject*,
+        typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
+    >
+    ReturnType parse(
+        const std::string_view& name,
+        Func convert,
+        Type default_value
+    ) {
+        static_assert(
+            std::is_same_v<ReturnType, Type>,
+            "Conversion function must return same type as default value."
+        );
+        PARSE_KEYWORD
+        PARSE_POSITIONAL
+
+        // no matching argument
+        return default_value;
+    }
+
+    /* Finalize the argument list, throwing an error if any unexpected arguments are
+    present. */
+    inline void finalize() {
+        finalize_positional();
+        finalize_keyword();
+    }
+
+    #undef PARSE_POSITIONAL
+    #undef PARSE_KEYWORD
 
 };
 

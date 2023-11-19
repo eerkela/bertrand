@@ -497,8 +497,8 @@ public:
         }
         return RelativeProxy(this->self, sentinel, offset);
     }
-};
 
+};
 
 
 #endif  // BERTRAND_STRUCTS_LINKED_SET_CYTHON_H

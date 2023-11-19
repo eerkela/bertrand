@@ -408,9 +408,10 @@ public:
     /* Implement `LinkedList.reserve()` in Python. */
     static PyObject* reserve(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        static constexpr std::string_view meth_name{"reserve"};
         try {
             // parse arguments
-            Args pyargs = Args(args, nargs);
+            Args pyargs(meth_name, args, nargs);
             std::optional<long long> capacity = pyargs.parse(
                 "capacity",
                 util::parse_opt_int,
@@ -466,7 +467,7 @@ public:
         try {
             std::visit(
                 [&spec](auto& list) {
-                    list.specialize(spec);
+                    list.specialize(util::none_to_null(spec));
                 },
                 self->variant
             );
@@ -585,9 +586,10 @@ protected:
         ) {
             using Args = util::PyArgs<util::CallProtocol::KWARGS>;
             using util::ValueError;
+            static constexpr std::string_view meth_name{"__init__"};
             try {
                 // parse arguments
-                Args pyargs(args, kwargs);
+                Args pyargs(meth_name, args, kwargs);
                 PyObject* iterable = pyargs.parse(
                     "iterable", util::none_to_null, (PyObject*)nullptr
                 );

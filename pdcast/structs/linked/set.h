@@ -3,9 +3,15 @@
 #define BERTRAND_STRUCTS_LINKED_SET_H
 
 #include <cstddef>  // size_t
+#include <optional>  // std::optional<>
+#include <ostream>  // std::ostream
+#include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
+#include "../util/args.h"  // PyArgs
+#include "../util/except.h"  // throw_python()
 #include "core/view.h"  // SetView
 #include "base.h"  // LinkedBase
+#include "list.h"  // PyListInterface
 
 #include "algorithms/add.h"
 #include "algorithms/contains.h"
@@ -25,9 +31,9 @@
 #include "algorithms/set_compare.h"
 #include "algorithms/slice.h"
 #include "algorithms/sort.h"
+#include "algorithms/swap.h"
 #include "algorithms/union.h"
 #include "algorithms/update.h"
-#include "list.h"
 
 
 namespace bertrand {
@@ -83,87 +89,142 @@ public:
     }
 
     /* Insert an item at a specific index of the set. */
-    inline void insert(size_t index, Value& item) {
+    inline void insert(long long index, const Value& item) {
         linked::insert(this->view, index, item);
     }
 
     /* Extend a set by adding elements from an iterable that are not already present. */
     template <typename Container>
-    inline void update(Container& items, bool left = false) {
+    inline void update(const Container& items, bool left = false) {
         linked::update(this->view, items, left);
     }
 
     /* Remove elements from a set that are contained in the given iterable. */
     template <typename Container>
-    inline void difference_update(Container& items) {
+    inline void difference_update(const Container& items) {
         linked::difference_update(this->view, items);
     }
 
     /* Removal elements from a set that are not contained in the given iterable. */
     template <typename Container>
-    inline void intersection_update(Container& items) {
+    inline void intersection_update(const Container& items) {
         linked::intersection_update(this->view, items);
     }
 
     /* Update a set, keeping only elements found in either the set or the given
     container, but not both. */
     template <typename Container>
-    inline void symmetric_difference_update(Container& items, bool left = false) {
+    inline void symmetric_difference_update(const Container& items, bool left = false) {
         linked::symmetric_difference_update(this->view, items, left);
     }
 
-    /* Get the index of an item within the set. */
-    template <typename Index>
-    inline size_t index(Value& item, Index start = 0, Index stop = -1) const {
+/* Get the index of an item within the list. */
+    inline size_t index(
+        const Value& item,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
         return linked::index(this->view, item, start, stop);
     }
 
-    /* Count the number of occurrences of an item within the set. */
-    template <typename Index>
-    inline size_t count(Value& item, Index start = 0, Index stop = -1) const {
+    /* Count the number of occurrences of an item within the list. */
+    inline size_t count(
+        const Value& item,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
         return linked::count(this->view, item, start, stop);
     }
 
-    /* Remove an item from the set. */
-    inline void remove(Value& item) {
+    /* Check if the list contains a certain item. */
+    inline bool contains(const Value& item) const {
+        return linked::contains(this->view, item);
+    }
+
+    /* Remove the first occurrence of an item from the list. */
+    inline void remove(const Value& item) {
         linked::remove(this->view, item);
     }
 
     /* Remove an item from the set if it is present. */
-    inline void discard(Value& item) {
+    inline void discard(const Value& item) {
         linked::discard(this->view, item);
     }
 
-    /* Remove an item from the set and return its value. */
-    template <typename Index>
-    inline Value pop(Index index = -1) {
+    /* Remove an item from the list and return its value. */
+    inline Value pop(long long index = -1) {
         return linked::pop(this->view, index);
     }
 
-    /* Remove all elements from the set. */
+    /* Remove all elements from the list. */
     inline void clear() {
         this->view.clear();
     }
 
-    /* Return a shallow copy of the set. */
+    /* Return a shallow copy of the list. */
     inline LinkedSet copy() const {
         return LinkedSet(this->view.copy());
     }
 
-    /* Sort the set in-place according to an optional key func. */
+    /* Sort the list in-place according to an optional key func. */
     template <typename Func>
     inline void sort(Func key = nullptr, bool reverse = false) {
-        linked::sort<SortPolicy>(this->view, key, reverse);
+        linked::sort<linked::MergeSort>(this->view, key, reverse);
     }
 
-    /* Reverse the order of elements in the set in-place. */
+    /* Reverse the order of elements in the list in-place. */
     inline void reverse() {
         linked::reverse(this->view);
     }
 
-    /* Shift all elements in the set to the right by the specified number of steps. */
-    inline void rotate(int steps = 1) {
+    /* Shift all elements in the list to the right by the specified number of steps. */
+    inline void rotate(long long steps = 1) {
         linked::rotate(this->view, steps);
+    }
+
+    /* Return a new set with elements from this set and all other container(s). */
+    template <typename... Containers>
+    inline LinkedSet union_(const Containers&&... others) const {
+        return LinkedSet(linked::union_(this->view, others...));
+    }
+
+    /* Return a new set with elements from this set that are common to all other
+    container(s).  */
+    template <typename... Containers>
+    inline LinkedSet intersection(const Containers&&... others) const {
+        return LinkedSet(linked::intersection(this->view, others...));
+    }
+
+    /* Return a new set with elements in this set that are not in the other
+    container(s). */
+    template <typename... Containers>
+    inline LinkedSet difference(const Containers&&... others) const {
+        return LinkedSet(linked::difference(this->view, others...));
+    }
+
+    /* Return a new set with elements in either this set or another container, but not
+    both. */
+    template <typename... Containers>
+    inline LinkedSet symmetric_difference(const Containers&&... others) const {
+        return LinkedSet(linked::symmetric_difference(this->view, others...));
+    }
+
+    /* Check whether the set has no elements in common with another container. */
+    template <typename Container>
+    inline bool isdisjoint(const Container& other) const {
+        return linked::isdisjoint(this->view, other);
+    }
+
+    /* Check whether all items within the set are also present in another container. */
+    template <typename Container>
+    inline bool issubset(const Container& other) const {
+        return linked::issubset(this->view, other, false);
+    }
+
+    /* Check whether the set contains all items within another container. */
+    template <typename Container>
+    inline bool issuperset(const Container& other) const {
+        return linked::issuperset(this->view, other, false);
     }
 
     /* Get the linear distance between two elements within the set. */
@@ -186,51 +247,6 @@ public:
     template <typename Index>
     inline void move_to_index(Value& item, Index index) {
         linked::move_to_index(this->view, item, index);
-    }
-
-    /* Check whether the set has no elements in common with another container. */
-    template <typename Container>
-    inline bool isdisjoint(const Container& other) const {
-        return linked::isdisjoint(this->view, other);
-    }
-
-    /* Check whether all items within the set are also present in another container. */
-    template <typename Container>
-    inline bool issubset(const Container& other) const {
-        return linked::issubset(this->view, other);
-    }
-
-    /* Check whether the set contains all items within another container. */
-    template <typename Container>
-    inline bool issuperset(const Container& other) const {
-        return linked::issuperset(this->view, other);
-    }
-
-    /* Return a new set with elements from this set and all other container(s). */
-    template <typename... Containers>
-    inline LinkedSet union_(const Containers&&... others) const {
-        return LinkedSet(linked::set_union(this->view, others...));
-    }
-
-    /* Return a new set with elements from this set that are common to all other
-    container(s).  */
-    template <typename... Containers>
-    inline LinkedSet intersection(const Containers&&... others) const {
-        return LinkedSet(linked::intersection(this->view, others...));
-    }
-
-    /* Return a new set with elements in this set that are not in the other
-    container(s). */
-    template <typename... Containers>
-    inline LinkedSet difference(const Containers&&... others) const {
-        return LinkedSet(linked::difference(this->view, others...));
-    }
-
-    /* Return a new set with elements in either this set or another container, but not
-    both. */
-    template <typename... Containers>
-    inline LinkedSet symmetric_difference(const Containers&&... others) const {
-        return LinkedSet(linked::symmetric_difference(this->view, others...));
     }
 
     ///////////////////////
@@ -283,6 +299,19 @@ public:
      *      TODO
      */
 
+    /* Get a proxy for a value at a particular index of the set. */
+    inline linked::ElementProxy<View> operator[](long long index) {
+        return linked::position(this->view, index);
+    }
+
+    /* Get a proxy for a slice within the set. */
+    template <typename... Args>
+    inline linked::SliceProxy<View, LinkedSet> slice(Args&&... args) {
+        return linked::slice<View, LinkedSet>(
+            this->view,
+            std::forward<Args>(args)...
+        );
+    }
 
     //////////////////////////////////
     ////    OPERATOR OVERLOADS    ////
@@ -418,22 +447,17 @@ bool operator<=(const LinkedSet<Ts...>& set, const Container& other) {
 }
 
 
-// TODO: write a set equality algorithm.  Iterate through the container and look
-// up every value, inserting them into an unordered_set.  Then, compare the size of
-// the temporary set with the size of the LinkedSet.
-
-
-// /* Check whether a LinkedSet is equal to an arbitrary container. */
-// template <typename Container, typename... Ts>
-// bool operator==(const LinkedSet<Ts...>& set, const Container& other) {
-//     return linked::set_eq(set.view, other);
-// }
+/* Check whether a LinkedSet is equal to an arbitrary container. */
+template <typename Container, typename... Ts>
+bool operator==(const LinkedSet<Ts...>& set, const Container& other) {
+    return linked::set_equal(set.view, other);
+}
 
 
 /* Check whether a LinkedSet is not equal to an arbitrary container. */
 template <typename Container, typename... Ts>
 bool operator!=(const LinkedSet<Ts...>& set, const Container& other) {
-    return !(set == other);
+    return linked::set_not_equal(set.view, other);
 }
 
 
@@ -470,9 +494,10 @@ public:
         PyObject* kwnames
     ) {
         using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
+        static constexpr std::string_view meth_name{"add"};
         try {
             // parse arguments
-            Args pyargs(args, nargs, kwnames);
+            Args pyargs(meth_name, args, nargs, kwnames);
             PyObject* item = pyargs.parse("item");
             bool left = pyargs.parse("left", util::is_truthy, false);
             pyargs.finalize();
@@ -516,9 +541,6 @@ public:
         }
     }
 
-    // TODO: update(*) accepts iterables of containers, not just single ones
-    // -> these should be able to accept variable-length positional args.
-
     /* Implement `LinkedSet.union()` in Python. */
     static PyObject* union_(
         Derived* self,
@@ -527,6 +549,7 @@ public:
         PyObject* kwnames
     ) {
         using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
+        static constexpr std::string_view meth_name{"union"};
 
         // allocate new Python set
         Derived* result = reinterpret_cast<Derived*>(
@@ -536,13 +559,18 @@ public:
 
         try {
             // parse arguments
-            Args pyargs(args, nargs, kwnames);
-            bool left = pyargs.parse("left", util::is_truthy, false);
-            // do not finalize() - allows for variable length args
+            Args pyargs(meth_name, args, nargs, kwnames);
+            bool left = pyargs.keyword("left", util::is_truthy, false);
+            pyargs.finalize_keyword();  // allow for variadic positional args
 
             // invoke equivalent C++ method
-            std::visit(
+            return std::visit(
                 [&args, &nargs, &result, &left](auto& set) {
+                    if (nargs == 0) {
+                        result->from_cpp(set.copy());
+                        return reinterpret_cast<PyObject*>(result);
+                    }
+
                     // get union with first item, then update with all others
                     auto copy = set.union_(args[0], left);
                     for (Py_ssize_t i = 1; i < nargs; ++i) {
@@ -556,7 +584,7 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_pyton();
+            util::throw_python();
             Py_DECREF(result);
             return nullptr;
         }
@@ -570,17 +598,19 @@ public:
         PyObject* kwnames
     ) {
         using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
+        static constexpr std::string_view meth_name{"update"};
         try {
             // parse arguments
-            Args pyargs(args, nargs, kwnames);
-            PyObject* items = pyargs.parse("items");
-            bool left = pyargs.parse("left", util::is_truthy, false);
-            pyargs.finalize();
+            Args pyargs(meth_name, args, nargs, kwnames);
+            bool left = pyargs.keyword("left", util::is_truthy, false);
+            pyargs.finalize_keyword();  // allow for variadic positional args
 
             // invoke equivalent C++ method
             std::visit(
-                [&items, &left](auto& set) {
-                    set.update(items, left);
+                [&args, &nargs, &left](auto& set) {
+                    for (Py_ssize_t i = 0; i < nargs; ++i) {
+                        set.update(args[i], left);
+                    }
                 },
                 self->variant
             );
@@ -599,8 +629,7 @@ public:
     static PyObject* difference(
         Derived* self,
         PyObject* const* args,
-        Py_ssize_t nargs,
-        PyObject* kwnames
+        Py_ssize_t nargs
     ) {
         // allocate new Python set
         Derived* result = reinterpret_cast<Derived*>(
@@ -610,8 +639,13 @@ public:
 
         try {
             // invoke equivalent C++ method
-            std::visit(
-                [&args, &nargs, &result, &left](auto& set) {
+            return std::visit(
+                [&args, &nargs, &result](auto& set) {
+                    if (nargs == 0) {
+                        result->from_cpp(set.copy());
+                        return reinterpret_cast<PyObject*>(result);
+                    }
+
                     // get union with first item, then update with all others
                     auto copy = set.difference(args[0]);
                     for (Py_ssize_t i = 1; i < nargs; ++i) {
@@ -625,7 +659,7 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_pyton();
+            util::throw_python();
             Py_DECREF(result);
             return nullptr;
         }
@@ -635,20 +669,15 @@ public:
     static PyObject* difference_update(
         Derived* self,
         PyObject* const* args,
-        Py_ssize_t nargs,
-        PyObject* kwnames
+        Py_ssize_t nargs
     ) {
-        using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
         try {
-            // parse arguments
-            Args pyargs(args, nargs, kwnames);
-            PyObject* items = pyargs.parse("items");
-            pyargs.finalize();
-
             // invoke equivalent C++ method
             std::visit(
-                [&items, &left](auto& set) {
-                    set.difference_update(items);
+                [&args, &nargs](auto& set) {
+                    for (Py_ssize_t i = 0; i < nargs; ++i) {
+                        set.difference_update(args[i]);
+                    }
                 },
                 self->variant
             );
@@ -667,7 +696,7 @@ public:
     static PyObject* intersection(
         Derived* self,
         PyObject* const* args,
-        Py_ssize_t nargs,
+        Py_ssize_t nargs
     ) {
         // allocate new Python set
         Derived* result = reinterpret_cast<Derived*>(
@@ -677,8 +706,13 @@ public:
 
         try {
             // invoke equivalent C++ method
-            std::visit(
+            return std::visit(
                 [&args, &nargs, &result](auto& set) {
+                    if (nargs == 0) {
+                        result->from_cpp(set.copy());
+                        return reinterpret_cast<PyObject*>(result);
+                    }
+
                     // get union with first item, then update with all others
                     auto copy = set.intersection(args[0]);
                     for (Py_ssize_t i = 1; i < nargs; ++i) {
@@ -692,7 +726,7 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_pyton();
+            util::throw_python();
             Py_DECREF(result);
             return nullptr;
         }
@@ -702,20 +736,15 @@ public:
     static PyObject* intersection_update(
         Derived* self,
         PyObject* const* args,
-        Py_ssize_t nargs,
-        PyObject* kwnames
+        Py_ssize_t nargs
     ) {
-        using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
         try {
-            // parse arguments
-            Args pyargs(args, nargs, kwnames);
-            PyObject* items = pyargs.parse("items");
-            pyargs.finalize();
-
             // invoke equivalent C++ method
             std::visit(
-                [&items, &left](auto& set) {
-                    set.intersection_update(items);
+                [&args, &nargs](auto& set) {
+                    for (Py_ssize_t i = 0; i < nargs; ++i) {
+                        set.intersection_update(args[i]);
+                    }
                 },
                 self->variant
             );
@@ -738,6 +767,7 @@ public:
         PyObject* kwnames
     ) {
         using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
+        static constexpr std::string_view meth_name{"symmetric_difference"};
 
         // allocate new Python set
         Derived* result = reinterpret_cast<Derived*>(
@@ -747,13 +777,13 @@ public:
 
         try {
             // parse arguments
-            Args pyargs(args, nargs, kwnames);
+            Args pyargs(meth_name, args, nargs, kwnames);
             PyObject* other = pyargs.parse("other");
             bool left = pyargs.parse("left", util::is_truthy, false);
             pyargs.finalize();
 
             // invoke equivalent C++ method
-            std::visit(
+            return std::visit(
                 [&result, &other, &left](auto& set) {
                     result->from_cpp(set.symmetric_difference(other, left));
                     return reinterpret_cast<PyObject*>(result);
@@ -763,7 +793,7 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_pyton();
+            util::throw_python();
             Py_DECREF(result);
             return nullptr;
         }
@@ -777,16 +807,18 @@ public:
         PyObject* kwnames
     ) {
         using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
+        static constexpr std::string_view meth_name{"symmetric_difference_update"};
         try {
             // parse arguments
-            Args pyargs(args, nargs, kwnames);
+            Args pyargs(meth_name, args, nargs, kwnames);
             PyObject* items = pyargs.parse("items");
+            bool left = pyargs.parse("left", util::is_truthy, false);
             pyargs.finalize();
 
             // invoke equivalent C++ method
             std::visit(
                 [&items, &left](auto& set) {
-                    set.symmetric_difference_update(items);
+                    set.symmetric_difference_update(items, left);
                 },
                 self->variant
             );
@@ -805,7 +837,7 @@ public:
     static PyObject* isdisjoint(Derived* self, PyObject* other) {
         try {
             std::visit(
-                [&steps](auto& set) {
+                [&other](auto& set) {
                     set.isdisjoint(other);
                 },
                 self->variant
@@ -825,7 +857,7 @@ public:
     static PyObject* issubset(Derived* self, PyObject* other) {
         try {
             std::visit(
-                [&steps](auto& set) {
+                [&other](auto& set) {
                     set.issubset(other);
                 },
                 self->variant
@@ -845,7 +877,7 @@ public:
     static PyObject* issuperset(Derived* self, PyObject* other) {
         try {
             std::visit(
-                [&steps](auto& set) {
+                [&other](auto& set) {
                     set.issuperset(other);
                 },
                 self->variant
@@ -861,43 +893,138 @@ public:
         }
     }
 
-    // /* Implement `LinkedSet.distance()` in Python. */
-    // static PyObject* distance(
-    //     Derived* self,
-    //     PyObject* const* args,
-    //     Py_ssize_t nargs
-    // ) {
+    /* Implement `LinkedSet.distance()` in Python. */
+    static PyObject* distance(
+        Derived* self,
+        PyObject* const* args,
+        Py_ssize_t nargs
+    ) {
+        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        static constexpr std::string_view meth_name{"distance"};
+        try {
+            // parse arguments
+            Args pyargs(meth_name, args, nargs);
+            PyObject* item1 = pyargs.parse("item1");
+            PyObject* item2 = pyargs.parse("item2");
+            pyargs.finalize();
 
-    // }
+            // invoke equivalent C++ method
+            return std::visit(
+                [&item1, &item2](auto& set) {
+                    return PyLong_FromLongLong(set.distance(item1, item2));
+                },
+                self->variant
+            );
 
-    // /* Implement LinkedSet.swap() in Python. */
-    // static PyObject* swap(
-    //     Derived* self,
-    //     PyObject* const* args,
-    //     Py_ssize_t nargs
-    // ) {
+        // translate C++ exceptions into Python errors
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
+    }
 
-    // }
+    /* Implement LinkedSet.swap() in Python. */
+    static PyObject* swap(
+        Derived* self,
+        PyObject* const* args,
+        Py_ssize_t nargs
+    ) {
+        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        static constexpr std::string_view meth_name{"swap"};
+        try {
+            // parse arguments
+            Args pyargs(meth_name, args, nargs);
+            PyObject* item1 = pyargs.parse("item1");
+            PyObject* item2 = pyargs.parse("item2");
+            pyargs.finalize();
 
-    // /* Implement `LinkedSet.move()` in Python. */
-    // static PyObject* move(
-    //     Derived* self,
-    //     PyObject* const* args,
-    //     Py_ssize_t nargs,
-    //     PyObject* kwnames
-    // ) {
+            // invoke equivalent C++ method
+            std::visit(
+                [&item1, &item2](auto& set) {
+                    set.swap(item1, item2);
+                },
+                self->variant
+            );
 
-    // }
+            // exit normally
+            Py_RETURN_NONE;
 
-    // /* Implement `LinkedSet.move_to_index()` in Python. */
-    // static PyObject* move_to_index(
-    //     Derived* self,
-    //     PyObject* const* args,
-    //     Py_ssize_t nargs,
-    //     PyObject* kwnames
-    // ) {
+        // translate C++ exceptions into Python errors
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
 
-    // }
+    }
+
+    /* Implement `LinkedSet.move()` in Python. */
+    static PyObject* move(
+        Derived* self,
+        PyObject* const* args,
+        Py_ssize_t nargs,
+        PyObject* kwnames
+    ) {
+        using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
+        static constexpr std::string_view meth_name{"move"};
+        try {
+            // parse arguments
+            Args pyargs(meth_name, args, nargs, kwnames);
+            PyObject* item = pyargs.parse("item");
+            long long steps = pyargs.parse("steps", util::parse_int);
+            pyargs.finalize();
+
+            // invoke equivalent C++ method
+            std::visit(
+                [&item, &steps](auto& set) {
+                    set.move(item, steps);
+                },
+                self->variant
+            );
+
+            // exit normally
+            Py_RETURN_NONE;
+
+        // translate C++ exceptions into Python errors
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
+
+    }
+
+    /* Implement `LinkedSet.move_to_index()` in Python. */
+    static PyObject* move_to_index(
+        Derived* self,
+        PyObject* const* args,
+        Py_ssize_t nargs,
+        PyObject* kwnames
+    ) {
+        using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
+        static constexpr std::string_view meth_name{"move_to_index"};
+        try {
+            // parse arguments
+            Args pyargs(meth_name, args, nargs, kwnames);
+            PyObject* item = pyargs.parse("item");
+            long long index = pyargs.parse("index", util::parse_int);
+            pyargs.finalize();
+
+            // invoke equivalent C++ method
+            std::visit(
+                [&item, &index](auto& set) {
+                    set.move_to_index(item, index);
+                },
+                self->variant
+            );
+
+            // exit normally
+            Py_RETURN_NONE;
+
+        // translate C++ exceptions into Python errors
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
+    }
 
     /* Implement `LinkedSet.__or__()` (union operator) in Python. */
     static PyObject* __or__(Derived* self, PyObject* other) {
@@ -930,7 +1057,7 @@ public:
         // delegate to equivalent C++ operator
         try {
             std::visit(
-                [&other, &result](auto& set) {
+                [&other](auto& set) {
                     set |= other;
                 },
                 self->variant
@@ -940,7 +1067,6 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            Py_DECREF(result);
             util::throw_python();
             return nullptr;
         }
@@ -977,7 +1103,7 @@ public:
         // delegate to equivalent C++ operator
         try {
             std::visit(
-                [&other, &result](auto& set) {
+                [&other](auto& set) {
                     set -= other;
                 },
                 self->variant
@@ -987,7 +1113,6 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            Py_DECREF(result);
             util::throw_python();
             return nullptr;
         }
@@ -1024,7 +1149,7 @@ public:
         // delegate to equivalent C++ operator
         try {
             std::visit(
-                [&other, &result](auto& set) {
+                [&other](auto& set) {
                     set &= other;
                 },
                 self->variant
@@ -1034,7 +1159,6 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            Py_DECREF(result);
             util::throw_python();
             return nullptr;
         }
@@ -1072,7 +1196,7 @@ public:
         // delegate to equivalent C++ operator
         try {
             std::visit(
-                [&other, &result](auto& set) {
+                [&other](auto& set) {
                     set ^= other;
                 },
                 self->variant
@@ -1082,7 +1206,6 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            Py_DECREF(result);
             util::throw_python();
             return nullptr;
         }
@@ -1303,6 +1426,106 @@ This is equivalent to ``set >= other``.
 )doc"
         };
 
+        static constexpr std::string_view distance {R"doc(
+Get the linear distance between two items in the set.
+
+Parameters
+----------
+item1 : Any
+    The first item.
+item2 : Any
+    The second item.
+
+Returns
+-------
+int
+    The difference between the indices of the two items.  Positive values
+    indicate that ``item1`` is to the left of ``item2``, while negative values
+    indicate the opposite.  If the items are the same, this will be 0.
+
+Raises
+------
+KeyError
+    If either item is not present in the set.
+
+Notes
+-----
+This method is equivalent to ``set.index(item2) - set.index(item1)``, except
+that it gathers both indices in a single iteration.
+
+Distance calculations are O(n).
+)doc"
+        };
+
+        static constexpr std::string_view swap {R"doc(
+Swap the positions of two items within the set.
+
+Parameters
+----------
+item1 : Any
+    The first item.
+item2 : Any
+    The second item.
+
+Raises
+------
+KeyError
+    If either item is not present in the set.
+
+Notes
+-----
+This method is O(1) for doubly-linked sets and O(n) otherwise.  This is due to
+the need to traverse the entire set in order to find the previous node.
+)doc"
+        };
+
+        static constexpr std::string_view move {R"doc(
+Move an item within the set by the specified number of spaces.
+
+Parameters
+----------
+item : Any
+    The item to move.
+steps : int
+    The number of spaces to move the item.  If positive, the item will be moved
+    forward.  If negative, the item will be moved backward.
+
+Raises
+------
+KeyError
+    If the item is not present in the set.
+
+Notes
+-----
+This method is O(steps) for doubly-linked sets and singly-linked sets with
+``steps > 0``.  For singly-linked sets with ``steps < 0``, it is O(n) due to
+the need to traverse the entire set in order to find the previous node.
+)doc"
+        };
+
+        static constexpr std::string_view move_to_index {R"doc(
+Move an item within the set to the specified index.
+
+Parameters
+----------
+item : Any
+    The item to move.
+index : int
+    The index to move the item to, following the same semantics as the normal
+    index operator.
+
+Raises
+------
+KeyError
+    If the item is not present in the set.
+
+Notes
+-----
+This method is O(n) due to the need to traverse the entire set in order to find
+the given index.  For doubly-linked lists, it is optimized to O(n/2).
+)doc"
+        };
+
     };
 
 };
@@ -1336,7 +1559,7 @@ class PyLinkedSet :
     /* Construct a PyLinkedSet around an existing C++ LinkedSet. */
     template <typename Set>
     inline void from_cpp(Set&& set) {
-        new (&variant) Variant(std::forward<Set>(list));
+        new (&variant) Variant(std::forward<Set>(set));
     }
 
 public:
@@ -1349,9 +1572,10 @@ public:
     ) {
         using Args = util::PyArgs<util::CallProtocol::KWARGS>;
         using util::ValueError;
+        static constexpr std::string_view meth_name{"__init__"};
         try {
             // parse arguments
-            Args pyargs(args, kwargs);
+            Args pyargs(meth_name, args, kwargs);
             PyObject* iterable = pyargs.parse(
                 "iterable", util::none_to_null, (PyObject*)nullptr
             );
@@ -1502,7 +1726,7 @@ code that relies on this data structure with only minimal changes.
 )doc"
         };
 
-        // TODO: modify docs for remove(), count(), index()?
+        // TODO: modify docs for remove(), count()?
 
     };
 
@@ -1556,18 +1780,22 @@ code that relies on this data structure with only minimal changes.
             "union",  // renamed
             (PyCFunction) union_,
             METH_FASTCALL | METH_KEYWORDS,
-            PyDoc_STR(docs::union_::data())
-        }
+            PyDoc_STR(ISet::docs::union_.data())
+        },
         SET_METHOD(update, METH_FASTCALL | METH_KEYWORDS),
         SET_METHOD(difference, METH_FASTCALL),
-        SET_METHOD(difference_update, METH_FASTCALL | METH_KEYWORDS),
+        SET_METHOD(difference_update, METH_FASTCALL),
         SET_METHOD(intersection, METH_FASTCALL),
-        SET_METHOD(intersection_update, METH_FASTCALL | METH_KEYWORDS),
+        SET_METHOD(intersection_update, METH_FASTCALL),
         SET_METHOD(symmetric_difference, METH_FASTCALL | METH_KEYWORDS),
         SET_METHOD(symmetric_difference_update, METH_FASTCALL | METH_KEYWORDS),
         SET_METHOD(isdisjoint, METH_O),
         SET_METHOD(issubset, METH_O),
         SET_METHOD(issuperset, METH_O),
+        SET_METHOD(distance, METH_FASTCALL),
+        SET_METHOD(swap, METH_FASTCALL),
+        SET_METHOD(move, METH_FASTCALL | METH_KEYWORDS),
+        SET_METHOD(move_to_index, METH_FASTCALL | METH_KEYWORDS),
         {NULL}  // sentinel
     };
 
@@ -1589,13 +1817,9 @@ code that relies on this data structure with only minimal changes.
     inline static PySequenceMethods sequence = [] {
         PySequenceMethods slots;
         slots.sq_length = (lenfunc) Base::__len__;
-        slots.sq_concat = (binaryfunc) IList::__add__;
-        slots.sq_repeat = (ssizeargfunc) IList::__mul__;
         slots.sq_item = (ssizeargfunc) __getitem_scalar__;
         slots.sq_ass_item = (ssizeobjargproc) __setitem_scalar__;
         slots.sq_contains = (objobjproc) __contains__;
-        slots.sq_inplace_concat = (binaryfunc) IList::__iadd__;
-        slots.sq_inplace_repeat = (ssizeargfunc) IList::__imul__;
         return slots;
     }();
 
@@ -1645,7 +1869,7 @@ public:
 
 
 /* Python module definition. */
-static struct PyModuleDef module_ = {
+static struct PyModuleDef module_set = {
     PyModuleDef_HEAD_INIT,
     .m_name = "set",
     .m_doc = (
@@ -1663,7 +1887,7 @@ PyMODINIT_FUNC PyInit_set(void) {
     if (PyType_Ready(&PyLinkedSet::Type) < 0) return nullptr;
 
     // initialize module
-    PyObject* mod = PyModule_Create(&module_);
+    PyObject* mod = PyModule_Create(&module_set);
     if (mod == nullptr) return nullptr;
 
     // link type to module
