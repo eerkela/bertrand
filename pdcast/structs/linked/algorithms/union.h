@@ -134,7 +134,13 @@ namespace linked {
         using MemGuard = typename View::MemGuard;
 
         // unpack items into temporary view
-        View temp_view(items);
+        View temp_view(
+            items,
+            std::nullopt,  // capacity: inferred from items
+            true,  // dynamic: true
+            nullptr,  // specialization: generic
+            false  // reverse: false
+        );
 
         // preallocate to exact size
         View copy(

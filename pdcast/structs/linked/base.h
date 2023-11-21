@@ -63,7 +63,7 @@ public:
         std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr
     ) : view(
-            max_size.value_or(Allocator::DEFAULT_CAPACITY),
+            max_size,
             !max_size.has_value(),
             spec
         )
@@ -78,7 +78,7 @@ public:
         bool reverse = false
     ) : view(
             std::forward<Container>(iterable),
-            max_size.value_or(Allocator::DEFAULT_CAPACITY),
+            max_size,
             !max_size.has_value(),
             spec,
             reverse
@@ -96,7 +96,7 @@ public:
     ) : view(
             std::forward<Iterator>(begin),
             std::forward<Iterator>(end),
-            max_size.value_or(Allocator::DEFAULT_CAPACITY),
+            max_size,
             !max_size.has_value(),
             spec,
             reverse

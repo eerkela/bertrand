@@ -90,23 +90,20 @@ public:
 
     /* Construct an empty view. */
     BaseView(
-        size_t capacity = Allocator::DEFAULT_CAPACITY,
-        bool dynamic = true,
-        PyObject* spec = nullptr
-    ) :
-        allocator(capacity, dynamic, spec)
+        std::optional<size_t> capacity,
+        bool dynamic,
+        PyObject* spec
+    ) : allocator(capacity, dynamic, spec)
     {}
-
-    // TODO: union.h and update.h require a simple constructor for view
 
     /* Construct a view from an input iterable. */
     template <typename Container>
     BaseView(
         Container&& iterable,
-        size_t capacity = Allocator::DEFAULT_CAPACITY,
-        bool dynamic = true,
-        PyObject* spec = nullptr,
-        bool reverse = false
+        std::optional<size_t> capacity,
+        bool dynamic,
+        PyObject* spec,
+        bool reverse
     ) : allocator(
             init_size(iterable, capacity, dynamic),
             dynamic,
@@ -128,10 +125,10 @@ public:
     BaseView(
         Iterator&& begin,
         Iterator&& end,
-        size_t capacity = Allocator::DEFAULT_CAPACITY,
-        bool dynamic = true,
-        PyObject* spec = nullptr,
-        bool reverse = false
+        std::optional<size_t> capacity,
+        bool dynamic,
+        PyObject* spec,
+        bool reverse
     ) : allocator(capacity, dynamic, spec)
     {
         for (; begin != end; ++begin) {
@@ -467,15 +464,23 @@ protected:
     /* Get the size at which to initialize a list based on a given iterable and
     optional fixed size parameter. */
     template <typename Container>
-    static size_t init_size(Container&& container, size_t capacity, bool dynamic) {
+    static std::optional<size_t> init_size(
+        Container&& container,
+        std::optional<size_t> capacity,
+        bool dynamic
+    ) {
         // trivial case: capacity is fixed
         if (!dynamic) return capacity;
 
         // get size of container if possible
         std::optional<size_t> size = util::len(container);
         if (size.has_value()) {  // use max of container size and specified capacity
-            size_t val = size.value();
-            return val < capacity ? capacity : val;
+            if (capacity.has_value()) {
+                size_t x = capacity.value();
+                size_t y = size.value();
+                return std::make_optional(x < y ? y : x);
+            }
+            return size;
         }
 
         // otherwise, use the specified capacity
@@ -577,8 +582,12 @@ which requires manual synchronization to ensure that the data structures remain
 consistent with one another.  Finally, it removes an extra layer of indirection during
 lookups, which improves cache locality and overall performance. */
 template <typename NodeType = DoubleNode<PyObject*>>
-class SetView : public BaseView<SetView<NodeType>, HashAllocator<Hashed<NodeType>>> {
-    using Base = BaseView<SetView<NodeType>, HashAllocator<Hashed<NodeType>>>;
+class SetView : public BaseView<
+    SetView<NodeType>, HashAllocator<Hashed<NodeType>, Collision::DOUBLE_HASH>
+> {
+    using Base = BaseView<
+        SetView<NodeType>, HashAllocator<Hashed<NodeType>, Collision::DOUBLE_HASH>
+    >;
 
 public:
     static constexpr bool setlike = true;
@@ -592,10 +601,10 @@ public:
     template <typename Container>
     SetView(
         Container&& iterable,
-        size_t capacity = Base::Allocator::DEFAULT_CAPACITY,
-        bool dynamic = true,
-        PyObject* spec = nullptr,
-        bool reverse = false
+        std::optional<size_t> capacity,
+        bool dynamic,
+        PyObject* spec,
+        bool reverse
     ) : Base(
             Base::init_size(iterable, capacity, dynamic),
             dynamic,
@@ -619,10 +628,10 @@ public:
     SetView(
         Iterator&& begin,
         Iterator&& end,
-        size_t capacity = Base::Allocator::DEFAULT_CAPACITY,
-        bool dynamic = true,
-        PyObject* spec = nullptr,
-        bool reverse = false
+        std::optional<size_t> capacity,
+        bool dynamic,
+        PyObject* spec,
+        bool reverse
     ) : Base(capacity, dynamic, spec)
     {
         for (; begin != end; ++begin) {
@@ -679,11 +688,11 @@ operation. */
 template <typename NodeType = DoubleNode<PyObject*>, typename MappedType = PyObject*>
 class DictView : public BaseView<
     DictView<NodeType, MappedType>,
-    HashAllocator<Mapped<Hashed<NodeType>, MappedType>>
+    HashAllocator<Mapped<Hashed<NodeType>, MappedType>, Collision::DOUBLE_HASH>
 > {
     using Base = BaseView<
         DictView<NodeType, MappedType>,
-        HashAllocator<Mapped<Hashed<NodeType>, MappedType>>
+        HashAllocator<Mapped<Hashed<NodeType>, MappedType>, Collision::DOUBLE_HASH>
     >;
 
 public:
@@ -698,10 +707,10 @@ public:
     template <typename Container>
     DictView(
         Container&& iterable,
-        size_t capacity = Base::Allocator::DEFAULT_CAPACITY,
-        bool dynamic = true,
-        PyObject* spec = nullptr,
-        bool reverse = false
+        std::optional<size_t> capacity,
+        bool dynamic,
+        PyObject* spec,
+        bool reverse
     ) : Base(
             Base::init_size(iterable, capacity, dynamic),
             dynamic,
@@ -725,10 +734,10 @@ public:
     DictView(
         Iterator&& begin,
         Iterator&& end,
-        size_t capacity = Base::Allocator::DEFAULT_CAPACITY,
-        bool dynamic = true,
-        PyObject* spec = nullptr,
-        bool reverse = false
+        std::optional<size_t> capacity,
+        bool dynamic,
+        PyObject* spec,
+        bool reverse
     ) : Base(capacity, dynamic, spec)
     {
         for (; begin != end; ++begin) {

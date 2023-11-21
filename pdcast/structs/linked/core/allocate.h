@@ -10,7 +10,7 @@
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
 #include <Python.h>  // CPython API
-#include "../../util/except.h"  // catch_python(), TypeError()
+#include "../../util/except.h"  // catch_python(), TypeError(), KeyError()
 #include "../../util/math.h"  // next_power_of_two()
 #include "../../util/python.h"  // std::hash<PyObject*>, eq(), len()
 #include "../../util/repr.h"  // repr()
@@ -134,7 +134,7 @@ protected:
     /* Throw an error indicating that the allocator is frozen at its current size. */
     inline auto cannot_grow() const {
         std::ostringstream msg;
-        msg << "array is frozen at size: " << capacity;
+        msg << "allocator is frozen at size " << capacity;
         return util::MemoryError(msg.str());
     }
 
@@ -143,7 +143,7 @@ protected:
         size_t capacity,
         bool dynamic,
         PyObject* specialization
-    ) : config(DYNAMIC * dynamic),  // dynamic=false turns off dynamic resizing
+    ) : config(DYNAMIC * dynamic),
         head(nullptr),
         tail(nullptr),
         capacity(capacity),
@@ -703,15 +703,21 @@ private:
     as they appear in the list. */
 
     /* Adjust the starting capacity of a dynamic list to a power of two. */
-    inline static size_t init_capacity(size_t capacity, bool dynamic) {
+    inline static size_t init_capacity(std::optional<size_t> capacity, bool dynamic) {
+        if (!capacity.has_value()) {
+            return DEFAULT_CAPACITY;
+        }
+
         // if list is dynamic, round up to next power of two
+        size_t result = capacity.value();
         if (dynamic) {
-            size_t result = util::next_power_of_two(capacity);
-            return result < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : result;
+            return result < DEFAULT_CAPACITY ?
+                DEFAULT_CAPACITY :
+                util::next_power_of_two(result);
         }
 
         // otherwise, return as-is
-        return capacity;
+        return result;
     }
 
     /* Copy/move the nodes from this allocator into the given array. */
@@ -768,16 +774,16 @@ private:
             std::cout << "    -> deallocate: " << this->capacity << " nodes" << std::endl;
         }
         array = new_array;
-        this->capacity = new_capacity;
         free_list.first = nullptr;
         free_list.second = nullptr;
+        this->capacity = new_capacity;
     }
 
 public:
 
     /* Create an allocator with an optional fixed size. */
     ListAllocator(
-        size_t capacity,
+        std::optional<size_t> capacity,
         bool dynamic,
         PyObject* specialization
     ) : Base(init_capacity(capacity, dynamic), dynamic, specialization),
@@ -792,7 +798,7 @@ public:
         free_list(std::make_pair(nullptr, nullptr))
     {
         if (this->occupied) {
-            std::pair<Node*, Node*> bounds(other.transfer<false>(array));
+            std::pair<Node*, Node*> bounds(other.template transfer<false>(array));
             this->head = bounds.first;
             this->tail = bounds.second;
         }
@@ -826,7 +832,7 @@ public:
         // copy array
         array = Base::malloc_nodes(this->capacity);
         if (this->occupied != 0) {
-            std::pair<Node*, Node*> bounds(other.transfer<false>(array));
+            std::pair<Node*, Node*> bounds(other.template transfer<false>(array));
             this->head = bounds.first;
             this->tail = bounds.second;
         } else {
@@ -953,10 +959,538 @@ public:
 //////////////////////////////
 
 
-/* A custom allocator that uses a hash table to manage memory for each node. */
+/* Enumeration of all the collision resolution strategies that can be used in
+HashAllocators.  */
+enum class Collision {
+    DOUBLE_HASH,  // separate, power of 2 open address table w/ tombstones
+    HOPSCOTCH  // direct hopscotch table w/ neighborhood size of 31
+};
+
+
+/* Generic class for a HashAllocator implementing one of the above collision
+policies. */
+template <typename NodeType, Collision Policy>
+class HashAllocator;
+
+
+/* An extension of a ListAllocator that maintains a separate hash map of occupied
+nodes.  Uses double hashing with a strict power of two table size to resolve
+collisions.  Removed nodes are replaced by tombstones, leading to periodic rehashes. */
 template <typename NodeType>
-class HashAllocator : public BaseAllocator<HashAllocator<NodeType>, NodeType> {
-    using Base = BaseAllocator<HashAllocator<NodeType>, NodeType>;
+class HashAllocator<NodeType, Collision::DOUBLE_HASH> :
+    public BaseAllocator<HashAllocator<NodeType, Collision::DOUBLE_HASH>, NodeType>
+{
+    using Base = BaseAllocator<HashAllocator<NodeType, Collision::DOUBLE_HASH>, NodeType>;
+    friend Base;
+    friend typename Base::MemGuard;
+
+public:
+    using Node = typename Base::Node;
+    static constexpr size_t DEFAULT_CAPACITY = 8;  // minimum array size
+
+private:
+    using Value = typename Node::Value;
+    static constexpr size_t PRIMES[] = {  // prime numbers to use for double hashing
+        // HASH PRIME       // TABLE SIZE
+        0,                  // 1 (2**0)         (not used)
+        1,                  // 2 (2**1)         (not used)
+        3,                  // 4 (2**2)         (not used)
+        7,                  // 8 (2**3)         (not used)
+        13,                 // 16 (2**4)
+        23,                 // 32 (2**5)
+        53,                 // 64 (2**6)
+        97,                 // 128 (2**7)
+        193,                // 256 (2**8)
+        389,                // 512 (2**9)
+        769,                // 1024 (2**10)
+        1543,               // 2048 (2**11)
+        3079,               // 4096 (2**12)
+        6151,               // 8192 (2**13)
+        12289,              // 16384 (2**14)
+        24593,              // 32768 (2**15)
+        49157,              // 65536 (2**16)
+        98317,              // 131072 (2**17)
+        196613,             // 262144 (2**18)
+        393241,             // 524288 (2**19)
+        786433,             // 1048576 (2**20)
+        1572869,            // 2097152 (2**21)
+        3145739,            // 4194304 (2**22)
+        6291469,            // 8388608 (2**23)
+        12582917,           // 16777216 (2**24)
+        25165843,           // 33554432 (2**25)
+        50331653,           // 67108864 (2**26)
+        100663319,          // 134217728 (2**27)
+        201326611,          // 268435456 (2**28)
+        402653189,          // 536870912 (2**29)
+        805306457,          // 1073741824 (2**30)
+        1610612741,         // 2147483648 (2**31)
+        3221225473,         // 4294967296 (2**32)
+        // NOTE: HASH PRIME is the first prime number larger than 0.75 * TABLE_SIZE
+    };
+
+    Node* array;  // dynamic array of nodes
+    std::pair<Node*, Node*> free_list;  // singly-linked list of open nodes
+    size_t table_size;  // size of hash table
+    size_t tombstones;  // number of nodes marked for deletion
+    unsigned char exponent;  // log2(table_size) - log2(DEFAULT_CAPACITY)
+    size_t prime;  // prime number used for double hashing
+    Node** table;  // hash table of node addresses
+
+    /* Adjust the starting capacity of a dynamic set to a power of two. */
+    inline static size_t init_capacity(std::optional<size_t> capacity, bool dynamic) {
+        if (!capacity.has_value()) {
+            return DEFAULT_CAPACITY;
+        }
+
+        // if list is dynamic, round up to next power of two
+        size_t result = capacity.value();
+        if (dynamic) {
+            return result < DEFAULT_CAPACITY ?
+                DEFAULT_CAPACITY :
+                util::next_power_of_two(result);
+        }
+
+        // otherwise, return as-is
+        return result;
+    }
+
+    /* Allocate a zero-initialized table of node addresses with the specified size. */
+    inline static Node** calloc_table(size_t size) {
+        Node** result = static_cast<Node**>(
+            std::calloc(size, sizeof(Node*))
+        );
+        if (result == nullptr) {
+            throw std::bad_alloc();
+        }
+        return result;
+    }
+
+    /* Copy/move the nodes from this allocator into the given array + hash table. */
+    template <bool move>
+    std::pair<Node*, Node*> transfer(Node* other, Node** table) const {
+        Node* new_head = nullptr;
+        Node* new_tail = nullptr;
+
+        // copy over existing nodes
+        Node* curr = this->head;
+        size_t idx = 0;
+        while (curr != nullptr) {
+            // remember next node in original list
+            Node* next = curr->next();
+
+            // initialize new node in array
+            Node* other_curr = &other[idx++];
+            if constexpr (move) {
+                new (other_curr) Node(std::move(*curr));
+            } else {
+                new (other_curr) Node(*curr);
+            }
+
+            // insert into new hash table
+            size_t hash = other_curr->hash();
+            size_t step = (hash % prime) | 1;
+            size_t idx = util::mod2(hash, table_size);
+            Node* lookup = table[idx];
+            while (lookup != nullptr) {
+                idx = util::mod2(idx + step, table_size);
+                lookup = table[idx];
+            }
+            table[idx] = other_curr;
+
+            // link to previous node in array
+            if (curr == this->head) {
+                new_head = other_curr;
+            } else {
+                Node::join(new_tail, other_curr);
+            }
+            new_tail = other_curr;
+            curr = next;
+        }
+
+        // return head/tail pointers for new list
+        return std::make_pair(new_head, new_tail);
+    }
+
+    /* Allocate a new array of a given size and transfer the contents of the list. */
+    void resize(size_t new_capacity) {
+        table_size = new_capacity * 2;
+
+        // allocate new array
+        Node* new_array = Base::malloc_nodes(new_capacity);
+        Node** new_table = calloc_table(table_size);
+        if constexpr (DEBUG) {
+            std::cout << "    -> allocate: " << new_capacity << " nodes" << std::endl;
+        }
+
+        // move nodes into new array
+        std::pair<Node*, Node*> bounds(transfer<true>(new_array, new_table));
+        this->head = bounds.first;
+        this->tail = bounds.second;
+
+        // replace arrays
+        free(array);
+        free(table);
+        if constexpr (DEBUG) {
+            std::cout << "    -> deallocate: " << this->capacity << " nodes" << std::endl;
+        }
+        array = new_array;
+        table = new_table;
+        free_list.first = nullptr;
+        free_list.second = nullptr;
+        this->capacity = new_capacity;
+        tombstones = 0;
+        exponent = util::log2(table_size);
+        prime = PRIMES[exponent];
+    }
+
+    /* Look up a value in the hash table by providing an explicit hash/value. */
+    inline Node* _search(const size_t hash, const Value& value) const {
+        // get index and step for double hashing
+        size_t step = (hash % prime) | 1;
+        size_t idx = util::mod2(hash, table_size);
+        Node* lookup = table[idx];
+
+        // handle collisions
+        while (lookup != nullptr) {
+            if (lookup != this->temp() && util::eq(lookup->value(), value)) {
+                return lookup;  // match found
+            }
+
+            // advance to next bucket
+            idx = util::mod2(idx + step, table_size);
+            lookup = table[idx];
+        }
+
+        // value not found
+        return nullptr;
+    }
+
+public:
+
+    /* Create an allocator with an optional fixed size. */
+    HashAllocator(
+        std::optional<size_t> capacity,
+        bool dynamic,
+        PyObject* specialization
+    ) : Base(init_capacity(capacity, dynamic), dynamic, specialization),
+        array(Base::malloc_nodes(this->capacity)),
+        free_list(std::make_pair(nullptr, nullptr)),
+        table_size(util::next_power_of_two(this->capacity * 2)),
+        tombstones(0),
+        exponent(util::log2(table_size)),
+        prime(PRIMES[exponent]),
+        table(calloc_table(table_size))
+    {}
+
+    /* Copy constructor. */
+    HashAllocator(const HashAllocator& other) :
+        Base(other),
+        array(Base::malloc_nodes(this->capacity)),
+        free_list(std::make_pair(nullptr, nullptr)),
+        table_size(other.table_size),
+        tombstones(0),
+        exponent(other.exponent),
+        prime(other.prime),
+        table(calloc_table(table_size))
+    {
+        if (this->occupied) {
+            std::pair<Node*, Node*> bounds(other.template transfer<false>(array, table));
+            this->head = bounds.first;
+            this->tail = bounds.second;
+        }
+    }
+
+    /* Move constructor. */
+    HashAllocator(HashAllocator&& other) noexcept :
+        Base(std::move(other)),
+        array(other.array),
+        free_list(std::move(other.free_list)),
+        table_size(other.table_size),
+        tombstones(other.tombstones),
+        exponent(other.exponent),
+        prime(other.prime),
+        table(other.table)
+    {
+        other.array = nullptr;
+        other.free_list.first = nullptr;
+        other.free_list.second = nullptr;
+        other.table_size = 0;
+        other.tombstones = 0;
+        other.exponent = 0;
+        other.prime = 0;
+        other.table = nullptr;
+    }
+
+    /* Copy assignment operator. */
+    HashAllocator& operator=(const HashAllocator& other) {
+        if (this == &other) return *this;  // check for self-assignment
+
+        // invoke parent
+        Base::operator=(other);
+
+        // destroy array
+        free_list.first = nullptr;
+        free_list.second = nullptr;
+        if (array != nullptr) {
+            free(array);
+            free(table);
+        }
+
+        // copy table metadata
+        table_size = other.table_size;
+        tombstones = 0;
+        exponent = other.exponent;
+        prime = other.prime;
+
+        // copy array
+        array = Base::malloc_nodes(this->capacity);
+        table = calloc_table(table_size);
+        if (this->occupied) {
+            std::pair<Node*, Node*> bounds(other.template transfer<false>(array, table));
+            this->head = bounds.first;
+            this->tail = bounds.second;
+        } else {
+            this->head = nullptr;
+            this->tail = nullptr;
+        }
+        return *this;
+    }
+
+    /* Move assignment operator. */
+    HashAllocator& operator=(HashAllocator&& other) noexcept {
+        if (this == &other) return *this;  // check for self-assignment
+
+        // invoke parent
+        Base::operator=(std::move(other));
+
+        // destroy array
+        if (array != nullptr) {
+            free(array);
+            free(table);
+        }
+
+        // transfer ownership
+        array = other.array;
+        free_list.first = other.free_list.first;
+        free_list.second = other.free_list.second;
+        table_size = other.table_size;
+        tombstones = other.tombstones;
+        exponent = other.exponent;
+        prime = other.prime;
+        table = other.table;
+
+        // reset other
+        other.array = nullptr;
+        other.free_list.first = nullptr;
+        other.free_list.second = nullptr;
+        other.table_size = 0;
+        other.tombstones = 0;
+        other.exponent = 0;
+        other.prime = 0;
+        other.table = nullptr;
+        return *this;
+    }
+
+    /* Destroy an allocator and release its resources. */
+    ~HashAllocator() noexcept {
+        if (this->occupied) {
+            Base::destroy_list();  // calls destructors
+        }
+        if (array != nullptr) {
+            free(array);
+            free(table);
+            if constexpr (DEBUG) {
+                std::cout << "    -> deallocate: " << this->capacity << " nodes";
+                std::cout << std::endl;
+            }
+        }
+    }
+
+    /* Construct a new node for the list. */
+    template <bool exist_ok = false, typename... Args>
+    Node* create(Args&&... args) {
+        // allocate into temporary node
+        Node* node = this->temp();
+        Base::init_node(node, std::forward<Args>(args)...);
+
+        // search hash table
+        size_t hash = node->hash();
+        size_t step = (hash % prime) | 1;  // double hashing
+        size_t idx = util::mod2(hash, table_size);
+        Node* lookup = table[idx];
+        while (lookup != nullptr && lookup != node) {  // fill in tombstones
+            // check for matching value
+            if (util::eq(lookup->value(), node->value())) {
+                if constexpr (exist_ok) {
+                    if constexpr (NodeTraits<Node>::has_mapped) {
+                        lookup->mapped(std::move(node->mapped()));
+                    }
+                    node->~Node();  // clean up temporary node
+                    return lookup;
+                } else {
+                    node->~Node();
+                    std::ostringstream msg;
+                    msg << "duplicate key: " << util::repr(node->value());
+                    throw std::invalid_argument(msg.str());
+                }
+            }
+
+            // advance to next index
+            idx = util::mod2(idx + step, table_size);
+            lookup = table[idx];
+        }
+
+        // check if we need to grow the array
+        if (this->occupied == this->capacity && free_list.first == nullptr) {
+            if (this->frozen() || !this->dynamic()) {
+                throw Base::cannot_grow();
+            }
+            resize(this->capacity * 2);
+
+            // rehash node to get new index
+            hash = node->hash();
+            step = (hash % prime) | 1;
+            idx = util::mod2(hash, table_size);
+            lookup = table[idx];
+            while (lookup != nullptr) {  // don't need to check for tombstones
+                idx = util::mod2(idx + step, table_size);
+                lookup = table[idx];
+            }
+        } else if (lookup == node) {  // clear tombstone
+            --tombstones;
+        }
+
+        // move temp node into allocator array
+        if (free_list.first != nullptr) {
+            node = free_list.first;
+            Node* next = node->next();
+            try {
+                new (node) Node(std::move(*this->temp()));
+            } catch (...) {
+                node->next(next);  // restore free list
+                throw;  // propagate
+            }
+            free_list.first = next;
+            if (free_list.first == nullptr) free_list.second = nullptr;
+        } else {
+            node = &array[this->occupied];
+            new (node) Node(std::move(*this->temp()));
+        }
+
+        // insert finalized node into hash table
+        ++this->occupied;
+        table[idx] = node;
+        return node;
+    }
+
+    /* Release a node from the set. */
+    void recycle(Node* node) {
+        // look up node in hash table
+        size_t hash = node->hash();
+        size_t step = (hash % prime) | 1;  // double hashing
+        size_t idx = util::mod2(hash, table_size);
+        Node* lookup = table[idx];
+
+        // handle collisions
+        while (lookup != nullptr) {
+            if (lookup == node) {
+                Base::recycle(node);  // invoke parent method
+
+                // mark as tombstone
+                table[idx] = this->temp();
+                ++tombstones;
+
+                // shrink array and clear out tombstones if necessary
+                if (!this->shrink()) {
+                    if (tombstones > this->capacity / 8) {  // clear out tombstones
+                        if (!this->frozen()) { // full defragmentation
+                            resize(this->capacity);
+                            return;
+                        } else {  // rehash table without touching allocator array
+                            // TODO
+                        }
+                    }
+                    if (free_list.first == nullptr) {
+                        free_list.first = node;
+                        free_list.second = node;
+                    } else {
+                        free_list.second->next(node);
+                        free_list.second = node;
+                    }
+                }
+                return;
+            }
+
+            // advance to next index
+            idx = util::mod2(idx + step, table_size);
+            lookup = table[idx];
+        }
+
+        // node not found
+        std::ostringstream msg;
+        msg << "key not found: " << util::repr(node->value());
+        throw util::KeyError(msg.str());
+    }
+
+    /* Remove all elements from the list. */
+    void clear() noexcept {
+        // invoke parent method
+        Base::clear();
+
+        // reset hash table parameters and shrink to default capacity
+        if (!this->frozen()) {
+            exponent = 0;
+            prime = PRIMES[0];
+            tombstones = 0;
+            this->capacity = DEFAULT_CAPACITY;
+            free(array);
+            free(table);
+            array = Base::malloc_nodes(this->capacity);
+            table = calloc_table(table_size);
+        }
+    }
+
+    /* Get the total amount of dynamic memory being managed by this allocator. */
+    inline size_t nbytes() const {
+        // NOTE: hash table takes 8 bytes per node (2 pointers per node)
+        return Base::nbytes() + table_size * sizeof(Node*);
+    }
+
+    /* Check whether the referenced node is being managed by this allocator. */
+    inline bool owns(const Node* node) const noexcept {
+        return node >= array && node < array + this->capacity;  // pointer arithmetic
+    }
+
+    /* Search for a node by its value directly. */
+    inline Node* search(const Value& key) const {
+        return _search(std::hash<Value>{}(key), key);
+    }
+
+    /* Search for a node by reusing a hash from another node. */
+    template <typename N, std::enable_if_t<std::is_base_of_v<NodeTag, N>, int> = 0>
+    inline Node* search(const N* node) const {
+        if constexpr (NodeTraits<N>::has_hash) {
+            return _search(node->hash(), node->value());
+        } else {
+            size_t hash = std::hash<typename N::Value>{}(node->value());
+            return _search(hash, node->value());
+        }
+    }
+
+};
+
+
+/* A custom allocator where hashing is applied directly to the underlying node array.
+Uses hopscotch hashing with a neighborhood size of 31 to resolve collisions, allowing
+it to work effectively at high load factors to reduce overhead.  This is extremely
+cache-friendly, since all the necessary data is co-located within the array.  However,
+resizes (while rare) are non-deterministic, and depend on the distribution of the hash
+function. */
+template <typename NodeType>
+class HashAllocator<NodeType, Collision::HOPSCOTCH> :
+    public BaseAllocator<HashAllocator<NodeType, Collision::HOPSCOTCH>, NodeType>
+{
+    using Base = BaseAllocator<HashAllocator<NodeType, Collision::HOPSCOTCH>, NodeType>;
     friend Base;
     friend typename Base::MemGuard;
 
@@ -1016,8 +1550,11 @@ private:
 
     /* Adjust the input to a constructor's `capacity` argument to account for double
     hashing, 50% maximum load factor, and strict power of two table sizes. */
-    inline static size_t init_capacity(size_t capacity) {
-        size_t result = util::next_power_of_two(capacity * 2);
+    inline static size_t init_capacity(std::optional<size_t> capacity) {
+        if (!capacity.has_value()) {
+            return DEFAULT_CAPACITY;
+        }
+        size_t result = util::next_power_of_two(capacity.value() * 2);
         return result < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : result;
     }
 
@@ -1031,16 +1568,11 @@ private:
         return result;
     }
 
-    /* A fast modulo operator that exploits a power of two table capacity. */
-    inline static size_t modulo(const size_t a, const size_t b) {
-        return a & (b - 1);  // works for any power of two b
-    }
-
     /* Look up a value in the hash table by providing an explicit hash. */
     Node* _search(const size_t hash, const Value& value) const {
         // get index and step for double hashing
         size_t step = (hash % prime) | 1;
-        size_t idx = modulo(hash, this->capacity);
+        size_t idx = util::mod2(hash, this->capacity);
         Node& lookup = array[idx];
         uint32_t& bits = flags[idx / 16];
         unsigned char flag = (bits >> (idx % 16)) & MASK;
@@ -1054,7 +1586,7 @@ private:
             if (flag == CONSTRUCTED && eq(lookup.value(), value)) return &lookup;
 
             // advance to next slot
-            idx = modulo(idx + step, this->capacity);
+            idx = util::mod2(idx + step, this->capacity);
             lookup = array[idx];
             bits = flags[idx / 16];
             flag = (bits >> (idx % 16)) & MASK;
@@ -1082,7 +1614,7 @@ private:
             }
 
             // get index in new array
-            size_t idx = modulo(hash, this->capacity);
+            size_t idx = util::mod2(hash, this->capacity);
             size_t step = (hash % prime) | 1;
             Node* lookup = &other[idx];
             size_t div = idx / 16;
@@ -1091,7 +1623,7 @@ private:
 
             // handle collisions (NOTE: no need to check for tombstones)
             while (bits & CONSTRUCTED) {
-                idx = modulo(idx + step, this->capacity);
+                idx = util::mod2(idx + step, this->capacity);
                 lookup = &other[idx];
                 div = idx / 16;
                 mod = idx % 16;
@@ -1164,7 +1696,7 @@ public:
 
     /* Create an allocator with an optional fixed size. */
     HashAllocator(
-        size_t capacity,
+        std::optional<size_t> capacity,
         bool dynamic,
         PyObject* specialization
     ) : Base(init_capacity(capacity), dynamic, specialization),
@@ -1227,7 +1759,7 @@ public:
         array = Base::malloc_nodes(this->capacity);
         flags = calloc_flags(this->capacity);
         if (this->occupied) {
-            std::pair<Node*, Node*> bounds(other.transfer<false>(array));
+            std::pair<Node*, Node*> bounds(other.template transfer<false>(array));
             this->head = bounds.first;
             this->tail = bounds.second;
         } else {
@@ -1304,7 +1836,7 @@ public:
         // search for node within hash table
         size_t hash = this->temp()->hash();
         size_t step = (hash % prime) | 1;  // double hashing
-        size_t idx = modulo(hash, this->capacity);
+        size_t idx = util::mod2(hash, this->capacity);
         Node& lookup = array[idx];
         size_t mod = idx % 16;
         uint32_t& bits = flags[idx / 16];
@@ -1328,7 +1860,7 @@ public:
             }
 
             // advance to next index
-            idx = modulo(idx + step, this->capacity);
+            idx = util::mod2(idx + step, this->capacity);
             lookup = array[idx];
             mod = idx % 16;
             bits = flags[idx / 16];
@@ -1351,7 +1883,7 @@ public:
         // look up node in hash table
         size_t hash = node->hash();
         size_t step = (hash % prime) | 1;  // double hashing
-        size_t idx = modulo(hash, this->capacity);
+        size_t idx = util::mod2(hash, this->capacity);
         Node& lookup = array[idx];
         size_t mod = idx % 16;
         uint32_t& bits = flags[idx / 16];
@@ -1391,7 +1923,7 @@ public:
             }
 
             // advance to next index
-            idx = modulo(idx + step, this->capacity);
+            idx = util::mod2(idx + step, this->capacity);
             lookup = array[idx];
             mod = idx % 16;
             bits = flags[idx / 16];
@@ -1401,7 +1933,7 @@ public:
         // node not found
         std::ostringstream msg;
         msg << "key not found: " << util::repr(node->value());
-        throw std::invalid_argument(msg.str());
+        throw util::KeyError(msg.str());
     }
 
     /* Remove all elements from the list. */
@@ -1449,18 +1981,18 @@ public:
     }
 
     /* Check whether the referenced node is being managed by this allocator. */
-    inline bool owns(Node* node) const noexcept {
+    inline bool owns(const Node* node) const noexcept {
         return node >= array && node < array + this->capacity;  // pointer arithmetic
     }
 
     /* Search for a node by its value directly. */
-    inline Node* search(Value& key) const {
+    inline Node* search(const Value& key) const {
         return _search(std::hash<Value>{}(key), key);
     }
 
     /* Search for a node by reusing a hash from another node. */
     template <typename N, std::enable_if_t<std::is_base_of_v<NodeTag, N>, int> = 0>
-    inline Node* search(N* node) const {
+    inline Node* search(const N* node) const {
         if constexpr (NodeTraits<N>::has_hash) {
             return _search(node->hash(), node->value());
         } else {

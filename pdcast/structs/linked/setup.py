@@ -1,21 +1,14 @@
 from setuptools import setup, Extension
 
 
-linked_list = Extension(
-    "list",
-    sources=["list.cpp"],
-)
-
-
-linked_set = Extension(
-    "set",
-    sources=["set.cpp"],
-)
-
+compile_args = ["-O3"]
 
 setup(
     name='linked',
     version='0.1.0',
     description='A linked list implementation in C++',
-    ext_modules=[linked_set],
+    ext_modules=[
+        Extension("list", sources=["list.cpp"], extra_compile_args=compile_args),
+        Extension("set", sources=["set.cpp"], extra_compile_args=compile_args),
+    ],
 )

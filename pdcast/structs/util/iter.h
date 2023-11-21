@@ -818,6 +818,12 @@ public:
     static constexpr bool has_rend = REnd::exists;
     static constexpr bool has_crend = CREnd::exists;
     static constexpr bool has_size = _has_size<Container>::value;
+    static constexpr bool forward_iterable = (
+        (has_begin || has_cbegin) && (has_end || has_cend)
+    );
+    static constexpr bool reverse_iterable = (
+        (has_rbegin || has_crbegin) && (has_rend || has_crend)
+    );
 };
 
 

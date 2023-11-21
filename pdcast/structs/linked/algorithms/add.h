@@ -14,11 +14,10 @@ namespace linked {
     /* Add an item to the end of a linked set or dictionary. */
     template <typename View, typename Item = typename View::Value>
     inline auto add(View& view, Item& item, bool left)
-        -> std::enable_if_t<ViewTraits<View>::setlike, void>
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
-        using Node = typename View::Node;
-        Node* node = view.template node<true>(item);  // exist_ok = true
-        if (node->next() == nullptr && node != view.tail()) {  // node not in view
+        typename View::Node* node = view.template node<true>(item);
+        if (node->next() == nullptr && node != view.tail()) {
             if (left) {
                 view.link(nullptr, node, view.head());
             } else {
@@ -37,9 +36,8 @@ namespace linked {
     inline auto add(View& view, Key& key, Value& value, bool left)
         -> std::enable_if_t<ViewTraits<View>::dictlike, void>
     {
-        using Node = typename View::Node;
-        Node* node = view.template node<true>(key, value);  // 2-argument init
-        if (node->next() == nullptr && node != view.tail()) {  // node not in view
+        typename View::Node* node = view.template node<true>(key, value);
+        if (node->next() == nullptr && node != view.tail()) {
             if (left) {
                 view.link(nullptr, node, view.head());
             } else {

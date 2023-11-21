@@ -89,6 +89,17 @@ struct ValueError : public Exception {
 };
 
 
+/* Python-style KeyError. */
+struct KeyError : public Exception {
+    using Exception::Exception;
+    using Exception::operator=;
+
+    KeyError(const char* what) : Exception(what, PyExc_KeyError) {}
+    KeyError(const std::string& what) : Exception(what, PyExc_KeyError) {}
+    KeyError(const std::string_view& what) : Exception(what, PyExc_KeyError) {}
+};
+
+
 /* Python-style IndexError. */
 struct IndexError : public Exception {
     using Exception::Exception;
