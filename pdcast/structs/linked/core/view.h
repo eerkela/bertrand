@@ -182,9 +182,6 @@ public:
 
     /* Set the head of the list to another node. */
     inline void head(Node* node) {
-        if (node != nullptr && !allocator.owns(node)) {
-            throw std::invalid_argument("node must be owned by this allocator");
-        }
         allocator.head = node;
     }
 
@@ -192,12 +189,9 @@ public:
     inline Node* tail() const noexcept {
         return allocator.tail;
     }
- 
+
     /* Set the tail of the list to another node. */
     inline void tail(Node* node) {
-        if (node != nullptr && !allocator.owns(node)) {
-            throw std::invalid_argument("node must be owned by this allocator");
-        }
         allocator.tail = node;
     }
 
@@ -230,23 +224,15 @@ public:
     /* Link a node to its neighbors to form a linked list. */
     inline void link(Node* prev, Node* curr, Node* next) {
         Node::link(prev, curr, next);  // as defined by Node
-        if (prev == nullptr) {
-            head(curr);
-        }
-        if (next == nullptr) {
-            tail(curr);
-        }
+        if (prev == nullptr) allocator.head = curr;
+        if (next == nullptr) allocator.tail = curr;
     }
 
     /* Unlink a node from its neighbors. */
     inline void unlink(Node* prev, Node* curr, Node* next) {
         Node::unlink(prev, curr, next);  // as defined by Node
-        if (prev == nullptr) {
-            head(next);
-        }
-        if (next == nullptr) {
-            tail(prev);
-        }
+        if (prev == nullptr) allocator.head = next;
+        if (next == nullptr) allocator.tail = prev;
     }
 
     /* Get the current size of the list. */
@@ -583,10 +569,10 @@ consistent with one another.  Finally, it removes an extra layer of indirection 
 lookups, which improves cache locality and overall performance. */
 template <typename NodeType = DoubleNode<PyObject*>>
 class SetView : public BaseView<
-    SetView<NodeType>, HashAllocator<Hashed<NodeType>, Collision::DOUBLE_HASH>
+    SetView<NodeType>, HashAllocator<Hashed<NodeType>, Collision::HOPSCOTCH>
 > {
     using Base = BaseView<
-        SetView<NodeType>, HashAllocator<Hashed<NodeType>, Collision::DOUBLE_HASH>
+        SetView<NodeType>, HashAllocator<Hashed<NodeType>, Collision::HOPSCOTCH>
     >;
 
 public:
@@ -661,8 +647,8 @@ public:
 
     /* Search the set for a particular node/value. */
     template <typename T>
-    inline Node* search(T* key) const {
-        return this->allocator.search(key);
+    inline Node* search(T&& key) const {
+        return this->allocator.search(std::forward<T>(key));
     }
 
 };
