@@ -1405,6 +1405,7 @@ public:
                             return;
                         } else {  // rehash table without touching allocator array
                             // TODO
+                            throw std::runtime_error("not implemented");
                         }
                     }
                     if (free_list.first == nullptr) {
@@ -1529,17 +1530,15 @@ private:
         alignas(Node) unsigned char data[sizeof(Node)];  // uninitialized payload
 
         /* NOTE: setting displacement=EMPTY indicates that the bucket does not have any
-         * collisions.  Otherwise, it is the distance to the first bucket in the
-         * collision chain.  
+         * collisions.  Otherwise, it is the distance from the current bucket (origin)
+         * to the first bucket in its collision chain.  If another value hashes to a
+         * bucket that has an EMPTY displacement, then it is guaranteed to be unique.
          *
          * Setting next=EMPTY indicates that the current bucket is not occupied.
          * Otherwise, it is the distance to the next bucket in the chain.  If it is set
          * to 0, then it indicates that the current bucket is at the end of its
          * collision chain.
          */
-
-        // NOTE: non-empty collisions means that at least one value hashed to this
-        // bucket.  In searches, we can 
 
         /* Get a pointer to the node within the bucket. */
         inline Node* node() noexcept {
@@ -1570,7 +1569,7 @@ private:
             Bucket* table;
             size_t idx;
             size_t modulo;
-            Bucket& curr;
+            Bucket* curr;
 
             /* Iterator traits. */
             using iterator_category         = std::forward_iterator_tag;
@@ -1585,7 +1584,7 @@ private:
             {}
 
             /* Dereference the iterator to get the current bucket. */
-            inline Bucket& operator*() const noexcept {
+            inline Bucket* operator*() const noexcept {
                 return curr;
             }
 
@@ -1619,8 +1618,6 @@ private:
             size_t origin_idx,
             size_t modulo
         ) noexcept {
-            // TODO: 
-
             return HopIterator(table, (origin_idx + collisions) & modulo, modulo);
         }
 
@@ -1645,31 +1642,26 @@ private:
 
     /* Look up a value in the hash table by providing an explicit hash/value. */
     Node* _search(const size_t hash, const Value& value) const {
+        // TODO: check for specialization?
+        // if constexpr (util::is_pyobject<Value>) {
+        //     if (this->specialization != nullptr) {
+        //         int comp = PyObject_IsInstance(value, this->specialization);
+        //         if (comp == -1) throw util::catch_python();
+        //         if (!comp) return nullptr;  // value cannot be contained in table
+        //     }
+        // }
+
         // identify starting bucket
         size_t idx = hash & modulo;
-        Bucket* bucket = &table[idx];
+        Bucket* bucket = table + idx;
 
         // if collision chain is empty, then no match is possible
         if (bucket->collisions != EMPTY) {
             if (bucket->collisions) {  // advance to head of chain
                 idx = (idx + bucket->collisions) & modulo;
-                bucket = &table[idx];
+                bucket = table + idx;
             }
             while (true) {
-                // fastpath for Python comparisons
-                if constexpr (util::is_pyobject<Value>) {
-                    // check for exact pointer match or string special case
-                    if (value == bucket->node()->value() || (
-                            PyUnicode_CheckExact(value) &&
-                            PyUnicode_CheckExact(bucket->node()->value()) &&
-                            PyUnicode_Compare(value, bucket->node()->value()) == 0
-                        )
-                    ) {
-                        return bucket->node();
-                    }
-                }
-
-                // fall back to ordinary == comparison
                 if (util::eq(value, bucket->node()->value())) {
                     return bucket->node();
                 }
@@ -1678,7 +1670,7 @@ private:
                 if (!bucket->next) break;  // end of chain
                 idx += bucket->next;
                 idx &= modulo;
-                bucket = &table[idx];
+                bucket = table + idx;
             }
         }
 
@@ -1706,65 +1698,51 @@ private:
 
             // get origin bucket in new array
             size_t origin_idx = hash & modulo;
-            Bucket& origin = other[origin_idx];
-            if (!origin.occupied()) {
-                // transfer node into new array
-                if constexpr (move) {
-                    origin.construct(std::move(*curr_node));
-                } else {
-                    origin.construct(*curr_node);
-                }
-                origin.collisions = 0;  // mark as head of collision chain
-                origin.next = 0;  // mark as tail of collision chain
-                curr_node = curr_node->next();
-                continue;
-            }
+            Bucket* origin = other + origin_idx;
 
-            // linear probe to find empty bucket
-            Bucket& bucket = other[(origin_idx + 1) & modulo];
-            Bucket& prev = origin;  // previous bucket in collision chain
+            // linear probe starting from origin
+            Bucket* bucket = origin;
+            Bucket* prev = origin;  // previous bucket in chain
             unsigned char prev_distance = 0;  // distance from origin to prev
-            unsigned char distance = 1;  // current probe length
-            unsigned char next = origin.collisions;  // distance to next bucket in chain
-            while (bucket.occupied()) {
+            unsigned char distance = 0;  // current probe length
+            unsigned char next = origin->collisions;  // distance to next bucket in chain
+            while (bucket->occupied()) {
+                if (++distance == NEIGHBORHOOD) {
+                    throw std::runtime_error("exceeded maximum probe length");
+                }
+                bucket = other + ((origin_idx + distance) & modulo);
                 if (distance == next) {
                     prev = bucket;
                     prev_distance = distance;
-                    next = distance + bucket.next;
+                    next += bucket->next;
                 }
-                if (++distance == NEIGHBORHOOD) {
-                    // TODO: throw error and retry with larger table?
-                    throw std::runtime_error("exceeded maximum probe length");
-                }
-                bucket = other[(origin_idx + distance) & size];
             };
 
             // update hop information
-            if (&prev == &origin) {  // empty bucket occurs at start of chain
-                unsigned char has_collisions = (origin.collisions != EMPTY);
-                bucket.next = (origin.collisions - distance) * has_collisions;
-                origin.collisions = distance;
-            } else {  // empty bucket occurs in middle or end of chain
+            if (distance < origin->collisions) {  // bucket is new head of chain
+                bucket->next = (origin->collisions != EMPTY) * (origin->collisions - distance);
+                origin->collisions = (origin->collisions != 0) * distance;
+            } else {  // bucket is in middle or end of chain
                 unsigned char delta = distance - prev_distance;
-                bucket.next = prev.next - delta;
-                prev.next = delta;
+                bucket->next = (prev->next != 0) * (prev->next - delta);
+                prev->next = delta;
             }
 
             // transfer node into new array
             Node* next_node = curr_node->next();
             if constexpr (move) {
-                bucket.construct(std::move(*curr_node));
+                bucket->construct(std::move(*curr_node));
             } else {
-                bucket.construct(*curr_node);
+                bucket->construct(*curr_node);
             }
 
-            // update head/tail pointers
+            // join with previous node and update head/tail pointers
             if (curr_node == this->head) {
-                new_head = bucket.node();
+                new_head = bucket->node();
             } else {
-                Node::join(new_tail, bucket.node());
+                Node::join(new_tail, bucket->node());
             }
-            new_tail = bucket.node();
+            new_tail = bucket->node();
             curr_node = next_node;
         }
 
@@ -1794,7 +1772,7 @@ private:
         this->capacity = new_capacity;
         table = new_table;
         modulo = new_capacity - 1;
-        max_load = new_capacity - (new_capacity / 8);
+        max_load = new_capacity - (new_capacity / 4);
     }
 
 public:
@@ -1806,7 +1784,7 @@ public:
         PyObject* specialization
     ) : Base(init_capacity(capacity), dynamic, specialization),
         table(new Bucket[this->capacity]), modulo(this->capacity - 1),
-        max_load(this->capacity - (this->capacity / 8))
+        max_load(this->capacity - (this->capacity / 4))
     {}
 
     /* Copy constructor. */
@@ -1903,18 +1881,16 @@ public:
         Base::init_node(node, std::forward<Args>(args)...);
 
         // check if we need to grow the array
-        if (this->occupied >= max_load) {
-            resize(this->capacity * 2);
-        }
+        if (this->occupied >= max_load) resize(this->capacity * 2);
 
         // search hash table to get origin bucket
         size_t origin_idx = node->hash() & modulo;
-        Bucket* origin = &table[origin_idx];
+        Bucket* origin = table + origin_idx;
 
         // if bucket has collisions, search the chain for a matching value
         if (origin->collisions != EMPTY) {
             size_t idx = (origin_idx + origin->collisions) & modulo;
-            Bucket* bucket = &table[idx];
+            Bucket* bucket = table + idx;
             while (true) {
                 // check for value match
                 if (util::eq(bucket->node()->value(), node->value())) {
@@ -1925,24 +1901,24 @@ public:
                         node->~Node();  // clean up temporary node
                         return bucket->node();
                     } else {
-                        node->~Node();
                         std::ostringstream msg;
                         msg << "duplicate key: " << util::repr(node->value());
+                        node->~Node();
                         throw util::KeyError(msg.str());
                     }
                 }
 
                 // advance to next bucket
-                if (!bucket->next) break;  // end of chain
+                if (!(bucket->next)) break;  // end of chain
                 idx += bucket->next;
                 idx &= modulo;
-                bucket = &table[idx];
+                bucket = table + idx;
             }
         }
 
         // NOTE: if we get here, then we know the value is unique and must be inserted
         // into the hash table.  This requires a linear probe over the hop neighborhood
-        // as well as updates to the hop information for the collision chain.
+        // as well as careful updates to the hop information for the collision chain.
 
         // linear probe starting from origin
         Bucket* bucket = origin;
@@ -1951,48 +1927,27 @@ public:
         unsigned char distance = 0;  // current probe length
         unsigned char next = origin->collisions;  // distance to next bucket in chain
         while (bucket->occupied()) {
-            if (++distance == NEIGHBORHOOD) {
-                // TODO: grow table and retry
-                throw std::runtime_error("exceeded maximum probe length");
+            if (++distance == NEIGHBORHOOD) {  // exceeded maximum probe length
+                resize(this->capacity * 2);  // grow table
+                return create(std::move(*node));  // retry
             }
-            bucket = &table[(origin_idx + distance) & modulo];
+            bucket = table + ((origin_idx + distance) & modulo);
             if (distance == next) {
                 prev = bucket;
                 prev_distance = distance;
-                next = next + bucket->next;
+                next += bucket->next;
             }
         }
 
-        // cases:
-        // 1. bucket has no collisions
-        //      -> set origin.collisions=distance
-        //      -> set bucket.next=0
-        // 2. bucket is new head of collision chain
-        //      -> set origin.collisions=distance
-        //      -> set bucket.next=origin.collisions-distance
-        // 3. bucket is in middle of collision chain
-        //      -> set bucket.next=prev.next-(distance-prev_distance)
-        //      -> set prev.next=distance-prev_distance
-        // 4. bucket is end of collision chain
-        //      -> set bucket.next=0
-        //      -> set prev.next=distance-prev_distance
-
-        // printf("origin index: %zu\n", origin_idx);
-        // printf("bucket index: %zu\n", (origin_idx + distance) & modulo);
-        // printf("origin collisions: %i\n", origin->collisions);
-
         // update hop information
-        if (distance < origin->collisions) {
+        if (distance < origin->collisions) {  // bucket is new head of chain
             bucket->next = (origin->collisions != EMPTY) * (origin->collisions - distance);
             origin->collisions = (origin->collisions != 0) * distance;
-        } else {
+        } else {  // bucket is in middle or end of chain
             unsigned char delta = distance - prev_distance;
             bucket->next = (prev->next != 0) * (prev->next - delta);
             prev->next = delta;
         }
-
-        // printf("origin collisions: %i\n", origin->collisions);
-        // printf("bucket next: %i\n", bucket->next);
 
         // insert node into empty bucket
         bucket->construct(std::move(*node));
@@ -2004,12 +1959,12 @@ public:
     void recycle(Node* node) {
         // look up origin node
         size_t idx = node->hash() & modulo;
-        Bucket& origin = table[idx];
+        Bucket* origin = table + idx;
 
         // trivial case: bucket does not have a collision chain
-        if (origin.collisions == EMPTY) {
-            if (origin.occupied() && util::eq(origin.node()->value(), node->value())) {
-                origin.destroy();
+        if (origin->collisions == EMPTY) {
+            if (origin->occupied() && util::eq(origin->node()->value(), node->value())) {
+                origin->destroy();
                 --this->occupied;
                 return;
             }
@@ -2019,32 +1974,38 @@ public:
         }
 
         // follow collision chain
-        Bucket& prev = origin;
-        idx = (idx + origin.collisions) & modulo;
-        Bucket& bucket = table[idx];
-        while (bucket.occupied()) {
+        Bucket* prev = origin;
+        idx = (idx + origin->collisions) & modulo;
+        Bucket* bucket = table + idx;
+        while (true) {
             // check for matching value
-            if (util::eq(bucket.node()->value(), node->value())) {
+            if (util::eq(bucket->node()->value(), node->value())) {
                 // update hop information
-                if (&prev == &origin) {  // bucket is head of collision chain
-                    unsigned char has_next = (bucket.next > 0);
-                    origin.collisions = (origin.collisions + bucket.next) * has_next;
+                unsigned char has_next = (bucket->next > 0);
+                if (prev == origin) {  // bucket is head of collision chain
+                    origin->collisions = has_next ?
+                        (origin->collisions + bucket->next) :
+                        EMPTY;
                 } else {  // bucket is in middle or end of collision chain
-                    unsigned char delta = bucket.next + prev.next;
-                    prev.next = (prev.next + delta) * (delta > 0);
+                    prev->next = has_next * (prev->next + bucket->next);
                 }
 
                 // destroy node
-                bucket.destroy();
+                if constexpr (DEBUG) {
+                    std::cout << "    -> recycle: " << util::repr(node->value());
+                    std::cout << std::endl;
+                }
+                bucket->destroy();
                 --this->occupied;
+                this->shrink();
                 return;
             }
 
             // advance to next bucket
-            if (!prev.next) break;  // end of chain
-            idx = (idx + prev.next) & modulo;
+            if (!prev->next) break;  // end of chain
+            idx = (idx + prev->next) & modulo;
             prev = bucket;
-            bucket = table[idx];
+            bucket = table + idx;
         }
 
         // node not found

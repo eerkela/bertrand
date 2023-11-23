@@ -381,6 +381,19 @@ template <typename LHS, typename RHS>
 inline bool eq(const LHS& lhs, const RHS& rhs) {
     auto execute = [](auto a, auto b) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            // fast path: check pointer equality
+            if (a == b) return true;
+
+            // fast path: use string comparison if both objects are strings
+            if (PyUnicode_CheckExact(a) && PyUnicode_CheckExact(b)) {
+                int result = PyUnicode_Compare(a, b);
+                if (result == -1 && PyErr_Occurred()) {
+                    throw catch_python<TypeError>();
+                }
+                return static_cast<bool>(result == 0);
+            }
+
+            // fall back to normal == comparison
             int result = PyObject_RichCompareBool(a, b, Py_EQ);
             if (result == -1 && PyErr_Occurred()) {
                 throw catch_python<TypeError>();
