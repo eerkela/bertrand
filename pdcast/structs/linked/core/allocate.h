@@ -141,8 +141,9 @@ protected:
 
     /* Throw an error indicating that the allocator is frozen at its current size. */
     inline auto cannot_grow() const {
+        const Derived* self = static_cast<const Derived*>(this);
         std::ostringstream msg;
-        msg << "allocator is frozen at size " << capacity;
+        msg << "allocator is frozen at size " << self->max_size().value_or(capacity);
         return util::MemoryError(msg.str());
     }
 
@@ -430,6 +431,12 @@ public:
     /* Get the total amount of dynamic memory allocated by this allocator. */
     inline size_t nbytes() const noexcept {
         return (1 + this->capacity) * sizeof(Node);  // account for temporary node
+    }
+
+    /* Get the maximum number of elements that this allocator can support if it does
+    not support dynamic sizing. */
+    inline std::optional<size_t> max_size() const noexcept {
+        return dynamic() ? std::nullopt : std::make_optional(capacity);
     }
 
     //////////////////////////////
@@ -1637,7 +1644,7 @@ private:
 
     Bucket* table;  // dynamic array of buckets
     size_t modulo;  // bitmask for fast modulo arithmetic
-    // size_t max_occupants;  // (for fixed-size sets) maximum number of occupants
+    size_t max_occupants;  // TODO: (for fixed-size sets) maximum number of occupants
 
     /* Adjust the starting capacity of a set to a power of two. */
     inline static size_t init_capacity(std::optional<size_t> capacity, bool dynamic) {
@@ -1647,7 +1654,7 @@ private:
 
         // round up to next power of two
         size_t result = capacity.value();
-        result = util::next_power_of_two(result + (!dynamic) * (result / 2));
+        result = util::next_power_of_two(result + (!dynamic) * (result / 3));
         return result < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : result;
     }
 
@@ -1796,12 +1803,14 @@ public:
         bool dynamic,
         PyObject* specialization
     ) : Base(init_capacity(capacity, dynamic), dynamic, specialization),
-        table(new Bucket[this->capacity]), modulo(this->capacity - 1)
+        table(new Bucket[this->capacity]), modulo(this->capacity - 1),
+        max_occupants(dynamic ? std::numeric_limits<size_t>::max() : capacity.value())
     {}
 
     /* Copy constructor. */
     HashAllocator(const HashAllocator& other) :
-        Base(other), table(new Bucket[this->capacity]), modulo(other.modulo)
+        Base(other), table(new Bucket[this->capacity]), modulo(other.modulo),
+        max_occupants(other.max_occupants)
     {
         // copy over existing nodes in correct list order (head -> tail)
         if (this->occupied) {
@@ -1815,7 +1824,8 @@ public:
 
     /* Move constructor. */
     HashAllocator(HashAllocator&& other) noexcept :
-        Base(std::move(other)), table(other.table), modulo(other.modulo)
+        Base(std::move(other)), table(other.table), modulo(other.modulo),
+        max_occupants(other.max_occupants)
     {
         other.table = nullptr;
     }
@@ -1833,6 +1843,7 @@ public:
         // copy new table
         table = new Bucket[this->capacity];
         modulo = other.modulo;
+        max_occupants = other.max_occupants;
         if (this->occupied) {
             std::pair<Node*, Node*> bounds(
                 other.template transfer<false>(table, this->capacity)
@@ -1859,6 +1870,7 @@ public:
         // transfer ownership
         table = other.table;
         modulo = other.modulo;
+        max_occupants = other.max_occupants;
         other.table = nullptr;
         return *this;
     }
@@ -1933,14 +1945,15 @@ public:
         // as well as careful updates to the hop information for the collision chain.
 
         // check if we need to grow the array
-        if (this->occupied >= this->capacity - (this->capacity / 4)) {
-            if (!this->frozen() && this->dynamic()) {
+        if (this->dynamic()) {
+            if (this->occupied >= this->capacity - (this->capacity / 4)) {
+                if (this->frozen()) throw Base::cannot_grow();
                 resize(this->capacity * 2);  // grow table
                 origin_idx = node->hash() & modulo;  // rehash node
                 origin = table + origin_idx;
-            } else {
-                throw Base::cannot_grow();
             }
+        } else if (this->occupied == this->max_occupants) {
+            throw Base::cannot_grow();
         }
 
         // linear probe starting from origin
@@ -2058,6 +2071,12 @@ public:
     inline size_t nbytes() const {
         // NOTE: hop information takes 2 extra bytes per bucket (maybe padded to 4/8)
         return sizeof(Node) + this->capacity * sizeof(Bucket);
+    }
+
+    /* Get the maximum number of elements that this allocator can support if it does
+    not support dynamic sizing. */
+    inline std::optional<size_t> max_size() const noexcept {
+        return this->dynamic() ? std::nullopt : std::make_optional(max_occupants);
     }
 
     /* Search for a node by its value directly. */
