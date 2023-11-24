@@ -118,7 +118,7 @@ public:
         linked::symmetric_difference_update(this->view, items, left);
     }
 
-    /* Get the index of an item within the list. */
+    /* Get the index of an item within the set. */
     inline size_t index(
         const Value& item,
         std::optional<long long> start = std::nullopt,
@@ -127,7 +127,7 @@ public:
         return linked::index(this->view, item, start, stop);
     }
 
-    /* Count the number of occurrences of an item within the list. */
+    /* Count the number of occurrences of an item within the set. */
     inline size_t count(
         const Value& item,
         std::optional<long long> start = std::nullopt,
@@ -136,12 +136,18 @@ public:
         return linked::count(this->view, item, start, stop);
     }
 
-    /* Check if the list contains a certain item. */
+    /* Check if the set contains a certain item. */
     inline bool contains(const Value& item) const {
         return linked::contains(this->view, item);
     }
 
-    /* Remove the first occurrence of an item from the list. */
+    /* Check if the set contains a certain item and move it to the front of the set
+    if so. */
+    inline bool lru_contains(const Value& item) {
+        return linked::lru_contains(this->view, item);
+    }
+
+    /* Remove the first occurrence of an item from the set. */
     inline void remove(const Value& item) {
         linked::remove(this->view, item);
     }
@@ -151,33 +157,33 @@ public:
         linked::discard(this->view, item);
     }
 
-    /* Remove an item from the list and return its value. */
+    /* Remove an item from the set and return its value. */
     inline Value pop(long long index = -1) {
         return linked::pop(this->view, index);
     }
 
-    /* Remove all elements from the list. */
+    /* Remove all elements from the set. */
     inline void clear() {
         this->view.clear();
     }
 
-    /* Return a shallow copy of the list. */
+    /* Return a shallow copy of the set. */
     inline LinkedSet copy() const {
         return LinkedSet(this->view.copy());
     }
 
-    /* Sort the list in-place according to an optional key func. */
+    /* Sort the set in-place according to an optional key func. */
     template <typename Func>
     inline void sort(Func key = nullptr, bool reverse = false) {
         linked::sort<linked::MergeSort>(this->view, key, reverse);
     }
 
-    /* Reverse the order of elements in the list in-place. */
+    /* Reverse the order of elements in the set in-place. */
     inline void reverse() {
         linked::reverse(this->view);
     }
 
-    /* Shift all elements in the list to the right by the specified number of steps. */
+    /* Shift all elements in the set to the right by the specified number of steps. */
     inline void rotate(long long steps = 1) {
         linked::rotate(this->view, steps);
     }
@@ -555,6 +561,24 @@ public:
 
             // exit normally
             Py_RETURN_NONE;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedSet.lru_contains()` in Python. */
+    static PyObject* lru_contains(Derived* self, PyObject* item) {
+        try {
+            // invoke equivalent C++ method
+            return std::visit(
+                [&item](auto& set) {
+                    return PyBool_FromLong(set.lru_contains(item));
+                },
+                self->variant
+            );
 
         // translate C++ errors into Python exceptions
         } catch (...) {
@@ -1273,6 +1297,30 @@ node.
 )doc"
         };
 
+        static constexpr std::string_view lru_contains {R"doc(
+Search the set for an item, moving it to the front if it is present.
+
+Parameters
+----------
+item : Any
+    The item to search for.
+
+Returns
+-------
+bool
+    True if the item is present in the set.  False otherwise.
+
+Notes
+-----
+This method is equivalent to ``item in set`` except that it also moves the item
+to the front of the set if it is found.  The linked nature of the data
+structure makes this extremely efficient, allowing the set to act as a fast
+LRU cache, particularly if the set is doubly-linked.
+
+LRU searches are O(1) for doubly-linked sets and O(n) for singly-linked ones.
+)doc"
+        };
+
         static constexpr std::string_view union_ {R"doc(
 Return a new set with the merged contents of this set and all other containers.
 
@@ -1544,7 +1592,7 @@ KeyError
 Notes
 -----
 This method is O(n) due to the need to traverse the entire set in order to find
-the given index.  For doubly-linked lists, it is optimized to O(n/2).
+the given index.  For doubly-linked sets, it is optimized to O(n/2).
 )doc"
         };
 
@@ -1720,25 +1768,25 @@ the same name, with equivalent semantics.
 Parameters
 ----------
 items : Iterable[Any], optional
-    The items to initialize the list with.  If not specified, the list will be
+    The items to initialize the set with.  If not specified, the set will be
     empty.
 max_size : int, optional
-    The maximum number of items that the list can hold.  If not specified, the
-    list will be unbounded.
+    The maximum number of items that the set can hold.  If not specified, the
+    set will be unbounded.
 spec : Any, optional
-    A specific type to enforce for elements of the list, allowing the creation
+    A specific type to enforce for elements of the set, allowing the creation
     of type-safe containers.  This can be in any format recognized by
     :func:`isinstance() <python:isinstance>`.  The default is ``None``, which
-    disables strict type checking for the list.  See the :meth:`specialize()`
+    disables strict type checking for the set.  See the :meth:`specialize()`
     method for more details.
 reverse : bool, default False
-    If True, reverse the order of ``items`` during list construction.  This is
+    If True, reverse the order of ``items`` during set construction.  This is
     more efficient than calling :meth:`reverse()` after construction.
 singly_linked : bool, default False
-    If True, use a singly-linked list instead of a doubly-linked list.  This
+    If True, use a singly-linked set instead of a doubly-linked set.  This
     trades some performance in certain operations for increased memory
-    efficiency.  Regardless of this setting, the list will still support all
-    the same operations as a doubly-linked list.
+    efficiency.  Regardless of this setting, the set will still support all
+    the same operations as a doubly-linked set.
 
 Notes
 -----
@@ -1816,6 +1864,8 @@ code that relies on this data structure with only minimal changes.
             METH_FASTCALL | METH_KEYWORDS,
             PyDoc_STR(ISet::docs::union_.data())
         },
+        SET_METHOD(discard, METH_O),
+        SET_METHOD(lru_contains, METH_O),
         SET_METHOD(update, METH_FASTCALL | METH_KEYWORDS),
         SET_METHOD(difference, METH_FASTCALL),
         SET_METHOD(difference_update, METH_FASTCALL),
@@ -1857,7 +1907,7 @@ code that relies on this data structure with only minimal changes.
         return slots;
     }();
 
-    /* Initialize a PyTypeObject to represent the list in Python. */
+    /* Initialize a PyTypeObject to represent the set in Python. */
     static PyTypeObject build_type() {
         return {
             .ob_base = PyObject_HEAD_INIT(NULL)

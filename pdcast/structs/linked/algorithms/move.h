@@ -11,6 +11,11 @@
 #include "../core/view.h"  // ViewTraits
 
 
+// TODO: move_to_index() has same problem as insert() when it comes to handling the
+// last index in the list.  We should be truncating to one past the last index, not
+// the last index itself.
+
+
 namespace bertrand {
 namespace structs {
 namespace linked {

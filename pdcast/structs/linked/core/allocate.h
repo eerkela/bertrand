@@ -23,6 +23,16 @@ namespace structs {
 namespace linked {
 
 
+// TODO: add a config template parameter to consolidate template flags?
+
+// LinkedSet<int, (
+//      Config::SINGLY_LINKED | Config::PERMANENTLY_SPECIALIZED | Config::PACKED
+//      Config::CONCURRENT
+// )>
+
+// LinkedSet<T, util::BasicLock, uint32_t config>
+
+
 /////////////////////////
 ////    CONSTANTS    ////
 /////////////////////////
@@ -122,9 +132,8 @@ protected:
             this->occupied <= this->capacity / 4
         ) {
             Derived* self = static_cast<Derived*>(this);
-            size_t size = util::next_power_of_two(this->occupied * 2);
-            size = size < Derived::DEFAULT_CAPACITY ? Derived::DEFAULT_CAPACITY : size;
-            self->resize(size);
+            size_t size = util::next_power_of_two(self->occupied * 2);
+            self->resize(size < Derived::DEFAULT_CAPACITY ? Derived::DEFAULT_CAPACITY : size);
             return true;
         }
         return false;
@@ -989,7 +998,7 @@ private:
     using Value = typename Node::Value;
     static constexpr size_t PRIMES[] = {  // prime numbers to use for double hashing
         // HASH PRIME       // TABLE SIZE
-        0,                  // 1 (2**0)         (not used)
+        1,                  // 1 (2**0)         (not used)
         1,                  // 2 (2**1)         (not used)
         3,                  // 4 (2**2)         (not used)
         7,                  // 8 (2**3)         (not used)
@@ -1436,7 +1445,7 @@ public:
         Base::clear();
 
         // reset hash table parameters and shrink to default capacity
-        if (!this->frozen()) {
+        if (!this->frozen() && this->dynamic()) {
             exponent = 0;
             prime = PRIMES[0];
             tombstones = 0;
@@ -1488,8 +1497,8 @@ Because of the direct integration with the allocator array, this approach does n
 require an auxiliary data structure.  Instead, it uses only 2 extra bytes per node
 to store the hopscotch offsets, making it more memory-efficient than the double hashing
 scheme listed above, which must allocate a whole pointer (5-8 bytes) for each node.
-The hopscotch algorithm also remains efficient at high load factors (up to 87.5%),
-giving similar memory characteristics to an equivalent ListAllocator.
+The hopscotch algorithm also remains efficient at high load factors, giving similar
+overall memory characteristics to an equivalent ListAllocator.
 
 Because of the requirement that node addresses remain physically stable over their
 lifetime, it is not possible to rearrange elements within the array.  This means that
@@ -1514,168 +1523,132 @@ public:
 private:
     using Value = typename Node::Value;
     static constexpr unsigned char EMPTY = 255;
-    static constexpr unsigned char NEIGHBORHOOD = 32;  // max probe distance
+    static constexpr unsigned char MAX_PROBE_LENGTH = 255;
     static_assert(
-        NEIGHBORHOOD < EMPTY,
+        MAX_PROBE_LENGTH <= EMPTY,
         "neighborhood size must leave room for EMPTY flag"
     );
+
+    /* NOTE: bucket types are hidden behind template specializations to allow for both
+     * packed and unpacked representations.  Both are identical, but the packed
+     * representation is more space efficient.  It can, however, degrade performance on
+     * some systems due to unaligned memory accesses.  The unpacked representation is
+     * more performant and portable, but always wastes between 2 and 6 extra bytes per
+     * bucket.
+     */
+
+    // TODO: add packed=false to template parameters.
+
+    template <bool packed = false, typename Dummy = void>
+    struct BucketType {
+        struct Bucket {
+            unsigned char collisions = EMPTY;
+            unsigned char next = EMPTY;
+            alignas(Node) unsigned char data[sizeof(Node)];  // uninitialized payload
+
+            /* NOTE: setting displacement=EMPTY indicates that the bucket does not have any
+            * collisions.  Otherwise, it is the distance from the current bucket (origin)
+            * to the first bucket in its collision chain.  If another value hashes to a
+            * bucket that has an EMPTY displacement, then it is guaranteed to be unique.
+            *
+            * Setting next=EMPTY indicates that the current bucket is not occupied.
+            * Otherwise, it is the distance to the next bucket in the chain.  If it is set
+            * to 0, then it indicates that the current bucket is at the end of its
+            * collision chain.
+            */
+
+            /* Get a pointer to the node within the bucket. */
+            inline Node* node() noexcept {
+                return reinterpret_cast<Node*>(&data);
+            }
+
+            /* Construct the node within the bucket. */
+            template <typename... Args>
+            inline void construct(Args&&... args) {
+                new (reinterpret_cast<Node*>(&data)) Node(std::forward<Args>(args)...);
+                // don't forget to set collisions and/or next!
+            }
+
+            /* Destroy the node within the bucket. */
+            inline void destroy() noexcept {
+                reinterpret_cast<Node&>(data).~Node();
+                next = EMPTY;
+            }
+
+            /* Check if the bucket is empty. */
+            inline bool occupied() const noexcept {
+                return next != EMPTY;
+            }
+
+        };
+    };
+
+    template <typename Dummy>
+    struct BucketType<true, Dummy> {
+        #pragma pack(push, 1)
+        struct Bucket {
+            unsigned char collisions = EMPTY;
+            unsigned char next = EMPTY;
+            alignas(Node) unsigned char data[sizeof(Node)];  // uninitialized payload
+
+            /* NOTE: setting displacement=EMPTY indicates that the bucket does not have any
+            * collisions.  Otherwise, it is the distance from the current bucket (origin)
+            * to the first bucket in its collision chain.  If another value hashes to a
+            * bucket that has an EMPTY displacement, then it is guaranteed to be unique.
+            *
+            * Setting next=EMPTY indicates that the current bucket is not occupied.
+            * Otherwise, it is the distance to the next bucket in the chain.  If it is set
+            * to 0, then it indicates that the current bucket is at the end of its
+            * collision chain.
+            */
+
+            /* Get a pointer to the node within the bucket. */
+            inline Node* node() noexcept {
+                return reinterpret_cast<Node*>(&data);
+            }
+
+            /* Construct the node within the bucket. */
+            template <typename... Args>
+            inline void construct(Args&&... args) {
+                new (reinterpret_cast<Node*>(&data)) Node(std::forward<Args>(args)...);
+                // don't forget to set collisions and/or next!
+            }
+
+            /* Destroy the node within the bucket. */
+            inline void destroy() noexcept {
+                reinterpret_cast<Node&>(data).~Node();
+                next = EMPTY;
+            }
+
+            /* Check if the bucket is empty. */
+            inline bool occupied() const noexcept {
+                return next != EMPTY;
+            }
+
+        };
+        #pragma pack(pop)
+    };
 
     /* A bucket storing offsets for the hopscotch algorithm.  Rather than using a
     bitmap, this approach stores two 8-bit offsets per bucket.  The first represents
     the distance to the head of this bucket's collision chain, and the second represents
     the distance to the next bucket in the current occupant's collision chain. */
-    struct Bucket {
-        unsigned char collisions = EMPTY;
-        unsigned char next = EMPTY;
-        alignas(Node) unsigned char data[sizeof(Node)];  // uninitialized payload
-
-        /* NOTE: setting displacement=EMPTY indicates that the bucket does not have any
-         * collisions.  Otherwise, it is the distance from the current bucket (origin)
-         * to the first bucket in its collision chain.  If another value hashes to a
-         * bucket that has an EMPTY displacement, then it is guaranteed to be unique.
-         *
-         * Setting next=EMPTY indicates that the current bucket is not occupied.
-         * Otherwise, it is the distance to the next bucket in the chain.  If it is set
-         * to 0, then it indicates that the current bucket is at the end of its
-         * collision chain.
-         */
-
-        /* Get a pointer to the node within the bucket. */
-        inline Node* node() noexcept {
-            return reinterpret_cast<Node*>(&data);
-        }
-
-        /* Construct the node within the bucket. */
-        template <typename... Args>
-        inline void construct(Args&&... args) {
-            new (reinterpret_cast<Node*>(&data)) Node(std::forward<Args>(args)...);
-            // don't forget to set collisions and/or next!
-        }
-
-        /* Destroy the node within the bucket. */
-        inline void destroy() noexcept {
-            reinterpret_cast<Node&>(data).~Node();
-            next = EMPTY;
-        }
-
-        /* Check if the bucket is empty. */
-        inline bool occupied() const noexcept {
-            return next != EMPTY;
-        }
-
-        /* A fast iterator over the bucket's neighborhood, following the offsets
-        between each colliding node. */
-        struct HopIterator {
-            Bucket* table;
-            size_t idx;
-            size_t modulo;
-            Bucket* curr;
-
-            /* Iterator traits. */
-            using iterator_category         = std::forward_iterator_tag;
-            using value_type                = Bucket;
-            using difference_type           = std::ptrdiff_t;
-            using pointer                   = Bucket*;
-            using reference                 = Bucket&;
-
-            /* Construct a new iterator from the given starting bucket. */
-            HopIterator(Bucket* table, size_t idx, size_t modulo) :
-                table(table), idx(idx), modulo(modulo), curr(table[idx])
-            {}
-
-            /* Dereference the iterator to get the current bucket. */
-            inline Bucket* operator*() const noexcept {
-                return curr;
-            }
-
-            /* Advance the iterator to the next bucket in the chain. */
-            inline HopIterator& operator++() noexcept {
-                idx = (idx + curr.next) & modulo;
-                curr = table[idx];
-                return *this;
-            }
-
-            /* Check if the iterator has reached the end of the chain. */
-            inline bool operator!=(const HopIterator& other) const noexcept {
-                return !curr.next;
-            }
-
-            /* Get an iterator to the beginning of the chain. */
-            inline HopIterator begin() const noexcept {
-                return HopIterator(table, idx, modulo);
-            }
-
-            /* Get an iterator to the end of the chain. */
-            inline HopIterator end() const noexcept {
-                return HopIterator(table, idx, modulo);  // self-terminating
-            }
-
-        };
-
-        /* Iterate through the bucket's collision chain, assuming it has one. */
-        inline HopIterator chain(
-            Bucket* table,
-            size_t origin_idx,
-            size_t modulo
-        ) noexcept {
-            return HopIterator(table, (origin_idx + collisions) & modulo, modulo);
-        }
-
-    };
+    using Bucket = typename BucketType<false>::Bucket;
 
     Bucket* table;  // dynamic array of buckets
     size_t modulo;  // bitmask for fast modulo arithmetic
-    size_t max_load;  // maximum number of occupied buckets before resize
+    // size_t max_occupants;  // (for fixed-size sets) maximum number of occupants
 
     /* Adjust the starting capacity of a set to a power of two. */
-    inline static size_t init_capacity(std::optional<size_t> capacity) {
+    inline static size_t init_capacity(std::optional<size_t> capacity, bool dynamic) {
         if (!capacity.has_value()) {
             return DEFAULT_CAPACITY;
         }
 
         // round up to next power of two
         size_t result = capacity.value();
-        return result < DEFAULT_CAPACITY ?
-            DEFAULT_CAPACITY :
-            util::next_power_of_two(result);
-    }
-
-    /* Look up a value in the hash table by providing an explicit hash/value. */
-    Node* _search(const size_t hash, const Value& value) const {
-        // TODO: check for specialization?
-        // if constexpr (util::is_pyobject<Value>) {
-        //     if (this->specialization != nullptr) {
-        //         int comp = PyObject_IsInstance(value, this->specialization);
-        //         if (comp == -1) throw util::catch_python();
-        //         if (!comp) return nullptr;  // value cannot be contained in table
-        //     }
-        // }
-
-        // identify starting bucket
-        size_t idx = hash & modulo;
-        Bucket* bucket = table + idx;
-
-        // if collision chain is empty, then no match is possible
-        if (bucket->collisions != EMPTY) {
-            if (bucket->collisions) {  // advance to head of chain
-                idx = (idx + bucket->collisions) & modulo;
-                bucket = table + idx;
-            }
-            while (true) {
-                if (util::eq(value, bucket->node()->value())) {
-                    return bucket->node();
-                }
-
-                // advance to next bucket
-                if (!bucket->next) break;  // end of chain
-                idx += bucket->next;
-                idx &= modulo;
-                bucket = table + idx;
-            }
-        }
-
-        // value not found
-        return nullptr;
+        result = util::next_power_of_two(result + (!dynamic) * (result / 2));
+        return result < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : result;
     }
 
     /* Copy/move the nodes from this allocator into another table. */
@@ -1707,7 +1680,7 @@ private:
             unsigned char distance = 0;  // current probe length
             unsigned char next = origin->collisions;  // distance to next bucket in chain
             while (bucket->occupied()) {
-                if (++distance == NEIGHBORHOOD) {
+                if (++distance == MAX_PROBE_LENGTH) {
                     throw std::runtime_error("exceeded maximum probe length");
                 }
                 bucket = other + ((origin_idx + distance) & modulo);
@@ -1759,9 +1732,21 @@ private:
         }
 
         // move nodes into new table
-        std::pair<Node*, Node*> bounds(transfer<true>(new_table, new_capacity));
-        this->head = bounds.first;
-        this->tail = bounds.second;
+        try {
+            std::pair<Node*, Node*> bounds(transfer<true>(new_table, new_capacity));
+            this->head = bounds.first;
+            this->tail = bounds.second;
+        } catch (...) {  // exceeded maximum probe length
+            delete[] new_table;
+            if (!this->frozen() && this->dynamic()) {
+                resize(new_capacity * 2);  // retry with a larger table
+                return;
+            } else {
+                throw;  // propagate error
+            }
+            resize(new_capacity * 2);
+            return;
+        }
 
         // replace table
         free(table);
@@ -1772,7 +1757,35 @@ private:
         this->capacity = new_capacity;
         table = new_table;
         modulo = new_capacity - 1;
-        max_load = new_capacity - (new_capacity / 4);
+    }
+
+    /* Look up a value in the hash table by providing an explicit hash/value. */
+    Node* _search(const size_t hash, const Value& value) const {
+        // identify starting bucket
+        size_t idx = hash & modulo;
+        Bucket* bucket = table + idx;
+
+        // if collision chain is empty, then no match is possible
+        if (bucket->collisions != EMPTY) {
+            if (bucket->collisions) {  // advance to head of chain
+                idx = (idx + bucket->collisions) & modulo;
+                bucket = table + idx;
+            }
+            while (true) {
+                if (util::eq(value, bucket->node()->value())) {
+                    return bucket->node();
+                }
+
+                // advance to next bucket
+                if (!bucket->next) break;  // end of chain
+                idx += bucket->next;
+                idx &= modulo;
+                bucket = table + idx;
+            }
+        }
+
+        // value not found
+        return nullptr;
     }
 
 public:
@@ -1782,15 +1795,13 @@ public:
         std::optional<size_t> capacity,
         bool dynamic,
         PyObject* specialization
-    ) : Base(init_capacity(capacity), dynamic, specialization),
-        table(new Bucket[this->capacity]), modulo(this->capacity - 1),
-        max_load(this->capacity - (this->capacity / 4))
+    ) : Base(init_capacity(capacity, dynamic), dynamic, specialization),
+        table(new Bucket[this->capacity]), modulo(this->capacity - 1)
     {}
 
     /* Copy constructor. */
     HashAllocator(const HashAllocator& other) :
-        Base(other), table(new Bucket[this->capacity]), modulo(other.modulo),
-        max_load(other.max_load)
+        Base(other), table(new Bucket[this->capacity]), modulo(other.modulo)
     {
         // copy over existing nodes in correct list order (head -> tail)
         if (this->occupied) {
@@ -1804,8 +1815,7 @@ public:
 
     /* Move constructor. */
     HashAllocator(HashAllocator&& other) noexcept :
-        Base(std::move(other)), table(other.table), modulo(other.modulo),
-        max_load(other.max_load)
+        Base(std::move(other)), table(other.table), modulo(other.modulo)
     {
         other.table = nullptr;
     }
@@ -1817,15 +1827,12 @@ public:
         // invoke parent
         Base::operator=(other);
 
-        // destroy table
-        if (table != nullptr) {
-            free(table);
-        }
+        // destroy current table
+        if (table != nullptr) free(table);
 
-        // copy table
+        // copy new table
         table = new Bucket[this->capacity];
         modulo = other.modulo;
-        max_load = other.max_load;
         if (this->occupied) {
             std::pair<Node*, Node*> bounds(
                 other.template transfer<false>(table, this->capacity)
@@ -1846,15 +1853,12 @@ public:
         // invoke parent
         Base::operator=(std::move(other));
 
-        // destroy table
-        if (table != nullptr) {
-            free(table);
-        }
+        // destroy current table
+        if (table != nullptr) free(table);
 
         // transfer ownership
         table = other.table;
         modulo = other.modulo;
-        max_load = other.max_load;
         other.table = nullptr;
         return *this;
     }
@@ -1873,15 +1877,23 @@ public:
         }
     }
 
+    /* NOTE: due to the way the hopscotch algorithm works, each node is assigned to a
+     * finite neighborhood of size MAX_PROBE_LENGTH.  It is possible (albeit very rare)
+     * that during insertion, a linear probe can surpass this length, which causes the
+     * algorithm to fail.  The probability of this is extremely low (impossible for
+     * sets under 255 elements, otherwise order 10**-29 for MAX_PROBE_LENGTH=255 at 75%
+     * maximum load), but is still possible, with increasing (but still very small)
+     * likelihood as the container size increases and/or probe length shortens.
+     * Dynamic sets can work around this by simply growing to a larger table size, but
+     * for fixed-size sets, it is a fatal error.
+     */
+
     /* Construct a new node from the table. */
     template <bool exist_ok = false, typename... Args>
     Node* create(Args&&... args) {
         // allocate into temporary node
         Node* node = this->temp();
         Base::init_node(node, std::forward<Args>(args)...);
-
-        // check if we need to grow the array
-        if (this->occupied >= max_load) resize(this->capacity * 2);
 
         // search hash table to get origin bucket
         size_t origin_idx = node->hash() & modulo;
@@ -1920,6 +1932,17 @@ public:
         // into the hash table.  This requires a linear probe over the hop neighborhood
         // as well as careful updates to the hop information for the collision chain.
 
+        // check if we need to grow the array
+        if (this->occupied >= this->capacity - (this->capacity / 4)) {
+            if (!this->frozen() && this->dynamic()) {
+                resize(this->capacity * 2);  // grow table
+                origin_idx = node->hash() & modulo;  // rehash node
+                origin = table + origin_idx;
+            } else {
+                throw Base::cannot_grow();
+            }
+        }
+
         // linear probe starting from origin
         Bucket* bucket = origin;
         Bucket* prev = origin;  // previous bucket in chain
@@ -1927,9 +1950,13 @@ public:
         unsigned char distance = 0;  // current probe length
         unsigned char next = origin->collisions;  // distance to next bucket in chain
         while (bucket->occupied()) {
-            if (++distance == NEIGHBORHOOD) {  // exceeded maximum probe length
-                resize(this->capacity * 2);  // grow table
-                return create(std::move(*node));  // retry
+            if (++distance == MAX_PROBE_LENGTH) {
+                if (!this->frozen() && this->dynamic()) {
+                    resize(this->capacity * 2);  // grow table
+                    return create(std::move(*node));  // retry
+                } else {
+                    throw std::runtime_error("exceeded maximum probe length");
+                }
             }
             bucket = table + ((origin_idx + distance) & modulo);
             if (distance == next) {
@@ -1997,7 +2024,7 @@ public:
                 }
                 bucket->destroy();
                 --this->occupied;
-                this->shrink();
+                this->shrink();  // attempt to shrink table
                 return;
             }
 
@@ -2019,19 +2046,18 @@ public:
         Base::clear();
 
         // reset hash table and shrink to default capacity
-        if (!this->frozen()) {
+        if (!this->frozen() && this->dynamic()) {
             this->capacity = DEFAULT_CAPACITY;
             free(table);
             table = new Bucket[this->capacity];
             modulo = this->capacity - 1;
-            max_load = this->capacity - (this->capacity / 8);
         }
     }
 
     /* Get the total amount of dynamic memory being managed by this allocator. */
     inline size_t nbytes() const {
-        // NOTE: hop information takes 2 extra bytes per bucket
-        return this->capacity * sizeof(Bucket);
+        // NOTE: hop information takes 2 extra bytes per bucket (maybe padded to 4/8)
+        return sizeof(Node) + this->capacity * sizeof(Bucket);
     }
 
     /* Search for a node by its value directly. */

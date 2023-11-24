@@ -651,6 +651,32 @@ public:
         return this->allocator.search(std::forward<T>(key));
     }
 
+    /* Search the set for a particular node, moving it to the front if it is found. */
+    template <typename T>
+    inline Node* lru_search(T&& key) {
+        Node* node = this->allocator.search(std::forward<T>(key));
+        if (node == this->head() || node == nullptr) return node;
+
+        // if doubly-linked, moving to the front is O(1)
+        if constexpr (NodeTraits<Node>::has_prev) {
+            Base::unlink(node->prev(), node, node->next());
+            Base::link(nullptr, node, this->head());
+
+        // otherwise, we have to traverse the list to find the previous node
+        } else {
+            auto it = this->begin();
+            ++it;  // skip head
+            for (auto end = this->end(); it != end; ++it) {
+                if (it.curr() == node) {
+                    Base::unlink(it.prev(), node, it.next());
+                    Base::link(nullptr, node, this->head());
+                    break;
+                }
+            }
+        }
+        return node;
+    }
+
 };
 
 
@@ -755,6 +781,32 @@ public:
     template <typename T>
     inline Node* search(T* key) const {
         return this->allocator.search(key);
+    }
+
+    /* Search the set for a particular node, moving it to the front if it is found. */
+    template <typename T>
+    inline Node* lru_search(T&& key) const {
+        Node* node = this->allocator.search(std::forward<T>(key));
+        if (node == this->head() || node == nullptr) return node;
+
+        // if doubly-linked, moving to the front is O(1)
+        if constexpr (NodeTraits<Node>::has_prev) {
+            Base::unlink(node->prev(), node, node->next());
+            Base::link(nullptr, node, this->head());
+
+        // otherwise, we have to traverse the list to find the previous node
+        } else {
+            auto it = this->begin();
+            ++it;  // skip head
+            for (auto end = this->end(); it != end; ++it) {
+                if (it.curr() == node) {
+                    Base::unlink(it.prev(), node, it.next());
+                    Base::link(nullptr, node, this->head());
+                    break;
+                }
+            }
+        }
+        return node;
     }
 
 };

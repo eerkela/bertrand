@@ -32,6 +32,15 @@ namespace linked {
         return view.search(item) != nullptr;
     }
 
+    /* Check if an item is contained within a linked set or dictionary and move it to
+    the front if so. */
+    template <typename View, typename Item = typename View::Value>
+    inline auto lru_contains(View& view, Item& item)
+        -> std::enable_if_t<ViewTraits<View>::hashed, bool>
+    {
+        return view.lru_search(item) != nullptr;
+    }
+
 
 }  // namespace linked
 }  // namespace structs

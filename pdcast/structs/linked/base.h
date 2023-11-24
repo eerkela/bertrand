@@ -247,7 +247,7 @@ public:
 namespace cython {
 
 
-/* A functor that generates weak references for a type-erased Cython variant. */
+/* A functor that generates C++ weak references for a type-erased Cython variant. */
 template <typename T>
 class SelfRef {
 public:
