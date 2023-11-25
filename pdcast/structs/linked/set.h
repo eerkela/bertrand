@@ -88,6 +88,12 @@ public:
         linked::add(this->view, item, left);
     }
 
+    /* Add an item to the set if it is not already present and move it to the front of
+    the set, evicting the last element to make room if necessary. */
+    inline void lru_add(Value& item) {
+        linked::lru_add(this->view, item);
+    }
+
     /* Insert an item at a specific index of the set. */
     inline void insert(long long index, const Value& item) {
         linked::insert(this->view, index, item);
@@ -534,6 +540,27 @@ public:
             std::visit(
                 [&item, &left](auto& set) {
                     set.add(item, left);
+                },
+                self->variant
+            );
+
+            // exit normally
+            Py_RETURN_NONE;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedSet.lru_add()` in Python. */
+    static PyObject* lru_add(Derived* self, PyObject* other) {
+        try {
+            // invoke equivalent C++ method
+            std::visit(
+                [&other](auto& set) {
+                    set.lru_add(other);
                 },
                 self->variant
             );
@@ -1281,6 +1308,33 @@ Adds are O(1) for both ends of the set.
 )doc"
         };
 
+        static constexpr std::string_view lru_add {R"doc(
+Insert an item at the front of the set if it is not present, or move it there
+if it is.  Evicts the last item if the set is of fixed size and already full.
+
+Parameters
+----------
+item : Any
+    The item to move/insert.
+
+Notes
+-----
+This method is equivalent to:
+
+.. code-block:: python
+
+    set.add(item, left=True)
+    set.move(item, 0)
+
+except that it avoids repeated lookups and evicts the last item if the set is
+already full.  The linked nature of the data structure makes this extremely
+efficient, allowing the set to act as a fast LRU cache, particularly if it is
+doubly-linked.
+
+LRU adds are O(1) for doubly-linked sets and O(n) for singly-linked ones.
+)doc"
+        };
+
         static constexpr std::string_view discard {R"doc(
 Remove an item from the set if it is present.
 
@@ -1315,7 +1369,7 @@ Notes
 This method is equivalent to ``item in set`` except that it also moves the item
 to the front of the set if it is found.  The linked nature of the data
 structure makes this extremely efficient, allowing the set to act as a fast
-LRU cache, particularly if the set is doubly-linked.
+LRU cache, particularly if it is doubly-linked.
 
 LRU searches are O(1) for doubly-linked sets and O(n) for singly-linked ones.
 )doc"
@@ -1858,6 +1912,7 @@ code that relies on this data structure with only minimal changes.
         LIST_METHOD(reverse, METH_NOARGS),
         LIST_METHOD(rotate, METH_FASTCALL),
         SET_METHOD(add, METH_FASTCALL | METH_KEYWORDS),
+        SET_METHOD(lru_add, METH_O),
         {
             "union",  // renamed
             (PyCFunction) union_,

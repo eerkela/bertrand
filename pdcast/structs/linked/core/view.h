@@ -209,7 +209,7 @@ public:
     /* Make a shallow copy of the entire list. */
     inline Derived copy() const {
         Derived result(capacity(), dynamic(), specialization());
-        for (auto it = util::iter(*this).forward(); it != it.end(); ++it) {
+        for (auto it = this->begin(), end = this->end(); it != end; ++it) {
             Node* copied = result.node(*it.curr());
             result.link(result.tail(), copied, nullptr);
         }
@@ -568,12 +568,8 @@ which requires manual synchronization to ensure that the data structures remain
 consistent with one another.  Finally, it removes an extra layer of indirection during
 lookups, which improves cache locality and overall performance. */
 template <typename NodeType = DoubleNode<PyObject*>>
-class SetView : public BaseView<
-    SetView<NodeType>, HashAllocator<Hashed<NodeType>, Collision::HOPSCOTCH>
-> {
-    using Base = BaseView<
-        SetView<NodeType>, HashAllocator<Hashed<NodeType>, Collision::HOPSCOTCH>
-    >;
+class SetView : public BaseView<SetView<NodeType>, HashAllocator<Hashed<NodeType>>> {
+    using Base = BaseView<SetView<NodeType>, HashAllocator<Hashed<NodeType>>>;
 
 public:
     static constexpr bool setlike = true;
@@ -601,9 +597,9 @@ public:
             Node* curr = node<true>(item);  // exist_ok = True
             if (curr->next() == nullptr && curr != this->tail()) {
                 if (reverse) {
-                    Base::link(nullptr, curr, Base::head());
+                    Base::link(nullptr, curr, this->head());
                 } else {
-                    Base::link(Base::tail(), curr, nullptr);
+                    Base::link(this->tail(), curr, nullptr);
                 }
             }
         }
@@ -624,9 +620,9 @@ public:
             Node* curr = node<true>(*begin);  // exist_ok = True
             if (curr->next() == nullptr && curr != this->tail()) {
                 if (reverse) {
-                    Base::link(nullptr, curr, Base::head());
+                    Base::link(nullptr, curr, this->head());
                 } else {
-                    Base::link(Base::tail(), curr, nullptr);
+                    Base::link(this->tail(), curr, nullptr);
                 }
             }
         }
@@ -638,9 +634,9 @@ public:
     or not the allocator will throw an exception if the value already exists in the set.
     The default is false, meaning that an exception will be thrown if a duplicate node
     is requested. */
-    template <bool exist_ok = false, typename... Args>
+    template <bool exist_ok = false, bool evict = false, typename... Args>
     inline Node* node(Args&&... args) const {
-        return this->allocator.template create<exist_ok, Args&&...>(
+        return this->allocator.template create<exist_ok, evict, Args&&...>(
             std::forward<Args>(args)...
         );
     }
@@ -700,11 +696,11 @@ operation. */
 template <typename NodeType = DoubleNode<PyObject*>, typename MappedType = PyObject*>
 class DictView : public BaseView<
     DictView<NodeType, MappedType>,
-    HashAllocator<Mapped<Hashed<NodeType>, MappedType>, Collision::DOUBLE_HASH>
+    HashAllocator<Mapped<Hashed<NodeType>, MappedType>>
 > {
     using Base = BaseView<
         DictView<NodeType, MappedType>,
-        HashAllocator<Mapped<Hashed<NodeType>, MappedType>, Collision::DOUBLE_HASH>
+        HashAllocator<Mapped<Hashed<NodeType>, MappedType>>
     >;
 
 public:
@@ -733,9 +729,9 @@ public:
             Node* curr = node<true>(item);  // exist_ok = True
             if (curr->next() == nullptr && curr != this->tail()) {
                 if (reverse) {
-                    Base::link(nullptr, curr, Base::head());
+                    Base::link(nullptr, curr, this->head());
                 } else {
-                    Base::link(Base::tail(), curr, nullptr);
+                    Base::link(this->tail(), curr, nullptr);
                 }
             }
         }
@@ -756,9 +752,9 @@ public:
             Node* curr = node<true>(*begin);  // exist_ok = True
             if (curr->next() == nullptr && curr != this->tail()) {
                 if (reverse) {
-                    Base::link(nullptr, curr, Base::head());
+                    Base::link(nullptr, curr, this->head());
                 } else {
-                    Base::link(Base::tail(), curr, nullptr);
+                    Base::link(this->tail(), curr, nullptr);
                 }
             }
         }
@@ -770,9 +766,9 @@ public:
     or not the allocator will throw an exception if the value already exists in the set.
     The default is false, meaning that an exception will be thrown if a duplicate node
     is requested. */
-    template <bool exist_ok = false, typename... Args>
+    template <bool exist_ok = false, bool evict = false, typename... Args>
     inline Node* node(Args&&... args) const {
-        return this->allocator.template create<exist_ok, Args&&...>(
+        return this->allocator.template create<exist_ok, evict, Args&&...>(
             std::forward<Args>(args)...
         );
     }
