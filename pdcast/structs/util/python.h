@@ -15,6 +15,9 @@
 
 #include <limits>  // std::numeric_limits<>
 
+#include <string_view>  // std::string_view
+
+#include <cstring>  // std::memcmp()
 
 /* NOTE: This file contains a collection of helper classes for interacting with the
  * Python C API using C++ RAII principles.  This allows automated handling of reference
@@ -30,16 +33,26 @@ namespace std {
     /* Hash function for PyObject* pointers. */
     template<>
     struct hash<PyObject*> {
-        inline size_t operator()(PyObject* obj) const {
-            using namespace bertrand::structs::util;
-            Py_hash_t val = PyObject_Hash(obj);
-            if (val == -1 && PyErr_Occurred()) {
-                throw catch_python<TypeError>();  // propagate error
+        inline size_t operator()(PyObject* key) const {
+            using namespace bertrand::structs;
+            Py_ssize_t hash;
+
+            // ASCII string special case (taken from CPython source)
+            // see: cpython/objects/setobject.c; set_contains_key()
+            if (!PyUnicode_CheckExact(key) ||
+                (hash = _PyASCIIObject_CAST(key)->hash) == -1
+            ) {
+                // fall back to PyObject_Hash()
+                hash = PyObject_Hash(key);
+                if (hash == -1 && PyErr_Occurred()) {
+                    throw util::catch_python<util::TypeError>();  // propagate error
+                }
             }
-            return static_cast<size_t>(val);
+
+            // convert to size_t
+            return static_cast<size_t>(hash);
         }
     };
-    
 
 
 }  // namespace std
@@ -386,6 +399,17 @@ inline bool eq(const LHS& lhs, const RHS& rhs) {
 
             // fast path: use string comparison if both objects are strings
             if (PyUnicode_CheckExact(a) && PyUnicode_CheckExact(b)) {
+                // ASCII string special case (taken from CPython source)
+                // see: cpython/Objects/unicodeobject.c; unicode_compare_eq()
+                if (PyUnicode_IS_ASCII(a) && PyUnicode_IS_ASCII(b)) {
+                    Py_ssize_t length = PyUnicode_GET_LENGTH(a);
+                    if (PyUnicode_GET_LENGTH(b) != length) return false;
+                    const void* data_a = PyUnicode_DATA(a);
+                    const void* data_b = PyUnicode_DATA(b);
+                    return std::memcmp(data_a, data_b, length) == 0;
+                }
+
+                // fall back to normal string comparison
                 int result = PyUnicode_Compare(a, b);
                 if (result == -1 && PyErr_Occurred()) {
                     throw catch_python<TypeError>();

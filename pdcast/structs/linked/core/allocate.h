@@ -23,16 +23,6 @@ namespace structs {
 namespace linked {
 
 
-// TODO: add a config template parameter to consolidate template flags?
-
-// LinkedSet<int, (
-//      Config::SINGLY_LINKED | Config::PERMANENTLY_SPECIALIZED | Config::PACKED
-//      Config::CONCURRENT
-// )>
-
-// LinkedSet<T, util::BasicLock, uint32_t config>
-
-
 /////////////////////////
 ////    CONSTANTS    ////
 /////////////////////////
@@ -988,24 +978,20 @@ distance to the next node in the collision chain.  When a collision is encounter
 skip through the collision chain using these offsets, checking only those nodes that
 actually collide.  This reduces the amount of time spent probing irrelevant buckets,
 and eliminates the need for tombstones.  In exchange, the collision chain is confined
-to a finite neighborhood around the origin node (as set by the hop information),
-possibly resulting in less predictable resizes than with other open addressing schemes.
+to a finite neighborhood around the origin node (as set by the hop information).
 
 Because of the direct integration with the allocator array, this approach does not
-require an auxiliary data structure.  Instead, it uses only 2 extra bytes per node
-to store the hopscotch offsets, making it more memory-efficient than the double hashing
-scheme listed above, which must allocate a whole pointer (5-8 bytes) for each node.
-The hopscotch algorithm also remains efficient at high load factors, giving similar
-overall memory characteristics to an equivalent ListAllocator.
-
-Because of the requirement that node addresses remain physically stable over their
-lifetime, it is not possible to rearrange elements within the array.  This means that
-the full hopscotch algorithm cannot be implemented as described in the original paper,
-since it attempts to consolidate elements to improve cache locality.  Instead,
-insertions into this map devolve into a linear search for an empty bucket, which limits
-the potential of the hopscotch algorithm.  As a result, insertions may be slightly
-slower than average, but searches and removals should remain fast at all times. */
-template <typename NodeType>
+require any auxiliary data structures.  Instead, it uses 2 extra bytes per node to
+store the hopscotch offsets, which can be packed into the allocator array for increased
+efficiency.  However, due to the requirement that node addresses remain physically
+stable over their lifetime, it is not possible to rearrange elements within the array
+as we insert items.  This means that the full hopscotch algorithm cannot be implemented
+as described in the original paper, since it attempts to consolidate elements to
+improve cache locality.  Instead, insertions into this map devolve into a linear search
+for an empty bucket, which limits the potential of the hopscotch algorithm.  As a
+result, insertions have comparable performance to a typical linear probing algorithm,
+but searches and removals will skip through the neighborhood like normal. */
+template <typename NodeType, bool packed = false>
 class HashAllocator : public BaseAllocator<HashAllocator<NodeType>, NodeType> {
     using Base = BaseAllocator<HashAllocator<NodeType>, NodeType>;
     friend Base;
@@ -1031,27 +1017,23 @@ private:
      * some systems due to unaligned memory accesses.  The unpacked representation is
      * more performant and portable, but always wastes between 2 and 6 extra bytes per
      * bucket.
+     *
+     * NOTE: setting displacement=EMPTY indicates that the bucket does not have any
+     * collisions.  Otherwise, it is the distance from the current bucket (origin) to
+     * the first bucket in its collision chain.  If another value hashes to a bucket
+     * that has an EMPTY displacement, then it is guaranteed to be unique.
+     *
+     * Setting next=EMPTY indicates that the current bucket is not occupied.  Otherwise,
+     * it is the distance to the next bucket in the chain.  If it is set to 0, then it
+     * indicates that the current bucket is at the end of its collision chain.
      */
 
-    // TODO: add packed=false to template parameters.
-
-    template <bool packed = false, typename Dummy = void>
+    template <bool pack = false, typename Dummy = void>
     struct BucketType {
         struct Bucket {
             unsigned char collisions = EMPTY;
             unsigned char next = EMPTY;
             alignas(Node) unsigned char data[sizeof(Node)];  // uninitialized payload
-
-            /* NOTE: setting displacement=EMPTY indicates that the bucket does not have any
-            * collisions.  Otherwise, it is the distance from the current bucket (origin)
-            * to the first bucket in its collision chain.  If another value hashes to a
-            * bucket that has an EMPTY displacement, then it is guaranteed to be unique.
-            *
-            * Setting next=EMPTY indicates that the current bucket is not occupied.
-            * Otherwise, it is the distance to the next bucket in the chain.  If it is set
-            * to 0, then it indicates that the current bucket is at the end of its
-            * collision chain.
-            */
 
             /* Get a pointer to the node within the bucket. */
             inline Node* node() noexcept {
@@ -1087,17 +1069,6 @@ private:
             unsigned char next = EMPTY;
             alignas(Node) unsigned char data[sizeof(Node)];  // uninitialized payload
 
-            /* NOTE: setting displacement=EMPTY indicates that the bucket does not have any
-            * collisions.  Otherwise, it is the distance from the current bucket (origin)
-            * to the first bucket in its collision chain.  If another value hashes to a
-            * bucket that has an EMPTY displacement, then it is guaranteed to be unique.
-            *
-            * Setting next=EMPTY indicates that the current bucket is not occupied.
-            * Otherwise, it is the distance to the next bucket in the chain.  If it is set
-            * to 0, then it indicates that the current bucket is at the end of its
-            * collision chain.
-            */
-
             /* Get a pointer to the node within the bucket. */
             inline Node* node() noexcept {
                 return reinterpret_cast<Node*>(&data);
@@ -1129,7 +1100,7 @@ private:
     bitmap, this approach stores two 8-bit offsets per bucket.  The first represents
     the distance to the head of this bucket's collision chain, and the second represents
     the distance to the next bucket in the current occupant's collision chain. */
-    using Bucket = typename BucketType<false>::Bucket;
+    using Bucket = typename BucketType<packed>::Bucket;
 
     Bucket* table;  // dynamic array of buckets
     size_t modulo;  // bitmask for fast modulo arithmetic
