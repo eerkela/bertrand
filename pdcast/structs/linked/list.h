@@ -37,6 +37,11 @@ namespace structs {
 namespace linked {
 
 
+// TODO: simplify template definition:
+// LinkedList<int>
+// LinkedList<int, config::SINGLY_LINKED>
+
+
 /* A modular linked list class that mimics the Python list interface in C++. */
 template <typename NodeType, typename LockPolicy = util::BasicLock>
 class LinkedList : public LinkedBase<linked::ListView<NodeType>, LockPolicy> {
@@ -166,10 +171,11 @@ public:
     /* Proxies allow access to a particular element or slice of a list, allowing
      * convenient, Python-like syntax for list operations. 
      *
-     * ElementProxies are returned by the array index operator [] when given with a
-     * single numeric argument.  This argument can be negative following the same
-     * semantics as built-in Python lists (i.e. -1 refers to the last element, and
-     * overflow results in an error).  Each proxy offers the following methods:
+     * ElementProxies are returned by the `position()` method and array index
+     * operator[] when given a single numeric argument.  This argument can be negative
+     * following the same semantics as built-in Python lists (i.e. -1 refers to the
+     * last element, and overflow results in an error).  Each proxy offers the
+     * following methods:
      *
      *      Value get(): return the value at the current index.
      *      void set(Value& value): set the value at the current index.
@@ -201,7 +207,7 @@ public:
      */
 
     /* Get a proxy for a value at a particular index of the list. */
-    inline linked::ElementProxy<View> operator[](long long index) {
+    inline linked::ElementProxy<View> position(long long index) {
         return linked::position(this->view, index);
     }
 
@@ -234,6 +240,11 @@ public:
      * symmetry is provided by the universal utility functions in structs/util/iter.h
      * and structs/util/python.h.
      */
+
+    /* Overload the array index operator ([]) to allow pythonic list indexing. */
+    inline auto operator[](long long index) {
+        return position(index);
+    }
 
 };
 
@@ -1682,7 +1693,6 @@ PyMODINIT_FUNC PyInit_list(void) {
         Py_DECREF(mod);
         return nullptr;
     }
-
     return mod;
 }
 

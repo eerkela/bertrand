@@ -40,7 +40,11 @@ namespace linked {
         size_t size = view.size();
         try {
             for (auto item : util::iter(items)) {
-                linked::add(view, item, left);
+                if (left) {
+                    linked::addleft(view, item);
+                } else {
+                    linked::add(view, item);
+                }
             }
 
         // clean up nodes on error

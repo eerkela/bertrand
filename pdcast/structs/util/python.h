@@ -404,6 +404,7 @@ inline bool eq(const LHS& lhs, const RHS& rhs) {
                 if (PyUnicode_IS_ASCII(a) && PyUnicode_IS_ASCII(b)) {
                     Py_ssize_t length = PyUnicode_GET_LENGTH(a);
                     if (PyUnicode_GET_LENGTH(b) != length) return false;
+                    if (length == 0) return true;  // both strings are empty
                     const void* data_a = PyUnicode_DATA(a);
                     const void* data_b = PyUnicode_DATA(b);
                     return std::memcmp(data_a, data_b, length) == 0;

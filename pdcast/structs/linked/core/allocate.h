@@ -31,7 +31,7 @@ namespace linked {
 /* DEBUG=TRUE adds print statements for every memory allocation in order to help catch
 leaks.  This is a lot less elegant than using a logging library, but it gets the job
 done, avoids a dependency, and is easier to use from a Python REPL. */
-constexpr bool DEBUG = true;
+constexpr bool DEBUG = false;
 
 
 ////////////////////
@@ -649,7 +649,40 @@ bool
 ////////////////////
 
 
-/* A custom allocator that uses a dynamic array to manage memory for each node. */
+/* A custom allocator that uses a dynamic array to manage memory for nodes within a
+linked list.
+
+Most linked list implementations (including `std::list`) typically allocate each node
+individually on the heap, rather than placing them in a contiguous array like
+`std::vector`.  This can lead to fragmentation, which degrades cache performance and
+adds overhead to every insertion/removal.  The reasons for doing this are sound: linked
+data structures require the memory address of each of their nodes to remain stable over
+time, in order to maintain the integrity of their internal pointers.  Individual heap
+allocations, while not the most efficient option, are one way to guarantee this
+stability.
+
+This allocator, on the other hand, uses a similar strategy to `std::vector`, placing
+all nodes in a single contiguous array which grows and shrinks as needed.  This
+eliminates fragmentation and, by growing the array geometrically, amortizes the cost of
+reallocation to further minimize heap allocations.  The only downsides are that each
+resize operation is O(n), and we always overallocate some amount of memory to ensure
+that we don't need to resize too often.
+
+Note that since each node maintains a reference to at least one other node in the list,
+we still need to ensure that their physical addresses do not change over time.  This
+means we are prohibited from moving nodes within the array, as doing so would
+compromise the list's integrity.  As a result, holes can form within the allocator
+array as elements are removed from the list.  Luckily, since the nodes may be linked,
+we can use them to form a singly-linked free list that tracks the location of each
+hole, without requiring any additional data structures.
+
+Filling holes in this way can lead to a secondary form of fragmentation, where the
+order of the linked list no longer matches the order of the nodes within the array.
+This forces the memory subsystem to load and unload individual cache lines more
+frequently, degrading performance.  To mitigate this, whenever we reallocate the array,
+we copy the nodes into the new array in the same order as they appear in the list.
+This ensures that each node immediately succeeds the previous node in memory,
+minimizing the number of cache lines that need to be loaded to traverse the list. */
 template <typename NodeType>
 class ListAllocator : public BaseAllocator<ListAllocator<NodeType>, NodeType> {
     using Base = BaseAllocator<ListAllocator<NodeType>, NodeType>;
@@ -664,14 +697,6 @@ public:
 private:
     Node* array;  // dynamic array of nodes
     std::pair<Node*, Node*> free_list;  // singly-linked list of open nodes
-
-    /* When we allocate new nodes, we fill the dynamic array from left to right.
-    If a node is removed from the middle of the array, then we add it to the free
-    list.  The next time a node is allocated, we check the free list and reuse a
-    node if possible.  Otherwise, we initialize a new node at the end of the
-    occupied section.  If this causes the array to exceed its capacity, then we
-    allocate a new array with twice the length and copy all nodes in the same order
-    as they appear in the list. */
 
     /* Adjust the starting capacity of a dynamic list to a power of two. */
     inline static size_t init_capacity(std::optional<size_t> capacity, bool dynamic) {
@@ -970,8 +995,8 @@ public:
 //////////////////////////////
 
 
-/* A custom allocator that directly hashes the node array to avoid auxiliary data
-structures.  Uses a modified hopscotch strategy to resolve collisions.
+/* A custom allocator that directly hashes the node array to allow for constant-time
+lookups.  Uses a modified hopscotch strategy to resolve collisions.
 
 Hopscotch hashing typically stores extra information in each bucket listing the
 distance to the next node in the collision chain.  When a collision is encountered, we
@@ -982,7 +1007,7 @@ to a finite neighborhood around the origin node (as set by the hop information).
 
 Because of the direct integration with the allocator array, this approach does not
 require any auxiliary data structures.  Instead, it uses 2 extra bytes per node to
-store the hopscotch offsets, which can be packed into the allocator array for increased
+store the hopscotch offsets, which can be packed into the allocator array for maximum
 efficiency.  However, due to the requirement that node addresses remain physically
 stable over their lifetime, it is not possible to rearrange elements within the array
 as we insert items.  This means that the full hopscotch algorithm cannot be implemented
@@ -990,7 +1015,14 @@ as described in the original paper, since it attempts to consolidate elements to
 improve cache locality.  Instead, insertions into this map devolve into a linear search
 for an empty bucket, which limits the potential of the hopscotch algorithm.  As a
 result, insertions have comparable performance to a typical linear probing algorithm,
-but searches and removals will skip through the neighborhood like normal. */
+but searches and removals will skip through the neighborhood like normal.
+
+The benefits of this algorithm are as follows.  First, it avoids the need for
+tombstones, which can accumulate within the list and degrade performance.  Second, it
+allows searches to work well at high load factors, since we only need to check a
+well-defined collision chain for a conflict, and third, it does not require us to move
+any elements within the array.  These properties allow us to implement a set of linked
+nodes with minimal overhead, while still maintaining as much performance as possible. */
 template <typename NodeType, bool packed = false>
 class HashAllocator : public BaseAllocator<HashAllocator<NodeType>, NodeType> {
     using Base = BaseAllocator<HashAllocator<NodeType>, NodeType>;
@@ -1026,6 +1058,16 @@ private:
      * Setting next=EMPTY indicates that the current bucket is not occupied.  Otherwise,
      * it is the distance to the next bucket in the chain.  If it is set to 0, then it
      * indicates that the current bucket is at the end of its collision chain.
+     *
+     * NOTE: due to the way the hopscotch algorithm works, each node is assigned to a
+     * finite neighborhood of size MAX_PROBE_LENGTH.  It is possible (albeit very rare)
+     * that during insertion, a linear probe can surpass this length, which causes the
+     * algorithm to fail.  The probability of this is extremely low (impossible for
+     * sets under 255 elements, otherwise order 10**-29 for MAX_PROBE_LENGTH=255 at 75%
+     * maximum load), but is still possible, with increasing (but still very small)
+     * likelihood as the container size increases and/or probe length shortens.
+     * Dynamic sets can work around this by simply growing to a larger table size, but
+     * for fixed-size sets, it is a fatal error.
      */
 
     template <bool pack = false, typename Dummy = void>
@@ -1235,7 +1277,7 @@ private:
             this->capacity != DEFAULT_CAPACITY &&
             this->occupied <= this->capacity / 4
         ) {
-            size_t size = util::next_power_of_two(this->occupied * 2);
+            size_t size = util::next_power_of_two(this->occupied + (this->occupied / 3));
             resize(size < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : size);
             return true;
         }
@@ -1256,8 +1298,9 @@ private:
                 bucket = table + idx;
             }
             while (true) {
-                if (util::eq(value, bucket->node()->value())) {
-                    return bucket->node();
+                Node* node = bucket->node();
+                if (node->hash() == hash && util::eq(node->value(), value)) {
+                    return node;
                 }
 
                 // advance to next bucket
@@ -1362,20 +1405,37 @@ public:
         }
     }
 
-    /* NOTE: due to the way the hopscotch algorithm works, each node is assigned to a
-     * finite neighborhood of size MAX_PROBE_LENGTH.  It is possible (albeit very rare)
-     * that during insertion, a linear probe can surpass this length, which causes the
-     * algorithm to fail.  The probability of this is extremely low (impossible for
-     * sets under 255 elements, otherwise order 10**-29 for MAX_PROBE_LENGTH=255 at 75%
-     * maximum load), but is still possible, with increasing (but still very small)
-     * likelihood as the container size increases and/or probe length shortens.
-     * Dynamic sets can work around this by simply growing to a larger table size, but
-     * for fixed-size sets, it is a fatal error.
-     */
+    /* An enum containing compile-time flags for the create() and recycle() factory
+    methods. */
+    enum : unsigned int {
+        DEFAULT = 0,
+        EXIST_OK = 1 << 0,
+        NOEXIST_OK = 1 << 1,
+        REPLACE_MAPPED = 1 << 2,
+        EVICT_HEAD = 1 << 3,
+        EVICT_TAIL = 1 << 4,
+        INSERT_HEAD = 1 << 5,
+        INSERT_TAIL = 1 << 6,
+        MOVE_HEAD = 1 << 7,
+        MOVE_TAIL = 1 << 8,
+    };
 
     /* Construct a new node from the table. */
-    template <bool exist_ok = false, bool evict = false, typename... Args>
+    template <unsigned int flags = DEFAULT, typename... Args>
     Node* create(Args&&... args) {
+        static_assert(
+            !((flags & MOVE_HEAD) && (flags & MOVE_TAIL)),
+            "cannot move node to both head and tail of list"
+        );
+        static_assert(
+            !((flags & EVICT_HEAD) && (flags & EVICT_TAIL)),
+            "cannot evict node from both head and tail of list"
+        );
+        static_assert(
+            !((flags & INSERT_HEAD) && (flags & INSERT_TAIL)),
+            "cannot insert node at both head and tail of list"
+        );
+
         // allocate into temporary node
         Node* node = this->temp();
         Base::init_node(node, std::forward<Args>(args)...);
@@ -1395,13 +1455,56 @@ public:
             }
             while (true) {
                 // check for value match
-                if (util::eq(bucket->node()->value(), node->value())) {
-                    if constexpr (exist_ok) {
-                        if constexpr (NodeTraits<Node>::has_mapped) {
+                if (bucket->node()->hash() == node->hash() &&
+                    util::eq(bucket->node()->value(), node->value())
+                ) {
+                    if constexpr (flags & EXIST_OK) {
+                        if constexpr (
+                            NodeTraits<Node>::has_mapped &&
+                            (flags & REPLACE_MAPPED)
+                        ) {
                             bucket->node()->mapped(std::move(node->mapped()));
                         }
                         node->~Node();  // clean up temporary node
-                        return bucket->node();
+                        node = bucket->node();  // simplify syntax
+                        if constexpr (flags & MOVE_HEAD) {
+                            if (node != this->head) {
+                                Node* prev;
+                                if constexpr (NodeTraits<Node>::has_prev) {
+                                    prev = node->prev();
+                                } else {
+                                    prev = nullptr;
+                                    Node* curr = this->head;
+                                    while (curr != node) {
+                                        prev = curr;
+                                        curr = curr->next();
+                                    }
+                                }
+                                if (node == this->tail) this->tail = prev;
+                                Node::unlink(prev, node, node->next());
+                                Node::link(nullptr, node, this->head);
+                                this->head = node;
+                            }
+                        } else if constexpr (flags & MOVE_TAIL) {
+                            if (node != this->tail) {
+                                Node* prev;
+                                if constexpr (NodeTraits<Node>::has_prev) {
+                                    prev = node->prev();
+                                } else {
+                                    prev = nullptr;
+                                    Node* curr = this->head;
+                                    while (curr != node) {
+                                        prev = curr;
+                                        curr = curr->next();
+                                    }
+                                }
+                                if (node == this->head) this->head = node->next();
+                                Node::unlink(prev, node, node->next());
+                                Node::link(this->tail, node, nullptr);
+                                this->tail = node;
+                            }
+                        }
+                        return node;
                     } else {
                         std::ostringstream msg;
                         msg << "duplicate key: " << util::repr(node->value());
@@ -1433,22 +1536,28 @@ public:
 
         // otherwise if set is of fixed size, either evict an element or throw an error
         } else if (this->occupied == this->max_occupants) {
-            if constexpr (evict) {
+            if constexpr (flags & EVICT_HEAD) {
+                Node* evicted = this->head;
+                this->head = evicted->next();
+                if (this->head == nullptr) this->tail = nullptr;
+                Node::unlink(nullptr, evicted, this->head);
+                recycle(evicted);
+            } else if constexpr (flags & EVICT_TAIL) {
                 Node* evicted = this->tail;
+                Node* prev;
                 if constexpr (NodeTraits<Node>::has_prev) {
-                    Node* prev = this->tail->prev();
-                    Node::unlink(prev, evicted, nullptr);
-                    this->tail = prev;
+                    prev = evicted->prev();
                 } else {
-                    Node* prev = nullptr;
+                    prev = nullptr;
                     Node* curr = this->head;
-                    while (curr != nullptr) {
+                    while (curr != evicted) {
                         prev = curr;
                         curr = curr->next();
                     }
-                    Node::unlink(prev, evicted, nullptr);
-                    this->tail = prev;
                 }
+                this->tail = prev;
+                if (this->tail == nullptr) this->head = nullptr;
+                Node::unlink(prev, evicted, nullptr);
                 recycle(evicted);
             } else {
                 throw Base::cannot_grow();
@@ -1491,59 +1600,68 @@ public:
         // insert node into empty bucket
         bucket->construct(std::move(*node));
         ++this->occupied;
-        return bucket->node();
+        node = bucket->node();  // simplify syntax
+        if constexpr (flags & INSERT_HEAD) {
+            Node::link(nullptr, node, this->head);
+            this->head = node;
+            if (this->tail == nullptr) this->tail = node;
+        } else if constexpr (flags & INSERT_TAIL) {
+            Node::link(this->tail, node, nullptr);
+            this->tail = node;
+            if (this->head == nullptr) this->head = node;
+        }
+        return node;
     }
 
     /* Release a node from the table. */
+    template <unsigned int flags = DEFAULT>
     void recycle(Node* node) {
         // look up origin node
         size_t idx = node->hash() & modulo;
         Bucket* origin = table + idx;
 
-        // trivial case: bucket does not have a collision chain
-        if (origin->collisions == EMPTY) {
-            std::ostringstream msg;
-            msg << "key not found: " << util::repr(node->value());
-            throw util::KeyError(msg.str());
-        }
-
-        // follow collision chain
-        Bucket* prev = nullptr;
-        Bucket* bucket = origin;
-        if (origin->collisions) {
-            idx += origin->collisions;
-            idx &= modulo;
-            bucket = table + idx;
-        }
-        while (true) {
-            // check for matching value
-            if (util::eq(bucket->node()->value(), node->value())) {
-                // update hop information
-                unsigned char has_next = (bucket->next > 0);
-                if (prev == nullptr) {  // bucket is head of collision chain
-                    origin->collisions = has_next ?
-                        origin->collisions + bucket->next : EMPTY;
-                } else {  // bucket is in middle or end of collision chain
-                    prev->next = has_next * (prev->next + bucket->next);
-                }
-
-                // destroy node
-                if constexpr (DEBUG) {
-                    std::cout << "    -> recycle: " << util::repr(node->value());
-                    std::cout << std::endl;
-                }
-                bucket->destroy();
-                --this->occupied;
-                this->shrink();  // attempt to shrink table
-                return;
+        // if collision chain is empty, then no match is possible
+        if (origin->collisions != EMPTY) {
+            // follow collision chain
+            Bucket* prev = nullptr;
+            Bucket* bucket = origin;
+            if (origin->collisions) {
+                idx += origin->collisions;
+                idx &= modulo;
+                bucket = table + idx;
             }
+            while (true) {
+                // check for matching value
+                if (bucket->node()->hash() == node->hash() &&
+                    util::eq(bucket->node()->value(), node->value())
+                ) {
+                    // update hop information
+                    unsigned char has_next = (bucket->next > 0);
+                    if (prev == nullptr) {  // bucket is head of collision chain
+                        origin->collisions = has_next ?
+                            origin->collisions + bucket->next : EMPTY;
+                    } else {  // bucket is in middle or end of collision chain
+                        prev->next = has_next * (prev->next + bucket->next);
+                    }
 
-            // advance to next bucket
-            if (!bucket->next) break;  // end of chain
-            idx += bucket->next;
-            idx &= modulo;
-            prev = bucket;
-            bucket = table + idx;
+                    // destroy node
+                    if constexpr (DEBUG) {
+                        std::cout << "    -> recycle: " << util::repr(node->value());
+                        std::cout << std::endl;
+                    }
+                    bucket->destroy();
+                    --this->occupied;
+                    this->shrink();  // attempt to shrink table
+                    return;
+                }
+
+                // advance to next bucket
+                if (!bucket->next) break;  // end of chain
+                idx += bucket->next;
+                idx &= modulo;
+                prev = bucket;
+                bucket = table + idx;
+            }
         }
 
         // node not found

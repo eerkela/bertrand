@@ -3,9 +3,10 @@
 #define BERTRAND_STRUCTS_LINKED_SET_H
 
 #include <cstddef>  // size_t
-#include <optional>  // std::optional<>
+#include <optional>  // std::optional
 #include <ostream>  // std::ostream
 #include <sstream>  // std::ostringstream
+#include <variant>  // std::variant
 #include <Python.h>  // CPython API
 #include "../util/args.h"  // PyArgs
 #include "../util/except.h"  // throw_python()
@@ -41,12 +42,8 @@ namespace structs {
 namespace linked {
 
 
-/* A module linked set class that mimics the Python set interface in C++. */
-template <
-    typename NodeType,
-    typename SortPolicy = linked::MergeSort,
-    typename LockPolicy = util::BasicLock
->
+/* An ordered set based on a combined linked list and hash table. */
+template <typename NodeType, typename LockPolicy = util::BasicLock>
 class LinkedSet : public LinkedBase<linked::SetView<NodeType>, LockPolicy> {
     using Base = LinkedBase<linked::SetView<NodeType>, LockPolicy>;
 
@@ -83,9 +80,14 @@ public:
      *      TODO
      */
 
-    /* Add an item to the set if it is not already present. */
-    inline void add(Value& item, bool left = false) {
-        linked::add(this->view, item, left);
+    /* Add an item to the end of the set if it is not already present. */
+    inline void add(Value& item) {
+        linked::add(this->view, item);
+    }
+
+    /* Add an item to the beginning of the set if it is not already present. */
+    inline void addleft(Value& item) {
+        linked::addleft(this->view, item);
     }
 
     /* Add an item to the set if it is not already present and move it to the front of
@@ -334,7 +336,7 @@ public:
      */
 
     /* Get a proxy for a value at a particular index of the set. */
-    inline linked::ElementProxy<View> operator[](long long index) {
+    inline linked::ElementProxy<View> position(long long index) {
         return linked::position(this->view, index);
     }
 
@@ -369,6 +371,11 @@ public:
      * symmetry is provided by the universal utility functions in structs/util/iter.h
      * and structs/util/python.h.
      */
+
+    /* Overload the array index operator ([]) to allow pythonic list indexing. */
+    inline auto operator[](long long index) {
+        return position(index);
+    }
 
 };
 
@@ -514,32 +521,39 @@ bool operator>(const LinkedSet<Ts...>& set, const Container& other) {
 //////////////////////////////
 
 
-/* CRTP mixin class that contains the Python set interface for a linked data
-structure. */
+/* CRTP mixin class containing the Python set interface for a linked data structure. */
 template <typename Derived>
 class PySetInterface {
 public:
 
     /* Implement `LinkedSet.add()` in Python. */
-    static PyObject* add(
-        Derived* self,
-        PyObject* const* args,
-        Py_ssize_t nargs,
-        PyObject* kwnames
-    ) {
-        using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
-        static constexpr std::string_view meth_name{"add"};
+    static PyObject* add(Derived* self, PyObject* item) {
         try {
-            // parse arguments
-            Args pyargs(meth_name, args, nargs, kwnames);
-            PyObject* item = pyargs.parse("item");
-            bool left = pyargs.parse("left", util::is_truthy, false);
-            pyargs.finalize();
-
             // invoke equivalent C++ method
             std::visit(
-                [&item, &left](auto& set) {
-                    set.add(item, left);
+                [&item](auto& set) {
+                    set.add(item);
+                },
+                self->variant
+            );
+
+            // exit normally
+            Py_RETURN_NONE;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedSet.addleft()` in Python. */
+    static PyObject* addleft(Derived* self, PyObject* item) {
+        try {
+            // invoke equivalent C++ method
+            std::visit(
+                [&item](auto& set) {
+                    set.addleft(item);
                 },
                 self->variant
             );
@@ -555,12 +569,12 @@ public:
     }
 
     /* Implement `LinkedSet.lru_add()` in Python. */
-    static PyObject* lru_add(Derived* self, PyObject* other) {
+    static PyObject* lru_add(Derived* self, PyObject* item) {
         try {
             // invoke equivalent C++ method
             std::visit(
-                [&other](auto& set) {
-                    set.lru_add(other);
+                [&item](auto& set) {
+                    set.lru_add(item);
                 },
                 self->variant
             );
@@ -1296,13 +1310,26 @@ Parameters
 ----------
 item : Any
     The item to insert.
-left : bool, default False
-    If True, insert the item at the beginning of the set instead of the end.
 
 Notes
 -----
-If ``left=True``, then the item will be appended to the beginning of the set
-rather than the end.
+Adds are O(1) for both ends of the set.
+)doc"
+        };
+
+        static constexpr std::string_view addleft {R"doc(
+Insert an item at the beginning of the set if it is not already present.
+
+Parameters
+----------
+item : Any
+    The item to insert.
+
+Notes
+-----
+This method is analogous to the ``appendleft()`` method of a
+:class:`collections.deque` object, except that only appends the item if it is
+not already contained within the set.
 
 Adds are O(1) for both ends of the set.
 )doc"
@@ -1911,7 +1938,8 @@ code that relies on this data structure with only minimal changes.
         LIST_METHOD(sort, METH_FASTCALL | METH_KEYWORDS),
         LIST_METHOD(reverse, METH_NOARGS),
         LIST_METHOD(rotate, METH_FASTCALL),
-        SET_METHOD(add, METH_FASTCALL | METH_KEYWORDS),
+        SET_METHOD(add, METH_O),
+        SET_METHOD(addleft, METH_O),
         SET_METHOD(lru_add, METH_O),
         {
             "union",  // renamed
@@ -2036,7 +2064,6 @@ PyMODINIT_FUNC PyInit_set(void) {
         Py_DECREF(mod);
         return nullptr;
     }
-
     return mod;
 }
 

@@ -573,7 +573,8 @@ class SetView : public BaseView<SetView<NodeType>, HashAllocator<Hashed<NodeType
 
 public:
     static constexpr bool setlike = true;
-    using Node = Hashed<NodeType>;
+    using Allocator = typename Base::Allocator;
+    using Node = typename Base::Node;
 
     // inherit constructors
     using Base::Base;
@@ -593,14 +594,13 @@ public:
             spec
         )
     {
+        static constexpr unsigned int flags = Allocator::EXIST_OK;
+
         for (auto item : util::iter(iterable)) {
-            Node* curr = node<true>(item);  // exist_ok = True
-            if (curr->next() == nullptr && curr != this->tail()) {
-                if (reverse) {
-                    Base::link(nullptr, curr, this->head());
-                } else {
-                    Base::link(this->tail(), curr, nullptr);
-                }
+            if (reverse) {
+                node<flags | Allocator::INSERT_HEAD>(item);
+            } else {
+                node<flags | Allocator::INSERT_TAIL>(item);
             }
         }
     }
@@ -617,13 +617,10 @@ public:
     ) : Base(capacity, dynamic, spec)
     {
         for (; begin != end; ++begin) {
-            Node* curr = node<true>(*begin);  // exist_ok = True
-            if (curr->next() == nullptr && curr != this->tail()) {
-                if (reverse) {
-                    Base::link(nullptr, curr, this->head());
-                } else {
-                    Base::link(this->tail(), curr, nullptr);
-                }
+            if (reverse) {
+                node<Allocator::EXIST_OK | Allocator::INSERT_HEAD>(*begin);
+            } else {
+                node<Allocator::EXIST_OK | Allocator::INSERT_TAIL>(*begin);
             }
         }
     }
@@ -634,9 +631,9 @@ public:
     or not the allocator will throw an exception if the value already exists in the set.
     The default is false, meaning that an exception will be thrown if a duplicate node
     is requested. */
-    template <bool exist_ok = false, bool evict = false, typename... Args>
+    template <unsigned int flags = Allocator::DEFAULT, typename... Args>
     inline Node* node(Args&&... args) const {
-        return this->allocator.template create<exist_ok, evict, Args&&...>(
+        return this->allocator.template create<flags, Args&&...>(
             std::forward<Args>(args)...
         );
     }
@@ -681,131 +678,131 @@ public:
 ////////////////////////
 
 
-/* A linked data structure that uses a hash table to store nodes as key-value pairs.
+// /* A linked data structure that uses a hash table to store nodes as key-value pairs.
 
-DictViews are identical to SetViews except that their nodes are specialized to store
-key-value pairs rather than single values.  This allows them to be used as a mapping
-type, similar to std::unordered_map or the built-in Python dict.
+// DictViews are identical to SetViews except that their nodes are specialized to store
+// key-value pairs rather than single values.  This allows them to be used as a mapping
+// type, similar to std::unordered_map or the built-in Python dict.
 
-DictViews (and the associated LinkedDicts) are especially useful as high-performance
-caches, particularly when they are doubly-linked.  In this case, we can move nodes
-within the list at the same time as we perform a search, allowing us to efficiently
-implement a variety of caching strategies.  The most basic is a Least-Recently-Used
-(LRU) cache, which simply moves the searched node to the head of the list in a single
-operation. */
-template <typename NodeType = DoubleNode<PyObject*>, typename MappedType = PyObject*>
-class DictView : public BaseView<
-    DictView<NodeType, MappedType>,
-    HashAllocator<Mapped<Hashed<NodeType>, MappedType>>
-> {
-    using Base = BaseView<
-        DictView<NodeType, MappedType>,
-        HashAllocator<Mapped<Hashed<NodeType>, MappedType>>
-    >;
+// DictViews (and the associated LinkedDicts) are especially useful as high-performance
+// caches, particularly when they are doubly-linked.  In this case, we can move nodes
+// within the list at the same time as we perform a search, allowing us to efficiently
+// implement a variety of caching strategies.  The most basic is a Least-Recently-Used
+// (LRU) cache, which simply moves the searched node to the head of the list in a single
+// operation. */
+// template <typename NodeType = DoubleNode<PyObject*>, typename MappedType = PyObject*>
+// class DictView : public BaseView<
+//     DictView<NodeType, MappedType>,
+//     HashAllocator<Mapped<Hashed<NodeType>, MappedType>>
+// > {
+//     using Base = BaseView<
+//         DictView<NodeType, MappedType>,
+//         HashAllocator<Mapped<Hashed<NodeType>, MappedType>>
+//     >;
 
-public:
-    static constexpr bool dictlike = true;
-    using Node = Mapped<Hashed<NodeType>, MappedType>;
+// public:
+//     static constexpr bool dictlike = true;
+//     using Node = Mapped<Hashed<NodeType>, MappedType>;
 
-    // inherit constructors
-    using Base::Base;
-    using Base::operator=;
+//     // inherit constructors
+//     using Base::Base;
+//     using Base::operator=;
 
-    /* Construct a DictView from an input iterable. */
-    template <typename Container>
-    DictView(
-        Container&& iterable,
-        std::optional<size_t> capacity,
-        bool dynamic,
-        PyObject* spec,
-        bool reverse
-    ) : Base(
-            Base::init_size(iterable, capacity, dynamic),
-            dynamic,
-            spec
-        )
-    {
-        for (auto item : util::iter(iterable)) {
-            Node* curr = node<true>(item);  // exist_ok = True
-            if (curr->next() == nullptr && curr != this->tail()) {
-                if (reverse) {
-                    Base::link(nullptr, curr, this->head());
-                } else {
-                    Base::link(this->tail(), curr, nullptr);
-                }
-            }
-        }
-    }
+//     /* Construct a DictView from an input iterable. */
+//     template <typename Container>
+//     DictView(
+//         Container&& iterable,
+//         std::optional<size_t> capacity,
+//         bool dynamic,
+//         PyObject* spec,
+//         bool reverse
+//     ) : Base(
+//             Base::init_size(iterable, capacity, dynamic),
+//             dynamic,
+//             spec
+//         )
+//     {
+//         for (auto item : util::iter(iterable)) {
+//             Node* curr = node<true>(item);  // exist_ok = True
+//             if (curr->next() == nullptr && curr != this->tail()) {
+//                 if (reverse) {
+//                     Base::link(nullptr, curr, this->head());
+//                 } else {
+//                     Base::link(this->tail(), curr, nullptr);
+//                 }
+//             }
+//         }
+//     }
 
-    /* Construct a SetView from an iterator range. */
-    template <typename Iterator>
-    DictView(
-        Iterator&& begin,
-        Iterator&& end,
-        std::optional<size_t> capacity,
-        bool dynamic,
-        PyObject* spec,
-        bool reverse
-    ) : Base(capacity, dynamic, spec)
-    {
-        for (; begin != end; ++begin) {
-            Node* curr = node<true>(*begin);  // exist_ok = True
-            if (curr->next() == nullptr && curr != this->tail()) {
-                if (reverse) {
-                    Base::link(nullptr, curr, this->head());
-                } else {
-                    Base::link(this->tail(), curr, nullptr);
-                }
-            }
-        }
-    }
+//     /* Construct a SetView from an iterator range. */
+//     template <typename Iterator>
+//     DictView(
+//         Iterator&& begin,
+//         Iterator&& end,
+//         std::optional<size_t> capacity,
+//         bool dynamic,
+//         PyObject* spec,
+//         bool reverse
+//     ) : Base(capacity, dynamic, spec)
+//     {
+//         for (; begin != end; ++begin) {
+//             Node* curr = node<true>(*begin);  // exist_ok = True
+//             if (curr->next() == nullptr && curr != this->tail()) {
+//                 if (reverse) {
+//                     Base::link(nullptr, curr, this->head());
+//                 } else {
+//                     Base::link(this->tail(), curr, nullptr);
+//                 }
+//             }
+//         }
+//     }
 
-    /* Construct a new node for the set.
+//     /* Construct a new node for the set.
 
-    NOTE: this accepts an optional `exist_ok` template parameter that controls whether
-    or not the allocator will throw an exception if the value already exists in the set.
-    The default is false, meaning that an exception will be thrown if a duplicate node
-    is requested. */
-    template <bool exist_ok = false, bool evict = false, typename... Args>
-    inline Node* node(Args&&... args) const {
-        return this->allocator.template create<exist_ok, evict, Args&&...>(
-            std::forward<Args>(args)...
-        );
-    }
+//     NOTE: this accepts an optional `exist_ok` template parameter that controls whether
+//     or not the allocator will throw an exception if the value already exists in the set.
+//     The default is false, meaning that an exception will be thrown if a duplicate node
+//     is requested. */
+//     template <bool exist_ok = false, bool evict = false, typename... Args>
+//     inline Node* node(Args&&... args) const {
+//         return this->allocator.template create<exist_ok, evict, Args&&...>(
+//             std::forward<Args>(args)...
+//         );
+//     }
 
-    /* Search the set for a particular node/value. */
-    template <typename T>
-    inline Node* search(T* key) const {
-        return this->allocator.search(key);
-    }
+//     /* Search the set for a particular node/value. */
+//     template <typename T>
+//     inline Node* search(T* key) const {
+//         return this->allocator.search(key);
+//     }
 
-    /* Search the set for a particular node, moving it to the front if it is found. */
-    template <typename T>
-    inline Node* lru_search(T&& key) const {
-        Node* node = this->allocator.search(std::forward<T>(key));
-        if (node == this->head() || node == nullptr) return node;
+//     /* Search the set for a particular node, moving it to the front if it is found. */
+//     template <typename T>
+//     inline Node* lru_search(T&& key) const {
+//         Node* node = this->allocator.search(std::forward<T>(key));
+//         if (node == this->head() || node == nullptr) return node;
 
-        // if doubly-linked, moving to the front is O(1)
-        if constexpr (NodeTraits<Node>::has_prev) {
-            Base::unlink(node->prev(), node, node->next());
-            Base::link(nullptr, node, this->head());
+//         // if doubly-linked, moving to the front is O(1)
+//         if constexpr (NodeTraits<Node>::has_prev) {
+//             Base::unlink(node->prev(), node, node->next());
+//             Base::link(nullptr, node, this->head());
 
-        // otherwise, we have to traverse the list to find the previous node
-        } else {
-            auto it = this->begin();
-            ++it;  // skip head
-            for (auto end = this->end(); it != end; ++it) {
-                if (it.curr() == node) {
-                    Base::unlink(it.prev(), node, it.next());
-                    Base::link(nullptr, node, this->head());
-                    break;
-                }
-            }
-        }
-        return node;
-    }
+//         // otherwise, we have to traverse the list to find the previous node
+//         } else {
+//             auto it = this->begin();
+//             ++it;  // skip head
+//             for (auto end = this->end(); it != end; ++it) {
+//                 if (it.curr() == node) {
+//                     Base::unlink(it.prev(), node, it.next());
+//                     Base::link(nullptr, node, this->head());
+//                     break;
+//                 }
+//             }
+//         }
+//         return node;
+//     }
 
-};
+// };
 
 
 ///////////////////////////

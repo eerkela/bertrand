@@ -2,212 +2,161 @@
 #ifndef BERTRAND_STRUCTS_LINKED_DICT_H
 #define BERTRAND_STRUCTS_LINKED_DICT_H
 
-#include <cstddef>  // for size_t
+#include <cstddef>  // size_t
+#include <optional>  // std::optional
+#include <ostream>  // std::ostream
+#include <sstream>  // std::ostringstream
 #include <utility>  // std::pair
 #include <variant>  // std::variant
 #include <Python.h>  // CPython API
+#include "../util/args.h"  // PyArgs
+#include "../util/except.h"  // throw_python()
+#include "core/view.h"  // DictView
+#include "base.h"  // LinkedBase
+#include "list.h"  // PyListInterface
+#include "set.h"  // PySetInterface
 
-// Algorithms
-#include "algorithms/append.h"
-#include "algorithms/compare.h"
+#include "algorithms/add.h"
 #include "algorithms/contains.h"
 #include "algorithms/count.h"
-#include "algorithms/delete_slice.h"
-#include "algorithms/extend.h"
-#include "algorithms/get_slice.h"
+#include "algorithms/discard.h"
+#include "algorithms/distance.h"
 #include "algorithms/index.h"
 #include "algorithms/insert.h"
 #include "algorithms/move.h"
 #include "algorithms/pop.h"
+#include "algorithms/position.h"
+// #include "algorithms/relative.h"
 #include "algorithms/remove.h"
+#include "algorithms/repr.h"
 #include "algorithms/reverse.h"
 #include "algorithms/rotate.h"
-#include "algorithms/set_slice.h"
+#include "algorithms/set_compare.h"
+#include "algorithms/slice.h"
 #include "algorithms/sort.h"
-
-// Core
-#include "core/allocate.h"  // Allocator policies
-#include "core/bounds.h"  // normalize_index(), normalize_bounds(), etc.
-#include "core/node.h"  // Nodes
-#include "core/view.h"  // Views
+#include "algorithms/swap.h"
+#include "algorithms/union.h"
+#include "algorithms/update.h"
 
 
-///////////////////////
-////    PRIVATE    ////
-///////////////////////
+namespace bertrand {
+namespace structs {
+namespace linked {
 
 
-/* Using a `std::variant` allows us to expose only a single Cython wrapper for
-all linked dictionaries. */
-using VariantDictView = std::variant<
-    DictView<SingleNode, DirectAllocator>,
-    DictView<SingleNode, FreeListAllocator>,
-    DictView<SingleNode, PreAllocator>,
-    DictView<DoubleNode, DirectAllocator>,
-    DictView<DoubleNode, FreeListAllocator>,
-    DictView<DoubleNode, PreAllocator>
->;
+// TODO: account for mapped type in template definition:
+// LinkedDict<int, float, ...>
 
 
-//////////////////////
-////    PUBLIC    ////
-//////////////////////
 
+/* A n ordered dictionary based on a combined linked list and hash table. */
+template <typename NodeType, typename LockPolicy = util::BasicLock>
+class LinkedDict : public LinkedBase<linked::DictView<NodeType>, LockPolicy> {
+    using Base = LinkedBase<linked::DictView<NodeType>, LockPolicy>;
 
-class VariantDict {
 public:
+    using View = linked::DictView<NodeType>;
+    using Node = typename View::Node;
+    using Value = typename View::Value;
+    using MappedValue = typename View::MappedValue;
 
-    /* Construct a new VariantDict from an existing DictView.  This is called to
-    construct a new `VariantDict` from the output of `DictView.copy()` or
-    `get_slice()`. */
-    template <typename NodeType, template <typename> class Allocator>
-    VariantDict(DictView<NodeType, Allocator>&& view) {
-        using Node = typename DictView<NodeType, Allocator>::Node;
-        _doubly_linked = has_prev<Node>::value;
-        view_variant = std::move(view);
-    }
+    template <linked::Direction dir>
+    using Iterator = typename View::template Iterator<dir>;
+    template <linked::Direction dir>
+    using ConstIterator = typename View::template ConstIterator<dir>;
 
-    /* Construct an empty DictView to match the given template parameters and
-    wrap it as a VariantDict. This is called during `LinkedSet.__init__()`. */
-    VariantDict(bool doubly_linked, Py_ssize_t max_size) :
-        _doubly_linked(doubly_linked)
-    {
-        if (doubly_linked) {
-            if (max_size < 0) {
-                view_variant = DictView<DoubleNode, FreeListAllocator>(max_size);
-            } else {
-                view_variant = DictView<DoubleNode, PreAllocator>(max_size);
-            }
-        } else {
-            if (max_size < 0) {
-                view_variant = DictView<SingleNode, FreeListAllocator>(max_size);
-            } else {
-                view_variant = DictView<SingleNode, PreAllocator>(max_size);
-            }
-        }
-    }
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
 
-    /* Construct a new ListView to match the given parameters and wrap it as a
-    VariantDict. This is called during `LinkedSet.__init__()`. */
-    VariantDict(
-        PyObject* iterable,
-        bool doubly_linked,
-        bool reverse,
-        Py_ssize_t max_size,
-        PyObject* spec
-    ) : _doubly_linked(doubly_linked) {
-        if (doubly_linked) {
-            if (max_size < 0) {
-                view_variant = DictView<DoubleNode, FreeListAllocator>(
-                    iterable, reverse, max_size, spec
-                );
-            } else {
-                view_variant = DictView<DoubleNode, PreAllocator>(
-                    iterable, reverse, max_size, spec
-                );
-            }
-        } else {
-            if (max_size < 0) {
-                view_variant = DictView<SingleNode, FreeListAllocator>(
-                    iterable, reverse, max_size, spec
-                );
-            } else {
-                view_variant = DictView<SingleNode, PreAllocator>(
-                    iterable, reverse, max_size, spec
-                );
-            }
-        }
-    }
+    // inherit constructors from LinkedBase
+    using Base::Base;
+    using Base::operator=;
 
     //////////////////////////////
-    ////    LIST INTERFACE    ////
+    ////    DICT INTERFACE    ////
     //////////////////////////////
 
 
+    ///////////////////////
+    ////    PROXIES    ////
+    ///////////////////////
 
 
-    /////////////////////////////////
-    ////    ITERATOR PROTOCOL    ////
-    /////////////////////////////////
+    //////////////////////////////////
+    ////    OPERATOR OVERLOADS    ////
+    //////////////////////////////////
 
-    /* Check if the underlying view is doubly-linked. */
-    inline bool doubly_linked() const {
-        return _doubly_linked;
+
+};
+
+
+/////////////////////////////////////
+////    STRING REPRESENTATION    ////
+/////////////////////////////////////
+
+
+
+//////////////////////////////
+////    PYTHON WRAPPER    ////
+//////////////////////////////
+
+
+/* CRTP mixin class containing the Python dict interface for a linked data structure. */
+template <typename Derived>
+class PyDictInterface {
+
+};
+
+
+/* A discriminated union of templated `LinkedDict` types that can be used from
+Python. */
+class PyLinkedDict :
+    public PyLinkedBase<PyLinkedDict>,
+    public PyListInterface<PyLinkedDict>,
+    public PySetInterface<PyLinkedDict>,
+    public PyDictInterface<PyLinkedDict>
+{
+
+};
+
+
+/* Python module definition. */
+static struct PyModuleDef module_dict = {
+    PyModuleDef_HEAD_INIT,
+    .m_name = "dict",
+    .m_doc = (
+        "This module contains an optimized LinkedDict data structure for use "
+        "in Python.  The exact same data structure is also available in C++ "
+        "under the same header path (bertrand/structs/linked/dict.h)."
+    ),
+    .m_size = -1,
+};
+
+
+/* Python import hook. */
+PyMODINIT_FUNC PyInit_dict(void) {
+    // initialize type objects
+    if (PyType_Ready(&PyLinkedDict::Type) < 0) return nullptr;
+
+    // initialize module
+    PyObject* mod = PyModule_Create(&module_dict);
+    if (mod == nullptr) return nullptr;
+
+    // link type to module
+    Py_INCREF(&PyLinkedDict::Type);
+    if (PyModule_AddObject(mod, "LinkedDict", (PyObject*) &PyLinkedDict::Type) < 0) {
+        Py_DECREF(&PyLinkedDict::Type);
+        Py_DECREF(mod);
+        return nullptr;
     }
-
-    /* Get the head node of a singly-linked list. */
-    inline SingleNode* get_head_single() {
-        return std::visit(
-            [&](auto& view) -> SingleNode* {
-                using View = std::decay_t<decltype(view)>;
-                using Node = typename View::Node;
-
-                if constexpr (has_prev<Node>::value) {
-                    throw std::runtime_error("List is not singly-linked.");
-                } else {
-                    return static_cast<SingleNode*>(view.head);
-                }
-            },
-            view_variant
-        );
-    }
-
-    /* Get the tail node of a singly-linked list. */
-    inline SingleNode* get_tail_single() {
-        return std::visit(
-            [&](auto& view) -> SingleNode* {
-                using View = std::decay_t<decltype(view)>;
-                using Node = typename View::Node;
-
-                if constexpr (has_prev<Node>::value) {
-                    throw std::runtime_error("List is not singly-linked.");
-                } else {
-                    return static_cast<SingleNode*>(view.tail);
-                }
-            },
-            view_variant
-        );
-    }
-
-    /* Get the head node of a doubly-linked list. */
-    inline DoubleNode* get_head_double() {
-        return std::visit(
-            [&](auto& view) -> DoubleNode* {
-                using View = std::decay_t<decltype(view)>;
-                using Node = typename View::Node;
-
-                if constexpr (has_prev<Node>::value) {
-                    return static_cast<DoubleNode*>(view.head);
-                } else {
-                    throw std::runtime_error("List is not doubly-linked.");
-                }
-            },
-            view_variant
-        );
-    }
-
-    /* Get the tail node of a doubly-linked list. */
-    inline DoubleNode* get_tail_double() {
-        return std::visit(
-            [&](auto& view) -> DoubleNode* {
-                using View = std::decay_t<decltype(view)>;
-                using Node = typename View::Node;
-
-                if constexpr (has_prev<Node>::value) {
-                    return static_cast<DoubleNode*>(view.tail);
-                } else {
-                    throw std::runtime_error("List is not doubly-linked.");
-                }
-            },
-            view_variant
-        );
-    }
-
-private:
-    VariantDictView view_variant;
-    bool _doubly_linked
+    return mod;
 }
 
+
+}  // namespace linked
+}  // namespace structs
+}  // namespace bertrand
 
 
 #endif // BERTRAND_STRUCTS_LINKED_DICT_H
