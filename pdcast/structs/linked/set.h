@@ -86,8 +86,8 @@ public:
     }
 
     /* Add an item to the beginning of the set if it is not already present. */
-    inline void addleft(Value& item) {
-        linked::addleft(this->view, item);
+    inline void add_left(Value& item) {
+        linked::add_left(this->view, item);
     }
 
     /* Add an item to the set if it is not already present and move it to the front of
@@ -547,13 +547,13 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.addleft()` in Python. */
-    static PyObject* addleft(Derived* self, PyObject* item) {
+    /* Implement `LinkedSet.add_left()` in Python. */
+    static PyObject* add_left(Derived* self, PyObject* item) {
         try {
             // invoke equivalent C++ method
             std::visit(
                 [&item](auto& set) {
-                    set.addleft(item);
+                    set.add_left(item);
                 },
                 self->variant
             );
@@ -1317,7 +1317,7 @@ Adds are O(1) for both ends of the set.
 )doc"
         };
 
-        static constexpr std::string_view addleft {R"doc(
+        static constexpr std::string_view add_left {R"doc(
 Insert an item at the beginning of the set if it is not already present.
 
 Parameters
@@ -1928,9 +1928,9 @@ code that relies on this data structure with only minimal changes.
         BASE_METHOD(specialize, METH_O),
         BASE_METHOD(__reversed__, METH_NOARGS),
         BASE_METHOD(__class_getitem__, METH_CLASS | METH_O),
-        LIST_METHOD(insert, METH_FASTCALL | METH_KEYWORDS),
-        LIST_METHOD(index, METH_FASTCALL | METH_KEYWORDS),
-        LIST_METHOD(count, METH_FASTCALL | METH_KEYWORDS),
+        LIST_METHOD(insert, METH_FASTCALL),
+        LIST_METHOD(index, METH_FASTCALL),
+        LIST_METHOD(count, METH_FASTCALL),
         LIST_METHOD(remove, METH_O),
         LIST_METHOD(pop, METH_FASTCALL),
         LIST_METHOD(clear, METH_NOARGS),
@@ -1939,7 +1939,7 @@ code that relies on this data structure with only minimal changes.
         LIST_METHOD(reverse, METH_NOARGS),
         LIST_METHOD(rotate, METH_FASTCALL),
         SET_METHOD(add, METH_O),
-        SET_METHOD(addleft, METH_O),
+        SET_METHOD(add_left, METH_O),
         SET_METHOD(lru_add, METH_O),
         {
             "union",  // renamed

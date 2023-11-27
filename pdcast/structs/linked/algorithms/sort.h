@@ -27,10 +27,15 @@ auto sort(View& view, Func key, bool reverse)
     using Node = typename View::Node;
     using KeyNode = Keyed<Node, Func>;
 
-    // trivial case: empty view
-    if (view.size() == 0) {
-        return;
+    // trivial case: empty view or already sorted
+    bool is_sorted = true;
+    for (auto it = view.begin(); it.next() != nullptr; ++it) {
+        if (!util::lt(*it, it.next()->value())) {
+            is_sorted = false;
+            break;
+        }
     }
+    if (is_sorted) return;
 
     // if no key function is given, sort the view directly
     if (key == nullptr) {

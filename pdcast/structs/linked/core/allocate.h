@@ -1034,6 +1034,23 @@ public:
     using MemGuard = typename Base::MemGuard;
     static constexpr size_t DEFAULT_CAPACITY = 8;  // minimum table size
 
+    /* An enum containing compile-time flags to control the behavior of the create()
+    and recycle() factory methods in an optimized fashion. */
+    enum : unsigned int {
+        DEFAULT = 0,
+        EXIST_OK = 1 << 0,
+        NOEXIST_OK = 1 << 1,
+        REPLACE_MAPPED = 1 << 2,
+        RETURN_MAPPED = 1 << 3,
+        UNLINK = 1 << 4,
+        EVICT_HEAD = 1 << 5,
+        EVICT_TAIL = 1 << 6,
+        INSERT_HEAD = 1 << 7,
+        INSERT_TAIL = 1 << 8,
+        MOVE_HEAD = 1 << 9,
+        MOVE_TAIL = 1 << 10,
+    };
+
 private:
     using Value = typename Node::Value;
     static constexpr unsigned char EMPTY = 255;
@@ -1284,8 +1301,118 @@ private:
         return false;
     }
 
+    /* Move a node to the head of the list once it's been found */
+    void move_to_head(Node* node) noexcept {
+        if (node != this->head) {
+            Node* prev;
+            if constexpr (NodeTraits<Node>::has_prev) {
+                prev = node->prev();
+            } else {
+                prev = nullptr;
+                Node* curr = this->head;
+                while (curr != node) {
+                    prev = curr;
+                    curr = curr->next();
+                }
+            }
+            if (node == this->tail) this->tail = prev;
+            Node::unlink(prev, node, node->next());
+            Node::link(nullptr, node, this->head);
+            this->head = node;
+        }
+    }
+
+    /* Move a node to the tail of the list once it's been found */
+    void move_to_tail(Node* node) noexcept {
+        if (node != this->tail) {
+            Node* prev;
+            if constexpr (NodeTraits<Node>::has_prev) {
+                prev = node->prev();
+            } else {
+                prev = nullptr;
+                Node* curr = this->head;
+                while (curr != node) {
+                    prev = curr;
+                    curr = curr->next();
+                }
+            }
+            if (node == this->head) this->head = node->next();
+            Node::unlink(prev, node, node->next());
+            Node::link(this->tail, node, nullptr);
+            this->tail = node;
+        }
+    }
+
+    /* Evict the head node of the list. */
+    void evict_head() {
+        Node* evicted = this->head;
+        this->head = evicted->next();
+        if (this->head == nullptr) this->tail = nullptr;
+        Node::unlink(nullptr, evicted, this->head);
+        recycle(evicted);
+    }
+
+    /* Evict the tail node of the list. */
+    void evict_tail() {
+        Node* evicted = this->tail;
+        Node* prev;
+        if constexpr (NodeTraits<Node>::has_prev) {
+            prev = evicted->prev();
+        } else {
+            prev = nullptr;
+            Node* curr = this->head;
+            while (curr != evicted) {
+                prev = curr;
+                curr = curr->next();
+            }
+        }
+        this->tail = prev;
+        if (this->tail == nullptr) this->head = nullptr;
+        Node::unlink(prev, evicted, nullptr);
+        recycle(evicted);
+    }
+
+    /* Insert a node at the head of the list. */
+    inline void insert_head(Node* node) noexcept {
+        Node::link(nullptr, node, this->head);
+        this->head = node;
+        if (this->tail == nullptr) this->tail = node;
+    }
+
+    /* Insert a node at the tail of the list. */
+    inline void insert_tail(Node* node) noexcept {
+        Node::link(this->tail, node, nullptr);
+        this->tail = node;
+        if (this->head == nullptr) this->head = node;
+    }
+
+    /* Unlink a node from its neighbors before recycling it. */
+    void unlink(Node* node) {
+        Node* next = node->next();
+        Node* prev;
+        if constexpr (NodeTraits<Node>::has_prev) {
+            prev = node->prev();
+        } else {
+            prev = nullptr;
+            Node* curr = this->head;
+            while (curr != node) {
+                prev = curr;
+                curr = curr->next();
+            }
+        }
+        if (node == this->head) this->head = next;
+        if (node == this->tail) this->tail = prev;
+        Node::unlink(prev, node, next);
+    }
+
     /* Look up a value in the hash table by providing an explicit hash/value. */
-    Node* _search(const size_t hash, const Value& value) const {
+    template <unsigned int flags = DEFAULT>
+    Node* _search(const size_t hash, const Value& value) {
+        static_assert(
+            !((flags & MOVE_HEAD) && (flags & MOVE_TAIL)),
+            "cannot move node to both head and tail of list"
+        );
+
         // identify starting bucket
         size_t idx = hash & modulo;
         Bucket* bucket = table + idx;
@@ -1300,6 +1427,12 @@ private:
             while (true) {
                 Node* node = bucket->node();
                 if (node->hash() == hash && util::eq(node->value(), value)) {
+                    // move node if directed
+                    if constexpr (flags & MOVE_HEAD) {
+                        move_to_head(node);
+                    } else if constexpr (flags & MOVE_TAIL) {
+                        move_to_tail(node);
+                    }
                     return node;
                 }
 
@@ -1313,6 +1446,70 @@ private:
 
         // value not found
         return nullptr;
+    }
+
+    /* Remove a value in the hash table by providing an explicit hash/value. */
+    template <unsigned int flags = DEFAULT>
+    void _recycle(const size_t hash, const Value& value) {
+        // look up origin node
+        size_t idx = hash & modulo;
+        Bucket* origin = table + idx;
+
+        // if collision chain is empty, then no match is possible
+        if (origin->collisions != EMPTY) {
+            // follow collision chain
+            Bucket* prev = nullptr;
+            Bucket* bucket = origin;
+            if (origin->collisions) {
+                idx += origin->collisions;
+                idx &= modulo;
+                bucket = table + idx;
+            }
+            while (true) {
+                Node* node = bucket->node();
+                if (node->hash() == hash && util::eq(node->value(), value)) {
+                    // update hop information
+                    unsigned char has_next = (bucket->next > 0);
+                    if (prev == nullptr) {  // bucket is head of collision chain
+                        origin->collisions = has_next ?
+                            origin->collisions + bucket->next : EMPTY;
+                    } else {  // bucket is in middle or end of collision chain
+                        prev->next = has_next * (prev->next + bucket->next);
+                    }
+
+                    // unlink from neighbors if directed
+                    if constexpr (flags & UNLINK) {
+                        unlink(node);
+                    }
+
+                    // destroy node
+                    if constexpr (DEBUG) {
+                        std::cout << "    -> recycle: " << util::repr(value);
+                        std::cout << std::endl;
+                    }
+                    bucket->destroy();
+                    --this->occupied;
+                    this->shrink();  // attempt to shrink table
+                    return;
+                }
+
+                // advance to next bucket
+                if (!bucket->next) break;  // end of chain
+                idx += bucket->next;
+                idx &= modulo;
+                prev = bucket;
+                bucket = table + idx;
+            }
+        }
+
+        // node not found
+        if constexpr (flags & NOEXIST_OK) {
+            return;
+        } else {
+            std::ostringstream msg;
+            msg << "key not found: " << util::repr(value);
+            throw util::KeyError(msg.str());
+        }
     }
 
 public:
@@ -1405,21 +1602,6 @@ public:
         }
     }
 
-    /* An enum containing compile-time flags for the create() and recycle() factory
-    methods. */
-    enum : unsigned int {
-        DEFAULT = 0,
-        EXIST_OK = 1 << 0,
-        NOEXIST_OK = 1 << 1,
-        REPLACE_MAPPED = 1 << 2,
-        EVICT_HEAD = 1 << 3,
-        EVICT_TAIL = 1 << 4,
-        INSERT_HEAD = 1 << 5,
-        INSERT_TAIL = 1 << 6,
-        MOVE_HEAD = 1 << 7,
-        MOVE_TAIL = 1 << 8,
-    };
-
     /* Construct a new node from the table. */
     template <unsigned int flags = DEFAULT, typename... Args>
     Node* create(Args&&... args) {
@@ -1466,45 +1648,12 @@ public:
                             bucket->node()->mapped(std::move(node->mapped()));
                         }
                         node->~Node();  // clean up temporary node
-                        node = bucket->node();  // simplify syntax
                         if constexpr (flags & MOVE_HEAD) {
-                            if (node != this->head) {
-                                Node* prev;
-                                if constexpr (NodeTraits<Node>::has_prev) {
-                                    prev = node->prev();
-                                } else {
-                                    prev = nullptr;
-                                    Node* curr = this->head;
-                                    while (curr != node) {
-                                        prev = curr;
-                                        curr = curr->next();
-                                    }
-                                }
-                                if (node == this->tail) this->tail = prev;
-                                Node::unlink(prev, node, node->next());
-                                Node::link(nullptr, node, this->head);
-                                this->head = node;
-                            }
+                            move_to_head(bucket->node());
                         } else if constexpr (flags & MOVE_TAIL) {
-                            if (node != this->tail) {
-                                Node* prev;
-                                if constexpr (NodeTraits<Node>::has_prev) {
-                                    prev = node->prev();
-                                } else {
-                                    prev = nullptr;
-                                    Node* curr = this->head;
-                                    while (curr != node) {
-                                        prev = curr;
-                                        curr = curr->next();
-                                    }
-                                }
-                                if (node == this->head) this->head = node->next();
-                                Node::unlink(prev, node, node->next());
-                                Node::link(this->tail, node, nullptr);
-                                this->tail = node;
-                            }
+                            move_to_tail(bucket->node());
                         }
-                        return node;
+                        return bucket->node();
                     } else {
                         std::ostringstream msg;
                         msg << "duplicate key: " << util::repr(node->value());
@@ -1537,28 +1686,9 @@ public:
         // otherwise if set is of fixed size, either evict an element or throw an error
         } else if (this->occupied == this->max_occupants) {
             if constexpr (flags & EVICT_HEAD) {
-                Node* evicted = this->head;
-                this->head = evicted->next();
-                if (this->head == nullptr) this->tail = nullptr;
-                Node::unlink(nullptr, evicted, this->head);
-                recycle(evicted);
+                evict_head();
             } else if constexpr (flags & EVICT_TAIL) {
-                Node* evicted = this->tail;
-                Node* prev;
-                if constexpr (NodeTraits<Node>::has_prev) {
-                    prev = evicted->prev();
-                } else {
-                    prev = nullptr;
-                    Node* curr = this->head;
-                    while (curr != evicted) {
-                        prev = curr;
-                        curr = curr->next();
-                    }
-                }
-                this->tail = prev;
-                if (this->tail == nullptr) this->head = nullptr;
-                Node::unlink(prev, evicted, nullptr);
-                recycle(evicted);
+                evict_tail();
             } else {
                 throw Base::cannot_grow();
             }
@@ -1602,72 +1732,23 @@ public:
         ++this->occupied;
         node = bucket->node();  // simplify syntax
         if constexpr (flags & INSERT_HEAD) {
-            Node::link(nullptr, node, this->head);
-            this->head = node;
-            if (this->tail == nullptr) this->tail = node;
+            insert_head(node);
         } else if constexpr (flags & INSERT_TAIL) {
-            Node::link(this->tail, node, nullptr);
-            this->tail = node;
-            if (this->head == nullptr) this->head = node;
+            insert_tail(node);
         }
         return node;
     }
 
     /* Release a node from the table. */
     template <unsigned int flags = DEFAULT>
-    void recycle(Node* node) {
-        // look up origin node
-        size_t idx = node->hash() & modulo;
-        Bucket* origin = table + idx;
+    inline void recycle(Node* node) {
+        _recycle<flags>(node->hash(), node->value());
+    }
 
-        // if collision chain is empty, then no match is possible
-        if (origin->collisions != EMPTY) {
-            // follow collision chain
-            Bucket* prev = nullptr;
-            Bucket* bucket = origin;
-            if (origin->collisions) {
-                idx += origin->collisions;
-                idx &= modulo;
-                bucket = table + idx;
-            }
-            while (true) {
-                // check for matching value
-                if (bucket->node()->hash() == node->hash() &&
-                    util::eq(bucket->node()->value(), node->value())
-                ) {
-                    // update hop information
-                    unsigned char has_next = (bucket->next > 0);
-                    if (prev == nullptr) {  // bucket is head of collision chain
-                        origin->collisions = has_next ?
-                            origin->collisions + bucket->next : EMPTY;
-                    } else {  // bucket is in middle or end of collision chain
-                        prev->next = has_next * (prev->next + bucket->next);
-                    }
-
-                    // destroy node
-                    if constexpr (DEBUG) {
-                        std::cout << "    -> recycle: " << util::repr(node->value());
-                        std::cout << std::endl;
-                    }
-                    bucket->destroy();
-                    --this->occupied;
-                    this->shrink();  // attempt to shrink table
-                    return;
-                }
-
-                // advance to next bucket
-                if (!bucket->next) break;  // end of chain
-                idx += bucket->next;
-                idx &= modulo;
-                prev = bucket;
-                bucket = table + idx;
-            }
-        }
-
-        // node not found
-        std::ostringstream msg;
-        msg << "key not found: " << util::repr(node->value());
-        throw util::KeyError(msg.str());
+    /* Release a node from the table after looking up its value. */
+    template <unsigned int flags = DEFAULT>
+    inline void recycle(const Value& key) {
+        _recycle<flags>(std::hash<Value>{}(key), key);
     }
 
     /* Remove all elements from the table. */
@@ -1727,20 +1808,30 @@ public:
     }
 
     /* Search for a node by its value directly. */
-    inline Node* search(const Value& key) const {
-        return _search(std::hash<Value>{}(key), key);
+    template <unsigned int flags = DEFAULT>
+    inline Node* search(const Value& key) {
+        return _search<flags>(std::hash<Value>{}(key), key);
     }
 
     /* Search for a node by reusing a hash from another node. */
-    template <typename N, std::enable_if_t<std::is_base_of_v<NodeTag, N>, int> = 0>
-    inline Node* search(const N* node) const {
+    template <
+        unsigned int flags = DEFAULT,
+        typename N,
+        bool cond = std::is_base_of_v<NodeTag, N>
+    >
+    inline auto search(const N* node) -> std::enable_if_t<cond, Node*> {
         if constexpr (NodeTraits<N>::has_hash) {
-            return _search(node->hash(), node->value());
+            return _search<flags>(node->hash(), node->value());
         } else {
             size_t hash = std::hash<typename N::Value>{}(node->value());
-            return _search(hash, node->value());
+            return _search<flags>(hash, node->value());
         }
     }
+
+    // TODO: optimize pop() in the same way.  Search value, get node, incref, unlink,
+    // recycle, and return value without any extra lookups.  Perhaps the return value
+    // for recycle() can be conditional?  void most of the time, but MappedValue if
+    // NodeTraits<Node>::has_mapped && (flags & RETURN_MAPPED)
 
 };
 

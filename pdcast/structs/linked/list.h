@@ -90,8 +90,13 @@ public:
      */
 
     /* Add an item to the end of the list. */
-    inline void append(const Value& item, bool left = false) {
-        linked::append(this->view, item, left);
+    inline void append(const Value& item) {
+        linked::append(this->view, item);
+    }
+
+    /* Add an item to the beginning of the list. */
+    inline void append_left(const Value& item) {
+        linked::append_left(this->view, item);
     }
 
     /* Insert an item at a specified index of the list. */
@@ -101,8 +106,14 @@ public:
 
     /* Extend the list by appending elements from an iterable. */
     template <typename Container>
-    inline void extend(const Container& items, bool left = false) {
-        linked::extend(this->view, items, left);
+    inline void extend(const Container& items) {
+        linked::extend(this->view, items);
+    }
+
+    /* Extend the list by left-appending elements from an iterable. */
+    template <typename Container>
+    inline void extend_left(const Container& items) {
+        linked::extend_left(this->view, items);
     }
 
     /* Get the index of an item within the list. */
@@ -285,7 +296,7 @@ LinkedList<Ts...> operator+(const LinkedList<Ts...>& lhs, const Container& rhs) 
 /* Concatenate a LinkedList with an arbitrary C++/Python container in-place. */
 template <typename Container, typename... Ts>
 LinkedList<Ts...>& operator+=(LinkedList<Ts...>& lhs, const Container& rhs) {
-    linked::extend(lhs.view, rhs, false);
+    linked::extend(lhs.view, rhs);
     return lhs;
 }
 
@@ -430,25 +441,33 @@ class PyListInterface {
 public:
 
     /* Implement `LinkedList.append()` in Python. */
-    static PyObject* append(
-        Derived* self,
-        PyObject* const* args,
-        Py_ssize_t nargs,
-        PyObject* kwnames
-    ) {
-        using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
-        static constexpr std::string_view meth_name{"append"};
+    static PyObject* append(Derived* self, PyObject* item) {
         try {
-            // parse arguments
-            Args pyargs(meth_name, args, nargs, kwnames);
-            PyObject* item = pyargs.parse("item");
-            bool left = pyargs.parse("left", util::is_truthy, false);
-            pyargs.finalize();
-
             // invoke equivalent C++ method
             std::visit(
-                [&item, &left](auto& list) {
-                    list.append(item, left);
+                [&item](auto& list) {
+                    list.append(item);
+                },
+                self->variant
+            );
+
+            // exit normally
+            Py_RETURN_NONE;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedList.append_left()` in Python. */
+    static PyObject* append_left(Derived* self, PyObject* item) {
+        try {
+            // invoke equivalent C++ method
+            std::visit(
+                [&item](auto& list) {
+                    list.append_left(item);
                 },
                 self->variant
             );
@@ -464,17 +483,12 @@ public:
     }
 
     /* Implement `LinkedList.insert()` in Python. */
-    static PyObject* insert(
-        Derived* self,
-        PyObject* const* args,
-        Py_ssize_t nargs,
-        PyObject* kwnames
-    ) {
-        using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
+    static PyObject* insert(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"insert"};
         try {
             // parse arguments
-            Args pyargs(meth_name, args, nargs, kwnames);
+            Args pyargs(meth_name, args, nargs);
             long long index = pyargs.parse("index", util::parse_int);
             PyObject* item = pyargs.parse("item");
             pyargs.finalize();
@@ -498,25 +512,33 @@ public:
     }
 
     /* Implement `LinkedList.extend()` in Python. */
-    static PyObject* extend(
-        Derived* self,
-        PyObject* const* args,
-        Py_ssize_t nargs,
-        PyObject* kwnames
-    ) {
-        using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
-        static constexpr std::string_view meth_name{"extend"};
+    static PyObject* extend(Derived* self, PyObject* items) {
         try {
-            // parse arguments
-            Args pyargs(meth_name, args, nargs, kwnames);
-            PyObject* items = pyargs.parse("items");
-            bool left = pyargs.parse("left", util::is_truthy, false);
-            pyargs.finalize();
-
             // invoke equivalent C++ method
             std::visit(
-                [&items, &left](auto& list) {
-                    list.extend(items, left);
+                [&items](auto& list) {
+                    list.extend(items);
+                },
+                self->variant
+            );
+
+            // exit normally
+            Py_RETURN_NONE;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedList.extend_left()` in Python. */
+    static PyObject* extend_left(Derived* self, PyObject* items) {
+        try {
+            // invoke equivalent C++ method
+            std::visit(
+                [&items](auto& list) {
+                    list.extend_left(items);
                 },
                 self->variant
             );
@@ -532,18 +554,13 @@ public:
     }
 
     /* Implement `LinkedList.index()` in Python. */
-    static PyObject* index(
-        Derived* self,
-        PyObject* const* args,
-        Py_ssize_t nargs,
-        PyObject* kwnames
-    ) {
-        using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
+    static PyObject* index(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
         using Index = std::optional<long long>;
         static constexpr std::string_view meth_name{"index"};
         try {
             // parse arguments
-            Args pyargs(meth_name, args, nargs, kwnames);
+            Args pyargs(meth_name, args, nargs);
             PyObject* item = pyargs.parse("item");
             Index start = pyargs.parse("start", util::parse_opt_int, Index());
             Index stop = pyargs.parse("stop", util::parse_opt_int, Index());
@@ -568,18 +585,13 @@ public:
     }
 
     /* Implement `LinkedList.count()` in Python. */
-    static PyObject* count(
-        Derived* self,
-        PyObject* const* args,
-        Py_ssize_t nargs,
-        PyObject* kwnames
-    ) {
-        using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
+    static PyObject* count(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
         using Index = std::optional<long long>;
         static constexpr std::string_view meth_name{"count"};
         try {
             // parse arguments
-            Args pyargs(meth_name, args, nargs, kwnames);
+            Args pyargs(meth_name, args, nargs);
             PyObject* item = pyargs.parse("item");
             Index start = pyargs.parse("start", util::parse_opt_int, Index());
             Index stop = pyargs.parse("stop", util::parse_opt_int, Index());
@@ -1074,9 +1086,23 @@ left : bool, default False
 
 Notes
 -----
-If ``left=True``, this method behaves like the
-:meth:`appendleft() <python:collections.deque.appendleft>` method of
-:class:`collections.deque`.
+Appends are O(1) for both ends of the list.
+)doc"
+        };
+
+        static constexpr std::string_view append_left {R"doc(
+Insert an item at the beginning of the list.
+
+Parameters
+----------
+item : Any
+    The item to insert.
+
+Notes
+-----
+This method is analogous to the
+:meth:`appendleft() <python:collections.deque.appendleft>` method of a
+:class:`collections.deque` object.
 
 Appends are O(1) for both ends of the list.
 )doc"
@@ -1106,15 +1132,30 @@ Parameters
 ----------
 items : Iterable[Any]
     The items to append.
-left : bool, default False
-    If True, insert the items at the beginning of the list instead of the end.
 
 Notes
 -----
-If ``left=True``, this method behaves like the
-:meth:`extendleft() <python:collections.deque.extendleft>` method of
-:class:`collections.deque`.  Just like that method, the series of left appends
-results in reversing the order of elements in ``items``.
+If an error occurs while extending the list, then the operation will be undone,
+returning the list to its original state.
+
+Extends are O(m), where ``m`` is the length of ``items``.
+)doc"
+        };
+
+        static constexpr std::string_view extend_left {R"doc(
+Extend the list by left-appending all the items from the specified iterable.
+
+Parameters
+----------
+items : Iterable[Any]
+    The items to append.
+
+Notes
+-----
+This method is analogous to the
+:meth:`extendleft() <python:collections.deque.extendleft>` method of a
+:class:`collections.deque` object.  Just like that method, the series of left
+appends results in reversing the order of elements in ``items``.
 
 If an error occurs while extending the list, then the operation will be undone,
 returning the list to its original state.
@@ -1577,11 +1618,13 @@ code that relies on this data structure with only minimal changes.
         BASE_METHOD(specialize, METH_O),
         BASE_METHOD(__reversed__, METH_NOARGS),
         BASE_METHOD(__class_getitem__, METH_CLASS | METH_O),
-        LIST_METHOD(append, METH_FASTCALL | METH_KEYWORDS),
-        LIST_METHOD(insert, METH_FASTCALL | METH_KEYWORDS),
-        LIST_METHOD(extend, METH_FASTCALL | METH_KEYWORDS),
-        LIST_METHOD(index, METH_FASTCALL | METH_KEYWORDS),
-        LIST_METHOD(count, METH_FASTCALL | METH_KEYWORDS),
+        LIST_METHOD(append, METH_O),
+        LIST_METHOD(append_left, METH_O),
+        LIST_METHOD(insert, METH_FASTCALL),
+        LIST_METHOD(extend, METH_O),
+        LIST_METHOD(extend_left, METH_O),
+        LIST_METHOD(index, METH_FASTCALL),
+        LIST_METHOD(count, METH_FASTCALL),
         LIST_METHOD(remove, METH_O),
         LIST_METHOD(pop, METH_FASTCALL),
         LIST_METHOD(clear, METH_NOARGS),

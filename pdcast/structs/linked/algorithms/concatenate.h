@@ -47,7 +47,7 @@ namespace linked {
 
         // otherwise, copy existing view and extend dynamically
         View copy(view);
-        extend(copy, container, false);
+        linked::extend(copy, container);
         return copy;
     }
 

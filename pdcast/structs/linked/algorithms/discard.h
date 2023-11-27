@@ -17,25 +17,8 @@ namespace linked {
     auto discard(View& view, Item& item)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
-        using Node = typename View::Node;
-
-        // search for node
-        Node* curr = view.search(item);
-        if (curr == nullptr) return;  // item not found
-
-        // get neighboring nodes
-        Node* prev;
-        if constexpr (NodeTraits<Node>::has_prev) {  // O(1) if doubly-linked
-            prev = curr->prev();
-        } else {
-            auto it = view.begin();
-            while (it.next() != curr) ++it;
-            prev = it.curr();
-        }
-
-        // unlink and free node
-        view.unlink(prev, curr, curr->next());
-        view.recycle(curr);
+        using Allocator = typename View::Allocator;
+        view.template recycle<Allocator::NOEXIST_OK | Allocator::UNLINK>(item);
     }
 
 

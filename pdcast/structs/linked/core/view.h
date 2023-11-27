@@ -476,113 +476,23 @@ protected:
 };
 
 
-////////////////////////
-////    LISTVIEW    ////
-////////////////////////
-
-
-/* A linked data structure that uses a dynamic array to store nodes in sequential
-order.
-
-ListViews use a similar memory layout to std::vector and the built-in Python list.
-They initially allocate a small array of nodes (8 in this case), and advance an
-internal pointer whenever a new node is constructed.  When the array is full, the view
-allocates a new array with twice the size and moves the old nodes into the new array.
-This strategy is significantly more efficient than allocating nodes individually on the
-heap, which is typical for linked lists and incurs a large overhead for each
-allocation.  This sequential memory layout also avoids heap fragmentation, improving
-cache locality and overall performance as a result.  This gives the list amortized O(1)
-insertion time comparable to std::vector or its Python equivalent, and much faster in
-general than std::list.
-
-Whenever a node is removed from the list, its memory is returned to the allocator array
-and inserted into a linked list of recycled nodes.  This list is composed directly from
-the removed nodes themselves, avoiding auxiliary data structures and associated memory
-overhead.  When a new node is constructed, the free list is checked to see if there are
-any available nodes.  If there are, the node is removed from the free list and reused.
-Otherwise, a new node is allocated from the array, causing it to grow if necessary.
-Conversely, if a linked list's size drops to below 1/4 its capacity, the allocator
-array will shrink to half its current size, providing dynamic sizing.
-
-As an additional optimization, linked lists prefer to store their nodes in strictly
-sequential order, which ensures optimal alignment at the hardware level.  This is
-accomplished by transferring nodes in their current list order whenever we grow or
-shrink the internal array.  This automatically defragments the list periodically as
-elements are added and removed, requiring no additional overhead beyond an ordinary
-copy.  If desired, this process can also be triggered manually via the defragment()
-method for on-demand optimization.
-*/
-template <typename NodeType = DoubleNode<PyObject*>>
-class ListView : public BaseView<ListView<NodeType>, ListAllocator<NodeType>> {
-    using Base = BaseView<ListView<NodeType>, ListAllocator<NodeType>>;
+/* An extension of BaseView that adds behavior specific to allocators that hash their
+contents. */
+template <typename Derived, typename Allocator>
+class HashView : public BaseView<Derived, Allocator> {
+    using Base = BaseView<Derived, Allocator>;
 
 public:
-    static constexpr bool listlike = true;
-
-    // inherit constructors
-    using Base::Base;
-    using Base::operator=;
-
-    /* NOTE: we don't need any further implementation since ListView is the minimal
-     * valid view configuration.  Other than an optimized memory management strategy,
-     * it does not add any additional functionality, and does not assume any specific
-     * capabilities of the underlying nodes.
-     */
-};
-
-
-///////////////////////
-////    SETVIEW    ////
-///////////////////////
-
-
-/* A linked data structure that uses a hash table to allocate and store nodes.
-
-SetViews use a similar memory layout to std::unordered_set and the built-in Python set.
-They begin by allocating a small array of nodes (16 in this case), and placing nodes
-into the array using std::hash to determine their position.  If two nodes hash to the
-same index, then the collision is resolved using open addressing via double hashing.
-This strategy prevents clustering and ensures that items are relatively evenly
-distributed across the array, which is important for optimal performance.  Additionally,
-the maximum load factor before growing the array is 0.5, limiting collisions and
-ensuring fast lookup times in the average case.  The minimum load factor before
-shrinking the array is 0.125, providing hysteresis to prevent thrashing when the array
-is near its minimum/maximum size.
-
-Whenever a node is removed from the set, its corresponding index is marked as a
-tombstone in an auxiliary bit set, indicating that it is available for reuse without
-interfering with normal collision resolution.  These tombstones are skipped over during
-searches and removals, and are automatically cleared when the set is resized or
-defragmented, or if their concentration exceeds 1/8th of the table size.  Tombstones
-can also be gradually replaced if they are encountered during insertion, delaying the
-need for a full rehash.
-
-Combining the allocator with a hash table like this provides a number of advantages
-over using a separate data structure.  First, it limits memory overhead to just 2 extra
-bits per node (for the required bit flags), which is significantly less than retaining
-a separate hash table in addition to the nodes themselves.  Second, it guarantees (at
-an algorithmic level) that the set invariants are never violated at any point.
-Non-hashable items will simply fail to compile, and duplicate items will be rejected by
-the allocator at runtime.  This is in contrast to maintaining a separate hash table,
-which requires manual synchronization to ensure that the data structures remain
-consistent with one another.  Finally, it removes an extra layer of indirection during
-lookups, which improves cache locality and overall performance. */
-template <typename NodeType = DoubleNode<PyObject*>>
-class SetView : public BaseView<SetView<NodeType>, HashAllocator<Hashed<NodeType>>> {
-    using Base = BaseView<SetView<NodeType>, HashAllocator<Hashed<NodeType>>>;
-
-public:
-    static constexpr bool setlike = true;
-    using Allocator = typename Base::Allocator;
     using Node = typename Base::Node;
+    using Value = typename Base::Value;
 
     // inherit constructors
     using Base::Base;
     using Base::operator=;
 
-    /* Construct a SetView from an input iterable. */
+    /* Construct a hashed view from an input iterable. */
     template <typename Container>
-    SetView(
+    HashView(
         Container&& iterable,
         std::optional<size_t> capacity,
         bool dynamic,
@@ -594,20 +504,18 @@ public:
             spec
         )
     {
-        static constexpr unsigned int flags = Allocator::EXIST_OK;
-
         for (auto item : util::iter(iterable)) {
             if (reverse) {
-                node<flags | Allocator::INSERT_HEAD>(item);
+                node<Allocator::EXIST_OK | Allocator::INSERT_HEAD>(item);
             } else {
-                node<flags | Allocator::INSERT_TAIL>(item);
+                node<Allocator::EXIST_OK | Allocator::INSERT_TAIL>(item);
             }
         }
     }
 
-    /* Construct a SetView from an iterator range. */
+    /* Construct a hashed view from an iterator range. */
     template <typename Iterator>
-    SetView(
+    HashView(
         Iterator&& begin,
         Iterator&& end,
         std::optional<size_t> capacity,
@@ -625,12 +533,18 @@ public:
         }
     }
 
-    /* Construct a new node for the set.
+    /* Construct a new node for the set using an optional template configuration.
 
-    NOTE: this accepts an optional `exist_ok` template parameter that controls whether
-    or not the allocator will throw an exception if the value already exists in the set.
-    The default is false, meaning that an exception will be thrown if a duplicate node
-    is requested. */
+    Any number of the following options can be combined via bitwise OR to modify the
+    behavior of this method (available under the Allocator:: namespace):
+        EXIST_OK - do not throw an exception if the node already exists
+        EVICT_HEAD - evict the head node to make room if the set is full
+        EVICT_TAIL - evict the tail node to make room if the set is full
+        INSERT_HEAD - if the node is not already in the set, insert it at the head
+        INSERT_TAIL - if the node is not already in the set, insert it at the tail
+        MOVE_HEAD - if the node is already in the set, move it to the head
+        MOVE_TAIL - if the node is already in the set, move it to the tail
+    */
     template <unsigned int flags = Allocator::DEFAULT, typename... Args>
     inline Node* node(Args&&... args) const {
         return this->allocator.template create<flags, Args&&...>(
@@ -638,37 +552,71 @@ public:
         );
     }
 
-    /* Search the set for a particular node/value. */
-    template <typename T>
-    inline Node* search(T&& key) const {
-        return this->allocator.search(std::forward<T>(key));
+    /* Release a node, returning it to the allocator.
+
+    Any number of the following options can be combined via bitwise OR to modify the
+    behavior of this method (available under the Allocator:: namespace):
+        NOEXIST_OK - do not throw an exception if the node is not contained in the set
+        UNLINK - unlink the node from its neighbors before returning it to the allocator
+        RETURN_MAPPED - return the node's mapped value (void otherwise)
+    */
+    template <unsigned int flags = Allocator::DEFAULT, typename... Args>
+    inline void recycle(Args&&... args) const {
+        this->allocator.template recycle<flags>(std::forward<Args>(args)...);
     }
 
-    /* Search the set for a particular node, moving it to the front if it is found. */
-    template <typename T>
-    inline Node* lru_search(T&& key) {
-        Node* node = this->allocator.search(std::forward<T>(key));
-        if (node == this->head() || node == nullptr) return node;
+    /* Search the set for a particular node/value.
 
-        // if doubly-linked, moving to the front is O(1)
-        if constexpr (NodeTraits<Node>::has_prev) {
-            Base::unlink(node->prev(), node, node->next());
-            Base::link(nullptr, node, this->head());
-
-        // otherwise, we have to traverse the list to find the previous node
-        } else {
-            auto it = this->begin();
-            ++it;  // skip head
-            for (auto end = this->end(); it != end; ++it) {
-                if (it.curr() == node) {
-                    Base::unlink(it.prev(), node, it.next());
-                    Base::link(nullptr, node, this->head());
-                    break;
-                }
-            }
-        }
-        return node;
+    Any number of the following options can be combined via bitwise OR to modify the
+    behavior of this method (available under the Allocator:: namespace):
+        MOVE_HEAD - if the node is found, move it to the head of the set
+        MOVE_TAIL - if the node is found, move it to the tail of the set
+    */
+    template <unsigned int flags = Allocator::DEFAULT, typename... Args>
+    inline Node* search(Args&&... args) const {
+        return this->allocator.template search<flags>(std::forward<Args>(args)...);
     }
+
+};
+
+
+////////////////////////
+////    LISTVIEW    ////
+////////////////////////
+
+
+/* A linked data structure that uses a dynamic array to store nodes in sequential
+order. */
+template <typename NodeType>
+class ListView : public BaseView<ListView<NodeType>, ListAllocator<NodeType>> {
+    using Base = BaseView<ListView<NodeType>, ListAllocator<NodeType>>;
+
+public:
+    static constexpr bool listlike = true;
+
+    // inherit constructors
+    using Base::Base;
+    using Base::operator=;
+
+};
+
+
+///////////////////////
+////    SETVIEW    ////
+///////////////////////
+
+
+/* A linked data structure that uses a hash table to allocate and store nodes. */
+template <typename NodeType>
+class SetView : public HashView<SetView<NodeType>, HashAllocator<Hashed<NodeType>>> {
+    using Base = HashView<SetView<NodeType>, HashAllocator<Hashed<NodeType>>>;
+
+public:
+    static constexpr bool setlike = true;
+
+    // inherit constructors
+    using Base::Base;
+    using Base::operator=;
 
 };
 
@@ -678,139 +626,34 @@ public:
 ////////////////////////
 
 
-// /* A linked data structure that uses a hash table to store nodes as key-value pairs.
+/* A linked data structure that uses a hash table to store nodes as key-value pairs. */
+template <typename NodeType, typename MappedType>
+class DictView : public HashView<
+    DictView<NodeType, MappedType>,
+    HashAllocator<Mapped<Hashed<NodeType>, MappedType>>
+> {
+    using Base = HashView<
+        DictView<NodeType, MappedType>,
+        HashAllocator<Mapped<Hashed<NodeType>, MappedType>>
+    >;
 
-// DictViews are identical to SetViews except that their nodes are specialized to store
-// key-value pairs rather than single values.  This allows them to be used as a mapping
-// type, similar to std::unordered_map or the built-in Python dict.
+public:
+    static constexpr bool dictlike = true;
 
-// DictViews (and the associated LinkedDicts) are especially useful as high-performance
-// caches, particularly when they are doubly-linked.  In this case, we can move nodes
-// within the list at the same time as we perform a search, allowing us to efficiently
-// implement a variety of caching strategies.  The most basic is a Least-Recently-Used
-// (LRU) cache, which simply moves the searched node to the head of the list in a single
-// operation. */
-// template <typename NodeType = DoubleNode<PyObject*>, typename MappedType = PyObject*>
-// class DictView : public BaseView<
-//     DictView<NodeType, MappedType>,
-//     HashAllocator<Mapped<Hashed<NodeType>, MappedType>>
-// > {
-//     using Base = BaseView<
-//         DictView<NodeType, MappedType>,
-//         HashAllocator<Mapped<Hashed<NodeType>, MappedType>>
-//     >;
+    // inherit constructors
+    using Base::Base;
+    using Base::operator=;
 
-// public:
-//     static constexpr bool dictlike = true;
-//     using Node = Mapped<Hashed<NodeType>, MappedType>;
-
-//     // inherit constructors
-//     using Base::Base;
-//     using Base::operator=;
-
-//     /* Construct a DictView from an input iterable. */
-//     template <typename Container>
-//     DictView(
-//         Container&& iterable,
-//         std::optional<size_t> capacity,
-//         bool dynamic,
-//         PyObject* spec,
-//         bool reverse
-//     ) : Base(
-//             Base::init_size(iterable, capacity, dynamic),
-//             dynamic,
-//             spec
-//         )
-//     {
-//         for (auto item : util::iter(iterable)) {
-//             Node* curr = node<true>(item);  // exist_ok = True
-//             if (curr->next() == nullptr && curr != this->tail()) {
-//                 if (reverse) {
-//                     Base::link(nullptr, curr, this->head());
-//                 } else {
-//                     Base::link(this->tail(), curr, nullptr);
-//                 }
-//             }
-//         }
-//     }
-
-//     /* Construct a SetView from an iterator range. */
-//     template <typename Iterator>
-//     DictView(
-//         Iterator&& begin,
-//         Iterator&& end,
-//         std::optional<size_t> capacity,
-//         bool dynamic,
-//         PyObject* spec,
-//         bool reverse
-//     ) : Base(capacity, dynamic, spec)
-//     {
-//         for (; begin != end; ++begin) {
-//             Node* curr = node<true>(*begin);  // exist_ok = True
-//             if (curr->next() == nullptr && curr != this->tail()) {
-//                 if (reverse) {
-//                     Base::link(nullptr, curr, this->head());
-//                 } else {
-//                     Base::link(this->tail(), curr, nullptr);
-//                 }
-//             }
-//         }
-//     }
-
-//     /* Construct a new node for the set.
-
-//     NOTE: this accepts an optional `exist_ok` template parameter that controls whether
-//     or not the allocator will throw an exception if the value already exists in the set.
-//     The default is false, meaning that an exception will be thrown if a duplicate node
-//     is requested. */
-//     template <bool exist_ok = false, bool evict = false, typename... Args>
-//     inline Node* node(Args&&... args) const {
-//         return this->allocator.template create<exist_ok, evict, Args&&...>(
-//             std::forward<Args>(args)...
-//         );
-//     }
-
-//     /* Search the set for a particular node/value. */
-//     template <typename T>
-//     inline Node* search(T* key) const {
-//         return this->allocator.search(key);
-//     }
-
-//     /* Search the set for a particular node, moving it to the front if it is found. */
-//     template <typename T>
-//     inline Node* lru_search(T&& key) const {
-//         Node* node = this->allocator.search(std::forward<T>(key));
-//         if (node == this->head() || node == nullptr) return node;
-
-//         // if doubly-linked, moving to the front is O(1)
-//         if constexpr (NodeTraits<Node>::has_prev) {
-//             Base::unlink(node->prev(), node, node->next());
-//             Base::link(nullptr, node, this->head());
-
-//         // otherwise, we have to traverse the list to find the previous node
-//         } else {
-//             auto it = this->begin();
-//             ++it;  // skip head
-//             for (auto end = this->end(); it != end; ++it) {
-//                 if (it.curr() == node) {
-//                     Base::unlink(it.prev(), node, it.next());
-//                     Base::link(nullptr, node, this->head());
-//                     break;
-//                 }
-//             }
-//         }
-//         return node;
-//     }
-
-// };
+};
 
 
-///////////////////////////
-////    VIEW TRAITS    ////
-///////////////////////////
+//////////////////////
+////    TRAITS    ////
+//////////////////////
 
 
-/* A collection of SFINAE traits for inspecting view types at compile time. */
+/* A collection of SFINAE traits for inspecting view types at compile time and
+dispatching non-member methods accordingly. */
 template <typename ViewType>
 struct ViewTraits {
     static constexpr bool linked = std::is_base_of_v<ViewTag, ViewType>;

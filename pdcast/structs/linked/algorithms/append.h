@@ -13,16 +13,19 @@ namespace linked {
 
     /* Add an item to the end of a linked list, set, or dictionary. */
     template <typename View, typename Item = typename View::Value>
-    inline auto append(View& view, Item& item, bool left)
+    inline auto append(View& view, Item& item)
         -> std::enable_if_t<ViewTraits<View>::linked, void>
     {
-        using Node = typename View::Node;
-        Node* node = view.node(item);
-        if (left) {
-            view.link(nullptr, node, view.head());
-        } else {
-            view.link(view.tail(), node, nullptr);
-        }
+        view.link(view.tail(), view.node(item), nullptr);
+    }
+
+
+    /* Add an item at the start of a linked list, set, or dictionary. */
+    template <typename View, typename Item = typename View::Value>
+    inline auto append_left(View& view, Item& item)
+        -> std::enable_if_t<ViewTraits<View>::linked, void>
+    {
+        view.link(view.tail(), view.node(item), nullptr);
     }
 
 
@@ -32,16 +35,23 @@ namespace linked {
         typename Key = typename View::Value,
         typename Value = typename View::MappedValue
     >
-    inline auto append(View& view, Key& key, Value& value, bool left)
+    inline auto append(View& view, Key& key, Value& value)
         -> std::enable_if_t<ViewTraits<View>::dictlike, void>
     {
-        using Node = typename View::Node;
-        Node* node = view.node(key, value);  // use 2-argument init
-        if (left) {
-            view.link(nullptr, node, view.head);
-        } else {
-            view.link(view.tail, node, nullptr);
-        }
+        view.template node<View::Allocator::INSERT_TAIL>(key, value);
+    }
+
+
+    /* Add a key-value pair at the start of a linked dictionary. */
+    template <
+        typename View,
+        typename Key = typename View::Value,
+        typename Value = typename View::MappedValue
+    >
+    inline auto append_left(View& view, Key& key, Value& value)
+        -> std::enable_if_t<ViewTraits<View>::dictlike, void>
+    {
+        view.template node<View::Allocator::INSERT_HEAD>(key, value);
     }
 
 

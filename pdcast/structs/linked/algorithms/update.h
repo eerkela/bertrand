@@ -41,7 +41,7 @@ namespace linked {
         try {
             for (auto item : util::iter(items)) {
                 if (left) {
-                    linked::addleft(view, item);
+                    linked::add_left(view, item);
                 } else {
                     linked::add(view, item);
                 }

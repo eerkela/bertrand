@@ -26,7 +26,7 @@ namespace linked {
 
     /* Add an item to the beginning of a linked set or dictionary. */
     template <typename View, typename Item = typename View::Value>
-    inline auto addleft(View& view, Item& item)
+    inline auto add_left(View& view, Item& item)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
         using Allocator = typename View::Allocator;
@@ -37,8 +37,8 @@ namespace linked {
     }
 
 
-    /* Add an item to the front of a set or dictionary, or move it there if it is
-    already present. */
+    /* Add an item to the front of a set or dictionary, evicting the last item if
+    necessary and moving items that are already present. */
     template <typename View, typename Item = typename View::Value>
     inline auto lru_add(View& view, Item& item)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
@@ -75,7 +75,7 @@ namespace linked {
         typename Key = typename View::Value,
         typename Value = typename View::MappedValue
     >
-    inline auto addleft(View& view, Key& key, Value& value)
+    inline auto add_left(View& view, Key& key, Value& value)
         -> std::enable_if_t<ViewTraits<View>::dictlike, void>
     {
         using Allocator = typename View::Allocator;
@@ -86,8 +86,8 @@ namespace linked {
     }
 
 
-    /* Add an item to the front of a set or dictionary, or move it there if it is
-    already present. */
+    /* Add a key-value pair to the front of a dictionary, evicting the last item if
+    necessary and moving pairs that are already present. */
     template <
         typename View,
         typename Key = typename View::Value,
