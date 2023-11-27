@@ -9,6 +9,11 @@
 #include "update.h"  // update()
 
 
+// TODO: memory reservation is somewhat iffy here.  If the view is not dynamic,
+// then we won't end up shrinking at the end, and can end up with an enormous
+// set.
+
+
 namespace bertrand {
 namespace structs {
 namespace linked {
@@ -16,12 +21,17 @@ namespace linked {
 
     /* Get the union between a linked set or dictionary and an arbitrary Python
     iterable. */
-    template <typename View, typename Container>
-    auto union_(const View& view, const Container& items, bool left)
+    template <typename View, typename Container, bool left = false>
+    auto union_(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
+        using Allocator = typename View::Allocator;
         using Node = typename View::Node;
         using MemGuard = typename View::MemGuard;
+        static constexpr unsigned int flags = (
+            Allocator::EXIST_OK | Allocator::REPLACE_MAPPED |
+            (left ? Allocator::INSERT_HEAD : Allocator::INSERT_TAIL)
+        );
 
         // try to get length of items
         std::optional<size_t> length = util::len(items);
@@ -42,14 +52,7 @@ namespace linked {
     
             // add elements from items
             for (auto item : util::iter(items)) {
-                Node* node = copy.template node<true>(item);  // exist_ok = true
-                if (node->next() == nullptr && node != copy.tail()) {
-                    if (left) {
-                        copy.link(nullptr, node, copy.head());
-                    } else {
-                        copy.link(copy.tail(), node, nullptr);
-                    }
-                }
+                copy.template node<flags>(item);
             }
 
             return copy;
@@ -57,8 +60,23 @@ namespace linked {
 
         // otherwise, copy existing view and update dynamically
         View copy(view);
-        update(copy, items, left);
+        if constexpr (left) {
+            linked::update_left(copy, items);
+        } else {
+            linked::update(copy, items);
+        }
         return copy;
+    }
+
+
+    /* Get the union between a linked set or dictionary and an arbitrary Python
+    iterable.  This method appends elements to the head of the set rather than the
+    tail. */
+    template <typename View, typename Container>
+    auto union_left(const View& view, const Container& items)
+        -> std::enable_if_t<ViewTraits<View>::hashed, View>
+    {
+        return union_<View, Container, true>(view, items);
     }
 
 
@@ -126,8 +144,8 @@ namespace linked {
 
     /* Get the symmetric difference between a linked set or dictionary and an arbitrary
     Python iterable. */
-    template <typename View, typename Container>
-    auto symmetric_difference(const View& view, const Container& items, bool left)
+    template <typename View, typename Container, bool left = false>
+    auto symmetric_difference(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
         using Node = typename View::Node;
@@ -164,7 +182,7 @@ namespace linked {
             Node* node = view.search(it.curr());
             if (node == nullptr) {
                 node = copy.node(std::move(*(it.curr())));
-                if (left) {
+                if constexpr (left) {
                     copy.link(nullptr, node, copy.head());
                 } else {
                     copy.link(copy.tail(), node, nullptr);
@@ -173,6 +191,17 @@ namespace linked {
         }
 
         return copy;
+    }
+
+
+    /* Get the symmetric difference between a linked set or dictionary and an arbitrary
+    Python iterable.  This method appends elements to the head of the set rather than
+    the tail. */
+    template <typename View, typename Container>
+    auto symmetric_difference_left(const View& view, const Container& items)
+        -> std::enable_if_t<ViewTraits<View>::hashed, View>
+    {
+        return symmetric_difference<View, Container, true>(view, items);
     }
 
 

@@ -8,7 +8,6 @@
 #include "../../util/iter.h"  // iter()
 #include "../core/node.h"  // NodeTraits
 #include "../core/view.h"  // ViewTraits
-#include "add.h"  // add()
 
 
 namespace bertrand {
@@ -27,24 +26,20 @@ namespace linked {
 
     /* Update a set or dictionary, appending items that are not already present. */
     template <typename View, typename Container>
-    auto update(View& view, const Container& items, bool left)
+    auto update(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
-        using Node = typename View::Node;
+        using Allocator = typename View::Allocator;
         using MemGuard = typename View::MemGuard;
-
-        // preallocate if possible (unless size is unknown)
-        MemGuard outer = view.try_reserve(items);
+        static constexpr unsigned int flags = (
+            Allocator::EXIST_OK | Allocator::REPLACE_MAPPED | Allocator::INSERT_TAIL
+        );
 
         // add each item
         size_t size = view.size();
         try {
             for (auto item : util::iter(items)) {
-                if (left) {
-                    linked::add_left(view, item);
-                } else {
-                    linked::add(view, item);
-                }
+                view.template node<flags>(item);
             }
 
         // clean up nodes on error
@@ -53,22 +48,47 @@ namespace linked {
             if (idx == 0) throw;  // nothing to clean up
             MemGuard inner = view.reserve();  // hold allocator at current size
 
-            // if adding to head, remove first (view.size() - size) nodes
-            if (left) {
-                auto it = view.begin();
+            // remove last (view.size() - size) nodes
+            if constexpr (NodeTraits<typename View::Node>::has_prev) {
+                auto it = view.rbegin();
                 for (size_t i = 0; i < idx; ++i) view.recycle(it.drop());
-
-            // otherwise, remove last (view.size() - size) nodes
             } else {
-                if constexpr (NodeTraits<Node>::has_prev) {
-                    auto it = view.rbegin();
-                    for (size_t i = 0; i < idx; ++i) view.recycle(it.drop());
-                } else {
-                    auto it = view.begin();  // forward traversal
-                    for (size_t i = 0; i < view.size() - idx; ++i) ++it;
-                    for (size_t i = 0; i < idx; ++i) view.recycle(it.drop());
-                }
+                auto it = view.begin();  // forward traversal
+                for (size_t i = 0; i < view.size() - idx; ++i) ++it;
+                for (size_t i = 0; i < idx; ++i) view.recycle(it.drop());
             }
+            throw;  // propagate
+        }
+    }
+
+
+    /* Update a set or dictionary, appending items that are not already present. */
+    template <typename View, typename Container>
+    auto update_left(View& view, const Container& items)
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
+    {
+        using Allocator = typename View::Allocator;
+        using MemGuard = typename View::MemGuard;
+        static constexpr unsigned int flags = (
+            Allocator::EXIST_OK | Allocator::REPLACE_MAPPED | Allocator::INSERT_HEAD
+        );
+
+        // add each item
+        size_t size = view.size();
+        try {
+            for (auto item : util::iter(items)) {
+                view.template node<flags>(item);
+            }
+
+        // clean up nodes on error
+        } catch (...) {
+            size_t idx = view.size() - size;  // number of nodes to remove
+            if (idx == 0) throw;  // nothing to clean up
+            MemGuard inner = view.reserve();  // hold allocator at current size
+
+            // remove first (view.size() - size) nodes
+            auto it = view.begin();
+            for (size_t i = 0; i < idx; ++i) view.recycle(it.drop());
             throw;  // propagate
         }
     }
@@ -159,8 +179,8 @@ namespace linked {
 
     /* Update a linked set or dictionary in-place, keeping only elements found in
     either the set or a given container, but not both. */
-    template <typename View, typename Container>
-    auto symmetric_difference_update(View& view, const Container& items, bool left)
+    template <typename View, typename Container, bool left = false>
+    auto symmetric_difference_update(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
         using Node = typename View::Node;
@@ -174,6 +194,9 @@ namespace linked {
             nullptr,  // specialization: generic
             false  // reverse: false
         );
+
+        // TODO: this reserve() call can break the allocator if it is of fixed size
+        // and the other view has duplicate items.
 
         // allocate enough memory to store both views (shrink to fit on exit)
         MemGuard guard = view.reserve(view.size() + temp_view.size());
@@ -189,7 +212,7 @@ namespace linked {
                 // if node is not present, move it into the original view
                 if (node == nullptr) {
                     node = view.node(std::move(*(it.curr())));
-                    if (left) {
+                    if constexpr (left) {
                         view.link(nullptr, node, view.head());
                     } else {
                         view.link(view.tail(), node, nullptr);
@@ -212,7 +235,7 @@ namespace linked {
                 // if node is not present, move it into the original view
                 if (node == nullptr) {
                     node = view.node(std::move(*(it.curr())));
-                    if (left) {
+                    if constexpr (left) {
                         view.link(nullptr, node, view.head());
                     } else {
                         view.link(view.tail(), node, nullptr);
@@ -234,6 +257,16 @@ namespace linked {
                 }
             }
         }
+    }
+
+    /* Update a linked set or dictionary in-place, keeping only elements found in
+    either the set or a given container, but not both.  This method appends elements to
+    the head of the set rather than the tail. */
+    template <typename View, typename Container>
+    auto symmetric_difference_update_left(View& view, const Container& items)
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
+    {
+        symmetric_difference_update<View, Container, true>(view, items);
     }
 
 
