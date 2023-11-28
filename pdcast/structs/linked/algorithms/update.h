@@ -195,12 +195,6 @@ namespace linked {
             false  // reverse: false
         );
 
-        // TODO: this reserve() call can break the allocator if it is of fixed size
-        // and the other view has duplicate items.
-
-        // allocate enough memory to store both views (shrink to fit on exit)
-        MemGuard guard = view.reserve(view.size() + temp_view.size());
-
         // keep track of nodes as they are added in order to avoid cycles
         std::unordered_set<Node*> added;
 
@@ -249,6 +243,7 @@ namespace linked {
             }
 
             // remove marked nodes
+            MemGuard inner = view.reserve();  // hold allocator at current size
             for (auto it = view.begin(), end = view.end(); it != end;) {
                 if (to_remove.find(it.curr()) != to_remove.end()) {
                     view.recycle(it.drop());  // implicitly advances iterator

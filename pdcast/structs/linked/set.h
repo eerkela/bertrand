@@ -6,6 +6,7 @@
 #include <optional>  // std::optional
 #include <ostream>  // std::ostream
 #include <sstream>  // std::ostringstream
+#include <utility>
 #include <variant>  // std::variant
 #include <Python.h>  // CPython API
 #include "../util/args.h"  // PyArgs
@@ -108,43 +109,51 @@ public:
         linked::insert(this->view, index, item);
     }
 
-    /* Extend a set by adding elements from an iterable that are not already present. */
-    template <typename Container>
-    inline void update(const Container& items) {
-        linked::update(this->view, items);
+    /* Extend a set by adding elements from one or more iterables that are not already
+    present.  Accepts variadic arguments just like Python. */
+    template <typename... Containers>
+    inline void update(Containers&&... items) {
+        (linked::update(this->view, std::forward<Containers>(items)), ...);
     }
 
     /* Extend a set by left-adding elements from an iterable that are not already
     present. */
-    template <typename Container>
-    inline void update_left(const Container& items) {
-        linked::update_left(this->view, items);
+    template <typename... Containers>
+    inline void update_left(Containers&&... items) {
+        (linked::update_left(this->view, std::forward<Containers>(items)), ...);
     }
 
+    // TODO: lru_update
+
+
     /* Remove elements from a set that are contained in the given iterable. */
-    template <typename Container>
-    inline void difference_update(const Container& items) {
-        linked::difference_update(this->view, items);
+    template <typename... Containers>
+    inline void difference_update(Containers&&... items) {
+        (linked::difference_update(this->view, std::forward<Containers>(items)), ...);
     }
 
     /* Removal elements from a set that are not contained in the given iterable. */
-    template <typename Container>
-    inline void intersection_update(const Container& items) {
-        linked::intersection_update(this->view, items);
+    template <typename... Containers>
+    inline void intersection_update(Containers&&... items) {
+        (linked::intersection_update(this->view, std::forward<Containers>(items)), ...);
     }
 
     /* Update a set, keeping only elements found in either the set or the given
     container, but not both. */
     template <typename Container>
-    inline void symmetric_difference_update(const Container& items) {
-        linked::symmetric_difference_update(this->view, items);
+    inline void symmetric_difference_update(Container&& items) {
+        linked::symmetric_difference_update(
+            this->view, std::forward<Container>(items)
+        );
     }
 
     /* Update a set, keeping only elements found in either the set or the given
     container, but not both.  Appends to the head of the set rather than the tail. */
     template <typename Container>
-    inline void symmetric_difference_update_left(const Container& items) {
-        linked::symmetric_difference_update_left(this->view, items);
+    inline void symmetric_difference_update_left(Container&& items) {
+        linked::symmetric_difference_update_left(
+            this->view, std::forward<Container>(items)
+        );
     }
 
     /* Get the index of an item within the set. */
@@ -218,38 +227,37 @@ public:
     }
 
     /* Return a new set with elements from this set and another container. */
-    template <typename Container>
-    inline LinkedSet union_(Container&& other) const {
+    template <typename... Containers>
+    inline LinkedSet union_(Containers&&... items) const {
         return LinkedSet(
-            linked::union_(this->view, std::forward<Container>(other))
+            (linked::union_(this->view, std::forward<Containers>(items)), ...)
         );
     }
 
     /* Return a new set with elements from this set and another container.  Appends
     to the head of the set rather than the tail. */
-    template <typename Container>
-    inline LinkedSet union_left(Container&& other) const {
+    template <typename... Containers>
+    inline LinkedSet union_left(Containers&&... items) const {
         return LinkedSet(
-            linked::union_left(this->view, std::forward<Container>(other))
+            (linked::union_left(this->view, std::forward<Containers>(items)), ...)
         );
     }
 
     /* Return a new set with elements from this set that are common to all other
     container(s).  */
-    template <typename Container>
-    inline LinkedSet intersection(Container&& other) const {
+    template <typename... Containers>
+    inline LinkedSet intersection(Containers&&... items) const {
         return LinkedSet(
-            linked::intersection(this->view, std::forward<Container>(other)
-            )
+            (linked::intersection(this->view, std::forward<Containers>(items)), ...)
         );
     }
 
     /* Return a new set with elements in this set that are not in the other
     container(s). */
-    template <typename Container>
-    inline LinkedSet difference(Container&& other) const {
+    template <typename... Containers>
+    inline LinkedSet difference(Containers&&... items) const {
         return LinkedSet(
-            linked::difference(this->view, std::forward<Container>(other))
+            (linked::difference(this->view, std::forward<Containers>(items)), ...)
         );
     }
 
@@ -259,8 +267,7 @@ public:
     inline LinkedSet symmetric_difference(Container&& other) const {
         return LinkedSet(
             linked::symmetric_difference(
-                this->view,
-                std::forward<Container>(other)
+                this->view, std::forward<Container>(other)
             )
         );
     }
@@ -271,8 +278,7 @@ public:
     inline LinkedSet symmetric_difference_left(Container&& other) const {
         return LinkedSet(
             linked::symmetric_difference_left(
-                this->view,
-                std::forward<Container>(other)
+                this->view, std::forward<Container>(other)
             )
         );
     }
@@ -1005,15 +1011,12 @@ public:
     /* Implement `LinkedSet.isdisjoint()` in Python. */
     static PyObject* isdisjoint(Derived* self, PyObject* other) {
         try {
-            std::visit(
+            return std::visit(
                 [&other](auto& set) {
-                    set.isdisjoint(other);
+                    return PyBool_FromLong(set.isdisjoint(other));
                 },
                 self->variant
             );
-
-            // exit normally
-            Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
         } catch (...) {
@@ -1025,15 +1028,12 @@ public:
     /* Implement `LinkedSet.issubset()` in Python. */
     static PyObject* issubset(Derived* self, PyObject* other) {
         try {
-            std::visit(
+            return std::visit(
                 [&other](auto& set) {
-                    set.issubset(other);
+                    return PyBool_FromLong(set.issubset(other));
                 },
                 self->variant
             );
-
-            // exit normally
-            Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
         } catch (...) {
@@ -1045,15 +1045,12 @@ public:
     /* Implement `LinkedSet.issubset()` in Python. */
     static PyObject* issuperset(Derived* self, PyObject* other) {
         try {
-            std::visit(
+            return std::visit(
                 [&other](auto& set) {
-                    set.issuperset(other);
+                    return PyBool_FromLong(set.issuperset(other));
                 },
                 self->variant
             );
-
-            // exit normally
-            Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
         } catch (...) {
@@ -1899,11 +1896,7 @@ class PyLinkedSet :
 public:
 
     /* Initialize a LinkedSet instance from Python. */
-    static int __init__(
-        PyLinkedSet* self,
-        PyObject* args,
-        PyObject* kwargs
-    ) {
+    static int __init__(PyLinkedSet* self, PyObject* args, PyObject* kwargs) {
         using Args = util::PyArgs<util::CallProtocol::KWARGS>;
         using util::ValueError;
         static constexpr std::string_view meth_name{"__init__"};
@@ -2149,6 +2142,20 @@ code that relies on this data structure with only minimal changes.
         return slots;
     }();
 
+    /* Vtable containing special methods related to Python's number protocol. */
+    inline static PyNumberMethods number = [] {
+        PyNumberMethods slots;
+        slots.nb_or = (binaryfunc) ISet::__or__;
+        slots.nb_inplace_or = (binaryfunc) ISet::__ior__;
+        slots.nb_subtract = (binaryfunc) ISet::__sub__;
+        slots.nb_inplace_subtract = (binaryfunc) ISet::__isub__;
+        slots.nb_and = (binaryfunc) ISet::__and__;
+        slots.nb_inplace_and = (binaryfunc) ISet::__iand__;
+        slots.nb_xor = (binaryfunc) ISet::__xor__;
+        slots.nb_inplace_xor = (binaryfunc) ISet::__ixor__;
+        return slots;
+    }();
+
     /* Initialize a PyTypeObject to represent the set in Python. */
     static PyTypeObject build_type() {
         return {
@@ -2158,6 +2165,7 @@ code that relies on this data structure with only minimal changes.
             .tp_itemsize = 0,
             .tp_dealloc = (destructor) Base::__dealloc__,
             .tp_repr = (reprfunc) __repr__,
+            .tp_as_number = &number,
             .tp_as_sequence = &sequence,
             .tp_as_mapping = &mapping,
             .tp_hash = (hashfunc) PyObject_HashNotImplemented,  // not hashable

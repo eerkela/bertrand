@@ -11,7 +11,7 @@
 
 // TODO: memory reservation is somewhat iffy here.  If the view is not dynamic,
 // then we won't end up shrinking at the end, and can end up with an enormous
-// set.
+// set that never shrinks.
 
 
 namespace bertrand {
@@ -26,44 +26,31 @@ namespace linked {
         -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
         using Allocator = typename View::Allocator;
-        using Node = typename View::Node;
-        using MemGuard = typename View::MemGuard;
         static constexpr unsigned int flags = (
             Allocator::EXIST_OK | Allocator::REPLACE_MAPPED |
             (left ? Allocator::INSERT_HEAD : Allocator::INSERT_TAIL)
         );
 
-        // try to get length of items
-        std::optional<size_t> length = util::len(items);
-        if (length.has_value()) {
-            // preallocate exact size
-            View copy(
-                view.size() + length.value(),
-                view.dynamic(),
-                view.specialization()
-            );
-            MemGuard hold = copy.reserve();  // hold allocator at current size
-
-            // add elements from view
-            for (auto it = view.begin(), end = view.end(); it != end; ++it) {
-                Node* node = copy.node(*(it.curr()));
-                copy.link(copy.tail(), node, nullptr);
-            }
-    
-            // add elements from items
-            for (auto item : util::iter(items)) {
-                copy.template node<flags>(item);
-            }
-
-            return copy;
+        // copy existing view
+        View copy(view.size(), true, view.specialization());  // dynamic
+        for (auto it = view.begin(), end = view.end(); it != end; ++it) {
+            copy.link(copy.tail(), copy.node(*(it.curr())), nullptr);
         }
 
-        // otherwise, copy existing view and update dynamically
-        View copy(view);
-        if constexpr (left) {
-            linked::update_left(copy, items);
-        } else {
-            linked::update(copy, items);
+        // add elements from items
+        for (auto item : util::iter(items)) {
+            copy.template node<flags>(item);
+        }
+
+        // if original view was not dynamic, move into new view
+        if (!view.dynamic()) {
+            // TODO: inefficient, but the only other way is to build a temporary
+            // set of all the nodes that are not in the original view.
+            View result(copy.size(), false, view.specialization());
+            for (auto it = copy.begin(), end = copy.end(); it != end; ++it) {
+                result.link(result.tail(), result.node(std::move(*(it.curr()))), nullptr);
+            }
+            return result;
         }
         return copy;
     }
@@ -73,7 +60,7 @@ namespace linked {
     iterable.  This method appends elements to the head of the set rather than the
     tail. */
     template <typename View, typename Container>
-    auto union_left(const View& view, const Container& items)
+    inline auto union_left(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
         return union_<View, Container, true>(view, items);
@@ -87,24 +74,19 @@ namespace linked {
         -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
         using Node = typename View::Node;
-        using MemGuard = typename View::MemGuard;
 
-        // preallocate to current size
-        View copy(view.size(), view.dynamic(), view.specialization());
-        MemGuard hold = copy.reserve();  // hold allocator at current size
-
-        // use auxiliary set to keep track of visited nodes as we iterate over items
+        // iterate over items and mark all found nodes
         std::unordered_set<const Node*> found;
         for (auto item : util::iter(items)) {
             Node* node = view.search(item);
             if (node != nullptr) found.insert(node);
         }
 
-        // iterate through view and add all elements that were not found
+        // add all elements that were not found
+        View copy(view.size() - found.size(), view.dynamic(), view.specialization());
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             if (found.find(it.curr()) == found.end()) {
-                Node* node = copy.node(*(it.curr()));
-                copy.link(copy.tail(), node, nullptr);
+                copy.link(copy.tail(), copy.node(*(it.curr())), nullptr);
             }
         }
         return copy;
@@ -118,24 +100,19 @@ namespace linked {
         -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
         using Node = typename View::Node;
-        using MemGuard = typename View::MemGuard;
 
-        // preallocate to current size
-        View copy(view.size(), view.dynamic(), view.specialization());
-        MemGuard hold = copy.reserve();  // hold allocator at current size
-
-        // use auxiliary set to keep track of visited nodes as we iterate over items
+        // iterate over items and mark all found nodes
         std::unordered_set<const Node*> found;
         for (auto item : util::iter(items)) {
             Node* node = view.search(item);
             if (node != nullptr) found.insert(node);
         }
 
-        // iterate through view and add all elements that were found
+        // add all elements that were found
+        View copy(found.size(), view.dynamic(), view.specialization());
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             if (found.find(it.curr()) != found.end()) {
-                Node* node = copy.node(*(it.curr()));
-                copy.link(copy.tail(), node, nullptr);
+                copy.link(copy.tail(), copy.node(*(it.curr())), nullptr);
             }
         }
         return copy;
@@ -172,8 +149,7 @@ namespace linked {
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             Node* node = temp_view.search(it.curr());
             if (node == nullptr) {
-                node = copy.node(*(it.curr()));
-                copy.link(copy.tail(), node, nullptr);
+                copy.link(copy.tail(), copy.node(*(it.curr())), nullptr);
             }
         }
 

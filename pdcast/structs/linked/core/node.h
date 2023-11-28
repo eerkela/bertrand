@@ -6,10 +6,12 @@
 #include <mutex>  // std::mutex
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
-#include <type_traits>  // std::enable_if_t<>, std::is_convertible_v<>, etc.
+#include <type_traits>  // std::enable_if_t<>, etc.
 #include <Python.h>  // CPython API
+#include "../../util/base.h"  // is_pyobject<>
 #include "../../util/except.h"  // catch_python(), TypeError()
 #include "../../util/func.h"  // FuncTraits
+#include "../../util/python.h"  // std::hash<PyObject*>
 #include "../../util/repr.h"  // repr()
 
 
@@ -33,7 +35,6 @@ class NodeTag {};
 /* Base class containing common functionality across all nodes. */
 template <typename ValueType>
 class BaseNode : public NodeTag {
-    inline static constexpr bool py_val = std::is_convertible_v<ValueType, PyObject*>;
     ValueType _value;
 
 public:
@@ -45,7 +46,7 @@ public:
     }
 
     /* Apply an explicit type check to the wrapped value if it is a Python object. */
-    template <bool cond = py_val>
+    template <bool cond = util::is_pyobject<Value>>
     inline std::enable_if_t<cond, bool> typecheck(PyObject* specialization) const {
         int comp = PyObject_IsInstance(_value, specialization);
         if (comp == -1) throw util::catch_python<util::TypeError>();
@@ -56,12 +57,12 @@ protected:
 
     /* Initialize a node with a given value. */
     BaseNode(Value value) noexcept : _value(value) {
-        if constexpr (py_val) Py_XINCREF(value);
+        if constexpr (util::is_pyobject<Value>) Py_XINCREF(value);
     }
 
     /* Copy constructor. */
     BaseNode(const BaseNode& other) noexcept : _value(other._value) {
-        if constexpr (py_val) Py_XINCREF(_value);
+        if constexpr (util::is_pyobject<Value>) Py_XINCREF(_value);
     }
 
     /* Move constructor. */
@@ -74,11 +75,11 @@ protected:
         if (this == &other) return *this;  // check for self-assignment
 
         // clear current node
-        if constexpr (py_val) Py_XDECREF(_value);
+        if constexpr (util::is_pyobject<Value>) Py_XDECREF(_value);
 
         // copy other node
         _value = other._value;
-        if constexpr (py_val) Py_XINCREF(_value);
+        if constexpr (util::is_pyobject<Value>) Py_XINCREF(_value);
         return *this;
     }
 
@@ -87,7 +88,7 @@ protected:
         if (this == &other) return *this;  // check for self-assignment
 
         // clear current node
-        if constexpr (py_val) Py_XDECREF(_value);
+        if constexpr (util::is_pyobject<Value>) Py_XDECREF(_value);
 
         // move other node
         _value = std::move(other._value);
@@ -97,7 +98,7 @@ protected:
 
     /* Destroy a node and release its resources. */
     ~BaseNode() noexcept {
-        if constexpr (py_val) Py_XDECREF(_value);
+        if constexpr (util::is_pyobject<Value>) Py_XDECREF(_value);
         if constexpr (std::is_pointer_v<Value>) _value = nullptr;
     }
 
@@ -343,9 +344,9 @@ private:
     /* Invoke the key function on the specified value and return the computed result. */
     _Value invoke(Func func, typename Wrapped::Value arg) {
         // Python key
-        if constexpr (std::is_convertible_v<Func, PyObject*>) {
+        if constexpr (util::is_pyobject<Func>) {
             static_assert(
-                std::is_convertible_v<typename Base::Value, PyObject*>,
+                util::is_pyobject<typename Base::Value>,
                 "Python functions can only be applied to PyObject* nodes"
             );
 
@@ -451,18 +452,17 @@ class Hashed : public Wrapped {
     /* Compute the hash of the underlying node value. */
     inline static size_t compute_hash(Hashed* node) {
         using Value = typename Wrapped::Value;
-
-        if constexpr (std::is_convertible_v<Value, PyObject*>) {
-            Py_hash_t hash_val = PyObject_Hash(node->value());
-            if (hash_val == -1 && PyErr_Occurred()) {
+        if constexpr (util::is_pyobject<Value>) {
+            try {
+                return std::hash<Value>{}(node->value());
+            } catch (...) {
                 // NOTE: we have to make sure to release any resources that were
                 // acquired during the wrapped constructor
                 node->~Hashed();
-                throw util::catch_python<util::TypeError>();
+                throw;
             }
-            return static_cast<size_t>(hash_val);  // for compatibility with std::hash
         } else {
-            return std::hash<Value>()(node->value());
+            return std::hash<Value>{}(node->value());
         }
     }
 
@@ -559,15 +559,12 @@ as a dictionary. */
 template <typename Wrapped, typename MappedType>
 class Mapped : public Wrapped {
     using KeyType = typename Wrapped::Value;
-    static constexpr bool py_mapped = std::is_convertible_v<MappedType, PyObject*>;
     MappedType _mapped;
 
     /* Unpack a python tuple containing a key and value. */
     inline static std::pair<PyObject*, PyObject*> unpack_python(PyObject* tuple) {
-        static constexpr bool py_key = std::is_convertible_v<KeyType, PyObject*>;
-        static constexpr bool py_value = std::is_convertible_v<MappedType, PyObject*>;
         static_assert(
-            py_key && py_value,
+            util::is_pyobject<KeyType> && util::is_pyobject<MappedType>,
             "Python tuples can only be unpacked by PyObject* nodes"
         );
 
@@ -579,8 +576,8 @@ class Mapped : public Wrapped {
         }
 
         // unpack tuple and return pair
-        PyObject* key = PyTuple_GetItem(tuple, 0);
-        PyObject* mapped = PyTuple_GetItem(tuple, 1);
+        PyObject* key = PyTuple_GET_ITEM(tuple, 0);
+        PyObject* mapped = PyTuple_GET_ITEM(tuple, 1);
         return std::make_pair(key, mapped);
     }
 
@@ -589,9 +586,7 @@ public:
 
     /* Initialize a mapped node with a separate key and value. */
     Mapped(KeyType key, MappedValue value) : Wrapped(key), _mapped(value) {
-        if constexpr (py_mapped) {
-            Py_INCREF(value);
-        }
+        if constexpr (util::is_pyobject<MappedType>) Py_XINCREF(value);
     }
 
     /* Initialize a mapped node with a coupled key and value. */
@@ -603,7 +598,7 @@ public:
 
     /* Copy constructor. */
     Mapped(const Mapped& other) noexcept : Wrapped(other), _mapped(other._mapped) {
-        if constexpr (py_mapped) Py_INCREF(_mapped);
+        if constexpr (util::is_pyobject<MappedType>) Py_XINCREF(_mapped);
     }
 
     /* Move constructor. */
@@ -622,9 +617,7 @@ public:
 
         // copy mapped value
         _mapped = other._mapped;
-        if constexpr (py_mapped) {
-            Py_XINCREF(_mapped);
-        }
+        if constexpr (util::is_pyobject<MappedType>) Py_XINCREF(_mapped);
         return *this;
     }
 
@@ -637,15 +630,13 @@ public:
 
         // move mapped value
         _mapped = std::move(other._mapped);
-        if constexpr (std::is_pointer_v<MappedValue>) {
-            other._mapped = nullptr;
-        }
+        if constexpr (std::is_pointer_v<MappedValue>) other._mapped = nullptr;
         return *this;
     }
 
     /* Destroy a mapped node and release its resources. */
     ~Mapped() noexcept {
-        if constexpr (py_mapped) Py_XDECREF(_mapped);
+        if constexpr (util::is_pyobject<MappedType>) Py_XDECREF(_mapped);
     }
 
     /* Get the mapped value. */
@@ -655,7 +646,7 @@ public:
 
     /* Overwrite the mapped value. */
     inline void mapped(MappedValue&& mapped) noexcept {
-        if constexpr (py_mapped) {
+        if constexpr (util::is_pyobject<MappedType>) {
             Py_XDECREF(_mapped);
             Py_XINCREF(mapped);
         }

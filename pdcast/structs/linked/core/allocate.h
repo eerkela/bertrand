@@ -63,7 +63,7 @@ protected:
     enum {
         FROZEN                  = 0b001,
         DYNAMIC                 = 0b010,
-        STRICTLY_TYPED          = 0b100  // (not used)
+        STRICTLY_TYPED          = 0b100  // (currently unused)
     } CONFIG;
     unsigned char config;
     union { mutable Node _temp; };  // uninitialized temporary node for internal use
@@ -80,35 +80,31 @@ protected:
     /* Initialize an uninitialized node for use in the list. */
     template <typename... Args>
     inline void init_node(Node* node, Args&&... args) {
-        using util::repr;
-
         // variadic dispatch to node constructor
         new (node) Node(std::forward<Args>(args)...);
 
         // check python specialization if enabled
         if (specialization != nullptr && !node->typecheck(specialization)) {
             std::ostringstream msg;
-            msg << repr(node->value()) << " is not of type ";
-            msg << repr(specialization);
-            node->~Node();  // in-place destructor
+            msg << util::repr(node->value()) << " is not of type ";
+            msg << util::repr(specialization);
+            node->~Node();
             throw util::TypeError(msg.str());
         }
         if constexpr (DEBUG) {
-            std::cout << "    -> create: " << repr(node->value()) << std::endl;
+            std::cout << "    -> create: " << util::repr(node->value()) << std::endl;
         }
     }
 
     /* Destroy all nodes contained in the list. */
     inline void destroy_list() noexcept {
-        using util::repr;
-
         Node* curr = head;
         while (curr != nullptr) {
             Node* next = curr->next();
             if constexpr (DEBUG) {
-                std::cout << "    -> recycle: " << repr(curr->value()) << std::endl;
+                std::cout << "    -> recycle: " << util::repr(curr->value()) << std::endl;
             }
-            curr->~Node();  // in-place destructor
+            curr->~Node();
             curr = next;
         }
     }
@@ -1302,7 +1298,7 @@ private:
     }
 
     /* Move a node to the head of the list once it's been found */
-    void move_to_head(Node* node) noexcept {
+    inline void move_to_head(Node* node) noexcept {
         if (node != this->head) {
             Node* prev;
             if constexpr (NodeTraits<Node>::has_prev) {
@@ -1323,7 +1319,7 @@ private:
     }
 
     /* Move a node to the tail of the list once it's been found */
-    void move_to_tail(Node* node) noexcept {
+    inline void move_to_tail(Node* node) noexcept {
         if (node != this->tail) {
             Node* prev;
             if constexpr (NodeTraits<Node>::has_prev) {
@@ -1344,7 +1340,7 @@ private:
     }
 
     /* Evict the head node of the list. */
-    void evict_head() {
+    inline void evict_head() {
         Node* evicted = this->head;
         this->head = evicted->next();
         if (this->head == nullptr) this->tail = nullptr;
@@ -1353,7 +1349,7 @@ private:
     }
 
     /* Evict the tail node of the list. */
-    void evict_tail() {
+    inline void evict_tail() {
         Node* evicted = this->tail;
         Node* prev;
         if constexpr (NodeTraits<Node>::has_prev) {
@@ -1387,7 +1383,7 @@ private:
     }
 
     /* Unlink a node from its neighbors before recycling it. */
-    void unlink(Node* node) {
+    inline void unlink(Node* node) {
         Node* next = node->next();
         Node* prev;
         if constexpr (NodeTraits<Node>::has_prev) {
@@ -1601,6 +1597,12 @@ public:
             }
         }
     }
+
+    // TODO: things can probably get faster if we store the hash on the bucket rather
+    // than the node.  This would allow us to allocate directly into the target node
+    // rather than allocating into a temporary node and then searching from there.
+    // We would simply extract the first value from the arg pack, hash it, and then
+    // search for a node that matches its value.  If 
 
     /* Construct a new node from the table. */
     template <unsigned int flags = DEFAULT, typename... Args>
