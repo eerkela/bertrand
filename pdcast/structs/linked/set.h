@@ -38,13 +38,6 @@
 #include "algorithms/update.h"
 
 
-// TODO: now that update methods do not take a left argument, they can accept
-// variadic arguments at the C++ level.  This should allow them to be used in
-// the same way as Python.
-
-// use an integer_sequence to unpack the variadic arguments
-
-
 namespace bertrand {
 namespace structs {
 namespace linked {
@@ -89,18 +82,18 @@ public:
      */
 
     /* Add an item to the end of the set if it is not already present. */
-    inline void add(Value& item) {
+    inline void add(const Value& item) {
         linked::add(this->view, item);
     }
 
     /* Add an item to the beginning of the set if it is not already present. */
-    inline void add_left(Value& item) {
+    inline void add_left(const Value& item) {
         linked::add_left(this->view, item);
     }
 
     /* Add an item to the set if it is not already present and move it to the front of
     the set, evicting the last element to make room if necessary. */
-    inline void lru_add(Value& item) {
+    inline void lru_add(const Value& item) {
         linked::lru_add(this->view, item);
     }
 
@@ -110,29 +103,33 @@ public:
     }
 
     /* Extend a set by adding elements from one or more iterables that are not already
-    present.  Accepts variadic arguments just like Python. */
+    present. */
     template <typename... Containers>
     inline void update(Containers&&... items) {
         (linked::update(this->view, std::forward<Containers>(items)), ...);
     }
 
-    /* Extend a set by left-adding elements from an iterable that are not already
-    present. */
+    /* Extend a set by left-adding elements from one or more iterables that are not
+    already present. */
     template <typename... Containers>
     inline void update_left(Containers&&... items) {
         (linked::update_left(this->view, std::forward<Containers>(items)), ...);
     }
 
-    // TODO: lru_update
+    /* Extend a set by adding or moving items to the head of the set and possibly
+    evicting the tail to make room. */
+    template <typename... Containers>
+    inline void lru_update(Containers&&... items) {
+        (linked::lru_update(this->view, std::forward<Containers>(items)), ...);
+    }
 
-
-    /* Remove elements from a set that are contained in the given iterable. */
+    /* Remove elements from a set that are contained in one or more iterables. */
     template <typename... Containers>
     inline void difference_update(Containers&&... items) {
         (linked::difference_update(this->view, std::forward<Containers>(items)), ...);
     }
 
-    /* Removal elements from a set that are not contained in the given iterable. */
+    /* Removal elements from a set that are not contained in one or more iterables. */
     template <typename... Containers>
     inline void intersection_update(Containers&&... items) {
         (linked::intersection_update(this->view, std::forward<Containers>(items)), ...);
@@ -185,7 +182,7 @@ public:
         return linked::lru_contains(this->view, item);
     }
 
-    /* Remove the first occurrence of an item from the set. */
+    /* Remove an item from the set. */
     inline void remove(const Value& item) {
         linked::remove(this->view, item);
     }
@@ -226,7 +223,7 @@ public:
         linked::rotate(this->view, steps);
     }
 
-    /* Return a new set with elements from this set and another container. */
+    /* Return a new set with elements from this set and all other containers. */
     template <typename... Containers>
     inline LinkedSet union_(Containers&&... items) const {
         return LinkedSet(
@@ -234,7 +231,7 @@ public:
         );
     }
 
-    /* Return a new set with elements from this set and another container.  Appends
+    /* Return a new set with elements from this set and all other containers.  Appends
     to the head of the set rather than the tail. */
     template <typename... Containers>
     inline LinkedSet union_left(Containers&&... items) const {
@@ -243,8 +240,7 @@ public:
         );
     }
 
-    /* Return a new set with elements from this set that are common to all other
-    container(s).  */
+    /* Return a new set with elements common to this set and all other containers. */
     template <typename... Containers>
     inline LinkedSet intersection(Containers&&... items) const {
         return LinkedSet(
@@ -252,8 +248,8 @@ public:
         );
     }
 
-    /* Return a new set with elements in this set that are not in the other
-    container(s). */
+    /* Return a new set with elements from this set that are not common to any other
+    containers. */
     template <typename... Containers>
     inline LinkedSet difference(Containers&&... items) const {
         return LinkedSet(
@@ -264,10 +260,10 @@ public:
     /* Return a new set with elements in either this set or another container, but not
     both. */
     template <typename Container>
-    inline LinkedSet symmetric_difference(Container&& other) const {
+    inline LinkedSet symmetric_difference(Container&& items) const {
         return LinkedSet(
             linked::symmetric_difference(
-                this->view, std::forward<Container>(other)
+                this->view, std::forward<Container>(items)
             )
         );
     }
@@ -275,51 +271,53 @@ public:
     /* Return a new set with elements in either this set or another container, but not
     both.  Appends to the head of the set rather than the tail. */
     template <typename Container>
-    inline LinkedSet symmetric_difference_left(Container&& other) const {
+    inline LinkedSet symmetric_difference_left(Container&& items) const {
         return LinkedSet(
             linked::symmetric_difference_left(
-                this->view, std::forward<Container>(other)
+                this->view, std::forward<Container>(items)
             )
         );
     }
 
     /* Check whether the set has no elements in common with another container. */
     template <typename Container>
-    inline bool isdisjoint(const Container& other) const {
-        return linked::isdisjoint(this->view, other);
+    inline bool isdisjoint(Container&& items) const {
+        return linked::isdisjoint(this->view, std::forward<Container>(items));
     }
 
     /* Check whether all items within the set are also present in another container. */
     template <typename Container>
-    inline bool issubset(const Container& other) const {
-        return linked::issubset(this->view, other, false);
+    inline bool issubset(Container&& items) const {
+        return linked::issubset(
+            this->view, std::forward<Container>(items), false
+        );
     }
 
     /* Check whether the set contains all items within another container. */
     template <typename Container>
-    inline bool issuperset(const Container& other) const {
-        return linked::issuperset(this->view, other, false);
+    inline bool issuperset(Container&& items) const {
+        return linked::issuperset(
+            this->view, std::forward<Container>(items), false
+        );
     }
 
     /* Get the linear distance between two elements within the set. */
-    inline long long distance(Value& from, Value& to) const {
+    inline long long distance(const Value& from, const Value& to) const {
         return linked::distance(this->view, from, to);
     }
 
     /* Swap the positions of two elements within the set. */
-    inline void swap(Value& item1, Value& item2) {
+    inline void swap(const Value& item1, const Value& item2) {
         linked::swap(this->view, item1, item2);
     }
 
     /* Move an item within the set by the specified number of steps. */
-    template <typename Steps>
-    inline void move(Value& item, Steps steps) {
+    inline void move(const Value& item, long long steps) {
         linked::move(this->view, item, steps);
     }
 
     /* Move an item within the set to the specified index. */
-    template <typename Index>
-    inline void move_to_index(Value& item, Index index) {
+    inline void move_to_index(Value& item, long long index) {
         linked::move_to_index(this->view, item, index);
     }
 
@@ -769,6 +767,29 @@ public:
                 [&args, &nargs](auto& set) {
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
                         set.update_left(args[i]);
+                    }
+                },
+                self->variant
+            );
+
+            // exit normally
+            Py_RETURN_NONE;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedSet.lru_update()` in Python. */
+    static PyObject* lru_update(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+        try {
+            // invoke equivalent C++ method
+            std::visit(
+                [&args, &nargs](auto& set) {
+                    for (Py_ssize_t i = 0; i < nargs; ++i) {
+                        set.lru_update(args[i]);
                     }
                 },
                 self->variant
@@ -1407,7 +1428,7 @@ item : Any
 
 Notes
 -----
-This method is equivalent to:
+This method is roughly equivalent to:
 
 .. code-block:: python
 
@@ -1534,6 +1555,38 @@ Parameters
 
 Notes
 -----
+Updates are O(sum(m_n)), where m_n is the length of each of the containers
+passed to this method.
+)doc"
+        };
+
+        static constexpr std::string_view lru_update {R"doc(
+Update a set in-place, merging the contents of all other containers according
+to the LRU caching strategy.
+
+Parameters
+----------
+*others : Iterable[Any]
+    An arbitrary number of containers passed to this method as positional
+    arguments.
+
+Notes
+-----
+This method is roughly equivalent to:
+
+.. code-block:: python
+
+    set.update(*others)
+    for container in others:
+        for item in container:
+            set.add(item)
+            set.move(item, 0)
+
+Except that it avoids repeated lookups, collapses the loops, and evicts the
+last item if the set is already full.  The linked nature of the data structure
+makes this extremely efficient, allowing the set to act as a fast LRU cache,
+particularly if it is doubly-linked.
+
 Updates are O(sum(m_n)), where m_n is the length of each of the containers
 passed to this method.
 )doc"
@@ -1865,7 +1918,7 @@ class PyLinkedSet :
         new (&variant) Variant(std::forward<Set>(set));
     }
 
-    /* Construct a PyLinkedList from scratch using the given constructor arguments. */
+    /* Construct a PyLinkedSet from scratch using the given constructor arguments. */
     static void construct(
         PyLinkedSet* self,
         PyObject* iterable,
@@ -2057,7 +2110,7 @@ code that relies on this data structure with only minimal changes.
     #define SET_METHOD(NAME, ARG_PROTOCOL) \
         { #NAME, (PyCFunction) ISet::NAME, ARG_PROTOCOL, PyDoc_STR(ISet::docs::NAME.data()) } \
 
-    /* Vtable containing Python @property definitions for the LinkedList. */
+    /* Vtable containing Python @property definitions for the LinkedSet. */
     inline static PyGetSetDef properties[] = {
         BASE_PROPERTY(lock),
         BASE_PROPERTY(capacity),
@@ -2069,7 +2122,7 @@ code that relies on this data structure with only minimal changes.
         {NULL}  // sentinel
     };
 
-    /* Vtable containing Python method definitions for the LinkedList. */
+    /* Vtable containing Python method definitions for the LinkedSet. */
     inline static PyMethodDef methods[] = {
         BASE_METHOD(reserve, METH_FASTCALL),
         BASE_METHOD(defragment, METH_NOARGS),
@@ -2100,6 +2153,7 @@ code that relies on this data structure with only minimal changes.
         SET_METHOD(union_left, METH_FASTCALL),
         SET_METHOD(update, METH_FASTCALL),
         SET_METHOD(update_left, METH_FASTCALL),
+        SET_METHOD(lru_update, METH_FASTCALL),
         SET_METHOD(difference, METH_FASTCALL),
         SET_METHOD(difference_update, METH_FASTCALL),
         SET_METHOD(intersection, METH_FASTCALL),
@@ -2127,8 +2181,8 @@ code that relies on this data structure with only minimal changes.
     inline static PyMappingMethods mapping = [] {
         PyMappingMethods slots;
         slots.mp_length = (lenfunc) Base::__len__;
-        slots.mp_subscript = (binaryfunc) __getitem__;
-        slots.mp_ass_subscript = (objobjargproc) __setitem__;
+        slots.mp_subscript = (binaryfunc) IList::__getitem__;
+        slots.mp_ass_subscript = (objobjargproc) IList::__setitem__;
         return slots;
     }();
 
@@ -2136,9 +2190,9 @@ code that relies on this data structure with only minimal changes.
     inline static PySequenceMethods sequence = [] {
         PySequenceMethods slots;
         slots.sq_length = (lenfunc) Base::__len__;
-        slots.sq_item = (ssizeargfunc) __getitem_scalar__;
-        slots.sq_ass_item = (ssizeobjargproc) __setitem_scalar__;
-        slots.sq_contains = (objobjproc) __contains__;
+        slots.sq_item = (ssizeargfunc) IList::__getitem_scalar__;
+        slots.sq_ass_item = (ssizeobjargproc) IList::__setitem_scalar__;
+        slots.sq_contains = (objobjproc) IList::__contains__;
         return slots;
     }();
 
@@ -2178,7 +2232,7 @@ code that relies on this data structure with only minimal changes.
             .tp_doc = PyDoc_STR(docs::LinkedSet.data()),
             .tp_traverse = (traverseproc) Base::__traverse__,
             .tp_clear = (inquiry) Base::__clear__,
-            .tp_richcompare = (richcmpfunc) __richcompare__,
+            .tp_richcompare = (richcmpfunc) IList::__richcompare__,
             .tp_iter = (getiterfunc) Base::__iter__,
             .tp_methods = methods,
             .tp_getset = properties,

@@ -45,8 +45,8 @@ namespace linked {
     {
         using Allocator = typename View::Allocator;
         static constexpr unsigned int flags = (
-            Allocator::EXIST_OK | Allocator::REPLACE_MAPPED | Allocator::MOVE_HEAD |
-            Allocator::EVICT_TAIL | Allocator::INSERT_HEAD
+            Allocator::EXIST_OK | Allocator::REPLACE_MAPPED | Allocator::INSERT_HEAD |
+            Allocator::MOVE_HEAD | Allocator::EVICT_TAIL
         );
         view.template node<flags>(item);
     }

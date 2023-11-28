@@ -34,7 +34,7 @@ namespace linked {
         // copy existing view
         View copy(view.size(), true, view.specialization());  // dynamic
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
-            copy.link(copy.tail(), copy.node(*(it.curr())), nullptr);
+            copy.template node<Allocator::INSERT_TAIL>(*(it.curr()));
         }
 
         // add elements from items
@@ -42,13 +42,11 @@ namespace linked {
             copy.template node<flags>(item);
         }
 
-        // if original view was not dynamic, move into new view
+        // if original view was not dynamic, move into new view of fixed size
         if (!view.dynamic()) {
-            // TODO: inefficient, but the only other way is to build a temporary
-            // set of all the nodes that are not in the original view.
             View result(copy.size(), false, view.specialization());
             for (auto it = copy.begin(), end = copy.end(); it != end; ++it) {
-                result.link(result.tail(), result.node(std::move(*(it.curr()))), nullptr);
+                result.template node<Allocator::INSERT_TAIL>(std::move(*(it.curr())));
             }
             return result;
         }
@@ -73,6 +71,7 @@ namespace linked {
     auto difference(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
+        using Allocator = typename View::Allocator;
         using Node = typename View::Node;
 
         // iterate over items and mark all found nodes
@@ -86,7 +85,7 @@ namespace linked {
         View copy(view.size() - found.size(), view.dynamic(), view.specialization());
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             if (found.find(it.curr()) == found.end()) {
-                copy.link(copy.tail(), copy.node(*(it.curr())), nullptr);
+                copy.template node<Allocator::INSERT_TAIL>(*(it.curr()));
             }
         }
         return copy;
@@ -99,6 +98,7 @@ namespace linked {
     auto intersection(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
+        using Allocator = typename View::Allocator;
         using Node = typename View::Node;
 
         // iterate over items and mark all found nodes
@@ -112,7 +112,7 @@ namespace linked {
         View copy(found.size(), view.dynamic(), view.specialization());
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             if (found.find(it.curr()) != found.end()) {
-                copy.link(copy.tail(), copy.node(*(it.curr())), nullptr);
+                copy.template node<Allocator::INSERT_TAIL>(*(it.curr()));
             }
         }
         return copy;
@@ -125,31 +125,26 @@ namespace linked {
     auto symmetric_difference(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
+        using Allocator = typename View::Allocator;
         using Node = typename View::Node;
-        using MemGuard = typename View::MemGuard;
 
         // unpack items into temporary view
         View temp_view(
             items,
-            std::nullopt,  // capacity: inferred from items
+            std::nullopt,  // capacity: dynamic
             true,  // dynamic: true
             nullptr,  // specialization: generic
             false  // reverse: false
         );
 
-        // preallocate to exact size
-        View copy(
-            view.size() + temp_view.size(),
-            view.dynamic(),
-            view.specialization()
-        );
-        MemGuard hold = copy.reserve();  // hold allocator at current size
+        // allocate dynamic view to store result
+        View copy(std::nullopt, true, view.specialization());
 
         // add all elements from view that are not in temp view
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             Node* node = temp_view.search(it.curr());
             if (node == nullptr) {
-                copy.link(copy.tail(), copy.node(*(it.curr())), nullptr);
+                copy.template node<Allocator::INSERT_TAIL>(*(it.curr()));
             }
         }
 
@@ -157,15 +152,22 @@ namespace linked {
         for (auto it = temp_view.begin(), end = temp_view.end(); it != end; ++it) {
             Node* node = view.search(it.curr());
             if (node == nullptr) {
-                node = copy.node(std::move(*(it.curr())));
                 if constexpr (left) {
-                    copy.link(nullptr, node, copy.head());
+                    copy.template node<Allocator::INSERT_HEAD>(std::move(*(it.curr())));
                 } else {
-                    copy.link(copy.tail(), node, nullptr);
+                    copy.template node<Allocator::INSERT_TAIL>(std::move(*(it.curr())));
                 }
             }
         }
 
+        // if original view was not dynamic, move into new view of fixed size
+        if (!view.dynamic()) {
+            View result(copy.size(), false, view.specialization());
+            for (auto it = copy.begin(), end = copy.end(); it != end; ++it) {
+                result.template node<Allocator::INSERT_TAIL>(std::move(*(it.curr())));
+            }
+            return result;
+        }
         return copy;
     }
 

@@ -41,6 +41,13 @@ namespace linked {
 // LinkedList<int>
 // LinkedList<int, config::SINGLY_LINKED>
 
+// TODO: use type aliases?
+// template <typename T>
+// using DoublyLinkedList = LinkedList<DoubleNode<T>>;
+
+// Perhaps we can use SFINAE to check whether the first argument is a Node type, and
+// otherwise wrap it as a DoubleNode.
+
 
 /* A modular linked list class that mimics the Python list interface in C++. */
 template <typename NodeType, typename LockPolicy = util::BasicLock>
@@ -1643,8 +1650,8 @@ code that relies on this data structure with only minimal changes.
     inline static PyMappingMethods mapping = [] {
         PyMappingMethods slots;
         slots.mp_length = (lenfunc) Base::__len__;
-        slots.mp_subscript = (binaryfunc) __getitem__;
-        slots.mp_ass_subscript = (objobjargproc) __setitem__;
+        slots.mp_subscript = (binaryfunc) IList::__getitem__;
+        slots.mp_ass_subscript = (objobjargproc) IList::__setitem__;
         return slots;
     }();
 
@@ -1652,13 +1659,13 @@ code that relies on this data structure with only minimal changes.
     inline static PySequenceMethods sequence = [] {
         PySequenceMethods slots;
         slots.sq_length = (lenfunc) Base::__len__;
-        slots.sq_concat = (binaryfunc) __add__;
-        slots.sq_repeat = (ssizeargfunc) __mul__;
-        slots.sq_item = (ssizeargfunc) __getitem_scalar__;
-        slots.sq_ass_item = (ssizeobjargproc) __setitem_scalar__;
-        slots.sq_contains = (objobjproc) __contains__;
-        slots.sq_inplace_concat = (binaryfunc) __iadd__;
-        slots.sq_inplace_repeat = (ssizeargfunc) __imul__;
+        slots.sq_concat = (binaryfunc) IList::__add__;
+        slots.sq_repeat = (ssizeargfunc) IList::__mul__;
+        slots.sq_item = (ssizeargfunc) IList::__getitem_scalar__;
+        slots.sq_ass_item = (ssizeobjargproc) IList::__setitem_scalar__;
+        slots.sq_contains = (objobjproc) IList::__contains__;
+        slots.sq_inplace_concat = (binaryfunc) IList::__iadd__;
+        slots.sq_inplace_repeat = (ssizeargfunc) IList::__imul__;
         return slots;
     }();
 
@@ -1683,7 +1690,7 @@ code that relies on this data structure with only minimal changes.
             .tp_doc = PyDoc_STR(docs::LinkedList.data()),
             .tp_traverse = (traverseproc) Base::__traverse__,
             .tp_clear = (inquiry) Base::__clear__,
-            .tp_richcompare = (richcmpfunc) __richcompare__,
+            .tp_richcompare = (richcmpfunc) IList::__richcompare__,
             .tp_iter = (getiterfunc) Base::__iter__,
             .tp_methods = methods,
             .tp_getset = properties,

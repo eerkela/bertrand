@@ -1,4 +1,3 @@
-
 from random import randint
 from set import *
 from timeit import timeit
@@ -20,7 +19,6 @@ def test3(s):
     for x in t:
         s.add(x)
         s.remove(x)
-
 
 
 if __name__ == "__main__":

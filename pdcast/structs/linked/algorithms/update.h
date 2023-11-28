@@ -94,6 +94,26 @@ namespace linked {
     }
 
 
+    /* Update a set or dictionary, adding or moving items to the head and evicting from
+    the tail to make room. */
+    template <typename View, typename Container>
+    auto lru_update(View& view, const Container& items)
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
+    {
+        using Allocator = typename View::Allocator;
+        static constexpr unsigned int flags = (
+            Allocator::EXIST_OK | Allocator::REPLACE_MAPPED | Allocator::INSERT_HEAD |
+            Allocator::MOVE_HEAD | Allocator::EVICT_TAIL
+        );
+
+        // NOTE: This method is inherently destructive, so no attempt is made to return
+        // the view to its original state if an error occurs.
+        for (auto item : util::iter(items)) {
+            view.template node<flags>(item);
+        }
+    }
+
+
     /* Update a linked set or dictionary in-place, removing elements from a second
     set or dictionary. */
     template <typename View, typename Container>

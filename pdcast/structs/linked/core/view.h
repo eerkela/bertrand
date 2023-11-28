@@ -5,13 +5,11 @@
 #include <cstddef>  // size_t
 #include <optional>  // std::optional
 #include <stack>  // std::stack
-#include <stdexcept>  // std::invalid_argument
 #include <Python.h>  // CPython API
 #include "node.h"  // Hashed<>, Mapped<>
-#include "allocate.h"  // Allocator
+#include "allocate.h"  // allocators
 #include "iter.h"  // Iterator, Direction
 #include "../../util/iter.h"  // iter()
-#include "../../util/math.h"  // next_power_of_two()
 #include "../../util/python.h"  // len()
 
 
@@ -38,36 +36,18 @@ struct ViewTag {
 
 /* Base class representing the low-level core of a linked data structure.
 
-Views are responsible for managing the memory of and links between the underlying
-nodes, iteration over them, and references to the head/tail of the list as well as its
-current size.  They are lightweight wrappers around a raw memory allocator that exposes
-the following interface:
+Views are essentially lightweight wrappers around a raw memory allocator that expose a
+high-level interface for manipulating the state of the data structure.  They are always
+passed as a generic first argument to the non-member methods defined in the algorithms/
+directory, which can accept any kind of view as long as it is compatible with the
+algorithm in question.  These non-member methods are then packaged into the data
+structure's final public interface as normal member methods.  This allows us to mix and
+match the algorithms that are used simply by including the appropriate headers, without
+regard to the underlying implementation details.
 
-template <typename NodeType>
-class Allocator : public BaseAllocator<NodeType> {
-public:
-    Node* head;
-    Node* tail;
-    size_t capacity;  // total number of nodes in existence
-    size_t occupied;  // equivalent to view.size()
-    PyObject* specialization;
-
-    Node* create(Args...);  // forward to Node constructor
-    void recycle(Node* node);
-    void reserve(size_t capacity);
-    void defragment();
-    void clear();
-    void specialize(PyObject* spec);
-    size_t nbytes();
-};
-
-To this, they add a number of convenience methods for high-level list manipulations,
-which are then used in the various non-member method headers listed in the algorithms/
-directory.  This setup allows for ultimate configurability and code reuse, since
-methods can be mixed, matched, and specialized alongside views to produce a variety of
-flexible and highly-optimized data structures, without worrying about low-level
-implementation details.
-*/
+Each allocator must at minimum conform to the interface found in the BaseAllocator
+class template in the allocate.h header.  They may add additional functionality as
+specified in the extensions to BaseView listed below. */
 template <typename Derived, typename AllocatorType>
 class BaseView : public ViewTag {
 public:
@@ -82,7 +62,7 @@ public:
     using ConstIterator = linked::Iterator<const BaseView, dir>;
 
     // low-level memory management
-    mutable Allocator allocator;
+    mutable Allocator allocator;  // use at your own risk!
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -498,11 +478,7 @@ public:
         bool dynamic,
         PyObject* spec,
         bool reverse
-    ) : Base(
-            Base::init_size(iterable, capacity, dynamic),
-            dynamic,
-            spec
-        )
+    ) : Base(capacity, dynamic, spec)
     {
         for (auto item : util::iter(iterable)) {
             if (reverse) {

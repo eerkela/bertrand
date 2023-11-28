@@ -1598,12 +1598,6 @@ public:
         }
     }
 
-    // TODO: things can probably get faster if we store the hash on the bucket rather
-    // than the node.  This would allow us to allocate directly into the target node
-    // rather than allocating into a temporary node and then searching from there.
-    // We would simply extract the first value from the arg pack, hash it, and then
-    // search for a node that matches its value.  If 
-
     /* Construct a new node from the table. */
     template <unsigned int flags = DEFAULT, typename... Args>
     Node* create(Args&&... args) {

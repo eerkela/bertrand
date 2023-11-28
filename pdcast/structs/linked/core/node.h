@@ -2,10 +2,7 @@
 #ifndef BERTRAND_STRUCTS_LINKED_CORE_NODE_H
 #define BERTRAND_STRUCTS_LINKED_CORE_NODE_H
 
-#include <queue>  // std::queue
-#include <mutex>  // std::mutex
 #include <sstream>  // std::ostringstream
-#include <stdexcept>  // std::invalid_argument
 #include <type_traits>  // std::enable_if_t<>, etc.
 #include <Python.h>  // CPython API
 #include "../../util/base.h"  // is_pyobject<>
@@ -760,31 +757,11 @@ class NodeTraits {
 public:
     using Value = decltype(std::declval<NodeType>().value());
 
-    // TODO: has_pyobject
     static constexpr bool has_prev = _has_prev::value;
     static constexpr bool has_node = _has_node::value;
     static constexpr bool has_hash = _has_hash::value;
     static constexpr bool has_mapped = _has_mapped::value;
     static constexpr bool has_count = _has_count::value;
-
-    /*
-    NOTE: when GCC accepts C++20 as the default standard, we can replace
-    all of the above with:
-
-    inline static constexpr bool has_prev = requires(Node node) {
-        { node.prev() } -> std::convertible_to<Node*>;
-    };
-    inline static constexpr bool has_hash = requires(Node node) {
-        { node.hash() } -> std::convertible_to<Py_hash_t>;
-    };
-    inline static constexpr bool has_mapped = requires(Node node) {
-        { node.mapped() } -> std::convertible_to<PyObject*>;
-    };
-    inline static constexpr bool has_mutex = requires(Node node) {
-        { node.mutex() } -> std::convertible_to<std::mutex&>;
-    };
-    */
-
 };
 
 
