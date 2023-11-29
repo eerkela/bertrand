@@ -43,38 +43,55 @@ namespace structs {
 namespace linked {
 
 
-/* Apply default config flags for C++ LinkedLists. */
-static constexpr unsigned int set_defaults(unsigned int flags) {
-    unsigned int result = flags;
-    if (!(result & (Config::DOUBLY_LINKED | Config::SINGLY_LINKED | Config::XOR))) {
-        result |= Config::DOUBLY_LINKED;  // default to doubly-linked
+namespace set_config {
+
+    /* Apply default config flags for C++ LinkedLists. */
+    static constexpr unsigned int defaults(unsigned int flags) {
+        unsigned int result = flags;
+        if (!(result & (Config::DOUBLY_LINKED | Config::SINGLY_LINKED | Config::XOR))) {
+            result |= Config::DOUBLY_LINKED;  // default to doubly-linked
+        }
+        if (!(result & (Config::DYNAMIC | Config::FIXED_SIZE))) {
+            result |= Config::DYNAMIC;  // default to dynamic allocator
+        }
+        return result;
     }
-    if (!(result & (Config::DYNAMIC | Config::FIXED_SIZE))) {
-        result |= Config::DYNAMIC;  // default to dynamic allocator
-    }
-    return result;
+
+    /* Determine the corresponding node type for the given config flags. */
+    template <typename T, unsigned int Flags>
+    using NodeSelect = std::conditional_t<
+        !!(Flags & Config::DOUBLY_LINKED),
+        DoubleNode<T>,
+        SingleNode<T>
+    >;
+
 }
 
 
 /* An ordered set based on a combined linked list and hash table. */
 template <
-    typename Key,
+    typename K,
     unsigned int Flags = Config::DEFAULT,
     typename Lock = util::BasicLock
 >
 class LinkedSet : public LinkedBase<
-    linked::SetView<NodeSelect<Key, set_defaults(Flags)>, set_defaults(Flags)>,
+    linked::SetView<
+        set_config::NodeSelect<K, set_config::defaults(Flags)>,
+        set_config::defaults(Flags)
+    >,
     Lock
 > {
     using Base = LinkedBase<
-        linked::SetView<NodeSelect<Key, set_defaults(Flags)>, set_defaults(Flags)>,
+        linked::SetView<
+            set_config::NodeSelect<K, set_config::defaults(Flags)>,
+            set_config::defaults(Flags)
+        >,
         Lock
     >;
 
 public:
     using View = typename Base::View;
-    using Node = typename Base::Node;
-    using Value = typename Base::Value;
+    using Key = K;
 
     template <linked::Direction dir>
     using Iterator = typename Base::template Iterator<dir>;
@@ -108,25 +125,25 @@ public:
      *      TODO
      */
 
-    /* Add an item to the end of the set if it is not already present. */
-    inline void add(const Value& item) {
-        linked::add(this->view, item);
+    /* Add a key to the end of the set if it is not already present. */
+    inline void add(const Key& key) {
+        linked::add(this->view, key);
     }
 
-    /* Add an item to the beginning of the set if it is not already present. */
-    inline void add_left(const Value& item) {
-        linked::add_left(this->view, item);
+    /* Add a key to the beginning of the set if it is not already present. */
+    inline void add_left(const Key& key) {
+        linked::add_left(this->view, key);
     }
 
-    /* Add an item to the set if it is not already present and move it to the front of
+    /* Add a key to the set if it is not already present and move it to the front of
     the set, evicting the last element to make room if necessary. */
-    inline void lru_add(const Value& item) {
-        linked::lru_add(this->view, item);
+    inline void lru_add(const Key& key) {
+        linked::lru_add(this->view, key);
     }
 
-    /* Insert an item at a specific index of the set. */
-    inline void insert(long long index, const Value& item) {
-        linked::insert(this->view, index, item);
+    /* Insert a key at a specific index of the set. */
+    inline void insert(long long index, const Key& key) {
+        linked::insert(this->view, index, key);
     }
 
     /* Extend a set by adding elements from one or more iterables that are not already
@@ -180,47 +197,47 @@ public:
         );
     }
 
-    /* Get the index of an item within the set. */
+    /* Get the index of a key within the set. */
     inline size_t index(
-        const Value& item,
+        const Key& key,
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
-        return linked::index(this->view, item, start, stop);
+        return linked::index(this->view, key, start, stop);
     }
 
-    /* Count the number of occurrences of an item within the set. */
+    /* Count the number of occurrences of a key within the set. */
     inline size_t count(
-        const Value& item,
+        const Key& key,
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
-        return linked::count(this->view, item, start, stop);
+        return linked::count(this->view, key, start, stop);
     }
 
-    /* Check if the set contains a certain item. */
-    inline bool contains(const Value& item) const {
-        return linked::contains(this->view, item);
+    /* Check if the set contains a certain key. */
+    inline bool contains(const Key& key) const {
+        return linked::contains(this->view, key);
     }
 
-    /* Check if the set contains a certain item and move it to the front of the set
+    /* Check if the set contains a certain key and move it to the front of the set
     if so. */
-    inline bool lru_contains(const Value& item) {
-        return linked::lru_contains(this->view, item);
+    inline bool lru_contains(const Key& key) {
+        return linked::lru_contains(this->view, key);
     }
 
-    /* Remove an item from the set. */
-    inline void remove(const Value& item) {
-        linked::remove(this->view, item);
+    /* Remove a key from the set. */
+    inline void remove(const Key& key) {
+        linked::remove(this->view, key);
     }
 
-    /* Remove an item from the set if it is present. */
-    inline void discard(const Value& item) {
-        linked::discard(this->view, item);
+    /* Remove a key from the set if it is present. */
+    inline void discard(const Key& key) {
+        linked::discard(this->view, key);
     }
 
-    /* Remove an item from the set and return its value. */
-    inline Value pop(long long index = -1) {
+    /* Remove a key from the set and return its value. */
+    inline Key pop(long long index = -1) {
         return linked::pop(this->view, index);
     }
 
@@ -329,23 +346,23 @@ public:
     }
 
     /* Get the linear distance between two elements within the set. */
-    inline long long distance(const Value& from, const Value& to) const {
+    inline long long distance(const Key& from, const Key& to) const {
         return linked::distance(this->view, from, to);
     }
 
     /* Swap the positions of two elements within the set. */
-    inline void swap(const Value& item1, const Value& item2) {
-        linked::swap(this->view, item1, item2);
+    inline void swap(const Key& key1, const Key& key2) {
+        linked::swap(this->view, key1, key2);
     }
 
-    /* Move an item within the set by the specified number of steps. */
-    inline void move(const Value& item, long long steps) {
-        linked::move(this->view, item, steps);
+    /* Move a key within the set by the specified number of steps. */
+    inline void move(const Key& key, long long steps) {
+        linked::move(this->view, key, steps);
     }
 
-    /* Move an item within the set to the specified index. */
-    inline void move_to_index(Value& item, long long index) {
-        linked::move_to_index(this->view, item, index);
+    /* Move a key within the set to the specified index. */
+    inline void move_to_index(Key& key, long long index) {
+        linked::move_to_index(this->view, key, index);
     }
 
     ///////////////////////
@@ -360,14 +377,14 @@ public:
      * semantics as built-in Python lists (i.e. -1 refers to the last element, and
      * overflow results in an error).  Each proxy offers the following methods:
      *
-     *      Value get(): return the value at the current index.
-     *      void set(Value& value): set the value at the current index.
+     *      Key get(): return the value at the current index.
+     *      void set(Key& value): set the value at the current index.
      *      void del(): delete the value at the current index.
-     *      void insert(Value& value): insert a value at the current index.
-     *      Value pop(): remove the value at the current index and return it.
-     *      operator Value(): implicitly coerce the proxy to its value in function
+     *      void insert(Key& value): insert a value at the current index.
+     *      Key pop(): remove the value at the current index and return it.
+     *      operator Key(): implicitly coerce the proxy to its value in function
      *          calls and other contexts.
-     *      operator=(Value& value): set the value at the current index using
+     *      operator=(Key& value): set the value at the current index using
      *          assignment syntax.
      *
      * SliceProxies are returned by the `slice()` factory method, which can accept
@@ -376,7 +393,7 @@ public:
      * above.  Each proxy exposes the following methods:
      *
      *      LinkedSet get(): return a new set containing the contents of the slice.
-     *      void set(PyObject* items): overwrite the contents of the slice with the
+     *      void set(PyObject* keys): overwrite the contents of the slice with the
      *          contents of the iterable.
      *      void del(): remove the slice from the set.
      *      Iterator iter(): return a coupled iterator over the slice.
@@ -617,12 +634,12 @@ class PySetInterface {
 public:
 
     /* Implement `LinkedSet.add()` in Python. */
-    static PyObject* add(Derived* self, PyObject* item) {
+    static PyObject* add(Derived* self, PyObject* key) {
         try {
             // invoke equivalent C++ method
             std::visit(
-                [&item](auto& set) {
-                    set.add(item);
+                [&key](auto& set) {
+                    set.add(key);
                 },
                 self->variant
             );
@@ -638,12 +655,12 @@ public:
     }
 
     /* Implement `LinkedSet.add_left()` in Python. */
-    static PyObject* add_left(Derived* self, PyObject* item) {
+    static PyObject* add_left(Derived* self, PyObject* key) {
         try {
             // invoke equivalent C++ method
             std::visit(
-                [&item](auto& set) {
-                    set.add_left(item);
+                [&key](auto& set) {
+                    set.add_left(key);
                 },
                 self->variant
             );
@@ -659,12 +676,12 @@ public:
     }
 
     /* Implement `LinkedSet.lru_add()` in Python. */
-    static PyObject* lru_add(Derived* self, PyObject* item) {
+    static PyObject* lru_add(Derived* self, PyObject* key) {
         try {
             // invoke equivalent C++ method
             std::visit(
-                [&item](auto& set) {
-                    set.lru_add(item);
+                [&key](auto& set) {
+                    set.lru_add(key);
                 },
                 self->variant
             );
@@ -680,12 +697,12 @@ public:
     }
 
     /* Implement `LinkedSet.discard()` in Python. */
-    static PyObject* discard(Derived* self, PyObject* item) {
+    static PyObject* discard(Derived* self, PyObject* key) {
         try {
             // invoke equivalent C++ method
             std::visit(
-                [&item](auto& set) {
-                    set.discard(item);
+                [&key](auto& set) {
+                    set.discard(key);
                 },
                 self->variant
             );
@@ -701,12 +718,12 @@ public:
     }
 
     /* Implement `LinkedSet.lru_contains()` in Python. */
-    static PyObject* lru_contains(Derived* self, PyObject* item) {
+    static PyObject* lru_contains(Derived* self, PyObject* key) {
         try {
             // invoke equivalent C++ method
             return std::visit(
-                [&item](auto& set) {
-                    return PyBool_FromLong(set.lru_contains(item));
+                [&key](auto& set) {
+                    return PyBool_FromLong(set.lru_contains(key));
                 },
                 self->variant
             );
@@ -1141,14 +1158,14 @@ public:
         try {
             // parse arguments
             Args pyargs(meth_name, args, nargs);
-            PyObject* item1 = pyargs.parse("item1");
-            PyObject* item2 = pyargs.parse("item2");
+            PyObject* key1 = pyargs.parse("key1");
+            PyObject* key2 = pyargs.parse("key2");
             pyargs.finalize();
 
             // invoke equivalent C++ method
             return std::visit(
-                [&item1, &item2](auto& set) {
-                    return PyLong_FromLongLong(set.distance(item1, item2));
+                [&key1, &key2](auto& set) {
+                    return PyLong_FromLongLong(set.distance(key1, key2));
                 },
                 self->variant
             );
@@ -1167,14 +1184,14 @@ public:
         try {
             // parse arguments
             Args pyargs(meth_name, args, nargs);
-            PyObject* item1 = pyargs.parse("item1");
-            PyObject* item2 = pyargs.parse("item2");
+            PyObject* key1 = pyargs.parse("key1");
+            PyObject* key2 = pyargs.parse("key2");
             pyargs.finalize();
 
             // invoke equivalent C++ method
             std::visit(
-                [&item1, &item2](auto& set) {
-                    set.swap(item1, item2);
+                [&key1, &key2](auto& set) {
+                    set.swap(key1, key2);
                 },
                 self->variant
             );
@@ -1197,14 +1214,14 @@ public:
         try {
             // parse arguments
             Args pyargs(meth_name, args, nargs);
-            PyObject* item = pyargs.parse("item");
+            PyObject* key = pyargs.parse("key");
             long long steps = pyargs.parse("steps", util::parse_int);
             pyargs.finalize();
 
             // invoke equivalent C++ method
             std::visit(
-                [&item, &steps](auto& set) {
-                    set.move(item, steps);
+                [&key, &steps](auto& set) {
+                    set.move(key, steps);
                 },
                 self->variant
             );
@@ -1227,14 +1244,14 @@ public:
         try {
             // parse arguments
             Args pyargs(meth_name, args, nargs);
-            PyObject* item = pyargs.parse("item");
+            PyObject* key = pyargs.parse("key");
             long long index = pyargs.parse("index", util::parse_int);
             pyargs.finalize();
 
             // invoke equivalent C++ method
             std::visit(
-                [&item, &index](auto& set) {
-                    set.move_to_index(item, index);
+                [&key, &index](auto& set) {
+                    set.move_to_index(key, index);
                 },
                 self->variant
             );
@@ -1440,12 +1457,12 @@ protected:
     struct docs {
 
         static constexpr std::string_view add {R"doc(
-Insert an item at the end of the set if it is not already present.
+Insert a key at the end of the set if it is not already present.
 
 Parameters
 ----------
-item : Any
-    The item to insert.
+key : Any
+    The key to insert.
 
 Notes
 -----
@@ -1454,17 +1471,17 @@ Adds are O(1) for both ends of the set.
         };
 
         static constexpr std::string_view add_left {R"doc(
-Insert an item at the beginning of the set if it is not already present.
+Insert a key at the beginning of the set if it is not already present.
 
 Parameters
 ----------
-item : Any
-    The item to insert.
+key : Any
+    The key to insert.
 
 Notes
 -----
 This method is analogous to the ``appendleft()`` method of a
-:class:`collections.deque` object, except that only appends the item if it is
+:class:`collections.deque` object, except that only appends the key if it is
 not already contained within the set.
 
 Adds are O(1) for both ends of the set.
@@ -1472,13 +1489,13 @@ Adds are O(1) for both ends of the set.
         };
 
         static constexpr std::string_view lru_add {R"doc(
-Insert an item at the front of the set if it is not present, or move it there
-if it is.  Evicts the last item if the set is of fixed size and already full.
+Insert a key at the front of the set if it is not present, or move it there
+if it is.  Evicts the last key if the set is of fixed size and already full.
 
 Parameters
 ----------
-item : Any
-    The item to move/insert.
+key : Any
+    The key to move/insert.
 
 Notes
 -----
@@ -1486,10 +1503,10 @@ This method is roughly equivalent to:
 
 .. code-block:: python
 
-    set.add(item, left=True)
-    set.move(item, 0)
+    set.add(key, left=True)
+    set.move(key, 0)
 
-except that it avoids repeated lookups and evicts the last item if the set is
+except that it avoids repeated lookups and evicts the last key if the set is
 already full.  The linked nature of the data structure makes this extremely
 efficient, allowing the set to act as a fast LRU cache, particularly if it is
 doubly-linked.
@@ -1499,12 +1516,12 @@ LRU adds are O(1) for doubly-linked sets and O(n) for singly-linked ones.
         };
 
         static constexpr std::string_view discard {R"doc(
-Remove an item from the set if it is present.
+Remove a key from the set if it is present.
 
 Parameters
 ----------
-item : Any
-    The item to remove.
+key : Any
+    The key to remove.
 
 Notes
 -----
@@ -1515,21 +1532,21 @@ node.
         };
 
         static constexpr std::string_view lru_contains {R"doc(
-Search the set for an item, moving it to the front if it is present.
+Search the set for a key, moving it to the front if it is present.
 
 Parameters
 ----------
-item : Any
-    The item to search for.
+key : Any
+    The key to search for.
 
 Returns
 -------
 bool
-    True if the item is present in the set.  False otherwise.
+    True if the key is present in the set.  False otherwise.
 
 Notes
 -----
-This method is equivalent to ``item in set`` except that it also moves the item
+This method is equivalent to ``key in set`` except that it also moves the key
 to the front of the set if it is found.  The linked nature of the data
 structure makes this extremely efficient, allowing the set to act as a fast
 LRU cache, particularly if it is doubly-linked.
@@ -1632,12 +1649,12 @@ This method is roughly equivalent to:
 
     set.update(*others)
     for container in others:
-        for item in container:
-            set.add(item)
-            set.move(item, 0)
+        for key in container:
+            set.add(key)
+            set.move(key, 0)
 
 Except that it avoids repeated lookups, collapses the loops, and evicts the
-last item if the set is already full.  The linked nature of the data structure
+last key if the set is already full.  The linked nature of the data structure
 makes this extremely efficient, allowing the set to act as a fast LRU cache,
 particularly if it is doubly-linked.
 
@@ -1837,30 +1854,30 @@ This is equivalent to ``set >= other``.
         };
 
         static constexpr std::string_view distance {R"doc(
-Get the linear distance between two items in the set.
+Get the linear distance between two keys in the set.
 
 Parameters
 ----------
-item1 : Any
-    The first item.
-item2 : Any
-    The second item.
+key1 : Any
+    The first key.
+key2 : Any
+    The second key.
 
 Returns
 -------
 int
-    The difference between the indices of the two items.  Positive values
-    indicate that ``item1`` is to the left of ``item2``, while negative values
-    indicate the opposite.  If the items are the same, this will be 0.
+    The difference between the indices of the two keys.  Positive values
+    indicate that ``key1`` is to the left of ``key2``, while negative values
+    indicate the opposite.  If the keys are the same, this will be 0.
 
 Raises
 ------
 KeyError
-    If either item is not present in the set.
+    If either key is not present in the set.
 
 Notes
 -----
-This method is equivalent to ``set.index(item2) - set.index(item1)``, except
+This method is equivalent to ``set.index(key2) - set.index(key1)``, except
 that it gathers both indices in a single iteration.
 
 Distance calculations are O(n).
@@ -1868,19 +1885,19 @@ Distance calculations are O(n).
         };
 
         static constexpr std::string_view swap {R"doc(
-Swap the positions of two items within the set.
+Swap the positions of two keys within the set.
 
 Parameters
 ----------
-item1 : Any
-    The first item.
-item2 : Any
-    The second item.
+key1 : Any
+    The first key.
+key2 : Any
+    The second key.
 
 Raises
 ------
 KeyError
-    If either item is not present in the set.
+    If either key is not present in the set.
 
 Notes
 -----
@@ -1890,20 +1907,20 @@ the need to traverse the entire set in order to find the previous node.
         };
 
         static constexpr std::string_view move {R"doc(
-Move an item within the set by the specified number of spaces.
+Move a key within the set by the specified number of spaces.
 
 Parameters
 ----------
-item : Any
-    The item to move.
+key : Any
+    The key to move.
 steps : int
-    The number of spaces to move the item.  If positive, the item will be moved
-    forward.  If negative, the item will be moved backward.
+    The number of spaces to move the key.  If positive, the key will be moved
+    forward.  If negative, the key will be moved backward.
 
 Raises
 ------
 KeyError
-    If the item is not present in the set.
+    If the key is not present in the set.
 
 Notes
 -----
@@ -1914,20 +1931,20 @@ the need to traverse the entire set in order to find the previous node.
         };
 
         static constexpr std::string_view move_to_index {R"doc(
-Move an item within the set to the specified index.
+Move a key within the set to the specified index.
 
 Parameters
 ----------
-item : Any
-    The item to move.
+key : Any
+    The key to move.
 index : int
-    The index to move the item to, following the same semantics as the normal
+    The index to move the key to, following the same semantics as the normal
     index operator.
 
 Raises
 ------
 KeyError
-    If the item is not present in the set.
+    If the key is not present in the set.
 
 Notes
 -----
@@ -1958,21 +1975,21 @@ class PyLinkedSet :
     using SetConfig = linked::LinkedSet<PyObject*, Flags, util::BasicLock>;
     using Variant = std::variant<
         SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>,
-        SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
+        // SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
         SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
-        SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        // SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
         SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
-        SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        // SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
         SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
-        SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
+        // SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
         SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
-        SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
+        // SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
         SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
-        SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        // SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
         SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
-        SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
-        SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
+        // SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>
+        // SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
     >;
     template <size_t I>
     using Alternative = std::variant_alternative_t<I, Variant>;
@@ -2018,36 +2035,36 @@ class PyLinkedSet :
         switch (code) {
             case (Config::DEFAULT):
                 CONSTRUCT(0)
-            case (Config::PACKED):
-                CONSTRUCT(1)
+            // case (Config::PACKED):
+            //     CONSTRUCT(1)
             case (Config::STRICTLY_TYPED):
-                CONSTRUCT(2)
-            case (Config::PACKED | Config::STRICTLY_TYPED):
-                CONSTRUCT(3)
+                CONSTRUCT(1)
+            // case (Config::PACKED | Config::STRICTLY_TYPED):
+            //     CONSTRUCT(3)
             case (Config::FIXED_SIZE):
-                CONSTRUCT(4)
-            case (Config::FIXED_SIZE | Config::PACKED):
-                CONSTRUCT(5)
+                CONSTRUCT(2)
+            // case (Config::FIXED_SIZE | Config::PACKED):
+            //     CONSTRUCT(5)
             case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                CONSTRUCT(6)
-            case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-                CONSTRUCT(7)
+                CONSTRUCT(3)
+            // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            //     CONSTRUCT(7)
             case (Config::SINGLY_LINKED):
-                CONSTRUCT(8)
-            case (Config::SINGLY_LINKED | Config::PACKED):
-                CONSTRUCT(9)
+                CONSTRUCT(4)
+            // case (Config::SINGLY_LINKED | Config::PACKED):
+            //     CONSTRUCT(9)
             case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
-                CONSTRUCT(10)
-            case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
-                CONSTRUCT(11)
+                CONSTRUCT(5)
+            // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
+            //     CONSTRUCT(11)
             case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
-                CONSTRUCT(12)
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
-                CONSTRUCT(13)
+                CONSTRUCT(6)
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
+            //     CONSTRUCT(13)
             case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                CONSTRUCT(14)
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-                CONSTRUCT(15)
+                CONSTRUCT(7)
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            //     CONSTRUCT(15)
             default:
                 throw util::ValueError("invalid argument configuration");
         }
@@ -2065,8 +2082,8 @@ public:
         try {
             // parse arguments
             Args pyargs(meth_name, args, kwargs);
-            PyObject* iterable = pyargs.parse(
-                "iterable", util::none_to_null, (PyObject*)nullptr
+            PyObject* keys = pyargs.parse(
+                "keys", util::none_to_null, (PyObject*)nullptr
             );
             std::optional<size_t> max_size = pyargs.parse(
                 "max_size",
@@ -2086,7 +2103,7 @@ public:
 
             // initialize
             construct(
-                self, iterable, max_size, spec, reverse, singly_linked, packed, false
+                self, keys, max_size, spec, reverse, singly_linked, packed, false
             );
 
             // exit normally
@@ -2161,11 +2178,11 @@ the same name, with equivalent semantics.
 
 Parameters
 ----------
-items : Iterable[Any], optional
-    The items to initialize the set with.  If not specified, the set will be
+keys : Iterable[Any], optional
+    The keys to initialize the set with.  If not specified, the set will be
     empty.
 max_size : int, optional
-    The maximum number of items that the set can hold.  If not specified, the
+    The maximum number of keys that the set can hold.  If not specified, the
     set will be unbounded.
 spec : Any, optional
     A specific type to enforce for elements of the set, allowing the creation
@@ -2174,7 +2191,7 @@ spec : Any, optional
     disables strict type checking for the set.  See the :meth:`specialize()`
     method for more details.
 reverse : bool, default False
-    If True, reverse the order of ``items`` during set construction.  This is
+    If True, reverse the order of ``keys`` during set construction.  This is
     more efficient than calling :meth:`reverse()` after construction.
 singly_linked : bool, default False
     If True, use a singly-linked set instead of a doubly-linked set.  This

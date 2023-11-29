@@ -47,13 +47,24 @@ namespace linked {
             ++it;
         }
 
+        /* Helper for generating an appropriate token for a single element in the
+        given data structure. */
+        auto execute = [](std::ostringstream& stream, auto it) {
+            if constexpr (ViewTraits<View>::dictlike) {
+                stream << ", " << util::repr(*it) << ": ";
+                stream << util::repr(it.curr()->mapped());
+            } else {
+                stream << ", " << util::repr(*it);
+            }
+        };
+
         // abbreviate to avoid spamming the console with large lists
         if (view.size() > max_entries) {
             // append up to half the maximum number of entries
             size_t count = 1;
             size_t threshold = max_entries / 2;
             for (; it != end && count < threshold; ++it, ++count) {
-                stream << ", " << util::repr(*it);
+                execute(stream, it);
             }
 
             // ellipsis
@@ -66,7 +77,9 @@ namespace linked {
                 auto r_it = view.crbegin();
                 auto r_end = view.crend();
                 for (; r_it != r_end && count < max_entries; ++r_it, ++count) {
-                    stack.push(util::repr(*r_it));
+                    std::ostringstream ss;
+                    execute(ss, r_it);
+                    stack.push(ss.str());
                 }
                 while (!stack.empty()) {
                     stream << ", " << stack.top();
@@ -77,12 +90,12 @@ namespace linked {
                 threshold = view.size() - (max_entries - threshold);
                 for (size_t j = count; j < threshold; ++j, ++it);
                 for (; it != end; ++it) {
-                    stream << ", " << util::repr(*it);
+                    execute(stream, it);
                 }
             }
         } else {
             for (; it != end; ++it) {
-                stream << ", " << util::repr(*it);
+                execute(stream, it);
             }
         }
 

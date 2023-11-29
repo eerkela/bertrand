@@ -41,7 +41,6 @@ public:
     using View = ViewType;
     using Allocator = typename View::Allocator;
     using Node = typename View::Node;
-    using Value = typename View::Value;
     using MemGuard = typename View::MemGuard;
     using Lock = LockType;
 
@@ -50,6 +49,7 @@ public:
     template <Direction dir>
     using ConstIterator = typename View::template ConstIterator<dir>;
 
+    static constexpr unsigned int FLAGS = View::FLAGS;
     static constexpr bool SINGLY_LINKED = View::SINGLY_LINKED;
     static constexpr bool DOUBLY_LINKED = View::DOUBLY_LINKED;
     static constexpr bool XOR = View::XOR;
@@ -165,9 +165,10 @@ public:
         return view.frozen();
     }
 
-    /* Get the current specialization for elements of this list. */
+    /* Get a borrowed reference to the current Python specialization for elements of
+    this list. */
     inline PyObject* specialization() const noexcept {
-        return view.specialization();  // TODO: reference counting?
+        return view.specialization();
     }
 
     /* Enforce strict type checking for elements of the list. */
@@ -205,13 +206,10 @@ public:
     Lock lock;
     /* BasicLock:
      * lock()  // lock guard
-     * lock.python()  // context manager
      *
      * ReadWriteLock:
      * lock()  // lock guard (exclusive)
-     * lock.python()  // context manager (exclusive)
      * lock.shared()  // lock guard (shared)
-     * lock.shared.python()  // context manager (shared)
      *
      * RecursiveLock<Lock>:
      * Allows the above methods to be called recursively within a single thread.

@@ -22,15 +22,20 @@ def test3(s):
 
 
 if __name__ == "__main__":
-    f = LinkedSet(max_size=8)
-    s = LinkedSet()
-    p = set(s)
-    print(timeit(lambda: test1(f), number=100) / 100)
-    print(timeit(lambda: test2(s), number=100) / 100)
-    print(timeit(lambda: test2(p), number=100) / 100)
+    # f = LinkedSet(max_size=8)
+    # s = LinkedSet()
+    # p = set(s)
+    # print(timeit(lambda: test1(f), number=100) / 100)
+    # print(timeit(lambda: test2(s), number=100) / 100)
+    # print(timeit(lambda: test2(p), number=100) / 100)
 
     # print(timeit(lambda: test3(s), number=10) / 10)
     # print(timeit(lambda: test3(p), number=10) / 10)
 
     # print(timeit(lambda: s.update(t), number=1))
     # print(timeit(lambda: p.update(t), number=1))
+
+    s = LinkedSet("abcdef")
+    p = set(s)
+    print(timeit(lambda: "a" in s))
+    print(timeit(lambda: "a" in p))

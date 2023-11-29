@@ -86,15 +86,6 @@ namespace Config {
 }
 
 
-/* Determine the corresponding node type for the given config flags. */
-template <typename T, unsigned int Flags>
-using NodeSelect = std::conditional_t<
-    !!(Flags & Config::DOUBLY_LINKED),
-    DoubleNode<T>,
-    SingleNode<T>
->;
-
-
 /* Empty tag class marking a node allocator for a linked data structure.
 
 NOTE: this class is inherited by all allocators, and can be used for easy SFINAE checks
@@ -765,7 +756,7 @@ private:
             Node* next = curr->next();
 
             // initialize new node in array
-            Node* other_curr = &other[idx++];
+            Node* other_curr = other + (idx++);
             if constexpr (move) {
                 new (other_curr) Node(std::move(*curr));
             } else {
@@ -960,7 +951,7 @@ public:
         }
 
         // append to end of allocated section
-        Node* node = &array[this->occupied];
+        Node* node = array + this->occupied;
         Base::init_node(node, std::forward<Args>(args)...);
         ++this->occupied;
         return node;

@@ -38,16 +38,28 @@ namespace structs {
 namespace linked {
 
 
-/* Apply default config flags for C++ LinkedLists. */
-static constexpr unsigned int list_defaults(unsigned int flags) {
-    unsigned int result = flags;
-    if (!(result & (Config::DOUBLY_LINKED | Config::SINGLY_LINKED | Config::XOR))) {
-        result |= Config::DOUBLY_LINKED;  // default to doubly-linked
+namespace list_config {
+
+    /* Apply default config flags for C++ LinkedLists. */
+    static constexpr unsigned int defaults(unsigned int flags) {
+        unsigned int result = flags;
+        if (!(result & (Config::DOUBLY_LINKED | Config::SINGLY_LINKED | Config::XOR))) {
+            result |= Config::DOUBLY_LINKED;  // default to doubly-linked
+        }
+        if (!(result & (Config::DYNAMIC | Config::FIXED_SIZE))) {
+            result |= Config::DYNAMIC;  // default to dynamic allocator
+        }
+        return result;
     }
-    if (!(result & (Config::DYNAMIC | Config::FIXED_SIZE))) {
-        result |= Config::DYNAMIC;  // default to dynamic allocator
-    }
-    return result;
+
+    /* Determine the corresponding node type for the given config flags. */
+    template <typename T, unsigned int Flags>
+    using NodeSelect = std::conditional_t<
+        !!(Flags & Config::DOUBLY_LINKED),
+        DoubleNode<T>,
+        SingleNode<T>
+    >;
+
 }
 
 
@@ -58,17 +70,22 @@ template <
     typename Lock = util::BasicLock
 >
 class LinkedList : public LinkedBase<
-    linked::ListView<NodeSelect<T, list_defaults(Flags)>, list_defaults(Flags)>,
+    linked::ListView<
+        list_config::NodeSelect<T, list_config::defaults(Flags)>,
+        list_config::defaults(Flags)>,
     Lock
 > {
     using Base = LinkedBase<
-        linked::ListView<NodeSelect<T, list_defaults(Flags)>, list_defaults(Flags)>,
+        linked::ListView<
+            list_config::NodeSelect<T, list_config::defaults(Flags)>,
+            list_config::defaults(Flags)
+        >,
         Lock
     >;
 
 public:
     using View = typename Base::View;
-    using Value = typename Base::Node::Value;
+    using Value = T;
 
     template <linked::Direction dir>
     using Iterator = typename Base::template Iterator<dir>;
@@ -1467,21 +1484,21 @@ class PyLinkedList :
     using ListConfig = linked::LinkedList<PyObject*, Flags, util::BasicLock>;
     using Variant = std::variant<
         ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>,
-        ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
+        // ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
         ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
-        ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        // ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
         ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
-        ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        // ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
         ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
-        ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
+        // ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
         ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
-        ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
+        // ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
         ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
-        ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        // ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
         ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
-        ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
-        ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
+        // ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>
+        // ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
     >;
     template <size_t I>
     using Alternative = typename std::variant_alternative_t<I, Variant>;
@@ -1526,36 +1543,36 @@ class PyLinkedList :
         switch (code) {
             case (Config::DEFAULT):
                 CONSTRUCT(0)
-            case (Config::PACKED):
-                CONSTRUCT(1)
+            // case (Config::PACKED):
+            //     CONSTRUCT(1)
             case (Config::STRICTLY_TYPED):
-                CONSTRUCT(2)
-            case (Config::PACKED | Config::STRICTLY_TYPED):
-                CONSTRUCT(3)
+                CONSTRUCT(1)
+            // case (Config::PACKED | Config::STRICTLY_TYPED):
+            //     CONSTRUCT(3)
             case (Config::FIXED_SIZE):
-                CONSTRUCT(4)
-            case (Config::FIXED_SIZE | Config::PACKED):
-                CONSTRUCT(5)
+                CONSTRUCT(2)
+            // case (Config::FIXED_SIZE | Config::PACKED):
+            //     CONSTRUCT(5)
             case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                CONSTRUCT(6)
-            case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-                CONSTRUCT(7)
+                CONSTRUCT(3)
+            // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            //     CONSTRUCT(7)
             case (Config::SINGLY_LINKED):
-                CONSTRUCT(8)
-            case (Config::SINGLY_LINKED | Config::PACKED):
-                CONSTRUCT(9)
+                CONSTRUCT(4)
+            // case (Config::SINGLY_LINKED | Config::PACKED):
+            //     CONSTRUCT(9)
             case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
-                CONSTRUCT(10)
-            case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
-                CONSTRUCT(11)
+                CONSTRUCT(5)
+            // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
+            //     CONSTRUCT(11)
             case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
-                CONSTRUCT(12)
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
-                CONSTRUCT(13)
+                CONSTRUCT(6)
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
+            //     CONSTRUCT(13)
             case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                CONSTRUCT(14)
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-                CONSTRUCT(15)
+                CONSTRUCT(7)
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            //     CONSTRUCT(15)
             default:
                 throw util::ValueError("invalid argument configuration");
         }

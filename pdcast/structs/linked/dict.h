@@ -44,21 +44,58 @@ namespace structs {
 namespace linked {
 
 
-// TODO: final template config should follow std::unordered_map:
-// LinkedDict<Key, Value, Flags = Config::DEFAULT, LockType = BasicLock>
+namespace dict_config {
 
+    /* Apply default config flags for C++ LinkedLists. */
+    static constexpr unsigned int defaults(unsigned int flags) {
+        unsigned int result = flags;
+        if (!(result & (Config::DOUBLY_LINKED | Config::SINGLY_LINKED | Config::XOR))) {
+            result |= Config::DOUBLY_LINKED;  // default to doubly-linked
+        }
+        if (!(result & (Config::DYNAMIC | Config::FIXED_SIZE))) {
+            result |= Config::DYNAMIC;  // default to dynamic allocator
+        }
+        return result;
+    }
+
+    /* Determine the corresponding node type for the given config flags. */
+    template <typename Key, typename Value, unsigned int Flags>
+    using NodeSelect = std::conditional_t<
+        !!(Flags & Config::DOUBLY_LINKED),
+        Mapped<DoubleNode<Key>, Value>,
+        Mapped<SingleNode<Key>, Value>
+    >;
+
+}
 
 
 /* A n ordered dictionary based on a combined linked list and hash table. */
-template <typename NodeType, typename LockPolicy = util::BasicLock>
-class LinkedDict : public LinkedBase<linked::DictView<NodeType>, LockPolicy> {
-    using Base = LinkedBase<linked::DictView<NodeType>, LockPolicy>;
+template <
+    typename K,
+    typename V,
+    unsigned int Flags = Config::DEFAULT,
+    typename Lock = util::BasicLock
+>
+class LinkedDict : public LinkedBase<
+    linked::DictView<
+        dict_config::NodeSelect<K, V, dict_config::defaults(Flags)>,
+        dict_config::defaults(Flags)
+    >,
+    Lock
+> {
+    using Base = LinkedBase<
+        linked::DictView<
+            dict_config::NodeSelect<K, V, dict_config::defaults(Flags)>,
+            dict_config::defaults(Flags)
+        >,
+        Lock
+    >;
 
 public:
     using View = typename Base::View;
     using Node = typename Base::Node;
-    using Value = typename Base::Value;
-    using MappedValue = typename View::MappedValue;
+    using Key = K;
+    using Value = V;
 
     template <linked::Direction dir>
     using Iterator = typename Base::template Iterator<dir>;
@@ -77,7 +114,16 @@ public:
     ////    DICT INTERFACE    ////
     //////////////////////////////
 
-    // TODO: fromkeys()
+    template <typename Container>
+    inline static LinkedDict fromkeys(Container&& keys, const Value& value) {
+        // TODO: allocate a new view, then pass it to linked::fromkeys(), then
+        // move it into a new LinkedDict
+
+        return linked::fromkeys<View, LinkedDict>(
+            std::forward<Container>(keys),
+            value
+        );
+    }
 
     /* Add an item to the end of the dictionary if it is not already present. */
     template <typename Pair>
@@ -87,7 +133,7 @@ public:
 
     /* Add a key-value pair to the end of the dictionary if it is not already
     present. */
-    inline void add(const Value& key, const MappedValue& value) {
+    inline void add(const Key& key, const Value& value) {
         linked::add(this->view, key, value);
     }
 
@@ -99,7 +145,7 @@ public:
 
     /* Add a key-value pair to the beginning of the dictionary if it is not already
     present. */
-    inline void add_left(const Value& key, const MappedValue& value) {
+    inline void add_left(const Key& key, const Value& value) {
         linked::add_left(this->view, key, value);
     }
 
@@ -112,7 +158,7 @@ public:
 
     /* Add a key-value pair to the front of the dictionary, evicting the last item if
     necessary and moving items that are already present. */
-    inline void lru_add(const Value& key, const MappedValue& value) {
+    inline void lru_add(const Key& key, const Value& value) {
         linked::lru_add(this->view, key, value);
     }
 
@@ -123,7 +169,7 @@ public:
     }
 
     /* Insert a key-value pair at a specific index of the dictionary. */
-    inline void insert(long long index, const Value& key, const MappedValue& value) {
+    inline void insert(long long index, const Key& key, const Value& value) {
         linked::insert(this->view, index, key, value);
     }
 
@@ -181,7 +227,7 @@ public:
 
     /* Get the index of a key within the dictionary. */
     inline size_t index(
-        const Value& key,
+        const Key& key,
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
@@ -190,7 +236,7 @@ public:
 
     /* Count the number of occurrences of a key within the dictionary. */
     inline size_t count(
-        const Value& key,
+        const Key& key,
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
@@ -198,30 +244,30 @@ public:
     }
 
     /* Check if the dictionary contains a certain key. */
-    inline bool contains(const Value& key) const {
+    inline bool contains(const Key& key) const {
         return linked::contains(this->view, key);
     }
 
     /* Check if the dictionary contains a certain key and move it to the front of the
     dictionary if so. */
-    inline bool lru_contains(const Value& key) {
+    inline bool lru_contains(const Key& key) {
         return linked::lru_contains(this->view, key);
     }
 
     /* Remove a key from the dictionary. */
-    inline void remove(const Value& key) {
+    inline void remove(const Key& key) {
         linked::remove(this->view, key);
     }
 
     /* Remove a key from the dictionary if it is present. */
-    inline void discard(const Value& key) {
+    inline void discard(const Key& key) {
         linked::discard(this->view, key);
     }
 
     /* Remove a key from the dictionary and return its value. */
-    inline MappedValue pop(
-        const Value& key,
-        std::optional<MappedValue> default_value = std::nullopt
+    inline Value pop(
+        const Key& key,
+        std::optional<Value> default_value = std::nullopt
     ) {
         return linked::pop(this->view, key, default_value);
     }
@@ -230,7 +276,7 @@ public:
     // pop() for the other containers
 
     /* Remove and return a key, value pair from the dictionary. */
-    inline std::pair<Value, MappedValue> popitem() {
+    inline std::pair<Key, Value> popitem() {
         return linked::popitem(this->view);
     }
 
@@ -240,24 +286,21 @@ public:
     }
 
     /* Get a value from the dictionary using an optional default. */
-    inline MappedValue get(
-        const Value& key,
-        std::optional<MappedValue> default_value = std::nullopt
+    inline Value get(
+        const Key& key,
+        std::optional<Value> default_value = std::nullopt
     ) const {
         return linked::get(this->view, key, default_value);
     }
 
     /* Set a value within the dictionary or insert it if it is not already present. */
-    inline void setdefault(
-        const Value& key,
-        const MappedValue& default_value = MappedValue()
-    ) {
+    inline void setdefault(const Key& key, const Value& default_value) {
         linked::setdefault(this->view, key, default_value);
     }
 
     /* Return a shallow copy of the dictionary. */
     inline LinkedDict copy() const {
-        return linked::copy(this->view);
+        return LinkedDict(this->view.copy());
     }
 
     /* Sort the keys within the dictionary in-place according to an optional key
@@ -356,22 +399,22 @@ public:
     }
 
     /* Get the linear distance between two keys within the dictionary. */
-    inline long long distance(const Value& from, const Value& to) const {
+    inline long long distance(const Key& from, const Key& to) const {
         return linked::distance(this->view, from, to);
     }
 
     /* Swap the positions of two keys within the dictionary. */
-    inline void swap(const Value& key1, const Value& key2) {
+    inline void swap(const Key& key1, const Key& key2) {
         linked::swap(this->view, key1, key2);
     }
 
     /* Move a key within the dictionary by the specified number of steps. */
-    inline void move(const Value& key, long long steps) {
+    inline void move(const Key& key, long long steps) {
         linked::move(this->view, key, steps);
     }
 
     /* Move a key within the dictionary to a specific index. */
-    inline void move_to_index(const Value& key, long long index) {
+    inline void move_to_index(const Key& key, long long index) {
         linked::move_to_index(this->view, key, index);
     }
 
@@ -379,7 +422,7 @@ public:
     ////    PROXIES    ////
     ///////////////////////
 
-    // TODO: keys(), values(), items(), map(), position(), slice()
+    // TODO: map()
 
     /* Get a proxy for a value at a particular index of the dictionary. */
     inline linked::ElementProxy<View> position(long long index) {
@@ -405,21 +448,69 @@ public:
 };
 
 
+// TODO: these basically just link to the right methods on the base class.  They should
+// also provide custom iterators that return keys, values, or items, respectively.
+// The default iterators for LinkedDict only give keys, just like Python.
+
+// KeysProxy also uses setlike operator overloads.
+
+
+/* A read-only proxy for a dictionary's keys, in the same style as Python's
+`dict.keys()` accessor. */
+template <typename Dict>
+class KeysProxy {
+    friend Dict;
+    const Dict& dict;
+
+    KeysProxy(const Dict& dict) : dict(dict) {}
+
+public:
+
+};
+
+
+/* A read-only proxy for a dictionary's values in the same style as Python's
+`dict.values()` accessor. */
+template <typename Dict>
+class ValuesProxy {
+    friend Dict;
+    const Dict& dict;
+
+    ValuesProxy(const Dict& dict) : dict(dict) {}
+
+public:
+
+};
+
+
+/* A read-only proxy for a dictionary's items, in the same style as Python's
+`dict.items()` accessor. */
+template <typename Dict>
+class ItemsProxy {
+    friend Dict;
+    const Dict& dict;
+
+    ItemsProxy(const Dict& dict) : dict(dict) {}
+
+public:
+
+};
+
+
 /////////////////////////////////////
 ////    STRING REPRESENTATION    ////
 /////////////////////////////////////
 
 
-// TODO: account for mapped values in specialization and final string.  This should
-// be a specialization of linked::repr()
-
-
 /* Override the << operator to print the abbreviated contents of a dictionary to an
 output stream (equivalent to Python repr()). */
-template <typename... Ts>
-std::ostream& operator<<(std::ostream& stream, const LinkedDict<Ts...>& dict) {
+template <typename K, typename V, unsigned int Flags, typename... Ts>
+inline std::ostream& operator<<(
+    std::ostream& stream,
+    const LinkedDict<K, V, Flags, Ts...>& dict
+) {
     stream << linked::repr(
-        set.view,
+        dict.view,
         "LinkedDict",
         "{",
         "}",
@@ -435,37 +526,52 @@ std::ostream& operator<<(std::ostream& stream, const LinkedDict<Ts...>& dict) {
 
 
 /* Get the union between a LinkedDict and an arbitrary container. */
-template <typename Container, typename... Ts>
-LinkedDict<Ts...> operator|(const LinkedDict<Ts...>& dict, const Container& other) {
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline LinkedDict<K, V, Flags, Ts...> operator|(
+    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const Container& other
+) {
     return dict.union_(other);
 }
 
 
 /* Get the difference between a LinkedDict and an arbitrary container. */
-template <typename Container, typename... Ts>
-LinkedDict<Ts...> operator-(const LinkedDict<Ts...>& dict, const Container& other) {
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline LinkedDict<K, V, Flags, Ts...> operator-(
+    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const Container& other
+) {
     return dict.difference(other);
 }
 
 
 /* Get the intersection between a LinkedDict and an arbitrary container. */
-template <typename Container, typename... Ts>
-LinkedDict<Ts...> operator&(const LinkedDict<Ts...>& dict, const Container& other) {
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline LinkedDict<K, V, Flags, Ts...> operator&(
+    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const Container& other
+) {
     return dict.intersection(other);
 }
 
 
 /* Get the symmetric difference between a LinkedDict and an arbitrary container. */
-template <typename Container, typename... Ts>
-LinkedDict<Ts...> operator^(const LinkedDict<Ts...>& dict, const Container& other) {
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline LinkedDict<K, V, Flags, Ts...> operator^(
+    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const Container& other
+) {
     return dict.symmetric_difference(other);
 }
 
 
 /* Update a LinkedDict in-place, replacing it with the union of it and an arbitrary
 container. */
-template <typename Container, typename... Ts>
-LinkedDict<Ts...>& operator|=(LinkedDict<Ts...>& dict, const Container& other) {
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline LinkedDict<K, V, Flags, Ts...>& operator|=(
+    LinkedDict<K, V, Flags, Ts...>& dict,
+    const Container& other
+) {
     dict.update(other);
     return dict;
 }
@@ -473,8 +579,11 @@ LinkedDict<Ts...>& operator|=(LinkedDict<Ts...>& dict, const Container& other) {
 
 /* Update a LinkedDict in-place, replacing it with the difference between it and an
 arbitrary container. */
-template <typename Container, typename... Ts>
-LinkedDict<Ts...>& operator-=(LinkedDict<Ts...>& dict, const Container& other) {
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline LinkedDict<K, V, Flags, Ts...>& operator-=(
+    LinkedDict<K, V, Flags, Ts...>& dict,
+    const Container& other
+) {
     dict.difference_update(other);
     return dict;
 }
@@ -482,8 +591,11 @@ LinkedDict<Ts...>& operator-=(LinkedDict<Ts...>& dict, const Container& other) {
 
 /* Update a LinkedDict in-place, replacing it with the intersection between it and an
 arbitrary container. */
-template <typename Container, typename... Ts>
-LinkedDict<Ts...>& operator&=(LinkedDict<Ts...>& dict, const Container& other) {
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline LinkedDict<K, V, Flags, Ts...>& operator&=(
+    LinkedDict<K, V, Flags, Ts...>& dict,
+    const Container& other
+) {
     dict.intersection_update(other);
     return dict;
 }
@@ -491,8 +603,11 @@ LinkedDict<Ts...>& operator&=(LinkedDict<Ts...>& dict, const Container& other) {
 
 /* Update a LinkedDict in-place, replacing it with the symmetric difference between it
 and an arbitrary container. */
-template <typename Container, typename... Ts>
-LinkedDict<Ts...>& operator^=(LinkedDict<Ts...>& dict, const Container& other) {
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline LinkedDict<K, V, Flags, Ts...>& operator^=(
+    LinkedDict<K, V, Flags, Ts...>& dict,
+    const Container& other
+) {
     dict.symmetric_difference_update(other);
     return dict;
 }
@@ -504,43 +619,61 @@ LinkedDict<Ts...>& operator^=(LinkedDict<Ts...>& dict, const Container& other) {
 
 
 /* Check whether a LinkedDict is a proper subset of an arbitrary container. */
-template <typename Container, typename... Ts>
-bool operator<(const LinkedDict<Ts...>& dict, const Container& other) {
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator<(
+    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const Container& other
+) {
     return linked::issubset(dict.view, other, true);
 }
 
 
 /* Check whether a LinkedDict is a subset of an arbitrary container. */
-template <typename Container, typename... Ts>
-bool operator<=(const LinkedDict<Ts...>& dict, const Container& other) {
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator<=(
+    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const Container& other
+) {
     return linked::issubset(dict.view, other, false);
 }
 
 
 /* Check whether a LinkedDict is equal to an arbitrary container. */
-template <typename Container, typename... Ts>
-bool operator==(const LinkedDict<Ts...>& dict, const Container& other) {
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator==(
+    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const Container& other
+) {
     return linked::set_equal(dict.view, other);
 }
 
 
 /* Check whether a LinkedDict is not equal to an arbitrary container. */
-template <typename Container, typename... Ts>
-bool operator!=(const LinkedDict<Ts...>& dict, const Container& other) {
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator!=(
+    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const Container& other
+) {
     return linked::set_not_equal(dict.view, other);
 }
 
 
 /* Check whether a LinkedDict is a superset of an arbitrary container. */
-template <typename Container, typename... Ts>
-bool operator>=(const LinkedDict<Ts...>& dict, const Container& other) {
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator>=(
+    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const Container& other
+) {
     return linked::issuperset(dict.view, other, false);
 }
 
 
 /* Check whether a LinkedDict is a proper superset of an arbitrary container. */
-template <typename Container, typename... Ts>
-bool operator>(const LinkedDict<Ts...>& dict, const Container& other) {
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator>(
+    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const Container& other
+) {
     return linked::issuperset(dict.view, other, true);
 }
 
@@ -611,9 +744,30 @@ class PyLinkedDict :
     using ISet = PySetInterface<PyLinkedDict>;
     using IDict = PyDictInterface<PyLinkedDict>;
 
-    /* A std::variant representing all the LinkedDict implementations that are
+    /* A std::variant representing all of the LinkedDict implementations that are
     constructable from Python. */
-    // TODO
+    template <unsigned int Flags>
+    using DictConfig = linked::LinkedDict<PyObject*, PyObject*, Flags, util::BasicLock>;
+    using Variant = std::variant<
+        DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>,
+        // DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
+        DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
+        // DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
+        // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
+        // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
+        DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
+        // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
+        DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
+        // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
+        // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>
+        // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
+    >;
+    template <size_t I>
+    using Alternative = typename std::variant_alternative_t<I, Variant>;
 
     friend Base;
     friend IList;
@@ -627,6 +781,16 @@ class PyLinkedDict :
         new (&variant) Variant(std::forward<Set>(set));
     }
 
+    #define CONSTRUCT(IDX) \
+        if (iterable == nullptr) { \
+            new (&self->variant) Variant(Alternative<IDX>(max_size, spec)); \
+        } else { \
+            new (&self->variant) Variant( \
+                Alternative<IDX>(iterable, max_size, spec, reverse) \
+            ); \
+        } \
+        break; \
+
     /* Construct a PyLinkedDict from scratch using the given constructor arguments. */
     static void construct(
         PyLinkedDict* self,
@@ -634,26 +798,55 @@ class PyLinkedDict :
         std::optional<size_t> max_size,
         PyObject* spec,
         bool reverse,
-        bool singly_linked
+        bool singly_linked,
+        bool packed,
+        bool strictly_typed
     ) {
-        if (iterable == nullptr) {
-            if (singly_linked) {
-                new (&self->variant) Variant(SingleDict(max_size, spec));
-            } else {
-                new (&self->variant) Variant(DoubleDict(max_size, spec));
-            }
-        } else {
-            if (singly_linked) {
-                new (&self->variant) Variant(
-                    SingleDict(iterable, max_size, spec, reverse)
-                );
-            } else {
-                new (&self->variant) Variant(
-                    DoubleDict(iterable, max_size, spec, reverse)
-                );
-            }
+        unsigned int code = (
+            Config::SINGLY_LINKED * singly_linked |
+            Config::FIXED_SIZE * max_size.has_value() |
+            Config::PACKED * packed |
+            Config::STRICTLY_TYPED * strictly_typed
+        );
+        switch (code) {
+            case (Config::DEFAULT):
+                CONSTRUCT(0)
+            // case (Config::PACKED):
+            //     CONSTRUCT(1)
+            case (Config::STRICTLY_TYPED):
+                CONSTRUCT(1)
+            // case (Config::PACKED | Config::STRICTLY_TYPED):
+            //     CONSTRUCT(3)
+            case (Config::FIXED_SIZE):
+                CONSTRUCT(2)
+            // case (Config::FIXED_SIZE | Config::PACKED):
+            //     CONSTRUCT(5)
+            case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                CONSTRUCT(3)
+            // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            //     CONSTRUCT(7)
+            case (Config::SINGLY_LINKED):
+                CONSTRUCT(4)
+            // case (Config::SINGLY_LINKED | Config::PACKED):
+            //     CONSTRUCT(9)
+            case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
+                CONSTRUCT(5)
+            // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
+            //     CONSTRUCT(11)
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
+                CONSTRUCT(6)
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
+            //     CONSTRUCT(13)
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                CONSTRUCT(7)
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            //     CONSTRUCT(15)
+            default:
+                throw util::ValueError("invalid argument configuration");
         }
     }
+
+    #undef CONSTRUCT
 
 public:
 

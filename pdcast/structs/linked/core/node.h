@@ -53,22 +53,22 @@ public:
 protected:
 
     /* Initialize a node with a given value. */
-    BaseNode(Value value) noexcept : _value(value) {
+    inline BaseNode(Value value) noexcept : _value(value) {
         if constexpr (util::is_pyobject<Value>) Py_XINCREF(value);
     }
 
     /* Copy constructor. */
-    BaseNode(const BaseNode& other) noexcept : _value(other._value) {
+    inline BaseNode(const BaseNode& other) noexcept : _value(other._value) {
         if constexpr (util::is_pyobject<Value>) Py_XINCREF(_value);
     }
 
     /* Move constructor. */
-    BaseNode(BaseNode&& other) noexcept : _value(std::move(other._value)) {
+    inline BaseNode(BaseNode&& other) noexcept : _value(std::move(other._value)) {
         if constexpr (std::is_pointer_v<Value>) other._value = nullptr;
     }
 
     /* Copy assignment operator. */
-    BaseNode& operator=(const BaseNode& other) noexcept {
+    inline BaseNode& operator=(const BaseNode& other) noexcept {
         if (this == &other) return *this;  // check for self-assignment
 
         // clear current node
@@ -81,7 +81,7 @@ protected:
     }
 
     /* Move assignment operator. */
-    BaseNode& operator=(BaseNode&& other) noexcept {
+    inline BaseNode& operator=(BaseNode&& other) noexcept {
         if (this == &other) return *this;  // check for self-assignment
 
         // clear current node
@@ -94,7 +94,7 @@ protected:
     }
 
     /* Destroy a node and release its resources. */
-    ~BaseNode() noexcept {
+    inline ~BaseNode() noexcept {
         if constexpr (util::is_pyobject<Value>) Py_XDECREF(_value);
         if constexpr (std::is_pointer_v<Value>) _value = nullptr;
     }
@@ -172,7 +172,7 @@ public:
     }
 
     /* Get the next node in the list. */
-    inline SingleNode* next() const noexcept {
+    SingleNode* next() const noexcept {
         return _next;
     }
 
