@@ -745,15 +745,6 @@ class NodeTraits {
         static constexpr bool value = decltype(test<NodeType>(nullptr))::value;
     };
 
-    /* Detects whether the templated type has a count() accessor. */
-    struct _has_count {
-        template <typename T>
-        static constexpr auto test(T* t) -> decltype(t->count(), std::true_type());
-        template <typename T>
-        static constexpr auto test(...) -> std::false_type;
-        static constexpr bool value = decltype(test<NodeType>(nullptr))::value;
-    };
-
 public:
     using Value = decltype(std::declval<NodeType>().value());
 
@@ -761,7 +752,6 @@ public:
     static constexpr bool has_node = _has_node::value;
     static constexpr bool has_hash = _has_hash::value;
     static constexpr bool has_mapped = _has_mapped::value;
-    static constexpr bool has_count = _has_count::value;
 };
 
 

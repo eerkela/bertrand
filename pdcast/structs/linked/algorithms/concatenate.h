@@ -24,11 +24,7 @@ namespace linked {
         std::optional<size_t> length = util::len(container);
         if (length.has_value()) {
             // preallocate exact size
-            View copy(
-                view.size() + length.value(),
-                view.dynamic(),
-                view.specialization()
-            );
+            View copy(view.size() + length.value(), view.specialization());
 
             // add elements from view
             for (auto it = view.begin(), end = view.end(); it != end; ++it) {

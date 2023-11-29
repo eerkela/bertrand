@@ -44,8 +44,9 @@ namespace structs {
 namespace linked {
 
 
-// TODO: account for mapped type in template definition:
-// LinkedDict<int, float, ...>
+// TODO: final template config should follow std::unordered_map:
+// LinkedDict<Key, Value, Flags = Config::DEFAULT, LockType = BasicLock>
+
 
 
 /* A n ordered dictionary based on a combined linked list and hash table. */
@@ -54,15 +55,15 @@ class LinkedDict : public LinkedBase<linked::DictView<NodeType>, LockPolicy> {
     using Base = LinkedBase<linked::DictView<NodeType>, LockPolicy>;
 
 public:
-    using View = linked::DictView<NodeType>;
-    using Node = typename View::Node;
-    using Value = typename View::Value;
+    using View = typename Base::View;
+    using Node = typename Base::Node;
+    using Value = typename Base::Value;
     using MappedValue = typename View::MappedValue;
 
     template <linked::Direction dir>
-    using Iterator = typename View::template Iterator<dir>;
+    using Iterator = typename Base::template Iterator<dir>;
     template <linked::Direction dir>
-    using ConstIterator = typename View::template ConstIterator<dir>;
+    using ConstIterator = typename Base::template ConstIterator<dir>;
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -777,10 +778,15 @@ private:
 
     /* Vtable containing Python @property definitions for the LinkedDict */
     inline static PyGetSetDef properties[] = {
+        BASE_PROPERTY(SINGLY_LINKED),
+        BASE_PROPERTY(DOUBLY_LINKED),
+        // BASE_PROPERTY(XOR),  // not yet implemented
+        BASE_PROPERTY(DYNAMIC),
+        BASE_PROPERTY(PACKED),
+        BASE_PROPERTY(STRICTLY_TYPED),
         BASE_PROPERTY(lock),
         BASE_PROPERTY(capacity),
         BASE_PROPERTY(max_size),
-        BASE_PROPERTY(dynamic),
         BASE_PROPERTY(frozen),
         BASE_PROPERTY(nbytes),
         BASE_PROPERTY(specialization),

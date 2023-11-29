@@ -18,6 +18,8 @@
 // index 3.  The relative moves are available from the proxy via
 // set.relative("c").move(3), which would move "c" three steps forward in the set.
 
+// These would be accompanied by 
+
 
 namespace bertrand {
 namespace structs {

@@ -39,6 +39,62 @@ constexpr bool DEBUG = false;
 ////////////////////
 
 
+/* An enumerated, compile-time bitset describing customization options for all linked
+data structures.  Any number of these can be combined using bitwise OR during template
+instantiation.  Some are mutually contradictory, resulting in a compile-time error.
+
+Their meanings are as follows:
+-   DEFAULT: use the default configuration for this data structure.  This typically
+    means the use of a doubly-linked list with a dynamic allocator.
+-   SINGLY_LINKED: use a singly-linked list instead of a doubly-linked list.  This
+    reduces the memory footprint of each node by one pointer at the cost of reduced
+    performance.  All methods will still work identically.
+-   DOUBLY_LINKED: explicitly force the use of a doubly-linked list.  This is usually
+    the default, and provides the best performance for most use cases.
+-   XOR (TODO): use an XOR-linked list instead of a doubly-linked list.  This has the
+    same memory footprint as a singly-linked list, but, thanks to some clever math,
+    can still traverse the list in both directions.  This is an experimental feature
+    that is not yet implemented.
+-   DYNAMIC: explicitly force the use of a dynamic allocator that can grow and shrink
+    as needed.  This is usually the default, and provides the most flexibility for
+    interacting with the list.
+-   FIXED_SIZE: use a fixed-size allocator that cannot grow or shrink.  This is useful
+    for implementing LRU caches and other data structures that are guaranteed to never
+    exceed a certain size.  By setting this flag, the data structure will immediately
+    allocate enough memory to house the maximum number of elements, and will never
+    reallocate its internal array unless explicitly instructed to do so.
+-   PACKED: use a packed allocator that does not introduce any padding for its buckets.
+    This reduces the memory footprint of hash tables by 2-6 bytes per bucket, at the
+    cost of potentially reduced performance (system-dependent).
+-   STRICTLY_TYPED (PyObject* only): enforce strict typing for the whole lifecycle of
+    the data structure.  This will restrict the data structure to only contain Python
+    objects of a specific type, and will prevent that type from being changed after
+    construction.  This is useful for ensuring that the type guarantees of the
+    container are never violated.
+*/
+namespace Config {
+    enum : unsigned int {
+        DEFAULT = 0,
+        SINGLY_LINKED = 1 << 0,
+        DOUBLY_LINKED = 1 << 1,
+        XOR = 1 << 2,
+        DYNAMIC = 1 << 3,
+        FIXED_SIZE = 1 << 4,
+        PACKED = 1 << 5,
+        STRICTLY_TYPED = 1 << 6,
+    };
+}
+
+
+/* Determine the corresponding node type for the given config flags. */
+template <typename T, unsigned int Flags>
+using NodeSelect = std::conditional_t<
+    !!(Flags & Config::DOUBLY_LINKED),
+    DoubleNode<T>,
+    SingleNode<T>
+>;
+
+
 /* Empty tag class marking a node allocator for a linked data structure.
 
 NOTE: this class is inherited by all allocators, and can be used for easy SFINAE checks
@@ -48,24 +104,33 @@ class AllocatorTag {};
 
 /* Base class that implements shared functionality for all allocators and provides the
 minimum necessary attributes for compatibility with higher-level views. */
-template <typename Derived, typename NodeType>
+template <typename Derived, typename NodeType, unsigned int Flags = Config::DEFAULT>
 class BaseAllocator : public AllocatorTag {
+    static_assert(
+        !!(Flags & Config::SINGLY_LINKED) + !!(Flags & Config::DOUBLY_LINKED) +
+        !!(Flags & Config::XOR) <= 1,
+        "only one of SINGLY_LINKED, DOUBLY_LINKED, or XOR may be specified at a time"
+    );
+    static_assert(
+        !!(Flags & Config::DYNAMIC) + !!(Flags & Config::FIXED_SIZE) <= 1,
+        "only one of DYNAMIC or FIXED_SIZE may be specified at a time"
+    );
+
 public:
     using Node = NodeType;
     class MemGuard;
     class PyMemGuard;
+    static constexpr unsigned int FLAGS = Flags;
+    static constexpr bool SINGLY_LINKED = Flags & Config::SINGLY_LINKED;
+    static constexpr bool DOUBLY_LINKED = Flags & Config::DOUBLY_LINKED;
+    static constexpr bool XOR = Flags & Config::XOR;
+    static constexpr bool DYNAMIC = Flags & Config::DYNAMIC;
+    static constexpr bool FIXED_SIZE = Flags & Config::FIXED_SIZE;
+    static constexpr bool PACKED = Flags & Config::PACKED;
+    static constexpr bool STRICTLY_TYPED = Flags & Config::STRICTLY_TYPED;
 
 protected:
-    // bitfield for storing boolean flags related to allocator state, as follows:
-    // 0b001: if set, allocator is temporarily frozen for memory stability
-    // 0b010: if set, allocator does not support dynamic resizing
-    // 0b100: if set, nodes cannot be re-specialization after list construction
-    enum {
-        FROZEN                  = 0b001,
-        DYNAMIC                 = 0b010,
-        STRICTLY_TYPED          = 0b100  // (currently unused)
-    } CONFIG;
-    unsigned char config;
+    bool _frozen;  // indicates whether the allocator is frozen for memory stability
     union { mutable Node _temp; };  // uninitialized temporary node for internal use
 
     /* Allocate a contiguous block of uninitialized items with the specified size. */
@@ -84,12 +149,14 @@ protected:
         new (node) Node(std::forward<Args>(args)...);
 
         // check python specialization if enabled
-        if (specialization != nullptr && !node->typecheck(specialization)) {
-            std::ostringstream msg;
-            msg << util::repr(node->value()) << " is not of type ";
-            msg << util::repr(specialization);
-            node->~Node();
-            throw util::TypeError(msg.str());
+        if constexpr (util::is_pyobject<typename Node::Value>) {
+            if (specialization != nullptr && !node->typecheck(specialization)) {
+                std::ostringstream msg;
+                msg << util::repr(node->value()) << " is not of type ";
+                msg << util::repr(specialization);
+                node->~Node();
+                throw util::TypeError(msg.str());
+            }
         }
         if constexpr (DEBUG) {
             std::cout << "    -> create: " << util::repr(node->value()) << std::endl;
@@ -118,22 +185,12 @@ protected:
     }
 
     /* Create an allocator with an optional fixed size. */
-    BaseAllocator(
-        size_t capacity,
-        bool dynamic,
-        PyObject* specialization
-    ) : config(DYNAMIC * dynamic),
-        head(nullptr),
-        tail(nullptr),
-        capacity(capacity),
-        occupied(0),
-        specialization(specialization)
+    BaseAllocator(size_t capacity, PyObject* specialization) :
+        _frozen(false), head(nullptr), tail(nullptr), capacity(capacity), occupied(0),
+        specialization(Py_XNewRef(specialization))
     {
         if constexpr (DEBUG) {
             std::cout << "    -> allocate: " << this->capacity << " nodes" << std::endl;
-        }
-        if (specialization != nullptr) {
-            Py_INCREF(specialization);
         }
     }
 
@@ -146,29 +203,21 @@ public:
 
     /* Copy constructor. */
     BaseAllocator(const BaseAllocator& other) :
-        config(other.config),
-        head(nullptr),
-        tail(nullptr),
-        capacity(other.capacity),
-        occupied(other.occupied),
-        specialization(other.specialization)
+        _frozen(other._frozen), head(nullptr), tail(nullptr), capacity(other.capacity),
+        occupied(other.occupied), specialization(Py_XNewRef(other.specialization))
     {
         if constexpr (DEBUG) {
             std::cout << "    -> allocate: " << capacity << " nodes" << std::endl;
         }
-        Py_XINCREF(specialization);
     }
 
     /* Move constructor. */
     BaseAllocator(BaseAllocator&& other) noexcept :
-        config(other.config),
-        head(other.head),
-        tail(other.tail),
-        capacity(other.capacity),
-        occupied(other.occupied),
+        _frozen(other._frozen), head(other.head), tail(other.tail),
+        capacity(other.capacity), occupied(other.occupied),
         specialization(other.specialization)
     {
-        other.config = 0;
+        other._frozen = false;
         other.head = nullptr;
         other.tail = nullptr;
         other.capacity = 0;
@@ -179,7 +228,7 @@ public:
     /* Copy assignment operator. */
     BaseAllocator& operator=(const BaseAllocator& other) {
         if (this == &other) return *this;  // check for self-assignment
-        if (frozen()) {
+        if (frozen) {
             throw util::MemoryError(
                 "array cannot be reallocated while a MemGuard is active"
             );
@@ -197,11 +246,10 @@ public:
         }
 
         // copy from other
-        config = other.config;
+        _frozen = other._frozen;
         capacity = other.capacity;
         occupied = other.occupied;
         specialization = Py_XNewRef(other.specialization);
-
         return *this;
     }
 
@@ -216,15 +264,13 @@ public:
 
         // destroy current
         Py_XDECREF(specialization);
-        if (head != nullptr) {
-            destroy_list();  // calls destructors
-        }
+        if (head != nullptr) destroy_list();
         if constexpr (DEBUG) {
             std::cout << "    -> deallocate: " << capacity << " nodes" << std::endl;
         }
 
         // transfer ownership
-        config = other.config;
+        _frozen = other._frozen;
         head = other.head;
         tail = other.tail;
         capacity = other.capacity;
@@ -232,7 +278,7 @@ public:
         specialization = other.specialization;
 
         // reset other
-        other.config = 0;
+        other._frozen = false;
         other.head = nullptr;
         other.tail = nullptr;
         other.capacity = 0;
@@ -327,23 +373,25 @@ public:
 
     /* Enforce strict type checking for python values within the list. */
     void specialize(PyObject* spec) {
+        static_assert(
+            !STRICTLY_TYPED,
+            "cannot re-specialize a strictly-typed allocator after construction"
+        );
+        static_assert(
+            util::is_pyobject<typename Node::Value>,
+            "type specialization is only supported for PyObject* values"
+        );
+
         // handle null assignment
-        if (spec == nullptr) {
-            if (specialization != nullptr) {
-                Py_DECREF(specialization);  // release old spec
-                specialization = nullptr;
-            }
+        if (spec == nullptr || spec == Py_None) {
+            Py_XDECREF(specialization);  // release old spec
+            specialization = nullptr;
             return;
         }
 
         // early return if new spec is same as old spec
-        if (specialization != nullptr) {
-            int comp = PyObject_RichCompareBool(spec, specialization, Py_EQ);
-            if (comp == -1) {  // comparison raised an exception
-                throw util::catch_python<util::TypeError>();
-            } else if (comp == 1) {
-                return;
-            }
+        if (specialization != nullptr && util::eq(specialization, spec)) {
+            return;
         }
 
         // check the contents of the list
@@ -360,9 +408,7 @@ public:
 
         // replace old specialization
         Py_INCREF(spec);
-        if (specialization != nullptr) {
-            Py_DECREF(specialization);
-        }
+        Py_XDECREF(specialization);
         specialization = spec;
     }
 
@@ -371,14 +417,9 @@ public:
         return &_temp;
     }
 
-    /* Check whether the allocator supports dynamic resizing. */
-    inline bool dynamic() const noexcept {
-        return static_cast<bool>(config & DYNAMIC);
-    }
-
     /* Check whether the allocator is temporarily frozen for memory stability. */
     inline bool frozen() const noexcept {
-        return static_cast<bool>(config & FROZEN);
+        return _frozen;
     }
 
     /* Get the total amount of dynamic memory allocated by this allocator. */
@@ -389,7 +430,11 @@ public:
     /* Get the maximum number of elements that this allocator can support if it does
     not support dynamic sizing. */
     inline std::optional<size_t> max_size() const noexcept {
-        return dynamic() ? std::nullopt : std::make_optional(capacity);
+        if constexpr (DYNAMIC) {
+            return std::nullopt;
+        } else {
+            return std::make_optional(capacity);
+        }
     }
 
     //////////////////////////////
@@ -407,7 +452,7 @@ public:
         /* Create an active MemGuard for an allocator, freezing it at its current
         capacity. */
         MemGuard(Derived* allocator) noexcept : allocator(allocator) {
-            allocator->config |= FROZEN;  // set frozen bitflag
+            allocator->_frozen = true;
             if constexpr (DEBUG) {
                 std::cout << "FREEZE: " << allocator->capacity << " NODES";
                 std::cout << std::endl;
@@ -419,7 +464,7 @@ public:
 
         /* Destroy the outermost MemGuard. */
         inline void destroy() noexcept {
-            allocator->config &= ~FROZEN;  // clear frozen bitflag
+            allocator->_frozen = false;
             if constexpr (DEBUG) {
                 std::cout << "UNFREEZE: " << allocator->capacity << " NODES";
                 std::cout << std::endl;
@@ -485,10 +530,7 @@ public:
             // allocate
             PyMemGuard* self = PyObject_New(PyMemGuard, &Type);
             if (self == nullptr) {
-                PyErr_SetString(
-                    PyExc_RuntimeError,
-                    "failed to allocate PyMemGuard"
-                );
+                PyErr_SetString(PyExc_RuntimeError, "failed to allocate PyMemGuard");
                 return nullptr;
             }
 
@@ -503,10 +545,7 @@ public:
         static PyObject* __enter__(PyMemGuard* self, PyObject* /* ignored */) {
             // check if the allocator is already frozen
             if (self->has_guard) {
-                PyErr_SetString(
-                    PyExc_RuntimeError,
-                    "allocator is already frozen"
-                );
+                PyErr_SetString(PyExc_RuntimeError, "allocator is already frozen");
                 return nullptr;
             }
 
@@ -608,7 +647,7 @@ bool
         };
 
         /* Initialize a PyTypeObject to represent the guard from Python. */
-        static PyTypeObject init_type() {
+        static PyTypeObject build_type() {
             PyTypeObject slots = {
                 .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
                 .tp_name = util::PyName<MemGuard>.data(),
@@ -633,7 +672,7 @@ bool
     public:
 
         /* Final Python type. */
-        inline static PyTypeObject Type = init_type();
+        inline static PyTypeObject Type = build_type();
 
     };
 
@@ -679,9 +718,11 @@ frequently, degrading performance.  To mitigate this, whenever we reallocate the
 we copy the nodes into the new array in the same order as they appear in the list.
 This ensures that each node immediately succeeds the previous node in memory,
 minimizing the number of cache lines that need to be loaded to traverse the list. */
-template <typename NodeType>
-class ListAllocator : public BaseAllocator<ListAllocator<NodeType>, NodeType> {
-    using Base = BaseAllocator<ListAllocator<NodeType>, NodeType>;
+template <typename NodeType, unsigned int Flags>
+class ListAllocator : public BaseAllocator<
+    ListAllocator<NodeType, Flags>, NodeType, Flags
+> {
+    using Base = BaseAllocator<ListAllocator<NodeType, Flags>, NodeType, Flags>;
     friend Base;
     friend typename Base::MemGuard;
 
@@ -695,21 +736,19 @@ private:
     std::pair<Node*, Node*> free_list;  // singly-linked list of open nodes
 
     /* Adjust the starting capacity of a dynamic list to a power of two. */
-    inline static size_t init_capacity(std::optional<size_t> capacity, bool dynamic) {
-        if (!capacity.has_value()) {
-            return DEFAULT_CAPACITY;
-        }
-
-        // if list is dynamic, round up to next power of two
-        size_t result = capacity.value();
-        if (dynamic) {
+    inline static size_t init_capacity(std::optional<size_t> capacity) {
+        // if dynamic, round up to next power of two
+        if constexpr (Base::DYNAMIC) {
+            if (!capacity.has_value()) return DEFAULT_CAPACITY;
+            size_t result = capacity.value();
             return result < DEFAULT_CAPACITY ?
                 DEFAULT_CAPACITY :
                 util::next_power_of_two(result);
-        }
 
-        // otherwise, return as-is
-        return result;
+        // otherwise, return directly
+        } else {
+            return capacity.value_or(DEFAULT_CAPACITY);
+        }
     }
 
     /* Copy/move the nodes from this allocator into the given array. */
@@ -775,14 +814,15 @@ private:
     called automatically by recycle() as well as when a MemGuard falls out of scope,
     guaranteeing the load factor is never less than 25% of the list's capacity. */
     inline bool shrink() {
-        if (!this->frozen() &&
-            this->dynamic() &&
-            this->capacity != DEFAULT_CAPACITY &&
-            this->occupied <= this->capacity / 4
-        ) {
-            size_t size = util::next_power_of_two(this->occupied * 2);
-            resize(size < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : size);
-            return true;
+        if constexpr (Base::DYNAMIC) {
+            if (!this->frozen() &&
+                this->capacity != DEFAULT_CAPACITY &&
+                this->occupied <= this->capacity / 4
+            ) {
+                size_t size = util::next_power_of_two(this->occupied * 2);
+                resize(size < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : size);
+                return true;
+            }
         }
         return false;
     }
@@ -792,9 +832,8 @@ public:
     /* Create an allocator with an optional fixed size. */
     ListAllocator(
         std::optional<size_t> capacity,
-        bool dynamic,
         PyObject* specialization
-    ) : Base(init_capacity(capacity, dynamic), dynamic, specialization),
+    ) : Base(init_capacity(capacity), specialization),
         array(Base::malloc_nodes(this->capacity)),
         free_list(std::make_pair(nullptr, nullptr))
     {}
@@ -909,10 +948,15 @@ public:
 
         // check if we need to grow the array
         if (this->occupied == this->capacity) {
-            if (this->frozen() || !this->dynamic()) {
+            if constexpr (Base::DYNAMIC) {
+                if (!this->frozen()) {
+                    resize(this->capacity * 2);
+                } else {
+                    throw Base::cannot_grow();
+                }
+            } else {
                 throw Base::cannot_grow();
             }
-            resize(this->capacity * 2);
         }
 
         // append to end of allocated section
@@ -945,17 +989,19 @@ public:
         // reset free list and shrink to default capacity
         free_list.first = nullptr;
         free_list.second = nullptr;
-        if (!this->frozen() && this->dynamic() && this->capacity != DEFAULT_CAPACITY) {
-            this->capacity = DEFAULT_CAPACITY;
-            free(array);
-            if constexpr (DEBUG) {
-                std::cout << "    -> deallocate: " << this->capacity << " nodes";
-                std::cout << std::endl;
-            }
-            array = Base::malloc_nodes(this->capacity);
-            if constexpr (DEBUG) {
-                std::cout << "    -> allocate: " << this->capacity << " nodes";
-                std::cout << std::endl;
+        if constexpr (Base::DYNAMIC) {
+            if (!this->frozen() && this->capacity != DEFAULT_CAPACITY) {
+                this->capacity = DEFAULT_CAPACITY;
+                free(array);
+                if constexpr (DEBUG) {
+                    std::cout << "    -> deallocate: " << this->capacity << " nodes";
+                    std::cout << std::endl;
+                }
+                array = Base::malloc_nodes(this->capacity);
+                if constexpr (DEBUG) {
+                    std::cout << "    -> allocate: " << this->capacity << " nodes";
+                    std::cout << std::endl;
+                }
             }
         }
     }
@@ -965,7 +1011,15 @@ public:
         Base::reserve(new_size);
 
         // if frozen, check new size against current capacity
-        if (this->frozen() || !this->dynamic()) {
+        if constexpr (Base::DYNAMIC) {
+            if (this->frozen()) {
+                if (new_size > this->capacity) {
+                    throw Base::cannot_grow();
+                } else {
+                    return MemGuard();  // empty guard
+                }
+            }
+        } else {
             if (new_size > this->capacity) {
                 throw Base::cannot_grow();
             } else {
@@ -1019,9 +1073,11 @@ allows searches to work well at high load factors, since we only need to check a
 well-defined collision chain for a conflict, and third, it does not require us to move
 any elements within the array.  These properties allow us to implement a set of linked
 nodes with minimal overhead, while still maintaining as much performance as possible. */
-template <typename NodeType, bool packed = false>
-class HashAllocator : public BaseAllocator<HashAllocator<NodeType>, NodeType> {
-    using Base = BaseAllocator<HashAllocator<NodeType>, NodeType>;
+template <typename NodeType, unsigned int Flags>
+class HashAllocator : public BaseAllocator<
+    HashAllocator<NodeType, Flags>, NodeType, Flags
+> {
+    using Base = BaseAllocator<HashAllocator<NodeType, Flags>, NodeType, Flags>;
     friend Base;
     friend typename Base::MemGuard;
 
@@ -1155,14 +1211,14 @@ private:
     bitmap, this approach stores two 8-bit offsets per bucket.  The first represents
     the distance to the head of this bucket's collision chain, and the second represents
     the distance to the next bucket in the current occupant's collision chain. */
-    using Bucket = typename BucketType<packed>::Bucket;
+    using Bucket = typename BucketType<Base::PACKED>::Bucket;
 
     Bucket* table;  // dynamic array of buckets
     size_t modulo;  // bitmask for fast modulo arithmetic
     size_t max_occupants;  // (for fixed-size sets) maximum number of occupants
 
     /* Adjust the starting capacity of a set to a power of two. */
-    inline static size_t init_capacity(std::optional<size_t> capacity, bool dynamic) {
+    inline static size_t init_capacity(std::optional<size_t> capacity) {
         if (!capacity.has_value()) {
             return DEFAULT_CAPACITY;
         }
@@ -1171,6 +1227,15 @@ private:
         size_t result = capacity.value();
         result = util::next_power_of_two(result + (result / 3));
         return result < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : result;
+    }
+
+    /* Adjust the maximum occupants of a set based on its dynamic status. */
+    inline static size_t init_max_occupants(std::optional<size_t> capacity) {
+        if constexpr (Base::DYNAMIC) {
+            return std::numeric_limits<size_t>::max();
+        } else {
+            return capacity.value();
+        }
     }
 
     /* Copy/move the nodes from this allocator into another table. */
@@ -1260,14 +1325,16 @@ private:
             this->tail = tail;
         } catch (...) {  // exceeded maximum probe length
             delete[] new_table;
-            if (!this->frozen() && this->dynamic()) {
-                resize(new_capacity * 2);  // retry with a larger table
-                return;
+            if constexpr (Base::DYNAMIC) {
+                if (!this->frozen()) {
+                    resize(new_capacity * 2);  // retry with a larger table
+                    return;
+                } else {
+                    throw;  // propagate error
+                }
             } else {
                 throw;  // propagate error
             }
-            resize(new_capacity * 2);
-            return;
         }
 
         // replace table
@@ -1285,14 +1352,15 @@ private:
     called automatically by recycle() as well as when a MemGuard falls out of scope,
     guaranteeing the load factor is never less than 25% of the list's capacity. */
     inline bool shrink() {
-        if (!this->frozen() &&
-            this->dynamic() &&
-            this->capacity != DEFAULT_CAPACITY &&
-            this->occupied <= this->capacity / 4
-        ) {
-            size_t size = util::next_power_of_two(this->occupied + (this->occupied / 3));
-            resize(size < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : size);
-            return true;
+        if constexpr (Base::DYNAMIC) {
+            if (!this->frozen() &&
+                this->capacity != DEFAULT_CAPACITY &&
+                this->occupied <= this->capacity / 4
+            ) {
+                size_t size = util::next_power_of_two(this->occupied + (this->occupied / 3));
+                resize(size < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : size);
+                return true;
+            }
         }
         return false;
     }
@@ -1513,11 +1581,10 @@ public:
     /* Create an allocator with an optional fixed size. */
     HashAllocator(
         std::optional<size_t> capacity,
-        bool dynamic,
         PyObject* specialization
-    ) : Base(init_capacity(capacity, dynamic), dynamic, specialization),
+    ) : Base(init_capacity(capacity), specialization),
         table(new Bucket[this->capacity]), modulo(this->capacity - 1),
-        max_occupants(dynamic ? std::numeric_limits<size_t>::max() : capacity.value())
+        max_occupants(init_max_occupants(capacity))
     {}
 
     /* Copy constructor. */
@@ -1671,22 +1738,22 @@ public:
         // as well as careful updates to the hop information for the collision chain.
 
         // check if we need to grow the array if it is dynamic
-        if (this->dynamic()) {
+        if constexpr (Base::DYNAMIC) {
             if (this->occupied >= this->capacity - (this->capacity / 4)) {
                 if (this->frozen()) throw Base::cannot_grow();
                 resize(this->capacity * 2);  // grow table
                 origin_idx = node->hash() & modulo;  // rehash node
                 origin = table + origin_idx;
             }
-
-        // otherwise if set is of fixed size, either evict an element or throw an error
-        } else if (this->occupied == this->max_occupants) {
-            if constexpr (flags & EVICT_HEAD) {
-                evict_head();
-            } else if constexpr (flags & EVICT_TAIL) {
-                evict_tail();
-            } else {
-                throw Base::cannot_grow();
+        } else {
+            if (this->occupied == this->max_occupants) {
+                if constexpr (flags & EVICT_HEAD) {
+                    evict_head();
+                } else if constexpr (flags & EVICT_TAIL) {
+                    evict_tail();
+                } else {
+                    throw Base::cannot_grow();
+                }
             }
         }
 
@@ -1703,12 +1770,13 @@ public:
                 next += bucket->next;
             }
             if (++distance == MAX_PROBE_LENGTH) {
-                if (!this->frozen() && this->dynamic()) {
-                    resize(this->capacity * 2);  // grow table
-                    return create(std::move(*node));  // retry
-                } else {
-                    throw std::runtime_error("exceeded maximum probe length");
+                if constexpr (Base::DYNAMIC) {
+                    if (!this->frozen()) {
+                        resize(this->capacity * 2);  // grow table
+                        return create(std::move(*node));  // retry
+                    }
                 }
+                throw std::runtime_error("exceeded maximum probe length");
             }
             bucket = table + ((origin_idx + distance) & modulo);
         }
@@ -1752,19 +1820,21 @@ public:
         Base::clear();
 
         // shrink to default capacity
-        if (!this->frozen() && this->dynamic() && this->capacity != DEFAULT_CAPACITY) {
-            this->capacity = DEFAULT_CAPACITY;
-            free(table);
-            if constexpr (DEBUG) {
-                std::cout << "    -> deallocate: " << this->capacity << " nodes";
-                std::cout << std::endl;
+        if constexpr (Base::DYNAMIC) {
+            if (!this->frozen() && this->capacity != DEFAULT_CAPACITY) {
+                this->capacity = DEFAULT_CAPACITY;
+                free(table);
+                if constexpr (DEBUG) {
+                    std::cout << "    -> deallocate: " << this->capacity << " nodes";
+                    std::cout << std::endl;
+                }
+                table = new Bucket[this->capacity];
+                if constexpr (DEBUG) {
+                    std::cout << "    -> allocate: " << this->capacity << " nodes";
+                    std::cout << std::endl;
+                }
+                modulo = this->capacity - 1;
             }
-            table = new Bucket[this->capacity];
-            if constexpr (DEBUG) {
-                std::cout << "    -> allocate: " << this->capacity << " nodes";
-                std::cout << std::endl;
-            }
-            modulo = this->capacity - 1;
         }
     }
 
@@ -1773,8 +1843,16 @@ public:
         Base::reserve(new_size);
 
         // if frozen, check new size against current capacity
-        if (this->frozen() || !this->dynamic()) {
-            if (new_size > this->capacity - (this->capacity / 4)) {
+        if constexpr (Base::DYNAMIC) {
+            if (this->frozen()) {
+                if (new_size > this->capacity) {
+                    throw Base::cannot_grow();
+                } else {
+                    return MemGuard();  // empty guard
+                }
+            }
+        } else {
+            if (new_size > this->capacity) {
                 throw Base::cannot_grow();
             } else {
                 return MemGuard();  // empty guard
@@ -1800,7 +1878,11 @@ public:
     /* Get the maximum number of elements that this allocator can support if it does
     not support dynamic sizing. */
     inline std::optional<size_t> max_size() const noexcept {
-        return this->dynamic() ? std::nullopt : std::make_optional(max_occupants);
+        if constexpr (Base::DYNAMIC) {
+            return std::nullopt;
+        } else {
+            return std::make_optional(max_occupants);
+        }
     }
 
     /* Search for a node by its value directly. */

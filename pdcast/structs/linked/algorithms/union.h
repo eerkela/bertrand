@@ -9,11 +9,6 @@
 #include "update.h"  // update()
 
 
-// TODO: memory reservation is somewhat iffy here.  If the view is not dynamic,
-// then we won't end up shrinking at the end, and can end up with an enormous
-// set that never shrinks.
-
-
 namespace bertrand {
 namespace structs {
 namespace linked {
@@ -25,6 +20,8 @@ namespace linked {
     auto union_(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
+        using DynamicView = typename ViewTraits<View>::As::Dynamic;
+        using FixedView = typename ViewTraits<View>::As::FixedSize;
         using Allocator = typename View::Allocator;
         static constexpr unsigned int flags = (
             Allocator::EXIST_OK | Allocator::REPLACE_MAPPED |
@@ -32,7 +29,7 @@ namespace linked {
         );
 
         // copy existing view
-        View copy(view.size(), true, view.specialization());  // dynamic
+        DynamicView copy(view.size(), view.specialization());
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             copy.template node<Allocator::INSERT_TAIL>(*(it.curr()));
         }
@@ -43,14 +40,15 @@ namespace linked {
         }
 
         // if original view was not dynamic, move into new view of fixed size
-        if (!view.dynamic()) {
-            View result(copy.size(), false, view.specialization());
+        if constexpr (ViewTraits<View>::FIXED_SIZE) {
+            FixedView result(copy.size(), view.specialization());
             for (auto it = copy.begin(), end = copy.end(); it != end; ++it) {
                 result.template node<Allocator::INSERT_TAIL>(std::move(*(it.curr())));
             }
             return result;
+        } else {
+            return copy;
         }
-        return copy;
     }
 
 
@@ -82,7 +80,7 @@ namespace linked {
         }
 
         // add all elements that were not found
-        View copy(view.size() - found.size(), view.dynamic(), view.specialization());
+        View copy(view.size() - found.size(), view.specialization());
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             if (found.find(it.curr()) == found.end()) {
                 copy.template node<Allocator::INSERT_TAIL>(*(it.curr()));
@@ -109,7 +107,7 @@ namespace linked {
         }
 
         // add all elements that were found
-        View copy(found.size(), view.dynamic(), view.specialization());
+        View copy(found.size(), view.specialization());
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             if (found.find(it.curr()) != found.end()) {
                 copy.template node<Allocator::INSERT_TAIL>(*(it.curr()));
@@ -125,20 +123,24 @@ namespace linked {
     auto symmetric_difference(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
+        using TempView = typename View::template Reconfigure<
+            Config::SINGLY_LINKED | Config::DYNAMIC
+        >;
+        using DynamicView = typename ViewTraits<View>::As::Dynamic;
+        using FixedView = typename ViewTraits<View>::As::FixedSize;
         using Allocator = typename View::Allocator;
         using Node = typename View::Node;
 
         // unpack items into temporary view
-        View temp_view(
+        TempView temp_view(
             items,
             std::nullopt,  // capacity: dynamic
-            true,  // dynamic: true
             nullptr,  // specialization: generic
             false  // reverse: false
         );
 
         // allocate dynamic view to store result
-        View copy(std::nullopt, true, view.specialization());
+        DynamicView copy(std::nullopt, view.specialization());
 
         // add all elements from view that are not in temp view
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
@@ -161,14 +163,15 @@ namespace linked {
         }
 
         // if original view was not dynamic, move into new view of fixed size
-        if (!view.dynamic()) {
-            View result(copy.size(), false, view.specialization());
+        if constexpr (ViewTraits<View>::FIXED_SIZE) {
+            FixedView result(copy.size(), view.specialization());
             for (auto it = copy.begin(), end = copy.end(); it != end; ++it) {
                 result.template node<Allocator::INSERT_TAIL>(std::move(*(it.curr())));
             }
             return result;
+        } else {
+            return copy;
         }
-        return copy;
     }
 
 

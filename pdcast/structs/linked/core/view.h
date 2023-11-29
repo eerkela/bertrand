@@ -61,6 +61,15 @@ public:
     template <Direction dir>
     using ConstIterator = linked::Iterator<const BaseView, dir>;
 
+    static constexpr unsigned int FLAGS = Allocator::FLAGS;
+    static constexpr bool SINGLY_LINKED = Allocator::SINGLY_LINKED;
+    static constexpr bool DOUBLY_LINKED = Allocator::DOUBLY_LINKED;
+    static constexpr bool XOR = Allocator::XOR;
+    static constexpr bool DYNAMIC = Allocator::DYNAMIC;
+    static constexpr bool FIXED_SIZE = Allocator::FIXED_SIZE;
+    static constexpr bool PACKED = Allocator::PACKED;
+    static constexpr bool STRICTLY_TYPED = Allocator::STRICTLY_TYPED;
+
     // low-level memory management
     mutable Allocator allocator;  // use at your own risk!
 
@@ -69,11 +78,8 @@ public:
     ////////////////////////////
 
     /* Construct an empty view. */
-    BaseView(
-        std::optional<size_t> capacity,
-        bool dynamic,
-        PyObject* spec
-    ) : allocator(capacity, dynamic, spec)
+    BaseView(std::optional<size_t> capacity, PyObject* spec) :
+        allocator(capacity, spec)
     {}
 
     /* Construct a view from an input iterable. */
@@ -81,14 +87,9 @@ public:
     BaseView(
         Container&& iterable,
         std::optional<size_t> capacity,
-        bool dynamic,
         PyObject* spec,
         bool reverse
-    ) : allocator(
-            init_size(iterable, capacity, dynamic),
-            dynamic,
-            spec
-        )
+    ) : allocator(init_size(iterable, capacity), spec)
     {
         for (auto item : util::iter(iterable)) {
             Node* curr = node(item);
@@ -106,10 +107,9 @@ public:
         Iterator&& begin,
         Iterator&& end,
         std::optional<size_t> capacity,
-        bool dynamic,
         PyObject* spec,
         bool reverse
-    ) : allocator(capacity, dynamic, spec)
+    ) : allocator(capacity, spec)
     {
         for (; begin != end; ++begin) {
             Node* curr = node(*begin);
@@ -188,7 +188,7 @@ public:
 
     /* Make a shallow copy of the entire list. */
     inline Derived copy() const {
-        Derived result(capacity(), dynamic(), specialization());
+        Derived result(capacity(), specialization());
         for (auto it = this->begin(), end = this->end(); it != end; ++it) {
             Node* copied = result.node(*it.curr());
             result.link(result.tail(), copied, nullptr);
@@ -230,16 +230,6 @@ public:
         return allocator.max_size();
     }
 
-    /* Check whether the allocator supports dynamic resizing. */
-    inline bool dynamic() const noexcept {
-        return allocator.dynamic();
-    }
-
-    /* Check whether the allocator is currently frozen for memory stability. */
-    inline bool frozen() const noexcept {
-        return allocator.frozen();
-    }
-
     /* Reserve memory for a given number of nodes ahead of time.
     
     NOTE: this method produces a MemGuard object that holds the view at the new capacity
@@ -277,6 +267,11 @@ public:
     /* Rearrange the nodes in memory to optimize performance. */
     inline void defragment() {
         allocator.defragment();
+    }
+
+    /* Check whether the allocator is currently frozen for memory stability. */
+    inline bool frozen() const noexcept {
+        return allocator.frozen();
     }
 
     /* Get the total amount of dynamic memory consumed by the list.  This does not
@@ -432,24 +427,24 @@ protected:
     template <typename Container>
     static std::optional<size_t> init_size(
         Container&& container,
-        std::optional<size_t> capacity,
-        bool dynamic
+        std::optional<size_t> capacity
     ) {
-        // trivial case: capacity is fixed
-        if (!dynamic) return capacity;
+        // if dynamic, get length of container and compare with specified capacity
+        if constexpr (DYNAMIC) {
+            std::optional<size_t> size = util::len(container);
 
-        // get size of container if possible
-        std::optional<size_t> size = util::len(container);
-        if (size.has_value()) {  // use max of container size and specified capacity
-            if (capacity.has_value()) {
-                size_t x = capacity.value();
-                size_t y = size.value();
-                return std::make_optional(x < y ? y : x);
+            // use max of container size and specified capacity
+            if (size.has_value()) {
+                if (capacity.has_value()) {
+                    size_t x = capacity.value();
+                    size_t y = size.value();
+                    return std::make_optional(x < y ? y : x);
+                }
+                return size;
             }
-            return size;
         }
 
-        // otherwise, use the specified capacity
+        // otherwise, use capacity directly
         return capacity;
     }
 
@@ -475,10 +470,9 @@ public:
     HashView(
         Container&& iterable,
         std::optional<size_t> capacity,
-        bool dynamic,
         PyObject* spec,
         bool reverse
-    ) : Base(capacity, dynamic, spec)
+    ) : Base(capacity, spec)
     {
         for (auto item : util::iter(iterable)) {
             if (reverse) {
@@ -495,10 +489,9 @@ public:
         Iterator&& begin,
         Iterator&& end,
         std::optional<size_t> capacity,
-        bool dynamic,
         PyObject* spec,
         bool reverse
-    ) : Base(capacity, dynamic, spec)
+    ) : Base(capacity, spec)
     {
         for (; begin != end; ++begin) {
             if (reverse) {
@@ -563,11 +556,16 @@ public:
 
 /* A linked data structure that uses a dynamic array to store nodes in sequential
 order. */
-template <typename NodeType>
-class ListView : public BaseView<ListView<NodeType>, ListAllocator<NodeType>> {
-    using Base = BaseView<ListView<NodeType>, ListAllocator<NodeType>>;
+template <typename NodeType, unsigned int Flags>
+class ListView : public BaseView<
+    ListView<NodeType, Flags>, ListAllocator<NodeType, Flags>
+> {
+    using Base = BaseView<ListView<NodeType, Flags>, ListAllocator<NodeType, Flags>>;
 
 public:
+    template <unsigned int NewFlags>
+    using Reconfigure = ListView<NodeType, NewFlags>;
+
     static constexpr bool listlike = true;
 
     // inherit constructors
@@ -583,11 +581,18 @@ public:
 
 
 /* A linked data structure that uses a hash table to allocate and store nodes. */
-template <typename NodeType>
-class SetView : public HashView<SetView<NodeType>, HashAllocator<Hashed<NodeType>>> {
-    using Base = HashView<SetView<NodeType>, HashAllocator<Hashed<NodeType>>>;
+template <typename NodeType, unsigned int Flags>
+class SetView : public HashView<
+    SetView<NodeType, Flags>, HashAllocator<Hashed<NodeType>, Flags>
+> {
+    using Base = HashView<
+        SetView<NodeType, Flags>, HashAllocator<Hashed<NodeType>, Flags>
+    >;
 
 public:
+    template <unsigned int NewFlags>
+    using Reconfigure = SetView<NodeType, NewFlags>;
+
     static constexpr bool setlike = true;
 
     // inherit constructors
@@ -603,17 +608,18 @@ public:
 
 
 /* A linked data structure that uses a hash table to store nodes as key-value pairs. */
-template <typename NodeType, typename MappedType>
+template <typename NodeType, unsigned int Flags>
 class DictView : public HashView<
-    DictView<NodeType, MappedType>,
-    HashAllocator<Mapped<Hashed<NodeType>, MappedType>>
+    DictView<NodeType, Flags>, HashAllocator<Hashed<NodeType>, Flags>
 > {
     using Base = HashView<
-        DictView<NodeType, MappedType>,
-        HashAllocator<Mapped<Hashed<NodeType>, MappedType>>
+        DictView<NodeType, Flags>, HashAllocator<Hashed<NodeType>, Flags>
     >;
 
 public:
+    template <unsigned int NewFlags>
+    using Reconfigure = DictView<NodeType, NewFlags>;
+
     static constexpr bool dictlike = true;
 
     // inherit constructors
@@ -632,11 +638,54 @@ public:
 dispatching non-member methods accordingly. */
 template <typename ViewType>
 struct ViewTraits {
+    // dispatch hooks for non-member algorithms
     static constexpr bool linked = std::is_base_of_v<ViewTag, ViewType>;
     static constexpr bool listlike = linked && ViewType::listlike;
     static constexpr bool setlike = linked && ViewType::setlike;
     static constexpr bool dictlike = linked && ViewType::dictlike;
     static constexpr bool hashed = setlike || dictlike;
+
+    // configuration flags
+    static constexpr unsigned int FLAGS = ViewType::FLAGS;
+    static constexpr bool SINGLY_LINKED = ViewType::SINGLY_LINKED;
+    static constexpr bool DOUBLY_LINKED = ViewType::DOUBLY_LINKED;
+    static constexpr bool XOR = ViewType::XOR;
+    static constexpr bool DYNAMIC = ViewType::DYNAMIC;
+    static constexpr bool FIXED_SIZE = ViewType::FIXED_SIZE;
+    static constexpr bool PACKED = ViewType::PACKED;
+    static constexpr bool STRICTLY_TYPED = ViewType::STRICTLY_TYPED;
+
+    // reconfigure view with different flags
+    struct As {
+        using SinglyLinked = typename ViewType::template Reconfigure<
+            (FLAGS & ~(Config::DOUBLY_LINKED | Config::XOR)) | Config::SINGLY_LINKED
+        >;
+        using DoublyLinked = typename ViewType::template Reconfigure<
+            (FLAGS & ~(Config::SINGLY_LINKED | Config::XOR)) | Config::DOUBLY_LINKED
+        >;
+        using Xor = typename ViewType::template Reconfigure<
+            (FLAGS & ~(Config::SINGLY_LINKED | Config::DOUBLY_LINKED)) | Config::XOR
+        >;
+        using Dynamic = typename ViewType::template Reconfigure<
+            (FLAGS & ~Config::FIXED_SIZE) | Config::DYNAMIC
+        >;
+        using FixedSize = typename ViewType::template Reconfigure<
+            (FLAGS & ~Config::DYNAMIC) | Config::FIXED_SIZE
+        >;
+        using Packed = typename ViewType::template Reconfigure<
+            FLAGS | Config::PACKED
+        >;
+        using Unpacked = typename ViewType::template Reconfigure<
+            FLAGS & ~Config::PACKED
+        >;
+        using StrictlyTyped = typename ViewType::template Reconfigure<
+            FLAGS | Config::STRICTLY_TYPED
+        >;
+        using LooselyTyped = typename ViewType::template Reconfigure<
+            FLAGS & ~Config::STRICTLY_TYPED
+        >;
+    };
+
 };
 
 

@@ -203,14 +203,16 @@ namespace linked {
     auto symmetric_difference_update(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
+        using TempView = typename View::template Reconfigure<
+            Config::SINGLY_LINKED | Config::DYNAMIC
+        >;
         using Node = typename View::Node;
         using MemGuard = typename View::MemGuard;
 
         // unpack items into temporary view
-        View temp_view(
+        TempView temp_view(
             items,
             std::nullopt,  // capacity: inferred from items
-            true,  // dynamic: true
             nullptr,  // specialization: generic
             false  // reverse: false
         );

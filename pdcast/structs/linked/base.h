@@ -50,6 +50,14 @@ public:
     template <Direction dir>
     using ConstIterator = typename View::template ConstIterator<dir>;
 
+    static constexpr bool SINGLY_LINKED = View::SINGLY_LINKED;
+    static constexpr bool DOUBLY_LINKED = View::DOUBLY_LINKED;
+    static constexpr bool XOR = View::XOR;
+    static constexpr bool DYNAMIC = View::DYNAMIC;
+    static constexpr bool FIXED_SIZE = View::FIXED_SIZE;
+    static constexpr bool PACKED = View::PACKED;
+    static constexpr bool STRICTLY_TYPED = View::STRICTLY_TYPED;
+
     /* Every LinkedList contains a view that manages low-level node
     allocation/deallocation and links between nodes. */
     View view;
@@ -62,11 +70,7 @@ public:
     LinkedBase(
         std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr
-    ) : view(
-            max_size,
-            !max_size.has_value(),
-            spec
-        )
+    ) : view(max_size, spec)
     {}
 
     /* Construct a list from an input iterable. */
@@ -76,13 +80,7 @@ public:
         std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr,
         bool reverse = false
-    ) : view(
-            std::forward<Container>(iterable),
-            max_size,
-            !max_size.has_value(),
-            spec,
-            reverse
-        )
+    ) : view(std::forward<Container>(iterable), max_size, spec, reverse)
     {}
 
     /* Construct a list from an iterator range. */
@@ -97,7 +95,6 @@ public:
             std::forward<Iterator>(begin),
             std::forward<Iterator>(end),
             max_size,
-            !max_size.has_value(),
             spec,
             reverse
         )
@@ -150,16 +147,6 @@ public:
         return view.max_size();
     }
 
-    /* Check whether the allocator supports dynamic resizing. */
-    inline bool dynamic() const noexcept {
-        return view.dynamic();
-    }
-
-    /* Check whether the allocator is currently frozen for memory stability. */
-    inline bool frozen() const noexcept {
-        return view.frozen();
-    }
-
     /* Reserve memory for a specific number of nodes ahead of time. */
     inline MemGuard reserve(std::optional<size_t> capacity = std::nullopt) {
         // NOTE: the new capacity is absolute, not relative to the current capacity.  If
@@ -171,6 +158,11 @@ public:
     /* Rearrange the allocator array to reflect the current list order. */
     inline void defragment() {
         view.defragment();
+    }
+
+    /* Check whether the allocator is currently frozen for memory stability. */
+    inline bool frozen() const noexcept {
+        return view.frozen();
     }
 
     /* Get the current specialization for elements of this list. */
@@ -321,6 +313,66 @@ public:
     PyLinkedBase& operator=(const PyLinkedBase&) = delete;
     PyLinkedBase& operator=(PyLinkedBase&&) = delete;
 
+    /* Getter for `LinkedList.SINGLY_LINKED` in Python. */
+    inline static PyObject* SINGLY_LINKED(Derived* self, PyObject* /* ignored */) noexcept {
+        return std::visit(
+            [](auto& list) {
+                return PyBool_FromLong(std::decay_t<decltype(list)>::SINGLY_LINKED);
+            },
+            self->variant
+        );
+    }
+
+    /* Getter for `LinkedList.DOUBLY_LINKED` in Python. */
+    inline static PyObject* DOUBLY_LINKED(Derived* self, PyObject* /* ignored */) noexcept {
+        return std::visit(
+            [](auto& list) {
+                return PyBool_FromLong(std::decay_t<decltype(list)>::DOUBLY_LINKED);
+            },
+            self->variant
+        );
+    }
+
+    /* Getter for `LinkedList.XOR` in Python. */
+    inline static PyObject* XOR(Derived* self, PyObject* /* ignored */) noexcept {
+        return std::visit(
+            [](auto& list) {
+                return PyBool_FromLong(std::decay_t<decltype(list)>::XOR);
+            },
+            self->variant
+        );
+    }
+
+    /* Getter for `LinkedList.DYNAMIC` in Python. */
+    inline static PyObject* DYNAMIC(Derived* self, PyObject* /* ignored */) noexcept {
+        return std::visit(
+            [](auto& list) {
+                return PyBool_FromLong(std::decay_t<decltype(list)>::DYNAMIC);
+            },
+            self->variant
+        );
+    }
+
+    /* Getter for `LinkedList.PACKED` in Python. */
+    inline static PyObject* PACKED(Derived* self, PyObject* /* ignored */) noexcept {
+        return std::visit(
+            [](auto& list) {
+                return PyBool_FromLong(std::decay_t<decltype(list)>::PACKED);
+            },
+            self->variant
+        );
+    }
+
+    /* Getter for `LinkedList.STRICTLY_TYPED` in Python. */
+    inline static PyObject* STRICTLY_TYPED(Derived* self, PyObject* /* ignored */) noexcept {
+        return std::visit(
+            [](auto& list) {
+                return PyBool_FromLong(std::decay_t<decltype(list)>::STRICTLY_TYPED);
+            },
+            self->variant
+        );
+    }
+
     /* Wrap LinkedList.lock functor as a managed @property in Python. */
     inline static PyObject* lock(Derived* self, void* /* ignored */) noexcept {
         return std::visit(
@@ -358,17 +410,6 @@ public:
         }
     }
 
-    /* Getter for `LinkedList.dynamic` in Python. */
-    inline static PyObject* dynamic(Derived* self, PyObject* /* ignored */) noexcept {
-        bool result = std::visit(
-            [](auto& list) {
-                return list.dynamic();
-            },
-            self->variant
-        );
-        return PyBool_FromLong(result);
-    }
-
     /* Getter for `LinkedList.frozen` in Python. */
     inline static PyObject* frozen(Derived* self, PyObject* /* ignored */) noexcept {
         bool result = std::visit(
@@ -378,17 +419,6 @@ public:
             self->variant
         );
         return PyBool_FromLong(result);
-    }
-
-    /* Getter for `LinkedList.nbytes` in Python. */
-    inline static PyObject* nbytes(Derived* self, PyObject* /* ignored */) noexcept {
-        size_t result = std::visit(
-            [](auto& list) {
-                return list.nbytes();
-            },
-            self->variant
-        );
-        return PyLong_FromSize_t(result);
     }
 
     /* Getter for `LinkedList.specialization` in Python. */
@@ -403,6 +433,17 @@ public:
             Py_RETURN_NONE;
         }
         return Py_NewRef(result);
+    }
+
+    /* Getter for `LinkedList.nbytes` in Python. */
+    inline static PyObject* nbytes(Derived* self, PyObject* /* ignored */) noexcept {
+        size_t result = std::visit(
+            [](auto& list) {
+                return list.nbytes();
+            },
+            self->variant
+        );
+        return PyLong_FromSize_t(result);
     }
 
     /* Implement `LinkedList.reserve()` in Python. */
@@ -466,8 +507,20 @@ public:
     static PyObject* specialize(Derived* self, PyObject* spec) {
         try {
             std::visit(
-                [&spec](auto& list) {
-                    list.specialize(util::none_to_null(spec));
+                [&self, &spec](auto& list) {
+                    if constexpr (std::decay_t<decltype(list)>::STRICTLY_TYPED) {
+                        PyTypeObject* type = Py_TYPE(self);
+                        PyObject* spec = PyObject_GetAttrString(
+                            reinterpret_cast<PyObject*>(type),
+                            "_specialization"  // injected by __class_getitem__()
+                        );
+                        std::ostringstream msg;
+                        msg << "'" << type->tp_name << "' is already specialized to ";
+                        msg << util::repr(spec);
+                        throw util::TypeError(msg.str());
+                    } else {
+                        list.specialize(util::none_to_null(spec));
+                    }
                 },
                 self->variant
             );
@@ -490,7 +543,7 @@ public:
         );
         if (specialized_type == nullptr) return nullptr;
 
-        // set the specialization attribute
+        // set specialization attribute so __init__()/specialize() can retrieve it
         if (PyObject_SetAttrString(specialized_type, "_specialization", spec) < 0) {
             Py_DECREF(specialized_type);
             return nullptr;
@@ -605,6 +658,7 @@ protected:
                 );
                 bool reverse = pyargs.parse("reverse", util::is_truthy, false);
                 bool singly_linked = pyargs.parse("singly_linked", util::is_truthy, false);
+                bool packed = pyargs.parse("packed", util::is_truthy, false);
                 pyargs.finalize();
 
                 // initialize
@@ -614,10 +668,12 @@ protected:
                     max_size,
                     PyObject_GetAttrString(
                         reinterpret_cast<PyObject*>(Py_TYPE(self)),
-                        "_specialization"
+                        "_specialization"  // injected by __class_getitem__()
                     ),
                     reverse,
-                    singly_linked
+                    singly_linked,
+                    packed,
+                    true  // strictly typed
                 );
 
                 // exit normally
@@ -630,28 +686,11 @@ protected:
             }
         }
 
-        /* Disable dynamic specialization for permanently-specialized types. */
-        static PyObject* specialize(Specialized* self, PyObject* /* ignored */) {
-            PyTypeObject* type = Py_TYPE(self);
-            PyObject* spec = PyObject_GetAttrString(
-                reinterpret_cast<PyObject*>(type),
-                "_specialization"
-            );
-            PyErr_Format(
-                PyExc_TypeError,
-                "'%s' is already specialized to %R",
-                type->tp_name,
-                spec
-            );
-            return nullptr;
-        }
-
     private:
 
         /* Overridden methods for permanently-specialized types. */
         inline static PyMethodDef specialized_methods[] = {
             {"__init__", (PyCFunction)__init__, METH_VARARGS | METH_KEYWORDS, nullptr},
-            {"specialize", (PyCFunction)specialize, METH_O, nullptr},
             {NULL}  // sentinel
         };
 
@@ -681,6 +720,157 @@ protected:
 
     /* Compile-time docstrings for all public Python methods. */
     struct docs {
+
+        static constexpr std::string_view SINGLY_LINKED {R"doc(
+Check whether the list uses a singly-linked node type.
+
+Returns
+-------
+bool
+    True if the list is singly-linked.  False otherwise.
+
+Examples
+--------
+This defaults to False unless the list is explicitly configured to use a
+singly-linked node type.  For instance:
+
+.. doctest::
+
+    >>> from bertrand.structs import LinkedList
+    >>> LinkedList("abcdef").SINGLY_LINKED
+    False
+    >>> LinkedList("abcdef", singly_linked=True).SINGLY_LINKED
+    True
+)doc"
+        };
+
+        static constexpr std::string_view DOUBLY_LINKED {R"doc(
+Check whether the list uses a doubly-linked node type.
+
+Returns
+-------
+bool
+    True if the list is doubly-linked.  False otherwise.
+
+Examples
+--------
+This defaults to True unless the list is explicitly configured to use a
+singly-linked node type.  For instance:
+
+.. doctest::
+
+    >>> from bertrand.structs import LinkedList
+    >>> LinkedList("abcdef").DOUBLY_LINKED
+    True
+    >>> LinkedList("abcdef", singly_linked=True).DOUBLY_LINKED
+    False
+)doc"
+        };
+
+        static constexpr std::string_view XOR {R"doc(
+Check whether the list uses an XOR-linked node type.
+
+Returns
+-------
+bool
+    True if the list is XOR-linked.  False otherwise.
+
+Examples
+--------
+This defaults to False unless the list is explicitly configured to use an
+XOR-linked node type.  For instance:
+
+.. doctest::
+
+    >>> from bertrand.structs import LinkedList
+    >>> LinkedList("abcdef").XOR
+    False
+    >>> LinkedList("abcdef", xor=True).XOR
+    True
+)doc"
+        };
+
+        static constexpr std::string_view DYNAMIC {R"doc(
+Check whether the allocator supports dynamic resizing.
+
+Returns
+-------
+bool
+    True if the list can dynamically grow and shrink, or False if it has a
+    fixed size.
+
+Examples
+--------
+This defaults to True unless a maximum size is specified during construction.
+For instance:
+
+.. doctest::
+
+    >>> from bertrand.structs import LinkedList
+    >>> LinkedList("abcdef").DYNAMIC
+    True
+    >>> LinkedList("abcdef", 10).DYNAMIC
+    False
+)doc"
+        };
+
+        static constexpr std::string_view PACKED {R"doc(
+Check whether the allocator's buckets are packed for memory efficiency.
+
+Returns
+-------
+bool
+    True if the allocator's buckets are packed, or False if they are padded to
+    the system's preferred alignment.
+
+Notes
+-----
+Packed buckets are more memory-efficient, but may incur a small performance
+penalty on some systems.
+
+This flag has no effect unless the allocator's buckets are not evenly divisible
+by the system's preferred alignment width.  This is only the case for hashed
+views that use additional control structures to maintain information about the
+hash table (e.g. ``LinkedSet``, ``LinkedDict``).
+
+Examples
+--------
+This defaults to False unless the ``packed`` argument is specified during
+construction.  For instance:
+
+.. doctest::
+
+    >>> from bertrand.structs import LinkedSet
+    >>> LinkedSet("abcdef").PACKED
+    False
+    >>> LinkedSet("abcdef", packed=True).PACKED
+    True
+)doc"
+        };
+
+        static constexpr std::string_view STRICTLY_TYPED {R"doc(
+Check whether the allocator enforces strict type checking.
+
+Returns
+-------
+bool
+    True if the allocator enforces strict type checking for its contents, or
+    False if it allows arbitrary Python objects.
+
+Examples
+--------
+This defaults to False unless the data structure is subscripted with a
+particular type using ``__class_getitem__()``.  For instance:
+
+.. doctest::
+
+    >>> from bertrand.structs import LinkedList
+    >>> LinkedList("abcdef").STRICTLY_TYPED
+    False
+    >>> LinkedList[str]("abcdef").STRICTLY_TYPED
+    True
+)doc"
+        };
 
         static constexpr std::string_view lock {R"doc(
 Access the list's internal thread lock.
@@ -852,30 +1042,6 @@ This is equivalent to the following:
         return None
     else:
         return list.capacity
-)doc"
-        };
-
-        static constexpr std::string_view dynamic {R"doc(
-Check whether the allocator supports dynamic resizing.
-
-Returns
--------
-bool
-    True if the list can dynamically grow and shrink, or False if it has a
-    fixed size.
-
-Examples
---------
-This defaults to True unless a maximum size is specified during construction.
-For instance:
-
-.. doctest::
-
-    >>> from bertrand.structs import LinkedList
-    >>> LinkedList("abcdef").dynamic
-    True
-    >>> LinkedList("abcdef", 10).dynamic
-    False
 )doc"
         };
 

@@ -9,8 +9,9 @@
 #include <Python.h>  // CPython API
 #include "../util/args.h"  // PyArgs
 #include "../util/except.h"  // catch_python
+#include "core/allocate.h"  // Config, NodeSelect
 #include "core/view.h"  // ListView
-#include "base.h"  // LinkedBase
+#include "base.h"  // LinkedBase, NodeSelect
 
 #include "algorithms/add.h"
 #include "algorithms/append.h"
@@ -37,31 +38,42 @@ namespace structs {
 namespace linked {
 
 
-// TODO: simplify template definition:
-// LinkedList<int>
-// LinkedList<int, config::SINGLY_LINKED>
-
-// TODO: use type aliases?
-// template <typename T>
-// using DoublyLinkedList = LinkedList<DoubleNode<T>>;
-
-// Perhaps we can use SFINAE to check whether the first argument is a Node type, and
-// otherwise wrap it as a DoubleNode.
+/* Apply default config flags for C++ LinkedLists. */
+static constexpr unsigned int list_defaults(unsigned int flags) {
+    unsigned int result = flags;
+    if (!(result & (Config::DOUBLY_LINKED | Config::SINGLY_LINKED | Config::XOR))) {
+        result |= Config::DOUBLY_LINKED;  // default to doubly-linked
+    }
+    if (!(result & (Config::DYNAMIC | Config::FIXED_SIZE))) {
+        result |= Config::DYNAMIC;  // default to dynamic allocator
+    }
+    return result;
+}
 
 
 /* A modular linked list class that mimics the Python list interface in C++. */
-template <typename NodeType, typename LockPolicy = util::BasicLock>
-class LinkedList : public LinkedBase<linked::ListView<NodeType>, LockPolicy> {
-    using Base = LinkedBase<linked::ListView<NodeType>, LockPolicy>;
+template <
+    typename T,
+    unsigned int Flags = Config::DEFAULT,
+    typename Lock = util::BasicLock
+>
+class LinkedList : public LinkedBase<
+    linked::ListView<NodeSelect<T, list_defaults(Flags)>, list_defaults(Flags)>,
+    Lock
+> {
+    using Base = LinkedBase<
+        linked::ListView<NodeSelect<T, list_defaults(Flags)>, list_defaults(Flags)>,
+        Lock
+    >;
 
 public:
-    using View = linked::ListView<NodeType>;
-    using Value = typename View::Node::Value;
+    using View = typename Base::View;
+    using Value = typename Base::Node::Value;
 
     template <linked::Direction dir>
-    using Iterator = typename View::template Iterator<dir>;
+    using Iterator = typename Base::template Iterator<dir>;
     template <linked::Direction dir>
-    using ConstIterator = typename View::template ConstIterator<dir>;
+    using ConstIterator = typename Base::template ConstIterator<dir>;
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -274,8 +286,11 @@ public:
 
 /* Override the << operator to print the abbreviated contents of a list to an output
 stream (equivalent to Python repr()). */
-template <typename... Ts>
-std::ostream& operator<<(std::ostream& stream, const LinkedList<Ts...>& list) {
+template <typename T, unsigned int Flags, typename... Ts>
+inline std::ostream& operator<<(
+    std::ostream& stream,
+    const LinkedList<T, Flags, Ts...>& list
+) {
     stream << linked::repr(
         list.view,
         "LinkedList",
@@ -294,15 +309,21 @@ std::ostream& operator<<(std::ostream& stream, const LinkedList<Ts...>& list) {
 
 /* Concatenate a LinkedList with an arbitrary C++/Python container to produce a new
 list. */
-template <typename Container, typename... Ts>
-LinkedList<Ts...> operator+(const LinkedList<Ts...>& lhs, const Container& rhs) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline LinkedList<T, Flags, Ts...> operator+(
+    const LinkedList<T, Flags, Ts...>& lhs,
+    const Container& rhs
+) {
     return linked::concatenate(lhs.view, rhs);
 }
 
 
 /* Concatenate a LinkedList with an arbitrary C++/Python container in-place. */
-template <typename Container, typename... Ts>
-LinkedList<Ts...>& operator+=(LinkedList<Ts...>& lhs, const Container& rhs) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline LinkedList<T, Flags, Ts...>& operator+=(
+    LinkedList<T, Flags, Ts...>& lhs,
+    const Container& rhs
+) {
     linked::extend(lhs.view, rhs);
     return lhs;
 }
@@ -314,22 +335,31 @@ LinkedList<Ts...>& operator+=(LinkedList<Ts...>& lhs, const Container& rhs) {
 
 
 /* Repeat the elements of a LinkedList the specified number of times. */
-template <typename Integer, typename... Ts>
-inline LinkedList<Ts...> operator*(const LinkedList<Ts...>& list, const Integer rhs) {
+template <typename T, unsigned int Flags, typename... Ts>
+inline LinkedList<T, Flags, Ts...> operator*(
+    const LinkedList<T, Flags, Ts...>& list,
+    const long long rhs
+) {
     return linked::repeat(list.view, rhs);
 }
 
 
 /* Repeat the elements of a LinkedList the specified number of times (reversed). */
-template <typename Integer, typename... Ts>
-inline LinkedList<Ts...> operator*(const Integer lhs, const LinkedList<Ts...>& list) {
+template <typename T, unsigned int Flags, typename... Ts>
+inline LinkedList<T, Flags, Ts...> operator*(
+    const long long lhs,
+    const LinkedList<T, Flags, Ts...>& list
+) {
     return linked::repeat(list.view, lhs);
 }
 
 
 /* Repeat the elements of a LinkedList in-place the specified number of times. */
-template <typename Integer, typename... Ts>
-inline LinkedList<Ts...>& operator*=(LinkedList<Ts...>& list, const Integer rhs) {
+template <typename T, unsigned int Flags, typename... Ts>
+inline LinkedList<T, Flags, Ts...>& operator*=(
+    LinkedList<T, Flags, Ts...>& list,
+    const long long rhs
+) {
     linked::repeat_inplace(list.view, rhs);
     return list;
 }
@@ -342,96 +372,132 @@ inline LinkedList<Ts...>& operator*=(LinkedList<Ts...>& list, const Integer rhs)
 
 /* Apply a lexicographic `<` comparison between the elements of a LinkedList and
 another container.  */
-template <typename Container, typename... Ts>
-inline bool operator<(const LinkedList<Ts...>& lhs, const Container& rhs) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator<(
+    const LinkedList<T, Flags, Ts...>& lhs,
+    const Container& rhs
+) {
     return linked::lexical_lt(lhs, rhs);
 }
 
 
 /* Apply a lexicographic `<` comparison between the elements of a LinkedList and
 another container (reversed).  */
-template <typename Container, typename... Ts>
-inline bool operator<(const Container& lhs, const LinkedList<Ts...>& rhs) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator<(
+    const Container& lhs,
+    const LinkedList<T, Flags, Ts...>& rhs
+) {
     return linked::lexical_lt(lhs, rhs);
 }
 
 
 /* Apply a lexicographic `<=` comparison between the elements of a LinkedList and
 another container.  */
-template <typename Container, typename... Ts>
-inline bool operator<=(const LinkedList<Ts...>& lhs, const Container& rhs) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator<=(
+    const LinkedList<T, Flags, Ts...>& lhs,
+    const Container& rhs
+) {
     return linked::lexical_le(lhs, rhs);
 }
 
 
 /* Apply a lexicographic `<=` comparison between the elements of a LinkedList and
 another container (reversed).  */
-template <typename Container, typename... Ts>
-inline bool operator<=(const Container& lhs, const LinkedList<Ts...>& rhs) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator<=(
+    const Container& lhs,
+    const LinkedList<T, Flags, Ts...>& rhs
+) {
     return linked::lexical_lt(lhs, rhs);
 }
 
 
 /* Apply a lexicographic `==` comparison between the elements of a LinkedList and
 another container.  */
-template <typename Container, typename... Ts>
-inline bool operator==(const LinkedList<Ts...>& lhs, const Container& rhs) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator==(
+    const LinkedList<T, Flags, Ts...>& lhs,
+    const Container& rhs
+) {
     return linked::lexical_eq(lhs, rhs);
 }
 
 
 /* Apply a lexicographic `==` comparison between the elements of a LinkedList and
 another container (reversed).  */
-template <typename Container, typename... Ts>
-inline bool operator==(const Container& lhs, const LinkedList<Ts...>& rhs) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator==(
+    const Container& lhs,
+    const LinkedList<T, Flags, Ts...>& rhs
+) {
     return linked::lexical_eq(lhs, rhs);
 }
 
 
 /* Apply a lexicographic `!=` comparison between the elements of a LinkedList and
 another container.  */
-template <typename Container, typename... Ts>
-inline bool operator!=(const LinkedList<Ts...>& lhs, const Container& rhs) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator!=(
+    const LinkedList<T, Flags, Ts...>& lhs,
+    const Container& rhs
+) {
     return !linked::lexical_eq(lhs, rhs);
 }
 
 
 /* Apply a lexicographic `!=` comparison between the elements of a LinkedList and
 another container (reversed).  */
-template <typename Container, typename... Ts>
-inline bool operator!=(const Container& lhs, const LinkedList<Ts...>& rhs) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator!=(
+    const Container& lhs,
+    const LinkedList<T, Flags, Ts...>& rhs
+) {
     return !linked::lexical_eq(lhs, rhs);
 }
 
 
 /* Apply a lexicographic `>=` comparison between the elements of a LinkedList and
 another container.  */
-template <typename Container, typename... Ts>
-inline bool operator>=(const LinkedList<Ts...>& lhs, const Container& rhs) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator>=(
+    const LinkedList<T, Flags, Ts...>& lhs,
+    const Container& rhs
+) {
     return linked::lexical_ge(lhs, rhs);
 }
 
 
 /* Apply a lexicographic `>=` comparison between the elements of a LinkedList and
 another container (reversed).  */
-template <typename Container, typename... Ts>
-inline bool operator>=(const Container& lhs, const LinkedList<Ts...>& rhs) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator>=(
+    const Container& lhs,
+    const LinkedList<T, Flags, Ts...>& rhs
+) {
     return linked::lexical_ge(lhs, rhs);
 }
 
 
 /* Apply a lexicographic `>` comparison between the elements of a LinkedList and
 another container.  */
-template <typename Container, typename... Ts>
-inline bool operator>(const LinkedList<Ts...>& lhs, const Container& rhs) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator>(
+    const LinkedList<T, Flags, Ts...>& lhs,
+    const Container& rhs
+) {
     return linked::lexical_gt(lhs, rhs);
 }
 
 
 /* Apply a lexicographic `>` comparison between the elements of a LinkedList and
 another container (reversed).  */
-template <typename Container, typename... Ts>
-inline bool operator>(const Container& lhs, const LinkedList<Ts...>& rhs) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator>(
+    const Container& lhs,
+    const LinkedList<T, Flags, Ts...>& rhs
+) {
     return linked::lexical_gt(lhs, rhs);
 }
 
@@ -1395,14 +1461,30 @@ class PyLinkedList :
     using Base = PyLinkedBase<PyLinkedList>;
     using IList = PyListInterface<PyLinkedList>;
 
-    /* A std::variant representing all the LinkedList implementations that are
+    /* A std::variant representing all of the LinkedList implementations that are
     constructable from Python. */
-    using SingleList = LinkedList<SingleNode<PyObject*>, util::BasicLock>;
-    using DoubleList = LinkedList<DoubleNode<PyObject*>, util::BasicLock>;
+    template <unsigned int Flags>
+    using ListConfig = linked::LinkedList<PyObject*, Flags, util::BasicLock>;
     using Variant = std::variant<
-        SingleList,
-        DoubleList
+        ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>,
+        ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
+        ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
+        ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
+        ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
+        ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
+        ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
+        ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
+        ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
+        ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
+        ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
+        ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
     >;
+    template <size_t I>
+    using Alternative = typename std::variant_alternative_t<I, Variant>;
 
     friend Base;
     friend IList;
@@ -1414,6 +1496,16 @@ class PyLinkedList :
         new (&variant) Variant(std::forward<List>(list));
     }
 
+    #define CONSTRUCT(IDX) \
+        if (iterable == nullptr) { \
+            new (&self->variant) Variant(Alternative<IDX>(max_size, spec)); \
+        } else { \
+            new (&self->variant) Variant( \
+                Alternative<IDX>(iterable, max_size, spec, reverse) \
+            ); \
+        } \
+        break; \
+
     /* Construct a PyLinkedList from scratch using the given constructor arguments. */
     static void construct(
         PyLinkedList* self,
@@ -1421,35 +1513,60 @@ class PyLinkedList :
         std::optional<size_t> max_size,
         PyObject* spec,
         bool reverse,
-        bool singly_linked
+        bool singly_linked,
+        bool packed,
+        bool strictly_typed
     ) {
-        if (iterable == nullptr) {
-            if (singly_linked) {
-                new (&self->variant) Variant(SingleList(max_size, spec));
-            } else {
-                new (&self->variant) Variant(DoubleList(max_size, spec));
-            }
-        } else {
-            if (singly_linked) {
-                new (&self->variant) Variant(
-                    SingleList(iterable, max_size, spec, reverse)
-                );
-            } else {
-                new (&self->variant) Variant(
-                    DoubleList(iterable, max_size, spec, reverse)
-                );
-            }
+        unsigned int code = (
+            Config::SINGLY_LINKED * singly_linked |
+            Config::FIXED_SIZE * max_size.has_value() |
+            Config::PACKED * packed |
+            Config::STRICTLY_TYPED * strictly_typed
+        );
+        switch (code) {
+            case (Config::DEFAULT):
+                CONSTRUCT(0)
+            case (Config::PACKED):
+                CONSTRUCT(1)
+            case (Config::STRICTLY_TYPED):
+                CONSTRUCT(2)
+            case (Config::PACKED | Config::STRICTLY_TYPED):
+                CONSTRUCT(3)
+            case (Config::FIXED_SIZE):
+                CONSTRUCT(4)
+            case (Config::FIXED_SIZE | Config::PACKED):
+                CONSTRUCT(5)
+            case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                CONSTRUCT(6)
+            case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+                CONSTRUCT(7)
+            case (Config::SINGLY_LINKED):
+                CONSTRUCT(8)
+            case (Config::SINGLY_LINKED | Config::PACKED):
+                CONSTRUCT(9)
+            case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
+                CONSTRUCT(10)
+            case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
+                CONSTRUCT(11)
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
+                CONSTRUCT(12)
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
+                CONSTRUCT(13)
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                CONSTRUCT(14)
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+                CONSTRUCT(15)
+            default:
+                throw util::ValueError("invalid argument configuration");
         }
     }
+
+    #undef CONSTRUCT
 
 public:
 
     /* Initialize a LinkedList instance from Python. */
-    static int __init__(
-        PyLinkedList* self,
-        PyObject* args,
-        PyObject* kwargs
-    ) {
+    static int __init__(PyLinkedList* self, PyObject* args, PyObject* kwargs) {
         using Args = util::PyArgs<util::CallProtocol::KWARGS>;
         using util::ValueError;
         static constexpr std::string_view meth_name{"__init__"};
@@ -1472,10 +1589,13 @@ public:
             PyObject* spec = pyargs.parse("spec", util::none_to_null, (PyObject*) nullptr);
             bool reverse = pyargs.parse("reverse", util::is_truthy, false);
             bool singly_linked = pyargs.parse("singly_linked", util::is_truthy, false);
+            bool packed = pyargs.parse("packed", util::is_truthy, false);
             pyargs.finalize();
 
             // initialize
-            construct(self, iterable, max_size, spec, reverse, singly_linked);
+            construct(
+                self, iterable, max_size, spec, reverse, singly_linked, packed, false
+            );
 
             // exit normally
             return 0;
@@ -1608,10 +1728,15 @@ code that relies on this data structure with only minimal changes.
 
     /* Vtable containing Python @property definitions for the LinkedList. */
     inline static PyGetSetDef properties[] = {
+        BASE_PROPERTY(SINGLY_LINKED),
+        BASE_PROPERTY(DOUBLY_LINKED),
+        // BASE_PROPERTY(XOR),  // not yet implemented
+        BASE_PROPERTY(DYNAMIC),
+        BASE_PROPERTY(PACKED),
+        BASE_PROPERTY(STRICTLY_TYPED),
         BASE_PROPERTY(lock),
         BASE_PROPERTY(capacity),
         BASE_PROPERTY(max_size),
-        BASE_PROPERTY(dynamic),
         BASE_PROPERTY(frozen),
         BASE_PROPERTY(nbytes),
         BASE_PROPERTY(specialization),

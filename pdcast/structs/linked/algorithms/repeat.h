@@ -23,12 +23,12 @@ namespace linked {
 
         // trivial case: empty repetition
         if (repetitions < 0 || view.size() == 0) {
-            return View(view.capacity(), view.dynamic(), view.specialization());
+            return View(view.capacity(), view.specialization());
         }
 
         // preallocate exact size
         size_t reps = static_cast<size_t>(repetitions);
-        View copy(view.size() * reps, view.dynamic(), view.specialization());
+        View copy(view.size() * reps, view.specialization());
 
         // repeatedly copy nodes from original view
         for (size_t i = 0; i < reps; ++i) {

@@ -6,11 +6,11 @@
 #include <optional>  // std::optional
 #include <ostream>  // std::ostream
 #include <sstream>  // std::ostringstream
-#include <utility>
 #include <variant>  // std::variant
 #include <Python.h>  // CPython API
 #include "../util/args.h"  // PyArgs
 #include "../util/except.h"  // throw_python()
+#include "core/allocate.h"
 #include "core/view.h"  // SetView
 #include "base.h"  // LinkedBase
 #include "list.h"  // PyListInterface
@@ -43,20 +43,47 @@ namespace structs {
 namespace linked {
 
 
+/* Apply default config flags for C++ LinkedLists. */
+static constexpr unsigned int set_defaults(unsigned int flags) {
+    unsigned int result = flags;
+    if (!(result & (Config::DOUBLY_LINKED | Config::SINGLY_LINKED | Config::XOR))) {
+        result |= Config::DOUBLY_LINKED;  // default to doubly-linked
+    }
+    if (!(result & (Config::DYNAMIC | Config::FIXED_SIZE))) {
+        result |= Config::DYNAMIC;  // default to dynamic allocator
+    }
+    return result;
+}
+
+
 /* An ordered set based on a combined linked list and hash table. */
-template <typename NodeType, typename LockPolicy = util::BasicLock>
-class LinkedSet : public LinkedBase<linked::SetView<NodeType>, LockPolicy> {
-    using Base = LinkedBase<linked::SetView<NodeType>, LockPolicy>;
+template <
+    typename Key,
+    unsigned int Flags = Config::DEFAULT,
+    typename Lock = util::BasicLock
+>
+class LinkedSet : public LinkedBase<
+    linked::SetView<NodeSelect<Key, set_defaults(Flags)>, set_defaults(Flags)>,
+    Lock
+> {
+    using Base = LinkedBase<
+        linked::SetView<NodeSelect<Key, set_defaults(Flags)>, set_defaults(Flags)>,
+        Lock
+    >;
 
 public:
-    using View = linked::SetView<NodeType>;
-    using Node = typename View::Node;
-    using Value = typename View::Value;
+    using View = typename Base::View;
+    using Node = typename Base::Node;
+    using Value = typename Base::Value;
 
     template <linked::Direction dir>
-    using Iterator = typename View::template Iterator<dir>;
+    using Iterator = typename Base::template Iterator<dir>;
     template <linked::Direction dir>
-    using ConstIterator = typename View::template ConstIterator<dir>;
+    using ConstIterator = typename Base::template ConstIterator<dir>;
+
+    /* Get a variation of this type with a different set of configuration flags. */
+    template <unsigned int NewFlags>
+    using Reconfigure = LinkedSet<Key, NewFlags, Lock>;
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -423,8 +450,11 @@ public:
 
 /* Override the << operator to print the abbreviated contents of a set to an output
 stream (equivalent to Python repr()). */
-template <typename... Ts>
-std::ostream& operator<<(std::ostream& stream, const LinkedSet<Ts...>& set) {
+template <typename T, unsigned int Flags, typename... Ts>
+inline std::ostream& operator<<(
+    std::ostream& stream,
+    const LinkedSet<T, Flags, Ts...>& set
+) {
     stream << linked::repr(
         set.view,
         "LinkedSet",
@@ -442,37 +472,52 @@ std::ostream& operator<<(std::ostream& stream, const LinkedSet<Ts...>& set) {
 
 
 /* Get the union between a LinkedSet and an arbitrary container. */
-template <typename Container, typename... Ts>
-LinkedSet<Ts...> operator|(const LinkedSet<Ts...>& set, const Container& other) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline LinkedSet<T, Flags, Ts...> operator|(
+    const LinkedSet<T, Flags, Ts...>& set,
+    const Container& other
+) {
     return set.union_(other);
 }
 
 
 /* Get the difference between a LinkedSet and an arbitrary container. */
-template <typename Container, typename... Ts>
-LinkedSet<Ts...> operator-(const LinkedSet<Ts...>& set, const Container& other) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline LinkedSet<T, Flags, Ts...> operator-(
+    const LinkedSet<T, Flags, Ts...>& set,
+    const Container& other
+) {
     return set.difference(other);
 }
 
 
 /* Get the intersection between a LinkedSet and an arbitrary container. */
-template <typename Container, typename... Ts>
-LinkedSet<Ts...> operator&(const LinkedSet<Ts...>& set, const Container& other) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline LinkedSet<T, Flags, Ts...> operator&(
+    const LinkedSet<T, Flags, Ts...>& set,
+    const Container& other
+) {
     return set.intersection(other);
 }
 
 
 /* Get the symmetric difference between a LinkedSet and an arbitrary container. */
-template <typename Container, typename... Ts>
-LinkedSet<Ts...> operator^(const LinkedSet<Ts...>& set, const Container& other) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline LinkedSet<T, Flags, Ts...> operator^(
+    const LinkedSet<T, Flags, Ts...>& set,
+    const Container& other
+) {
     return set.symmetric_difference(other);
 }
 
 
 /* Update a LinkedSet in-place, replacing it with the union of it and an arbitrary
 container. */
-template <typename Container, typename... Ts>
-LinkedSet<Ts...>& operator|=(LinkedSet<Ts...>& set, const Container& other) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline LinkedSet<T, Flags, Ts...>& operator|=(
+    LinkedSet<T, Flags, Ts...>& set,
+    const Container& other
+) {
     set.update(other);
     return set;
 }
@@ -480,8 +525,11 @@ LinkedSet<Ts...>& operator|=(LinkedSet<Ts...>& set, const Container& other) {
 
 /* Update a LinkedSet in-place, replacing it with the difference between it and an
 arbitrary container. */
-template <typename Container, typename... Ts>
-LinkedSet<Ts...>& operator-=(LinkedSet<Ts...>& set, const Container& other) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline LinkedSet<T, Flags, Ts...>& operator-=(
+    LinkedSet<T, Flags, Ts...>& set,
+    const Container& other
+) {
     set.difference_update(other);
     return set;
 }
@@ -489,8 +537,11 @@ LinkedSet<Ts...>& operator-=(LinkedSet<Ts...>& set, const Container& other) {
 
 /* Update a LinkedSet in-place, replacing it with the intersection between it and an
 arbitrary container. */
-template <typename Container, typename... Ts>
-LinkedSet<Ts...>& operator&=(LinkedSet<Ts...>& set, const Container& other) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline LinkedSet<T, Flags, Ts...>& operator&=(
+    LinkedSet<T, Flags, Ts...>& set,
+    const Container& other
+) {
     set.intersection_update(other);
     return set;
 }
@@ -498,8 +549,11 @@ LinkedSet<Ts...>& operator&=(LinkedSet<Ts...>& set, const Container& other) {
 
 /* Update a LinkedSet in-place, replacing it with the symmetric difference between it
 and an arbitrary container. */
-template <typename Container, typename... Ts>
-LinkedSet<Ts...>& operator^=(LinkedSet<Ts...>& set, const Container& other) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline LinkedSet<T, Flags, Ts...>& operator^=(
+    LinkedSet<T, Flags, Ts...>& set,
+    const Container& other
+) {
     set.symmetric_difference_update(other);
     return set;
 }
@@ -511,43 +565,43 @@ LinkedSet<Ts...>& operator^=(LinkedSet<Ts...>& set, const Container& other) {
 
 
 /* Check whether a LinkedSet is a proper subset of an arbitrary container. */
-template <typename Container, typename... Ts>
-bool operator<(const LinkedSet<Ts...>& set, const Container& other) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator<(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return linked::issubset(set.view, other, true);
 }
 
 
 /* Check whether a LinkedSet is a subset of an arbitrary container. */
-template <typename Container, typename... Ts>
-bool operator<=(const LinkedSet<Ts...>& set, const Container& other) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator<=(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return linked::issubset(set.view, other, false);
 }
 
 
 /* Check whether a LinkedSet is equal to an arbitrary container. */
-template <typename Container, typename... Ts>
-bool operator==(const LinkedSet<Ts...>& set, const Container& other) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator==(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return linked::set_equal(set.view, other);
 }
 
 
 /* Check whether a LinkedSet is not equal to an arbitrary container. */
-template <typename Container, typename... Ts>
-bool operator!=(const LinkedSet<Ts...>& set, const Container& other) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator!=(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return linked::set_not_equal(set.view, other);
 }
 
 
 /* Check whether a LinkedSet is a superset of an arbitrary container. */
-template <typename Container, typename... Ts>
-bool operator>=(const LinkedSet<Ts...>& set, const Container& other) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator>=(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return linked::issuperset(set.view, other, false);
 }
 
 
 /* Check whether a LinkedSet is a proper superset of an arbitrary container. */
-template <typename Container, typename... Ts>
-bool operator>(const LinkedSet<Ts...>& set, const Container& other) {
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator>(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return linked::issuperset(set.view, other, true);
 }
 
@@ -1900,12 +1954,28 @@ class PyLinkedSet :
 
     /* A std::variant representing all the LinkedSet implementations that are
     constructable from Python. */
-    using SingleSet = LinkedSet<linked::SingleNode<PyObject*>, util::BasicLock>;
-    using DoubleSet = LinkedSet<linked::DoubleNode<PyObject*>, util::BasicLock>;
+    template <unsigned int Flags>
+    using SetConfig = linked::LinkedSet<PyObject*, Flags, util::BasicLock>;
     using Variant = std::variant<
-        SingleSet,
-        DoubleSet
+        SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>,
+        SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
+        SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
+        SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
+        SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
+        SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
+        SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
+        SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
+        SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
+        SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
+        SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
+        SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
     >;
+    template <size_t I>
+    using Alternative = std::variant_alternative_t<I, Variant>;
 
     friend Base;
     friend IList;
@@ -1918,6 +1988,16 @@ class PyLinkedSet :
         new (&variant) Variant(std::forward<Set>(set));
     }
 
+    #define CONSTRUCT(IDX) \
+        if (iterable == nullptr) { \
+            new (&self->variant) Variant(Alternative<IDX>(max_size, spec)); \
+        } else { \
+            new (&self->variant) Variant( \
+                Alternative<IDX>(iterable, max_size, spec, reverse) \
+            ); \
+        } \
+        break; \
+
     /* Construct a PyLinkedSet from scratch using the given constructor arguments. */
     static void construct(
         PyLinkedSet* self,
@@ -1925,26 +2005,55 @@ class PyLinkedSet :
         std::optional<size_t> max_size,
         PyObject* spec,
         bool reverse,
-        bool singly_linked
+        bool singly_linked,
+        bool packed,
+        bool strictly_typed
     ) {
-        if (iterable == nullptr) {
-            if (singly_linked) {
-                new (&self->variant) Variant(SingleSet(max_size, spec));
-            } else {
-                new (&self->variant) Variant(DoubleSet(max_size, spec));
-            }
-        } else {
-            if (singly_linked) {
-                new (&self->variant) Variant(
-                    SingleSet(iterable, max_size, spec, reverse)
-                );
-            } else {
-                new (&self->variant) Variant(
-                    DoubleSet(iterable, max_size, spec, reverse)
-                );
-            }
+        unsigned int code = (
+            Config::SINGLY_LINKED * singly_linked |
+            Config::FIXED_SIZE * max_size.has_value() |
+            Config::PACKED * packed |
+            Config::STRICTLY_TYPED * strictly_typed
+        );
+        switch (code) {
+            case (Config::DEFAULT):
+                CONSTRUCT(0)
+            case (Config::PACKED):
+                CONSTRUCT(1)
+            case (Config::STRICTLY_TYPED):
+                CONSTRUCT(2)
+            case (Config::PACKED | Config::STRICTLY_TYPED):
+                CONSTRUCT(3)
+            case (Config::FIXED_SIZE):
+                CONSTRUCT(4)
+            case (Config::FIXED_SIZE | Config::PACKED):
+                CONSTRUCT(5)
+            case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                CONSTRUCT(6)
+            case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+                CONSTRUCT(7)
+            case (Config::SINGLY_LINKED):
+                CONSTRUCT(8)
+            case (Config::SINGLY_LINKED | Config::PACKED):
+                CONSTRUCT(9)
+            case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
+                CONSTRUCT(10)
+            case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
+                CONSTRUCT(11)
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
+                CONSTRUCT(12)
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
+                CONSTRUCT(13)
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                CONSTRUCT(14)
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+                CONSTRUCT(15)
+            default:
+                throw util::ValueError("invalid argument configuration");
         }
     }
+
+    #undef CONSTRUCT
 
 public:
 
@@ -1972,10 +2081,13 @@ public:
             PyObject* spec = pyargs.parse("spec", util::none_to_null, (PyObject*) nullptr);
             bool reverse = pyargs.parse("reverse", util::is_truthy, false);
             bool singly_linked = pyargs.parse("singly_linked", util::is_truthy, false);
+            bool packed = pyargs.parse("packed", util::is_truthy, false);
             pyargs.finalize();
 
             // initialize
-            construct(self, iterable, max_size, spec, reverse, singly_linked);
+            construct(
+                self, iterable, max_size, spec, reverse, singly_linked, packed, false
+            );
 
             // exit normally
             return 0;
@@ -2112,10 +2224,15 @@ code that relies on this data structure with only minimal changes.
 
     /* Vtable containing Python @property definitions for the LinkedSet. */
     inline static PyGetSetDef properties[] = {
+        BASE_PROPERTY(SINGLY_LINKED),
+        BASE_PROPERTY(DOUBLY_LINKED),
+        // BASE_PROPERTY(XOR),  // not yet implemented
+        BASE_PROPERTY(DYNAMIC),
+        BASE_PROPERTY(PACKED),
+        BASE_PROPERTY(STRICTLY_TYPED),
         BASE_PROPERTY(lock),
         BASE_PROPERTY(capacity),
         BASE_PROPERTY(max_size),
-        BASE_PROPERTY(dynamic),
         BASE_PROPERTY(frozen),
         BASE_PROPERTY(nbytes),
         BASE_PROPERTY(specialization),

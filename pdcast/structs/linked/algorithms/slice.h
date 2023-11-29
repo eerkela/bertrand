@@ -443,10 +443,8 @@ namespace linked {
 
         /* Extract a slice from a linked list. */
         List get() const {
-            // NOTE: we always preallocate with the exact size of the slice, preventing
-            // reallocations.  If the original list is of fixed size, then the slice
-            // will be as well.
-            View result(length(), view.dynamic(), view.specialization());
+            // preallocate to exact size of the slice, preventing reallocations
+            View result(length(), view.specialization());
 
             // trivial case: empty slice
             if (empty()) {
