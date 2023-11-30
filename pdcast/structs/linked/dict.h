@@ -3,14 +3,17 @@
 #define BERTRAND_STRUCTS_LINKED_DICT_H
 
 #include <cstddef>  // size_t
+#include <iterator>
 #include <optional>  // std::optional
 #include <ostream>  // std::ostream
 #include <sstream>  // std::ostringstream
+#include <type_traits>
 #include <utility>  // std::pair
 #include <variant>  // std::variant
 #include <Python.h>  // CPython API
 #include "../util/args.h"  // PyArgs
 #include "../util/except.h"  // throw_python()
+#include "algorithms/map.h"
 #include "core/view.h"  // DictView
 #include "base.h"  // LinkedBase
 #include "list.h"  // PyListInterface
@@ -23,6 +26,7 @@
 #include "algorithms/distance.h"
 #include "algorithms/index.h"
 #include "algorithms/insert.h"
+#include "algorithms/lexical_compare.h"
 #include "algorithms/move.h"
 #include "algorithms/pop.h"
 #include "algorithms/position.h"
@@ -67,6 +71,15 @@ namespace dict_config {
     >;
 
 }
+
+
+/* Forward declarations for dict proxies. */
+template <typename Dict>
+class KeysProxy;
+template <typename Dict>
+class ValuesProxy;
+template <typename Dict>
+class ItemsProxy;
 
 
 /* A n ordered dictionary based on a combined linked list and hash table. */
@@ -380,24 +393,6 @@ public:
         );
     }
 
-    /* Check whether all keys within this dictionary are also present in another
-    container. */
-    template <typename Container>
-    inline bool issubset(Container&& items) const {
-        return linked::issubset(
-            this->view, std::forward<Container>(items), false
-        );
-    }
-
-    /* Check whether all keys within another container are also present in this
-    dictionary. */
-    template <typename Container>
-    inline bool issuperset(Container&& items) const {
-        return linked::issuperset(
-            this->view, std::forward<Container>(items), false
-        );
-    }
-
     /* Get the linear distance between two keys within the dictionary. */
     inline long long distance(const Key& from, const Key& to) const {
         return linked::distance(this->view, from, to);
@@ -422,7 +417,59 @@ public:
     ////    PROXIES    ////
     ///////////////////////
 
-    // TODO: map()
+    /* Proxies allow access to particular elements or slices of a dictionary, allowing
+     * for convenient, Python-like syntax for dictionary operations.
+     *
+     * MapProxies are returned by the normal index operator [] when given a possible
+     * key within the dictionary.  The key does not have to be present, and merely
+     * obtaining a proxy will not modify the dictionary in any way (unlike
+     * std::unordered_map).  The proxy itself delays searches until one of its methods
+     * is called, as follows:
+     *
+     *      Value get(): search the dictionary for this key and return its value.
+     *      Value lru_get(): search for this key and move it to the front of the
+     *          dictionary.
+     *      void set(Value& value): set the value for this key or insert at the end of
+     *          the dictionary if it is not already present.
+     *      void set_left(Value& value): set the value for this key or insert at the
+     *          front of the dictionary if it is not already present.
+     *      void lru_set(Value& value): set the value for this key and move it to the
+     *          front of the dictionary, evicting the last item to make room if
+     *          necessary.
+     *      void del(): remove this key from the dictionary.
+     *      void operator=(Value& value): syntactic sugar for set(value).
+     *      operator Value(): implicit conversion operator.  Syntactic sugar for get().
+     *
+     * KeysProxies, ValuesProxies, and ItemsProxies are returned by the keys(),
+     * values(), and items() methods, respectively.  They follow the same semantics as
+     * Python's built-in dict views, and can be used to iterate over and compare the
+     * keys and values within the dictionary.  See the comments below for details on
+     * how they work.
+     *
+     * Finally, ElementProxies and SliceProxies work the same as for lists, allowing
+     * positional access to elements within the dictionary.  See the corresponding
+     * documentation in linked/list.h for more information.
+     */
+
+    /* Get a read-only, setlike proxy for the keys within this dictionary. */
+    inline KeysProxy<LinkedDict> keys() const {
+        return KeysProxy<LinkedDict>(*this);
+    }
+
+    /* Get a read-only, setlike proxy for the values within this dictionary. */
+    inline ValuesProxy<LinkedDict> values() const {
+        return ValuesProxy<LinkedDict>(*this);
+    }
+
+    /* Get a read-only, setlike proxy for the key-value pairs within this dictionary. */
+    inline ItemsProxy<LinkedDict> items() const {
+        return ItemsProxy<LinkedDict>(*this);
+    }
+
+    /* Get a proxy for a particular key within the dictionary. */
+    inline linked::MapProxy<View> map(const Key& key) {
+        return linked::map(this->view, key);
+    }
 
     /* Get a proxy for a value at a particular index of the dictionary. */
     inline linked::ElementProxy<View> position(long long index) {
@@ -442,64 +489,65 @@ public:
     ////    OPERATOR OVERLOADS    ////
     //////////////////////////////////
 
-    // TODO: index operator uses map() proxy
+    /* NOTE: operators are implemented as non-member functions for commutativity.
+     * The supported operators are as follows:
+     *      (|, |=)     union, union update
+     *      (&, &=)     intersection, intersection update
+     *      (-, -=)     difference, difference update
+     *      (^, ^=)     symmetric difference, symmetric difference update
+     *      (==)        equality
+     *      (!=)        inequality
+     *      (<<)        string stream representation (equivalent to Python repr())
+     *
+     * These all work similarly to their Python counterparts except that they can
+     * accept any iterable container in either C++ or Python as the other operand, and
+     * cover a wider range of operations than the Python dict operators.  Intersections
+     * and differences, in particular, are not normally supported by Python dicts, but
+     * are implemented here for consistency with the set interface.  They can be used
+     * to easily filter dictionaries based on a set of keys:
+     *
+     *      >>> d = LinkedDict({"a": 1, "b": 2, "c": 3, "d": 4})
+     *      >>> d - {"a", "b"}
+     *      LinkedDict({"c": 3, "d": 4})
+     *      >>> d & {"a", "b"}
+     *      LinkedDict({"a": 1, "b": 2})
+     *
+     * Note that if a mapping is provided to either of these operators, only the keys
+     * will be used for comparison.
+     *
+     * The symmetric difference operator (^) is also supported, but only if it is
+     * given another mapping type as the other operand.  In this case, it will remove
+     * those keys that are common to both mappings and insert those that are unique
+     * with their corresponding values.  For example:
+     *
+     *      >>> d = LinkedDict({"a": 1, "b": 2, "c": 3, "d": 4})
+     *      >>> d ^ {"a": 1, "b": 2, "e": 5}
+     *      LinkedDict({"c": 3, "d": 4, "e": 5})
+     *
+     * Finally, set comparison operators (<=, <, >=, >) are not supported for the
+     * dictionary itself, but are supported for the proxies returned by keys() and
+     * potentially items() if the values are also hashable (in which case it acts as a
+     * set of key-value pairs).  For example:
+     *
+     *      >>> d = LinkedDict({"a": 1, "b": 2, "c": 3, "d": 4})
+     *      >>> d.keys() <= {"a", "b", "c", "d"}
+     *      True
+     *      >>> d.items() <= {("a", 1), ("b", 2), ("c", 3), ("d", 4)}
+     *      True
+     */
 
+    /* Overload the index operator[] to return MapProxies for elements within this
+    dictionary. */
+    inline linked::MapProxy<View> operator[](const Key& key) {
+        return map(key);
+    }
 
 };
 
 
-// TODO: these basically just link to the right methods on the base class.  They should
-// also provide custom iterators that return keys, values, or items, respectively.
-// The default iterators for LinkedDict only give keys, just like Python.
-
-// KeysProxy also uses setlike operator overloads.
-
-
-/* A read-only proxy for a dictionary's keys, in the same style as Python's
-`dict.keys()` accessor. */
-template <typename Dict>
-class KeysProxy {
-    friend Dict;
-    const Dict& dict;
-
-    KeysProxy(const Dict& dict) : dict(dict) {}
-
-public:
-
-};
-
-
-/* A read-only proxy for a dictionary's values in the same style as Python's
-`dict.values()` accessor. */
-template <typename Dict>
-class ValuesProxy {
-    friend Dict;
-    const Dict& dict;
-
-    ValuesProxy(const Dict& dict) : dict(dict) {}
-
-public:
-
-};
-
-
-/* A read-only proxy for a dictionary's items, in the same style as Python's
-`dict.items()` accessor. */
-template <typename Dict>
-class ItemsProxy {
-    friend Dict;
-    const Dict& dict;
-
-    ItemsProxy(const Dict& dict) : dict(dict) {}
-
-public:
-
-};
-
-
-/////////////////////////////////////
-////    STRING REPRESENTATION    ////
-/////////////////////////////////////
+//////////////////////////////
+////    DICT OPERATORS    ////
+//////////////////////////////
 
 
 /* Override the << operator to print the abbreviated contents of a dictionary to an
@@ -520,46 +568,70 @@ inline std::ostream& operator<<(
 }
 
 
-//////////////////////////////
-////    SET ARITHMETIC    ////
-//////////////////////////////
+/* NOTE: dictionaries can be combined via the same set arithmetic operators as
+ * LinkedSet (|, |=, -, -=, &, &=, ^, ^=), but only when the other operand is a
+ * sequence of key-value pairs or another mapping type.  The same is true for
+ * comparison operators, which are restricted to == and !=.
+ */
+
+
+/* Check whether a LinkedDict is equal to another mapping or container of pairs. */
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator==(
+    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const Map& other
+) {
+    // TODO: compare both keys and values
+    return linked::set_equal(dict.view, other);
+}
+
+
+/* Check whether a LinkedDict is not equal to an arbitrary container. */
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator!=(
+    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const Map& other
+) {
+    // TODO: compare both keys and values
+    return linked::set_not_equal(dict.view, other);
+}
 
 
 /* Get the union between a LinkedDict and an arbitrary container. */
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline LinkedDict<K, V, Flags, Ts...> operator|(
     const LinkedDict<K, V, Flags, Ts...>& dict,
-    const Container& other
+    const Map& other
 ) {
     return dict.union_(other);
 }
 
 
 /* Get the difference between a LinkedDict and an arbitrary container. */
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline LinkedDict<K, V, Flags, Ts...> operator-(
     const LinkedDict<K, V, Flags, Ts...>& dict,
-    const Container& other
+    const Map& other
 ) {
     return dict.difference(other);
 }
 
 
 /* Get the intersection between a LinkedDict and an arbitrary container. */
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline LinkedDict<K, V, Flags, Ts...> operator&(
     const LinkedDict<K, V, Flags, Ts...>& dict,
-    const Container& other
+    const Map& other
 ) {
     return dict.intersection(other);
 }
 
 
 /* Get the symmetric difference between a LinkedDict and an arbitrary container. */
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline LinkedDict<K, V, Flags, Ts...> operator^(
     const LinkedDict<K, V, Flags, Ts...>& dict,
-    const Container& other
+    const Map& other
 ) {
     return dict.symmetric_difference(other);
 }
@@ -567,10 +639,10 @@ inline LinkedDict<K, V, Flags, Ts...> operator^(
 
 /* Update a LinkedDict in-place, replacing it with the union of it and an arbitrary
 container. */
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline LinkedDict<K, V, Flags, Ts...>& operator|=(
     LinkedDict<K, V, Flags, Ts...>& dict,
-    const Container& other
+    const Map& other
 ) {
     dict.update(other);
     return dict;
@@ -579,10 +651,10 @@ inline LinkedDict<K, V, Flags, Ts...>& operator|=(
 
 /* Update a LinkedDict in-place, replacing it with the difference between it and an
 arbitrary container. */
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline LinkedDict<K, V, Flags, Ts...>& operator-=(
     LinkedDict<K, V, Flags, Ts...>& dict,
-    const Container& other
+    const Map& other
 ) {
     dict.difference_update(other);
     return dict;
@@ -591,10 +663,10 @@ inline LinkedDict<K, V, Flags, Ts...>& operator-=(
 
 /* Update a LinkedDict in-place, replacing it with the intersection between it and an
 arbitrary container. */
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline LinkedDict<K, V, Flags, Ts...>& operator&=(
     LinkedDict<K, V, Flags, Ts...>& dict,
-    const Container& other
+    const Map& other
 ) {
     dict.intersection_update(other);
     return dict;
@@ -603,78 +675,451 @@ inline LinkedDict<K, V, Flags, Ts...>& operator&=(
 
 /* Update a LinkedDict in-place, replacing it with the symmetric difference between it
 and an arbitrary container. */
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline LinkedDict<K, V, Flags, Ts...>& operator^=(
     LinkedDict<K, V, Flags, Ts...>& dict,
-    const Container& other
+    const Map& other
 ) {
     dict.symmetric_difference_update(other);
     return dict;
 }
 
 
-//////////////////////////////
-////    SET COMPARISON    ////
-//////////////////////////////
+////////////////////////
+////    KEY VIEW    ////
+////////////////////////
 
 
-/* Check whether a LinkedDict is a proper subset of an arbitrary container. */
+/* A read-only proxy for a dictionary's keys, in the same style as Python's
+`dict.keys()` accessor. */
+template <typename Dict>
+class KeysProxy {
+    friend Dict;
+    const Dict& dict;
+
+    KeysProxy(const Dict& dict) : dict(dict) {}
+
+public:
+    using Key = typename Dict::Key;
+
+    /* Get a read-only reference to the dictionary. */
+    inline const Dict& mapping() const {
+        return dict;
+    }
+
+    /* Check if the referenced dictionary contains the given key. */
+    inline bool contains(Key& key) const {
+        return dict.contains(key);
+    }
+
+    /* Check whether the referenced dictionary has no keys in common with another
+    container. */
+    template <typename Container>
+    inline bool isdisjoint(Container&& items) const {
+        return linked::isdisjoint(dict.view, std::forward<Container>(items));
+    }
+
+    /* Check whether all the keys of the referenced dictionary are also present in
+    another container. */
+    template <typename Container>
+    inline bool issubset(Container&& items) const {
+        return linked::issubset(
+            dict.view, std::forward<Container>(items), false
+        );
+    }
+
+    /* Check whether all the keys within another container are also present in the
+    referenced dictionary. */
+    template <typename Container>
+    inline bool issuperset(Container&& items) const {
+        return linked::issuperset(
+            dict.view, std::forward<Container>(items), false
+        );
+    }
+
+    /* Get the total number of keys stored in the referenced dictionary. */
+    inline size_t size() const {
+        return dict.size();
+    }
+
+    /////////////////////////
+    ////    ITERATORS    ////
+    /////////////////////////
+
+    /* Iterate through the keys of the referenced dictionary. */
+    inline auto begin() const { return dict.begin(); }
+    inline auto end() const { return dict.end(); }
+    inline auto cbegin() const { return dict.cbegin(); }
+    inline auto cend() const { return dict.cend(); }
+    inline auto rbegin() const { return dict.rbegin(); }
+    inline auto rend() const { return dict.rend(); }
+    inline auto crbegin() const { return dict.crbegin(); }
+    inline auto crend() const { return dict.crend(); }
+
+    ////////////////////////
+    ////    INDEXING    ////
+    ////////////////////////
+
+    // TODO: position(), slice() ?
+
+    //////////////////////////////////
+    ////    OPERATOR OVERLOADS    ////
+    //////////////////////////////////
+
+    /* NOTE: KeysProxies support set comparisons using the <, <=, ==, !=, >=, and >
+     * operators,  even though the underlying dictionary does not.  They also support
+     * the |, &, -, and ^ operators for set arithmetic, but not their in-place
+     * equivalents (|=, &=, -=, ^=).  This is consistent with Python, which enforces
+     * the same restrictions for its built-in dict type.  See the non-member operator
+     * overloads below for more details.
+     */
+
+    /* Get the key at a particular index of the referenced dictionary. */
+    inline const ElementProxy<typename Dict::View> operator[](long long index) const {
+        return dict.position(index);
+    }
+
+};
+
+
+/* NOTE: set comparisons are only exposed for the keys() proxy of a LinkedDict
+ * instance.  This is consistent with the Python API, which enforces the same rule for
+ * its built-in dict type.  It's more explicit than comparing the dictionary directly,
+ * since it is immediately clear that values are not included in the comparison.
+ */
+
+
+/* Check whether the keys in a LinkedDict are equal to an arbitrary container. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator==(
+    const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
+    const Container& other
+) {
+    return linked::set_equal(proxy.mapping().view, other);
+}
+
+
+/* Check whether the keys in a LinkedDict are not equal to an arbitrary container. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator!=(
+    const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
+    const Container& other
+) {
+    return linked::set_not_equal(proxy.mapping().view, other);
+}
+
+
+/* Check whether the keys in a LinkedDict form a proper subset of an arbitrary
+container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator<(
-    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
     const Container& other
 ) {
-    return linked::issubset(dict.view, other, true);
+    return linked::issubset(proxy.mapping().view, other, true);
 }
 
 
-/* Check whether a LinkedDict is a subset of an arbitrary container. */
+/* Check whether the keys in a LinkedDict form a subset of an arbitrary container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator<=(
-    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
     const Container& other
 ) {
-    return linked::issubset(dict.view, other, false);
+    return linked::issubset(proxy.mapping().view, other, false);
 }
+
+
+/* Check whether the keys in a LinkedDict form a superset of an arbitrary container. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator>=(
+    const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
+    const Container& other
+) {
+    return linked::issuperset(proxy.mapping().view, other, false);
+}
+
+
+/* Check whether the keys in a LinkedDict form a proper superset of an arbitrary
+container. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator>(
+    const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
+    const Container& other
+) {
+    return linked::issuperset(proxy.mapping().view, other, true);
+}
+
+
+//////////////////////////
+////    VALUE VIEW    ////
+//////////////////////////
+
+
+/* A read-only proxy for a dictionary's values in the same style as Python's
+`dict.values()` accessor. */
+template <typename Dict>
+class ValuesProxy {
+    friend Dict;
+    const Dict& dict;
+
+    ValuesProxy(const Dict& dict) : dict(dict) {}
+
+public:
+
+    /* Get a read-only reference to the proxied dictionary. */
+    inline const Dict& mapping() const {
+        return dict;
+    }
+
+    /* Check if the referenced dictionary contains the given value. */
+    inline bool contains(const typename Dict::Value& value) const {
+        return dict.contains(value);  // TODO: replicate behavior of LinkedList.contains().
+    }
+
+    /* Get the total number of values stored in the proxied dictionary. */
+    inline size_t size() const {
+        return dict.size();
+    }
+
+    /* A custom iterator that dereferences to the value associated with each key,
+    rather than the keys themselves. */
+    template <Direction dir>
+    struct Iterator {
+        using Iter = typename Dict::template Iterator<dir>;
+        using Value = typename Dict::Value;
+        Iter iter;
+
+        /* Iterator traits. */
+        using iterator_category     = std::forward_iterator_tag;
+        using difference_type       = std::ptrdiff_t;
+        using value_type            = std::remove_reference_t<Value>;
+        using pointer               = value_type*;
+        using reference             = value_type&;
+
+        Iterator(const Iter&& base) : iter(std::move(base)) {}
+
+        /* Dereference to the mapped value rather than the key. */
+        inline Value operator*() const noexcept {
+            return iter->curr()->mapped();
+        }
+
+        /* Advance to the next node. */
+        inline Iterator& operator++() noexcept {
+            ++iter;
+            return *this;
+        }
+
+        /* Terminate the sequence. */
+        template <Direction T>
+        inline bool operator!=(const Iterator<T>& other) const noexcept {
+            return iter != other.iter;
+        }
+
+    };
+
+    /* Iterate through the values of the referenced dictionary. */
+    inline auto begin() const { return Iterator<Direction::forward>(dict.begin()); }
+    inline auto end() const { return Iterator<Direction::forward>(dict.end()); }
+    inline auto cbegin() const { return Iterator<Direction::forward>(dict.cbegin()); }
+    inline auto cend() const { return Iterator<Direction::forward>(dict.cend()); }
+    inline auto rbegin() const { return Iterator<Direction::backward>(dict.rbegin()); }
+    inline auto rend() const { return Iterator<Direction::backward>(dict.rend()); }
+    inline auto crbegin() const { return Iterator<Direction::backward>(dict.crbegin()); }
+    inline auto crend() const { return Iterator<Direction::backward>(dict.crend()); }
+
+};
+
+
+/* NOTE: Since LinkedDicts are fundamentally ordered, they support lexical comparisons
+ * between their values() and arbitrary containers just like LinkedLists.  These will
+ * be applied to the values in the same order as they appear in the dictionary.
+ */
+
+
+/* Check whether the values in a LinkedDict are lexically equal to an arbitrary
+container. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator==(
+    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
+    const Container& other
+) {
+    return linked::lexical_eq(proxy, other);
+}
+
+
+/* Check whether the values in a LinkedDict are not lexically equivalent to an
+arbitrary container. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator!=(
+    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
+    const Container& other
+) {
+    return !linked::lexical_eq(proxy, other);
+}
+
+
+/* Check whether the values in a LinkedDict are lexically less than those of an
+arbitrary container. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator<(
+    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
+    const Container& other
+) {
+    return linked::lexical_lt(proxy, other);
+}
+
+
+/* Check whether the values in a LinkedDict are lexically less than or equal to those
+of an arbitrary container. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator<=(
+    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
+    const Container& other
+) {
+    return linked::lexical_le(proxy, other);
+}
+
+
+/* Check whether the values in a LinkedDict are lexically greater than or equal to
+those of an arbitrary container. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator>=(
+    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
+    const Container& other
+) {
+    return linked::lexical_ge(proxy, other);
+}
+
+
+/* Check whether the values in a LinkedDict are lexically greater than those of an
+arbitrary container. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator>(
+    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
+    const Container& other
+) {
+    return linked::lexical_gt(proxy, other);
+}
+
+
+/////////////////////////
+////    ITEM VIEW    ////
+/////////////////////////
+
+
+/* A read-only proxy for a dictionary's items, in the same style as Python's
+`dict.items()` accessor. */
+template <typename Dict>
+class ItemsProxy {
+    friend Dict;
+    const Dict& dict;
+
+    ItemsProxy(const Dict& dict) : dict(dict) {}
+
+    /* Check whether std::hash<> is specialized for the given value type. */
+    template <typename T, typename = void>
+    struct is_hashable : std::false_type {};
+    template <typename T>
+    struct is_hashable<T, std::void_t<decltype(std::hash<T>{}(std::declval<T>()))>> :
+        std::true_type
+    {};
+
+public:
+    using Key = typename Dict::Key;
+    using Value = typename Dict::Value;
+    static constexpr bool hashable = is_hashable<Value>::value;
+
+    /* Get a read-only reference to the proxied dictionary. */
+    inline const Dict& mapping() const {
+        return dict;
+    }
+
+    /* Check if the referenced dictionary contains the given value. */
+    inline bool contains(const std::pair<Key, Value> item) const {
+        typename Dict::Node* node = dict.view.search(item.first);
+        return node != nullptr && util::eq(node->mapped(), item.second);
+    }
+
+    /* Get the total number of items stored in the proxied dictionary. */
+    inline size_t size() const {
+        return dict.size();
+    }
+
+    /* A custom iterator that dereferences to the value associated with each key,
+    rather than the keys themselves. */
+    template <Direction dir>
+    struct Iterator {
+        using Iter = typename Dict::template Iterator<dir>;
+        using Key = typename Dict::Key;
+        using Value = typename Dict::Value;
+        Iter iter;
+
+        /* Iterator traits. */
+        using iterator_category     = std::forward_iterator_tag;
+        using difference_type       = std::ptrdiff_t;
+        using value_type            = std::remove_reference_t<Value>;
+        using pointer               = value_type*;
+        using reference             = value_type&;
+
+        Iterator(const Iter&& base) : iter(std::move(base)) {}
+
+        /* Dereference to the mapped value rather than the key. */
+        inline std::pair<Key, Value> operator*() const noexcept {
+            return std::make_pair(*iter, iter->curr()->mapped());
+        }
+
+        /* Advance to the next node. */
+        inline Iterator& operator++() noexcept {
+            ++iter;
+            return *this;
+        }
+
+        /* Terminate the sequence. */
+        template <Direction T>
+        inline bool operator!=(const Iterator<T>& other) const noexcept {
+            return iter != other.iter;
+        }
+
+    };
+
+    /* Iterate through the values of the referenced dictionary. */
+    inline auto begin() const { return Iterator<Direction::forward>(dict.begin()); }
+    inline auto end() const { return Iterator<Direction::forward>(dict.end()); }
+    inline auto cbegin() const { return Iterator<Direction::forward>(dict.cbegin()); }
+    inline auto cend() const { return Iterator<Direction::forward>(dict.cend()); }
+    inline auto rbegin() const { return Iterator<Direction::backward>(dict.rbegin()); }
+    inline auto rend() const { return Iterator<Direction::backward>(dict.rend()); }
+    inline auto crbegin() const { return Iterator<Direction::backward>(dict.crbegin()); }
+    inline auto crend() const { return Iterator<Direction::backward>(dict.crend()); }
+
+};
+
+
+/* NOTE: items() proxies also support setlike comparisons just like keys(), but only
+ * if all of the values are also hashable.  It can then be treated like a set of
+ * key-value pairs, and comparisons will be based on both the keys and values of the
+ * dictionary.  If the values are not hashable, then only == and != are supported.
+ */
 
 
 /* Check whether a LinkedDict is equal to an arbitrary container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator==(
-    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const ItemsProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
     const Container& other
 ) {
-    return linked::set_equal(dict.view, other);
+    return proxy.mapping() == other;  // same as LinkedDict
 }
 
 
 /* Check whether a LinkedDict is not equal to an arbitrary container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator!=(
-    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const ItemsProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
     const Container& other
 ) {
-    return linked::set_not_equal(dict.view, other);
-}
-
-
-/* Check whether a LinkedDict is a superset of an arbitrary container. */
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator>=(
-    const LinkedDict<K, V, Flags, Ts...>& dict,
-    const Container& other
-) {
-    return linked::issuperset(dict.view, other, false);
-}
-
-
-/* Check whether a LinkedDict is a proper superset of an arbitrary container. */
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator>(
-    const LinkedDict<K, V, Flags, Ts...>& dict,
-    const Container& other
-) {
-    return linked::issuperset(dict.view, other, true);
+    return proxy.mapping() != other;  // same as LinkedDict
 }
 
 

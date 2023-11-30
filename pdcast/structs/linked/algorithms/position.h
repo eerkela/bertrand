@@ -5,6 +5,7 @@
 #include <cstddef>  // size_t
 #include <stdexcept>  // std::out_of_range
 #include <sstream>  // std::ostringstream
+#include <type_traits>  // std::enable_if_t<>
 #include <Python.h>  // CPython API
 #include "../../util/base.h"  // is_pyobject<>
 #include "../../util/except.h"  // TypeError
@@ -18,7 +19,7 @@ namespace structs {
 namespace linked {
 
 
-    /* forward declaration */
+    /* Forward declaration for proxy object. */
     template <typename View>
     class ElementProxy;
 
@@ -123,7 +124,24 @@ namespace linked {
         template <Direction dir>
         using Iterator = typename View::template Iterator<dir>;
 
+        View& view;
+        Bidirectional<Iterator> iter;
+
+        template <typename _View>
+        friend auto position(_View& view, long long index)
+            -> std::enable_if_t<ViewTraits<_View>::linked, ElementProxy<_View>>;
+
+        template <Direction dir>
+        ElementProxy(View& view, Iterator<dir>&& iter) :
+            view(view), iter(std::move(iter))
+        {}
+
     public:
+        /* Disallow ElementProxies from being stored as lvalues. */
+        ElementProxy(const ElementProxy&) = delete;
+        ElementProxy(ElementProxy&&) = delete;
+        ElementProxy& operator=(const ElementProxy&) = delete;
+        ElementProxy& operator=(ElementProxy&&) = delete;
 
         /* Get the value at the current index. */
         inline Value get() const {
@@ -164,24 +182,6 @@ namespace linked {
             return *this;
         }
 
-        /* Disallow ElementProxies from being stored as lvalues. */
-        ElementProxy(const ElementProxy&) = delete;
-        ElementProxy(ElementProxy&&) = delete;
-        ElementProxy& operator=(const ElementProxy&) = delete;
-        ElementProxy& operator=(ElementProxy&&) = delete;
-
-    private:
-        View& view;
-        Bidirectional<Iterator> iter;
-
-        template <typename _View>
-        friend auto position(_View& view, long long index)
-            -> std::enable_if_t<ViewTraits<_View>::linked, ElementProxy<_View>>;
-
-        template <Direction dir>
-        ElementProxy(View& view, Iterator<dir>&& iter) :
-            view(view), iter(std::move(iter))
-        {}
     };
 
 

@@ -93,15 +93,6 @@ public:
     using View = typename Base::View;
     using Key = K;
 
-    template <linked::Direction dir>
-    using Iterator = typename Base::template Iterator<dir>;
-    template <linked::Direction dir>
-    using ConstIterator = typename Base::template ConstIterator<dir>;
-
-    /* Get a variation of this type with a different set of configuration flags. */
-    template <unsigned int NewFlags>
-    using Reconfigure = LinkedSet<Key, NewFlags, Lock>;
-
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
@@ -115,14 +106,46 @@ public:
     /////////////////////////////
 
     /* LinkedSets implement the full Python set interface with equivalent semantics to
-     * the built-in Python set type, as well as a few addons from `collections.deque`.
-     * There are only a few differences:
+     * the built-in Python set type.  They are also ordered just like LinkedLists, and
+     * inherit many of the same operations.  The following are some notable differences
+     * from the Python set interface:
      *
-     *      1.  The add() and update() methods accept a second boolean argument that
-     *          signals whether the item(s) should be inserted at the beginning of the
-     *          list or at the end.  This is similar to the appendleft() and
-     *          extendleft() methods of `collections.deque`.
-     *      TODO
+     *      1.  The add(), union()/update(), and symmetric_difference()/
+     *          symmetric_difference_update() methods have corresponding *_left()
+     *          and lru_*() counterparts.  These methods append to the head of the set
+     *          rather than the tail.  The lru_*() methods also move existing items to
+     *          the head of the set and evict the tail to make room if necessary.
+     *      2.  Similarly, the lru_contains() method can be used to check if a key is
+     *          present in the set and move it to the head of the set if so.
+     *      3.  The set supports the index(), count(), sort(), reverse(), and rotate()
+     *          methods from the LinkedList interface, which all behave identically to
+     *          their list equivalents.
+     *      4.  The insert() method, which inserts a key at a specific index, will
+     *          raise an error if the given key is already present within the set.
+     *      5.  The pop() method accepts an optional index argument, which pops the
+     *          element at a specific index rather than always popping from the tail.
+     *      6.  The set supports additional methods not found on unordered sets, such
+     *          as:
+     *              distance(key1, key2):
+     *                  get the number of indices from key1 to key2.
+     *              swap(key1, key2):
+     *                  swap the positions of key1 and key2.  
+     *              move(key, steps):
+     *                  move a key by the specified number of steps relative to its
+     *                  current position.
+     *              move_to_index(key, index):
+     *                  move key to the specified index relative to the start of the
+     *                  set.
+     *      7.  Sets can be positionally sliced and accessed just like lists.  If a
+     *          non-unique key is inserted, an error will be thrown and the set will
+     *          return to its original state.
+     *      8.  Lastly, at the C++ level, Python's set.union() method is renamed to
+     *          union_() to prevent a naming conflict with the C++ union keyword.
+     *
+     * Most of these are related to the fact that LinkedSets are fundamentally ordered
+     * and thus equivalent in many respects to LinkedLists.  They can therefore be used
+     * as both sets and lists with constant-time access to each element.  The interface
+     * supports both use cases, with similar performance to Python's built-in set type.
      */
 
     /* Add a key to the end of the set if it is not already present. */
@@ -372,47 +395,12 @@ public:
     /* Proxies allow access to a particular element or slice of a set, allowing
      * convenient, Python-like syntax for set operations.
      *
-     * ElementProxies are returned by the array index operator [] when given with a
-     * single numeric argument.  This argument can be negative following the same
-     * semantics as built-in Python lists (i.e. -1 refers to the last element, and
-     * overflow results in an error).  Each proxy offers the following methods:
-     *
-     *      Key get(): return the value at the current index.
-     *      void set(Key& value): set the value at the current index.
-     *      void del(): delete the value at the current index.
-     *      void insert(Key& value): insert a value at the current index.
-     *      Key pop(): remove the value at the current index and return it.
-     *      operator Key(): implicitly coerce the proxy to its value in function
-     *          calls and other contexts.
-     *      operator=(Key& value): set the value at the current index using
-     *          assignment syntax.
-     *
-     * SliceProxies are returned by the `slice()` factory method, which can accept
-     * either a Python slice object or separate start, stop, and step arguments, each
-     * of which are optional, and can be negative following the same semantics as
-     * above.  Each proxy exposes the following methods:
-     *
-     *      LinkedSet get(): return a new set containing the contents of the slice.
-     *      void set(PyObject* keys): overwrite the contents of the slice with the
-     *          contents of the iterable.
-     *      void del(): remove the slice from the set.
-     *      Iterator iter(): return a coupled iterator over the slice.
-     *          NOTE: slice iterators may not yield results in the same order as the
-     *          step size would indicate.  This is because slices are traversed in
-     *          such a way as to minimize the number of nodes that must be visited and
-     *          avoid backtracking.  See linked/algorithms/slice.h for more details.
-     *      Iterator begin():  return an iterator to the first element of the slice.
-     *          See note above.
-     *      Iterator end(): return an iterator to terminate the slice.
-     *
-     * RelativeProxies are returned by the `relative()` factory method, which accepts
-     * any value within the set.  The value is searched and used as a reference point
-     * for relative indexing.  The resulting proxies can then be used to manipulate the
-     * set locally around the sentinel value, which can be faster than operating on the
-     * whole set at once.  For instance, a relative insertion can be O(1), whereas a
-     * whole-set insertion is O(n).  Each proxy exposes the following methods:
-     *
-     *      TODO
+     * Since LinkedSets are fundamentally ordered, they implement the same positional
+     * proxies as LinkedLists.  This means that set elements can be accessed using
+     * integer indices and slices, which is not possible for Python sets or
+     * std::unordered_set.  Insertions are guaranteed never to break the set
+     * invariants, and will throw errors otherwise.  See structs/linked/list.h for more
+     * information.
      */
 
     /* Get a proxy for a value at a particular index of the set. */
@@ -434,25 +422,26 @@ public:
     //////////////////////////////////
 
     /* NOTE: operators are implemented as non-member functions for commutativity.
-     * Namely, the supported operators are as follows:
-     *      (|)     union
-     *      (&)     intersection
-     *      (-)     difference
-     *      (^)     symmetric difference
-     *      (<)     proper subset comparison
-     *      (<=)    subset comparison
-     *      (==)    equality comparison
-     *      (!=)    inequality comparison
-     *      (>=)    superset comparison
-     *      (>)     proper superset comparison
+     * The supported operators are as follows:
+     *      (|, |=)     union, union update
+     *      (&, &=)     intersection, intersection update
+     *      (-, -=)     difference, difference update
+     *      (^, ^=)     symmetric difference, symmetric difference update
+     *      (<)         proper subset comparison
+     *      (<=)        subset comparison
+     *      (==)        equality comparison
+     *      (!=)        inequality comparison
+     *      (>=)        superset comparison
+     *      (>)         proper superset comparison
+     *      (<<)        string stream representation (equivalent to Python repr())
      *
-     * These all work similarly to their Python equivalents except that they can accept
-     * any iterable container in either C++ or Python to compare against.  This
-     * symmetry is provided by the universal utility functions in structs/util/iter.h
-     * and structs/util/python.h.
+     * These all work similarly to their Python counterparts except that they can
+     * accept any iterable container in either C++ or Python as the other operand.
+     * This symmetry is provided by the universal utility functions in
+     * structs/util/iter.h and structs/util/python.h.
      */
 
-    /* Overload the array index operator ([]) to allow pythonic list indexing. */
+    /* Overload the array index operator ([]) to allow pythonic set indexing. */
     inline auto operator[](long long index) {
         return position(index);
     }
@@ -460,9 +449,9 @@ public:
 };
 
 
-/////////////////////////////////////
-////    STRING REPRESENTATION    ////
-/////////////////////////////////////
+/////////////////////////////
+////    SET OPERATORS    ////
+/////////////////////////////
 
 
 /* Override the << operator to print the abbreviated contents of a set to an output
@@ -481,11 +470,6 @@ inline std::ostream& operator<<(
     );
     return stream;
 }
-
-
-//////////////////////////////
-////    SET ARITHMETIC    ////
-//////////////////////////////
 
 
 /* Get the union between a LinkedSet and an arbitrary container. */
@@ -574,11 +558,6 @@ inline LinkedSet<T, Flags, Ts...>& operator^=(
     set.symmetric_difference_update(other);
     return set;
 }
-
-
-//////////////////////////////
-////    SET COMPARISON    ////
-//////////////////////////////
 
 
 /* Check whether a LinkedSet is a proper subset of an arbitrary container. */

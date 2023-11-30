@@ -87,11 +87,6 @@ public:
     using View = typename Base::View;
     using Value = T;
 
-    template <linked::Direction dir>
-    using Iterator = typename Base::template Iterator<dir>;
-    template <linked::Direction dir>
-    using ConstIterator = typename Base::template ConstIterator<dir>;
-
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
@@ -108,17 +103,15 @@ public:
      * the built-in Python list type, as well as a few addons from `collections.deque`.
      * There are only a few differences:
      *
-     *      1.  The append() and extend() methods accept a second boolean argument that
-     *          signals whether the item(s) should be inserted at the beginning of the
-     *          list or at the end.  This is similar to the appendleft() and
+     *      1.  The append() and extend() methods have corresponding append_left() and
+     *          extend_left() counterparts.  These are similar to the appendleft() and
      *          extendleft() methods of `collections.deque`.
      *      2.  The count() method accepts optional `start` and `stop` arguments that
      *          specify a slice of the list to search within.  This is similar to the
      *          index() method of the built-in Python list.
      *      3.  LinkedLists are able to store non-Python C++ types, but only when
-     *          declared from C++ code.  LinkedLists are available from Python, but can
-     *          only store Python objects (i.e. PyObject*) when declared from a Python
-     *          context.
+     *          declared from C++ or Cython.  LinkedLists are available from Python,
+     *          but can only store Python objects when declared from a Python context.
      *
      * Otherwise, everything should behave exactly as expected, with similar overall
      * performance to a built-in Python list (random access limitations of linked lists
@@ -272,20 +265,20 @@ public:
     //////////////////////////////////
 
     /* NOTE: operators are implemented as non-member functions for commutativity.
-     * Namely, the supported operators are as follows:
-     *      (+)     concatenation
-     *      (*)     repetition
-     *      (<)     lexicographic less-than comparison
-     *      (<=)    lexicographic less-than-or-equal-to comparison
-     *      (==)    lexicographic equality comparison
-     *      (!=)    lexicographic inequality comparison
-     *      (>=)    lexicographic greater-than-or-equal-to comparison
-     *      (>)     lexicographic greater-than comparison
+     * The supported operators are as follows:
+     *      (+, +=)     concatenation, in-place concatenation
+     *      (*, *=)     repetition, in-place repetition
+     *      (<)         lexicographic less-than comparison
+     *      (<=)        lexicographic less-than-or-equal-to comparison
+     *      (==)        lexicographic equality comparison
+     *      (!=)        lexicographic inequality comparison
+     *      (>=)        lexicographic greater-than-or-equal-to comparison
+     *      (>)         lexicographic greater-than comparison
      *
-     * These all work similarly to their Python equivalents except that they can accept
-     * any iterable container in either C++ or Python to compare against.  This
-     * symmetry is provided by the universal utility functions in structs/util/iter.h
-     * and structs/util/python.h.
+     * These all work similarly to their Python counterparts except that they can
+     * accept any iterable container in either C++ or Python as the other operand.
+     * This symmetry is provided by the universal utility functions in
+     * structs/util/iter.h and structs/util/python.h.
      */
 
     /* Overload the array index operator ([]) to allow pythonic list indexing. */
@@ -296,9 +289,9 @@ public:
 };
 
 
-/////////////////////////////////////
-////    STRING REPRESENTATION    ////
-/////////////////////////////////////
+//////////////////////////////
+////    LIST OPERATORS    ////
+//////////////////////////////
 
 
 /* Override the << operator to print the abbreviated contents of a list to an output
@@ -317,11 +310,6 @@ inline std::ostream& operator<<(
     );
     return stream;
 }
-
-
-/////////////////////////////
-////    CONCATENATION    ////
-/////////////////////////////
 
 
 /* Concatenate a LinkedList with an arbitrary C++/Python container to produce a new
@@ -344,11 +332,6 @@ inline LinkedList<T, Flags, Ts...>& operator+=(
     linked::extend(lhs.view, rhs);
     return lhs;
 }
-
-
-//////////////////////////
-////    REPETITION    ////
-//////////////////////////
 
 
 /* Repeat the elements of a LinkedList the specified number of times. */
@@ -382,18 +365,10 @@ inline LinkedList<T, Flags, Ts...>& operator*=(
 }
 
 
-////////////////////////////////////////
-////    LEXICOGRAPHIC COMPARISON    ////
-////////////////////////////////////////
-
-
 /* Apply a lexicographic `<` comparison between the elements of a LinkedList and
 another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator<(
-    const LinkedList<T, Flags, Ts...>& lhs,
-    const Container& rhs
-) {
+inline bool operator<(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
     return linked::lexical_lt(lhs, rhs);
 }
 
@@ -401,10 +376,7 @@ inline bool operator<(
 /* Apply a lexicographic `<` comparison between the elements of a LinkedList and
 another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator<(
-    const Container& lhs,
-    const LinkedList<T, Flags, Ts...>& rhs
-) {
+inline bool operator<(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
     return linked::lexical_lt(lhs, rhs);
 }
 
@@ -412,10 +384,7 @@ inline bool operator<(
 /* Apply a lexicographic `<=` comparison between the elements of a LinkedList and
 another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator<=(
-    const LinkedList<T, Flags, Ts...>& lhs,
-    const Container& rhs
-) {
+inline bool operator<=(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
     return linked::lexical_le(lhs, rhs);
 }
 
@@ -423,10 +392,7 @@ inline bool operator<=(
 /* Apply a lexicographic `<=` comparison between the elements of a LinkedList and
 another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator<=(
-    const Container& lhs,
-    const LinkedList<T, Flags, Ts...>& rhs
-) {
+inline bool operator<=(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
     return linked::lexical_lt(lhs, rhs);
 }
 
@@ -434,10 +400,7 @@ inline bool operator<=(
 /* Apply a lexicographic `==` comparison between the elements of a LinkedList and
 another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator==(
-    const LinkedList<T, Flags, Ts...>& lhs,
-    const Container& rhs
-) {
+inline bool operator==(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
     return linked::lexical_eq(lhs, rhs);
 }
 
@@ -445,10 +408,7 @@ inline bool operator==(
 /* Apply a lexicographic `==` comparison between the elements of a LinkedList and
 another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator==(
-    const Container& lhs,
-    const LinkedList<T, Flags, Ts...>& rhs
-) {
+inline bool operator==(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
     return linked::lexical_eq(lhs, rhs);
 }
 
@@ -456,10 +416,7 @@ inline bool operator==(
 /* Apply a lexicographic `!=` comparison between the elements of a LinkedList and
 another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator!=(
-    const LinkedList<T, Flags, Ts...>& lhs,
-    const Container& rhs
-) {
+inline bool operator!=(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
     return !linked::lexical_eq(lhs, rhs);
 }
 
@@ -467,10 +424,7 @@ inline bool operator!=(
 /* Apply a lexicographic `!=` comparison between the elements of a LinkedList and
 another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator!=(
-    const Container& lhs,
-    const LinkedList<T, Flags, Ts...>& rhs
-) {
+inline bool operator!=(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
     return !linked::lexical_eq(lhs, rhs);
 }
 
@@ -478,10 +432,7 @@ inline bool operator!=(
 /* Apply a lexicographic `>=` comparison between the elements of a LinkedList and
 another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator>=(
-    const LinkedList<T, Flags, Ts...>& lhs,
-    const Container& rhs
-) {
+inline bool operator>=(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
     return linked::lexical_ge(lhs, rhs);
 }
 
@@ -489,10 +440,7 @@ inline bool operator>=(
 /* Apply a lexicographic `>=` comparison between the elements of a LinkedList and
 another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator>=(
-    const Container& lhs,
-    const LinkedList<T, Flags, Ts...>& rhs
-) {
+inline bool operator>=(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
     return linked::lexical_ge(lhs, rhs);
 }
 
@@ -500,10 +448,7 @@ inline bool operator>=(
 /* Apply a lexicographic `>` comparison between the elements of a LinkedList and
 another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator>(
-    const LinkedList<T, Flags, Ts...>& lhs,
-    const Container& rhs
-) {
+inline bool operator>(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
     return linked::lexical_gt(lhs, rhs);
 }
 
@@ -511,10 +456,7 @@ inline bool operator>(
 /* Apply a lexicographic `>` comparison between the elements of a LinkedList and
 another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator>(
-    const Container& lhs,
-    const LinkedList<T, Flags, Ts...>& rhs
-) {
+inline bool operator>(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
     return linked::lexical_gt(lhs, rhs);
 }
 
