@@ -10,7 +10,7 @@
 #include <Python.h>  // CPython API
 #include "../util/args.h"  // PyArgs
 #include "../util/except.h"  // throw_python()
-#include "core/allocate.h"
+#include "core/allocate.h"  // Config
 #include "core/view.h"  // SetView
 #include "base.h"  // LinkedBase
 #include "list.h"  // PyListInterface
@@ -169,57 +169,6 @@ public:
         linked::insert(this->view, index, key);
     }
 
-    /* Extend a set by adding elements from one or more iterables that are not already
-    present. */
-    template <typename... Containers>
-    inline void update(Containers&&... items) {
-        (linked::update(this->view, std::forward<Containers>(items)), ...);
-    }
-
-    /* Extend a set by left-adding elements from one or more iterables that are not
-    already present. */
-    template <typename... Containers>
-    inline void update_left(Containers&&... items) {
-        (linked::update_left(this->view, std::forward<Containers>(items)), ...);
-    }
-
-    /* Extend a set by adding or moving items to the head of the set and possibly
-    evicting the tail to make room. */
-    template <typename... Containers>
-    inline void lru_update(Containers&&... items) {
-        (linked::lru_update(this->view, std::forward<Containers>(items)), ...);
-    }
-
-    /* Remove elements from a set that are contained in one or more iterables. */
-    template <typename... Containers>
-    inline void difference_update(Containers&&... items) {
-        (linked::difference_update(this->view, std::forward<Containers>(items)), ...);
-    }
-
-    /* Removal elements from a set that are not contained in one or more iterables. */
-    template <typename... Containers>
-    inline void intersection_update(Containers&&... items) {
-        (linked::intersection_update(this->view, std::forward<Containers>(items)), ...);
-    }
-
-    /* Update a set, keeping only elements found in either the set or the given
-    container, but not both. */
-    template <typename Container>
-    inline void symmetric_difference_update(Container&& items) {
-        linked::symmetric_difference_update(
-            this->view, std::forward<Container>(items)
-        );
-    }
-
-    /* Update a set, keeping only elements found in either the set or the given
-    container, but not both.  Appends to the head of the set rather than the tail. */
-    template <typename Container>
-    inline void symmetric_difference_update_left(Container&& items) {
-        linked::symmetric_difference_update_left(
-            this->view, std::forward<Container>(items)
-        );
-    }
-
     /* Get the index of a key within the set. */
     inline size_t index(
         const Key& key,
@@ -307,12 +256,39 @@ public:
         );
     }
 
+    /* Extend a set by adding elements from one or more iterables that are not already
+    present. */
+    template <typename... Containers>
+    inline void update(Containers&&... items) {
+        (linked::update(this->view, std::forward<Containers>(items)), ...);
+    }
+
+    /* Extend a set by left-adding elements from one or more iterables that are not
+    already present. */
+    template <typename... Containers>
+    inline void update_left(Containers&&... items) {
+        (linked::update_left(this->view, std::forward<Containers>(items)), ...);
+    }
+
+    /* Extend a set by adding or moving items to the head of the set and possibly
+    evicting the tail to make room. */
+    template <typename... Containers>
+    inline void lru_update(Containers&&... items) {
+        (linked::lru_update(this->view, std::forward<Containers>(items)), ...);
+    }
+
     /* Return a new set with elements common to this set and all other containers. */
     template <typename... Containers>
     inline LinkedSet intersection(Containers&&... items) const {
         return LinkedSet(
             (linked::intersection(this->view, std::forward<Containers>(items)), ...)
         );
+    }
+
+    /* Removal elements from a set that are not contained in one or more iterables. */
+    template <typename... Containers>
+    inline void intersection_update(Containers&&... items) {
+        (linked::intersection_update(this->view, std::forward<Containers>(items)), ...);
     }
 
     /* Return a new set with elements from this set that are not common to any other
@@ -322,6 +298,12 @@ public:
         return LinkedSet(
             (linked::difference(this->view, std::forward<Containers>(items)), ...)
         );
+    }
+
+    /* Remove elements from a set that are contained in one or more iterables. */
+    template <typename... Containers>
+    inline void difference_update(Containers&&... items) {
+        (linked::difference_update(this->view, std::forward<Containers>(items)), ...);
     }
 
     /* Return a new set with elements in either this set or another container, but not
@@ -343,6 +325,24 @@ public:
             linked::symmetric_difference_left(
                 this->view, std::forward<Container>(items)
             )
+        );
+    }
+
+    /* Update a set, keeping only elements found in either the set or the given
+    container, but not both. */
+    template <typename Container>
+    inline void symmetric_difference_update(Container&& items) {
+        linked::symmetric_difference_update(
+            this->view, std::forward<Container>(items)
+        );
+    }
+
+    /* Update a set, keeping only elements found in either the set or the given
+    container, but not both.  Appends to the head of the set rather than the tail. */
+    template <typename Container>
+    inline void symmetric_difference_update_left(Container&& items) {
+        linked::symmetric_difference_update_left(
+            this->view, std::forward<Container>(items)
         );
     }
 
@@ -398,9 +398,8 @@ public:
      * Since LinkedSets are fundamentally ordered, they implement the same positional
      * proxies as LinkedLists.  This means that set elements can be accessed using
      * integer indices and slices, which is not possible for Python sets or
-     * std::unordered_set.  Insertions are guaranteed never to break the set
-     * invariants, and will throw errors otherwise.  See structs/linked/list.h for more
-     * information.
+     * std::unordered_set.  Insertions are guaranteed never to break the set invariants,
+     * and will throw errors otherwise.  See structs/linked/list.h for more information.
      */
 
     /* Get a proxy for a value at a particular index of the set. */
@@ -559,11 +558,16 @@ inline LinkedSet<T, Flags, Ts...>& operator^=(
     return set;
 }
 
-
 /* Check whether a LinkedSet is a proper subset of an arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return linked::issubset(set.view, other, true);
+}
+
+/* Apply a reversed < comparison. */
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator<(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
+    return linked::issuperset(set.view, other, true);
 }
 
 
@@ -574,9 +578,23 @@ inline bool operator<=(const LinkedSet<T, Flags, Ts...>& set, const Container& o
 }
 
 
+/* Apply a reversed <= comparison. */
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator<=(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
+    return linked::issuperset(set.view, other, false);
+}
+
+
 /* Check whether a LinkedSet is equal to an arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator==(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
+    return linked::set_equal(set.view, other);
+}
+
+
+/* Apply a reversed == comparison. */
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator==(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
     return linked::set_equal(set.view, other);
 }
 
@@ -588,6 +606,13 @@ inline bool operator!=(const LinkedSet<T, Flags, Ts...>& set, const Container& o
 }
 
 
+/* Apply a reversed != comparison. */
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator!=(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
+    return linked::set_not_equal(set.view, other);
+}
+
+
 /* Check whether a LinkedSet is a superset of an arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>=(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
@@ -595,10 +620,24 @@ inline bool operator>=(const LinkedSet<T, Flags, Ts...>& set, const Container& o
 }
 
 
+/* Apply a reversed >= comparison. */
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator>=(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
+    return linked::issubset(set.view, other, false);
+}
+
+
 /* Check whether a LinkedSet is a proper superset of an arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return linked::issuperset(set.view, other, true);
+}
+
+
+/* Apply a reversed > comparison. */
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline bool operator>(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
+    return linked::issubset(set.view, other, true);
 }
 
 
@@ -622,8 +661,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -643,8 +680,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -664,8 +699,25 @@ public:
                 },
                 self->variant
             );
+            Py_RETURN_NONE;
 
-            // exit normally
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            util::throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedSet.remove()` in Python. */
+    static PyObject* remove(Derived* self, PyObject* key) {
+        try {
+            // invoke equivalent C++ method
+            std::visit(
+                [&key](auto& set) {
+                    set.remove(key);
+                },
+                self->variant
+            );
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -685,8 +737,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -716,7 +766,6 @@ public:
 
     /* Implement `LinkedSet.union()` in Python. */
     static PyObject* union_(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        // allocate new Python set
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
@@ -752,7 +801,6 @@ public:
 
     /* Implement `LinkedSet.union_left()` in Python. */
     static PyObject* union_left(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        // allocate new Python set
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
@@ -798,8 +846,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -821,8 +867,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -844,8 +888,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -857,7 +899,6 @@ public:
 
     /* Implement `LinkedSet.difference()` in Python. */
     static PyObject* difference(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        // allocate new Python set
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
@@ -907,8 +948,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -924,7 +963,6 @@ public:
         PyObject* const* args,
         Py_ssize_t nargs
     ) {
-        // allocate new Python set
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
@@ -974,8 +1012,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -987,7 +1023,6 @@ public:
 
     /* Implement `LinkedSet.symmetric_difference()` in Python. */
     static PyObject* symmetric_difference(Derived* self, PyObject* items) {
-        // allocate new Python set
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
@@ -1013,7 +1048,6 @@ public:
 
     /* Implement `LinkedSet.symmetric_difference()` in Python. */
     static PyObject* symmetric_difference_left(Derived* self, PyObject* items) {
-        // allocate new Python set
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
@@ -1047,8 +1081,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -1068,8 +1100,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -1174,8 +1204,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ exceptions into Python errors
@@ -1204,8 +1232,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ exceptions into Python errors
@@ -1217,7 +1243,11 @@ public:
     }
 
     /* Implement `LinkedSet.move_to_index()` in Python. */
-    static PyObject* move_to_index(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+    static PyObject* move_to_index(
+        Derived* self,
+        PyObject* const* args,
+        Py_ssize_t nargs
+    ) {
         using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"move_to_index"};
         try {
@@ -1234,8 +1264,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ exceptions into Python errors
@@ -1247,7 +1275,6 @@ public:
 
     /* Implement `LinkedSet.__or__()` (union operator) in Python. */
     static PyObject* __or__(Derived* self, PyObject* other) {
-        // allocate new Python set
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
@@ -1293,7 +1320,6 @@ public:
 
     /* Implement `LinkedSet.__sub__()` (difference operator) in Python. */
     static PyObject* __sub__(Derived* self, PyObject* other) {
-        // allocate new Python set
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
@@ -1339,7 +1365,6 @@ public:
 
     /* Implement `LinkedSet.__and__()` (iuntersection operator) in Python. */
     static PyObject* __and__(Derived* self, PyObject* other) {
-        // allocate new Python set
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
@@ -1385,7 +1410,6 @@ public:
 
     /* Implement `LinkedSet.__xor__()` (symmetric difference operator) in Python. */
     static PyObject* __xor__(Derived* self, PyObject* other) {
-        // allocate new Python set
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
@@ -1491,6 +1515,27 @@ efficient, allowing the set to act as a fast LRU cache, particularly if it is
 doubly-linked.
 
 LRU adds are O(1) for doubly-linked sets and O(n) for singly-linked ones.
+)doc"
+        };
+
+        static constexpr std::string_view remove {R"doc(
+Remove an item from the set.
+
+Parameters
+----------
+key : Any
+    The key to remove.
+
+Raises
+------
+KeyError
+    If the key is not present in the set.
+
+Notes
+-----
+Removals are O(1) for doubly-linked sets and O(n) for singly-linked ones.  This
+is due to the need to traverse the entire set in order to find the previous
+node.
 )doc"
         };
 
@@ -1937,7 +1982,7 @@ the given index.  For doubly-linked sets, it is optimized to O(n/2).
 };
 
 
-/* A discriminated union of templated `LinkedSet` types that can be used from
+/* A discriminated union of templated `LinkedSet` types that can be constructed from
 Python. */
 class PyLinkedSet :
     public PyLinkedBase<PyLinkedSet>,
@@ -2148,12 +2193,13 @@ private:
     struct docs {
 
         static constexpr std::string_view LinkedSet {R"doc(
-An ordered set based on a doubly-linked list.
+A modular, ordered set based on a doubly-linked list available in both Python
+and C++.
 
 This class is a drop-in replacement for a built-in :class:`set`, supporting all
 the same operations, plus those of the built-in :class:`list` and some extras
-related to the ordered nature of the set.  It is also available in C++ under
-the same name, with equivalent semantics.
+leveraging the ordered nature of the set.  It is also available as a C++ type
+under the same name, with identical semantics.
 
 Parameters
 ----------
@@ -2177,28 +2223,56 @@ singly_linked : bool, default False
     trades some performance in certain operations for increased memory
     efficiency.  Regardless of this setting, the set will still support all
     the same operations as a doubly-linked set.
+packed : bool, default False
+    If True, use a packed allocator that does not pad its contents to the
+    system's preferred alignment.  This can free between 2 and 6 bytes per
+    node at the cost of slightly reduced performance (depending on the system).
+    Regardless of this setting, the set will still support all the same
+    operations as an unpacked set.
 
 Notes
 -----
-These data structures are highly optimized for performance, and are generally
-on par with the built-in :class:`set` type.  They have slightly more overhead
-due to handling the links between each node, but users should not notice a
-significant difference on average.
+These data structures are highly optimized, and offer performance that is
+generally on par with the built-in :class:`set` type.  They have slightly more
+overhead due to handling the links between each node, but users should not
+notice a significant difference on average.
 
 The data structure itself is implemented entirely in C++, and can be used
-natively at the C++ level.  The Python wrapper is directly equivalent to the
-C++ class, and is provided for convenience.  Technically speaking, the Python
-class represents a ``std::variant`` of possible C++ implementations, each of
-which is templated for maximum performance.  The Python class is therefore
-slightly slower than the C++ class due to extra indirection, but the difference
-is negligible, and can mostly be attributed to the Python interpreter itself.
+equivalently at the C++ level.  The Python wrapper is actually just a
+discriminated union of C++ template configurations, each of which can be
+instantiated directly in C++ for reduced overhead.  The C++ data structure
+behaves exactly the same, with all the same methods and conventions and only
+minor syntax differences related to both languages.  Here's an example:
 
-Due to the symmetry between Python and C++, users should be able to easily port
-code that relies on this data structure with only minimal changes.
+
+.. code-block:: cpp
+
+    #include <bertrand/structs/linked/list.h>
+
+    int main() {
+        std::vector<int> keys = {1, 2, 3, 4, 5};
+        bertrand::LinkedSet<int> set(items);
+
+        set.add(6);
+        set.update(std::vector{7, 8, 9});
+        int x = set.pop();
+        set.rotate(4);
+        set[0] = x;
+        for (int i : set) {
+            // ...
+        }
+
+        std::cout << set;  // LinkedSet({9, 6, 7, 8, 1, 2, 3, 4})
+        return 0;
+    }
+
+This makes it significantly easier to port code that relies on this data
+structure between the two languages.  In fact, doing so provides significant
+benefits, allowing users to take advantage of static C++ types and completely
+bypass the Python interpreter, increasing performance by orders of magnitude
+in some cases.
 )doc"
         };
-
-        // TODO: modify docs for remove(), count()?
 
     };
 
@@ -2245,7 +2319,6 @@ code that relies on this data structure with only minimal changes.
         LIST_METHOD(insert, METH_FASTCALL),
         LIST_METHOD(index, METH_FASTCALL),
         LIST_METHOD(count, METH_FASTCALL),
-        LIST_METHOD(remove, METH_O),
         LIST_METHOD(pop, METH_FASTCALL),
         LIST_METHOD(clear, METH_NOARGS),
         LIST_METHOD(copy, METH_NOARGS),
@@ -2255,6 +2328,7 @@ code that relies on this data structure with only minimal changes.
         SET_METHOD(add, METH_O),
         SET_METHOD(add_left, METH_O),
         SET_METHOD(lru_add, METH_O),
+        SET_METHOD(remove, METH_O),
         SET_METHOD(discard, METH_O),
         SET_METHOD(lru_contains, METH_O),
         {
@@ -2327,7 +2401,7 @@ code that relies on this data structure with only minimal changes.
     static PyTypeObject build_type() {
         return {
             .ob_base = PyObject_HEAD_INIT(NULL)
-            .tp_name = "bertrand.structs.LinkedSet",
+            .tp_name = "bertrand.LinkedSet",
             .tp_basicsize = sizeof(PyLinkedSet),
             .tp_itemsize = 0,
             .tp_dealloc = (destructor) Base::__dealloc__,
@@ -2356,7 +2430,7 @@ code that relies on this data structure with only minimal changes.
 
 public:
 
-    /* The final Python type. */
+    /* The final Python type as a PyTypeObject. */
     inline static PyTypeObject Type = build_type();
 
     /* Check whether another PyObject* is of this type. */

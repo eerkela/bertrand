@@ -9,9 +9,9 @@
 #include <Python.h>  // CPython API
 #include "../util/args.h"  // PyArgs
 #include "../util/except.h"  // catch_python
-#include "core/allocate.h"  // Config, NodeSelect
+#include "core/allocate.h"  // Config
 #include "core/view.h"  // ListView
-#include "base.h"  // LinkedBase, NodeSelect
+#include "base.h"  // LinkedBase
 
 #include "algorithms/add.h"
 #include "algorithms/append.h"
@@ -482,8 +482,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -503,8 +501,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -532,8 +528,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -553,8 +547,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -574,8 +566,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -657,8 +647,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -705,8 +693,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -718,7 +704,6 @@ public:
 
     /* Implement `LinkedList.copy()` in Python. */
     static PyObject* copy(Derived* self, PyObject* /* ignored */) {
-        // allocate new Python list
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
@@ -765,8 +750,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -786,8 +769,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -814,8 +795,6 @@ public:
                 },
                 self->variant
             );
-
-            // exit normally
             Py_RETURN_NONE;
 
         // translate C++ errors into Python exceptions
@@ -938,7 +917,6 @@ public:
 
     /* Implement `LinkedList.__add__()` in Python. */
     static PyObject* __add__(Derived* self, PyObject* other) {
-        // allocate new Python list
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
@@ -1078,11 +1056,7 @@ protected:
     }
 
     /* Implement `PySequence_SetItem()` in CPython API. */
-    static int __setitem_scalar__(
-        Derived* self,
-        Py_ssize_t index,
-        PyObject* item
-    ) {
+    static int __setitem_scalar__(Derived* self, Py_ssize_t index, PyObject* item) {
         try {
             std::visit(
                 [&index, &item](auto& list) {
@@ -1619,11 +1593,11 @@ private:
     struct docs {
 
         static constexpr std::string_view LinkedList {R"doc(
-A doubly-linked list.
+A modular, doubly-linked list available in both Python and C++.
 
 This class is a drop-in replacement for a built-in :class:`list` or
 :class:`collections.deque` object, supporting all the same operations.  It is
-also available in C++ under the same name, with equivalent semantics.
+also available as a C++ type under the same name, with identical semantics.
 
 Parameters
 ----------
@@ -1647,26 +1621,52 @@ singly_linked : bool, default False
     trades some performance in certain operations for increased memory
     efficiency.  Regardless of this setting, the list will still support all
     the same operations as a doubly-linked list.
+packed : bool, default False
+    If True, use a packed allocator that does not pad its contents to the
+    system's preferred alignment.  This has no effect for LinkedLists, as there
+    is no difference between their packed and unpacked representations.
 
 Notes
 -----
-These data structures are highly optimized for performance, and are generally
-on par with the built-in :class:`list` and :class:`collections.deque` types.
-They retains the usual tradeoffs of linked lists vs arrays (e.g. random access,
-vs constant-time insertions, etc.), but attempts to minimize compromises
-wherever possible.  Users should not notice a significant difference on
-average.
+These data structures are highly optimized, and offer performance that is
+generally on par with the built-in :class:`list` and :class:`collections.deque`
+types.  They retain the usual tradeoffs of linked lists vs arrays (e.g. random
+access, vs constant-time insertions, etc.), but attempt to minimize compromises
+wherever possible.  Users should not notice a significant difference on average.
 
 The data structure itself is implemented entirely in C++, and can be used
-natively at the C++ level.  The Python wrapper is directly equivalent to the
-C++ class, and is provided for convenience.  Technically speaking, the Python
-class represents a ``std::variant`` of possible C++ implementations, each of
-which is templated for maximum performance.  The Python class is therefore
-slightly slower than the C++ class due to extra indirection, but the difference
-is negligible, and can mostly be attributed to the Python interpreter itself.
+equivalently at the C++ level.  The Python wrapper is actually just a
+discriminated union of C++ template configurations, each of which can be
+instantiated directly in C++ for reduced overhead.  The C++ data structure
+behaves exactly the same, with all the same methods and conventions and only
+minor syntax differences related to both languages.  Here's an example:
 
-Due to the symmetry between Python and C++, users should be able to easily port
-code that relies on this data structure with only minimal changes.
+.. code-block:: cpp
+
+    #include <bertrand/structs/linked/list.h>
+
+    int main() {
+        std::vector<int> items{1, 2, 3, 4, 5};
+        bertrand::LinkedList<int> list(items);
+
+        list.append(6);
+        list.extend(std::vector<int>{7, 8, 9});
+        int x = list.pop();
+        list.rotate(4);
+        list[0] = x;
+        for (int i : list) {
+            // ...
+        }
+
+        std::cout << list;  // LinkedList([9, 6, 7, 8, 1, 2, 3, 4])
+        return 0;
+    }
+
+This makes it significantly easier to port code that relies on this data
+structure between the two languages.  In fact, doing so provides significant
+benefits, allowing users to take advantage of static C++ types and completely
+bypass the Python interpreter, increasing performance by orders of magnitude
+in some cases.
 )doc"
         };
 
@@ -1757,7 +1757,7 @@ code that relies on this data structure with only minimal changes.
     static PyTypeObject build_type() {
         return {
             .ob_base = PyObject_HEAD_INIT(NULL)
-            .tp_name = "bertrand.structs.LinkedList",
+            .tp_name = "bertrand.LinkedList",
             .tp_basicsize = sizeof(PyLinkedList),
             .tp_itemsize = 0,
             .tp_dealloc = (destructor) Base::__dealloc__,
@@ -1785,7 +1785,7 @@ code that relies on this data structure with only minimal changes.
 
 public:
 
-    /* The final Python type. */
+    /* The final Python type as a PyTypeObject. */
     inline static PyTypeObject Type = build_type();
 
     /* Check whether another PyObject* is of this type. */

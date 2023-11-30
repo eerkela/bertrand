@@ -1528,7 +1528,7 @@ private:
     static PyTypeObject build_type() {
         return {
             .ob_base = PyObject_HEAD_INIT(NULL)
-            .tp_name = "bertrand.structs.LinkedDict",
+            .tp_name = "bertrand.LinkedDict",
             .tp_basicsize = sizeof(PyLinkedDict),
             .tp_itemsize = 0,
             .tp_dealloc = (destructor) Base::__dealloc__,
@@ -1557,7 +1557,7 @@ private:
 
 public:
 
-    /* The final Python type. */
+    /* The final Python type as a PyTypeObject. */
     inline static PyTypeObject Type = build_type();
 
     /* Check whether another PyObject* is of this type. */
