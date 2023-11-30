@@ -14,7 +14,6 @@
 
 
 namespace bertrand {
-namespace structs {
 namespace util {
 
 
@@ -265,7 +264,7 @@ struct PyArgs<CallProtocol::KWARGS> {
     /* Finalize the keyword arguments to the function. */
     inline void finalize_keyword() {
         if (static_cast<Py_ssize_t>(found.size()) < n_kwargs) {
-            for (PyObject* key : util::iter(kwargs)) {
+            for (PyObject* key : iter(kwargs)) {
                 std::string_view keyword{PyUnicode_AsUTF8(key)};
                 if (found.find(keyword) == found.end()) {
                     std::ostringstream msg;
@@ -681,7 +680,7 @@ inline static PyObject* none_to_null(PyObject* obj) {
 /* Check if a Python object is truthy. */
 inline static bool is_truthy(PyObject* obj) {
     int result = PyObject_IsTrue(obj);
-    if (result == -1) throw util::catch_python();
+    if (result == -1) throw catch_python();
     return static_cast<bool>(result);
 }
 
@@ -689,10 +688,10 @@ inline static bool is_truthy(PyObject* obj) {
 /* Convert a python integer into a long long index. */
 inline static long long parse_int(PyObject* obj) {
     PyObject* integer = PyNumber_Index(obj);
-    if (integer == nullptr) throw util::catch_python();
+    if (integer == nullptr) throw catch_python();
     long long result = PyLong_AsLongLong(integer);
     Py_DECREF(integer);
-    if (result == -1 && PyErr_Occurred()) throw util::catch_python();
+    if (result == -1 && PyErr_Occurred()) throw catch_python();
     return result;
 }
 
@@ -704,7 +703,6 @@ inline static std::optional<long long> parse_opt_int(PyObject* obj) {
 
 
 } // namespace util
-} // namespace structs
 } // namespace bertrand
 
 

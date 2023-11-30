@@ -5,7 +5,7 @@
 #include <cstddef>  // ssize_t
 #include <optional>  // std::optional<>
 #include <sstream>  // std::ostringstream
-#include "../../util/repr.h"  // repr()
+#include "../../util/ops.h"  // repr()
 #include "../core/view.h"  // ViewTraits
 
 
@@ -36,7 +36,7 @@ namespace linked {
         // convenience function for throwing item not found error
         auto not_found = [](Item& item) {
             std::ostringstream msg;
-            msg << util::repr(item) << " is not in set";
+            msg << repr(item) << " is not in set";
             return std::invalid_argument(msg.str());
         };
 

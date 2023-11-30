@@ -3,21 +3,19 @@
 #define BERTRAND_STRUCTS_UTIL_PYTHON_H
 
 #include <cstddef>  // size_t
+#include <cstring>  // std::memcmp
 #include <functional>  // std::hash, std::less, std::plus, etc.
 #include <optional>  // std::optional<>
+#include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::out_of_range, std::logic_error
+#include <string>  // std::string
+#include <typeinfo>  // typeid()
 #include <type_traits>  // std::is_convertible_v<>, std::remove_cv_t<>, etc.
 #include <Python.h>  // CPython API
 #include "base.h"  // is_pyobject<>
 #include "except.h"  // catch_python, TypeError
 #include "iter.h"  // iter(), PyIterator
 
-
-#include <limits>  // std::numeric_limits<>
-
-#include <string_view>  // std::string_view
-
-#include <cstring>  // std::memcmp()
 
 /* NOTE: This file contains a collection of helper classes for interacting with the
  * Python C API using C++ RAII principles.  This allows automated handling of reference
@@ -26,48 +24,12 @@
  */
 
 
-/* Specializations for C++ standard library functors using the Python C API. */
-namespace std {
-
-
-    /* Hash function for PyObject* pointers. */
-    template<>
-    struct hash<PyObject*> {
-        inline size_t operator()(PyObject* key) const {
-            using namespace bertrand::structs;
-            Py_ssize_t hash;
-
-            // ASCII string special case (taken from CPython source)
-            // see: cpython/objects/setobject.c; set_contains_key()
-            if (!PyUnicode_CheckExact(key) ||
-                (hash = _PyASCIIObject_CAST(key)->hash) == -1
-            ) {
-                // fall back to PyObject_Hash()
-                hash = PyObject_Hash(key);
-                if (hash == -1 && PyErr_Occurred()) {
-                    throw util::catch_python<util::TypeError>();  // propagate error
-                }
-            }
-
-            // convert to size_t
-            return static_cast<size_t>(hash);
-        }
-    };
-
-
-}  // namespace std
-
-
 namespace bertrand {
-namespace structs {
-namespace util {
 
 
-/* Utilities for applying C++/Python operators agnostically across types. */
-namespace detail {
+namespace op_detail {
 
-
-    /* Try to convert a C++ argument into an equivalent Python object. */
+    /* Attempt to convert a C++ argument into an equivalent Python object. */
     template <typename T>
     PyObject* as_pyobject(T&& obj) {
         // object must be a basic type
@@ -111,8 +73,7 @@ namespace detail {
         }
     }
 
-
-    /* Wrap a pure C++/Python operation to allow mixed input. */
+    /* Wrap a pure C++/Python operation to allow mixed C++/Python arguments. */
     template <typename LHS, typename RHS, typename F>
     auto wrap(F func, LHS lhs, RHS rhs) {
         // case 1: both arguments are Python objects
@@ -152,8 +113,74 @@ namespace detail {
         }
     }
 
+    /* A trait that determines which specialization of repr() is appropriate for a
+    given type. */
+    template <typename T>
+    class ReprTraits {
+        using True = std::true_type;
+        using False = std::false_type;
+        using Stream = std::ostringstream;
 
-}  // namespace detail
+        enum class Use {
+            python,
+            to_string,
+            stream,
+            iterable,
+            type_id
+        };
+
+        /* Check if the templated type is a Python object. */
+        template<typename U>
+        static auto _python(U u) -> decltype(
+            PyObject_Repr(std::forward<U>(u)), True{}
+        );
+        static auto _python(...) -> False;
+
+        /* Check if the templated type is a valid input to std::to_string. */
+        template<typename U>
+        static auto _to_string(U u) -> decltype(
+            std::to_string(std::forward<U>(u)), True{}
+        );
+        static auto _to_string(...) -> False;
+
+        /* Check if the templated type supports std::ostringstream insertion. */
+        template<typename U>
+        static auto _streamable(U u) -> decltype(
+            std::declval<Stream&>() << std::forward<U>(u), True{}
+        );
+        static auto _streamable(...) -> False;
+
+        /* Check if the templated type is iterable. */
+        template<typename U>
+        static auto _iterable(U u) -> decltype(
+            std::begin(std::forward<U>(u)), std::end(std::forward<U>(u)), True{}
+        );
+        static auto _iterable(...) -> False;
+
+        /* Determine the Repr() overload to use for objects of the templated type. */
+        static constexpr Use category = [] {
+            if constexpr (decltype(_python(std::declval<T>()))::value) {
+                return Use::python;
+            } else if constexpr (decltype(_to_string(std::declval<T>()))::value) {
+                return Use::to_string;
+            } else if constexpr (decltype(_streamable(std::declval<T>()))::value) {
+                return Use::stream;
+            } else if constexpr (decltype(_iterable(std::declval<T>()))::value) {
+                return Use::iterable;
+            } else {
+                return Use::type_id;
+            }
+        }();
+
+    public:
+        static constexpr bool python = (category == Use::python);
+        static constexpr bool streamable = (category == Use::stream);
+        static constexpr bool to_string = (category == Use::to_string);
+        static constexpr bool iterable = (category == Use::iterable);
+        static constexpr bool type_id = (category == Use::type_id);
+    };
+
+}
 
 
 ///////////////////////////////
@@ -193,7 +220,7 @@ inline auto invert(const T& x) {
 
 /* Get the (-)negation of a C++ or Python object. */
 template <typename T>
-inline auto neg(const T& x) {
+inline auto negative(const T& x) {
     if constexpr (is_pyobject<T>) {
         PyObject* val = PyNumber_Negative(x);
         if (val == nullptr) {
@@ -208,7 +235,7 @@ inline auto neg(const T& x) {
 
 /* Get the (+)positive value of a C++ or Python object. */
 template <typename T>
-inline auto pos(const T& x) {
+inline auto positive(const T& x) {
     if constexpr (is_pyobject<T>) {
         PyObject* val = PyNumber_Positive(x);
         if (val == nullptr) {
@@ -221,16 +248,42 @@ inline auto pos(const T& x) {
 }
 
 
+/* Get the hash of a C++ or Python object. */
+template <typename T>
+inline size_t hash(const T& key) {
+    if constexpr (is_pyobject<T>) {
+        Py_ssize_t result;
+
+        // ASCII string special case (taken from CPython source)
+        // see: cpython/objects/setobject.c; set_contains_key()
+        if (!PyUnicode_CheckExact(key) ||
+            (result = _PyASCIIObject_CAST(key)->hash) == -1
+        ) {
+            // fall back to PyObject_Hash()
+            result = PyObject_Hash(key);
+            if (result == -1 && PyErr_Occurred()) {
+                throw catch_python<TypeError>();
+            }
+        }
+
+        // convert to size_t
+        return static_cast<size_t>(result);
+    } else {
+        return std::hash<T>()(key);
+    }
+}
+
+
 /* Get the length of a C++ or Python object. */
 template <typename T>
 inline std::optional<size_t> len(const T& x) {
     // check for x.size()
-    if constexpr (ContainerTraits<T>::has_size) {
+    if constexpr (util::ContainerTraits<T>::has_size) {
         return std::make_optional(x.size());
-    } 
+    }
 
     // check for PyObject_Length()
-    else if constexpr (util::is_pyobject<T>) {
+    else if constexpr (is_pyobject<T>) {
         if (PyObject_HasAttrString(x, "__len__")) {
             Py_ssize_t size = PyObject_Length(x);
             if (size == -1 && PyErr_Occurred()) {
@@ -243,6 +296,87 @@ inline std::optional<size_t> len(const T& x) {
     }
 
     return std::nullopt;
+}
+
+
+/* Python's repr() function is extremely useful for debugging, but there is no direct
+ * equivalent for C++ objects.  This makes debugging C++ code more difficult,
+ * especially when working with objects of unknown type (doubly so when Python objects
+ * might be mixed in with static C++ types).
+ *
+ * The repr() function attempts to solve that problem by providing a single, generic
+ * function that uses template specialization and SFINAE to determine the best way to
+ * stringify an arbitrary object.  This allows us to use the same interface for all
+ * objects (whether Python or C++), and to easily extend the functionality to new types
+ * as needed.  At the moment, this can accept any object that is:
+ *      - convertible to PyObject*, in which case `PyObject_Repr()` is used.
+ *      - convertible to std::string, in which case `std::to_string()` is used.
+ *      - streamable into a std::ostringstream, in which case `operator<<` is used.
+ *      - iterable, in which case each element is recursively unpacked according to the
+ *        same rules as listed here.
+ *      - none of the above, in which case the raw type name is returned using
+ *        `typeid().name()`.
+ */
+
+
+/* Get a string representation of a Python object using PyObject_Repr(). */
+template <typename T, std::enable_if_t<op_detail::ReprTraits<T>::python, int> = 0>
+std::string repr(const T& obj) {
+    if (obj == nullptr) {
+        return std::string("NULL");
+    }
+    PyObject* py_repr = PyObject_Repr(obj);
+    if (py_repr == nullptr) {
+        throw catch_python<RuntimeError>();
+    }
+    const char* c_repr = PyUnicode_AsUTF8(py_repr);
+    if (c_repr == nullptr) {
+        throw catch_python<RuntimeError>();
+    }
+    Py_DECREF(py_repr);
+    return std::string(c_repr);
+}
+
+
+/* Get a string representation of a C++ object using `std::to_string()`. */
+template <typename T, std::enable_if_t<op_detail::ReprTraits<T>::to_string, int> = 0>
+std::string repr(const T& obj) {
+    return std::to_string(obj);
+}
+
+
+/* Get a string representation of a C++ object by streaming it into a
+`std::ostringstream`. */
+template <typename T, std::enable_if_t<op_detail::ReprTraits<T>::streamable, int> = 0>
+std::string repr(const T& obj) {
+    std::ostringstream stream;
+    stream << obj;
+    return stream.str();
+}
+
+
+/* Get a string representation of an iterable C++ object by recursively unpacking
+it. */
+template <typename T, std::enable_if_t<op_detail::ReprTraits<T>::iterable, int> = 0>
+std::string repr(const T& obj) {
+    std::ostringstream stream;
+    stream << '[';
+    for (auto iter = std::begin(obj); iter != std::end(obj);) {
+        stream << repr(*iter);
+        if (++iter != std::end(obj)) {
+            stream << ", ";
+        }
+    }
+    stream << ']';
+    return stream.str();
+}
+
+
+/* Get a string representation of an arbitrary C++ object by getting its mangled type
+name.  NOTE: this is the default implementation if no specialization can be found. */
+template <typename T, std::enable_if_t<op_detail::ReprTraits<T>::type_id, int> = 0>
+std::string repr(const T& obj) {
+    return std::string(typeid(obj).name());
 }
 
 
@@ -266,7 +400,7 @@ inline auto bit_and(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -285,7 +419,7 @@ inline auto bit_or(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -304,7 +438,7 @@ inline auto bit_xor(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -323,7 +457,7 @@ inline auto lshift(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -342,7 +476,7 @@ inline auto rshift(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -366,7 +500,7 @@ inline bool lt(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -385,7 +519,7 @@ inline bool le(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -429,7 +563,7 @@ inline bool eq(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -448,7 +582,7 @@ inline bool ne(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -467,7 +601,7 @@ inline bool ge(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -486,7 +620,121 @@ inline bool gt(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
+}
+
+
+/* Compare elements of two containers lexicographically, checking whether all
+elements of the left operand are less than or equal to their counterparts from the
+right operand, with ties broken if the left operand is shorter than the right. */
+template <typename LHS, typename RHS>
+bool lexical_lt(const LHS& lhs, const RHS& rhs) {
+    auto it_lhs = iter(lhs).forward();
+    auto it_rhs = iter(rhs).forward();
+
+    // compare until one of the sequences is exhausted
+    while (it_lhs != it_lhs.end() && it_rhs != it_rhs.end()) {
+        auto x = *it_lhs;
+        auto y = *it_rhs;
+        if (lt(x, y)) return true;
+        if (lt(y, x)) return false;
+        ++it_lhs;
+        ++it_rhs;
+    }
+
+    // check if lhs is shorter than rhs
+    return (!(it_lhs != it_lhs.end()) && it_rhs != it_rhs.end());
+}
+
+
+/* Compare elements of two containers lexicographically, checking whether all
+elements of the left operand are less than or equal to their counterparts from the
+right operand, with ties broken if the left operand is the same size or shorter
+than the right. */
+template <typename LHS, typename RHS>
+bool lexical_le(const LHS& lhs, const RHS& rhs) {
+    auto it_lhs = iter(lhs).forward();
+    auto it_rhs = iter(rhs).forward();
+
+    // compare until one of the sequences is exhausted
+    while (it_lhs != it_lhs.end() && it_rhs != it_rhs.end()) {
+        auto x = *it_lhs;
+        auto y = *it_rhs;
+        if (lt(x, y)) return true;
+        if (lt(y, x)) return false;
+        ++it_lhs;
+        ++it_rhs;
+    }
+
+    // check if lhs is shorter than or equal to rhs
+    return !(it_lhs != it_lhs.end());
+}
+
+
+/* Compare elements of two containers lexicographically, checking whether all
+elements of the left operand are stricly equal to their counterparts from the right
+operand, and that the left operand is the same length as the right. */
+template <typename LHS, typename RHS>
+bool lexical_eq(const LHS& lhs, const RHS& rhs) {
+    auto it_lhs = iter(lhs).forward();
+    auto it_rhs = iter(rhs).forward();
+
+    // compare until one of the sequences is exhausted
+    while (it_lhs != it_lhs.end() && it_rhs != it_rhs.end()) {
+        if (ne(*it_lhs, *it_rhs)) return false;
+        ++it_lhs;
+        ++it_rhs;
+    }
+
+    // check if both sequences are the same length
+    return (!(it_lhs != it_lhs.end()) && !(it_rhs != it_rhs.end()));
+}
+
+
+/* Compare elements of two containers lexicographically, checking whether all
+elements of the left operand are greater than or equal to their counterparts from
+the right operand, with ties broken if the left operand is the same size or longer
+than the right. */
+template <typename LHS, typename RHS>
+bool lexical_ge(const LHS& lhs, const RHS& rhs) {
+    auto it_lhs = iter(lhs).forward();
+    auto it_rhs = iter(rhs).forward();
+
+    // compare until one of the sequences is exhausted
+    while (it_lhs != it_lhs.end() && it_rhs != it_rhs.end()) {
+        auto x = *it_lhs;
+        auto y = *it_rhs;
+        if (lt(y, x)) return true;
+        if (lt(x, y)) return false;
+        ++it_lhs;
+        ++it_rhs;
+    }
+
+    // check if lhs is longer than or equal to rhs
+    return !(it_rhs != it_rhs.end());
+}
+
+
+/* Compare elements of two containers lexicographically, checking whether all
+elements of the left operand are greater than or equal to their counterparts from
+the right operand, with ties broken if the left operand is longer than the right. */
+template <typename LHS, typename RHS>
+bool lexical_gt(const LHS& lhs, const RHS& rhs) {
+    auto it_lhs = iter(lhs).forward();
+    auto it_rhs = iter(rhs).forward();
+
+    // compare until one of the sequences is exhausted
+    while (it_lhs != it_lhs.end() && it_rhs != it_rhs.end()) {
+        auto x = *it_lhs;
+        auto y = *it_rhs;
+        if (lt(y, x)) return true;
+        if (lt(x, y)) return false;
+        ++it_lhs;
+        ++it_rhs;
+    }
+
+    // check if lhs is longer than rhs
+    return (!(it_rhs != it_rhs.end()) && it_lhs != it_lhs.end());
 }
 
 
@@ -510,7 +758,7 @@ inline auto plus(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -529,7 +777,7 @@ inline auto minus(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -548,7 +796,7 @@ inline auto multiply(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -567,7 +815,7 @@ inline auto power(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -611,11 +859,11 @@ inline auto divide(const LHS& lhs, const RHS& rhs) {
 
                 // if result < 0, check remainder != 0 and correct
                 try {
-                    if (util::lt(result, 0)) {
+                    if (lt(result, 0)) {
                         PyObject* remainder = PyNumber_Remainder(a, b);
                         if (remainder == nullptr) throw catch_python<TypeError>();
                         try {
-                            bool nonzero = util::ne(remainder, 0);
+                            bool nonzero = ne(remainder, 0);
                             if (nonzero) {
                                 PyObject* corrected = plus(result, 1);
                                 Py_DECREF(remainder);
@@ -649,7 +897,7 @@ inline auto divide(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
 }
 
 
@@ -661,18 +909,18 @@ inline auto modulo(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             // NOTE: C++ modulus operator always retains the sign of the numerator, whereas
             // Python retains the sign of the denominator.
-            if (util::lt(a, 0)) {
-                if (util::lt(b, 0)) {  // (a < 0, b < 0)  ===  a % b
+            if (lt(a, 0)) {
+                if (lt(b, 0)) {  // (a < 0, b < 0)  ===  a % b
                     PyObject* result = PyNumber_Remainder(a, b);
                     if (result == nullptr) throw catch_python<TypeError>();
                     return result;
                 } else {  // (a < 0, b >= 0)  ===  -(-a % b)
-                    PyObject* a = util::neg(a);
+                    PyObject* a = negative(a);
                     try {
                         PyObject* c = PyNumber_Remainder(a, b);
                         if (c == nullptr) throw catch_python<TypeError>();
                         try {
-                            PyObject* result = util::neg(c);
+                            PyObject* result = negative(c);
                             Py_DECREF(c);
                             Py_DECREF(a);
                             return result;
@@ -687,8 +935,8 @@ inline auto modulo(const LHS& lhs, const RHS& rhs) {
                     }
                 }
             } else {
-                if (util::lt(b, 0)) {  // (a >= 0, b < 0)  ===  a % -b
-                    PyObject* b = util::neg(b);
+                if (lt(b, 0)) {  // (a >= 0, b < 0)  ===  a % -b
+                    PyObject* b = negative(b);
                     try {
                         PyObject* result = PyNumber_Remainder(a, b);
                         if (result == nullptr) throw catch_python<TypeError>();
@@ -710,13 +958,30 @@ inline auto modulo(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return detail::wrap(execute, lhs, rhs);
+    return op_detail::wrap(execute, lhs, rhs);
 }
 
 
-}  // namespace util
-}  // namespace structs
 }  // namespace bertrand
+
+
+/* Specializations for C++ standard library functors using the Python C API. */
+namespace std {
+
+
+    /* Hash function for PyObject* pointers. */
+    template<>
+    struct hash<PyObject*> {
+        inline size_t operator()(PyObject* key) const {
+            return bertrand::hash(key);
+        }
+    };
+
+
+    // TODO: overload std:equal_to<>?
+
+
+}  // namespace std
 
 
 #endif // BERTRAND_STRUCTS_UTIL_PYTHON_H

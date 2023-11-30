@@ -4,7 +4,7 @@
 
 #include <cstddef>  // size_t
 #include <utility>  // std::pair
-#include "../../util/python.h"  // lt()
+#include "../../util/ops.h"  // lt()
 #include "../core/node.h"  // Keyed<>
 #include "../core/view.h"  // ListView, ViewTraits
 
@@ -30,7 +30,7 @@ auto sort(View& view, Func key, bool reverse)
     // trivial case: empty view or already sorted
     bool is_sorted = true;
     for (auto it = view.begin(); it.next() != nullptr; ++it) {
-        if (!util::lt(*it, it.next()->value())) {
+        if (!lt(*it, it.next()->value())) {
             is_sorted = false;
             break;
         }
@@ -112,7 +112,7 @@ protected:
         // the smaller of the two elements to the merged result, repeating until one of
         // the sublists has been exhausted, giving a sorted list of size `length * 2`.
         while (left.first != nullptr && right.first != nullptr) {
-            bool comp = util::lt(left.first->value(), right.first->value());
+            bool comp = lt(left.first->value(), right.first->value());
 
             // append smaller of two candidates to the merged list
             if (reverse ^ comp) {  // [not] left < right

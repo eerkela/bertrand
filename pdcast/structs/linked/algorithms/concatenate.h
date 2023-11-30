@@ -3,7 +3,8 @@
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_CONCATENATE_H
 
 #include <type_traits>  // std::enable_if_t<>
-#include "../../util/python.h"  // len()
+#include "../../util/iter.h"  // iter()
+#include "../../util/ops.h"  // len()
 #include "../core/view.h"  // ViewTraits
 #include "extend.h"  // extend()
 
@@ -21,7 +22,7 @@ namespace linked {
         using Node = typename View::Node;
 
         // try to get length of container
-        std::optional<size_t> length = util::len(container);
+        std::optional<size_t> length = len(container);
         if (length.has_value()) {
             // preallocate exact size
             View copy(view.size() + length.value(), view.specialization());
@@ -33,7 +34,7 @@ namespace linked {
             }
 
             // add elements from container
-            for (auto item : util::iter(container)) {
+            for (auto item : iter(container)) {
                 Node* node = copy.node(item);
                 copy.link(copy.tail(), node, nullptr);
             }

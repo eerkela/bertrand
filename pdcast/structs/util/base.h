@@ -7,8 +7,6 @@
 
 
 namespace bertrand {
-namespace structs {
-namespace util {
 
 
 /* Check if a type is convertible to PyObject*. */
@@ -22,8 +20,6 @@ inline constexpr bool is_pyobject = (
 );
 
 
-}  // namespace util
-}  // namespace structs
 }  // namespace bertrand
 
 

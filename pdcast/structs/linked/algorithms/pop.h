@@ -33,7 +33,7 @@ namespace linked {
         // payload for return value
         auto execute = [&view](Node* node) {
             Value result = node->value();
-            if constexpr (util::is_pyobject<Value>) {
+            if constexpr (is_pyobject<Value>) {
                 Py_INCREF(result);  // return new reference
             }
             view.recycle(node);
@@ -88,7 +88,7 @@ namespace linked {
 
         // get return value and recycle node
         Value value = curr->value;
-        if constexpr (util::is_pyobject<Value>) {
+        if constexpr (is_pyobject<Value>) {
             Py_INCREF(value);  // return new reference
         }
         view.unlink(prev, curr, curr->next());

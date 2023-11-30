@@ -7,7 +7,6 @@
 
 
 namespace bertrand {
-namespace structs {
 namespace util {
 
 
@@ -58,7 +57,6 @@ inline static T py_modulo(T a, T b) {
 
 
 }  // namespace util
-}  // namespace structs
 }  // namespace bertrand
 
 

@@ -4,7 +4,7 @@
 
 #include <type_traits>  // std::enable_if_t<>
 #include "../../util/except.h"  // catch_python<>, TypeError
-#include "../../util/python.h"  // le(), eq()
+#include "../../util/ops.h"  // le(), eq()
 #include "../core/view.h"  // ViewTraits
 #include "extend.h"  // extend()
 
@@ -51,13 +51,13 @@ namespace linked {
             std::ostringstream msg;
             msg << "can't multiply sequence by non-int of type '";
             msg << repetitions->ob_type->tp_name << "'";
-            throw util::TypeError(msg.str());
+            throw TypeError(msg.str());
         }
 
         // delegate to C++ overload
         long long n = PyLong_AsLongLong(repetitions);
         if (n == -1 && PyErr_Occurred()) {
-            throw util::catch_python<util::TypeError>();
+            throw catch_python<TypeError>();
         }
         return repeat(view, n);
     }
@@ -110,13 +110,13 @@ namespace linked {
             std::ostringstream msg;
             msg << "can't multiply sequence by non-int of type '";
             msg << repetitions->ob_type->tp_name << "'";
-            throw util::TypeError(msg.str());
+            throw TypeError(msg.str());
         }
 
         // delegate to C++ overload
         long long n = PyLong_AsLongLong(repetitions);
         if (n == -1 && PyErr_Occurred()) {
-            throw util::catch_python<util::TypeError>();
+            throw catch_python<TypeError>();
         }
         repeat_inplace(view, n);
     }

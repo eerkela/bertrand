@@ -5,7 +5,7 @@
 #include <cstddef>  // size_t
 #include <optional>  // std::optional
 #include <type_traits>  // std::enable_if_t<>
-#include "../../util/python.h"  // eq()
+#include "../../util/ops.h"  // eq()
 #include "../core/view.h"  // ViewTraits
 #include "slice.h"  // normalize_slice()
 
@@ -55,7 +55,7 @@ namespace linked {
                 // search until we hit start index
                 size_t count = 0;
                 for (; idx >= norm_start; --idx, ++it) {
-                    count += util::eq(*it, item);  // branchless
+                    count += eq(*it, item);  // branchless
                 }
                 return count;
             }
@@ -69,7 +69,7 @@ namespace linked {
         // search until we hit item or stop index
         size_t count = 0;
         for (; idx < norm_stop; ++idx, ++it) {
-            count += util::eq(*it, item);  // branchless
+            count += eq(*it, item);  // branchless
         }
         return count;
     }

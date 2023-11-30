@@ -5,7 +5,7 @@
 #include <cstddef>  // size_t
 #include <sstream>  // std::ostringstream
 #include <type_traits>  // std::enable_if_t<>
-#include "../../util/repr.h"  // repr()
+#include "../../util/ops.h"  // repr()
 #include "../core/iter.h"  // Iterator
 #include "../core/node.h"  // NodeTraits
 #include "../core/view.h"  // ViewTraits
@@ -32,7 +32,7 @@ namespace linked {
         Node* node = view.search(item);
         if (node == nullptr) {
             std::ostringstream msg;
-            msg << util::repr(item) << " is not in set";
+            msg << repr(item) << " is not in set";
             throw std::invalid_argument(msg.str());
         }
 
@@ -118,7 +118,7 @@ namespace linked {
         Node* node = view.search(item);
         if (node == nullptr) {
             std::ostringstream msg;
-            msg << util::repr(item) << " is not in set";
+            msg << repr(item) << " is not in set";
             throw std::invalid_argument(msg.str());
         }
 

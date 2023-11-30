@@ -10,6 +10,7 @@
 #include <Python.h>  // CPython API
 #include "../util/args.h"  // PyArgs
 #include "../util/except.h"  // throw_python()
+#include "../util/ops.h"  // repr()
 #include "core/allocate.h"  // Config
 #include "core/view.h"  // SetView
 #include "base.h"  // LinkedBase
@@ -72,7 +73,7 @@ namespace set_config {
 template <
     typename K,
     unsigned int Flags = Config::DEFAULT,
-    typename Lock = util::BasicLock
+    typename Lock = BasicLock
 >
 class LinkedSet : public LinkedBase<
     linked::SetView<
@@ -437,7 +438,7 @@ public:
      * These all work similarly to their Python counterparts except that they can
      * accept any iterable container in either C++ or Python as the other operand.
      * This symmetry is provided by the universal utility functions in
-     * structs/util/iter.h and structs/util/python.h.
+     * structs/util/iter.h and structs/util/ops.h.
      */
 
     /* Overload the array index operator ([]) to allow pythonic set indexing. */
@@ -460,7 +461,7 @@ inline std::ostream& operator<<(
     std::ostream& stream,
     const LinkedSet<T, Flags, Ts...>& set
 ) {
-    stream << linked::repr(
+    stream << linked::build_repr(
         set.view,
         "LinkedSet",
         "{",
@@ -665,7 +666,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -684,7 +685,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -703,7 +704,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -722,7 +723,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -741,7 +742,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -759,7 +760,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -793,7 +794,7 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_python();
+            throw_python();
             Py_DECREF(result);
             return nullptr;
         }
@@ -828,7 +829,7 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_python();
+            throw_python();
             Py_DECREF(result);
             return nullptr;
         }
@@ -850,7 +851,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -871,7 +872,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -892,7 +893,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -926,7 +927,7 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_python();
+            throw_python();
             Py_DECREF(result);
             return nullptr;
         }
@@ -952,7 +953,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -990,7 +991,7 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_python();
+            throw_python();
             Py_DECREF(result);
             return nullptr;
         }
@@ -1016,7 +1017,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1040,7 +1041,7 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_python();
+            throw_python();
             Py_DECREF(result);
             return nullptr;
         }
@@ -1065,7 +1066,7 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_python();
+            throw_python();
             Py_DECREF(result);
             return nullptr;
         }
@@ -1085,7 +1086,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1104,7 +1105,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1121,7 +1122,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1138,7 +1139,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1155,14 +1156,16 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
 
     /* Implement `LinkedSet.distance()` in Python. */
     static PyObject* distance(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        using Args = PyArgs<CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"distance"};
         try {
             // parse arguments
@@ -1181,14 +1184,16 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
 
     /* Implement LinkedSet.swap() in Python. */
     static PyObject* swap(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        using Args = PyArgs<CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"swap"};
         try {
             // parse arguments
@@ -1208,7 +1213,7 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
 
@@ -1216,13 +1221,16 @@ public:
 
     /* Implement `LinkedSet.move()` in Python. */
     static PyObject* move(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        using bertrand::util::parse_int;
+        using Args = PyArgs<CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"move"};
         try {
             // parse arguments
             Args pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
-            long long steps = pyargs.parse("steps", util::parse_int);
+            long long steps = pyargs.parse("steps", parse_int);
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -1236,7 +1244,7 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
 
@@ -1248,13 +1256,16 @@ public:
         PyObject* const* args,
         Py_ssize_t nargs
     ) {
-        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        using bertrand::util::parse_int;
+        using Args = PyArgs<CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"move_to_index"};
         try {
             // parse arguments
             Args pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
-            long long index = pyargs.parse("index", util::parse_int);
+            long long index = pyargs.parse("index", parse_int);
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -1268,7 +1279,7 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1293,7 +1304,7 @@ public:
         // translate C++ errors into Python exceptions
         } catch (...) {
             Py_DECREF(result);
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1313,7 +1324,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1338,7 +1349,7 @@ public:
         // translate C++ errors into Python exceptions
         } catch (...) {
             Py_DECREF(result);
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1358,7 +1369,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1383,7 +1394,7 @@ public:
         // translate C++ errors into Python exceptions
         } catch (...) {
             Py_DECREF(result);
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1403,7 +1414,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1428,7 +1439,7 @@ public:
         // translate C++ errors into Python exceptions
         } catch (...) {
             Py_DECREF(result);
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1449,7 +1460,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1996,7 +2007,7 @@ class PyLinkedSet :
     /* A std::variant representing all the LinkedSet implementations that are
     constructable from Python. */
     template <unsigned int Flags>
-    using SetConfig = linked::LinkedSet<PyObject*, Flags, util::BasicLock>;
+    using SetConfig = linked::LinkedSet<PyObject*, Flags, BasicLock>;
     using Variant = std::variant<
         SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>,
         // SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
@@ -2090,7 +2101,7 @@ class PyLinkedSet :
             // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
             //     CONSTRUCT(15)
             default:
-                throw util::ValueError("invalid argument configuration");
+                throw ValueError("invalid argument configuration");
         }
     }
 
@@ -2100,29 +2111,33 @@ public:
 
     /* Initialize a LinkedSet instance from Python. */
     static int __init__(PyLinkedSet* self, PyObject* args, PyObject* kwargs) {
-        using Args = util::PyArgs<util::CallProtocol::KWARGS>;
-        using util::ValueError;
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        using bertrand::util::none_to_null;
+        using bertrand::util::parse_int;
+        using bertrand::util::is_truthy;
+        using Args = PyArgs<CallProtocol::KWARGS>;
         static constexpr std::string_view meth_name{"__init__"};
         try {
             // parse arguments
             Args pyargs(meth_name, args, kwargs);
             PyObject* keys = pyargs.parse(
-                "keys", util::none_to_null, (PyObject*)nullptr
+                "keys", none_to_null, (PyObject*)nullptr
             );
             std::optional<size_t> max_size = pyargs.parse(
                 "max_size",
                 [](PyObject* obj) -> std::optional<size_t> {
                     if (obj == Py_None) return std::nullopt;
-                    long long result = util::parse_int(obj);
+                    long long result = parse_int(obj);
                     if (result < 0) throw ValueError("max_size cannot be negative");
                     return std::make_optional(static_cast<size_t>(result));
                 },
                 std::optional<size_t>()
             );
-            PyObject* spec = pyargs.parse("spec", util::none_to_null, (PyObject*) nullptr);
-            bool reverse = pyargs.parse("reverse", util::is_truthy, false);
-            bool singly_linked = pyargs.parse("singly_linked", util::is_truthy, false);
-            bool packed = pyargs.parse("packed", util::is_truthy, false);
+            PyObject* spec = pyargs.parse("spec", none_to_null, (PyObject*) nullptr);
+            bool reverse = pyargs.parse("reverse", is_truthy, false);
+            bool singly_linked = pyargs.parse("singly_linked", is_truthy, false);
+            bool packed = pyargs.parse("packed", is_truthy, false);
             pyargs.finalize();
 
             // initialize
@@ -2135,7 +2150,7 @@ public:
 
         // translate C++ exceptions into Python eerrors
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return -1;
         }
     }
@@ -2149,11 +2164,11 @@ public:
                 [&stream](auto& set) {
                     auto it = set.begin();
                     if (it != set.end()) {
-                        stream << util::repr(*it);
+                        stream << repr(*it);
                         ++it;
                     }
                     for (; it != set.end(); ++it) {
-                        stream << ", " << util::repr(*it);
+                        stream << ", " << repr(*it);
                     }
                 },
                 self->variant
@@ -2163,7 +2178,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -2182,7 +2197,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -2436,7 +2451,7 @@ public:
     /* Check whether another PyObject* is of this type. */
     inline static bool typecheck(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &Type);
-        if (result == -1) throw util::catch_python();
+        if (result == -1) throw catch_python();
         return static_cast<bool>(result);
     }
 
@@ -2478,6 +2493,12 @@ PyMODINIT_FUNC PyInit_set(void) {
 
 }  // namespace linked
 }  // namespace structs
+
+
+/* Export to base namespace */
+using structs::linked::PyLinkedSet;
+
+
 }  // namespace bertrand
 
 

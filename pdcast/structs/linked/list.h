@@ -9,6 +9,7 @@
 #include <Python.h>  // CPython API
 #include "../util/args.h"  // PyArgs
 #include "../util/except.h"  // catch_python
+#include "../util/ops.h"  // repr(), lexical comparisons
 #include "core/allocate.h"  // Config
 #include "core/view.h"  // ListView
 #include "base.h"  // LinkedBase
@@ -21,7 +22,6 @@
 #include "algorithms/extend.h"
 #include "algorithms/index.h"
 #include "algorithms/insert.h"
-#include "algorithms/lexical_compare.h"
 #include "algorithms/pop.h"
 #include "algorithms/position.h"
 #include "algorithms/remove.h"
@@ -67,7 +67,7 @@ namespace list_config {
 template <
     typename T,
     unsigned int Flags = Config::DEFAULT,
-    typename Lock = util::BasicLock
+    typename Lock = BasicLock
 >
 class LinkedList : public LinkedBase<
     linked::ListView<
@@ -278,7 +278,7 @@ public:
      * These all work similarly to their Python counterparts except that they can
      * accept any iterable container in either C++ or Python as the other operand.
      * This symmetry is provided by the universal utility functions in
-     * structs/util/iter.h and structs/util/python.h.
+     * structs/util/iter.h and structs/util/ops.h.
      */
 
     /* Overload the array index operator ([]) to allow pythonic list indexing. */
@@ -301,7 +301,7 @@ inline std::ostream& operator<<(
     std::ostream& stream,
     const LinkedList<T, Flags, Ts...>& list
 ) {
-    stream << linked::repr(
+    stream << linked::build_repr(
         list.view,
         "LinkedList",
         "[",
@@ -369,7 +369,7 @@ inline LinkedList<T, Flags, Ts...>& operator*=(
 another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
-    return linked::lexical_lt(lhs, rhs);
+    return lexical_lt(lhs, rhs);
 }
 
 
@@ -377,7 +377,7 @@ inline bool operator<(const LinkedList<T, Flags, Ts...>& lhs, const Container& r
 another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
-    return linked::lexical_lt(lhs, rhs);
+    return lexical_lt(lhs, rhs);
 }
 
 
@@ -385,7 +385,7 @@ inline bool operator<(const Container& lhs, const LinkedList<T, Flags, Ts...>& r
 another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<=(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
-    return linked::lexical_le(lhs, rhs);
+    return lexical_le(lhs, rhs);
 }
 
 
@@ -393,7 +393,7 @@ inline bool operator<=(const LinkedList<T, Flags, Ts...>& lhs, const Container& 
 another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<=(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
-    return linked::lexical_lt(lhs, rhs);
+    return lexical_lt(lhs, rhs);
 }
 
 
@@ -401,7 +401,7 @@ inline bool operator<=(const Container& lhs, const LinkedList<T, Flags, Ts...>& 
 another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator==(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
-    return linked::lexical_eq(lhs, rhs);
+    return lexical_eq(lhs, rhs);
 }
 
 
@@ -409,7 +409,7 @@ inline bool operator==(const LinkedList<T, Flags, Ts...>& lhs, const Container& 
 another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator==(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
-    return linked::lexical_eq(lhs, rhs);
+    return lexical_eq(lhs, rhs);
 }
 
 
@@ -417,7 +417,7 @@ inline bool operator==(const Container& lhs, const LinkedList<T, Flags, Ts...>& 
 another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator!=(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
-    return !linked::lexical_eq(lhs, rhs);
+    return !lexical_eq(lhs, rhs);
 }
 
 
@@ -425,7 +425,7 @@ inline bool operator!=(const LinkedList<T, Flags, Ts...>& lhs, const Container& 
 another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator!=(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
-    return !linked::lexical_eq(lhs, rhs);
+    return !lexical_eq(lhs, rhs);
 }
 
 
@@ -433,7 +433,7 @@ inline bool operator!=(const Container& lhs, const LinkedList<T, Flags, Ts...>& 
 another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>=(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
-    return linked::lexical_ge(lhs, rhs);
+    return lexical_ge(lhs, rhs);
 }
 
 
@@ -441,7 +441,7 @@ inline bool operator>=(const LinkedList<T, Flags, Ts...>& lhs, const Container& 
 another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>=(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
-    return linked::lexical_ge(lhs, rhs);
+    return lexical_ge(lhs, rhs);
 }
 
 
@@ -449,7 +449,7 @@ inline bool operator>=(const Container& lhs, const LinkedList<T, Flags, Ts...>& 
 another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
-    return linked::lexical_gt(lhs, rhs);
+    return lexical_gt(lhs, rhs);
 }
 
 
@@ -457,7 +457,7 @@ inline bool operator>(const LinkedList<T, Flags, Ts...>& lhs, const Container& r
 another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
-    return linked::lexical_gt(lhs, rhs);
+    return lexical_gt(lhs, rhs);
 }
 
 
@@ -486,7 +486,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -505,19 +505,23 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
 
     /* Implement `LinkedList.insert()` in Python. */
     static PyObject* insert(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        using bertrand::util::parse_int;
+
+        using Args = PyArgs<CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"insert"};
         try {
             // parse arguments
             Args pyargs(meth_name, args, nargs);
-            long long index = pyargs.parse("index", util::parse_int);
+            long long index = pyargs.parse("index", parse_int);
             PyObject* item = pyargs.parse("item");
             pyargs.finalize();
 
@@ -532,7 +536,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -551,7 +555,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -570,22 +574,25 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
 
     /* Implement `LinkedList.index()` in Python. */
     static PyObject* index(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        using bertrand::util::parse_opt_int;
+        using Args = PyArgs<CallProtocol::FASTCALL>;
         using Index = std::optional<long long>;
         static constexpr std::string_view meth_name{"index"};
         try {
             // parse arguments
             Args pyargs(meth_name, args, nargs);
             PyObject* item = pyargs.parse("item");
-            Index start = pyargs.parse("start", util::parse_opt_int, Index());
-            Index stop = pyargs.parse("stop", util::parse_opt_int, Index());
+            Index start = pyargs.parse("start", parse_opt_int, Index());
+            Index stop = pyargs.parse("stop", parse_opt_int, Index());
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -601,22 +608,25 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
 
     /* Implement `LinkedList.count()` in Python. */
     static PyObject* count(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        using bertrand::util::parse_opt_int;
+        using Args = PyArgs<CallProtocol::FASTCALL>;
         using Index = std::optional<long long>;
         static constexpr std::string_view meth_name{"count"};
         try {
             // parse arguments
             Args pyargs(meth_name, args, nargs);
             PyObject* item = pyargs.parse("item");
-            Index start = pyargs.parse("start", util::parse_opt_int, Index());
-            Index stop = pyargs.parse("stop", util::parse_opt_int, Index());
+            Index start = pyargs.parse("start", parse_opt_int, Index());
+            Index stop = pyargs.parse("stop", parse_opt_int, Index());
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -632,7 +642,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -651,21 +661,22 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
 
     /* Implement `LinkedList.pop()` in Python. */
     static PyObject* pop(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        using bertrand::util::parse_int;
+        using Args = PyArgs<CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"pop"};
         try {
             // parse arguments
             Args pyargs(meth_name, args, nargs);
-            long long index = pyargs.parse(
-                "index", util::parse_int, (long long) -1
-            );
+            long long index = pyargs.parse("index", parse_int, (long long)-1);
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -678,7 +689,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -697,7 +708,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -721,7 +732,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             Py_DECREF(result);
             return nullptr;
         }
@@ -734,13 +745,17 @@ public:
         Py_ssize_t nargs,
         PyObject* kwnames
     ) {
-        using Args = util::PyArgs<util::CallProtocol::VECTORCALL>;
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        using bertrand::util::none_to_null;
+        using bertrand::util::is_truthy;
+        using Args = PyArgs<CallProtocol::VECTORCALL>;
         static constexpr std::string_view meth_name{"sort"};
         try {
             // parse arguments
             Args pyargs(meth_name, args, nargs, kwnames);
-            PyObject* key = pyargs.keyword("key", util::none_to_null, (PyObject*)nullptr);
-            bool reverse = pyargs.keyword("reverse", util::is_truthy, false);
+            PyObject* key = pyargs.keyword("key", none_to_null, (PyObject*)nullptr);
+            bool reverse = pyargs.keyword("reverse", is_truthy, false);
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -754,7 +769,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -773,19 +788,22 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
 
     /* Implement `LinkedList.rotate()` in Python. */
     static PyObject* rotate(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        using bertrand::util::parse_int;
+        using Args = PyArgs<CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"rotate"};
         try {
             // parse arguments
             Args pyargs(meth_name, args, nargs);
-            long long steps = pyargs.parse("steps", util::parse_int, (long long) 1);
+            long long steps = pyargs.parse("steps", parse_int, (long long)1);
             pyargs.finalize();
 
             // invoke equivalent C++ method
@@ -799,7 +817,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -817,7 +835,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return -1;
         }
     }
@@ -827,7 +845,7 @@ public:
         try {
             // check for integer index
             if (PyIndex_Check(key)) {
-                long long index = util::parse_int(key);
+                long long index = bertrand::util::parse_int(key);
                 PyObject* result = std::visit(
                     [&index](auto& list) {
                         return list[index].get();
@@ -842,7 +860,7 @@ public:
                 Derived* result = reinterpret_cast<Derived*>(
                     Derived::__new__(&Derived::Type, nullptr, nullptr)
                 );
-                if (result == nullptr) throw util::catch_python();
+                if (result == nullptr) throw catch_python();
                 return std::visit(
                     [&result, &key](auto& list) {
                         result->from_cpp(list.slice(key).get());
@@ -862,7 +880,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -872,7 +890,7 @@ public:
         try {
             // check for integer index
             if (PyIndex_Check(key)) {
-                long long index = util::parse_int(key);
+                long long index = bertrand::util::parse_int(key);
                 std::visit(
                     [&index, &items](auto& list) {
                         if (items == nullptr) {
@@ -910,7 +928,7 @@ public:
             return -1;
 
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return -1;
         }
     }
@@ -935,7 +953,7 @@ public:
         // translate C++ errors into Python exceptions
         } catch (...) {
             Py_DECREF(result);
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -954,7 +972,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -979,7 +997,7 @@ public:
         // translate C++ errors into Python exceptions
         } catch (...) {
             Py_DECREF(result);
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -998,7 +1016,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1023,14 +1041,14 @@ public:
                         case Py_GT:
                             return list > other;
                         default:
-                            throw util::ValueError("invalid comparison operator");
+                            throw ValueError("invalid comparison operator");
                     }
                 },
                 self->variant
             );
             return PyBool_FromLong(result);
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1050,7 +1068,7 @@ protected:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1072,7 +1090,7 @@ protected:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return -1;
         }
     }
@@ -1397,7 +1415,7 @@ class PyLinkedList :
     /* A std::variant representing all of the LinkedList implementations that are
     constructable from Python. */
     template <unsigned int Flags>
-    using ListConfig = linked::LinkedList<PyObject*, Flags, util::BasicLock>;
+    using ListConfig = linked::LinkedList<PyObject*, Flags, BasicLock>;
     using Variant = std::variant<
         ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>,
         // ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
@@ -1490,7 +1508,7 @@ class PyLinkedList :
             // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
             //     CONSTRUCT(15)
             default:
-                throw util::ValueError("invalid argument configuration");
+                throw ValueError("invalid argument configuration");
         }
     }
 
@@ -1500,29 +1518,33 @@ public:
 
     /* Initialize a LinkedList instance from Python. */
     static int __init__(PyLinkedList* self, PyObject* args, PyObject* kwargs) {
-        using Args = util::PyArgs<util::CallProtocol::KWARGS>;
-        using util::ValueError;
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        using bertrand::util::none_to_null;
+        using bertrand::util::is_truthy;
+        using bertrand::util::parse_int;
+        using Args = PyArgs<CallProtocol::KWARGS>;
         static constexpr std::string_view meth_name{"__init__"};
         try {
             // parse arguments
             Args pyargs(meth_name, args, kwargs);
             PyObject* iterable = pyargs.parse(
-                "iterable", util::none_to_null, (PyObject*)nullptr
+                "iterable", none_to_null, (PyObject*)nullptr
             );
             std::optional<size_t> max_size = pyargs.parse(
                 "max_size",
                 [](PyObject* obj) -> std::optional<size_t> {
                     if (obj == Py_None) return std::nullopt;
-                    long long result = util::parse_int(obj);
+                    long long result = parse_int(obj);
                     if (result < 0) throw ValueError("max_size cannot be negative");
                     return std::make_optional(static_cast<size_t>(result));
                 },
                 std::optional<size_t>()
             );
-            PyObject* spec = pyargs.parse("spec", util::none_to_null, (PyObject*) nullptr);
-            bool reverse = pyargs.parse("reverse", util::is_truthy, false);
-            bool singly_linked = pyargs.parse("singly_linked", util::is_truthy, false);
-            bool packed = pyargs.parse("packed", util::is_truthy, false);
+            PyObject* spec = pyargs.parse("spec", none_to_null, (PyObject*) nullptr);
+            bool reverse = pyargs.parse("reverse", is_truthy, false);
+            bool singly_linked = pyargs.parse("singly_linked", is_truthy, false);
+            bool packed = pyargs.parse("packed", is_truthy, false);
             pyargs.finalize();
 
             // initialize
@@ -1535,7 +1557,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return -1;
         }
     }
@@ -1549,11 +1571,11 @@ public:
                 [&stream](auto& list) {
                     auto it = list.begin();
                     if (it != list.end()) {
-                        stream << util::repr(*it);
+                        stream << repr(*it);
                         ++it;
                     }
                     for (; it != list.end(); ++it) {
-                        stream << ", " << util::repr(*it);
+                        stream << ", " << repr(*it);
                     }
                 },
                 self->variant
@@ -1563,7 +1585,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1582,7 +1604,7 @@ public:
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1791,7 +1813,7 @@ public:
     /* Check whether another PyObject* is of this type. */
     inline static bool typecheck(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &Type);
-        if (result == -1) throw util::catch_python();
+        if (result == -1) throw catch_python();
         return static_cast<bool>(result);
     }
 
@@ -1833,6 +1855,12 @@ PyMODINIT_FUNC PyInit_list(void) {
 
 }  // namespace linked
 }  // namespace structs
+
+
+/* Export to base namespace */
+using structs::linked::LinkedList;
+
+
 }  // namespace bertrand
 
 

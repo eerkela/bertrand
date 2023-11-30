@@ -19,7 +19,7 @@ namespace linked {
     auto isdisjoint(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, bool>
     {
-        for (auto item : util::iter(items)) {
+        for (auto item : iter(items)) {
             if (view.search(item) != nullptr) return false;
         }
         return true;
@@ -36,7 +36,7 @@ namespace linked {
 
         // use auxiliary set to keep track of visited nodes as we iterate over items
         std::unordered_set<Node*> found;
-        for (auto item : util::iter(items)) {
+        for (auto item : iter(items)) {
             Node* node = view.search(item);
             if (node == nullptr) return false;
             found.insert(node);
@@ -57,7 +57,7 @@ namespace linked {
 
         // use auxiliary set to keep track of visited nodes as we iterate over items
         std::unordered_set<Node*> found;
-        for (auto item : util::iter(items)) {
+        for (auto item : iter(items)) {
             Node* node = view.search(item);
             if (node != nullptr) return false;
             found.insert(node);
@@ -79,7 +79,7 @@ namespace linked {
         // use auxiliary set to keep track of visited nodes as we iterate over items
         std::unordered_set<Node*> found;
         bool larger = false;
-        for (auto item : util::iter(items)) {
+        for (auto item : iter(items)) {
             Node* node = view.search(item);
             if (node == nullptr) {
                 larger = true;
@@ -106,7 +106,7 @@ namespace linked {
 
         // use auxiliary set to keep track of visited nodes as we iterate over items
         std::unordered_set<Node*> found;
-        for (auto item : util::iter(items)) {
+        for (auto item : iter(items)) {
             Node* node = view.search(item);
             if (node == nullptr) return false;
             found.insert(node);

@@ -6,7 +6,7 @@
 #include <stack>  // std::stack
 #include <string>  // std::string
 #include <type_traits>  // std::enable_if_t<>
-#include "../../util/repr.h"  // repr()
+#include "../../util/ops.h"  // bertrand::repr()
 #include "../core/node.h"  // NodeTraits
 #include "../core/view.h"  // ViewTraits
 
@@ -19,21 +19,20 @@ namespace linked {
     /* Get a comma-separated, possibly abbreviated string representing the contents
     of the list, for use in repr()-style string formatting. */
     template <typename View>
-    auto repr(
+    auto build_repr(
         const View& view,
         const char* prefix,
         const char* lbracket,
         const char* rbracket,
         size_t max_entries
-    )
-        -> std::enable_if_t<ViewTraits<View>::linked, std::string>
+    ) -> std::enable_if_t<ViewTraits<View>::linked, std::string>
     {
         std::ostringstream stream;
 
         // append prefix + specialization if given
         stream << prefix;
         if (view.specialization() != nullptr) {
-            stream << "[" << util::repr(view.specialization()) << "]";
+            stream << "[" << bertrand::repr(view.specialization()) << "]";
         }
 
         // append left bracket
@@ -43,7 +42,7 @@ namespace linked {
         auto it = view.cbegin();
         auto end = view.cend();
         if (it != end) {
-            stream << util::repr(*it);
+            stream << bertrand::repr(*it);
             ++it;
         }
 
@@ -51,10 +50,10 @@ namespace linked {
         given data structure. */
         auto execute = [](std::ostringstream& stream, auto it) {
             if constexpr (ViewTraits<View>::dictlike) {
-                stream << ", " << util::repr(*it) << ": ";
-                stream << util::repr(it.curr()->mapped());
+                stream << ", " << bertrand::repr(*it) << ": ";
+                stream << bertrand::repr(it.curr()->mapped());
             } else {
-                stream << ", " << util::repr(*it);
+                stream << ", " << bertrand::repr(*it);
             }
         };
 

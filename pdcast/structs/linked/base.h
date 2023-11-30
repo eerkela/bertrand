@@ -10,7 +10,7 @@
 #include <variant>  // std::visit
 #include "core/iter.h"  // Direction
 #include "../util/iter.h"  // iter(), IterProxy
-#include "../util/python.h"  // PyIterator
+#include "../util/ops.h"  // PyIterator
 #include "../util/string.h"  // string concatenation
 #include "../util/thread.h"  // PyLock
 
@@ -376,7 +376,7 @@ public:
         return std::visit(
             [](auto& list) {
                 using Lock = typename std::decay_t<decltype(list)>::Lock;
-                return util::PyLock<Lock>::construct(list.lock);
+                return bertrand::util::PyLock<Lock>::construct(list.lock);
             },
             self->variant
         );
@@ -446,14 +446,14 @@ public:
 
     /* Implement `LinkedList.reserve()` in Python. */
     static PyObject* reserve(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using Args = util::PyArgs<util::CallProtocol::FASTCALL>;
+        using Args = bertrand::util::PyArgs<bertrand::util::CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"reserve"};
         try {
             // parse arguments
             Args pyargs(meth_name, args, nargs);
             std::optional<long long> capacity = pyargs.parse(
                 "capacity",
-                util::parse_opt_int,
+                bertrand::util::parse_opt_int,
                 std::optional<long long>()
             );
             pyargs.finalize();
@@ -478,7 +478,7 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -496,7 +496,7 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -514,10 +514,10 @@ public:
                         );
                         std::ostringstream msg;
                         msg << "'" << type->tp_name << "' is already specialized to ";
-                        msg << util::repr(spec);
-                        throw util::TypeError(msg.str());
+                        msg << repr(spec);
+                        throw TypeError(msg.str());
                     } else {
-                        list.specialize(util::none_to_null(spec));
+                        list.specialize(bertrand::util::none_to_null(spec));
                     }
                 },
                 self->variant
@@ -526,7 +526,7 @@ public:
 
         // translate C++ exceptions into Python errors
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
         
@@ -565,7 +565,7 @@ public:
     inline static PyObject* __iter__(Derived* self) noexcept {
         return std::visit(
             [](auto& list) {
-                return util::iter(list).python();
+                return iter(list).python();
             },
             self->variant
         );
@@ -575,7 +575,7 @@ public:
     inline static PyObject* __reversed__(Derived* self, PyObject* /* ignored */) noexcept {
         return std::visit(
             [](auto& list) {
-                return util::iter(list).rpython();
+                return iter(list).rpython();
             },
             self->variant
         );
@@ -635,28 +635,27 @@ protected:
             PyObject* args,
             PyObject* kwargs
         ) {
-            using Args = util::PyArgs<util::CallProtocol::KWARGS>;
-            using util::ValueError;
+            using Args = bertrand::util::PyArgs<bertrand::util::CallProtocol::KWARGS>;
             static constexpr std::string_view meth_name{"__init__"};
             try {
                 // parse arguments
                 Args pyargs(meth_name, args, kwargs);
                 PyObject* iterable = pyargs.parse(
-                    "iterable", util::none_to_null, (PyObject*)nullptr
+                    "iterable", bertrand::util::none_to_null, (PyObject*)nullptr
                 );
                 std::optional<size_t> max_size = pyargs.parse(
                     "max_size",
                     [](PyObject* obj) -> std::optional<size_t> {
                         if (obj == Py_None) return std::nullopt;
-                        long long result = util::parse_int(obj);
+                        long long result = bertrand::util::parse_int(obj);
                         if (result < 0) throw ValueError("max_size cannot be negative");
                         return std::make_optional(static_cast<size_t>(result));
                     },
                     std::optional<size_t>()
                 );
-                bool reverse = pyargs.parse("reverse", util::is_truthy, false);
-                bool singly_linked = pyargs.parse("singly_linked", util::is_truthy, false);
-                bool packed = pyargs.parse("packed", util::is_truthy, false);
+                bool reverse = pyargs.parse("reverse", bertrand::util::is_truthy, false);
+                bool singly_linked = pyargs.parse("singly_linked", bertrand::util::is_truthy, false);
+                bool packed = pyargs.parse("packed", bertrand::util::is_truthy, false);
                 pyargs.finalize();
 
                 // initialize
@@ -679,7 +678,7 @@ protected:
 
             // translate C++ errors into Python exceptions
             } catch (...) {
-                util::throw_python();
+                throw_python();
                 return -1;
             }
         }

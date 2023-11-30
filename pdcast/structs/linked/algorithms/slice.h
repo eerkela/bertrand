@@ -85,7 +85,7 @@ namespace linked {
     SliceIndices<View> normalize_slice(const View& view, PyObject* py_slice) {
         // check that input is a Python slice object
         if (!PySlice_Check(py_slice)) {
-            throw util::TypeError("index must be a Python slice");
+            throw TypeError("index must be a Python slice");
         }
 
         size_t size = view.size();
@@ -201,7 +201,7 @@ namespace linked {
             first(0), last(0), length(length), inverted(false), backward(false)
         {
             // convert to closed interval [start, closed]
-            long long mod = util::py_modulo((stop - start), step);
+            long long mod = bertrand::util::py_modulo((stop - start), step);
             long long closed = (mod == 0) ? (stop - step) : (stop - mod);
 
             // get direction to traverse slice based on singly-/doubly-linked status
@@ -477,7 +477,7 @@ namespace linked {
         template <typename Container>
         void set(const Container& items) {
             // unpack iterable into temporary sequence (unless it is already a sequence)
-            auto sequence = util::sequence(items);
+            auto sequence = bertrand::util::sequence(items);
 
             // trvial case: both slice and sequence are empty
             if (empty() && sequence.size() == 0) return;
@@ -522,8 +522,8 @@ namespace linked {
                 // for Python-style slice insertions (e.g. slice[1:2] = [1, 2, 3]).  In
                 // these cases, Python allows the slice and sequence lengths to differ,
                 // and continues inserting items until the sequence is exhausted.
-                auto iter = util::iter(sequence);
-                auto seq = inverted() ? iter.reverse() : iter.forward();
+                auto it = iter(sequence);
+                auto seq = inverted() ? it.reverse() : it.forward();
                 for (auto it = this->begin(); seq != seq.end(); ++it, ++seq, ++idx) {
                     it.insert(view.node(*seq));
                 }

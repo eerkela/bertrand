@@ -4,7 +4,6 @@
 
 #include <cstddef>  // size_t
 #include <cstdlib>  // malloc(), calloc(), free()
-#include <functional>  // std::hash
 #include <iostream>  // std::cout, std::endl
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
@@ -12,8 +11,7 @@
 #include <Python.h>  // CPython API
 #include "../../util/except.h"  // catch_python(), TypeError(), KeyError()
 #include "../../util/math.h"  // next_power_of_two()
-#include "../../util/python.h"  // std::hash<PyObject*>, eq(), len()
-#include "../../util/repr.h"  // repr()
+#include "../../util/ops.h"  // hash(), eq(), len(), repr()
 #include "../../util/name.h"  // PyName
 #include "node.h"  // NodeTraits
 
@@ -140,17 +138,17 @@ protected:
         new (node) Node(std::forward<Args>(args)...);
 
         // check python specialization if enabled
-        if constexpr (util::is_pyobject<typename Node::Value>) {
+        if constexpr (is_pyobject<typename Node::Value>) {
             if (specialization != nullptr && !node->typecheck(specialization)) {
                 std::ostringstream msg;
-                msg << util::repr(node->value()) << " is not of type ";
-                msg << util::repr(specialization);
+                msg << repr(node->value()) << " is not of type ";
+                msg << repr(specialization);
                 node->~Node();
-                throw util::TypeError(msg.str());
+                throw TypeError(msg.str());
             }
         }
         if constexpr (DEBUG) {
-            std::cout << "    -> create: " << util::repr(node->value()) << std::endl;
+            std::cout << "    -> create: " << repr(node->value()) << std::endl;
         }
     }
 
@@ -160,7 +158,7 @@ protected:
         while (curr != nullptr) {
             Node* next = curr->next();
             if constexpr (DEBUG) {
-                std::cout << "    -> recycle: " << util::repr(curr->value()) << std::endl;
+                std::cout << "    -> recycle: " << repr(curr->value()) << std::endl;
             }
             curr->~Node();
             curr = next;
@@ -172,7 +170,7 @@ protected:
         const Derived* self = static_cast<const Derived*>(this);
         std::ostringstream msg;
         msg << "allocator is frozen at size " << self->max_size().value_or(capacity);
-        return util::MemoryError(msg.str());
+        return MemoryError(msg.str());
     }
 
     /* Create an allocator with an optional fixed size. */
@@ -220,7 +218,7 @@ public:
     BaseAllocator& operator=(const BaseAllocator& other) {
         if (this == &other) return *this;  // check for self-assignment
         if (frozen) {
-            throw util::MemoryError(
+            throw MemoryError(
                 "array cannot be reallocated while a MemGuard is active"
             );
         }
@@ -248,7 +246,7 @@ public:
     BaseAllocator& operator=(BaseAllocator&& other) noexcept {
         if (this == &other) return *this;  // check for self-assignment
         if (frozen()) {
-            throw util::MemoryError(
+            throw MemoryError(
                 "array cannot be reallocated while a MemGuard is active"
             );
         }
@@ -295,7 +293,7 @@ public:
     void recycle(Node* node) {
         // manually call destructor
         if constexpr (DEBUG) {
-            std::cout << "    -> recycle: " << util::repr(node->value());
+            std::cout << "    -> recycle: " << repr(node->value());
             std::cout << std::endl;
         }
         node->~Node();
@@ -341,7 +339,7 @@ public:
     attribute.  Otherwise, produce an empty MemGuard. */
     template <typename Container>
     inline MemGuard try_reserve(Container& container) {
-        std::optional<size_t> length = util::len(container);
+        std::optional<size_t> length = len(container);
         if (!length.has_value()) {
             return MemGuard();
         }
@@ -355,7 +353,7 @@ public:
         if (frozen()) {
             std::ostringstream msg;
             msg << "array cannot be reallocated while a MemGuard is active";
-            throw util::MemoryError(msg.str());
+            throw MemoryError(msg.str());
         }
 
         // invoke derived method
@@ -369,7 +367,7 @@ public:
             "cannot re-specialize a strictly-typed allocator after construction"
         );
         static_assert(
-            util::is_pyobject<typename Node::Value>,
+            is_pyobject<typename Node::Value>,
             "type specialization is only supported for PyObject* values"
         );
 
@@ -381,7 +379,7 @@ public:
         }
 
         // early return if new spec is same as old spec
-        if (specialization != nullptr && util::eq(specialization, spec)) {
+        if (specialization != nullptr && eq(specialization, spec)) {
             return;
         }
 
@@ -390,9 +388,9 @@ public:
         while (curr != nullptr) {
             if (!curr->typecheck(spec)) {
                 std::ostringstream msg;
-                msg << util::repr(curr->value()) << " is not of type ";
-                msg << util::repr(spec);
-                throw util::TypeError(msg.str());
+                msg << repr(curr->value()) << " is not of type ";
+                msg << repr(spec);
+                throw TypeError(msg.str());
             }
             curr = curr->next();
         }
@@ -546,7 +544,7 @@ public:
 
             // translate C++ exceptions into Python errors
             } catch (...) {
-                util::throw_python();
+                throw_python();
                 return nullptr;
             }
 
@@ -641,7 +639,7 @@ bool
         static PyTypeObject build_type() {
             PyTypeObject slots = {
                 .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
-                .tp_name = util::PyName<MemGuard>.data(),
+                .tp_name = bertrand::util::PyName<MemGuard>.data(),
                 .tp_basicsize = sizeof(PyMemGuard),
                 .tp_dealloc = (destructor) __dealloc__,
                 .tp_flags = (
@@ -734,7 +732,7 @@ private:
             size_t result = capacity.value();
             return result < DEFAULT_CAPACITY ?
                 DEFAULT_CAPACITY :
-                util::next_power_of_two(result);
+                bertrand::util::next_power_of_two(result);
 
         // otherwise, return directly
         } else {
@@ -810,7 +808,7 @@ private:
                 this->capacity != DEFAULT_CAPACITY &&
                 this->occupied <= this->capacity / 4
             ) {
-                size_t size = util::next_power_of_two(this->occupied * 2);
+                size_t size = bertrand::util::next_power_of_two(this->occupied * 2);
                 resize(size < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : size);
                 return true;
             }
@@ -1019,7 +1017,7 @@ public:
         }
 
         // otherwise, grow the array if necessary
-        size_t new_capacity = util::next_power_of_two(new_size);
+        size_t new_capacity = bertrand::util::next_power_of_two(new_size);
         if (new_capacity > this->capacity) {
             resize(new_capacity);
         }
@@ -1216,7 +1214,7 @@ private:
 
         // round up to next power of two
         size_t result = capacity.value();
-        result = util::next_power_of_two(result + (result / 3));
+        result = bertrand::util::next_power_of_two(result + (result / 3));
         return result < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : result;
     }
 
@@ -1244,7 +1242,7 @@ private:
             if constexpr (NodeTraits<Node>::has_hash) {
                 hash = curr_node->hash();
             } else {
-                hash = std::hash<Value>{}(curr_node->value());
+                hash = bertrand::hash(curr_node->value());
             }
 
             // get origin bucket in new array
@@ -1348,7 +1346,9 @@ private:
                 this->capacity != DEFAULT_CAPACITY &&
                 this->occupied <= this->capacity / 4
             ) {
-                size_t size = util::next_power_of_two(this->occupied + (this->occupied / 3));
+                size_t size = bertrand::util::next_power_of_two(
+                    this->occupied + (this->occupied / 3)
+                );
                 resize(size < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : size);
                 return true;
             }
@@ -1481,7 +1481,7 @@ private:
             }
             while (true) {
                 Node* node = bucket->node();
-                if (node->hash() == hash && util::eq(node->value(), value)) {
+                if (node->hash() == hash && eq(node->value(), value)) {
                     // move node if directed
                     if constexpr (flags & MOVE_HEAD) {
                         move_to_head(node);
@@ -1522,7 +1522,7 @@ private:
             }
             while (true) {
                 Node* node = bucket->node();
-                if (node->hash() == hash && util::eq(node->value(), value)) {
+                if (node->hash() == hash && eq(node->value(), value)) {
                     // update hop information
                     unsigned char has_next = (bucket->next > 0);
                     if (prev == nullptr) {  // bucket is head of collision chain
@@ -1539,7 +1539,7 @@ private:
 
                     // destroy node
                     if constexpr (DEBUG) {
-                        std::cout << "    -> recycle: " << util::repr(value);
+                        std::cout << "    -> recycle: " << repr(value);
                         std::cout << std::endl;
                     }
                     bucket->destroy();
@@ -1562,8 +1562,8 @@ private:
             return;
         } else {
             std::ostringstream msg;
-            msg << "key not found: " << util::repr(value);
-            throw util::KeyError(msg.str());
+            msg << "key not found: " << repr(value);
+            throw KeyError(msg.str());
         }
     }
 
@@ -1692,7 +1692,7 @@ public:
             while (true) {
                 // check for value match
                 if (bucket->node()->hash() == node->hash() &&
-                    util::eq(bucket->node()->value(), node->value())
+                    eq(bucket->node()->value(), node->value())
                 ) {
                     if constexpr (flags & EXIST_OK) {
                         if constexpr (
@@ -1710,9 +1710,9 @@ public:
                         return bucket->node();
                     } else {
                         std::ostringstream msg;
-                        msg << "duplicate key: " << util::repr(node->value());
+                        msg << "duplicate key: " << repr(node->value());
                         node->~Node();
-                        throw util::KeyError(msg.str());
+                        throw KeyError(msg.str());
                     }
                 }
 
@@ -1803,7 +1803,7 @@ public:
     /* Release a node from the table after looking up its value. */
     template <unsigned int flags = DEFAULT>
     inline void recycle(const Value& key) {
-        _recycle<flags>(std::hash<Value>{}(key), key);
+        _recycle<flags>(bertrand::hash(key), key);
     }
 
     /* Remove all elements from the table. */
@@ -1851,7 +1851,9 @@ public:
         }
 
         // otherwise, grow the table if necessary
-        size_t new_capacity = util::next_power_of_two(new_size + (new_size / 3));
+        size_t new_capacity = bertrand::util::next_power_of_two(
+            new_size + (new_size / 3)
+        );
         if (new_capacity > this->capacity) {
             resize(new_capacity);
         }
@@ -1879,7 +1881,7 @@ public:
     /* Search for a node by its value directly. */
     template <unsigned int flags = DEFAULT>
     inline Node* search(const Value& key) {
-        return _search<flags>(std::hash<Value>{}(key), key);
+        return _search<flags>(bertrand::hash(key), key);
     }
 
     /* Search for a node by reusing a hash from another node. */
@@ -1892,7 +1894,7 @@ public:
         if constexpr (NodeTraits<N>::has_hash) {
             return _search<flags>(node->hash(), node->value());
         } else {
-            size_t hash = std::hash<typename N::Value>{}(node->value());
+            size_t hash = bertrand::hash(node->value());
             return _search<flags>(hash, node->value());
         }
     }

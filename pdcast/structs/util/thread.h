@@ -13,12 +13,10 @@
 #include <type_traits>  // std::is_same_v, std::is_base_of_v, std::enable_if_t, etc.
 #include <unordered_set>  // std::unordered_set
 #include "except.h"  // throw_python()
-#include "slot.h"  // Slot
 #include "string.h"  // PyName
 
 
 namespace bertrand {
-namespace structs {
 namespace util {
 
 
@@ -932,7 +930,7 @@ public:
 
             // translate C++ exceptions to Python errors
             } catch (...) {
-                util::throw_python();
+                throw_python();
                 return nullptr;
             }
 
@@ -1372,7 +1370,16 @@ public:
 
 
 }  // namespace util
-}  // namespace structs
+
+
+/* Export to base namespace. */
+using util::BasicLock;
+using util::ReadWriteLock;
+using util::RecursiveLock;
+using util::SpinLock;
+using util::DiagnosticLock;
+
+
 }  // namespace bertrand
 
 

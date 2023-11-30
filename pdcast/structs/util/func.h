@@ -13,7 +13,6 @@
 
 
 namespace bertrand {
-namespace structs {
 namespace util {
 
 
@@ -250,7 +249,6 @@ public:
 
 
 }  // namespace util
-}  // namespace structs
 }  // namespace bertrand
 
 

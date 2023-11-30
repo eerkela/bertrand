@@ -4,7 +4,6 @@
 
 #include <Python.h>  // CPython API
 #include "../../util/iter.h" // iter()
-#include "../../util/python.h"  // is_pyobject<>, len()
 #include "../core/view.h"  // ViewTraits
 #include "append.h"  // append()
 
@@ -36,7 +35,7 @@ namespace linked {
         // append each item
         size_t size = view.size();
         try {
-            for (auto item : util::iter(items)) {
+            for (auto item : iter(items)) {
                 view.link(view.tail(), view.node(item), nullptr);
             }
 
@@ -80,7 +79,7 @@ namespace linked {
         // append each item
         size_t size = view.size();
         try {
-            for (auto item : util::iter(items)) {
+            for (auto item : iter(items)) {
                 view.link(nullptr, view.node(item), view.head());
             }
 

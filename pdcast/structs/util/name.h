@@ -51,7 +51,6 @@
 
 
 namespace bertrand {
-namespace structs {
 namespace util {
 
 
@@ -222,7 +221,6 @@ constexpr std::string_view PyName = TypeName<T>::mangled;
 
 
 }  // namespace util
-}  // namespace structs
 }  // namespace bertrand
 
 

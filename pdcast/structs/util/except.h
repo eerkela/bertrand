@@ -16,12 +16,13 @@
  * the reverse is not true, and the rules around doing so are somewhat limited.  By
  * using custom exceptions, we can customize the Cython translation to provide more
  * Pythonic and informative error messages.
+ *
+ * reference:
+ *      https://docs.python.org/3/c-api/exceptions.html?highlight=pyexc#standardwarningcategories
  */
 
 
 namespace bertrand {
-namespace structs {
-namespace util {
 
 
 /* Base class for all Python-compatible C++ exceptions. */
@@ -120,9 +121,6 @@ struct RuntimeError : public Exception {
     RuntimeError(const std::string& what) : Exception(what, PyExc_RuntimeError) {}
     RuntimeError(const std::string_view& what) : Exception(what, PyExc_RuntimeError) {}
 };
-
-
-// reference: https://docs.python.org/3/c-api/exceptions.html?highlight=pyexc#standardwarningcategories
 
 
 // TODO: can maybe even store the traceback and just use PyErr_Restore() to send it to
@@ -225,8 +223,6 @@ inline void throw_python() {
 }
 
 
-}  // namespace util
-}  // namespace structs
 }  // namespace bertrand
 
 

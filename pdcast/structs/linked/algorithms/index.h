@@ -7,8 +7,7 @@
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
 #include <type_traits>  // std::enable_if_t<>
-#include "../../util/python.h"  // eq()
-#include "../../util/repr.h"  // repr()
+#include "../../util/ops.h"  // eq(), repr()
 #include "../core/view.h"  // ViewTraits
 #include "slice.h"  // normalize_slice()
 
@@ -33,7 +32,7 @@ namespace linked {
         // convenience function for throwing not-found error
         auto not_found = [](const Item& item) {
             std::ostringstream msg;
-            msg << util::repr(item) << " is not in list";
+            msg << repr(item) << " is not in list";
             return std::out_of_range(msg.str());
         };
 
@@ -66,7 +65,7 @@ namespace linked {
                 bool found = false;
                 size_t last_observed;
                 for (; idx >= norm_start; --idx, ++it) {
-                    if (util::eq(*it, item)) {
+                    if (eq(*it, item)) {
                         found = true;
                         last_observed = idx;
                     }
@@ -87,7 +86,7 @@ namespace linked {
 
         // search until we hit item or stop index
         for (; idx < norm_stop; ++idx, ++it) {
-            if (util::eq(*it, item)) {
+            if (eq(*it, item)) {
                 return idx;
             }
         }
@@ -112,7 +111,7 @@ namespace linked {
         // convenience function for throwing not-found error
         auto not_found = [](const Item& item) {
             std::ostringstream msg;
-            msg << util::repr(item) << " is not in set";
+            msg << repr(item) << " is not in set";
             return std::out_of_range(msg.str());
         };
 

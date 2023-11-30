@@ -10,7 +10,7 @@
 #include "allocate.h"  // allocators
 #include "iter.h"  // Iterator, Direction
 #include "../../util/iter.h"  // iter()
-#include "../../util/python.h"  // len()
+#include "../../util/ops.h"  // len()
 
 
 namespace bertrand {
@@ -91,7 +91,7 @@ public:
         bool reverse
     ) : allocator(init_size(iterable, capacity), spec)
     {
-        for (auto item : util::iter(iterable)) {
+        for (auto item : iter(iterable)) {
             Node* curr = node(item);
             if (reverse) {
                 link(nullptr, curr, head());
@@ -431,7 +431,7 @@ protected:
     ) {
         // if dynamic, get length of container and compare with specified capacity
         if constexpr (DYNAMIC) {
-            std::optional<size_t> size = util::len(container);
+            std::optional<size_t> size = len(container);
 
             // use max of container size and specified capacity
             if (size.has_value()) {
@@ -474,7 +474,7 @@ public:
         bool reverse
     ) : Base(capacity, spec)
     {
-        for (auto item : util::iter(iterable)) {
+        for (auto item : iter(iterable)) {
             if (reverse) {
                 node<Allocator::EXIST_OK | Allocator::INSERT_HEAD>(item);
             } else {

@@ -5,7 +5,7 @@
 #include <sstream>  // std::ostringstream
 #include <stdexcept>  // std::invalid_argument
 #include <type_traits>  // std::enable_if_t<>
-#include "../../util/repr.h"  // repr()
+#include "../../util/ops.h"  // repr()
 #include "../core/node.h"  // NodeTraits
 #include "../core/view.h"  // ViewTraits
 
@@ -25,7 +25,7 @@ namespace linked {
         // convenience function for throwing item not found error
         auto not_found = [](Item& item) {
             std::ostringstream msg;
-            msg << util::repr(item) << " is not in set";
+            msg << repr(item) << " is not in set";
             return std::invalid_argument(msg.str());
         };
 

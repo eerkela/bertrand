@@ -3,7 +3,8 @@
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_UNION_H
 
 #include <type_traits>  // std::enable_if_t<>
-#include "../../util/python.h"  // len()
+#include "../../util/iter.h"  // iter()
+#include "../../util/ops.h"  // len()
 #include "../core/node.h"  // NodeTraits
 #include "../core/view.h"  // ViewTraits
 #include "update.h"  // update()
@@ -35,7 +36,7 @@ namespace linked {
         }
 
         // add elements from items
-        for (auto item : util::iter(items)) {
+        for (auto item : iter(items)) {
             copy.template node<flags>(item);
         }
 
@@ -74,7 +75,7 @@ namespace linked {
 
         // iterate over items and mark all found nodes
         std::unordered_set<const Node*> found;
-        for (auto item : util::iter(items)) {
+        for (auto item : iter(items)) {
             Node* node = view.search(item);
             if (node != nullptr) found.insert(node);
         }
@@ -101,7 +102,7 @@ namespace linked {
 
         // iterate over items and mark all found nodes
         std::unordered_set<const Node*> found;
-        for (auto item : util::iter(items)) {
+        for (auto item : iter(items)) {
             Node* node = view.search(item);
             if (node != nullptr) found.insert(node);
         }

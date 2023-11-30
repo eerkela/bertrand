@@ -3,7 +3,7 @@
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_CONTAINS_H
 
 #include <type_traits>  // std::enable_if_t<>
-#include "../../util/python.h"  // eq()
+#include "../../util/ops.h"  // eq()
 #include "../core/view.h"  // ViewTraits
 
 
@@ -18,7 +18,7 @@ namespace linked {
         -> std::enable_if_t<ViewTraits<View>::listlike, bool>
     {
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
-            if (util::eq(it.curr()->value(), item)) return true;
+            if (eq(it.curr()->value(), item)) return true;
         }
         return false;
     }

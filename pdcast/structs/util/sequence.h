@@ -22,7 +22,6 @@
 
 
 namespace bertrand {
-namespace structs {
 namespace util {
 
 
@@ -54,14 +53,14 @@ public:
     ~PySequence() { Py_DECREF(sequence); }
 
     /* Iterate over the sequence. */
-    inline auto begin() const { return util::iter(this->sequence).begin(); }
-    inline auto cbegin() const { return util::iter(this->sequence).cbegin(); }
-    inline auto end() const { return util::iter(this->sequence).end(); }
-    inline auto cend() const { return util::iter(this->sequence).cend(); }
-    inline auto rbegin() const { return util::iter(this->sequence).rbegin(); }
-    inline auto crbegin() const { return util::iter(this->sequence).crbegin(); }
-    inline auto rend() const { return util::iter(this->sequence).rend(); }
-    inline auto crend() const { return util::iter(this->sequence).crend(); }
+    inline auto begin() const { return iter(this->sequence).begin(); }
+    inline auto cbegin() const { return iter(this->sequence).cbegin(); }
+    inline auto end() const { return iter(this->sequence).end(); }
+    inline auto cend() const { return iter(this->sequence).cend(); }
+    inline auto rbegin() const { return iter(this->sequence).rbegin(); }
+    inline auto crbegin() const { return iter(this->sequence).crbegin(); }
+    inline auto rend() const { return iter(this->sequence).rend(); }
+    inline auto crend() const { return iter(this->sequence).crend(); }
 
     /* Get underlying PyObject* array. */
     inline PyObject** data() const { return PySequence_Fast_ITEMS(sequence); }
@@ -81,15 +80,15 @@ public:
 /*  */
 template <typename T>
 class CppSequence {
-    using Iterator = decltype(util::iter(std::declval<T>()).begin());
+    using Iterator = decltype(iter(std::declval<T>()).begin());
     using deref_type = decltype(*std::declval<Iterator>());
     std::vector<deref_type> sequence;
 
     /* Unpack a C++ iterable into a fast sequence. */
     inline std::vector<deref_type> unpack(const T& iterable) {
         return std::vector<deref_type>(
-            util::iter(iterable).begin(),
-            util::iter(iterable).end()
+            iter(iterable).begin(),
+            iter(iterable).end()
         );
     }
 
@@ -135,7 +134,6 @@ inline auto sequence(Iterable&& iterable) {
 
 
 }  // namespace util
-}  // namespace structs
 }  // namespace bertrand
 
 

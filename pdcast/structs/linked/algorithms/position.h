@@ -9,7 +9,7 @@
 #include <Python.h>  // CPython API
 #include "../../util/base.h"  // is_pyobject<>
 #include "../../util/except.h"  // TypeError
-#include "../../util/python.h"  // lt(), ge(), plus()
+#include "../../util/ops.h"  // lt(), ge(), plus()
 #include "../core/iter.h"  // Direction, Bidirectional
 #include "../core/view.h"  // ViewTraits
 
@@ -50,24 +50,24 @@ namespace linked {
     /* Normalize a Python integer for use as an index to a list. */
     size_t normalize_index(PyObject* index, size_t size, bool truncate) {
         if (!PyLong_Check(index)) {
-            throw util::TypeError("index must be a Python integer");
+            throw TypeError("index must be a Python integer");
         }
 
         // comparisons are kept at the python level until we're ready to return
         PyObject* py_zero = PyLong_FromSize_t(0);  // new ref
         PyObject* py_size = PyLong_FromSize_t(size);  // new ref
-        bool lt_zero = util::lt(index, py_zero);
+        bool lt_zero = lt(index, py_zero);
 
         // wraparound negative indices
         bool release_index = false;
         if (lt_zero) {
-            index = util::plus(index, py_size);  // new ref
-            lt_zero = util::lt(index, py_zero);
+            index = plus(index, py_size);  // new ref
+            lt_zero = lt(index, py_zero);
             release_index = true;  // remember to DECREF index later
         }
 
         // boundscheck - value is bad
-        if (lt_zero || util::ge(index, py_size)) {
+        if (lt_zero || ge(index, py_size)) {
             Py_DECREF(py_zero);
             Py_DECREF(py_size);
             if (release_index) Py_DECREF(index);
@@ -145,7 +145,7 @@ namespace linked {
 
         /* Get the value at the current index. */
         inline Value get() const {
-            if constexpr (util::is_pyobject<Value>) {
+            if constexpr (is_pyobject<Value>) {
                 return Py_NewRef(*iter);
             } else {
                 return *iter;

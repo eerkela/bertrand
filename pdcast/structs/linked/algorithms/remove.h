@@ -6,8 +6,7 @@
 #include <stdexcept>  // std::invalid_argument
 #include <type_traits>  // std::enable_if_t<>
 #include "../../util/iter.h"  // iter()
-#include "../../util/repr.h"  // repr()
-#include "../../util/python.h"  // eq()
+#include "../../util/ops.h"  // eq(), repr()
 #include "../core/node.h"  // NodeTraits
 #include "../core/view.h"  // ViewTraits
 
@@ -23,12 +22,11 @@ namespace linked {
         -> std::enable_if_t<ViewTraits<View>::listlike, void>
     {
         using Node = typename View::Node;
-        using util::iter;
 
         // find item in list
         for (auto it = iter(view).forward(); it != it.end(); ++it) {
             Node* node = it.curr();
-            if (util::eq(node->value(), item)) {
+            if (eq(node->value(), item)) {
                 view.recycle(it.drop());
                 return;
             }
@@ -36,7 +34,7 @@ namespace linked {
 
         // item not found
         std::ostringstream msg;
-        msg << util::repr(item) << " is not in list";
+        msg << repr(item) << " is not in list";
         throw std::invalid_argument(msg.str());  
     }
 
