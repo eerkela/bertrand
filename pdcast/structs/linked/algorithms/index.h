@@ -5,7 +5,6 @@
 #include <cstddef>  // size_t
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
-#include <stdexcept>  // std::invalid_argument
 #include <type_traits>  // std::enable_if_t<>
 #include "../../util/ops.h"  // eq(), repr()
 #include "../core/view.h"  // ViewTraits

@@ -3,7 +3,6 @@
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_SWAP_H
 
 #include <sstream>  // std::ostringstream
-#include <stdexcept>  // std::invalid_argument
 #include <type_traits>  // std::enable_if_t<>
 #include "../../util/ops.h"  // repr()
 #include "../core/node.h"  // NodeTraits

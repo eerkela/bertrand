@@ -3,11 +3,10 @@
 #define BERTRAND_STRUCTS_LINKED_DICT_H
 
 #include <cstddef>  // size_t
-#include <iterator>
 #include <optional>  // std::optional
 #include <ostream>  // std::ostream
 #include <sstream>  // std::ostringstream
-#include <type_traits>
+#include <type_traits>  // std::conditional_t
 #include <utility>  // std::pair
 #include <variant>  // std::variant
 #include <Python.h>  // CPython API
@@ -486,17 +485,17 @@ public:
      */
 
     /* Get a read-only, setlike proxy for the keys within this dictionary. */
-    inline KeysProxy<LinkedDict> keys() const {
+    inline const KeysProxy<LinkedDict> keys() const {
         return KeysProxy<LinkedDict>(*this);
     }
 
     /* Get a read-only, setlike proxy for the values within this dictionary. */
-    inline ValuesProxy<LinkedDict> values() const {
+    inline const ValuesProxy<LinkedDict> values() const {
         return ValuesProxy<LinkedDict>(*this);
     }
 
     /* Get a read-only, setlike proxy for the key-value pairs within this dictionary. */
-    inline ItemsProxy<LinkedDict> items() const {
+    inline const ItemsProxy<LinkedDict> items() const {
         return ItemsProxy<LinkedDict>(*this);
     }
 
@@ -505,8 +504,18 @@ public:
         return linked::map(this->view, key);
     }
 
-    /* Get a proxy for a value at a particular index of the dictionary. */
+    /* Get a const proxy for a particular key within a const dictionary. */
+    inline const linked::MapProxy<const View> map(const Key& key) const {
+        return linked::map(this->view, key);
+    }
+
+    /* Get a proxy for a key at a particular index of the dictionary. */
     inline linked::ElementProxy<View> position(long long index) {
+        return linked::position(this->view, index);
+    }
+
+    /* Get a const proxy for a key at a particular index of a const dictionary. */
+    inline const linked::ElementProxy<const View> position(long long index) const {
         return linked::position(this->view, index);
     }
 
@@ -514,6 +523,17 @@ public:
     template <typename... Args>
     inline linked::SliceProxy<View, LinkedDict> slice(Args&&... args) {
         return linked::slice<View, LinkedDict>(
+            this->view,
+            std::forward<Args>(args)...
+        );
+    }
+
+    /* Get a const proxy for a slice within a const dictionary. */
+    template <typename... Args>
+    inline auto slice(Args&&... args) const
+        -> const linked::SliceProxy<const View, const LinkedDict>
+    {
+        return linked::slice<const View, const LinkedDict>(
             this->view,
             std::forward<Args>(args)...
         );
@@ -734,6 +754,9 @@ inline bool operator!=(
 //////////////////////
 ////    keys()    ////
 //////////////////////
+
+
+// TODO: Python wrappers for keys(), values(), items()
 
 
 /* A read-only proxy for a dictionary's keys, in the same style as Python's

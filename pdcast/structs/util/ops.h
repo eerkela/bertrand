@@ -7,7 +7,6 @@
 #include <functional>  // std::hash, std::less, std::plus, etc.
 #include <optional>  // std::optional<>
 #include <sstream>  // std::ostringstream
-#include <stdexcept>  // std::out_of_range, std::logic_error
 #include <string>  // std::string
 #include <typeinfo>  // typeid()
 #include <type_traits>  // std::is_convertible_v<>, std::remove_cv_t<>, etc.

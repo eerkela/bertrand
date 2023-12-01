@@ -3,7 +3,6 @@
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_POSITION_H
 
 #include <cstddef>  // size_t
-#include <stdexcept>  // std::out_of_range
 #include <sstream>  // std::ostringstream
 #include <type_traits>  // std::enable_if_t<>
 #include <Python.h>  // CPython API
@@ -94,6 +93,30 @@ namespace linked {
     template <typename View>
     auto position(View& view, long long index)
         -> std::enable_if_t<ViewTraits<View>::linked, ElementProxy<View>>
+    {
+        // normalize index
+        size_t norm_index = normalize_index(index, view.size(), false);
+
+        // get iterator to index
+        if constexpr (NodeTraits<typename View::Node>::has_prev) {
+            if (view.closer_to_tail(norm_index)) {
+                auto it = view.rbegin();
+                for (size_t i = view.size() - 1; i > norm_index; --i) ++it;
+                return ElementProxy<View>(view, std::move(it));
+            }
+        }
+
+        // forward traversal
+        auto it = view.begin();
+        for (size_t i = 0; i < norm_index; ++i) ++it;
+        return ElementProxy<View>(view, std::move(it));
+    }
+
+
+    /* Get a proxy for a value at a particular index of the list. */
+    template <typename View>
+    auto position(const View& view, long long index)
+        -> std::enable_if_t<ViewTraits<View>::linked, const ElementProxy<View>>
     {
         // normalize index
         size_t norm_index = normalize_index(index, view.size(), false);

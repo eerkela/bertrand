@@ -5,7 +5,6 @@
 #include <cstddef>  // size_t
 #include <memory>  // std::shared_ptr, std::weak_ptr
 #include <optional>  // std::optional
-#include <stdexcept>  // std::runtime_error
 #include <string_view>  // std::string_view
 #include <variant>  // std::visit
 #include "core/iter.h"  // Direction

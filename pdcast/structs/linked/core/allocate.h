@@ -7,7 +7,6 @@
 #include <iostream>  // std::cout, std::endl
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
-#include <stdexcept>  // std::invalid_argument
 #include <Python.h>  // CPython API
 #include "../../util/except.h"  // catch_python(), TypeError(), KeyError()
 #include "../../util/math.h"  // next_power_of_two()

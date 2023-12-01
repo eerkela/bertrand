@@ -30,6 +30,16 @@ namespace linked {
     }
 
 
+    /* Get a proxy for a value that may or may not be stored within a linked
+    dictionary. */
+    template <typename View, typename Key>
+    auto map(const View& view, const Key& key)
+        -> std::enable_if_t<ViewTraits<View>::dictlike, const MapProxy<View>>
+    {
+        return MapProxy<View>(view, key);
+    }
+
+
     /* A proxy for an entry in the dictionary, as returned by the [] operator. */
     template <typename View>
     class MapProxy {

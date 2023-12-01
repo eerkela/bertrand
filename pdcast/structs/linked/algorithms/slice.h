@@ -116,6 +116,16 @@ namespace linked {
     }
 
 
+    /* Get a proxy for a slice within the list. */
+    template <typename View, typename List = View, typename... Args>
+    auto slice(const View& view, Args&&... args)
+        -> std::enable_if_t<ViewTraits<View>::linked, const SliceProxy<View, List>>
+    {
+        using Slice = SliceProxy<View, List>;
+        return Slice(view, normalize_slice(view, std::forward<Args>(args)...));
+    }
+
+
     /* A simple class representing the normalized indices needed to construct a slice
     from a linked data structure. */
     template <typename View>

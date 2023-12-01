@@ -2,7 +2,6 @@
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_POP_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_POP_H
 
-#include <stdexcept>  // std::out_of_range
 #include <tuple>  // std::tuple
 #include <type_traits>  // std::enable_if_t<>
 #include <Python.h>  // CPython API

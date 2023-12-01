@@ -408,10 +408,26 @@ public:
         return linked::position(this->view, index);
     }
 
+    /* Get a const proxy for a value at a particular index of a const set. */
+    inline const linked::ElementProxy<const View> position(long long index) const {
+        return linked::position(this->view, index);
+    }
+
     /* Get a proxy for a slice within the set. */
     template <typename... Args>
     inline linked::SliceProxy<View, LinkedSet> slice(Args&&... args) {
         return linked::slice<View, LinkedSet>(
+            this->view,
+            std::forward<Args>(args)...
+        );
+    }
+
+    /* Get a const proxy for a slice within a const set. */
+    template <typename... Args>
+    inline auto slice(Args&&... args) const
+        -> const linked::SliceProxy<const View, const LinkedSet>
+    {
+        return linked::slice<const View, const LinkedSet>(
             this->view,
             std::forward<Args>(args)...
         );
@@ -443,6 +459,11 @@ public:
 
     /* Overload the array index operator ([]) to allow pythonic set indexing. */
     inline auto operator[](long long index) {
+        return position(index);
+    }
+
+    /* Allow [] operator to be used on const sets. */
+    inline auto operator[](long long index) const {
         return position(index);
     }
 

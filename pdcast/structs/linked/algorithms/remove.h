@@ -3,7 +3,6 @@
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_REMOVE_H
 
 #include <sstream>  // std::ostringstream
-#include <stdexcept>  // std::invalid_argument
 #include <type_traits>  // std::enable_if_t<>
 #include "../../util/iter.h"  // iter()
 #include "../../util/ops.h"  // eq(), repr()

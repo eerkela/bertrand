@@ -4,7 +4,7 @@
 
 #include <stack>  // std::stack
 #include <Python.h>  // CPython API
-#include <type_traits>
+#include <type_traits>  // std::conditional_t<>
 #include "node.h"  // NodeTraits
 
 
