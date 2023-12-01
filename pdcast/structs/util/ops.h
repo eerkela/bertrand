@@ -17,10 +17,9 @@
 #include "iter.h"  // iter(), PyIterator
 
 
-/* NOTE: This file contains a collection of helper classes for interacting with the
- * Python C API using C++ RAII principles.  This allows automated handling of reference
- * counts and other memory management concerns, and simplifies overall communication
- * between C++ and Python.
+/* NOTE: This file contains a collection of helper functions for applying basic
+ * operators to both C++ and Python objects.  This is useful for writing generic
+ * algorithms that can accept either C++ or Python objects as arguments.
  */
 
 
@@ -380,109 +379,15 @@ std::string repr(const T& obj) {
 }
 
 
+/* NOTE: A generic iter() function, which will iterate over both Python and C++
+ * containers, is provided in the iter.h header alongside this file.  It is
+ * omitted here for brevity.
+ */
+
+
 ////////////////////////////////
 ////    BINARY OPERATORS    ////
 ////////////////////////////////
-
-
-/* Apply a bitwise `&` operation between two C++ or Python objects. */
-template <typename LHS, typename RHS>
-inline auto bit_and(const LHS& lhs, const RHS& rhs) {
-    auto execute = [](auto a, auto b) {
-        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
-            PyObject* result = PyNumber_And(a, b);
-            if (result == nullptr) {
-                throw catch_python<TypeError>();
-            }
-            return result;  // new reference
-        } else {
-            return a & b;
-        }
-    };
-
-    return op_detail::wrap(execute, lhs, rhs);
-}
-
-
-/* Apply a bitwise `|` operation between two C++ or Python objects. */
-template <typename LHS, typename RHS>
-inline auto bit_or(const LHS& lhs, const RHS& rhs) {
-    auto execute = [](auto a, auto b) {
-        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
-            PyObject* result = PyNumber_Or(a, b);
-            if (result == nullptr) {
-                throw catch_python<TypeError>();
-            }
-            return result;  // new reference
-        } else {
-            return a | b;
-        }
-    };
-
-    return op_detail::wrap(execute, lhs, rhs);
-}
-
-
-/* Apply a bitwise `^` operation between two C++ or Python objects. */
-template <typename LHS, typename RHS>
-inline auto bit_xor(const LHS& lhs, const RHS& rhs) {
-    auto execute = [](auto a, auto b) {
-        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
-            PyObject* result = PyNumber_Xor(a, b);
-            if (result == nullptr) {
-                throw catch_python<TypeError>();
-            }
-            return result;  // new reference
-        } else {
-            return a ^ b;
-        }
-    };
-
-    return op_detail::wrap(execute, lhs, rhs);
-}
-
-
-/* Apply a bitwise `<<` operation between two C++ or Python objects. */
-template <typename LHS, typename RHS>
-inline auto lshift(const LHS& lhs, const RHS& rhs) {
-    auto execute = [](auto a, auto b) {
-        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
-            PyObject* result = PyNumber_Lshift(a, b);
-            if (result == nullptr) {
-                throw catch_python<TypeError>();
-            }
-            return result;  // new reference
-        } else {
-            return a << b;
-        }
-    };
-
-    return op_detail::wrap(execute, lhs, rhs);
-}
-
-
-/* Apply a bitwise `>>` operation between two C++ or Python objects. */
-template <typename LHS, typename RHS>
-inline auto rshift(const LHS& lhs, const RHS& rhs) {
-    auto execute = [](auto a, auto b) {
-        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
-            PyObject* result = PyNumber_Rshift(a, b);
-            if (result == nullptr) {
-                throw catch_python<TypeError>();
-            }
-            return result;  // new reference
-        } else {
-            return a >> b;
-        }
-    };
-
-    return op_detail::wrap(execute, lhs, rhs);
-}
-
-
-///////////////////////////
-////    COMPARISONS    ////
-///////////////////////////
 
 
 /* Apply a `<` comparison between any combination of C++ or Python objects. */
@@ -738,11 +643,6 @@ bool lexical_gt(const LHS& lhs, const RHS& rhs) {
 }
 
 
-////////////////////
-////    MATH    ////
-////////////////////
-
-
 /* Apply a `+` operation between any combination of C++ or Python objects. */
 template <typename LHS, typename RHS>
 inline auto plus(const LHS& lhs, const RHS& rhs) {
@@ -962,26 +862,102 @@ inline auto modulo(const LHS& lhs, const RHS& rhs) {
 }
 
 
-}  // namespace bertrand
-
-
-/* Specializations for C++ standard library functors using the Python C API. */
-namespace std {
-
-
-    /* Hash function for PyObject* pointers. */
-    template<>
-    struct hash<PyObject*> {
-        inline size_t operator()(PyObject* key) const {
-            return bertrand::hash(key);
+/* Apply a bitwise `&` operation between two C++ or Python objects. */
+template <typename LHS, typename RHS>
+inline auto bit_and(const LHS& lhs, const RHS& rhs) {
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            PyObject* result = PyNumber_And(a, b);
+            if (result == nullptr) {
+                throw catch_python<TypeError>();
+            }
+            return result;  // new reference
+        } else {
+            return a & b;
         }
     };
 
+    return op_detail::wrap(execute, lhs, rhs);
+}
 
-    // TODO: overload std:equal_to<>?
+
+/* Apply a bitwise `|` operation between two C++ or Python objects. */
+template <typename LHS, typename RHS>
+inline auto bit_or(const LHS& lhs, const RHS& rhs) {
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            PyObject* result = PyNumber_Or(a, b);
+            if (result == nullptr) {
+                throw catch_python<TypeError>();
+            }
+            return result;  // new reference
+        } else {
+            return a | b;
+        }
+    };
+
+    return op_detail::wrap(execute, lhs, rhs);
+}
 
 
-}  // namespace std
+/* Apply a bitwise `^` operation between two C++ or Python objects. */
+template <typename LHS, typename RHS>
+inline auto bit_xor(const LHS& lhs, const RHS& rhs) {
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            PyObject* result = PyNumber_Xor(a, b);
+            if (result == nullptr) {
+                throw catch_python<TypeError>();
+            }
+            return result;  // new reference
+        } else {
+            return a ^ b;
+        }
+    };
+
+    return op_detail::wrap(execute, lhs, rhs);
+}
+
+
+/* Apply a bitwise `<<` operation between two C++ or Python objects. */
+template <typename LHS, typename RHS>
+inline auto lshift(const LHS& lhs, const RHS& rhs) {
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            PyObject* result = PyNumber_Lshift(a, b);
+            if (result == nullptr) {
+                throw catch_python<TypeError>();
+            }
+            return result;  // new reference
+        } else {
+            return a << b;
+        }
+    };
+
+    return op_detail::wrap(execute, lhs, rhs);
+}
+
+
+/* Apply a bitwise `>>` operation between two C++ or Python objects. */
+template <typename LHS, typename RHS>
+inline auto rshift(const LHS& lhs, const RHS& rhs) {
+    auto execute = [](auto a, auto b) {
+        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            PyObject* result = PyNumber_Rshift(a, b);
+            if (result == nullptr) {
+                throw catch_python<TypeError>();
+            }
+            return result;  // new reference
+        } else {
+            return a >> b;
+        }
+    };
+
+    return op_detail::wrap(execute, lhs, rhs);
+}
+
+
+}  // namespace bertrand
 
 
 #endif // BERTRAND_STRUCTS_UTIL_PYTHON_H

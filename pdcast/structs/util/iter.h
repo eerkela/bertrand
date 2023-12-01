@@ -1288,9 +1288,9 @@ private:
 /* Create a C++ to Python iterator proxy for a container. */
 template <typename Container>
 inline auto iter(Container& container)
-    -> std::enable_if_t<!is_pyobject<Container>, util::IterProxy<Container, identity>>
+    -> std::enable_if_t<!is_pyobject<Container>, IterProxy<Container, identity>>
 {
-    return util::IterProxy<Container, identity>(container);
+    return IterProxy<Container, identity>(container);
 }
 
 
@@ -1298,27 +1298,27 @@ inline auto iter(Container& container)
 function at each dereference. */
 template <typename Container, typename Func>
 inline auto iter(Container& container, Func func)
-    -> std::enable_if_t<!is_pyobject<Container>, util::IterProxy<Container, Func>>
+    -> std::enable_if_t<!is_pyobject<Container>, IterProxy<Container, Func>>
 {
-    return util::IterProxy<Container, Func>(container, func);
+    return IterProxy<Container, Func>(container, func);
 }
 
 
 /* Create a Python to C++ iterator proxy for a mutable Python container. */
 template <typename Container>
 inline auto iter(Container container)
-    -> std::enable_if_t<is_pyobject<Container>, util::PyIterProxy<Container, identity>>
+    -> std::enable_if_t<is_pyobject<Container>, PyIterProxy<Container, identity>>
 {
-    return util::PyIterProxy<Container, identity>(container);
+    return PyIterProxy<Container, identity>(container);
 }
 
 
 /* Create a Python to C++ iterator proxy for a mutable Python container. */
 template <typename Container, typename Func>
 inline auto iter(Container container, Func convert)
-    -> std::enable_if_t<is_pyobject<Container>, util::PyIterProxy<Container, Func>>
+    -> std::enable_if_t<is_pyobject<Container>, PyIterProxy<Container, Func>>
 {
-    return util::PyIterProxy<Container, Func>(container, convert);
+    return PyIterProxy<Container, Func>(container, convert);
 }
 
 

@@ -38,8 +38,7 @@ namespace linked {
     inline auto lru_contains(View& view, Item& item)
         -> std::enable_if_t<ViewTraits<View>::hashed, bool>
     {
-        using Allocator = typename View::Allocator;
-        return view.template search<Allocator::MOVE_HEAD>(item) != nullptr;
+        return view.template search<View::Allocator::MOVE_HEAD>(item) != nullptr;
     }
 
 

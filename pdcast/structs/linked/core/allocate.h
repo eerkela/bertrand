@@ -21,6 +21,12 @@ namespace structs {
 namespace linked {
 
 
+// TODO: we could maybe implement a converting move constructor for allocators that
+// allows them to be constructed from other allocators with different flags, as long as
+// the flags are compatible.  This would allow us to switch between dynamic/fixed-size
+// lists, for example.
+
+
 /////////////////////////
 ////    CONSTANTS    ////
 /////////////////////////

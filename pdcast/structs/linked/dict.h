@@ -13,7 +13,7 @@
 #include <Python.h>  // CPython API
 #include "../util/args.h"  // PyArgs
 #include "../util/except.h"  // throw_python()
-#include "algorithms/map.h"
+#include "../util/ops.h"  // eq(), lexical_lt(), etc.
 #include "core/view.h"  // DictView
 #include "base.h"  // LinkedBase
 #include "list.h"  // PyListInterface
@@ -24,9 +24,10 @@
 #include "algorithms/count.h"
 #include "algorithms/discard.h"
 #include "algorithms/distance.h"
+#include "algorithms/get.h"
 #include "algorithms/index.h"
 #include "algorithms/insert.h"
-#include "algorithms/lexical_compare.h"
+#include "algorithms/map.h"
 #include "algorithms/move.h"
 #include "algorithms/pop.h"
 #include "algorithms/position.h"
@@ -35,6 +36,7 @@
 #include "algorithms/repr.h"
 #include "algorithms/reverse.h"
 #include "algorithms/rotate.h"
+#include "algorithms/setdefault.h"
 #include "algorithms/set_compare.h"
 #include "algorithms/slice.h"
 #include "algorithms/sort.h"
@@ -87,7 +89,7 @@ template <
     typename K,
     typename V,
     unsigned int Flags = Config::DEFAULT,
-    typename Lock = util::BasicLock
+    typename Lock = BasicLock
 >
 class LinkedDict : public LinkedBase<
     linked::DictView<
@@ -129,6 +131,12 @@ public:
 
     template <typename Container>
     inline static LinkedDict fromkeys(Container&& keys, const Value& value) {
+        // TODO: account for different flag configurations.  If LinkedDict is
+        // fixed-size, then we can't just default-construct it here, since we're
+        // likely to hit the size limit.  We also can't preallocate ahead of
+        // time, since we don't know how many duplicates there will be.
+        LinkedDict result;
+
         // TODO: allocate a new view, then pass it to linked::fromkeys(), then
         // move it into a new LinkedDict
 
@@ -138,105 +146,63 @@ public:
         );
     }
 
-    /* Add an item to the end of the dictionary if it is not already present. */
-    template <typename Pair>
-    inline void add(const Pair& item) {
-        linked::add(this->view, item);
-    }
+    // TODO: add() may not be necessary.  Just use the normal index operator [] or
+    // map() proxy instead.
 
-    /* Add a key-value pair to the end of the dictionary if it is not already
-    present. */
-    inline void add(const Key& key, const Value& value) {
-        linked::add(this->view, key, value);
-    }
 
-    /* Add an item to the beginning of the dictionary if it is not already present. */
-    template <typename Pair>
-    inline void add_left(const Pair& item) {
-        linked::add_left(this->view, item);
-    }
+    // /* Add an item to the end of the dictionary if it is not already present. */
+    // template <typename Pair>
+    // inline void add(const Pair& item) {
+    //     linked::add(this->view, item);
+    // }
 
-    /* Add a key-value pair to the beginning of the dictionary if it is not already
-    present. */
-    inline void add_left(const Key& key, const Value& value) {
-        linked::add_left(this->view, key, value);
-    }
+    // /* Add a key-value pair to the end of the dictionary if it is not already
+    // present. */
+    // inline void add(const Key& key, const Value& value) {
+    //     linked::add(this->view, key, value);
+    // }
 
-    /* Add an item to the front of the dictionary, evicting the last item if
-    necessary and moving items that are already present. */
-    template <typename Pair>
-    inline void lru_add(const Pair& item) {
-        linked::lru_add(this->view, item);
-    }
+    // /* Add an item to the beginning of the dictionary if it is not already present. */
+    // template <typename Pair>
+    // inline void add_left(const Pair& item) {
+    //     linked::add_left(this->view, item);
+    // }
 
-    /* Add a key-value pair to the front of the dictionary, evicting the last item if
-    necessary and moving items that are already present. */
-    inline void lru_add(const Key& key, const Value& value) {
-        linked::lru_add(this->view, key, value);
-    }
+    // /* Add a key-value pair to the beginning of the dictionary if it is not already
+    // present. */
+    // inline void add_left(const Key& key, const Value& value) {
+    //     linked::add_left(this->view, key, value);
+    // }
 
-    /* Insert an item at a specific index of the dictionary. */
-    template <typename Pair>
-    inline void insert(long long index, const Pair& item) {
-        linked::insert(this->view, index, item);
-    }
+    // /* Add an item to the front of the dictionary, evicting the last item if
+    // necessary and moving items that are already present. */
+    // template <typename Pair>
+    // inline void lru_add(const Pair& item) {
+    //     linked::lru_add(this->view, item);
+    // }
+
+    // /* Add a key-value pair to the front of the dictionary, evicting the last item if
+    // necessary and moving items that are already present. */
+    // inline void lru_add(const Key& key, const Value& value) {
+    //     linked::lru_add(this->view, key, value);
+    // }
+
+
+    // TODO: insert() could only accept a key-value pair, not a general Pair type.
+
+    // /* Insert an item at a specific index of the dictionary. */
+    // template <typename Pair>
+    // inline void insert(long long index, const Pair& item) {
+    //     linked::insert(this->view, index, item);
+    // }
 
     /* Insert a key-value pair at a specific index of the dictionary. */
     inline void insert(long long index, const Key& key, const Value& value) {
         linked::insert(this->view, index, key, value);
     }
 
-    /* Extend a dictionary by adding elements from one or more iterables that are not
-    already present. */
-    template <typename... Containers>
-    inline void update(Containers&&... items) {
-        (linked::update(this->view, std::forward<Containers>(items)), ...);
-    }
-
-    /* Extend a dictionary by left-adding elements from one or more iterables that are
-    not already present. */
-    template <typename... Containers>
-    inline void update_left(Containers&&... items) {
-        (linked::update_left(this->view, std::forward<Containers>(items)), ...);
-    }
-
-    /* Extend a dictionary by adding or moving items to the head of the dictionary and
-    possibly evicting the tail to make room. */
-    template <typename... Containers>
-    inline void lru_update(Containers&&... items) {
-        (linked::lru_update(this->view, std::forward<Containers>(items)), ...);
-    }
-
-    /* Remove elements from a dictionary that are contained in one or more iterables. */
-    template <typename... Containers>
-    inline void difference_update(Containers&&... items) {
-        (linked::difference_update(this->view, std::forward<Containers>(items)), ...);
-    }
-
-    /* Remove elements from a dictionary that are contained in one or more iterables. */
-    template <typename... Containers>
-    inline void intersection_update(Containers&&... items) {
-        (linked::intersection_update(this->view, std::forward<Containers>(items)), ...);
-    }
-
-    /* Update a dictionary, keeping only elements found in either the dictionary or the
-    given container, but not both. */
-    template <typename Container>
-    inline void symmetric_difference_update(Container&& items) {
-        linked::symmetric_difference_update(
-            this->view, std::forward<Container>(items)
-        );
-    }
-
-    /* Update a dictionary, keeping only elements found in either the dictionary or the
-    given container, but not both.  Appends to the head of the dictionary rather than
-    the tail. */
-    template <typename Container>
-    inline void symmetric_difference_update_left(Container&& items) {
-        linked::symmetric_difference_update_left(
-            this->view, std::forward<Container>(items)
-        );
-    }
+    // TODO: index() and count() can be implemented on keys(), values(), and items()
+    // proxies.
 
     /* Get the index of a key within the dictionary. */
     inline size_t index(
@@ -285,30 +251,49 @@ public:
         return linked::pop(this->view, key, default_value);
     }
 
-    // TODO: popitem should be able to take an index which defaults to -1 just like
-    // pop() for the other containers
-
     /* Remove and return a key, value pair from the dictionary. */
-    inline std::pair<Key, Value> popitem() {
-        return linked::popitem(this->view);
+    inline std::pair<Key, Value> popitem(long long index = -1) {
+        return linked::pop(this->view, index);
     }
 
     /* Remove all elements from the dictionary. */
     inline void clear() {
-        linked::clear(this->view);
+        this->view.clear();
     }
 
     /* Get a value from the dictionary using an optional default. */
-    inline Value get(
+    inline std::optional<Value> get(
         const Key& key,
         std::optional<Value> default_value = std::nullopt
     ) const {
         return linked::get(this->view, key, default_value);
     }
 
+    /* Get a value from the dictionary using an optional default, moving the key to
+    the front of the dictionary if it is found. */
+    inline std::optional<Value> lru_get(
+        const Key& key,
+        std::optional<Value> default_value = std::nullopt
+    ) {
+        return linked::lru_get(this->view, key, default_value);
+    }
+
     /* Set a value within the dictionary or insert it if it is not already present. */
-    inline void setdefault(const Key& key, const Value& default_value) {
-        linked::setdefault(this->view, key, default_value);
+    inline Value& setdefault(const Key& key, const Value& default_value) {
+        return linked::setdefault(this->view, key, default_value);
+    }
+
+    /* Set a value within the dictionary or insert it at the front of the dictionary
+    if it is not already present. */
+    inline Value& setdefault_left(const Key& key, const Value& default_value) {
+        return linked::setdefault_left(this->view, key, default_value);
+    }
+
+    /* Set a value within the dictionary and move it to the front of the dictionary,
+    or insert it there if it is not already present.  Evicts the last element to make
+    room if necessary. */
+    inline Value& lru_setdefault(const Key& key, const Value& default_value) {
+        return linked::lru_setdefault(this->view, key, default_value);
     }
 
     /* Return a shallow copy of the dictionary. */
@@ -352,6 +337,27 @@ public:
         );
     }
 
+    /* Extend a dictionary by adding elements from one or more iterables that are not
+    already present. */
+    template <typename... Containers>
+    inline void update(Containers&&... items) {
+        (linked::update(this->view, std::forward<Containers>(items)), ...);
+    }
+
+    /* Extend a dictionary by left-adding elements from one or more iterables that are
+    not already present. */
+    template <typename... Containers>
+    inline void update_left(Containers&&... items) {
+        (linked::update_left(this->view, std::forward<Containers>(items)), ...);
+    }
+
+    /* Extend a dictionary by adding or moving items to the head of the dictionary and
+    possibly evicting the tail to make room. */
+    template <typename... Containers>
+    inline void lru_update(Containers&&... items) {
+        (linked::lru_update(this->view, std::forward<Containers>(items)), ...);
+    }
+
     /* Return a new dictionary with elements common to this dictionary and all other
     containers. */
     template <typename... Containers>
@@ -361,6 +367,12 @@ public:
         );
     }
 
+    /* Remove elements from a dictionary that are contained in one or more iterables. */
+    template <typename... Containers>
+    inline void intersection_update(Containers&&... items) {
+        (linked::intersection_update(this->view, std::forward<Containers>(items)), ...);
+    }
+
     /* Return a new dictionary with elements from this dictionary that are common to
     any other containers. */
     template <typename... Containers>
@@ -368,6 +380,12 @@ public:
         return LinkedDict(
             linked::difference(this->view, std::forward<Containers>(items)...)
         );
+    }
+
+    /* Remove elements from a dictionary that are contained in one or more iterables. */
+    template <typename... Containers>
+    inline void difference_update(Containers&&... items) {
+        (linked::difference_update(this->view, std::forward<Containers>(items)), ...);
     }
 
     /* Return a new dictionary with elements in either this dictionary or another
@@ -390,6 +408,25 @@ public:
             linked::symmetric_difference_left(
                 this->view, std::forward<Container>(items)
             )
+        );
+    }
+
+    /* Update a dictionary, keeping only elements found in either the dictionary or the
+    given container, but not both. */
+    template <typename Container>
+    inline void symmetric_difference_update(Container&& items) {
+        linked::symmetric_difference_update(
+            this->view, std::forward<Container>(items)
+        );
+    }
+
+    /* Update a dictionary, keeping only elements found in either the dictionary or the
+    given container, but not both.  Appends to the head of the dictionary rather than
+    the tail. */
+    template <typename Container>
+    inline void symmetric_difference_update_left(Container&& items) {
+        linked::symmetric_difference_update_left(
+            this->view, std::forward<Container>(items)
         );
     }
 
@@ -575,6 +612,103 @@ inline std::ostream& operator<<(
  */
 
 
+/* Get the union between a LinkedDict and an arbitrary container. */
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
+inline LinkedDict<K, V, Flags, Ts...> operator|(
+    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const Map& other
+) {
+    return dict.union_(other);
+}
+
+
+/* Update a LinkedDict in-place, replacing it with the union of it and an arbitrary
+container. */
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
+inline LinkedDict<K, V, Flags, Ts...>& operator|=(
+    LinkedDict<K, V, Flags, Ts...>& dict,
+    const Map& other
+) {
+    dict.update(other);
+    return dict;
+}
+
+
+/* Get the difference between a LinkedDict and an arbitrary container. */
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
+inline LinkedDict<K, V, Flags, Ts...> operator-(
+    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const Map& other
+) {
+    return dict.difference(other);
+}
+
+
+/* Update a LinkedDict in-place, replacing it with the difference between it and an
+arbitrary container. */
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
+inline LinkedDict<K, V, Flags, Ts...>& operator-=(
+    LinkedDict<K, V, Flags, Ts...>& dict,
+    const Map& other
+) {
+    dict.difference_update(other);
+    return dict;
+}
+
+
+/* Get the intersection between a LinkedDict and an arbitrary container. */
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
+inline LinkedDict<K, V, Flags, Ts...> operator&(
+    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const Map& other
+) {
+    return dict.intersection(other);
+}
+
+
+/* Update a LinkedDict in-place, replacing it with the intersection between it and an
+arbitrary container. */
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
+inline LinkedDict<K, V, Flags, Ts...>& operator&=(
+    LinkedDict<K, V, Flags, Ts...>& dict,
+    const Map& other
+) {
+    dict.intersection_update(other);
+    return dict;
+}
+
+
+/* Get the symmetric difference between a LinkedDict and an arbitrary container. */
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
+inline LinkedDict<K, V, Flags, Ts...> operator^(
+    const LinkedDict<K, V, Flags, Ts...>& dict,
+    const Map& other
+) {
+    return dict.symmetric_difference(other);
+}
+
+
+/* Update a LinkedDict in-place, replacing it with the symmetric difference between it
+and an arbitrary container. */
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
+inline LinkedDict<K, V, Flags, Ts...>& operator^=(
+    LinkedDict<K, V, Flags, Ts...>& dict,
+    const Map& other
+) {
+    dict.symmetric_difference_update(other);
+    return dict;
+}
+
+
+// TODO: implement proper == operators, accounting for both keys and values of this
+// and the other container.  The other container should be any mapping type
+// (python dict, std::unordered_map, etc.) or a sequence of key-value pairs.
+// -> use SFINAE to determine whether an iterator over the other container
+// dereferences to a key-value pair.
+// -> Iterators over python dictionaries only dereference to keys, so we need to
+// have a special case that calls PyDict_Next() to get key-value pairs.
+
+
 /* Check whether a LinkedDict is equal to another mapping or container of pairs. */
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator==(
@@ -597,97 +731,12 @@ inline bool operator!=(
 }
 
 
-/* Get the union between a LinkedDict and an arbitrary container. */
-template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline LinkedDict<K, V, Flags, Ts...> operator|(
-    const LinkedDict<K, V, Flags, Ts...>& dict,
-    const Map& other
-) {
-    return dict.union_(other);
-}
+// TODO: reverse equivalents for ==, !=
 
 
-/* Get the difference between a LinkedDict and an arbitrary container. */
-template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline LinkedDict<K, V, Flags, Ts...> operator-(
-    const LinkedDict<K, V, Flags, Ts...>& dict,
-    const Map& other
-) {
-    return dict.difference(other);
-}
-
-
-/* Get the intersection between a LinkedDict and an arbitrary container. */
-template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline LinkedDict<K, V, Flags, Ts...> operator&(
-    const LinkedDict<K, V, Flags, Ts...>& dict,
-    const Map& other
-) {
-    return dict.intersection(other);
-}
-
-
-/* Get the symmetric difference between a LinkedDict and an arbitrary container. */
-template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline LinkedDict<K, V, Flags, Ts...> operator^(
-    const LinkedDict<K, V, Flags, Ts...>& dict,
-    const Map& other
-) {
-    return dict.symmetric_difference(other);
-}
-
-
-/* Update a LinkedDict in-place, replacing it with the union of it and an arbitrary
-container. */
-template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline LinkedDict<K, V, Flags, Ts...>& operator|=(
-    LinkedDict<K, V, Flags, Ts...>& dict,
-    const Map& other
-) {
-    dict.update(other);
-    return dict;
-}
-
-
-/* Update a LinkedDict in-place, replacing it with the difference between it and an
-arbitrary container. */
-template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline LinkedDict<K, V, Flags, Ts...>& operator-=(
-    LinkedDict<K, V, Flags, Ts...>& dict,
-    const Map& other
-) {
-    dict.difference_update(other);
-    return dict;
-}
-
-
-/* Update a LinkedDict in-place, replacing it with the intersection between it and an
-arbitrary container. */
-template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline LinkedDict<K, V, Flags, Ts...>& operator&=(
-    LinkedDict<K, V, Flags, Ts...>& dict,
-    const Map& other
-) {
-    dict.intersection_update(other);
-    return dict;
-}
-
-
-/* Update a LinkedDict in-place, replacing it with the symmetric difference between it
-and an arbitrary container. */
-template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline LinkedDict<K, V, Flags, Ts...>& operator^=(
-    LinkedDict<K, V, Flags, Ts...>& dict,
-    const Map& other
-) {
-    dict.symmetric_difference_update(other);
-    return dict;
-}
-
-
-////////////////////////
-////    KEY VIEW    ////
-////////////////////////
+//////////////////////
+////    keys()    ////
+//////////////////////
 
 
 /* A read-only proxy for a dictionary's keys, in the same style as Python's
@@ -700,6 +749,7 @@ class KeysProxy {
     KeysProxy(const Dict& dict) : dict(dict) {}
 
 public:
+    using View = typename Dict::View;
     using Key = typename Dict::Key;
 
     /* Get a read-only reference to the dictionary. */
@@ -746,7 +796,7 @@ public:
     ////    ITERATORS    ////
     /////////////////////////
 
-    /* Iterate through the keys of the referenced dictionary. */
+    /* Iterate through each key in the referenced dictionary. */
     inline auto begin() const { return dict.begin(); }
     inline auto end() const { return dict.end(); }
     inline auto cbegin() const { return dict.cbegin(); }
@@ -760,7 +810,23 @@ public:
     ////    INDEXING    ////
     ////////////////////////
 
-    // TODO: position(), slice() ?
+
+    /* Get a read-only proxy for a key at a certain index of the referenced
+    dictionary. */
+    inline const ElementProxy<View> position(long long index) const {
+        return dict.position(index);
+    }
+
+    // TODO: have to consider the return value here.  Since the slice is const,
+    // only the get() method is enabled, but that returns another DictView.
+    // Instead, we want dict.keys()[:] to return another KeysProxy for the
+    // same dictionary.
+
+    // /* Get a read-only proxy for a slice of the referenced dictionary. */
+    // template <typename... Args>
+    // inline const SliceProxy<View, Dict> slice(Args&&... args) const {
+    //     return dict.slice(std::forward<Args>(args)...);
+    // }
 
     //////////////////////////////////
     ////    OPERATOR OVERLOADS    ////
@@ -775,8 +841,8 @@ public:
      */
 
     /* Get the key at a particular index of the referenced dictionary. */
-    inline const ElementProxy<typename Dict::View> operator[](long long index) const {
-        return dict.position(index);
+    inline const ElementProxy<View> operator[](long long index) const {
+        return position(index);
     }
 
 };
@@ -789,11 +855,62 @@ public:
  */
 
 
+/* Check whether the keys in a LinkedDict form a proper subset of an arbitrary
+container. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator<(
+    const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
+    const Container& other
+) {
+    return linked::issubset(proxy.mapping().view, other, true);
+}
+
+
+/* Apply a reversed < comparison. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator<(
+    const Container& other,
+    const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
+) {
+    return linked::issuperset(proxy.mapping().view, other, true);
+}
+
+
+/* Check whether the keys in a LinkedDict form a subset of an arbitrary container. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator<=(
+    const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
+    const Container& other
+) {
+    return linked::issubset(proxy.mapping().view, other, false);
+}
+
+
+/* Apply a reversed <= comparison. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator<=(
+    const Container& other,
+    const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
+) {
+    return linked::issuperset(proxy.mapping().view, other, false);
+}
+
+
 /* Check whether the keys in a LinkedDict are equal to an arbitrary container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator==(
     const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
     const Container& other
+) {
+    return linked::set_equal(proxy.mapping().view, other);
+}
+
+
+/* Apply a reversed == comparison. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator==(
+    const Container& other,
+    const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
 ) {
     return linked::set_equal(proxy.mapping().view, other);
 }
@@ -809,24 +926,13 @@ inline bool operator!=(
 }
 
 
-/* Check whether the keys in a LinkedDict form a proper subset of an arbitrary
-container. */
+/* Apply a reversed != comparison. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator<(
-    const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
-    const Container& other
+inline bool operator!=(
+    const Container& other,
+    const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
 ) {
-    return linked::issubset(proxy.mapping().view, other, true);
-}
-
-
-/* Check whether the keys in a LinkedDict form a subset of an arbitrary container. */
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator<=(
-    const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
-    const Container& other
-) {
-    return linked::issubset(proxy.mapping().view, other, false);
+    return linked::set_not_equal(proxy.mapping().view, other);
 }
 
 
@@ -837,6 +943,16 @@ inline bool operator>=(
     const Container& other
 ) {
     return linked::issuperset(proxy.mapping().view, other, false);
+}
+
+
+/* Apply a reversed >= comparison. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator>=(
+    const Container& other,
+    const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
+) {
+    return linked::issubset(proxy.mapping().view, other, false);
 }
 
 
@@ -851,9 +967,19 @@ inline bool operator>(
 }
 
 
-//////////////////////////
-////    VALUE VIEW    ////
-//////////////////////////
+/* Apply a reversed > comparison. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator>(
+    const Container& other,
+    const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
+) {
+    return linked::issubset(proxy.mapping().view, other, true);
+}
+
+
+////////////////////////
+////    values()    ////
+////////////////////////
 
 
 /* A read-only proxy for a dictionary's values in the same style as Python's
@@ -874,7 +1000,10 @@ public:
 
     /* Check if the referenced dictionary contains the given value. */
     inline bool contains(const typename Dict::Value& value) const {
-        return dict.contains(value);  // TODO: replicate behavior of LinkedList.contains().
+        for (auto it = this->begin(), end = this->end(); it != end; ++it) {
+            if (eq(*it, value)) return true;
+        }
+        return false;
     }
 
     /* Get the total number of values stored in the proxied dictionary. */
@@ -937,28 +1066,6 @@ public:
  */
 
 
-/* Check whether the values in a LinkedDict are lexically equal to an arbitrary
-container. */
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator==(
-    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
-    const Container& other
-) {
-    return linked::lexical_eq(proxy, other);
-}
-
-
-/* Check whether the values in a LinkedDict are not lexically equivalent to an
-arbitrary container. */
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator!=(
-    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
-    const Container& other
-) {
-    return !linked::lexical_eq(proxy, other);
-}
-
-
 /* Check whether the values in a LinkedDict are lexically less than those of an
 arbitrary container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
@@ -966,7 +1073,17 @@ inline bool operator<(
     const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
     const Container& other
 ) {
-    return linked::lexical_lt(proxy, other);
+    return lexical_lt(proxy, other);
+}
+
+
+/* Apply a reversed < comparison. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator<(
+    const Container& other,
+    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
+) {
+    return lexical_lt(other, proxy);
 }
 
 
@@ -977,7 +1094,59 @@ inline bool operator<=(
     const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
     const Container& other
 ) {
-    return linked::lexical_le(proxy, other);
+    return lexical_le(proxy, other);
+}
+
+
+/* Apply a reversed <= comparison. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator<=(
+    const Container& other,
+    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
+) {
+    return lexical_le(other, proxy);
+}
+
+
+/* Check whether the values in a LinkedDict are lexically equal to an arbitrary
+container. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator==(
+    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
+    const Container& other
+) {
+    return lexical_eq(proxy, other);
+}
+
+
+/* Apply a reversed == comparison. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator==(
+    const Container& other,
+    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
+) {
+    return lexical_eq(other, proxy);
+}
+
+
+/* Check whether the values in a LinkedDict are not lexically equivalent to an
+arbitrary container. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator!=(
+    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
+    const Container& other
+) {
+    return !lexical_eq(proxy, other);
+}
+
+
+/* Apply a reversed != comparison. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator!=(
+    const Container& other,
+    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
+) {
+    return !lexical_eq(other, proxy);
 }
 
 
@@ -988,7 +1157,17 @@ inline bool operator>=(
     const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
     const Container& other
 ) {
-    return linked::lexical_ge(proxy, other);
+    return lexical_ge(proxy, other);
+}
+
+
+/* Apply a reversed >= comparison. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator>=(
+    const Container& other,
+    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
+) {
+    return lexical_ge(other, proxy);
 }
 
 
@@ -999,13 +1178,26 @@ inline bool operator>(
     const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
     const Container& other
 ) {
-    return linked::lexical_gt(proxy, other);
+    return lexical_gt(proxy, other);
+}
+
+
+/* Apply a reversed > comparison. */
+template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator>(
+    const Container& other,
+    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
+) {
+    return lexical_gt(other, proxy);
 }
 
 
 /////////////////////////
 ////    ITEM VIEW    ////
 /////////////////////////
+
+
+// TODO: this one's a doozy.
 
 
 /* A read-only proxy for a dictionary's items, in the same style as Python's
@@ -1017,8 +1209,8 @@ class ItemsProxy {
 
     ItemsProxy(const Dict& dict) : dict(dict) {}
 
-    /* Check whether std::hash<> is specialized for the given value type. */
-    template <typename T, typename = void>
+    /* Check whether the value type is hashable. */
+    template <typename T, typename U = void>
     struct is_hashable : std::false_type {};
     template <typename T>
     struct is_hashable<T, std::void_t<decltype(std::hash<T>{}(std::declval<T>()))>> :
@@ -1038,7 +1230,7 @@ public:
     /* Check if the referenced dictionary contains the given value. */
     inline bool contains(const std::pair<Key, Value> item) const {
         typename Dict::Node* node = dict.view.search(item.first);
-        return node != nullptr && util::eq(node->mapped(), item.second);
+        return node != nullptr && eq(node->mapped(), item.second);
     }
 
     /* Get the total number of items stored in the proxied dictionary. */
@@ -1133,41 +1325,642 @@ template <typename Derived>
 class PyDictInterface {
 public:
 
+    // TODO: figure out how to implement fromkeys() as a class method.  Basically,
+    // this is an alternate constructor without any of the __init__ flags.  It should
+    // either return a dynamic dict or offer optional keyword arguments for the flags.
 
+    // /* Implement `LinkedDict.fromkeys()` in Python. */
+    // static PyObject* fromkeys(PyObject* type, PyObject* const* args, Py_ssize_t nargs) {
+    //     using bertrand::util::PyArgs;
+    //     using bertrand::util::CallProtocol;
+    //     static constexpr std::string_view meth_name{"fromkeys"};
+    //     try {
+    //         // parse arguments
+    //         PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+    //         PyObject* keys = pyargs.parse("keys");
+    //         std::optional<PyObject*> value = pyargs.parse(
+    //             "value", nullptr, std::optional<PyObject*>(Py_None)
+    //         );
+    //
+    //         // invoked equivalent C++ method
+    //         std::visit(
+    //             [&keys, &value](auto& dict) {
+    //                 dict.fromkeys(keys, value);
+    //             },
+    //             self->variant
+    //         );
+    //
+    //     // translate C++ errors into Python exceptions
+    //     } catch (...) {
+    //         throw_python();
+    //         return nullptr;
+    //     }
+    // }
+
+    /* Implement `LinkedDict.insert()` in Python. */
+    static PyObject* insert(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        static constexpr std::string_view meth_name{"distance"};
+        try {
+            // parse arguments
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+            PyObject* key = pyargs.parse("key");
+            PyObject* value = pyargs.parse("value");
+            pyargs.finalize();
+
+            // invoked equivalent C++ method
+            std::visit(
+                [&key, &value](auto& dict) {
+                    dict.insert(key, value);
+                },
+                self->variant
+            );
+            Py_RETURN_NONE;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedDict.pop()` in Python. */
+    static PyObject* pop(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        static constexpr std::string_view meth_name{"pop"};
+        try {
+            // parse arguments
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+            PyObject* key = pyargs.parse("key");
+            std::optional<PyObject*> default_ = pyargs.parse(
+                "default", nullptr, std::optional<PyObject*>()
+            );
+            pyargs.finalize();
+
+            // invoked equivalent C++ method
+            return std::visit(
+                [&key, &default_](auto& dict) {
+                    return dict.pop(key, default_);
+                },
+                self->variant
+            );
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedDict.popitem()` in Python. */
+    static PyObject* popitem(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        using bertrand::util::parse_int;
+        static constexpr std::string_view meth_name{"pop"};
+        try {
+            // parse arguments
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+            long long index = pyargs.parse("index", parse_int, (long long)-1);
+            pyargs.finalize();
+
+            // invoke equivalent C++ method
+            return std::visit(
+                [&index](auto& dict) {
+                    return dict.popitem(index);  // returns new reference
+                },
+                self->variant
+            );
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedDict.get()` in Python. */
+    static PyObject* get(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        static constexpr std::string_view meth_name{"get"};
+        try {
+            // parse arguments
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+            PyObject* key = pyargs.parse("key");
+            std::optional<PyObject*> default_ = pyargs.parse(
+                "default", nullptr, std::optional<PyObject*>()
+            );
+            pyargs.finalize();
+
+            // invoke equivalent C++ method
+            return std::visit(
+                [&key, &default_](auto& dict) {
+                    return dict.get(key, default_);  // returns new reference
+                },
+                self->variant
+            );
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedDict.lru_get()` in Python. */
+    static PyObject* lru_get(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        static constexpr std::string_view meth_name{"lru_get"};
+        try {
+            // parse arguments
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+            PyObject* key = pyargs.parse("key");
+            std::optional<PyObject*> default_ = pyargs.parse(
+                "default", nullptr, std::optional<PyObject*>()
+            );
+            pyargs.finalize();
+
+            // invoke equivalent C++ method
+            return std::visit(
+                [&key, &default_](auto& dict) {
+                    return dict.lru_get(key, default_);  // returns new reference
+                },
+                self->variant
+            );
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedDict.setdefault()` in Python. */
+    static PyObject* setdefault(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        static constexpr std::string_view meth_name{"setdefault"};
+        try {
+            // parse arguments
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+            PyObject* key = pyargs.parse("key");
+            PyObject* value = pyargs.parse("value");
+            pyargs.finalize();
+
+            // invoke equivalent C++ method
+            return std::visit(
+                [&key, &value](auto& dict) {
+                    return dict.setdefault(key, value);  // returns new reference
+                },
+                self->variant
+            );
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedDict.setdefault_left()` in Python. */
+    static PyObject* setdefault_left(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        static constexpr std::string_view meth_name{"setdefault_left"};
+        try {
+            // parse arguments
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+            PyObject* key = pyargs.parse("key");
+            PyObject* value = pyargs.parse("value");
+            pyargs.finalize();
+
+            // invoke equivalent C++ method
+            return std::visit(
+                [&key, &value](auto& dict) {
+                    return dict.setdefault_left(key, value);  // returns new reference
+                },
+                self->variant
+            );
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedDict.lru_setdefault()` in Python. */
+    static PyObject* lru_setdefault(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        static constexpr std::string_view meth_name{"lru_setdefault"};
+        try {
+            // parse arguments
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+            PyObject* key = pyargs.parse("key");
+            PyObject* value = pyargs.parse("value");
+            pyargs.finalize();
+
+            // invoke equivalent C++ method
+            return std::visit(
+                [&key, &value](auto& dict) {
+                    return dict.lru_setdefault(key, value);  // returns new reference
+                },
+                self->variant
+            );
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
+    // TODO: thoroughly check these
+
+    /* Implement `LinkedDict.keys()` in Python. */
+    static PyObject* keys(Derived* self, PyObject* /* ignored */) {
+        try {
+            // invoke equivalent C++ method
+            return std::visit(
+                [](auto& dict) {
+                    return dict.keys();  // returns new reference
+                },
+                self->variant
+            );
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedDict.values()` in Python. */
+    static PyObject* values(Derived* self, PyObject* /* ignored */) {
+        try {
+            // invoke equivalent C++ method
+            return std::visit(
+                [](auto& dict) {
+                    return dict.values();  // returns new reference
+                },
+                self->variant
+            );
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedDict.items()` in Python. */
+    static PyObject* items(Derived* self, PyObject* /* ignored */) {
+        try {
+            // invoke equivalent C++ method
+            return std::visit(
+                [](auto& dict) {
+                    return dict.items();  // returns new reference
+                },
+                self->variant
+            );
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedDict.__getitem__()` in Python. */
+    static PyObject* __getitem__(Derived* self, PyObject* key) {
+        try {
+            // invoke equivalent C++ method
+            return std::visit(
+                [&key](auto& dict) {
+                    return dict[key];  // returns new reference
+                },
+                self->variant
+            );
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedDict.__setitem__()/__delitem__()` in Python. */
+    static int __setitem__(Derived* self, PyObject* key, PyObject* value) {
+        try {
+            // invoke equivalent C++ method
+            std::visit(
+                [&key, &value](auto& dict) {
+                    dict[key] = value;
+                },
+                self->variant
+            );
+            return 0;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return -1;
+        }
+    }
 
 protected:
 
     /* docstrings for public Python attributes. */
     struct docs {
 
-        // TODO: add() overloads for key-value pairs?
-        // -> maybe these should just be on the map() proxy itself.
-        // dict[key].lru_get()
-        // dict[key].lru_set()
-        // dict[key].set_left()
-
         static constexpr std::string_view fromkeys {R"doc(
+Create a new ``LinkedDict`` with keys from ``iterable`` and values set to
+``value``.
 
+This is a class method.
+
+Parameters
+----------
+iterable : Iterable[Hashable]
+    An iterable of keys to use for the new ``LinkedDict``.
+value : Any, default None
+    The value to use for all keys in ``iterable``.
+    
+Returns
+-------
+LinkedDict
+    A new ``LinkedDict`` with keys from ``iterable`` and values set to
+    ``value``.
+
+Notes
+-----
+Note that all keys will refer to just a singly instance of ``value``.  This can
+lead to unexpected behavior if ``value`` is a mutable object, such as a list.
+To get distinct values, use a generator expression in the ``LinkedDict``
+constructor itself.
+)doc"
+        };
+
+        static constexpr std::string_view insert {R"doc(
+Insert a new key-value pair into the ``LinkedDict`` at the specified index.
+
+Parameters
+----------
+index : int
+    The index at which to insert the new key-value pair.  This can be negative,
+    following the same syntax as Python lists.
+key : Hashable
+    The key to insert.  Must be unique.
+value : Any
+    The value to insert.
+
+Raises
+------
+KeyError
+    If ``key`` is already present in the ``LinkedDict``.
 )doc"
         };
 
         static constexpr std::string_view pop {R"doc(
+Remove the specified key from the dictionary and return its value or an
+optional default.
 
+Parameters
+----------
+key : Hashable
+    The key to remove.
+default : Any, optional
+    The value to return if ``key`` is not present in the ``LinkedDict``.  If
+    not provided, a ``KeyError`` will be raised instead.
+
+Returns
+-------
+Any
+    The value associated with ``key`` if it was present in the ``LinkedDict``,
+    otherwise ``default``.
+
+Raises
+------
+KeyError
+    If ``key`` is not present in the ``LinkedDict`` and ``default`` was not
+    provided.
+
+Notes
+-----
+Pops are O(1) for doubly-linked dictionaries and O(n) for singly-linked ones.
+This is due to the need to traverse the entire dictionary in order to find the
+previous node.
 )doc"
         };
 
         static constexpr std::string_view popitem {R"doc(
+Remove the key at the specified index and return its value.
 
+Parameters
+----------
+index : int, default -1
+    The index of the key to remove.  If not specified, the last key will be
+    removed.  This can be negative, following the same syntax as Python lists.
+
+Returns
+-------
+Any
+    The value associated with the key at ``index``.
+
+Raises
+------
+IndexError
+    If the dictionary is empty or if ``index`` is out of bounds.
+
+Notes
+-----
+``popitem()`` is analogous to :meth:`LinkedList.pop()`, and has the same
+behavior.  It is consistent with the built-in :meth:`dict.popitem()` method,
+except that it takes an optional index rather than always popping in LIFO
+order.
+
+Users should note that pops have different performance characteristics based on
+whether they occur at the front or back of the dictionary.  Popping from the
+front of a dictionary is O(1) for both singly- and doubly-linked dictionaries.
+Popping from the back, however, is only O(1) for doubly-linked dictionaries.
+It is O(n) for singly-linked dictionaries because the whole dictionary must be
+traversed to find the new tail.
+
+Pops towards the middle of the dictionary are O(n) in both cases.
 )doc"
         };
 
         static constexpr std::string_view get {R"doc(
+Return the value associated with a given key, or an optional default if it is
+not present.
 
+Parameters
+----------
+key : Hashable
+    The key to look up.
+default : Any, default None
+    The value to return if ``key`` is not present in the ``LinkedDict``.
+
+Returns
+-------
+Any
+    The value associated with ``key`` if it was present in the ``LinkedDict``,
+    otherwise ``default``.
+
+Notes
+-----
+Gets are always O(1).
+)doc"
+        };
+
+        static constexpr std::string_view lru_get {R"doc(
+Return the value associated with a given key and move it to the front of the
+dictionary if it is present.  Otherwise, return an optional default.
+
+Parameters
+----------
+key : Hashable
+    The key to look up.
+default : Any, default None
+    The value to return if ``key`` is not present in the ``LinkedDict``.
+
+Returns
+-------
+Any
+    The value associated with ``key`` if it was present in the ``LinkedDict``,
+    otherwise ``default``.
+
+Notes
+-----
+LRU gets are O(1) for doubly-linked dictionaries and O(n) on average for
+singly-linked ones if the key is already prsent.  This is due to the need to
+traverse the dictionary in order to find the previous node.
 )doc"
         };
 
         static constexpr std::string_view setdefault {R"doc(
+Get the value associated with a given key, or insert a new key-value pair if
+it is not present.
 
+Parameters
+----------
+key : Hashable
+    The key to look up.
+default : Any, default None
+    The value to insert if ``key`` is not present in the dictionary.
+
+Returns
+-------
+Any
+    The value associated with ``key`` if it was present in the ``LinkedDict``,
+    otherwise ``default``.
+
+Notes
+-----
+``setdefault()`` is always O(1).
+)doc"
+        };
+
+        static constexpr std::string_view setdefault_left {R"doc(
+Get the value associated with a given key, or left-insert a new key-value pair
+if it is not present.
+
+Parameters
+----------
+key : Hashable
+    The key to look up.
+default : Any, default None
+    The value to insert if ``key`` is not present in the dictionary.
+
+Returns
+-------
+Any
+    The value associated with ``key`` if it was present in the ``LinkedDict``,
+    otherwise ``default``.
+
+Notes
+-----
+``setdefault_left()`` is always O(1).
+)doc"
+        };
+
+        static constexpr std::string_view lru_setdefault {R"doc(
+Get the value associated with a given key and move it to the front of the
+dictionary, or left-insert a new key-value pair and evict the tail node to make
+room if necessary.
+
+Parameters
+----------
+key : Hashable
+    The key to look up.
+default : Any, default None
+    The value to insert if ``key`` is not present in the dictionary.
+
+Returns
+-------
+Any
+    The value associated with ``key`` if it was present in the ``LinkedDict``,
+    otherwise ``default``.
+
+Notes
+-----
+LRU setdefaults are O(1) for doubly-linked dictionaries and O(n) on average for
+singly-linked ones if the key is already present.  This is due to the need to
+traverse the dictionary in order to find the previous node.
+)doc"
+        };
+
+        static constexpr std::string_view keys {R"doc(
+Return a setlike, read-only proxy for the keys within the dictionary.
+
+Returns
+-------
+KeysProxy
+    A proxy for the keys within the dictionary.  This behaves like a read-only
+    ``LinkedSet``, and supports many of the same operations.
+
+Notes
+-----
+The proxy returned by this method can be iterated over, indexed, and compared
+with other sets or setlike objects using the standard set operators.
+)doc"
+        };
+
+        static constexpr std::string_view values {R"doc(
+Return a listlike, read-only proxy for the values within the dictionary.
+
+Returns
+-------
+ValuesProxy
+    A proxy for the values within the dictionary.  This behaves like a read-only
+    ``LinkedList``, and supports many of the same operations.
+
+Notes
+-----
+The proxy returned by this method can be iterated over, indexed, and compared
+with other lists or listlike objects using the standard list operators.
+)doc"
+        };
+
+        static constexpr std::string_view items {R"doc(
+Return a read-only proxy for the key-value pairs within the dictionary.
+
+Returns
+-------
+ItemsProxy
+    A proxy for the key-value pairs within the dictionary.  This behaves like a
+    read-only set of pairs.
+
+Notes
+-----
+The proxy returned by this method can be iterated over and indexed like a list.
+It also supports setlike comparisons with other sets or setlike objects if and
+only if the dictionary's values are also hashable.
 )doc"
         };
 
@@ -1192,7 +1985,7 @@ class PyLinkedDict :
     /* A std::variant representing all of the LinkedDict implementations that are
     constructable from Python. */
     template <unsigned int Flags>
-    using DictConfig = linked::LinkedDict<PyObject*, PyObject*, Flags, util::BasicLock>;
+    using DictConfig = linked::LinkedDict<PyObject*, PyObject*, Flags, BasicLock>;
     using Variant = std::variant<
         DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>,
         // DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
@@ -1221,9 +2014,9 @@ class PyLinkedDict :
     Variant variant;
 
     /* Construct a PyLinkedDict around an existing C++ LinkedDict. */
-    template <typename Set>
-    inline void from_cpp(Set&& set) {
-        new (&variant) Variant(std::forward<Set>(set));
+    template <typename Dict>
+    inline void from_cpp(Dict&& dict) {
+        new (&variant) Variant(std::forward<Dict>(dict));
     }
 
     #define CONSTRUCT(IDX) \
@@ -1287,7 +2080,7 @@ class PyLinkedDict :
             // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
             //     CONSTRUCT(15)
             default:
-                throw util::ValueError("invalid argument configuration");
+                throw ValueError("invalid argument configuration");
         }
     }
 
@@ -1297,28 +2090,32 @@ public:
 
     /* Initialize a LinkedDict instance from Python. */
     static int __init__(PyLinkedDict* self, PyObject* args, PyObject* kwargs) {
-        using Args = util::PyArgs<util::CallProtocol::KWARGS>;
-        using util::ValueError;
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        using bertrand::util::parse_int;
+        using bertrand::util::none_to_null;
+        using bertrand::util::is_truthy;
         static constexpr std::string_view meth_name{"__init__"};
         try {
             // parse arguments
-            Args pyargs(meth_name, args, kwargs);
+            PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
             PyObject* iterable = pyargs.parse(
-                "iterable", util::none_to_null, (PyObject*)nullptr
+                "iterable", none_to_null, (PyObject*) nullptr
             );
             std::optional<size_t> max_size = pyargs.parse(
                 "max_size",
                 [](PyObject* obj) -> std::optional<size_t> {
                     if (obj == Py_None) return std::nullopt;
-                    long long result = util::parse_int(obj);
+                    long long result = parse_int(obj);
                     if (result < 0) throw ValueError("max_size cannot be negative");
                     return std::make_optional(static_cast<size_t>(result));
                 },
                 std::optional<size_t>()
             );
-            PyObject* spec = pyargs.parse("spec", util::none_to_null, (PyObject*) nullptr);
-            bool reverse = pyargs.parse("reverse", util::is_truthy, false);
-            bool singly_linked = pyargs.parse("singly_linked", util::is_truthy, false);
+            PyObject* spec = pyargs.parse("spec", none_to_null, (PyObject*) nullptr);
+            bool reverse = pyargs.parse("reverse", is_truthy, false);
+            bool singly_linked = pyargs.parse("singly_linked", is_truthy, false);
+            bool packed = pyargs.parse("packed", is_truthy, false);
             pyargs.finalize();
 
             // initialize
@@ -1329,12 +2126,10 @@ public:
 
         // translate C++ exceptions into Python eerrors
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return -1;
         }
     }
-
-    // TODO: account for mapped values in final string.
 
     /* Implement `LinkedDict.__str__()` in Python. */
     static PyObject* __str__(PyLinkedDict* self) {
@@ -1342,24 +2137,28 @@ public:
             std::ostringstream stream;
             stream << "{";
             std::visit(
-                [&stream](auto& set) {
-                    auto it = set.begin();
-                    if (it != set.end()) {
-                        stream << util::repr(*it);
+                [&stream](auto& dict) {
+                    auto it = dict.begin();
+                    auto end = dict.end();
+                    if (it != end) {
+                        stream << repr(*it) << ": ";
+                        stream << repr(it.curr()->mapped());
                         ++it;
                     }
-                    for (; it != set.end(); ++it) {
-                        stream << ", " << util::repr(*it);
+                    for (; it != end; ++it) {
+                        stream << ", " << repr(*it) << ": ";
+                        stream << repr(it.curr()->mapped());
                     }
                 },
                 self->variant
             );
             stream << "}";
-            return PyUnicode_FromString(stream.str().c_str());
+            auto str = stream.str();
+            return PyUnicode_FromStringAndSize(str.c_str(), str.size());
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1369,16 +2168,17 @@ public:
         try {
             std::ostringstream stream;
             std::visit(
-                [&stream](auto& set) {
-                    stream << set;
+                [&stream](auto& dict) {
+                    stream << dict;
                 },
                 self->variant
             );
-            return PyUnicode_FromString(stream.str().c_str());
+            auto str = stream.str();
+            return PyUnicode_FromStringAndSize(str.c_str(), str.size());
 
         // translate C++ errors into Python exceptions
         } catch (...) {
-            util::throw_python();
+            throw_python();
             return nullptr;
         }
     }
@@ -1388,8 +2188,94 @@ private:
     /* docstrings for public Python attributes. */
     struct docs {
 
-        static constexpr std::string_view LinkedDict {R"doc(
+        // TODO: revisit the C++ usage example once everything is finalized
 
+        static constexpr std::string_view LinkedDict {R"doc(
+A modular, ordered citionary based on a linked list available in both Python
+and C++.
+
+This class is a drop-in replacement for a built-in :class:`dict`, supporting
+all the same operations, plus some from the :class:`set` and :class:`list`
+interfaces, as well as extras leveraging the ordered nature of the dictionary.
+It is also available as a C++ type under the same name, with identical
+semantics.
+
+Parameters
+----------
+items : Iterable[Any], optional
+    The key-value pairs to initialize the dictionary with.  This can be any
+    mapping type or iterable of pairs of the form ``(key, value)``.  If not
+    specified, the dictionary will be empty.
+max_size : int, optional
+    The maximum number of keys that the dictionary can hold.  If not specified,
+    the dictionary will be unbounded.
+spec : Any, optional
+    A specific type to enforce for elements of the dictionary, allowing the
+    creation of type-safe containers.  This can be in any format recognized by
+    :func:`isinstance() <python:isinstance>`, and can be provided as a
+    :class:`slice` to specialize the key and value types separately.  By
+    default, only the keys will be specialized.  The default is ``None``, which
+    disables type checking for the dictionary.  See the :meth:`specialize()`
+    method for more details.
+reverse : bool, default False
+    If True, reverse the order of ``items`` during dictionary construction.
+    This is more efficient than calling :meth:`reverse()` after construction.
+singly_linked : bool, default False
+    If True, use a singly-linked dictionary instead of a doubly-linked one.
+    This trades some performance in certain operations for increased memory
+    efficiency.  Regardless of this setting, the dictionary will still support
+    all the same operations.
+packed : bool, default False
+    If True, use a packed allocator that does not pad its contents to the
+    system's preferred alignment.  This can free between 2 and 6 bytes per
+    node at the cost of slightly reduced performance (depending on the system).
+    Regardless of this setting, the dictionary will still support all the same
+    operations.
+
+Notes
+-----
+These data structures are highly optimized, and offer performance that is
+generally on par with the built-in :class:`dict` type.  They have slightly more
+overhead due to handling the links between each node, but users should not
+notice a significant difference on average.
+
+The data structure itself is implemented entirely in C++, and can be used
+equivalently at the C++ level.  The Python wrapper is actually just a
+discriminated union of C++ template configurations, each of which can be
+instantiated directly in C++ for reduced overhead.  The C++ data structure
+behaves exactly the same, with all the same methods and conventions and only
+minor syntax differences related to both languages.  Here's an example:
+
+.. code-block:: cpp
+
+    #include <bertrand/structs/linked/list.h>
+
+    int main() {
+        using Item = std::pair<std::string, int>
+        std::vector<Item> items = {
+            {"a", 1}, {"b", 2}, {"c", 3}, {"d", 4}, {"e", 5}
+        };
+        bertrand::LinkedDict<std::string, int> dict(items);
+
+        dict["f"] = 6;
+        dict.update(std::vector<Item>{{"g", 7}, {"h", 8}, {"i", 9}});
+        int x = dict.pop("i");
+        dict.rotate(4);
+        dict["i"] = x;
+        for (Item i : dict.items()) {
+            // ...
+        }
+
+        std::cout << dict;
+        // LinkedDict({"i": 9, 6, 7, 8, "a": 1, "b": 2, "c": 3, "d": 4})
+        return 0;
+    }
+
+This makes it significantly easier to port code that relies on this data
+structure between the two languages.  In fact, doing so provides significant
+benefits, allowing users to take advantage of static C++ types and completely
+bypass the Python interpreter, increasing performance by orders of magnitude
+in some cases.
 )doc"
         };
 
@@ -1431,8 +2317,6 @@ private:
         {NULL}  // sentinel
     };
 
-    // TODO: add dictionary-specific methods
-
     /* Vtable containing Python method definitions for the LinkedDict. */
     inline static PyMethodDef methods[] = {
         BASE_METHOD(reserve, METH_FASTCALL),
@@ -1440,19 +2324,14 @@ private:
         BASE_METHOD(specialize, METH_O),
         BASE_METHOD(__reversed__, METH_NOARGS),
         BASE_METHOD(__class_getitem__, METH_CLASS | METH_O),
-        LIST_METHOD(insert, METH_FASTCALL),
         LIST_METHOD(index, METH_FASTCALL),
         LIST_METHOD(count, METH_FASTCALL),
-        LIST_METHOD(remove, METH_O),
-        LIST_METHOD(pop, METH_FASTCALL),
         LIST_METHOD(clear, METH_NOARGS),
         LIST_METHOD(copy, METH_NOARGS),
         LIST_METHOD(sort, METH_FASTCALL | METH_KEYWORDS),
         LIST_METHOD(reverse, METH_NOARGS),
         LIST_METHOD(rotate, METH_FASTCALL),
-        SET_METHOD(add, METH_O),
-        SET_METHOD(add_left, METH_O),
-        SET_METHOD(lru_add, METH_O),
+        SET_METHOD(remove, METH_O),
         SET_METHOD(discard, METH_O),
         SET_METHOD(lru_contains, METH_O),
         {
@@ -1480,6 +2359,18 @@ private:
         SET_METHOD(swap, METH_FASTCALL),
         SET_METHOD(move, METH_FASTCALL),
         SET_METHOD(move_to_index, METH_FASTCALL),
+        DICT_METHOD(fromkeys, METH_FASTCALL | METH_CLASS),
+        DICT_METHOD(insert, METH_FASTCALL),
+        DICT_METHOD(pop, METH_FASTCALL),
+        DICT_METHOD(popitem, METH_FASTCALL),
+        DICT_METHOD(get, METH_FASTCALL),
+        DICT_METHOD(lru_get, METH_FASTCALL),
+        DICT_METHOD(setdefault, METH_FASTCALL),
+        DICT_METHOD(setdefault_left, METH_FASTCALL),
+        DICT_METHOD(lru_setdefault, METH_FASTCALL),
+        DICT_METHOD(keys, METH_NOARGS),
+        DICT_METHOD(values, METH_NOARGS),
+        DICT_METHOD(items, METH_NOARGS),
         {NULL}  // sentinel
     };
 
@@ -1489,14 +2380,12 @@ private:
     #undef SET_METHOD
     #undef DICT_METHOD
 
-    // TODO: use dictionary-specific mapping methods
-
     /* Vtable containing special methods related to Python's mapping protocol. */
     inline static PyMappingMethods mapping = [] {
         PyMappingMethods slots;
         slots.mp_length = (lenfunc) Base::__len__;
-        slots.mp_subscript = (binaryfunc) IList::__getitem__;
-        slots.mp_ass_subscript = (objobjargproc) IList::__setitem__;
+        slots.mp_subscript = (binaryfunc) IDict::__getitem__;
+        slots.mp_ass_subscript = (objobjargproc) IDict::__setitem__;
         return slots;
     }();
 
@@ -1563,7 +2452,7 @@ public:
     /* Check whether another PyObject* is of this type. */
     inline static bool typecheck(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &Type);
-        if (result == -1) throw util::catch_python();
+        if (result == -1) throw catch_python();
         return static_cast<bool>(result);
     }
 

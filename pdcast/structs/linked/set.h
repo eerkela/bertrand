@@ -482,36 +482,6 @@ inline LinkedSet<T, Flags, Ts...> operator|(
 }
 
 
-/* Get the difference between a LinkedSet and an arbitrary container. */
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline LinkedSet<T, Flags, Ts...> operator-(
-    const LinkedSet<T, Flags, Ts...>& set,
-    const Container& other
-) {
-    return set.difference(other);
-}
-
-
-/* Get the intersection between a LinkedSet and an arbitrary container. */
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline LinkedSet<T, Flags, Ts...> operator&(
-    const LinkedSet<T, Flags, Ts...>& set,
-    const Container& other
-) {
-    return set.intersection(other);
-}
-
-
-/* Get the symmetric difference between a LinkedSet and an arbitrary container. */
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline LinkedSet<T, Flags, Ts...> operator^(
-    const LinkedSet<T, Flags, Ts...>& set,
-    const Container& other
-) {
-    return set.symmetric_difference(other);
-}
-
-
 /* Update a LinkedSet in-place, replacing it with the union of it and an arbitrary
 container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
@@ -521,6 +491,16 @@ inline LinkedSet<T, Flags, Ts...>& operator|=(
 ) {
     set.update(other);
     return set;
+}
+
+
+/* Get the difference between a LinkedSet and an arbitrary container. */
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline LinkedSet<T, Flags, Ts...> operator-(
+    const LinkedSet<T, Flags, Ts...>& set,
+    const Container& other
+) {
+    return set.difference(other);
 }
 
 
@@ -536,6 +516,16 @@ inline LinkedSet<T, Flags, Ts...>& operator-=(
 }
 
 
+/* Get the intersection between a LinkedSet and an arbitrary container. */
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline LinkedSet<T, Flags, Ts...> operator&(
+    const LinkedSet<T, Flags, Ts...>& set,
+    const Container& other
+) {
+    return set.intersection(other);
+}
+
+
 /* Update a LinkedSet in-place, replacing it with the intersection between it and an
 arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
@@ -545,6 +535,16 @@ inline LinkedSet<T, Flags, Ts...>& operator&=(
 ) {
     set.intersection_update(other);
     return set;
+}
+
+
+/* Get the symmetric difference between a LinkedSet and an arbitrary container. */
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
+inline LinkedSet<T, Flags, Ts...> operator^(
+    const LinkedSet<T, Flags, Ts...>& set,
+    const Container& other
+) {
+    return set.symmetric_difference(other);
 }
 
 
@@ -1165,11 +1165,10 @@ public:
     static PyObject* distance(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
-        using Args = PyArgs<CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"distance"};
         try {
             // parse arguments
-            Args pyargs(meth_name, args, nargs);
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key1 = pyargs.parse("key1");
             PyObject* key2 = pyargs.parse("key2");
             pyargs.finalize();
@@ -1193,11 +1192,10 @@ public:
     static PyObject* swap(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
-        using Args = PyArgs<CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"swap"};
         try {
             // parse arguments
-            Args pyargs(meth_name, args, nargs);
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key1 = pyargs.parse("key1");
             PyObject* key2 = pyargs.parse("key2");
             pyargs.finalize();
@@ -1224,11 +1222,10 @@ public:
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
         using bertrand::util::parse_int;
-        using Args = PyArgs<CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"move"};
         try {
             // parse arguments
-            Args pyargs(meth_name, args, nargs);
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
             long long steps = pyargs.parse("steps", parse_int);
             pyargs.finalize();
@@ -1259,11 +1256,10 @@ public:
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
         using bertrand::util::parse_int;
-        using Args = PyArgs<CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"move_to_index"};
         try {
             // parse arguments
-            Args pyargs(meth_name, args, nargs);
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
             long long index = pyargs.parse("index", parse_int);
             pyargs.finalize();
@@ -2116,11 +2112,10 @@ public:
         using bertrand::util::none_to_null;
         using bertrand::util::parse_int;
         using bertrand::util::is_truthy;
-        using Args = PyArgs<CallProtocol::KWARGS>;
         static constexpr std::string_view meth_name{"__init__"};
         try {
             // parse arguments
-            Args pyargs(meth_name, args, kwargs);
+            PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
             PyObject* keys = pyargs.parse(
                 "keys", none_to_null, (PyObject*)nullptr
             );
@@ -2174,7 +2169,8 @@ public:
                 self->variant
             );
             stream << "}";
-            return PyUnicode_FromString(stream.str().c_str());
+            auto str = stream.str();
+            return PyUnicode_FromStringAndSize(str.c_str(), str.size());
 
         // translate C++ errors into Python exceptions
         } catch (...) {
@@ -2193,7 +2189,8 @@ public:
                 },
                 self->variant
             );
-            return PyUnicode_FromString(stream.str().c_str());
+            auto str = stream.str();
+            return PyUnicode_FromStringAndSize(str.c_str(), str.size());
 
         // translate C++ errors into Python exceptions
         } catch (...) {
@@ -2208,8 +2205,7 @@ private:
     struct docs {
 
         static constexpr std::string_view LinkedSet {R"doc(
-A modular, ordered set based on a doubly-linked list available in both Python
-and C++.
+A modular, ordered set based on a linked list available in both Python and C++.
 
 This class is a drop-in replacement for a built-in :class:`set`, supporting all
 the same operations, plus those of the built-in :class:`list` and some extras
@@ -2228,22 +2224,22 @@ spec : Any, optional
     A specific type to enforce for elements of the set, allowing the creation
     of type-safe containers.  This can be in any format recognized by
     :func:`isinstance() <python:isinstance>`.  The default is ``None``, which
-    disables strict type checking for the set.  See the :meth:`specialize()`
-    method for more details.
+    disables type checking for the set.  See the :meth:`specialize()` method
+    for more details.
 reverse : bool, default False
     If True, reverse the order of ``keys`` during set construction.  This is
     more efficient than calling :meth:`reverse()` after construction.
 singly_linked : bool, default False
-    If True, use a singly-linked set instead of a doubly-linked set.  This
+    If True, use a singly-linked set instead of a doubly-linked one.  This
     trades some performance in certain operations for increased memory
     efficiency.  Regardless of this setting, the set will still support all
-    the same operations as a doubly-linked set.
+    the same operations.
 packed : bool, default False
     If True, use a packed allocator that does not pad its contents to the
     system's preferred alignment.  This can free between 2 and 6 bytes per
     node at the cost of slightly reduced performance (depending on the system).
     Regardless of this setting, the set will still support all the same
-    operations as an unpacked set.
+    operations.
 
 Notes
 -----
@@ -2258,7 +2254,6 @@ discriminated union of C++ template configurations, each of which can be
 instantiated directly in C++ for reduced overhead.  The C++ data structure
 behaves exactly the same, with all the same methods and conventions and only
 minor syntax differences related to both languages.  Here's an example:
-
 
 .. code-block:: cpp
 

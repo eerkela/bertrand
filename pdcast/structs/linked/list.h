@@ -515,12 +515,10 @@ public:
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
         using bertrand::util::parse_int;
-
-        using Args = PyArgs<CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"insert"};
         try {
             // parse arguments
-            Args pyargs(meth_name, args, nargs);
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             long long index = pyargs.parse("index", parse_int);
             PyObject* item = pyargs.parse("item");
             pyargs.finalize();
@@ -584,12 +582,11 @@ public:
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
         using bertrand::util::parse_opt_int;
-        using Args = PyArgs<CallProtocol::FASTCALL>;
         using Index = std::optional<long long>;
         static constexpr std::string_view meth_name{"index"};
         try {
             // parse arguments
-            Args pyargs(meth_name, args, nargs);
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* item = pyargs.parse("item");
             Index start = pyargs.parse("start", parse_opt_int, Index());
             Index stop = pyargs.parse("stop", parse_opt_int, Index());
@@ -618,12 +615,11 @@ public:
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
         using bertrand::util::parse_opt_int;
-        using Args = PyArgs<CallProtocol::FASTCALL>;
         using Index = std::optional<long long>;
         static constexpr std::string_view meth_name{"count"};
         try {
             // parse arguments
-            Args pyargs(meth_name, args, nargs);
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* item = pyargs.parse("item");
             Index start = pyargs.parse("start", parse_opt_int, Index());
             Index stop = pyargs.parse("stop", parse_opt_int, Index());
@@ -671,11 +667,10 @@ public:
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
         using bertrand::util::parse_int;
-        using Args = PyArgs<CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"pop"};
         try {
             // parse arguments
-            Args pyargs(meth_name, args, nargs);
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             long long index = pyargs.parse("index", parse_int, (long long)-1);
             pyargs.finalize();
 
@@ -749,11 +744,10 @@ public:
         using bertrand::util::CallProtocol;
         using bertrand::util::none_to_null;
         using bertrand::util::is_truthy;
-        using Args = PyArgs<CallProtocol::VECTORCALL>;
         static constexpr std::string_view meth_name{"sort"};
         try {
             // parse arguments
-            Args pyargs(meth_name, args, nargs, kwnames);
+            PyArgs<CallProtocol::VECTORCALL> pyargs(meth_name, args, nargs, kwnames);
             PyObject* key = pyargs.keyword("key", none_to_null, (PyObject*)nullptr);
             bool reverse = pyargs.keyword("reverse", is_truthy, false);
             pyargs.finalize();
@@ -798,11 +792,10 @@ public:
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
         using bertrand::util::parse_int;
-        using Args = PyArgs<CallProtocol::FASTCALL>;
         static constexpr std::string_view meth_name{"rotate"};
         try {
             // parse arguments
-            Args pyargs(meth_name, args, nargs);
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             long long steps = pyargs.parse("steps", parse_int, (long long)1);
             pyargs.finalize();
 
@@ -1523,11 +1516,10 @@ public:
         using bertrand::util::none_to_null;
         using bertrand::util::is_truthy;
         using bertrand::util::parse_int;
-        using Args = PyArgs<CallProtocol::KWARGS>;
         static constexpr std::string_view meth_name{"__init__"};
         try {
             // parse arguments
-            Args pyargs(meth_name, args, kwargs);
+            PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
             PyObject* iterable = pyargs.parse(
                 "iterable", none_to_null, (PyObject*)nullptr
             );
@@ -1581,7 +1573,8 @@ public:
                 self->variant
             );
             stream << "]";
-            return PyUnicode_FromString(stream.str().c_str());
+            auto str = stream.str();
+            return PyUnicode_FromStringAndSize(str.c_str(), str.size());
 
         // translate C++ errors into Python exceptions
         } catch (...) {
@@ -1600,7 +1593,8 @@ public:
                 },
                 self->variant
             );
-            return PyUnicode_FromString(stream.str().c_str());
+            auto str = stream.str();
+            return PyUnicode_FromStringAndSize(str.c_str(), str.size());
 
         // translate C++ errors into Python exceptions
         } catch (...) {
@@ -1633,8 +1627,8 @@ spec : Any, optional
     A specific type to enforce for elements of the list, allowing the creation
     of type-safe containers.  This can be in any format recognized by
     :func:`isinstance() <python:isinstance>`.  The default is ``None``, which
-    disables strict type checking for the list.  See the :meth:`specialize()`
-    method for more details.
+    disables type checking for the list.  See the :meth:`specialize()` method
+    for more details.
 reverse : bool, default False
     If True, reverse the order of ``items`` during list construction.  This is
     more efficient than calling :meth:`reverse()` after construction.
