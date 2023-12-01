@@ -39,7 +39,7 @@ namespace linked {
             if (truncate) {
                 return lt_zero ? 0 : size - 1;
             }
-            throw std::out_of_range("list index out of range");
+            throw IndexError("list index out of range");
         }
 
         // return as size_t
@@ -76,7 +76,7 @@ namespace linked {
             if (truncate) {
                 return lt_zero ? 0 : size - 1;
             }
-            throw std::out_of_range("list index out of range");
+            throw IndexError("list index out of range");
         }
 
         // value is good - cast to size_t

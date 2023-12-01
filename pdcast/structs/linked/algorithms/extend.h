@@ -24,7 +24,7 @@ namespace linked {
 
     /* Add multiple items to the end of a list, set, or dictionary. */
     template <typename View, typename Container>
-    auto extend(View& view, Container& items)
+    auto extend(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::listlike, void>
     {
         using MemGuard = typename View::MemGuard;
@@ -61,7 +61,7 @@ namespace linked {
 
     /* Add multiple items to the end of a list, set, or dictionary. */
     template <typename View, typename Container>
-    auto extend_left(View& view, Container& items)
+    auto extend_left(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::listlike, void>
     {
         using MemGuard = typename View::MemGuard;

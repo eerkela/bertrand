@@ -255,7 +255,7 @@ public:
         still exists.  Otherwise, sets a Python error and return nullptr.  */
         T* get() const {
             if (ref.expired()) {
-                throw std::runtime_error("referenced object no longer exists");
+                throw RuntimeError("referenced object no longer exists");
             }
             return ref.lock().get();
         }

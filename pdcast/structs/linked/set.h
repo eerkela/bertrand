@@ -385,7 +385,7 @@ public:
     }
 
     /* Move a key within the set to the specified index. */
-    inline void move_to_index(Key& key, long long index) {
+    inline void move_to_index(const Key& key, long long index) {
         linked::move_to_index(this->view, key, index);
     }
 
@@ -2249,11 +2249,12 @@ overhead due to handling the links between each node, but users should not
 notice a significant difference on average.
 
 The data structure itself is implemented entirely in C++, and can be used
-equivalently at the C++ level.  The Python wrapper is actually just a
-discriminated union of C++ template configurations, each of which can be
-instantiated directly in C++ for reduced overhead.  The C++ data structure
-behaves exactly the same, with all the same methods and conventions and only
-minor syntax differences related to both languages.  Here's an example:
+equivalently at the C++ level.  In fact, the Python wrapper is just a
+discriminated union of C++ templates, and can be thought of as directly emitting
+equivalent C++ code at runtime.  As such, each variation of this data structure
+is available as a C++ type under the same name, with identical semantics and
+only superficial syntax differences related to both languages.  Here's an
+example:
 
 .. code-block:: cpp
 
@@ -2278,7 +2279,7 @@ minor syntax differences related to both languages.  Here's an example:
 
 This makes it significantly easier to port code that relies on this data
 structure between the two languages.  In fact, doing so provides significant
-benefits, allowing users to take advantage of static C++ types and completely
+benefits, allowing users to take advantage of static C++ types that completely
 bypass the Python interpreter, increasing performance by orders of magnitude
 in some cases.
 )doc"

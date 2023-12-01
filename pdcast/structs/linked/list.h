@@ -840,12 +840,12 @@ public:
             if (PyIndex_Check(key)) {
                 long long index = bertrand::util::parse_int(key);
                 PyObject* result = std::visit(
-                    [&index](auto& list) {
-                        return list[index].get();
+                    [&index](auto& list) -> PyObject* {
+                        return list[index];
                     },
                     self->variant
                 );
-                return Py_XNewRef(result);  // return borrowed reference
+                return Py_XNewRef(result);
             }
 
             // check for slice
@@ -889,7 +889,7 @@ public:
                         if (items == nullptr) {
                             list[index].del();
                         } else {
-                            list[index].set(items);
+                            list[index] = items;
                         }
                     },
                     self->variant
@@ -904,7 +904,7 @@ public:
                         if (items == nullptr) {
                             list.slice(key).del();
                         } else {
-                            list.slice(key).set(items);
+                            list.slice(key) = items;
                         }
                     },
                     self->variant
@@ -1053,7 +1053,7 @@ protected:
         try {
             PyObject* result = std::visit(
                 [&index](auto& list) {
-                    return list[index].get();
+                    return Py_XNewRef(list[index].get());
                 },
                 self->variant
             );
@@ -1609,7 +1609,7 @@ private:
     struct docs {
 
         static constexpr std::string_view LinkedList {R"doc(
-A modular, doubly-linked list available in both Python and C++.
+A modular linked list available in both Python and C++.
 
 This class is a drop-in replacement for a built-in :class:`list` or
 :class:`collections.deque` object, supporting all the same operations.  It is
@@ -1651,11 +1651,12 @@ access, vs constant-time insertions, etc.), but attempt to minimize compromises
 wherever possible.  Users should not notice a significant difference on average.
 
 The data structure itself is implemented entirely in C++, and can be used
-equivalently at the C++ level.  The Python wrapper is actually just a
-discriminated union of C++ template configurations, each of which can be
-instantiated directly in C++ for reduced overhead.  The C++ data structure
-behaves exactly the same, with all the same methods and conventions and only
-minor syntax differences related to both languages.  Here's an example:
+equivalently at the C++ level.  In fact, the Python wrapper is just a
+discriminated union of C++ templates, and can be thought of as directly emitting
+equivalent C++ code at runtime.  As such, each variation of this data structure
+is available as a C++ type under the same name, with identical semantics and
+only superficial syntax differences related to both languages.  Here's an
+example:
 
 .. code-block:: cpp
 

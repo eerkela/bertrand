@@ -42,9 +42,7 @@ namespace linked {
 
         // normalize step
         long long step_ = step.value_or(1);
-        if (step_ == 0) {
-            throw std::invalid_argument("slice step cannot be zero");
-        }
+        if (step_ == 0) throw ValueError("slice step cannot be zero");
 
         // normalize start index
         long long start_ = start.value_or(default_start);
@@ -95,9 +93,7 @@ namespace linked {
         int err = PySlice_GetIndicesEx(
             py_slice, size, &py_start, &py_stop, &py_step, &py_length
         );
-        if (err == -1) {
-            throw std::runtime_error("failed to normalize slice");
-        }
+        if (err == -1) throw catch_python();
 
         // cast from Py_ssize_t
         long long start = static_cast<long long>(py_start);
@@ -487,7 +483,7 @@ namespace linked {
                 std::ostringstream msg;
                 msg << "attempt to assign sequence of size " << sequence.size();
                 msg << " to extended slice of size " << length();
-                throw std::invalid_argument(msg.str());
+                throw ValueError(msg.str());
             }
 
             // temporary array to undo changes in case of error
@@ -495,7 +491,7 @@ namespace linked {
                 Node* array;
                 RecoveryArray(size_t length) {
                     array = static_cast<Node*>(malloc(sizeof(Node) * length));
-                    if (array == nullptr) throw std::bad_alloc();
+                    if (array == nullptr) throw MemoryError();
                 }
                 Node& operator[](size_t index) { return array[index]; }
                 ~RecoveryArray() { free(array); }  // does not call destructors
@@ -569,6 +565,28 @@ namespace linked {
             for (auto it = this->begin(), end = this->end(); it != end; ++it) {
                 view.recycle(it.drop());
             }
+        }
+
+        /* Implicitly convert the proxy into an extracted slice where applicable.
+        
+        This is syntactic sugar for the get() method, such that
+        `LinkedList<T> list = list.slice(start, stop, step)` is equivalent to
+        `LinkedList<T> list = list.slice(start, stop, step).get()`.  The same implicit
+        conversion is also applied if the proxy is passed to a function that expects a
+        vakue, unless that function is marked as `explicit`. */
+        inline operator List() const {
+            return get();
+        }
+
+        /* Assign the slice in-place.
+        
+        This is syntactic sugar for the set() method, such that
+        `list.slice(start, stop, step) = items` is equivalent to
+        `list.slice(start, stop, step).set(items)`. */
+        template <typename Container>
+        inline SliceProxy& operator=(const Container& items) {
+            set(items);
+            return *this;
         }
 
     };

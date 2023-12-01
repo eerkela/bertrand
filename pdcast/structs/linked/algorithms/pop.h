@@ -25,7 +25,7 @@ namespace linked {
         using Value = typename View::Value;
 
         // trivial case: empty list
-        if (view.size() == 0) throw std::out_of_range("pop from empty list");
+        if (view.size() == 0) throw IndexError("pop from empty list");
 
         // normalize index
         size_t norm_index = normalize_index(index, view.size(), true);
@@ -57,18 +57,14 @@ namespace linked {
 
 
     /* Pop a key from a linked dictionary and return its corresponding value. */
-    template <
-        typename View,
-        typename Key = typename View::Value,
-        typename Value = typename View::MappedValue
-    >
-    auto pop(View& view, Key& key, Value& default_value)
+    template <typename View, typename Key, typename Value>
+    auto pop(View& view, const Key& key, const Value& default_value)
         -> std::enable_if_t<ViewTraits<View>::dictlike, Value>
     {
         using Node = typename View::Node;
 
         // trivial case: empty list
-        if (view.size() == 0) throw std::out_of_range("pop from empty list");
+        if (view.size() == 0) throw IndexError("pop from empty list");
 
         // search for node
         Node* curr = view.search(key);

@@ -201,9 +201,6 @@ public:
         linked::insert(this->view, index, key, value);
     }
 
-    // TODO: index() and count() can be implemented on keys(), values(), and items()
-    // proxies.
-
     /* Get the index of a key within the dictionary. */
     inline size_t index(
         const Key& key,
@@ -757,6 +754,24 @@ public:
         return dict;
     }
 
+    /* Get the index of a key within the dictionary. */
+    inline size_t index(
+        const Key& key,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        return mapping().index(key, start, stop);
+    }
+
+    /* Count the number of occurrences of a key within the dictionary. */
+    inline size_t count(
+        const Key& key,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        return mapping().count(key, start, stop);
+    }
+
     /* Check if the referenced dictionary contains the given key. */
     inline bool contains(Key& key) const {
         return dict.contains(key);
@@ -992,17 +1007,35 @@ class ValuesProxy {
     ValuesProxy(const Dict& dict) : dict(dict) {}
 
 public:
+    using Node = typename Dict::Node;  // used in index(), count() implementations
+    using Value = typename Dict::Value;
 
     /* Get a read-only reference to the proxied dictionary. */
     inline const Dict& mapping() const {
         return dict;
     }
 
+    /* Get the index of a key within the dictionary. */
+    inline size_t index(
+        const Value& key,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        return linked::_listlike_index(*this, key, start, stop);
+    }
+
+    /* Count the number of occurrences of a key within the dictionary. */
+    inline size_t count(
+        const Value& key,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        return linked::_listlike_count(*this, key, start, stop);
+    }
+
     /* Check if the referenced dictionary contains the given value. */
-    inline bool contains(const typename Dict::Value& value) const {
-        for (auto it = this->begin(), end = this->end(); it != end; ++it) {
-            if (eq(*it, value)) return true;
-        }
+    inline bool contains(const Value& value) const {
+        for (auto val : *this) if (eq(val, value)) return true;
         return false;
     }
 
@@ -1192,12 +1225,12 @@ inline bool operator>(
 }
 
 
-/////////////////////////
-////    ITEM VIEW    ////
-/////////////////////////
+///////////////////////
+////    items()    ////
+///////////////////////
 
 
-// TODO: this one's a doozy.
+// TODO: this one's a doozy.  Dealing with sets of tuples is kind of a nightmare.
 
 
 /* A read-only proxy for a dictionary's items, in the same style as Python's
@@ -1227,10 +1260,118 @@ public:
         return dict;
     }
 
-    /* Check if the referenced dictionary contains the given value. */
+    /* Get the index of a key within the dictionary. */
+    inline size_t index(
+        const Key& key,
+        const Value& value,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        return linked::index(dict.view, key, value, start, stop);
+    }
+
+    /* Apply an index() check using a C++ pair. */
+    inline size_t index(
+        const std::pair<Key, Value> item,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        return index(item.first, item.second, start, stop);
+    }
+
+    /* Apply an index() check using a C++ tuple of size 2. */
+    inline size_t index(
+        const std::tuple<Key, Value>& item,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        return index(std::get<0>(item), std::get<1>(item), start, stop);
+    }
+
+    /* Apply an index() check using a Python tuple of size 2. */
+    inline size_t index(
+        PyObject* item,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 2) {
+            throw TypeError("expected a tuple of size 2");
+        }
+        return index(
+            PyTuple_GET_ITEM(item, 0),
+            PyTuple_GET_ITEM(item, 1),
+            start,
+            stop
+        );
+    }
+
+    /* Count the number of occurrences of a key within the dictionary. */
+    inline size_t count(
+        const Key& key,
+        const Value& value,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        return linked::count(dict.view, key, value, start, stop);
+    }
+
+    /* Apply a count() check using a C++ pair. */
+    inline size_t count(
+        const std::pair<Key, Value> item,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        return count(item.first, item.second, start, stop);
+    }
+
+    /* Apply a count() check using a C++ tuple of size 2. */
+    inline size_t count(
+        const std::tuple<Key, Value>& item,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        return count(std::get<0>(item), std::get<1>(item), start, stop);
+    }
+
+    /* Apply a count() check using a Python tuple of size 2. */
+    inline size_t count(
+        PyObject* item,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 2) {
+            throw TypeError("expected a tuple of size 2");
+        }
+        return count(
+            PyTuple_GET_ITEM(item, 0),
+            PyTuple_GET_ITEM(item, 1),
+            start,
+            stop
+        );
+    }
+
+    /* Check if the referenced dictionary contains the given key-value pair. */
+    inline bool contains(const Key& key, const Value& value) const {
+        typename Dict::Node* node = dict.view.search(key);
+        return node != nullptr && eq(node->mapped(), value);
+    }
+
+    /* Apply a contains() check using a C++ pair. */
     inline bool contains(const std::pair<Key, Value> item) const {
-        typename Dict::Node* node = dict.view.search(item.first);
-        return node != nullptr && eq(node->mapped(), item.second);
+        return contains(item.first, item.second);
+    }
+
+    /* Apply a contains() check using a C++ tuple of size 2. */
+    inline bool contains(const std::tuple<Key, Value>& item) const {
+        return contains(std::get<0>(item), std::get<1>(item));
+    }
+
+    /* Apply a contains() check using a Python tuple of size 2. */
+    inline bool contains(PyObject* item) const {
+        if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 2) {
+            throw TypeError("expected a tuple of size 2");
+        }
+        return contains(PyTuple_GET_ITEM(item, 0), PyTuple_GET_ITEM(item, 1));
     }
 
     /* Get the total number of items stored in the proxied dictionary. */
@@ -1588,7 +1729,8 @@ public:
             // invoke equivalent C++ method
             return std::visit(
                 [](auto& dict) {
-                    return dict.keys();  // returns new reference
+                    using Proxy = typename std::decay_t<decltype(dict.keys())>;
+                    return Proxy::PyType.construct(dict.keys());
                 },
                 self->variant
             );
@@ -1606,7 +1748,8 @@ public:
             // invoke equivalent C++ method
             return std::visit(
                 [](auto& dict) {
-                    return dict.values();  // returns new reference
+                    using Proxy = typename std::decay_t<decltype(dict.values())>;
+                    return Proxy::PyType.construct(dict.values());
                 },
                 self->variant
             );
@@ -1624,7 +1767,8 @@ public:
             // invoke equivalent C++ method
             return std::visit(
                 [](auto& dict) {
-                    return dict.items();  // returns new reference
+                    using Proxy = typename std::decay_t<decltype(dict.items())>;
+                    return Proxy::PyType.construct(dict.items());
                 },
                 self->variant
             );
@@ -1642,7 +1786,7 @@ public:
             // invoke equivalent C++ method
             return std::visit(
                 [&key](auto& dict) {
-                    return dict[key];  // returns new reference
+                    return Py_XNewRef(dict[key].get());
                 },
                 self->variant
             );
@@ -2188,10 +2332,8 @@ private:
     /* docstrings for public Python attributes. */
     struct docs {
 
-        // TODO: revisit the C++ usage example once everything is finalized
-
         static constexpr std::string_view LinkedDict {R"doc(
-A modular, ordered citionary based on a linked list available in both Python
+A modular, ordered dictionary based on a linked list available in both Python
 and C++.
 
 This class is a drop-in replacement for a built-in :class:`dict`, supporting
@@ -2240,11 +2382,12 @@ overhead due to handling the links between each node, but users should not
 notice a significant difference on average.
 
 The data structure itself is implemented entirely in C++, and can be used
-equivalently at the C++ level.  The Python wrapper is actually just a
-discriminated union of C++ template configurations, each of which can be
-instantiated directly in C++ for reduced overhead.  The C++ data structure
-behaves exactly the same, with all the same methods and conventions and only
-minor syntax differences related to both languages.  Here's an example:
+equivalently at the C++ level.  In fact, the Python wrapper is just a
+discriminated union of C++ templates, and can be thought of as directly emitting
+equivalent C++ code at runtime.  As such, each variation of this data structure
+is available as a C++ type under the same name, with identical semantics and
+only superficial syntax differences related to both languages.  Here's an
+example:
 
 .. code-block:: cpp
 
@@ -2267,7 +2410,7 @@ minor syntax differences related to both languages.  Here's an example:
         }
 
         std::cout << dict;
-        // LinkedDict({"i": 9, 6, 7, 8, "a": 1, "b": 2, "c": 3, "d": 4})
+        // LinkedDict({"f": 6, "g": 7, "h": 8, "a": 1, "b": 2, "c": 3, "d": 4, "i": 9})
         return 0;
     }
 

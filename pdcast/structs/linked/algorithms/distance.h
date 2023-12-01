@@ -27,17 +27,17 @@ namespace linked {
 
 
     /* Get the linear distance between two values in a linked set or dictionary. */
-    template <typename View, typename Item = typename View::Value>
-    auto distance(View& view, Item& item1, Item& item2)
+    template <typename View, typename Item>
+    auto distance(const View& view, const Item& item1, const Item& item2)
         -> std::enable_if_t<ViewTraits<View>::hashed, long long>
     {
         using Node = typename View::Node;
 
         // convenience function for throwing item not found error
-        auto not_found = [](Item& item) {
+        auto not_found = [](auto item) {
             std::ostringstream msg;
             msg << repr(item) << " is not in set";
-            return std::invalid_argument(msg.str());
+            return KeyError(msg.str());
         };
 
         // search for nodes in hash table

@@ -29,12 +29,8 @@ namespace linked {
 
 
     /* Insert an item into a linked list, set, or dictionary at the given index. */
-    template <
-        typename View,
-        typename Index,
-        typename Item = typename View::Value
-    >
-    inline auto insert(View& view, Index index, Item& item)
+    template <typename View, typename Item>
+    inline auto insert(View& view, long long index, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::linked, void>
     {
         // normalize index

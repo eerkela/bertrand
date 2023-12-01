@@ -22,7 +22,7 @@ namespace linked {
 
     /* Get a proxy for a value that may or may not be stored within a linked
     dictionary. */
-    template <typename View, typename Key = typename View::Value>
+    template <typename View, typename Key>
     auto map(View& view, const Key& key)
         -> std::enable_if_t<ViewTraits<View>::dictlike, MapProxy<View>>
     {
@@ -58,8 +58,8 @@ namespace linked {
             Node* node = view.search(key);
             if (node == nullptr) {
                 std::ostringstream msg;
-                msg << "key not found: " << util::repr(key);
-                throw util::KeyError(msg.str());
+                msg << "key not found: " << repr(key);
+                throw KeyError(msg.str());
             }
             return node->mapped();
         }
@@ -71,8 +71,8 @@ namespace linked {
             Node* node = view.template search<Allocator::MOVE_HEAD>(key);
             if (node == nullptr) {
                 std::ostringstream msg;
-                msg << "key not found: " << util::repr(key);
-                throw util::KeyError(msg.str());
+                msg << "key not found: " << repr(key);
+                throw KeyError(msg.str());
             }
             return node->mapped();
         }

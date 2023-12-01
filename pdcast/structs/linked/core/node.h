@@ -45,7 +45,7 @@ public:
     template <bool cond = is_pyobject<Value>>
     inline std::enable_if_t<cond, bool> typecheck(PyObject* specialization) const {
         int comp = PyObject_IsInstance(_value, specialization);
-        if (comp == -1) throw catch_python<TypeError>();
+        if (comp == -1) throw catch_python();
         return static_cast<bool>(comp);
     }
 
@@ -352,7 +352,7 @@ private:
             // apply key function to node value
             PyObject* val = PyObject_CallFunctionObjArgs(func, arg, nullptr);
             if (val == nullptr) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return val;  // new reference
 
@@ -450,18 +450,13 @@ class Hashed : public Wrapped {
 
     /* Compute the hash of the underlying node value. */
     inline static size_t compute_hash(Hashed* node) {
-        using Value = typename Wrapped::Value;
-        if constexpr (is_pyobject<Value>) {
-            try {
-                return std::hash<Value>{}(node->value());
-            } catch (...) {
-                // NOTE: we have to make sure to release any resources that were
-                // acquired during the wrapped constructor
-                node->~Hashed();
-                throw;
-            }
-        } else {
-            return std::hash<Value>{}(node->value());
+        try {
+            return bertrand::hash(node->value());
+        } catch (...) {
+            // NOTE: we have to make sure to release any resources that were
+            // acquired during the wrapped constructor
+            node->~Hashed();
+            throw;
         }
     }
 

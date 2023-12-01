@@ -17,16 +17,13 @@ namespace linked {
 
 
     /* Remove the first occurrence of an item from a linked list. */
-    template <typename View, typename Item = typename View::Value>
-    auto remove(View& view, Item& item)
+    template <typename View, typename Item>
+    auto remove(View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::listlike, void>
     {
-        using Node = typename View::Node;
-
         // find item in list
-        for (auto it = iter(view).forward(); it != it.end(); ++it) {
-            Node* node = it.curr();
-            if (eq(node->value(), item)) {
+        for (auto it = view.begin(), end = view.end(); it != end; ++it) {
+            if (eq(*it, item)) {
                 view.recycle(it.drop());
                 return;
             }
@@ -35,13 +32,13 @@ namespace linked {
         // item not found
         std::ostringstream msg;
         msg << repr(item) << " is not in list";
-        throw std::invalid_argument(msg.str());  
+        throw KeyError(msg.str());  
     }
 
 
     /* Remove an item from a linked set or dictionary. */
-    template <typename View, typename Item = typename View::Value>
-    auto remove(View& view, Item& item)
+    template <typename View, typename Item>
+    auto remove(View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
         using Allocator = typename View::Allocator;

@@ -132,7 +132,7 @@ protected:
     inline static Node* malloc_nodes(size_t capacity) {
         Node* result = static_cast<Node*>(std::malloc(capacity * sizeof(Node)));
         if (result == nullptr) {
-            throw std::bad_alloc();
+            throw MemoryError();
         }
         return result;
     }
@@ -321,7 +321,7 @@ public:
     void reserve(size_t new_size) {
         // ensure new capacity is large enough to store all existing nodes
         if (new_size < occupied) {
-            throw std::invalid_argument(
+            throw ValueError(
                 "new capacity cannot be smaller than current size"
             );
         }
@@ -659,7 +659,7 @@ bool
 
             // register Python type
             if (PyType_Ready(&slots) < 0) {
-                throw std::runtime_error("could not initialize PyMemGuard type");
+                throw RuntimeError("could not initialize PyMemGuard type");
             }
             return slots;
         }
@@ -1268,7 +1268,7 @@ private:
                     next += bucket->next;
                 }
                 if (++distance == MAX_PROBE_LENGTH) {
-                    throw std::runtime_error("exceeded maximum probe length");
+                    throw RuntimeError("exceeded maximum probe length");
                 }
                 bucket = other + ((origin_idx + distance) & modulo);
             };
@@ -1773,7 +1773,7 @@ public:
                         return create(std::move(*node));  // retry
                     }
                 }
-                throw std::runtime_error("exceeded maximum probe length");
+                throw RuntimeError("exceeded maximum probe length");
             }
             bucket = table + ((origin_idx + distance) & modulo);
         }

@@ -13,20 +13,18 @@ namespace linked {
 
 
     /* Check if an item is contained within a linked list. */
-    template <typename View, typename Item = typename View::Value>
-    inline auto contains(View& view, Item& item)
+    template <typename View, typename Item>
+    inline auto contains(const View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::listlike, bool>
     {
-        for (auto it = view.begin(), end = view.end(); it != end; ++it) {
-            if (eq(it.curr()->value(), item)) return true;
-        }
+        for (auto val : view) if (eq(val, item)) return true;
         return false;
     }
 
 
     /* Check if an item is contained within a linked set or dictionary. */
-    template <typename View, typename Item = typename View::Value>
-    inline auto contains(View& view, Item& item)
+    template <typename View, typename Item>
+    inline auto contains(const View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::hashed, bool>
     {
         return view.search(item) != nullptr;
@@ -34,8 +32,8 @@ namespace linked {
 
     /* Check if an item is contained within a linked set or dictionary and move it to
     the front if so. */
-    template <typename View, typename Item = typename View::Value>
-    inline auto lru_contains(View& view, Item& item)
+    template <typename View, typename Item>
+    inline auto lru_contains(View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::hashed, bool>
     {
         return view.template search<View::Allocator::MOVE_HEAD>(item) != nullptr;

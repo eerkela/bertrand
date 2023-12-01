@@ -57,7 +57,7 @@ namespace linked {
         // delegate to C++ overload
         long long n = PyLong_AsLongLong(repetitions);
         if (n == -1 && PyErr_Occurred()) {
-            throw catch_python<TypeError>();
+            throw catch_python();
         }
         return repeat(view, n);
     }
@@ -116,7 +116,7 @@ namespace linked {
         // delegate to C++ overload
         long long n = PyLong_AsLongLong(repetitions);
         if (n == -1 && PyErr_Occurred()) {
-            throw catch_python<TypeError>();
+            throw catch_python();
         }
         repeat_inplace(view, n);
     }

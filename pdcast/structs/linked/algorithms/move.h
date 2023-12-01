@@ -22,8 +22,8 @@ namespace linked {
 
 
     /* Move an item within a linked set or dictionary. */
-    template <typename View, typename Item = typename View::Value>
-    auto move(View& view, Item& item, long long steps)
+    template <typename View, typename Item>
+    auto move(View& view, const Item& item, long long steps)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
         using Node = typename View::Node;
@@ -33,7 +33,7 @@ namespace linked {
         if (node == nullptr) {
             std::ostringstream msg;
             msg << repr(item) << " is not in set";
-            throw std::invalid_argument(msg.str());
+            throw KeyError(msg.str());
         }
 
         // trivial case: no movement
@@ -108,8 +108,8 @@ namespace linked {
 
 
     /* Move an item to a particular index of a linked set or dictionary. */
-    template <typename View, typename Item = typename View::Value>
-    auto move_to_index(View& view, Item& item, long long index)
+    template <typename View, typename Item>
+    auto move_to_index(View& view, const Item& item, long long index)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
         using Node = typename View::Node;
@@ -119,7 +119,7 @@ namespace linked {
         if (node == nullptr) {
             std::ostringstream msg;
             msg << repr(item) << " is not in set";
-            throw std::invalid_argument(msg.str());
+            throw KeyError(msg.str());
         }
 
         // normalize index
