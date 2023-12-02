@@ -8,10 +8,10 @@
 #include <Python.h>  // CPython API
 #include "../core/iter.h"  // Bidirectional<>
 #include "../core/view.h"  // ViewTraits
-#include "../../util/iter.h"  // iter()
+#include "../../util/container.h"  // PySequence
 #include "../../util/except.h"  // TypeError()
+#include "../../util/iter.h"  // iter()
 #include "../../util/math.h"  // py_modulo()
-#include "../../util/sequence.h"  // PySequence
 
 
 namespace bertrand {

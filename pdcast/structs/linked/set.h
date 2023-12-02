@@ -2043,8 +2043,6 @@ class PyLinkedSet :
         SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>
         // SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
     >;
-    template <size_t I>
-    using Alternative = std::variant_alternative_t<I, Variant>;
 
     friend Base;
     friend IList;
@@ -2057,15 +2055,22 @@ class PyLinkedSet :
         new (&variant) Variant(std::forward<Set>(set));
     }
 
-    #define CONSTRUCT(IDX) \
-        if (iterable == nullptr) { \
-            new (&self->variant) Variant(Alternative<IDX>(max_size, spec)); \
+    /* Construct a particular alternative stored in the variant. */
+    template <size_t I>
+    inline static void alt(
+        PyLinkedSet* self,
+        PyObject* iterable,
+        std::optional<size_t> max_size,
+        PyObject* spec,
+        bool reverse
+    ) {
+        using Alt = typename std::variant_alternative_t<I, Variant>;
+        if (iterable == nullptr) {
+            new (&self->variant) Variant(Alt(max_size, spec));
         } else { \
-            new (&self->variant) Variant( \
-                Alternative<IDX>(iterable, max_size, spec, reverse) \
-            ); \
-        } \
-        break; \
+            new (&self->variant) Variant(Alt(iterable, max_size, spec, reverse));
+        }
+    }
 
     /* Construct a PyLinkedSet from scratch using the given constructor arguments. */
     static void construct(
@@ -2086,43 +2091,57 @@ class PyLinkedSet :
         );
         switch (code) {
             case (Config::DEFAULT):
-                CONSTRUCT(0)
+                alt<0>(self, iterable, max_size, spec, reverse);
+                break;
             // case (Config::PACKED):
-            //     CONSTRUCT(1)
+            //     alt<1>(self, iterable, max_size, spec, reverse);
+            //     break;
             case (Config::STRICTLY_TYPED):
-                CONSTRUCT(1)
+                alt<1>(self, iterable, max_size, spec, reverse);
+                break;
             // case (Config::PACKED | Config::STRICTLY_TYPED):
-            //     CONSTRUCT(3)
+            //     alt<3>(self, iterable, max_size, spec, reverse);
+            //     break;
             case (Config::FIXED_SIZE):
-                CONSTRUCT(2)
+                alt<2>(self, iterable, max_size, spec, reverse);
+                break;
             // case (Config::FIXED_SIZE | Config::PACKED):
-            //     CONSTRUCT(5)
+            //     alt<5>(self, iterable, max_size, spec, reverse);
+            //     break;
             case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                CONSTRUCT(3)
+                alt<3>(self, iterable, max_size, spec, reverse);
+                break;
             // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     CONSTRUCT(7)
+            //     alt<7>(self, iterable, max_size, spec, reverse);
+            //     break;
             case (Config::SINGLY_LINKED):
-                CONSTRUCT(4)
+                alt<4>(self, iterable, max_size, spec, reverse);
+                break;
             // case (Config::SINGLY_LINKED | Config::PACKED):
-            //     CONSTRUCT(9)
+            //     alt<9>(self, iterable, max_size, spec, reverse);
+            //     break;
             case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
-                CONSTRUCT(5)
+                alt<5>(self, iterable, max_size, spec, reverse);
+                break;
             // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
-            //     CONSTRUCT(11)
+            //     alt<11>(self, iterable, max_size, spec, reverse);
+            //     break;
             case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
-                CONSTRUCT(6)
+                alt<6>(self, iterable, max_size, spec, reverse);
+                break;
             // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
-            //     CONSTRUCT(13)
+            //     alt<13>(self, iterable, max_size, spec, reverse);
+            //     break;
             case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                CONSTRUCT(7)
+                alt<7>(self, iterable, max_size, spec, reverse);
+                break;
             // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     CONSTRUCT(15)
+            //     alt<15>(self, iterable, max_size, spec, reverse);
+            //     break;
             default:
                 throw ValueError("invalid argument configuration");
         }
     }
-
-    #undef CONSTRUCT
 
 public:
 
@@ -2513,6 +2532,7 @@ PyMODINIT_FUNC PyInit_set(void) {
 
 
 /* Export to base namespace */
+using structs::linked::LinkedSet;
 using structs::linked::PyLinkedSet;
 
 

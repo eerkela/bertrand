@@ -1074,7 +1074,7 @@ protected:
         try {
             PyObject* result = std::visit(
                 [&index](auto& list) {
-                    return Py_XNewRef(list[index].get());
+                    return Py_XNewRef(list.position(index).get());
                 },
                 self->variant
             );
@@ -1093,9 +1093,9 @@ protected:
             std::visit(
                 [&index, &item](auto& list) {
                     if (item == nullptr) {
-                        list[index].del();
+                        list.position(index).del();
                     } else {
-                        list[index].set(item);
+                        list.position(index).set(item);
                     }
                 },
                 self->variant
@@ -1448,8 +1448,6 @@ class PyLinkedList :
         ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>
         // ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
     >;
-    template <size_t I>
-    using Alternative = typename std::variant_alternative_t<I, Variant>;
 
     friend Base;
     friend IList;
@@ -1461,15 +1459,22 @@ class PyLinkedList :
         new (&variant) Variant(std::forward<List>(list));
     }
 
-    #define CONSTRUCT(IDX) \
-        if (iterable == nullptr) { \
-            new (&self->variant) Variant(Alternative<IDX>(max_size, spec)); \
+    /* Construct a particular alternative stored in the variant. */
+    template <size_t I>
+    inline static void alt(
+        PyLinkedList* self,
+        PyObject* iterable,
+        std::optional<size_t> max_size,
+        PyObject* spec,
+        bool reverse
+    ) {
+        using Alt = typename std::variant_alternative_t<I, Variant>;
+        if (iterable == nullptr) {
+            new (&self->variant) Variant(Alt(max_size, spec));
         } else { \
-            new (&self->variant) Variant( \
-                Alternative<IDX>(iterable, max_size, spec, reverse) \
-            ); \
-        } \
-        break; \
+            new (&self->variant) Variant(Alt(iterable, max_size, spec, reverse));
+        }
+    }
 
     /* Construct a PyLinkedList from scratch using the given constructor arguments. */
     static void construct(
@@ -1490,43 +1495,57 @@ class PyLinkedList :
         );
         switch (code) {
             case (Config::DEFAULT):
-                CONSTRUCT(0)
+                alt<0>(self, iterable, max_size, spec, reverse);
+                break;
             // case (Config::PACKED):
-            //     CONSTRUCT(1)
+            //     alt<1>(self, iterable, max_size, spec, reverse);
+            //     break;
             case (Config::STRICTLY_TYPED):
-                CONSTRUCT(1)
+                alt<1>(self, iterable, max_size, spec, reverse);
+                break;
             // case (Config::PACKED | Config::STRICTLY_TYPED):
-            //     CONSTRUCT(3)
+            //     alt<3>(self, iterable, max_size, spec, reverse);
+            //     break;
             case (Config::FIXED_SIZE):
-                CONSTRUCT(2)
+                alt<2>(self, iterable, max_size, spec, reverse);
+                break;
             // case (Config::FIXED_SIZE | Config::PACKED):
-            //     CONSTRUCT(5)
+            //     alt<5>(self, iterable, max_size, spec, reverse);
+            //     break;
             case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                CONSTRUCT(3)
+                alt<3>(self, iterable, max_size, spec, reverse);
+                break;
             // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     CONSTRUCT(7)
+            //     alt<7>(self, iterable, max_size, spec, reverse);
+            //     break;
             case (Config::SINGLY_LINKED):
-                CONSTRUCT(4)
+                alt<4>(self, iterable, max_size, spec, reverse);
+                break;
             // case (Config::SINGLY_LINKED | Config::PACKED):
-            //     CONSTRUCT(9)
+            //     alt<9>(self, iterable, max_size, spec, reverse);
+            //     break;
             case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
-                CONSTRUCT(5)
+                alt<5>(self, iterable, max_size, spec, reverse);
+                break;
             // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
-            //     CONSTRUCT(11)
+            //     alt<11>(self, iterable, max_size, spec, reverse);
+            //     break;
             case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
-                CONSTRUCT(6)
+                alt<6>(self, iterable, max_size, spec, reverse);
+                break;
             // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
-            //     CONSTRUCT(13)
+            //     alt<13>(self, iterable, max_size, spec, reverse);
+            //     break;
             case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                CONSTRUCT(7)
+                alt<7>(self, iterable, max_size, spec, reverse);
+                break;
             // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     CONSTRUCT(15)
+            //     alt<15>(self, iterable, max_size, spec, reverse);
+            //     break;
             default:
                 throw ValueError("invalid argument configuration");
         }
     }
-
-    #undef CONSTRUCT
 
 public:
 
@@ -1875,6 +1894,7 @@ PyMODINIT_FUNC PyInit_list(void) {
 
 /* Export to base namespace */
 using structs::linked::LinkedList;
+using structs::linked::PyLinkedList;
 
 
 }  // namespace bertrand

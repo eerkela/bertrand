@@ -44,8 +44,8 @@ namespace linked {
     template <typename View>
     class MapProxy {
         using Node = typename View::Node;
-        using Key = typename View::Value;
-        using Value = typename View::MappedValue;
+        using Key = typename Node::Value;
+        using Value = typename Node::MappedValue;
 
         View& view;
         const Key& key;
@@ -95,7 +95,7 @@ namespace linked {
                 Allocator::EXIST_OK | Allocator::REPLACE_MAPPED |
                 Allocator::INSERT_TAIL
             );
-            Node* node = view.template node<flags>(key, value);
+            view.template node<flags>(key, value);
         }
 
         /* Set the value stored with this key, left-appending it if it does not already
@@ -106,7 +106,7 @@ namespace linked {
                 Allocator::EXIST_OK | Allocator::REPLACE_MAPPED |
                 Allocator::INSERT_HEAD
             );
-            Node* node = view.template node<flags>(key, value);
+            view.template node<flags>(key, value);
         }
 
         /* Set the value stored with this key, moving it to the front of the dictionary
@@ -117,7 +117,7 @@ namespace linked {
                 Allocator::EXIST_OK | Allocator::REPLACE_MAPPED |
                 Allocator::INSERT_HEAD | Allocator::MOVE_HEAD | Allocator::EVICT_TAIL
             );
-            Node* node = view.template node<flags>(key, value);
+            view.template node<flags>(key, value);
         }
 
         /* Delete the value stored with this key, or raise an error if it is not

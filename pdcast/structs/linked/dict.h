@@ -611,7 +611,7 @@ inline std::ostream& operator<<(
     std::ostream& stream,
     const LinkedDict<K, V, Flags, Ts...>& dict
 ) {
-    stream << linked::repr(
+    stream << linked::build_repr(
         dict.view,
         "LinkedDict",
         "{",
@@ -1840,6 +1840,30 @@ public:
         }
     }
 
+    /* Implement `LinkedList.__lt__()/__le__()/__eq__()/__ne__()/__ge__()/__gt__()` in
+    Python. */
+    static PyObject* __richcompare__(Derived* self, PyObject* other, int cmp) {
+        try {
+            bool result = std::visit(
+                [&other, &cmp](auto& list) {
+                    switch (cmp) {
+                        case Py_EQ:
+                            return list == other;
+                        case Py_NE:
+                            return list != other;
+                        default:
+                            throw ValueError("invalid comparison operator");
+                    }
+                },
+                self->variant
+            );
+            return PyBool_FromLong(result);
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
 protected:
 
     /* docstrings for public Python attributes. */
@@ -2154,25 +2178,23 @@ class PyLinkedDict :
     template <unsigned int Flags>
     using DictConfig = linked::LinkedDict<PyObject*, PyObject*, Flags, BasicLock>;
     using Variant = std::variant<
-        DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>,
+        DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>
         // DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
-        DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
+        // DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
         // DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
-        DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
+        // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
         // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
+        // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
         // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
-        DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
+        // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
         // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
-        DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
+        // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
         // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
-        DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
+        // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
         // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>
+        // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>
         // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
     >;
-    template <size_t I>
-    using Alternative = typename std::variant_alternative_t<I, Variant>;
 
     friend Base;
     friend IList;
@@ -2186,15 +2208,22 @@ class PyLinkedDict :
         new (&variant) Variant(std::forward<Dict>(dict));
     }
 
-    #define CONSTRUCT(IDX) \
-        if (iterable == nullptr) { \
-            new (&self->variant) Variant(Alternative<IDX>(max_size, spec)); \
+    /* Construct a particular alternative stored in the variant. */
+    template <size_t I>
+    inline static void alt(
+        PyLinkedDict* self,
+        PyObject* iterable,
+        std::optional<size_t> max_size,
+        PyObject* spec,
+        bool reverse
+    ) {
+        using Alt = typename std::variant_alternative_t<I, Variant>;
+        if (iterable == nullptr) {
+            new (&self->variant) Variant(Alt(max_size, spec));
         } else { \
-            new (&self->variant) Variant( \
-                Alternative<IDX>(iterable, max_size, spec, reverse) \
-            ); \
-        } \
-        break; \
+            new (&self->variant) Variant(Alt(iterable, max_size, spec, reverse));
+        }
+    }
 
     /* Construct a PyLinkedDict from scratch using the given constructor arguments. */
     static void construct(
@@ -2215,43 +2244,57 @@ class PyLinkedDict :
         );
         switch (code) {
             case (Config::DEFAULT):
-                CONSTRUCT(0)
-            // case (Config::PACKED):
-            //     CONSTRUCT(1)
-            case (Config::STRICTLY_TYPED):
-                CONSTRUCT(1)
-            // case (Config::PACKED | Config::STRICTLY_TYPED):
-            //     CONSTRUCT(3)
-            case (Config::FIXED_SIZE):
-                CONSTRUCT(2)
-            // case (Config::FIXED_SIZE | Config::PACKED):
-            //     CONSTRUCT(5)
-            case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                CONSTRUCT(3)
-            // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     CONSTRUCT(7)
-            case (Config::SINGLY_LINKED):
-                CONSTRUCT(4)
-            // case (Config::SINGLY_LINKED | Config::PACKED):
-            //     CONSTRUCT(9)
-            case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
-                CONSTRUCT(5)
-            // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
-            //     CONSTRUCT(11)
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
-                CONSTRUCT(6)
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
-            //     CONSTRUCT(13)
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                CONSTRUCT(7)
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     CONSTRUCT(15)
+                alt<0>(self, iterable, max_size, spec, reverse);
+                break;
+            // // case (Config::PACKED):
+            // //     alt<1>(self, iterable, max_size, spec, reverse);
+            // //     break;
+            // case (Config::STRICTLY_TYPED):
+            //     alt<1>(self, iterable, max_size, spec, reverse);
+            //     break;
+            // // case (Config::PACKED | Config::STRICTLY_TYPED):
+            // //     alt<3>(self, iterable, max_size, spec, reverse);
+            // //     break;
+            // case (Config::FIXED_SIZE):
+            //     alt<2>(self, iterable, max_size, spec, reverse);
+            //     break;
+            // // case (Config::FIXED_SIZE | Config::PACKED):
+            // //     alt<5>(self, iterable, max_size, spec, reverse);
+            // //     break;
+            // case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+            //     alt<3>(self, iterable, max_size, spec, reverse);
+            //     break;
+            // // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            // //     alt<7>(self, iterable, max_size, spec, reverse);
+            // //     break;
+            // case (Config::SINGLY_LINKED):
+            //     alt<4>(self, iterable, max_size, spec, reverse);
+            //     break;
+            // // case (Config::SINGLY_LINKED | Config::PACKED):
+            // //     alt<9>(self, iterable, max_size, spec, reverse);
+            // //     break;
+            // case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
+            //     alt<5>(self, iterable, max_size, spec, reverse);
+            //     break;
+            // // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
+            // //     alt<11>(self, iterable, max_size, spec, reverse);
+            // //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
+            //     alt<6>(self, iterable, max_size, spec, reverse);
+            //     break;
+            // // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
+            // //     alt<13>(self, iterable, max_size, spec, reverse);
+            // //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+            //     alt<7>(self, iterable, max_size, spec, reverse);
+            //     break;
+            // // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            // //     alt<15>(self, iterable, max_size, spec, reverse);
+            // //     break;
             default:
                 throw ValueError("invalid argument configuration");
         }
     }
-
-    #undef CONSTRUCT
 
 public:
 
@@ -2286,7 +2329,9 @@ public:
             pyargs.finalize();
 
             // initialize
-            construct(self, iterable, max_size, spec, reverse, singly_linked);
+            construct(
+                self, iterable, max_size, spec, reverse, singly_linked, packed, false
+            );
 
             // exit normally
             return 0;
@@ -2601,7 +2646,7 @@ in some cases.
             .tp_doc = PyDoc_STR(docs::LinkedDict.data()),
             .tp_traverse = (traverseproc) Base::__traverse__,
             .tp_clear = (inquiry) Base::__clear__,
-            .tp_richcompare = (richcmpfunc) IList::__richcompare__,
+            .tp_richcompare = (richcmpfunc) IDict::__richcompare__,
             .tp_iter = (getiterfunc) Base::__iter__,
             .tp_methods = methods,
             .tp_getset = properties,
@@ -2660,6 +2705,13 @@ PyMODINIT_FUNC PyInit_dict(void) {
 
 }  // namespace linked
 }  // namespace structs
+
+
+/* Export to base namespace. */
+using structs::linked::LinkedDict;
+using structs::linked::PyLinkedDict;
+
+
 }  // namespace bertrand
 
 
