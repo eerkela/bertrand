@@ -79,48 +79,6 @@ namespace linked {
         bool inverted;  // if true, first and last indices contradict step size
         bool backward;  // if true, traverse from tail
 
-        /* Copy constructor. */
-        SliceIndices(const SliceIndices& other) :
-            start(other.start), stop(other.stop), step(other.step),
-            abs_step(other.abs_step), first(other.first), last(other.last),
-            length(other.length), inverted(other.inverted), backward(other.backward)
-        {}
-
-        /* Move constructor. */
-        SliceIndices(SliceIndices&& other) :
-            start(other.start), stop(other.stop), step(other.step),
-            abs_step(other.abs_step), first(other.first), last(other.last),
-            length(other.length), inverted(other.inverted), backward(other.backward)
-        {}
-
-        /* Copy assignment operator. */
-        SliceIndices& operator=(const SliceIndices& other) {
-            start = other.start;
-            stop = other.stop;
-            step = other.step;
-            abs_step = other.abs_step;
-            first = other.first;
-            last = other.last;
-            length = other.length;
-            inverted = other.inverted;
-            backward = other.backward;
-            return *this;
-        }
-
-        /* Move assignment operator. */
-        SliceIndices& operator=(SliceIndices&& other) {
-            start = other.start;
-            stop = other.stop;
-            step = other.step;
-            abs_step = other.abs_step;
-            first = other.first;
-            last = other.last;
-            length = other.length;
-            inverted = other.inverted;
-            backward = other.backward;
-            return *this;
-        }
-
     };
 
 
@@ -431,22 +389,24 @@ namespace linked {
         void set(const Container& items) {
             using MemGuard = typename View::MemGuard;
 
-            auto seq = sequence(items);  // fast, indexable sequence with known length
-            if (indices.length == 0 && seq.size() == 0) {
+            // unpack items into indexable sequence with known length
+            auto seq = sequence(items);  // possibly a no-op if already a sequence
+            if (indices.length != seq.size()) {
+                // NOTE: Python allows the slice and sequence lengths to differ if and
+                // only if the step size is 1.  This can possibly change the overall
+                // length of the list.
+                if (indices.step != 1) {
+                    std::ostringstream msg;
+                    msg << "attempt to assign sequence of size " << seq.size();
+                    msg << " to extended slice of size " << indices.length;
+                    throw ValueError(msg.str());
+                }
+            } else if (indices.length == 0) {
                 return;
             }
 
-            // NOTE: Python allows the slice and sequence lengths to differ if and only
-            // if the step size is 1.  This can possibly change the length of the list.
-            if (indices.length != seq.size() && indices.step != 1) {
-                std::ostringstream msg;
-                msg << "attempt to assign sequence of size " << seq.size();
-                msg << " to extended slice of size " << indices.length;
-                throw ValueError(msg.str());
-            }
-
             RecoveryArray recovery(indices.length);
-            MemGuard guard = view.reserve(view.size() + seq.size() - indices.length);
+            MemGuard guard = view.reserve(view.size() - indices.length + seq.size());
 
             // remove current occupants
             size_t idx = 0;
