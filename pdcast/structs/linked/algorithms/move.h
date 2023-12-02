@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_MOVE_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_MOVE_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_MOVE_H
 
@@ -28,7 +27,6 @@ namespace linked {
     {
         using Node = typename View::Node;
 
-        // search for node in hash table
         Node* node = view.search(item);
         if (node == nullptr) {
             std::ostringstream msg;
@@ -36,8 +34,9 @@ namespace linked {
             throw KeyError(msg.str());
         }
 
-        // trivial case: no movement
-        if (steps == 0 || node == (steps > 0 ? view.tail() : view.head())) return;
+        if (steps == 0 || node == (steps > 0 ? view.tail() : view.head())) {
+            return;
+        }
 
         // get neighbors at both insertion and removal point
         Node* old_prev;
@@ -46,8 +45,6 @@ namespace linked {
         Node* new_next;
         if constexpr (NodeTraits<Node>::has_prev) {  // O(m) if doubly-linked
             old_prev = node->prev();
-
-            // construct local iterator around node and walk to new position
             if (steps > 0) {
                 using Iter = typename View::template Iterator<Direction::forward>;
                 auto it = Iter(view, old_prev, node, old_next);
@@ -72,13 +69,11 @@ namespace linked {
                 for (auto end = view.end(); steps > 0 && it != end; --steps, ++it);
                 new_prev = it.curr();
                 new_next = it.next();
-            }
 
-            // Otherwise, we need to create a lookahead iterator offset from the head
-            // of the list by an amount equal to `steps`.  We then advance both
-            // iterators until the lookahead iterator reaches the removal point.  When
-            // this occurs, the lookbehind iterator will be at the insertion point.
-            else {
+            // lookahead iterator is offset from the head of list by an amount equal to
+            // `steps`.  When it reaches the removal point, lookbehind will be at
+            // insertion point.
+            } else {
                 bool truncate = false;
                 for (; steps < 0; ++steps, ++it) {  // `it` becomes lookahead iterator
                     if (it.curr() == node) {
@@ -90,7 +85,7 @@ namespace linked {
                     }
                 }
 
-                // generate lookbehind and advance until we find removal point
+                // construct lookbehind and advance both until we find removal point
                 if (!truncate) {
                     auto lookbehind = view.begin();
                     for (; it.curr() != node; ++it, ++lookbehind);
@@ -114,7 +109,6 @@ namespace linked {
     {
         using Node = typename View::Node;
 
-        // search for node in hash table
         Node* node = view.search(item);
         if (node == nullptr) {
             std::ostringstream msg;
@@ -122,10 +116,9 @@ namespace linked {
             throw KeyError(msg.str());
         }
 
-        // normalize index
         size_t norm_index = normalize_index(index, view.size(), true);
 
-        // get prev pointers at both insertion and removal point
+        // get neighbors at both insertion and removal point
         Node* old_prev;
         Node* old_next = node->next();
         Node* new_prev;

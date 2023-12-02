@@ -1,7 +1,7 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_POP_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_POP_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_POP_H
 
+#include <sstream>  // std::ostringstream
 #include <tuple>  // std::tuple
 #include <type_traits>  // std::enable_if_t<>
 #include <Python.h>  // CPython API
@@ -16,24 +16,25 @@ namespace linked {
 
 
     /* Pop an item from a linked list, set, or dictionary at the given index. */
-    template <typename View>
+    template <typename View, typename Value = typename View::Value>
     inline auto pop(View& view, long long index)
-        -> std::enable_if_t<ViewTraits<View>::linked, typename View::Value>
+        -> std::enable_if_t<
+            ViewTraits<View>::listlike || ViewTraits<View>::setlike,
+            Value
+        >
     {
         using Node = typename View::Node;
-        using Value = typename View::Value;
+        if (view.size() == 0) {
+            throw IndexError("pop from empty list");
+        }
 
-        // trivial case: empty list
-        if (view.size() == 0) throw IndexError("pop from empty list");
-
-        // normalize index
         size_t norm_index = normalize_index(index, view.size(), true);
 
         // payload for return value
-        auto execute = [&view](Node* node) {
+        auto execute = [&view](Node* node) -> Value {
             Value result = node->value();
             if constexpr (is_pyobject<Value>) {
-                Py_INCREF(result);  // return new reference
+                Py_INCREF(result);  // new reference
             }
             view.recycle(node);
             return result;
@@ -43,15 +44,59 @@ namespace linked {
         if constexpr (NodeTraits<Node>::has_prev) {
             if (view.closer_to_tail(norm_index)) {
                 auto it = view.rbegin();
-                for (size_t i = view.size() - 1; i > norm_index; --i) ++it;
+                for (size_t i = view.size() - 1; i > norm_index; --i, ++it);
                 return execute(it.drop());
             }
         }
 
         // forward traversal
         auto it = view.begin();
-        for (size_t i = 0; i < norm_index; ++i) ++it;
+        for (size_t i = 0; i < norm_index; ++i, ++it);
         return execute(it.drop());
+    }
+
+
+    // TODO: pop() for dictlike views should be optimized at the allocator level.
+    // -> single lookup, optional default value, in-place recycle.  Requires allocator
+    // integration.
+
+
+    /* Pop a key from a linked dictionary and return its corresponding value. */
+    template <typename View, typename Key, typename Value = typename View::MappedValue>
+    auto pop(View& view, const Key& key)
+        -> std::enable_if_t<ViewTraits<View>::dictlike, Value>
+    {
+        using Node = typename View::Node;
+        if (view.size() == 0) {
+            throw IndexError("pop from empty list");
+        }
+
+        Node* curr = view.search(key);
+        if (curr == nullptr) {
+            std::ostringstream msg;
+            msg << repr(key);
+            throw KeyError(msg.str());
+        }
+
+        // get current neighbors
+        Node* prev;
+        if constexpr (NodeTraits<Node>::has_prev) {
+            prev = curr->prev();
+        } else {
+            auto it = view.begin();
+            while (it.next() != curr) {
+                ++it;
+            }
+            prev = it.curr();
+        }
+
+        Value value = curr->mapped();
+        if constexpr (is_pyobject<Value>) {
+            Py_INCREF(value);  // new reference
+        }
+        view.unlink(prev, curr, curr->next());
+        view.recycle(curr);
+        return value;
     }
 
 
@@ -61,30 +106,30 @@ namespace linked {
         -> std::enable_if_t<ViewTraits<View>::dictlike, Value>
     {
         using Node = typename View::Node;
+        if (view.size() == 0) {
+            throw IndexError("pop from empty list");
+        }
 
-        // trivial case: empty list
-        if (view.size() == 0) throw IndexError("pop from empty list");
-
-        // search for node
         Node* curr = view.search(key);
         if (curr == nullptr) {
             return default_value;
         }
 
-        // get neighboring nodes
+        // get current neighbors
         Node* prev;
-        if constexpr (NodeTraits<Node>::has_prev) {  // O(1) if doubly-linked
+        if constexpr (NodeTraits<Node>::has_prev) {
             prev = curr->prev();
         } else {
             auto it = view.begin();
-            while (it.next() != curr) ++it;
+            while (it.next() != curr) {
+                ++it;
+            }
             prev = it.curr();
         }
 
-        // get return value and recycle node
-        Value value = curr->value;
+        Value value = curr->mapped();
         if constexpr (is_pyobject<Value>) {
-            Py_INCREF(value);  // return new reference
+            Py_INCREF(value);  // new reference
         }
         view.unlink(prev, curr, curr->next());
         view.recycle(curr);

@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_SWAP_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_SWAP_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_SWAP_H
 
@@ -21,37 +20,43 @@ namespace linked {
     {
         using Node = typename View::Node;
 
-        // convenience function for throwing item not found error
+        // helper for throwing item not found error
         auto not_found = [](auto item) {
             std::ostringstream msg;
-            msg << repr(item) << " is not in set";
+            msg << repr(item);
             return KeyError(msg.str());
         };
 
-        // search for nodes in hash table
+        // search for both nodes
         Node* node1 = view.search(item1);
-        if (node1 == nullptr) throw not_found(item1);
+        if (node1 == nullptr) {
+            throw not_found(item1);
+        }
         Node* node2 = view.search(item2);
-        if (node2 == nullptr) throw not_found(item2);
+        if (node2 == nullptr) {
+            throw not_found(item2);
+        } else if (node1 == node2) {
+            return;
+        }
 
-        // trivial case: nodes are identical
-        if (node1 == node2) return;
-
-        // get predecessors of both nodes
+        // get current neighborss
         Node* prev1 = nullptr;
         Node* prev2 = nullptr;
-        if constexpr (NodeTraits<Node>::has_prev) {  // O(1) if doubly-linked
+        if constexpr (NodeTraits<Node>::has_prev) {
             prev1 = node1->prev();
             prev2 = node2->prev();
         } else {
-            // Otherwise, we have to iterate from the head of the list
             for (auto it = view.begin(), end = view.end(); it != end; ++it) {
                 if (it.next() == node1) {
                     prev1 = it.curr();
-                    if (prev2 != nullptr) break;
+                    if (prev2 != nullptr) {
+                        break;
+                    }
                 } else if (it.next() == node2) {
                     prev2 = it.curr();
-                    if (prev1 != nullptr) break;
+                    if (prev1 != nullptr) {
+                        break;
+                    }
                 }
             }
         }

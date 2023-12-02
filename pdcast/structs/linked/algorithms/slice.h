@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_SLICE_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_SLICE_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_SLICE_H
 
@@ -19,126 +18,66 @@ namespace structs {
 namespace linked {
 
 
-    /* Forward declarations. */
-    template <typename View>
-    class SliceIndices;
-    template <typename View, typename List>
-    class SliceProxy;
+    ///////////////////////////////////
+    ////    SLICE NORMALIZATION    ////
+    ///////////////////////////////////
 
 
-    /* Normalize slice indices, applying Python-style wraparound and bounds
-    checking. */
-    template <typename View>
-    SliceIndices<View> normalize_slice(
-        const View& view,
-        std::optional<long long> start = std::nullopt,
-        std::optional<long long> stop = std::nullopt,
-        std::optional<long long> step = std::nullopt
-    ) {
-        // normalize slice indices
-        long long size = static_cast<long long>(view.size());
-        long long default_start = step.value_or(0) < 0 ? size - 1 : 0;
-        long long default_stop = step.value_or(0) < 0 ? -1 : size;
-
-        // normalize step
-        long long step_ = step.value_or(1);
-        if (step_ == 0) throw ValueError("slice step cannot be zero");
-
-        // normalize start index
-        long long start_ = start.value_or(default_start);
-        if (start_ < 0) {
-            start_ += size;
-            if (start_ < 0) {
-                start_ = step_ < 0 ? -1 : 0;
-            }
-        } else if (start_ >= size) {
-            start_ = step_ < 0 ? size - 1 : size;
-        }
-
-        // normalize stop index
-        long long stop_ = stop.value_or(default_stop);
-        if (stop_ < 0) {
-            stop_ += size;
-            if (stop_ < 0) {
-                stop_ = step_ < 0 ? -1 : 0;
-            }
-        } else if (stop_ > size) {
-            stop_ = step_ < 0 ? size - 1 : size;
-        }
-
-        // get length of slice
-        size_t length = std::max(
-            (stop_ - start_ + step_ - (step_ > 0 ? 1 : -1)) / step_,
-            static_cast<long long>(0)
-        );
-
-        // return as SliceIndices
-        return SliceIndices<View>(start_, stop_, step_, length, size);
-    }
-
-
-    /* Normalize a Python slice object, applying Python-style wraparound and bounds
-    checking. */
-    template <typename View>
-    SliceIndices<View> normalize_slice(const View& view, PyObject* py_slice) {
-        // check that input is a Python slice object
-        if (!PySlice_Check(py_slice)) {
-            throw TypeError("index must be a Python slice");
-        }
-
-        size_t size = view.size();
-
-        // use CPython API to get slice indices
-        Py_ssize_t py_start, py_stop, py_step, py_length;
-        int err = PySlice_GetIndicesEx(
-            py_slice, size, &py_start, &py_stop, &py_step, &py_length
-        );
-        if (err == -1) throw catch_python();
-
-        // cast from Py_ssize_t
-        long long start = static_cast<long long>(py_start);
-        long long stop = static_cast<long long>(py_stop);
-        long long step = static_cast<long long>(py_step);
-        size_t length = static_cast<size_t>(py_length);
-
-        // return as SliceIndices
-        return SliceIndices<View>(start, stop, step, length, size);
-    }
-
-
-    /* Get a proxy for a slice within the list. */
-    template <typename View, typename List = View, typename... Args>
-    auto slice(View& view, Args&&... args)
-        -> std::enable_if_t<ViewTraits<View>::linked, SliceProxy<View, List>>
-    {
-        using Slice = SliceProxy<View, List>;
-        return Slice(view, normalize_slice(view, std::forward<Args>(args)...));
-    }
-
-
-    /* Get a proxy for a slice within the list. */
-    template <typename View, typename List = View, typename... Args>
-    auto slice(const View& view, Args&&... args)
-        -> std::enable_if_t<ViewTraits<View>::linked, const SliceProxy<View, List>>
-    {
-        using Slice = SliceProxy<View, List>;
-        return Slice(view, normalize_slice(view, std::forward<Args>(args)...));
-    }
-
-
-    /* A simple class representing the normalized indices needed to construct a slice
-    from a linked data structure. */
+    /* Data class representing normalized indices needed to construct a SliceProxy. */
     template <typename View>
     class SliceIndices {
-    public:
+        template <typename _View>
+        friend SliceIndices<_View> normalize_slice(
+            const _View& view,
+            std::optional<long long> start,
+            std::optional<long long> stop,
+            std::optional<long long> step
+        );
 
-        /* Slice indices. */
+        template <typename _View>
+        friend SliceIndices<_View> normalize_slice(const _View& view, PyObject* slice);
+
+        /* Construct a SliceIndices object from normalized indices. */
+        SliceIndices(
+            long long start,
+            long long stop,
+            long long step,
+            size_t length,
+            size_t view_size
+        ) : start(start), stop(stop), step(step), abs_step(std::llabs(step)),
+            first(0), last(0), length(length), inverted(false), backward(false)
+        {
+            using Node = typename View::Node;
+
+            // make closed interval
+            long long mod = bertrand::util::py_modulo((stop - start), step);
+            long long closed = (mod == 0) ? (stop - step) : (stop - mod);
+
+            // flip start/stop based on singly-/doubly-linked status
+            if constexpr (NodeTraits<Node>::has_prev) {
+                long long lsize = static_cast<long long>(view_size);
+                bool cond = (
+                    (step > 0 && start <= lsize - closed) ||
+                    (step < 0 && lsize - start <= closed)
+                );
+                first = cond ? start : closed;
+                last = cond ? closed : start;
+            } else {
+                first = step > 0 ? start : closed;
+                last = step > 0 ? closed : start;
+            }
+
+            backward = (first > ((view_size - (view_size > 0)) / 2));
+            inverted = backward ^ (step < 0);
+        }
+
+    public:
         long long start, stop, step;  // original indices supplied to constructor
-        size_t abs_step;  // absolute value of step size
+        size_t abs_step;
         size_t first, last;  // first and last indices included in slice
-        size_t length;  // total number of items in slice
-        bool inverted;  // check whether first and last indices confrom to step size
-        bool backward;  // check whether slice is traversed from tail to head
+        size_t length;  // total number of items
+        bool inverted;  // if true, first and last indices contradict step size
+        bool backward;  // if true, traverse from tail
 
         /* Copy constructor. */
         SliceIndices(const SliceIndices& other) :
@@ -182,136 +121,169 @@ namespace linked {
             return *this;
         }
 
-    private:
-        template <typename _View>
-        friend SliceIndices<_View> normalize_slice(
-            const _View& view,
-            std::optional<long long> start,
-            std::optional<long long> stop,
-            std::optional<long long> step
-        );
-
-        template <typename _View>
-        friend SliceIndices<_View> normalize_slice(
-            const _View& view,
-            PyObject* py_slice
-        );
-
-        SliceIndices(
-            long long start,
-            long long stop,
-            long long step,
-            size_t length,
-            size_t view_size
-        ) : start(start), stop(stop), step(step), abs_step(llabs(step)),
-            first(0), last(0), length(length), inverted(false), backward(false)
-        {
-            // convert to closed interval [start, closed]
-            long long mod = bertrand::util::py_modulo((stop - start), step);
-            long long closed = (mod == 0) ? (stop - step) : (stop - mod);
-
-            // get direction to traverse slice based on singly-/doubly-linked status
-            std::pair<size_t, size_t> dir = slice_direction(closed, view_size);
-            first = dir.first;
-            last = dir.second;
-
-            // Because we've adjusted our indices to minimize total iterations, we might
-            // not be iterating in the same direction as the step size would indicate.
-            // We must account for this when getting/setting items in the slice.
-            backward = (first > ((view_size - (view_size > 0)) / 2));
-            inverted = backward ^ (step < 0);
-        }
-
-        /* Swap the start and stop indices based on singly-/doubly-linked status. */
-        std::pair<long long, long long> slice_direction(
-            long long closed,
-            size_t view_size
-        ) {
-            // if doubly-linked, start at whichever end is closest to slice boundary
-            if constexpr (NodeTraits<typename View::Node>::has_prev) {
-                long long size = static_cast<long long>(view_size);
-                bool cond = (
-                    (step > 0 && start <= size - closed) ||
-                    (step < 0 && size - start <= closed)
-                );
-                return cond ?
-                    std::make_pair(start, closed) :
-                    std::make_pair(closed, start);
-            }
-
-            // if singly-linked, always start from head of list
-            return step > 0 ?
-                std::make_pair(start, closed) :
-                std::make_pair(closed, start);
-        }
-
     };
 
 
+    /* Normalize slice indices, applying Python-style wraparound and bounds
+    checking. */
+    template <typename View>
+    SliceIndices<View> normalize_slice(
+        const View& view,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt,
+        std::optional<long long> step = std::nullopt
+    ) {
+        // apply defaults
+        long long lsize = static_cast<long long>(view.size());
+        long long default_start = step.value_or(0) < 0 ? lsize - 1 : 0;
+        long long default_stop = step.value_or(0) < 0 ? -1 : lsize;
+
+        // normalize step
+        long long nstep = step.value_or(1);
+        if (nstep == 0) throw ValueError("slice step cannot be zero");
+
+        // normalize start
+        long long nstart = start.value_or(default_start);
+        if (nstart < 0) {
+            nstart += lsize;
+            if (nstart < 0) {
+                nstart = nstep < 0 ? -1 : 0;
+            }
+        } else if (nstart >= lsize) {
+            nstart = nstep < 0 ? lsize - 1 : lsize;
+        }
+
+        // normalize stop
+        long long nstop = stop.value_or(default_stop);
+        if (nstop < 0) {
+            nstop += lsize;
+            if (nstop < 0) {
+                nstop = nstep < 0 ? -1 : 0;
+            }
+        } else if (nstop > lsize) {
+            nstop = nstep < 0 ? lsize - 1 : lsize;
+        }
+
+        long long length = (nstop - nstart + nstep - (nstep > 0 ? 1 : -1)) / nstep;
+
+        return SliceIndices<View>(nstart, nstop, nstep, length < 0 ? 0 : length, lsize);
+    }
+
+
+    /* Normalize a Python slice object, applying Python-style wraparound and bounds
+    checking. */
+    template <typename View>
+    SliceIndices<View> normalize_slice(const View& view, PyObject* slice) {
+        if (!PySlice_Check(slice)) {
+            throw TypeError("index must be a Python slice");
+        }
+
+        size_t size = view.size();
+        Py_ssize_t start, stop, step, length;
+        if (PySlice_GetIndicesEx(slice, size, &start, &stop, &step, &length)) {
+            throw catch_python();
+        }
+
+        return SliceIndices<View>(start, stop, step, length, size);
+    }
+
+
+    /////////////////////
+    ////    PROXY    ////
+    /////////////////////
+
+
+    // TODO: I appear to have broken slice assignment somehow.  Not sure exactly how,
+    // though.  The second assignment always breaks things.
+
+
     /* A proxy for a slice within a list, as returned by the slice() factory method. */
-    template <typename View, typename List>
+    template <typename View, typename Result>
     class SliceProxy {
         using Node = typename View::Node;
-        using Value = typename View::Value;
+        static constexpr Direction forward = Direction::forward;
+        static constexpr Direction backward = Direction::backward;
+
+        template <typename _View, typename _Result, typename... Args>
+        friend auto slice(_View& view, Args&&... args)
+            -> std::enable_if_t<ViewTraits<_View>::linked, SliceProxy<_View, _Result>>;
 
         View& view;
         const SliceIndices<View> indices;
-        mutable bool found;  // indicates whether we've cached the origin node
-        mutable Node* _origin;  // node that immediately precedes slice (can be NULL)
+        mutable bool cached;
+        mutable Node* _origin;  // node immediately preceding slice (can be null)
 
-        /* Find and cache the origin node for the slice. */
+        /* Construct a SliceProxy using the normalized indices. */
+        SliceProxy(View& view, SliceIndices<View>&& indices) :
+            view(view), indices(indices), cached(false), _origin(nullptr)
+        {}
+
+        /* Find the origin node for the slice. */
         Node* origin() const {
-            if (found) return _origin;  // return cached origin
+            if (cached) {
+                return _origin;
+            }
 
-            // find origin node
             if constexpr (NodeTraits<Node>::has_prev) {
-                if (backward()) {  // backward traversal
+                if (indices.backward) {
                     auto it = view.rbegin();
-                    for (size_t i = 1; i < view.size() - first(); ++i) ++it;
-                    found = true;
+                    for (size_t i = 1; i < view.size() - indices.first; ++i, ++it);
+                    cached = true;
                     _origin = it.next();
                     return _origin;
                 }
             }
 
-            // forward traversal
             auto it = view.begin();
-            for (size_t i = 0; i < first(); ++i) ++it;
-            found = true;
+            for (size_t i = 0; i < indices.first; ++i, ++it);
+            cached = true;
             _origin = it.prev();
             return _origin;
         }
 
-        /* Force use of slice() factory function. */
-        template <typename _View, typename _List, typename... Args>
-        friend auto slice(_View& view, Args&&... args)
-            -> std::enable_if_t<ViewTraits<_View>::linked, SliceProxy<_View, _List>>;
+        /* Simple C array used in set() to hold a temporary buffer of replaced nodes. */
+        struct RecoveryArray {
+            Node* array;
+    
+            RecoveryArray(size_t length) {
+                array = static_cast<Node*>(malloc(sizeof(Node) * length));
+                if (array == nullptr) throw MemoryError();
+            }
 
-        /* Construct a SliceProxy with at least one element. */
-        SliceProxy(View& view, SliceIndices<View>&& indices) :
-            view(view), indices(indices), found(false), _origin(nullptr)
-        {}
+            Node& operator[](size_t index) {
+                return array[index];
+            }
+
+            ~RecoveryArray() {
+                free(array);  // no need to call destructors
+            }
+
+        };
 
     public:
-
         /* Disallow SliceProxies from being stored as lvalues. */
         SliceProxy(const SliceProxy&) = delete;
         SliceProxy(SliceProxy&&) = delete;
         SliceProxy& operator=(const SliceProxy&) = delete;
         SliceProxy& operator=(SliceProxy&&) = delete;
 
+        /////////////////////////
+        ////    ITERATORS    ////
+        /////////////////////////
+
         /* A specialized iterator built for slice traversal. */
         template <Direction dir>
         class Iterator : public View::template Iterator<dir> {
             using Base = typename View::template Iterator<dir>;
             friend SliceProxy;
-            const SliceIndices<View>& indices;
-            size_t _idx;
+
+            const SliceIndices<View> indices;
+            size_t idx;
             size_t skip;
 
             /* Get an iterator to the start of the slice. */
             Iterator(View& view, const SliceIndices<View>& indices, Node* origin) :
-                Base(view), indices(indices), _idx(0), skip(0)
+                Base(view), indices(indices), idx(0), skip(0)
             {
                 if constexpr (dir == Direction::backward) {
                     this->_next = origin;
@@ -338,37 +310,37 @@ namespace linked {
 
             /* Get an empty iterator to terminate the slice. */
             Iterator(View& view, const SliceIndices<View>& indices) :
-                Base(view), indices(indices), _idx(indices.length), skip(0)
+                Base(view), indices(indices), idx(indices.length), skip(0)
             {}
 
         public:
 
             /* Copy constructor. */
             Iterator(const Iterator& other) noexcept :
-                Base(other), indices(other.indices), _idx(other._idx), skip(other.skip)
+                Base(other), indices(other.indices), idx(other.idx), skip(other.skip)
             {}
 
             /* Move constructor. */
             Iterator(Iterator&& other) noexcept :
                 Base(std::move(other)), indices(std::move(other.indices)),
-                _idx(other._idx), skip(other.skip)
+                idx(other.idx), skip(other.skip)
             {}
 
-            /* Prefix increment to advance the iterator to the next node in the slice. */
+            // TODO: might be a case for a while true loop with manual termination
+            // to avoid if check.
+
+            /* Advance the iterator. */
             inline Iterator& operator++() noexcept {
-                ++_idx;
-                if (_idx == indices.length) {
-                    return *this;  // don't advance past end of slice
+                if (++idx == indices.length) {
+                    return *this;  // don't move past end of slice
                 }
 
-                if constexpr (dir == Direction::backward) {
-                    for (size_t i = skip; i < indices.abs_step; ++i) {
+                for (size_t i = skip; i < indices.abs_step; ++i) {
+                    if constexpr (dir == Direction::backward) {
                         this->_next = this->_curr;
                         this->_curr = this->_prev;
                         this->_prev = this->_curr->prev();
-                    }
-                } else {
-                    for (size_t i = skip; i < indices.abs_step; ++i) {
+                    } else {
                         this->_prev = this->_curr;
                         this->_curr = this->_next;
                         this->_next = this->_curr->next();
@@ -377,27 +349,22 @@ namespace linked {
                 return *this;
             }
 
-            /* Inequality comparison to terminate the slice. */
+            /* Terminate the slice. */
             template <Direction T>
             inline bool operator!=(const Iterator<T>& other) const noexcept {
-                return _idx != other._idx;
-            }
-
-            /* Get the current iteration step of the iterator. */
-            inline size_t idx() const noexcept {
-                return _idx;
+                return idx != other.idx;
             }
 
             /* Get the current index of the iterator within the list. */
             inline size_t index() const noexcept {
                 if (dir == Direction::backward) {
-                    return indices.first - _idx * indices.abs_step;
+                    return indices.first - idx * indices.abs_step;
                 } else {
-                    return indices.first + _idx * indices.abs_step;
+                    return indices.first + idx * indices.abs_step;
                 }
             }
 
-            /* Remove the node at the current position. */
+            /* Unlink and return the node at the current position. */
             inline Node* drop() {
                 ++skip;
                 return Base::drop();
@@ -407,192 +374,139 @@ namespace linked {
 
         /* Return an iterator to the start of the slice. */
         inline auto begin() const {
-            // backward traversal
             if constexpr (NodeTraits<Node>::has_prev) {
-                using Backward = Iterator<Direction::backward>;
-                if (backward()) {
-                    return Bidirectional(Backward(view, indices, origin()));
+                if (indices.backward) {
+                    return Bidirectional(Iterator<backward>(view, indices, origin()));
                 }
             }
-
-            // forward traversal
-            using Forward = Iterator<Direction::forward>;
-            return Bidirectional(Forward(view, indices, origin()));        
+            return Bidirectional(Iterator<forward>(view, indices, origin()));        
         }
 
         /* Return an iterator to the end of the slice. */
         inline auto end() const {
-            // backward traversal
             if constexpr (NodeTraits<Node>::has_prev) {
-                using Backward = Iterator<Direction::backward>;
-                if (backward()) {
-                    return Bidirectional(Backward(view, indices));
+                if (indices.backward) {
+                    return Bidirectional(Iterator<backward>(view, indices));
                 }
             }
-
-            // forward traversal
-            using Forward = Iterator<Direction::forward>;
-            return Bidirectional(Forward(view, indices));
+            return Bidirectional(Iterator<forward>(view, indices));
         }
 
-        /* Pass through to SliceIndices. */
-        inline long long start() const { return indices.start; }
-        inline long long stop() const { return indices.stop; }
-        inline long long step() const { return indices.step; }
-        inline size_t abs_step() const { return indices.abs_step; }
-        inline size_t first() const { return indices.first; }
-        inline size_t last() const { return indices.last; }
-        inline size_t length() const { return indices.length; }
-        inline bool empty() const { return indices.length == 0; }
-        inline bool backward() const { return indices.backward; }
-        inline bool inverted() const { return indices.inverted; }
+        //////////////////////
+        ////    PUBLIC    ////
+        //////////////////////
 
         /* Extract a slice from a linked list. */
-        List get() const {
-            // preallocate to exact size of the slice, preventing reallocations
-            View result(length(), view.specialization());
-
-            // trivial case: empty slice
-            if (empty()) {
-                if constexpr (std::is_same_v<View, List>) {
+        Result get() const {
+            // preallocate to exact size
+            View result(indices.length, view.specialization());
+            if (indices.length == 0) {
+                if constexpr (std::is_same_v<View, Result>) {
                     return result;
                 } else {
-                    return List(std::move(result));
+                    return Result(std::move(result));
                 }
             }
 
-            // copy nodes from original view into result
+            // copy all nodes in slice
             for (auto it = this->begin(), end = this->end(); it != end; ++it) {
                 Node* copy = result.node(*(it.curr()));
-                if (inverted()) {  // correct for inverted traversal
-                    result.link(nullptr, copy, result.head());
+                if (indices.inverted) {
+                    result.link(nullptr, copy, result.head());  // cancels out
                 } else {
                     result.link(result.tail(), copy, nullptr);
                 }
             }
 
-            // return as List
-            if constexpr (std::is_same_v<View, List>) {
+            // possibly wrap in higher-level container
+            if constexpr (std::is_same_v<View, Result>) {
                 return result;
             } else {
-                return List(std::move(result));
+                return Result(std::move(result));
             }
         }
 
         /* Replace a slice within a linked list. */
         template <typename Container>
         void set(const Container& items) {
-            // unpack iterable into temporary sequence (unless it is already a sequence)
-            auto sequence = bertrand::util::sequence(items);
+            using MemGuard = typename View::MemGuard;
 
-            // trvial case: both slice and sequence are empty
-            if (empty() && sequence.size() == 0) return;
+            auto seq = sequence(items);  // fast, indexable sequence with known length
+            if (indices.length == 0 && seq.size() == 0) {
+                return;
+            }
 
-            // check slice length matches sequence length
-            if (step() != 1 && length() != sequence.size()) {
+            // NOTE: Python allows the slice and sequence lengths to differ if and only
+            // if the step size is 1.  This can possibly change the length of the list.
+            if (indices.length != seq.size() && indices.step != 1) {
                 std::ostringstream msg;
-                msg << "attempt to assign sequence of size " << sequence.size();
-                msg << " to extended slice of size " << length();
+                msg << "attempt to assign sequence of size " << seq.size();
+                msg << " to extended slice of size " << indices.length;
                 throw ValueError(msg.str());
             }
 
-            // temporary array to undo changes in case of error
-            struct RecoveryArray {
-                Node* array;
-                RecoveryArray(size_t length) {
-                    array = static_cast<Node*>(malloc(sizeof(Node) * length));
-                    if (array == nullptr) throw MemoryError();
-                }
-                Node& operator[](size_t index) { return array[index]; }
-                ~RecoveryArray() { free(array); }  // does not call destructors
-            };
+            RecoveryArray recovery(indices.length);
+            MemGuard guard = view.reserve(view.size() + seq.size() - indices.length);
 
-            // allocate recovery array
-            RecoveryArray recovery(length());
-
-            // hold allocator at current size (or grow if performing a slice insertion)
-            typename View::MemGuard guard = 
-                view.reserve(view.size() + sequence.size() - length());
-
-            // loop 1: remove current nodes in slice
-            for (auto it = this->begin(), end = this->end(); it != end; ++it) {
+            // remove current occupants
+            size_t idx = 0;
+            for (auto it = this->begin(); idx < indices.length; ++idx, ++it) {
                 Node* node = it.drop();
-                new (&recovery[it.idx()]) Node(std::move(*node));  // move to recovery
-                view.recycle(node);  // recycle original node
+                new (&recovery[idx]) Node(std::move(*node));
+                view.recycle(node);
             }
 
-            // loop 2: insert new nodes from sequence into vacated slice
-            size_t idx = 0;
+            // insert new nodes from sequence
             try {
-                // NOTE: we iterate over the sequence, not the slice, in order to allow
-                // for Python-style slice insertions (e.g. slice[1:2] = [1, 2, 3]).  In
-                // these cases, Python allows the slice and sequence lengths to differ,
-                // and continues inserting items until the sequence is exhausted.
-                auto it = iter(sequence);
-                auto seq = inverted() ? it.reverse() : it.forward();
-                for (auto it = this->begin(); seq != seq.end(); ++it, ++seq, ++idx) {
-                    it.insert(view.node(*seq));
+                idx = 0;
+                for (auto it = this->begin(); idx < seq.size(); ++idx, ++it) {
+                    it.insert(
+                        view.node(seq[indices.inverted ? seq.size() - idx - 1 : idx])
+                    );
                 }
 
-            // rewind if an error occurs
             } catch (...) {
-                // NOTE: we can use the recovery array to restore the original list in
-                // the event of error.  This is an extremely delicate process, as we
-                // must ensure that all existing nodes are cleaned up, no matter where
-                // the error occurred.  We must also avoid memory leaks, and ensure
-                // that all nodes are properly recycled and destroyed.
-
-                // loop 3: remove nodes that have already been added to list
+                // remove nodes that have already been added
                 size_t i = 0;
                 for (auto it = this->begin(); i < idx; ++i, ++it) {
                     view.recycle(it.drop());
                 }
 
-                // loop 4: reinsert original nodes from recovery array
-                for (auto it = this->begin(), end = this->end(); it != end; ++it) {
-                    Node& recovery_node = recovery[it.idx()];
-                    it.insert(view.node(std::move(recovery_node)));
-                    recovery_node.~Node();  // destroy recovery node
+                // reinsert originals from recovery array
+                i = 0;
+                for (auto it = this->begin(); i < indices.length; ++i, ++it) {
+                    it.insert(view.node(std::move(recovery[i])));
                 }
-                throw;  // propagate
+                throw;
             }
 
-            // loop 3: deallocate removed nodes
-            for (size_t i = 0; i < length(); i++) {
-                recovery[i].~Node();  // release recovery node
+            // deallocate recovery array
+            for (size_t i = 0; i < indices.length; i++) {
+                recovery[i].~Node();
             }
         }
 
         /* Delete a slice within a linked list. */
         void del() {
-            // trivial case: slice is empty
-            if (empty()) return;
-
-            // hold allocator at current size until all nodes are removed
-            typename View::MemGuard guard = view.reserve();
-
-            // recycle every node in slice
-            for (auto it = this->begin(), end = this->end(); it != end; ++it) {
-                view.recycle(it.drop());
+            // freeze allocator during iteration
+            if (indices.length != 0) {
+                typename View::MemGuard guard = view.reserve();
+                for (auto it = this->begin(), end = this->end(); it != end; ++it) {
+                    view.recycle(it.drop());
+                }
             }
         }
 
-        /* Implicitly convert the proxy into an extracted slice where applicable.
-        
-        This is syntactic sugar for the get() method, such that
-        `LinkedList<T> list = list.slice(start, stop, step)` is equivalent to
-        `LinkedList<T> list = list.slice(start, stop, step).get()`.  The same implicit
-        conversion is also applied if the proxy is passed to a function that expects a
-        vakue, unless that function is marked as `explicit`. */
-        inline operator List() const {
+        /* Implicitly convert the proxy into a result where applicable.  This is
+        syntactic sugar for get(), such that `LinkedList<T> list = list.slice(i, j, k)`
+        is equivalent to `LinkedList<T> list = list.slice(i, j, k).get()`. */
+        inline operator Result() const {
             return get();
         }
 
-        /* Assign the slice in-place.
-        
-        This is syntactic sugar for the set() method, such that
-        `list.slice(start, stop, step) = items` is equivalent to
-        `list.slice(start, stop, step).set(items)`. */
+        /* Assign the slice in-place.  This is syntactic sugar for set(), such that
+        `list.slice(i, j, k) = items` is equivalent to
+        `list.slice(i, j, k).set(items)`. */
         template <typename Container>
         inline SliceProxy& operator=(const Container& items) {
             set(items);
@@ -600,6 +514,28 @@ namespace linked {
         }
 
     };
+
+
+    /* Get a proxy for a slice within the list. */
+    template <typename View, typename Result = View, typename... Args>
+    auto slice(View& view, Args&&... args)
+        -> std::enable_if_t<ViewTraits<View>::linked, SliceProxy<View, Result>>
+    {
+        return SliceProxy<View, Result>(
+            view, normalize_slice(view, std::forward<Args>(args)...))
+        ;
+    }
+
+
+    /* Get a const proxy for a slice within a const list. */
+    template <typename View, typename Result = View, typename... Args>
+    auto slice(const View& view, Args&&... args)
+        -> std::enable_if_t<ViewTraits<View>::linked, const SliceProxy<View, Result>>
+    {
+        return SliceProxy<View, Result>(
+            view, normalize_slice(view, std::forward<Args>(args)...)
+        );
+    }
 
 
 }  // namespace linked

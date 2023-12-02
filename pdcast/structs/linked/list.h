@@ -1055,7 +1055,7 @@ public:
                         case Py_GT:
                             return list > other;
                         default:
-                            throw ValueError("invalid comparison operator");
+                            throw TypeError("invalid comparison");
                     }
                 },
                 self->variant

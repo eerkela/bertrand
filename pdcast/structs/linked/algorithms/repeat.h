@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_REPEAT_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_REPEAT_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_REPEAT_H
 
@@ -20,17 +19,13 @@ namespace linked {
         -> std::enable_if_t<ViewTraits<View>::listlike, View>
     {
         using Node = typename View::Node;
-
-        // trivial case: empty repetition
         if (repetitions < 0 || view.size() == 0) {
-            return View(view.capacity(), view.specialization());
+            return View(view.capacity(), view.specialization());  // empty view
         }
 
         // preallocate exact size
         size_t reps = static_cast<size_t>(repetitions);
         View copy(view.size() * reps, view.specialization());
-
-        // repeatedly copy nodes from original view
         for (size_t i = 0; i < reps; ++i) {
             for (auto it = view.begin(), end = view.end(); it != end; ++it) {
                 Node* node = copy.node(*(it.curr()));
@@ -46,7 +41,6 @@ namespace linked {
     auto repeat(const View& view, PyObject* repetitions)
         -> std::enable_if_t<ViewTraits<View>::listlike, View>
     {
-        // check if repetitions is an integer
         if (!PyLong_Check(repetitions)) {
             std::ostringstream msg;
             msg << "can't multiply sequence by non-int of type '";
@@ -54,7 +48,7 @@ namespace linked {
             throw TypeError(msg.str());
         }
 
-        // delegate to C++ overload
+        // error can still occur if python int is too large to fit in long long
         long long n = PyLong_AsLongLong(repetitions);
         if (n == -1 && PyErr_Occurred()) {
             throw catch_python();
@@ -70,23 +64,20 @@ namespace linked {
         -> std::enable_if_t<ViewTraits<View>::listlike, void>
     {
         using Node = typename View::Node;
-
-        // trivial case: empty repetition
         if (repetitions < 0 || view.size() == 0) {
             view.clear();
             return;
         }
 
-        // reserve exact size
-        size_t reps = static_cast<size_t>(repetitions);
-        view.reserve(view.size() * reps);
-
         // NOTE: If we're careful, we can do this without copying the view.  This is
         // done by recording the original tail and repeatedly iterating through the
         // beginning portion while extending the list.
 
-        // copy nodes in-place
+        // reserve exact size
+        size_t reps = static_cast<size_t>(repetitions);
+        view.reserve(view.size() * reps);
         Node* tail = view.tail();
+
         for (size_t i = 1; i < reps; ++i) {
             auto it = view.begin();
             for (; it.curr() != tail; ++it) {
@@ -105,7 +96,6 @@ namespace linked {
     auto repeat_inplace(View& view, PyObject* repetitions)
         -> std::enable_if_t<ViewTraits<View>::listlike, void>
     {
-        // check if repetitions is an integer
         if (!PyLong_Check(repetitions)) {
             std::ostringstream msg;
             msg << "can't multiply sequence by non-int of type '";
@@ -113,7 +103,7 @@ namespace linked {
             throw TypeError(msg.str());
         }
 
-        // delegate to C++ overload
+        // error can still occur if python int is too large to fit in long long
         long long n = PyLong_AsLongLong(repetitions);
         if (n == -1 && PyErr_Occurred()) {
             throw catch_python();

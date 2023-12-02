@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_REMOVE_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_REMOVE_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_REMOVE_H
 
@@ -20,15 +19,12 @@ namespace linked {
     auto remove(View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::listlike, void>
     {
-        // find item in list
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             if (eq(*it, item)) {
                 view.recycle(it.drop());
                 return;
             }
         }
-
-        // item not found
         std::ostringstream msg;
         msg << repr(item) << " is not in list";
         throw KeyError(msg.str());  

@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_COUNT_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_COUNT_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_COUNT_H
 
@@ -38,31 +37,28 @@ namespace linked {
     ) -> std::enable_if_t<ViewTraits<View>::hashed, size_t>
     {
         using Node = typename View::Node;
-
-        // trivial case: empty set
-        if (view.size() == 0) return 0;
+        if (view.size() == 0) {
+            return 0;
+        }
 
         // normalize start/stop indices
         SliceIndices<View> indices = normalize_slice(view, start, stop);
         size_t norm_start = indices.start;
         size_t norm_stop = indices.stop;
-        if (norm_start > norm_stop) {
-            throw IndexError(
-                "start index cannot be greater than stop index"
-            );
+        if (norm_start == norm_stop) {
+            return 0;
+        } else if (norm_start > norm_stop) {
+            throw IndexError("start index cannot be greater than stop index");
+        }
+        
+
+        Node* node = view.search(item);
+        if (node == nullptr) {
+            return 0;
+        } else if (norm_start == 0 && norm_stop == view.size() - 1) {
+            return 1;  // slice covers whole set
         }
 
-        // trivial case: empty slice
-        if (norm_start == norm_stop) return 0;
-
-        // check if item is contained in hash table
-        Node* node = view.search(item);
-        if (node == nullptr) return 0;
-
-        // trivial case: slice covers whole set
-        if (norm_start == 0 && norm_stop == view.size() - 1) return 1;
-
-        // find index of item
         size_t idx = 0;
         for (auto it = view.begin(); idx < norm_stop; ++it, ++idx) {
             if (it.curr() == node) break;
@@ -83,42 +79,39 @@ namespace linked {
     ) -> std::enable_if_t<ViewTraits<View>::dictlike, size_t>
     {
         using Node = typename View::Node;
-
-        // trivial case: empty set
-        if (view.size() == 0) return 0;
+        if (view.size() == 0) {
+            return 0;
+        }
 
         // normalize start/stop indices
         SliceIndices<View> indices = normalize_slice(view, start, stop);
         size_t norm_start = indices.start;
         size_t norm_stop = indices.stop;
-        if (norm_start > norm_stop) {
-            throw IndexError(
-                "start index cannot be greater than stop index"
-            );
-        }
-
-        // trivial case: empty slice
-        if (norm_start == norm_stop) return 0;
+        if (norm_start == norm_stop) {
+            return 0;
+        } else if (norm_start > norm_stop) {
+            throw IndexError("start index cannot be greater than stop index");
+        } 
 
         // check if key is contained in hash table
         Node* node = view.search(key);
-        if (node == nullptr) return 0;
-
-        // compare value
-        if (!eq(node->mapped(), value)) {
+        if (node == nullptr) {
+            return 0;
+        } else if (!eq(node->mapped(), value)) {
             std::ostringstream msg;
             msg << "value mismatch for key " << repr(key) << ": ";
             msg << repr(node->mapped()) << " != " << repr(value);
             throw KeyError(msg.str());
         }
 
-        // trivial case: slice covers whole set
-        if (norm_start == 0 && norm_stop == view.size() - 1) return 1;
-
-        // find index of key
+        if (norm_start == 0 && norm_stop == view.size() - 1) {
+            return 1;
+        }
         size_t idx = 0;
         for (auto it = view.begin(); idx < norm_stop; ++it, ++idx) {
-            if (it.curr() == node) break;
+            if (it.curr() == node) {
+                break;
+            }
         }
         return idx >= norm_start && idx < norm_stop;
     }
@@ -140,50 +133,44 @@ namespace linked {
         std::optional<long long> stop
     ) {
         using Node = typename View::Node;
-
-        // trivial case: empty list
-        if (view.size() == 0) return 0;
+        if (view.size() == 0) {
+            return 0;
+        }
 
         // normalize start/stop indices
         SliceIndices<View> indices = normalize_slice(view, start, stop);
         size_t norm_start = indices.start;
         size_t norm_stop = indices.stop;
-        if (norm_start > norm_stop) {
-            throw IndexError(
-                "start index cannot be greater than stop index"
-            );
+        if (norm_start == norm_stop) {
+            return 0;
+        } else if (norm_start > norm_stop) {
+            throw IndexError("start index cannot be greater than stop index");
         }
 
-        // trivial case: empty slice
-        if (norm_start == norm_stop) return 0;
-
-        // if list is doubly-linked and stop is closer to tail than start is to head,
-        // then we iterate backward from the tail
+        // NOTE: if list is doubly-linked and stop is closer to tail than start is to
+        // head, then we iterate backward from the tail
         if constexpr (NodeTraits<Node>::has_prev) {
             if (indices.backward) {
-                // get backwards iterator to stop index
                 size_t idx = view.size() - 1;
                 auto it = view.rbegin();
                 for (; idx >= norm_stop; --idx, ++it);
 
-                // search until we hit start index
                 size_t count = 0;
                 for (; idx >= norm_start; --idx, ++it) {
-                    count += eq(*it, item);  // branchless
+                    count += eq(*it, item);
                 }
                 return count;
             }
         }
 
-        // otherwise, we iterate forward from the head
+        // otherwise, we have to iterate from the head
         size_t idx = 0;
         auto it = view.begin();
         for (; idx < norm_start; ++idx, ++it);
 
-        // search until we hit item or stop index
         size_t count = 0;
         for (; idx < norm_stop; ++idx, ++it) {
-            count += eq(*it, item);  // branchless
+            count += eq(*it, item);
         }
         return count;
     }

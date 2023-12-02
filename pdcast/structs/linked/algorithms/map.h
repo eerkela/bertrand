@@ -1,7 +1,5 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_MAP_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_MAP_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_MAP_H
-
 
 #include <sstream>  // std::ostringstream
 #include <type_traits>  // std::enable_if_t<>
@@ -74,19 +72,6 @@ namespace linked {
             return node->mapped();
         }
 
-        /* Get the value stored with this key and move it to the front of the
-        dictionary. */
-        inline const Value& lru_get() const {
-            using Allocator = typename View::Allocator;
-            Node* node = view.template search<Allocator::MOVE_HEAD>(key);
-            if (node == nullptr) {
-                std::ostringstream msg;
-                msg << "key not found: " << repr(key);
-                throw KeyError(msg.str());
-            }
-            return node->mapped();
-        }
-
         /* Set the value stored with this key.  Inserts the key with the specified
         value if it is not already present. */
         inline void set(const Value& value) {
@@ -94,28 +79,6 @@ namespace linked {
             static constexpr unsigned int flags = (
                 Allocator::EXIST_OK | Allocator::REPLACE_MAPPED |
                 Allocator::INSERT_TAIL
-            );
-            view.template node<flags>(key, value);
-        }
-
-        /* Set the value stored with this key, left-appending it if it does not already
-        exist. */
-        inline void set_left(const Value& value) {
-            using Allocator = typename View::Allocator;
-            static constexpr unsigned int flags = (
-                Allocator::EXIST_OK | Allocator::REPLACE_MAPPED |
-                Allocator::INSERT_HEAD
-            );
-            view.template node<flags>(key, value);
-        }
-
-        /* Set the value stored with this key, moving it to the front of the dictionary
-        and evicting the tail node to make room if necessary. */
-        inline void lru_set(const Value& value) {
-            using Allocator = typename View::Allocator;
-            static constexpr unsigned int flags = (
-                Allocator::EXIST_OK | Allocator::REPLACE_MAPPED |
-                Allocator::INSERT_HEAD | Allocator::MOVE_HEAD | Allocator::EVICT_TAIL
             );
             view.template node<flags>(key, value);
         }

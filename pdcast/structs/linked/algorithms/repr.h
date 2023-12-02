@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_STRING_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_STRING_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_STRING_H
 
@@ -29,7 +28,7 @@ namespace linked {
     {
         std::ostringstream stream;
 
-        // append prefix + specialization if given
+        // append prefix, specialization if given
         stream << prefix;
         if (view.specialization() != nullptr) {
             stream << "[" << bertrand::repr(view.specialization()) << "]";
@@ -46,8 +45,7 @@ namespace linked {
             ++it;
         }
 
-        /* Helper for generating an appropriate token for a single element in the
-        given data structure. */
+        // Helper for generating a single token in the given data structure
         auto execute = [](std::ostringstream& stream, auto it) {
             if constexpr (ViewTraits<View>::dictlike) {
                 stream << ", " << bertrand::repr(*it) << ": ";
@@ -57,21 +55,18 @@ namespace linked {
             }
         };
 
-        // abbreviate to avoid spamming the console with large lists
+        // abbreviate to avoid spamming the console
         if (view.size() > max_entries) {
-            // append up to half the maximum number of entries
             size_t count = 1;
             size_t threshold = max_entries / 2;
             for (; it != end && count < threshold; ++it, ++count) {
                 execute(stream, it);
             }
 
-            // ellipsis
             stream << ", ...";
 
-            // append remaining elements from tail of list
+            // NOTE: if doubly-linked, skip to the end and iterate backwards
             if constexpr (NodeTraits<typename View::Node>::has_prev) {
-                // skip to the end and iterate backwards
                 std::stack<std::string> stack;
                 auto r_it = view.crbegin();
                 auto r_end = view.crend();
@@ -84,14 +79,16 @@ namespace linked {
                     stream << ", " << stack.top();
                     stack.pop();
                 }
+
+            // otherwise, continue until we hit remaining elements
             } else {
-                // iterate forwards until we hit last remaining elements
                 threshold = view.size() - (max_entries - threshold);
                 for (size_t j = count; j < threshold; ++j, ++it);
                 for (; it != end; ++it) {
                     execute(stream, it);
                 }
             }
+
         } else {
             for (; it != end; ++it) {
                 execute(stream, it);
@@ -100,8 +97,6 @@ namespace linked {
 
         // append right bracket
         stream << rbracket << ")";
-
-        // return as std::string
         return stream.str();
     }
 

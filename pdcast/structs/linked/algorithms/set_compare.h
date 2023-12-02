@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_SET_COMPARE_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_SET_COMPARE_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_SET_COMPARE_H
 
@@ -20,7 +19,9 @@ namespace linked {
         -> std::enable_if_t<ViewTraits<View>::hashed, bool>
     {
         for (auto item : iter(items)) {
-            if (view.search(item) != nullptr) return false;
+            if (view.search(item) != nullptr) {
+                return false;
+            }
         }
         return true;
     }
@@ -34,15 +35,16 @@ namespace linked {
     {
         using Node = typename View::Node;
 
-        // use auxiliary set to keep track of visited nodes as we iterate over items
+        // use auxiliary set to keep track of visited nodes
         std::unordered_set<Node*> found;
         for (auto item : iter(items)) {
             Node* node = view.search(item);
-            if (node == nullptr) return false;
+            if (node == nullptr) {
+                return false;
+            }
             found.insert(node);
         }
 
-        // check that we found all nodes in view
         return found.size() == view.size();
     }
 
@@ -55,15 +57,16 @@ namespace linked {
     {
         using Node = typename View::Node;
 
-        // use auxiliary set to keep track of visited nodes as we iterate over items
+        // use auxiliary set to keep track of visited nodes
         std::unordered_set<Node*> found;
         for (auto item : iter(items)) {
             Node* node = view.search(item);
-            if (node != nullptr) return false;
+            if (node != nullptr) {
+                return false;
+            }
             found.insert(node);
         }
 
-        // check that we did not find all nodes in view
         return found.size() != view.size();
     }
 
@@ -76,7 +79,7 @@ namespace linked {
     {
         using Node = typename View::Node;
 
-        // use auxiliary set to keep track of visited nodes as we iterate over items
+        // use auxiliary set to keep track of visited nodes
         std::unordered_set<Node*> found;
         bool larger = false;
         for (auto item : iter(items)) {
@@ -88,11 +91,7 @@ namespace linked {
             }
         }
 
-        // check that we found all nodes in view
-        if (found.size() != view.size()) return false;
-
-        // if strict, assert that container has at least one extra element
-        return !strict || larger;
+        return found.size() == view.size() && (larger || !strict);
     }
 
 
@@ -108,12 +107,14 @@ namespace linked {
         std::unordered_set<Node*> found;
         for (auto item : iter(items)) {
             Node* node = view.search(item);
-            if (node == nullptr) return false;
+            if (node == nullptr) {
+                return false;
+            }
             found.insert(node);
         }
 
         // if strict, assert that view has at least one extra element
-        return !strict || found.size() < view.size();
+        return found.size() < view.size() || !strict;
     }
 
 

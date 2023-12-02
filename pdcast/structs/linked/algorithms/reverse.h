@@ -1,8 +1,8 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_REVERSE_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_REVERSE_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_REVERSE_H
 
 #include <type_traits>  // std::enable_if_t<>
+#include "../core/node.h"  // NodeTraits
 #include "../core/view.h"  // ViewTraits
 
 
@@ -13,17 +13,15 @@ namespace linked {
 
     /* Reverse a linked list in-place. */
     template <typename View>
-    auto reverse(View& view)
-        -> std::enable_if_t<ViewTraits<View>::linked, void>
-    {
+    auto reverse(View& view) -> std::enable_if_t<ViewTraits<View>::linked, void> {
         using Node = typename View::Node;
 
-        // save original `head` pointer
+        // save original head
         Node* head = view.head();
         Node* curr = head;
-        
-        if constexpr (Node::doubly_linked) {
-            // swap all `next`/`prev` pointers
+
+        if constexpr (NodeTraits<Node>::has_prev) {
+            // swap `next`/`prev` pointers
             while (curr != nullptr) {
                 Node* next = curr->next();
                 curr->next(curr->prev());
@@ -31,7 +29,7 @@ namespace linked {
                 curr = next;
             }
         } else {
-            // swap all `next` pointers
+            // swap `next` pointers
             Node* prev = nullptr;
             while (curr != nullptr) {
                 Node* next = curr->next();
@@ -41,7 +39,7 @@ namespace linked {
             }
         }
 
-        // swap `head`/`tail` pointers
+        // swap head/tail pointers
         view.head(view.tail());
         view.tail(head);
     }

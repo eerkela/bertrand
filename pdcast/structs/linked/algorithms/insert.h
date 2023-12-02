@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_INSERT_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_INSERT_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_INSERT_H
 
@@ -33,25 +32,24 @@ namespace linked {
     inline auto insert(View& view, long long index, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::linked, void>
     {
-        // normalize index
+        using MemGuard = typename View::MemGuard;
         size_t norm_index = normalize_index(index, view.size(), true);
 
-        // reserve space for new node and freeze allocator
-        typename View::MemGuard guard = view.reserve(view.size() + 1);
+        // NOTE: if we don't reserve ahead of time, then the iterator might be
+        // invalidated by the node() constructor
+        MemGuard guard = view.reserve(view.size() + 1);
 
-        // get iterator to index
         if constexpr (NodeTraits<typename View::Node>::has_prev) {
             if (view.closer_to_tail(norm_index)) {
                 auto it = view.rbegin();
-                for (size_t i = view.size(); i > norm_index; --i) ++it;
+                for (size_t i = view.size(); i > norm_index; --i, ++it);
                 it.insert(view.node(item));
                 return;
             }
         }
 
-        // forward traversal
         auto it = view.begin();
-        for (size_t i = 0; i < norm_index; ++i) ++it;
+        for (size_t i = 0; i < norm_index; ++i, ++it);
         it.insert(view.node(item));
     }
 

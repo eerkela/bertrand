@@ -128,6 +128,7 @@ public:
     ////    DICT INTERFACE    ////
     //////////////////////////////
 
+    /* Create a new dictionary from a sequence of keys and a default value. */
     template <typename Container>
     inline static LinkedDict fromkeys(Container&& keys, const Value& value) {
         // TODO: account for different flag configurations.  If LinkedDict is
@@ -145,55 +146,23 @@ public:
         );
     }
 
-    // TODO: add() may not be necessary.  Just use the normal index operator [] or
-    // map() proxy instead.
+    /* Add a key-value pair to the end of the dictionary if it is not already
+    present. */
+    inline void add(const Key& key, const Value& value) {
+        linked::add(this->view, key, value);
+    }
 
+    /* Add a key-value pair to the beginning of the dictionary if it is not already
+    present. */
+    inline void add_left(const Key& key, const Value& value) {
+        linked::add_left(this->view, key, value);
+    }
 
-    // /* Add an item to the end of the dictionary if it is not already present. */
-    // template <typename Pair>
-    // inline void add(const Pair& item) {
-    //     linked::add(this->view, item);
-    // }
-
-    // /* Add a key-value pair to the end of the dictionary if it is not already
-    // present. */
-    // inline void add(const Key& key, const Value& value) {
-    //     linked::add(this->view, key, value);
-    // }
-
-    // /* Add an item to the beginning of the dictionary if it is not already present. */
-    // template <typename Pair>
-    // inline void add_left(const Pair& item) {
-    //     linked::add_left(this->view, item);
-    // }
-
-    // /* Add a key-value pair to the beginning of the dictionary if it is not already
-    // present. */
-    // inline void add_left(const Key& key, const Value& value) {
-    //     linked::add_left(this->view, key, value);
-    // }
-
-    // /* Add an item to the front of the dictionary, evicting the last item if
-    // necessary and moving items that are already present. */
-    // template <typename Pair>
-    // inline void lru_add(const Pair& item) {
-    //     linked::lru_add(this->view, item);
-    // }
-
-    // /* Add a key-value pair to the front of the dictionary, evicting the last item if
-    // necessary and moving items that are already present. */
-    // inline void lru_add(const Key& key, const Value& value) {
-    //     linked::lru_add(this->view, key, value);
-    // }
-
-
-    // TODO: insert() could only accept a key-value pair, not a general Pair type.
-
-    // /* Insert an item at a specific index of the dictionary. */
-    // template <typename Pair>
-    // inline void insert(long long index, const Pair& item) {
-    //     linked::insert(this->view, index, item);
-    // }
+    /* Add a key-value pair to the front of the dictionary, evicting the last item if
+    necessary and moving items that are already present. */
+    inline void lru_add(const Key& key, const Value& value) {
+        linked::lru_add(this->view, key, value);
+    }
 
     /* Insert a key-value pair at a specific index of the dictionary. */
     inline void insert(long long index, const Key& key, const Value& value) {
@@ -239,6 +208,8 @@ public:
         linked::discard(this->view, key);
     }
 
+    // TODO: replace optional default with separate overloads
+
     /* Remove a key from the dictionary and return its value. */
     inline Value pop(
         const Key& key,
@@ -256,6 +227,8 @@ public:
     inline void clear() {
         this->view.clear();
     }
+
+    // TODO: replace optional default with separate overloads
 
     /* Get a value from the dictionary using an optional default. */
     inline std::optional<Value> get(
@@ -1493,33 +1466,125 @@ public:
     // this is an alternate constructor without any of the __init__ flags.  It should
     // either return a dynamic dict or offer optional keyword arguments for the flags.
 
-    // /* Implement `LinkedDict.fromkeys()` in Python. */
-    // static PyObject* fromkeys(PyObject* type, PyObject* const* args, Py_ssize_t nargs) {
-    //     using bertrand::util::PyArgs;
-    //     using bertrand::util::CallProtocol;
-    //     static constexpr std::string_view meth_name{"fromkeys"};
-    //     try {
-    //         // parse arguments
-    //         PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
-    //         PyObject* keys = pyargs.parse("keys");
-    //         std::optional<PyObject*> value = pyargs.parse(
-    //             "value", nullptr, std::optional<PyObject*>(Py_None)
-    //         );
-    //
-    //         // invoked equivalent C++ method
-    //         std::visit(
-    //             [&keys, &value](auto& dict) {
-    //                 dict.fromkeys(keys, value);
-    //             },
-    //             self->variant
-    //         );
-    //
-    //     // translate C++ errors into Python exceptions
-    //     } catch (...) {
-    //         throw_python();
-    //         return nullptr;
-    //     }
-    // }
+    /* Implement `LinkedDict.fromkeys()` in Python. */
+    static PyObject* fromkeys(PyObject* type, PyObject* const* args, Py_ssize_t nargs) {
+        Derived* self = reinterpret_cast<Derived*>(
+            Derived::__new__(&Derived::Type, nullptr, nullptr)
+        );
+        if (result == nullptr) return nullptr;  // propagate
+
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        static constexpr std::string_view meth_name{"fromkeys"};
+        try {
+            // parse arguments
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+            PyObject* keys = pyargs.parse("keys");
+            PyObject* value = pyargs.parse("value", nullptr, Py_None);
+            pyargs.finalize();
+    
+            // TODO: choose first variant from Derived::Variant?  Or include
+            // singly_linked, packed?
+
+            // invoked equivalent C++ method
+            // TODO: this uses a specific instance rather than the type in general.
+            std::visit(
+                [&keys, &value](auto& dict) {
+                    dict.fromkeys(keys, value);
+                },
+                self->variant
+            );
+    
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedDict.add()` in Python. */
+    static PyObject* add(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        static constexpr std::string_view meth_name{"add"};
+        try {
+            // parse arguments
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+            PyObject* key = pyargs.parse("key");
+            PyObject* value = pyargs.parse("value");
+            pyargs.finalize();
+
+            // invoked equivalent C++ method
+            std::visit(
+                [&key, &value](auto& dict) {
+                    dict.add(key, value);
+                },
+                self->variant
+            );
+            Py_RETURN_NONE;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedDict.add_left() in Python. */
+    static PyObject* add_left(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        static constexpr std::string_view meth_name{"add_left"};
+        try {
+            // parse arguments
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+            PyObject* key = pyargs.parse("key");
+            PyObject* value = pyargs.parse("value");
+            pyargs.finalize();
+
+            // invoked equivalent C++ method
+            std::visit(
+                [&key, &value](auto& dict) {
+                    dict.add_left(key, value);
+                },
+                self->variant
+            );
+            Py_RETURN_NONE;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
+    /* Implement `LinkedDict.lru_add() in Python. */
+    static PyObject* lru_add(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        static constexpr std::string_view meth_name{"lru_add"};
+        try {
+            // parse arguments
+            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+            PyObject* key = pyargs.parse("key");
+            PyObject* value = pyargs.parse("value");
+            pyargs.finalize();
+
+            // invoked equivalent C++ method
+            std::visit(
+                [&key, &value](auto& dict) {
+                    dict.lru_add(key, value);
+                },
+                self->variant
+            );
+            Py_RETURN_NONE;
+
+        // translate C++ errors into Python exceptions
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
 
     /* Implement `LinkedDict.insert()` in Python. */
     static PyObject* insert(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
@@ -1558,15 +1623,17 @@ public:
             // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
-            std::optional<PyObject*> default_ = pyargs.parse(
-                "default", nullptr, std::optional<PyObject*>()
-            );
+            PyObject* default_ = pyargs.parse("default", nullptr, (PyObject*) nullptr);
             pyargs.finalize();
 
             // invoked equivalent C++ method
             return std::visit(
                 [&key, &default_](auto& dict) {
-                    return dict.pop(key, default_);
+                    if (default_ == nullptr) {
+                        return dict.pop(key);  // raises error if not found
+                    } else {
+                        return dict.pop(key, default_);  // returns default
+                    }
                 },
                 self->variant
             );
@@ -1614,15 +1681,17 @@ public:
             // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
-            std::optional<PyObject*> default_ = pyargs.parse(
-                "default", nullptr, std::optional<PyObject*>()
-            );
+            PyObject* default_ = pyargs.parse("default", nullptr, (PyObject*) nullptr);
             pyargs.finalize();
 
             // invoke equivalent C++ method
             return std::visit(
                 [&key, &default_](auto& dict) {
-                    return dict.get(key, default_);  // returns new reference
+                    if (default_ == nullptr) {
+                        return dict.get(key);  // raises error if not found
+                    } else {
+                        return dict.get(key, default_);  // returns default
+                    }
                 },
                 self->variant
             );
@@ -1643,15 +1712,17 @@ public:
             // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
-            std::optional<PyObject*> default_ = pyargs.parse(
-                "default", nullptr, std::optional<PyObject*>()
-            );
+            PyObject* default_ = pyargs.parse("default", nullptr, (PyObject*) nullptr);
             pyargs.finalize();
 
             // invoke equivalent C++ method
             return std::visit(
                 [&key, &default_](auto& dict) {
-                    return dict.lru_get(key, default_);  // returns new reference
+                    if (default_ == nullptr) {
+                        return dict.lru_get(key);  // raises error if not found
+                    } else {
+                        return dict.lru_get(key, default_);  // returns default
+                    }
                 },
                 self->variant
             );
@@ -1852,7 +1923,7 @@ public:
                         case Py_NE:
                             return list != other;
                         default:
-                            throw ValueError("invalid comparison operator");
+                            throw TypeError("invalid comparison");
                     }
                 },
                 self->variant
@@ -1894,6 +1965,60 @@ Note that all keys will refer to just a singly instance of ``value``.  This can
 lead to unexpected behavior if ``value`` is a mutable object, such as a list.
 To get distinct values, use a generator expression in the ``LinkedDict``
 constructor itself.
+)doc"
+        };
+
+        static constexpr std::string_view add {R"doc(
+Add a new key-value pair to the ``LinkedDict``.
+
+Parameters
+----------
+key : Hashable
+    The key to add.
+value : Any
+    The value to assign to ``key``.
+
+Notes
+-----
+This is equivalent to ``LinkedDict[key] = value``, but is provided for
+consistency with ``add_left()`` and ``lru_add()``.
+
+Dict additions are always O(1).
+)doc"
+        };
+
+        static constexpr std::string_view add_left {R"doc(
+Add a new key-value pair to the left side of the ``LinkedDict``.
+
+Parameters
+----------
+key : Hashable
+    The key to add.
+value : Any
+    The value to assign to ``key``.
+
+Notes
+-----
+Dict additions are always O(1).
+)doc"
+        };
+
+        static constexpr std::string_view lru_add {R"doc(
+Add a new key-value pair to the front of the ``LinkedDict`` or move it there if
+it is already present.  Evicts the last element if the dictionary is full.
+
+Parameters
+----------
+key : Hashable
+    The key to add.
+value : Any
+    The value to assign to ``key``.
+
+Notes
+-----
+LRU additions are O(1) for doubly-linked dictionaries and O(n) on average for
+singly-linked ones if the key is already present.  This is due to the need to
+traverse the dictionary in order to find the previous node.
 )doc"
         };
 
@@ -2571,6 +2696,9 @@ in some cases.
         SET_METHOD(move, METH_FASTCALL),
         SET_METHOD(move_to_index, METH_FASTCALL),
         DICT_METHOD(fromkeys, METH_FASTCALL | METH_CLASS),
+        DICT_METHOD(add, METH_FASTCALL),
+        DICT_METHOD(add_left, METH_FASTCALL),
+        DICT_METHOD(lru_add, METH_FASTCALL),
         DICT_METHOD(insert, METH_FASTCALL),
         DICT_METHOD(pop, METH_FASTCALL),
         DICT_METHOD(popitem, METH_FASTCALL),

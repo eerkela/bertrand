@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_CONTAINS_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_CONTAINS_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_CONTAINS_H
 
@@ -17,7 +16,9 @@ namespace linked {
     inline auto contains(const View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::listlike, bool>
     {
-        for (auto val : view) if (eq(val, item)) return true;
+        for (auto val : view) {
+            if (eq(val, item)) return true;
+        }
         return false;
     }
 

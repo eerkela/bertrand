@@ -306,23 +306,6 @@ protected:
 };
 
 
-// template<bertrand::structs::linked::Direction T>
-// bertrand::structs::linked::Iterator<ViewType, dir>::Iterator(
-//     bertrand::structs::linked::Iterator<ViewType, T>&&
-// )
-// [with bertrand::structs::linked::Direction T = T;
-// ViewType = bertrand::structs::linked::BaseView<
-//     bertrand::structs::linked::ListView<
-//         bertrand::structs::linked::SingleNode<_object*>
-//     >,
-//     bertrand::structs::linked::ListAllocator<
-//         bertrand::structs::linked::SingleNode<_object*>
-//     >
-// >;
-// bertrand::structs::linked::Direction dir = bertrand::structs::linked::Direction::forward
-// ]
-
-
 /* NOTE: Bidirectional<> is a type-erased iterator wrapper that can contain either a
  * forward or backward iterator over a linked list.  This allows us to write bare-metal
  * loops if the iteration direction is known at compile time, while also allowing for

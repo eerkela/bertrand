@@ -1,7 +1,7 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_CONCATENATE_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_CONCATENATE_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_CONCATENATE_H
 
+#include <optional>  // std::optional
 #include <type_traits>  // std::enable_if_t<>
 #include "../../util/iter.h"  // iter()
 #include "../../util/ops.h"  // len()
@@ -21,28 +21,23 @@ namespace linked {
     {
         using Node = typename View::Node;
 
-        // try to get length of container
+        // use exact container length if available
         std::optional<size_t> length = len(container);
         if (length.has_value()) {
-            // preallocate exact size
             View copy(view.size() + length.value(), view.specialization());
 
-            // add elements from view
             for (auto it = view.begin(), end = view.end(); it != end; ++it) {
                 Node* node = copy.node(*(it.curr()));
                 copy.link(copy.tail(), node, nullptr);
             }
 
-            // add elements from container
             for (auto item : iter(container)) {
                 Node* node = copy.node(item);
                 copy.link(copy.tail(), node, nullptr);
             }
-
             return copy;
         }
 
-        // otherwise, copy existing view and extend dynamically
         View copy(view);
         linked::extend(copy, container);
         return copy;

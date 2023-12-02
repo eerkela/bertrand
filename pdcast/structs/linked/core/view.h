@@ -9,6 +9,7 @@
 #include "node.h"  // Hashed<>, Mapped<>
 #include "allocate.h"  // allocators
 #include "iter.h"  // Iterator, Direction
+#include "../../util/container.h"  // PyDict
 #include "../../util/iter.h"  // iter()
 #include "../../util/ops.h"  // len()
 
@@ -563,10 +564,10 @@ class ListView : public BaseView<
     using Base = BaseView<ListView<NodeType, Flags>, ListAllocator<NodeType, Flags>>;
 
 public:
+    static constexpr bool listlike = true;
+
     template <unsigned int NewFlags>
     using Reconfigure = ListView<NodeType, NewFlags>;
-
-    static constexpr bool listlike = true;
 
     // inherit constructors
     using Base::Base;
@@ -590,10 +591,10 @@ class SetView : public HashView<
     >;
 
 public:
+    static constexpr bool setlike = true;
+
     template <unsigned int NewFlags>
     using Reconfigure = SetView<NodeType, NewFlags>;
-
-    static constexpr bool setlike = true;
 
     // inherit constructors
     using Base::Base;
@@ -617,14 +618,33 @@ class DictView : public HashView<
     >;
 
 public:
+    using Allocator = typename Base::Allocator;
+    static constexpr bool dictlike = true;
+
     template <unsigned int NewFlags>
     using Reconfigure = DictView<NodeType, NewFlags>;
-
-    static constexpr bool dictlike = true;
 
     // inherit constructors
     using Base::Base;
     using Base::operator=;
+
+    /* Account for key-value pairs when using Python dictionary as initializers. */
+    DictView(
+        const PyObject* iterable,
+        std::optional<size_t> capacity,
+        PyObject* spec,
+        bool reverse
+    ) : Base(capacity, spec)
+    {
+        PyDict dict(iterable);
+        for (auto item : iter(dict)) {
+            if (reverse) {
+                this->node<Allocator::EXIST_OK | Allocator::INSERT_HEAD>(item);
+            } else {
+                this->node<Allocator::EXIST_OK | Allocator::INSERT_TAIL>(item);
+            }
+        }
+    }
 
 };
 

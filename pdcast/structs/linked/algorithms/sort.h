@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_SORT_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_SORT_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_SORT_H
 
@@ -27,60 +26,44 @@ auto sort(View& view, Func key, bool reverse)
     using Node = typename View::Node;
     using KeyNode = Keyed<Node, Func>;
 
-    // trivial case: empty view or already sorted
-    bool is_sorted = true;
-    for (auto it = view.begin(); it.next() != nullptr; ++it) {
-        if (!lt(*it, it.next()->value())) {
-            is_sorted = false;
-            break;
-        }
-    }
-    if (is_sorted) return;
-
-    // if no key function is given, sort the view directly
+    // if no key function is given, sort in-place
     if (key == nullptr) {
         SortPolicy::execute(view, reverse);
         return;
     }
 
-    // otherwise, decorate each node with the computed key function
+    // otherwise, decorate each node with computed key
     using Decorated = ListView<KeyNode, Config::SINGLY_LINKED | Config::FIXED_SIZE>;
-    Decorated decorated(view.size(), nullptr);  // preallocated to exact size
+    Decorated dec(view.size(), nullptr);
     for (auto it = view.begin(), end = view.end(); it != end; ++it) {
-        KeyNode* node = decorated.node(it.curr(), key);
-        decorated.link(decorated.tail(), node, nullptr);
+        KeyNode* node = dec.node(it.curr(), key);
+        dec.link(dec.tail(), node, nullptr);
     }
 
-    // sort the decorated view
-    SortPolicy::execute(decorated, reverse);
+    SortPolicy::execute(dec, reverse);
 
-    // undecorate and reflect changes in original view
+    // undecorate and reflect changes in original view, recycling as we go
     Node* new_head = nullptr;
     Node* new_tail = nullptr;
-    for (auto it = decorated.begin(), end = decorated.end(); it != end; ) {
+    for (auto it = dec.begin(), end = dec.end(); it != end; ) {
         Node* unwrapped = it.curr()->node();
-
-        // link to sorted view
         if (new_head == nullptr) {
             new_head = unwrapped;
         } else {
             Node::link(new_tail, unwrapped, nullptr);
         }
         new_tail = unwrapped;
-
-        // NOTE: we recycle the decorated nodes as we go to avoid a second loop
-        decorated.recycle(it.drop());  // implicitly advances iterator
+        dec.recycle(it.drop());  // implicitly advances iterator
     }
 
-    // update head/tail of sorted view
     view.head(new_head);
     view.tail(new_tail);
 }
 
 
-////////////////////////
-////    POLICIES    ////
-////////////////////////
+//////////////////////////
+////    ALGORITHMS    ////
+//////////////////////////
 
 
 /* An iterative merge sort algorithm with error recovery. */
@@ -90,9 +73,13 @@ protected:
     /* Walk along the list by the specified number of nodes. */
     template <typename Node>
     inline static Node* walk(Node* curr, size_t length) {
-        if (curr == nullptr) return nullptr;  // nothing left to traverse
+        if (curr == nullptr) {
+            return nullptr;  // nothing left to traverse
+        }
         for (size_t i = 0; i < length; i++) {
-            if (curr->next() == nullptr) break;  // reached end of list
+            if (curr->next() == nullptr) {
+                break;  // end of list
+            }
             curr = curr->next();
         }
         return curr;
@@ -107,36 +94,34 @@ protected:
         bool reverse
     ) {
         Node* curr = temp;  // temporary head of merged list
+        Node* L = left.first;
+        Node* R = right.first;
 
-        // NOTE: we merge sublists by comparing the head of each sublist and appending
-        // the smaller of the two elements to the merged result, repeating until one of
-        // the sublists has been exhausted, giving a sorted list of size `length * 2`.
-        while (left.first != nullptr && right.first != nullptr) {
-            bool comp = lt(left.first->value(), right.first->value());
-
-            // append smaller of two candidates to the merged list
-            if (reverse ^ comp) {  // [not] left < right
-                Node::join(curr, left.first);
-                left.first = left.first->next();
+        // build merged sublist by appending smaller of L and R
+        while (L != nullptr && R != nullptr) {
+            if (reverse ^ lt(L->value(), R->value())) {
+                Node::join(curr, L);
+                L = L->next();
+                left.first = L->next();
             } else {
-                Node::join(curr, right.first);
-                right.first = right.first->next();
+                Node::join(curr, R);
+                R = R->next();
+                right.first = R;
             }
             curr = curr->next();
         }
 
-        // NOTE: at this point, one of the sublists has been exhausted, so we can
-        // safely append the remaining nodes.
+        // link remaining nodes
         Node* tail;
-        if (left.first != nullptr) {
-            Node::join(curr, left.first);
+        if (L != nullptr) {
+            Node::join(curr, L);
             tail = left.second;
         } else {
-            Node::join(curr, right.first);
+            Node::join(curr, R);
             tail = right.second;
         }
 
-        // unlink temporary node from final list and return proper head and tail
+        // unlink temporary node and return proper head and tail
         curr = temp->next();
         Node::split(temp, curr);
         return std::make_pair(curr, tail);
@@ -150,38 +135,51 @@ protected:
         std::pair<Node*, Node*> right,
         std::pair<Node*, Node*> unsorted
     ) {
-        // link each sublist into a single, partially-sorted list
         Node::join(sorted.second, left.first);  // sorted tail <-> left head
         Node::join(left.second, right.first);  // left tail <-> right head
         Node::join(right.second, unsorted.first);  // right tail <-> unsorted head
-
-        // return the head and tail of the recovered list
         return std::make_pair(sorted.first, unsorted.second);
     }
 
 public:
+
+    /* NOTE: as a refresher, the general merge sort algorithm is as follows:
+     *  1) divide the list into sublists of length 1 (bottom-up)
+     *  2) merge adjacent sublists into sorted mixtures with twice the length
+     *  3) repeat step 2 until the entire list is sorted
+     *
+     * We use a series of pairs to keep track of the head and tail of each sublist.
+     * `unsorted` tracks the nodes that still need to be sorted, while `sorted`
+     * does the same for those that have already been processed.  `left`, `right`,
+     * and `merged` pairs track the sublists that are used in each iteration of the
+     * merge loop.
+     */
 
     /* Sort a view in-place using an iterative merge sort algorithm. */
     template <typename View>
     static void execute(View& view, bool reverse) {
         using Node = typename View::Node;
 
-        // NOTE: we use a series of pairs to keep track of the head and tail of each
-        // sublist.  `unsorted` keeps track of the nodes that still need to be sorted,
-        // while `sorted` does the same for those that have already been processed.
-        // The `left`, `right`, and `merged` pairs track the sublists that are used in
-        // each iteration of the merge loop.
+        // check if view is already sorted
+        bool is_sorted = true;
+        for (auto it = view.begin(); it.next() != nullptr; ++it) {
+            if (!le(*it, it.next()->value()) ^ reverse) {
+                is_sorted = false;
+                break;
+            }
+        }
+        if (is_sorted) {
+            return;
+        }
+
         std::pair<Node*, Node*> unsorted = std::make_pair(view.head(), view.tail());
         std::pair<Node*, Node*> sorted = std::make_pair(nullptr, nullptr);
         std::pair<Node*, Node*> left = std::make_pair(nullptr, nullptr);
         std::pair<Node*, Node*> right = std::make_pair(nullptr, nullptr);
         std::pair<Node*, Node*> merged;
 
-        // NOTE: as a refresher, the general merge sort algorithm is as follows:
-        //  1) divide the list into sublists of length 1 (bottom-up)
-        //  2) merge adjacent sublists into sorted mixtures with twice the length
-        //  3) repeat step 2 until the entire list is sorted
-        size_t length = 1;  // length of sublists for current iteration
+        // iterate until the entire list is sorted
+        size_t length = 1;
         while (length <= view.size()) {
             // reset head and tail of sorted list
             sorted.first = nullptr;
@@ -200,20 +198,20 @@ public:
                     unsorted.first = right.second->next();
                 }
 
-                // unlink the sublists from the original list
-                Node::split(sorted.second, left.first);  // sorted <-/-> left
-                Node::split(left.second, right.first);  // left <-/-> right
-                Node::split(right.second, unsorted.first);  // right <-/-> unsorted
+                // unlink the sublists from original list
+                Node::split(sorted.second, left.first);
+                Node::split(left.second, right.first);
+                Node::split(right.second, unsorted.first);
 
-                // merge the left and right sublists in sorted order
+                // merge left and right sublists in sorted order
                 try {
                     merged = merge(left, right, view.temp(), reverse);
                 } catch (...) {
-                    // undo the splits to recover a coherent list
+                    // undo splits to recover a coherent list
                     merged = recover(sorted, left, right, unsorted);
                     view.head(merged.first);  // view is partially sorted, but valid
                     view.tail(merged.second);
-                    throw;  // propagate
+                    throw;
                 }
 
                 // link merged sublist to sorted
@@ -231,7 +229,7 @@ public:
             length *= 2;  // double the length of each sublist
         }
 
-        // update view parameters in-place
+        // update final head/tail
         view.head(sorted.first);
         view.tail(sorted.second);
     }

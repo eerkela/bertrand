@@ -1,6 +1,5 @@
-// include guard: BERTRAND_STRUCTS_UTIL_PYTHON_H
-#ifndef BERTRAND_STRUCTS_UTIL_PYTHON_H
-#define BERTRAND_STRUCTS_UTIL_PYTHON_H
+#ifndef BERTRAND_STRUCTS_UTIL_OPS_H
+#define BERTRAND_STRUCTS_UTIL_OPS_H
 
 #include <cstddef>  // size_t
 #include <cstring>  // std::memcmp
@@ -25,7 +24,7 @@
 namespace bertrand {
 
 
-namespace op_detail {
+namespace util {
 
     /* Attempt to convert a C++ argument into an equivalent Python object. */
     template <typename T>
@@ -73,7 +72,7 @@ namespace op_detail {
 
     /* Wrap a pure C++/Python operation to allow mixed C++/Python arguments. */
     template <typename LHS, typename RHS, typename F>
-    auto wrap(F func, LHS lhs, RHS rhs) {
+    auto allow_mixed_args(F func, LHS lhs, RHS rhs) {
         // case 1: both arguments are Python objects
         if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
             return func(lhs, rhs);
@@ -318,7 +317,7 @@ inline std::optional<size_t> len(const T& x) {
 
 
 /* Get a string representation of a Python object using PyObject_Repr(). */
-template <typename T, std::enable_if_t<op_detail::ReprTraits<T>::python, int> = 0>
+template <typename T, std::enable_if_t<util::ReprTraits<T>::python, int> = 0>
 std::string repr(const T& obj) {
     if (obj == nullptr) {
         return std::string("NULL");
@@ -337,7 +336,7 @@ std::string repr(const T& obj) {
 
 
 /* Get a string representation of a C++ object using `std::to_string()`. */
-template <typename T, std::enable_if_t<op_detail::ReprTraits<T>::to_string, int> = 0>
+template <typename T, std::enable_if_t<util::ReprTraits<T>::to_string, int> = 0>
 std::string repr(const T& obj) {
     return std::to_string(obj);
 }
@@ -345,7 +344,7 @@ std::string repr(const T& obj) {
 
 /* Get a string representation of a C++ object by streaming it into a
 `std::ostringstream`. */
-template <typename T, std::enable_if_t<op_detail::ReprTraits<T>::streamable, int> = 0>
+template <typename T, std::enable_if_t<util::ReprTraits<T>::streamable, int> = 0>
 std::string repr(const T& obj) {
     std::ostringstream stream;
     stream << obj;
@@ -355,7 +354,7 @@ std::string repr(const T& obj) {
 
 /* Get a string representation of an iterable C++ object by recursively unpacking
 it. */
-template <typename T, std::enable_if_t<op_detail::ReprTraits<T>::iterable, int> = 0>
+template <typename T, std::enable_if_t<util::ReprTraits<T>::iterable, int> = 0>
 std::string repr(const T& obj) {
     std::ostringstream stream;
     stream << '[';
@@ -372,7 +371,7 @@ std::string repr(const T& obj) {
 
 /* Get a string representation of an arbitrary C++ object by getting its mangled type
 name.  NOTE: this is the default implementation if no specialization can be found. */
-template <typename T, std::enable_if_t<op_detail::ReprTraits<T>::type_id, int> = 0>
+template <typename T, std::enable_if_t<util::ReprTraits<T>::type_id, int> = 0>
 std::string repr(const T& obj) {
     return std::string(typeid(obj).name());
 }
@@ -404,7 +403,7 @@ inline bool lt(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
@@ -423,7 +422,7 @@ inline bool le(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
@@ -467,7 +466,7 @@ inline bool eq(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
@@ -486,7 +485,7 @@ inline bool ne(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
@@ -505,7 +504,7 @@ inline bool ge(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
@@ -524,7 +523,7 @@ inline bool gt(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
@@ -657,7 +656,7 @@ inline auto plus(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
@@ -676,7 +675,7 @@ inline auto minus(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
@@ -695,7 +694,7 @@ inline auto multiply(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
@@ -714,7 +713,7 @@ inline auto power(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
@@ -796,7 +795,7 @@ inline auto divide(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
@@ -857,7 +856,7 @@ inline auto modulo(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
@@ -876,7 +875,7 @@ inline auto bit_and(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
@@ -895,7 +894,7 @@ inline auto bit_or(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
@@ -914,7 +913,7 @@ inline auto bit_xor(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
@@ -933,7 +932,7 @@ inline auto lshift(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
@@ -952,11 +951,11 @@ inline auto rshift(const LHS& lhs, const RHS& rhs) {
         }
     };
 
-    return op_detail::wrap(execute, lhs, rhs);
+    return util::allow_mixed_args(execute, lhs, rhs);
 }
 
 
 }  // namespace bertrand
 
 
-#endif // BERTRAND_STRUCTS_UTIL_PYTHON_H
+#endif // BERTRAND_STRUCTS_UTIL_OPS_H

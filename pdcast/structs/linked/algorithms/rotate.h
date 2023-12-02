@@ -1,10 +1,10 @@
-// include guard: BERTRAND_STRUCTS_LINKED_ALGORITHMS_ROTATE_H
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_ROTATE_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_ROTATE_H
 
 #include <cstddef>  // size_t
 #include <cmath>  // abs()
 #include <type_traits>  // std::enable_if_t<>
+#include "../core/node.h"  // NodeTraits
 #include "../core/view.h"  // ViewTraits
 
 
@@ -19,19 +19,16 @@ namespace linked {
         -> std::enable_if_t<ViewTraits<View>::linked, void>
     {
         using Node = typename View::Node;
-
-        // normalize steps
-        size_t norm_steps = llabs(steps) % view.size();
+        size_t norm_steps = std::llabs(steps) % view.size();
         if (norm_steps == 0) {
             return;  // rotated list is identical to original
         }
 
         // get index at which to split the list
         size_t index;
-        size_t rotate_left = (steps < 0);
-        if (rotate_left) {  // count from head
+        if (steps < 0) {
             index = norm_steps;
-        } else {  // count from tail
+        } else {
             index = view.size() - norm_steps;
         }
 
@@ -39,21 +36,16 @@ namespace linked {
         Node* new_tail;
 
         // identify new head and tail of rotated list
-        if constexpr (Node::doubly_linked) {
-            // NOTE: if the list is doubly-linked, then we can iterate in either
-            // direction to find the junction point.
-            if (index > view.size() / 2) {  // backward traversal
+        if constexpr (NodeTraits<Node>::has_prev) {
+            if (view.closer_to_tail(index)) {
                 new_head = view.tail();
-                for (size_t i = view.size() - 1; i > index; i--) {
+                for (size_t i = view.size() - 1; i > index; --i) {
                     new_head = new_head->prev();
                 }
                 new_tail = new_head->prev();
-
-                // join previous head/tail and split at new junction 
+ 
                 Node::join(view.tail(), view.head());
                 Node::split(new_tail, new_head);
-
-                // update head/tail pointers
                 view.head(new_head);
                 view.tail(new_tail);
                 return;
@@ -62,16 +54,13 @@ namespace linked {
 
         // forward traversal
         new_tail = view.head();
-        for (size_t i = 1; i < index; i++) {
+        for (size_t i = 1; i < index; ++i) {
             new_tail = new_tail->next();
         }
         new_head = new_tail->next();
 
-        // split at junction and join previous head/tail
-        Node::split(new_tail, new_head);
         Node::join(view.tail(), view.head());
-
-        // update head/tail pointers
+        Node::split(new_tail, new_head);
         view.head(new_head);
         view.tail(new_tail);
     }

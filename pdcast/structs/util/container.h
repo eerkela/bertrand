@@ -1,6 +1,6 @@
-// include guard: BERTRAND_STRUCTS_UTIL_SEQUENCE_H
-#ifndef BERTRAND_STRUCTS_UTIL_SEQUENCE_H
-#define BERTRAND_STRUCTS_UTIL_SEQUENCE_H
+// include guard: BERTRAND_STRUCTS_UTIL_CONTAINER_H
+#ifndef BERTRAND_STRUCTS_UTIL_CONTAINER_H
+#define BERTRAND_STRUCTS_UTIL_CONTAINER_H
 
 #include <cstddef>  // size_t
 #include <vector>  // std::vector
@@ -32,7 +32,7 @@ class PyTuple {
 
     /* Adopt an existing Python tuple. */
     inline static PyObject* adopt(PyObject* tuple) {
-        if (!PyTuple_CheckExact(tuple)) throw TypeError("expected a tuple");
+        if (!PyTuple_Check(tuple)) throw TypeError("expected a tuple");
         return tuple;
     }
 
@@ -215,7 +215,7 @@ class PyList {
 
     /* adopt an existing Python list. */
     inline static PyObject* adopt(PyObject* list) {
-        if (!PyList_CheckExact(list)) throw TypeError("expected a list");
+        if (!PyList_Check(list)) throw TypeError("expected a list");
         return list;
     }
 
@@ -420,7 +420,7 @@ class PySet {
 
     /* adopt an existing Python set. */
     inline static PyObject* adopt(PyObject* set) {
-        if (!PyAnySet_CheckExact(set)) throw TypeError("expected a set");
+        if (!PyAnySet_Check(set)) throw TypeError("expected a set");
         return set;
     }
 
@@ -543,7 +543,7 @@ class PyDict {
 
     /* adopt an existing Python dictionary. */
     inline static PyObject* adopt(PyObject* dict) {
-        if (!PyDict_CheckExact(dict)) throw TypeError("expected a dict");
+        if (!PyDict_Check(dict)) throw TypeError("expected a dict");
         return dict;
     }
 
@@ -832,8 +832,9 @@ class PyFastSequence {
     /* Unpack a Python iterable into a fast sequence. */
     inline PyObject* unpack(PyObject* iterable) {
         // don't unpack if iterable is already a tuple or list
-        if (PyTuple_CheckExact(iterable)) return Py_NewRef(iterable);
-        if (PyList_CheckExact(iterable)) return Py_NewRef(iterable);
+        if (PyTuple_Check(iterable) || PyList_Check(iterable)) {
+            return Py_NewRef(iterable);
+        }
 
         // unpack into a fast sequence
         PyObject* seq = PySequence_Fast(iterable, "could not unpack Python iterable");
@@ -959,4 +960,4 @@ using util::sequence;
 }  // namespace bertrand
 
 
-#endif  // BERTRAND_STRUCTS_UTIL_SEQUENCE_H
+#endif  // BERTRAND_STRUCTS_UTIL_CONTAINER_H
