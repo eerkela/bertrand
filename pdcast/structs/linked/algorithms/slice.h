@@ -4,13 +4,14 @@
 #include <cstddef>  // size_t
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
+#include <stack>  // std::stack
 #include <Python.h>  // CPython API
-#include "../core/iter.h"  // Bidirectional<>
-#include "../core/view.h"  // ViewTraits
 #include "../../util/container.h"  // PySequence
 #include "../../util/except.h"  // TypeError()
 #include "../../util/iter.h"  // iter()
 #include "../../util/math.h"  // py_modulo()
+#include "../core/iter.h"  // Direction
+#include "../core/view.h"  // ViewTraits
 
 
 namespace bertrand {
@@ -56,18 +57,20 @@ namespace linked {
             // flip start/stop based on singly-/doubly-linked status
             if constexpr (NodeTraits<Node>::has_prev) {
                 long long lsize = static_cast<long long>(view_size);
-                bool cond = (
+                bool congruent = (
                     (step > 0 && start <= lsize - closed) ||
                     (step < 0 && lsize - start <= closed)
                 );
-                first = cond ? start : closed;
-                last = cond ? closed : start;
+                first = congruent ? start : closed;
+                last = congruent ? closed : start;
+                backward = (
+                    first > last ||
+                    (first == last && first > ((view_size - (view_size > 0)) / 2))
+                );
             } else {
                 first = step > 0 ? start : closed;
                 last = step > 0 ? closed : start;
             }
-
-            backward = (first > ((view_size - (view_size > 0)) / 2));
             inverted = backward ^ (step < 0);
         }
 
@@ -123,7 +126,6 @@ namespace linked {
         }
 
         long long length = (nstop - nstart + nstep - (nstep > 0 ? 1 : -1)) / nstep;
-
         return SliceIndices<View>(nstart, nstop, nstep, length < 0 ? 0 : length, lsize);
     }
 
@@ -151,25 +153,22 @@ namespace linked {
     /////////////////////
 
 
-    // TODO: I appear to have broken slice assignment somehow.  Not sure exactly how,
-    // though.  The second assignment always breaks things.
-
-
     /* A proxy for a slice within a list, as returned by the slice() factory method. */
     template <typename View, typename Result>
     class SliceProxy {
         using Node = typename View::Node;
-        static constexpr Direction forward = Direction::forward;
-        static constexpr Direction backward = Direction::backward;
 
-        template <typename _View, typename _Result, typename... Args>
-        friend auto slice(_View& view, Args&&... args)
-            -> std::enable_if_t<ViewTraits<_View>::linked, SliceProxy<_View, _Result>>;
+        template <Direction dir>
+        using ViewIter = typename View::template Iterator<dir>;
 
         View& view;
         const SliceIndices<View> indices;
         mutable bool cached;
         mutable Node* _origin;  // node immediately preceding slice (can be null)
+
+        template <typename _View, typename _Result, typename... Args>
+        friend auto slice(_View& view, Args&&... args)
+            -> std::enable_if_t<ViewTraits<_View>::linked, SliceProxy<_View, _Result>>;
 
         /* Construct a SliceProxy using the normalized indices. */
         SliceProxy(View& view, SliceIndices<View>&& indices) :
@@ -198,6 +197,11 @@ namespace linked {
             _origin = it.prev();
             return _origin;
         }
+
+        // TODO: conditionally compile an unordered_map of node addresses whose mapped
+        // values have been overwritten.  This can be attached to the recovery array
+        // only used where needed.
+        // -> conditional compilation would require type erasure, which is a pain
 
         /* Simple C array used in set() to hold a temporary buffer of replaced nodes. */
         struct RecoveryArray {
@@ -229,125 +233,215 @@ namespace linked {
         ////    ITERATORS    ////
         /////////////////////////
 
-        /* A specialized iterator built for slice traversal. */
+        /* A specialized iterator that directly traverses over a slice without any
+        copies.  This automatically corrects for inverted traversal and always yields
+        items in the same order as the step size (reversed if called from rbegin). */
         template <Direction dir>
-        class Iterator : public View::template Iterator<dir> {
-            using Base = typename View::template Iterator<dir>;
-            friend SliceProxy;
+        class Iterator {
+            using Node = typename View::Node;
+            using Value = typename View::Value;
 
+            /* NOTE: this iterator is tricky.  It is essentially a wrapper around a
+             * standard view iterator, but it must also handle inverted traversal and
+             * negative step sizes.  This means that the direction of the view iterator
+             * might not match the direction of the slice iterator, depending on the
+             * singly-/doubly-linked status of the list and the input to the slice()
+             * factory method.
+             *
+             * To handle this, we use a type-erased union of view iterators and a stack
+             * of nodes that can be used to cancel out inverted traversal.  The stack
+             * is only populated if necessary, and also takes into account whether the
+             * iterator is generated from the begin()/end() or rbegin()/rend() methods.
+             *
+             * These iterators are only meant for direct iteration (no copying) over
+             * the slice.  The get(), set() and del() methods use the view iterators
+             * instead, and have more efficient methods of handling inverted traversal
+             * that don't require any backtracking or auxiliary data structures.
+             */
+
+            union {
+                ViewIter<Direction::forward> fwd;
+                ViewIter<Direction::backward> bwd;
+            };
+
+            std::stack<Node*> stack;
+            const View& view;
             const SliceIndices<View> indices;
             size_t idx;
-            size_t skip;
 
-            /* Get an iterator to the start of the slice. */
+            friend SliceProxy;
+
+            /* Get an iterator to the start of a non-empty slice. */
             Iterator(View& view, const SliceIndices<View>& indices, Node* origin) :
-                Base(view), indices(indices), idx(0), skip(0)
+                view(view), indices(indices), idx(0)
             {
-                if constexpr (dir == Direction::backward) {
-                    this->_next = origin;
-                    if (this->_next == nullptr) {
-                        this->_curr = this->view.tail();
-                    } else {
-                        this->_curr = this->_next->prev();
+                if (!indices.backward) {
+                    Node* prev = origin;
+                    Node* curr = (prev == nullptr) ? view.head() : prev->next();
+                    Node* next = (curr == nullptr) ? nullptr : curr->next();
+                    new (&fwd) ViewIter<Direction::forward>(view, prev, curr, next);
+
+                    // use stack to cancel out inverted traversal
+                    if (indices.inverted ^ (dir == Direction::backward)) {
+                        while (true) {
+                            stack.push(fwd.curr());
+                            if (++idx >= indices.length) {
+                                break;
+                            }
+                            for (size_t i = 0; i < indices.abs_step; ++i, ++fwd);
+                        }
+                        idx = 0;
                     }
-                    if (this->_curr != nullptr) {
-                        this->_prev = this->_curr->prev();
-                    }
+
                 } else {
-                    this->_prev = origin;
-                    if (this->_prev == nullptr) {
-                        this->_curr = this->view.head();
+                    if constexpr (NodeTraits<Node>::has_prev) {
+                        Node* next = origin;
+                        Node* curr = (next == nullptr) ? view.tail() : next->prev();
+                        Node* prev = (curr == nullptr) ? nullptr : curr->prev();
+                        new (&bwd) ViewIter<Direction::backward>(view, prev, curr, next);
+
+                        // use stack to cancel out inverted traversal
+                        if (indices.inverted ^ (dir == Direction::backward)) {
+                            while (true) {
+                                stack.push(bwd.curr());
+                                if (++idx >= indices.length) {
+                                    break;
+                                }
+                                for (size_t i = 0; i < indices.abs_step; ++i, ++bwd);
+                            }
+                            idx = 0;
+                        }
+
+                    // unreachable: indices.backward is always false if singly-linked
                     } else {
-                        this->_curr = this->_prev->next();
-                    }
-                    if (this->_curr != nullptr) {
-                        this->_next = this->_curr->next();
+                        throw ValueError(
+                            "backwards traversal is not supported for "
+                            "singly-linked lists"
+                        );
                     }
                 }
             }
 
-            /* Get an empty iterator to terminate the slice. */
+            /* Get an iterator to terminate a slice. */
             Iterator(View& view, const SliceIndices<View>& indices) :
-                Base(view), indices(indices), idx(indices.length), skip(0)
+                view(view), indices(indices), idx(indices.length)
             {}
 
         public:
+            using iterator_tag          = std::forward_iterator_tag;
+            using difference_type       = std::ptrdiff_t;
+            using value_type            = Value;
+            using pointer               = Value*;
+            using reference             = Value&;
 
             /* Copy constructor. */
             Iterator(const Iterator& other) noexcept :
-                Base(other), indices(other.indices), idx(other.idx), skip(other.skip)
-            {}
+                stack(other.stack), view(other.view), indices(other.indices),
+                idx(other.idx)
+            {
+                if (indices.backward) {
+                    new (&bwd) ViewIter<Direction::backward>(other.bwd);
+                } else {
+                    new (&fwd) ViewIter<Direction::forward>(other.fwd);
+                }
+            }
 
             /* Move constructor. */
             Iterator(Iterator&& other) noexcept :
-                Base(std::move(other)), indices(std::move(other.indices)),
-                idx(other.idx), skip(other.skip)
-            {}
-
-            // TODO: might be a case for a while true loop with manual termination
-            // to avoid if check.
-
-            /* Advance the iterator. */
-            inline Iterator& operator++() noexcept {
-                if (++idx == indices.length) {
-                    return *this;  // don't move past end of slice
+                stack(std::move(other.stack)), view(other.view),
+                indices(other.indices), idx(other.idx)
+            {
+                if (indices.backward) {
+                    new (&bwd) ViewIter<Direction::backward>(std::move(other.bwd));
+                } else {
+                    new (&fwd) ViewIter<Direction::forward>(std::move(other.fwd));
                 }
+            }
 
-                for (size_t i = skip; i < indices.abs_step; ++i) {
-                    if constexpr (dir == Direction::backward) {
-                        this->_next = this->_curr;
-                        this->_curr = this->_prev;
-                        this->_prev = this->_curr->prev();
+            /* Clean up union iterator on destruction. */
+            ~Iterator() {
+                if (indices.backward) {
+                    bwd.~ViewIter<Direction::backward>();
+                } else {
+                    fwd.~ViewIter<Direction::forward>();
+                }
+            }
+
+            /* Dereference the iterator to get the value at the current index. */
+            inline Value operator*() const {
+                if (!stack.empty()) {
+                    return stack.top()->value();
+                } else {
+                    return indices.backward ? *bwd : *fwd;
+                }
+            }
+
+            /* Advance the iterator to the next element in the slice. */
+            inline Iterator& operator++() noexcept {
+                ++idx;
+                if (!stack.empty()) {
+                    stack.pop();
+                } else if (idx < indices.length) {  // don't advance on final iteration
+                    if (indices.backward) {
+                        for (size_t i = 0; i < indices.abs_step; ++i, ++bwd);
                     } else {
-                        this->_prev = this->_curr;
-                        this->_curr = this->_next;
-                        this->_next = this->_curr->next();
+                        for (size_t i = 0; i < indices.abs_step; ++i, ++fwd);
                     }
                 }
                 return *this;
             }
 
-            /* Terminate the slice. */
-            template <Direction T>
-            inline bool operator!=(const Iterator<T>& other) const noexcept {
+            /* Compare iterators to terminate the slice. */
+            inline bool operator!=(const Iterator& other) const noexcept {
                 return idx != other.idx;
-            }
-
-            /* Get the current index of the iterator within the list. */
-            inline size_t index() const noexcept {
-                if (dir == Direction::backward) {
-                    return indices.first - idx * indices.abs_step;
-                } else {
-                    return indices.first + idx * indices.abs_step;
-                }
-            }
-
-            /* Unlink and return the node at the current position. */
-            inline Node* drop() {
-                ++skip;
-                return Base::drop();
             }
 
         };
 
         /* Return an iterator to the start of the slice. */
-        inline auto begin() const {
-            if constexpr (NodeTraits<Node>::has_prev) {
-                if (indices.backward) {
-                    return Bidirectional(Iterator<backward>(view, indices, origin()));
-                }
+        inline Iterator<Direction::forward> begin() const {
+            if (indices.length == 0) {
+                return end();
             }
-            return Bidirectional(Iterator<forward>(view, indices, origin()));        
+            return Iterator<Direction::forward>(view, indices, origin());
         }
 
-        /* Return an iterator to the end of the slice. */
-        inline auto end() const {
-            if constexpr (NodeTraits<Node>::has_prev) {
-                if (indices.backward) {
-                    return Bidirectional(Iterator<backward>(view, indices));
-                }
+        /* Return an explicitly const iterator to the start of the slice. */
+        inline Iterator<Direction::forward> cbegin() const {
+            return begin();
+        }
+
+        /* Return an iterator to terminate the slice. */
+        inline Iterator<Direction::forward> end() const {
+            return Iterator<Direction::forward>(view, indices);
+        }
+
+        /* Return an explicitly const iterator to terminate the slice. */
+        inline Iterator<Direction::forward> cend() const {
+            return end();
+        }
+
+        /* Return a reverse iterator over the slice. */
+        inline Iterator<Direction::backward> rbegin() const {
+            if (indices.length == 0) {
+                return rend();
             }
-            return Bidirectional(Iterator<forward>(view, indices));
+            return Iterator<Direction::backward>(view, indices, origin());
+        }
+
+        /* Return an explicitly const reverse iterator over the slice. */
+        inline Iterator<Direction::backward> crbegin() const {
+            return rbegin();
+        }
+
+        /* Return a reverse iterator to terminate the slice. */
+        inline Iterator<Direction::backward> rend() const {
+            return Iterator<Direction::backward>(view, indices);
+        }
+
+        /* Return an explicitly const reverse iterator to terminate the slice. */
+        inline Iterator<Direction::backward> crend() const {
+            return rend();
         }
 
         //////////////////////
@@ -366,13 +460,66 @@ namespace linked {
                 }
             }
 
-            // copy all nodes in slice
-            for (auto it = this->begin(), end = this->end(); it != end; ++it) {
-                Node* copy = result.node(*(it.curr()));
-                if (indices.inverted) {
-                    result.link(nullptr, copy, result.head());  // cancels out
-                } else {
-                    result.link(result.tail(), copy, nullptr);
+            // if doubly-linked, then we can potentially use a reverse iterator
+            if constexpr (NodeTraits<Node>::has_prev) {
+                if (indices.backward) {
+                    size_t idx = 0;
+                    Node* next = origin();
+                    Node* curr = (next == nullptr) ? view.tail() : next->prev();
+                    Node* prev = (curr == nullptr) ? nullptr : curr->prev();
+                    ViewIter<Direction::backward> it(view, prev, curr, next);
+                    if (indices.inverted) {
+                        while (true) {
+                            Node* copy = result.node(*(it.curr()));
+                            result.link(nullptr, copy, result.head());  // prepend
+                            if (++idx == indices.length) {
+                                break;
+                            }
+                            for (size_t i = 0; i < indices.abs_step; ++i, ++it);
+                        }
+                    } else {
+                        while (true) {
+                            Node* copy = result.node(*(it.curr()));
+                            result.link(result.tail(), copy, nullptr);  // append
+                            if (++idx == indices.length) {
+                                break;
+                            }
+                            for (size_t i = 0; i < indices.abs_step; ++i, ++it);
+                        }
+                    }
+
+                    // possibly wrap in higher-level container
+                    if constexpr (std::is_same_v<View, Result>) {
+                        return result;
+                    } else {
+                        return Result(std::move(result));
+                    }
+                }
+            }
+
+            // otherwise, we use a forward iterator
+            size_t idx = 0;
+            Node* prev = origin();
+            Node* curr = (prev == nullptr) ? view.head() : prev->next();
+            Node* next = (curr == nullptr) ? nullptr : curr->next();
+            ViewIter<Direction::forward> it(view, prev, curr, next);
+            if (indices.inverted) {
+                while (true) {
+                    Node* copy = result.node(*(it.curr()));
+                    result.link(nullptr, copy, result.head());  // prepend
+                    if (++idx == indices.length) {
+                        break;
+                    }
+                    for (size_t i = 0; i < indices.abs_step; ++i, ++it);
+                }
+            } else {
+                while (true) {
+                    Node* copy = result.node(*(it.curr()));
+                    result.link(result.tail(), copy, nullptr);  // append
+                    if (++idx == indices.length) {
+                        break;
+                    }
+                    for (size_t i = 0; i < indices.abs_step; ++i, ++it);
                 }
             }
 
@@ -394,7 +541,7 @@ namespace linked {
             if (indices.length != seq.size()) {
                 // NOTE: Python allows the slice and sequence lengths to differ if and
                 // only if the step size is 1.  This can possibly change the overall
-                // length of the list.
+                // length of the list, and makes everything much more complicated.
                 if (indices.step != 1) {
                     std::ostringstream msg;
                     msg << "attempt to assign sequence of size " << seq.size();
@@ -405,54 +552,195 @@ namespace linked {
                 return;
             }
 
+            // allocate recovery array and freeze list allocator during iteration
             RecoveryArray recovery(indices.length);
-            MemGuard guard = view.reserve(view.size() - indices.length + seq.size());
+            size_t fsize = view.size() - indices.length + seq.size();
+            MemGuard guard = view.reserve(fsize < view.size() ? view.size() : fsize);
+
+            // if doubly-linked, then we can potentially use a reverse iterator
+            if constexpr (NodeTraits<Node>::has_prev) {
+                if (indices.backward) {
+                    auto iter = [&]() -> ViewIter<Direction::backward> {
+                        Node* next = origin();
+                        Node* curr = (next == nullptr) ? view.tail() : next->prev();
+                        Node* prev = (curr == nullptr) ? nullptr : curr->prev();
+                        return ViewIter<Direction::backward>(view, prev, curr, next);
+                    };
+
+                    // remove current occupants
+                    if (indices.length > 0) {
+                        size_t idx = 0;
+                        auto loop1 = iter();
+                        while (true) {
+                            Node* node = loop1.drop();
+                            new (&recovery[idx]) Node(std::move(*node));
+                            view.recycle(node);
+                            if (++idx == indices.length) {
+                                break;
+                            }
+                            for (size_t i = 1; i < indices.abs_step; ++i, ++loop1);
+                        }
+                    }
+
+                    // insert new nodes from sequence
+                    if (seq.size() > 0) {
+                        size_t idx = 0;
+                        try {
+                            auto loop2 = iter();
+                            while (true) {
+                                size_t i = indices.inverted ? seq.size() - idx - 1 : idx;
+                                loop2.insert(view.node(seq[i]));
+                                if (++idx == seq.size()) {
+                                    break;
+                                }
+                                for (size_t i = 0; i < indices.abs_step; ++i, ++loop2);
+                            }
+                        } catch (...) {
+                            // remove nodes that have already been added
+                            if (idx > 0) {
+                                size_t i = 0;
+                                auto loop3 = iter();
+                                while (true) {
+                                    view.recycle(loop3.drop());
+                                    if (++i == idx) {
+                                        break;
+                                    }
+                                    for (size_t i = 1; i < indices.abs_step; ++i, ++loop3);
+                                }
+                            }
+
+                            // reinsert originals from recovery array
+                            if (indices.length > 0) {
+                                size_t i = 0;
+                                auto loop4 = iter();
+                                while (true) {
+                                    loop4.insert(view.node(std::move(recovery[i])));
+                                    if (++i == indices.length) {
+                                        break;
+                                    }
+                                    for (size_t i = 0; i < indices.abs_step; ++i, ++loop4);
+                                }
+                            }
+                            throw;
+                        }
+                    }
+
+                    // deallocate recovery array
+                    for (size_t idx = 0; idx < indices.length; ++idx) {
+                        recovery[idx].~Node();
+                    }
+                    return;
+                }
+            }
+
+            // otherwise we do the same thing, but with a forward iterator
+            auto iter = [&]() -> ViewIter<Direction::forward> {
+                Node* prev = origin();
+                Node* curr = (prev == nullptr) ? view.head() : prev->next();
+                Node* next = (curr == nullptr) ? nullptr : curr->next();
+                return ViewIter<Direction::forward>(view, prev, curr, next);
+            };
 
             // remove current occupants
-            size_t idx = 0;
-            for (auto it = this->begin(); idx < indices.length; ++idx, ++it) {
-                Node* node = it.drop();
-                new (&recovery[idx]) Node(std::move(*node));
-                view.recycle(node);
+            if (indices.length > 0) {
+                size_t idx = 0;
+                auto loop1 = iter();
+                while (true) {
+                    Node* node = loop1.drop();
+                    new (&recovery[idx]) Node(std::move(*node));
+                    view.recycle(node);
+                    if (++idx == indices.length) {
+                        break;
+                    }
+                    for (size_t i = 1; i < indices.abs_step; ++i, ++loop1);
+                }
             }
 
             // insert new nodes from sequence
-            try {
-                idx = 0;
-                for (auto it = this->begin(); idx < seq.size(); ++idx, ++it) {
-                    it.insert(
-                        view.node(seq[indices.inverted ? seq.size() - idx - 1 : idx])
-                    );
-                }
+            if (seq.size() > 0) {
+                size_t idx = 0;
+                try {
+                    auto loop2 = iter();
+                    while (true) {
+                        size_t i = indices.inverted ? seq.size() - idx - 1 : idx;
+                        loop2.insert(view.node(seq[i]));
+                        if (++idx == seq.size()) {
+                            break;
+                        }
+                        for (size_t i = 0; i < indices.abs_step; ++i, ++loop2);
+                    }
+                } catch (...) {
+                    // remove nodes that have already been added
+                    if (idx > 0) {
+                        size_t i = 0;
+                        auto loop3 = iter();
+                        while (true) {
+                            view.recycle(loop3.drop());
+                            if (++i == idx) {
+                                break;
+                            }
+                            for (size_t i = 1; i < indices.abs_step; ++i, ++loop3);
+                        }
+                    }
 
-            } catch (...) {
-                // remove nodes that have already been added
-                size_t i = 0;
-                for (auto it = this->begin(); i < idx; ++i, ++it) {
-                    view.recycle(it.drop());
+                    // reinsert originals from recovery array
+                    if (indices.length > 0) {
+                        size_t i = 0;
+                        auto loop4 = iter();
+                        while (true) {
+                            loop4.insert(view.node(std::move(recovery[i])));
+                            if (++i == indices.length) {
+                                break;
+                            }
+                            for (size_t i = 0; i < indices.abs_step; ++i, ++loop4);
+                        }
+                    }
+                    throw;
                 }
-
-                // reinsert originals from recovery array
-                i = 0;
-                for (auto it = this->begin(); i < indices.length; ++i, ++it) {
-                    it.insert(view.node(std::move(recovery[i])));
-                }
-                throw;
             }
 
             // deallocate recovery array
-            for (size_t i = 0; i < indices.length; i++) {
-                recovery[i].~Node();
+            for (size_t idx = 0; idx < indices.length; ++idx) {
+                recovery[idx].~Node();
             }
         }
 
         /* Delete a slice within a linked list. */
         void del() {
-            // freeze allocator during iteration
-            if (indices.length != 0) {
+            if (indices.length > 0) {
                 typename View::MemGuard guard = view.reserve();
-                for (auto it = this->begin(), end = this->end(); it != end; ++it) {
+
+                // if doubly-linked, then we can potentially use a reverse iterator
+                if constexpr (NodeTraits<Node>::has_prev) {
+                    if (indices.backward) {
+                        size_t idx = 0;
+                        Node* next = origin();
+                        Node* curr = (next == nullptr) ? view.tail() : next->prev();
+                        Node* prev = (curr == nullptr) ? nullptr : curr->prev();
+                        ViewIter<Direction::backward> it(view, prev, curr, next);
+                        while (true) {
+                            view.recycle(it.drop());
+                            if (++idx == indices.length) {
+                                break;
+                            }
+                            for (size_t i = 1; i < indices.abs_step; ++i, ++it);
+                        }
+                        return;
+                    }
+                }
+
+                // otherwise, we use a forward iterator
+                size_t idx = 0;
+                Node* prev = origin();
+                Node* curr = (prev == nullptr) ? view.head() : prev->next();
+                Node* next = (curr == nullptr) ? nullptr : curr->next();
+                ViewIter<Direction::forward> it(view, prev, curr, next);
+                while (true) {
                     view.recycle(it.drop());
+                    if (++idx == indices.length) {
+                        break;
+                    }
+                    for (size_t i = 1; i < indices.abs_step; ++i, ++it);
                 }
             }
         }

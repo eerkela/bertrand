@@ -8,7 +8,7 @@
 #include "../../util/base.h"  // is_pyobject<>
 #include "../../util/except.h"  // TypeError
 #include "../../util/ops.h"  // lt(), ge(), plus()
-#include "../core/iter.h"  // Direction, Bidirectional
+#include "../core/iter.h"  // Direction
 #include "../core/view.h"  // ViewTraits
 
 
@@ -72,19 +72,29 @@ namespace linked {
         using Value = typename View::Value;
 
         template <Direction dir>
-        using Iterator = typename View::template Iterator<dir>;
+        using ViewIter = typename View::template Iterator<dir>;
 
         View& view;
-        Bidirectional<Iterator> iter;
+        bool is_fwd;
+        union {
+            ViewIter<Direction::forward> fwd;
+            ViewIter<Direction::backward> bwd;
+        };
 
         template <typename _View>
         friend auto position(_View& view, long long index)
             -> std::enable_if_t<ViewTraits<_View>::linked, ElementProxy<_View>>;
 
         template <Direction dir>
-        ElementProxy(View& view, Iterator<dir>&& iter) :
-            view(view), iter(std::move(iter))
-        {}
+        ElementProxy(View& view, ViewIter<dir>&& it) : view(view) {
+            if constexpr (dir == Direction::forward) {
+                is_fwd = true;
+                new (&fwd) ViewIter<Direction::forward>(std::move(it));
+            } else {
+                is_fwd = false;
+                new (&bwd) ViewIter<Direction::backward>(std::move(it));
+            }
+        }
 
     public:
         /* Disallow ElementProxies from being stored as lvalues. */
@@ -93,24 +103,33 @@ namespace linked {
         ElementProxy& operator=(const ElementProxy&) = delete;
         ElementProxy& operator=(ElementProxy&&) = delete;
 
+        /* Clean up the union iterator when the proxy is destroyed. */
+        ~ElementProxy() {
+            if (is_fwd) {
+                fwd.~ViewIter<Direction::forward>();
+            } else {
+                bwd.~ViewIter<Direction::backward>();
+            }
+        }
+
         /* Get the value at the current index. */
         inline Value get() const {
             if constexpr (is_pyobject<Value>) {
-                return Py_NewRef(*iter);
+                return Py_NewRef(is_fwd ? *fwd : *bwd);
             } else {
-                return *iter;
+                return is_fwd ? *fwd : *bwd;
             }
         }
 
         /* Set the value at the current index. */
         inline void set(const Value value) {
             Node* node = view.node(value);
-            view.recycle(iter.replace(node));
+            view.recycle(is_fwd ? fwd.replace(node) : bwd.replace(node));
         }
 
         /* Delete the value at the current index. */
         inline void del() {
-            view.recycle(iter.drop());
+            view.recycle(is_fwd ? fwd.drop() : bwd.drop());
         }
 
         /* Implicitly convert the proxy to the value where applicable.  This is
@@ -138,7 +157,7 @@ namespace linked {
     {
         size_t norm_index = normalize_index(index, view.size(), false);
 
-        // get iterator to index
+        // maybe get backward iterator if closer to tail
         if constexpr (NodeTraits<typename View::Node>::has_prev) {
             if (view.closer_to_tail(norm_index)) {
                 auto it = view.rbegin();
@@ -147,7 +166,7 @@ namespace linked {
             }
         }
 
-        // forward traversal
+        // otherwise, use forward iterator
         auto it = view.begin();
         for (size_t i = 0; i < norm_index; ++i, ++it);
         return ElementProxy<View>(view, std::move(it));
@@ -159,10 +178,9 @@ namespace linked {
     auto position(const View& view, long long index)
         -> std::enable_if_t<ViewTraits<View>::linked, const ElementProxy<View>>
     {
-        // normalize index
         size_t norm_index = normalize_index(index, view.size(), false);
 
-        // get iterator to index
+        // maybe get backward iterator if closer to tail
         if constexpr (NodeTraits<typename View::Node>::has_prev) {
             if (view.closer_to_tail(norm_index)) {
                 auto it = view.rbegin();
@@ -171,7 +189,7 @@ namespace linked {
             }
         }
 
-        // forward traversal
+        // otherwise, use forward iterator
         auto it = view.begin();
         for (size_t i = 0; i < norm_index; ++i, ++it);
         return ElementProxy<View>(view, std::move(it));

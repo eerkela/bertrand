@@ -116,62 +116,13 @@ public:
     Iterator& begin() { return first; }
     Iterator& end() { return second; }
 
+    // TODO: conditionally compile all other iterator methods, similar to
+    // ConvertedIterator.  This might be a CRTP base class.
+
     // pass iterator protocol through to begin()
     inline value_type operator*() const { return *first; }
     inline CoupledIterator& operator++() { ++first; return *this; }
     inline bool operator!=(const Iterator& other) const { return first != other; }
-
-    // conditionally compile all other methods based on Iterator interface.
-    // NOTE: this uses SFINAE to detect the presence of these methods on the template
-    // Iterator.  If the Iterator does not implement the named method, then it will not
-    // be compiled, and users will get compile-time errors if they try to access it.
-    // This avoids the need to manually extend the CoupledIterator interface to match
-    // that of the Iterator.  See https://en.cppreference.com/w/cpp/language/sfinae
-    // for more information.
-
-    template <typename T = Iterator>
-    inline auto prev() const -> decltype(std::declval<T>().prev()) {
-        return first.prev();
-    }
-
-    template <typename T = Iterator>
-    inline auto curr() const -> decltype(std::declval<T>().curr()) {
-        return first.curr();
-    }
-
-    template <typename T = Iterator>
-    inline auto next() const -> decltype(std::declval<T>().next()) {
-        return first.next();
-    }
-
-    template <typename T = Iterator>
-    inline auto insert(typename T::Node* value)
-        -> decltype(std::declval<T>().insert(value))
-    {
-        return first.insert(value);  // void
-    }
-
-    template <typename T = Iterator>
-    inline auto drop() -> decltype(std::declval<T>().drop()) {
-        return first.drop();
-    }
-
-    template <typename T = Iterator>
-    inline auto replace(typename T::Node* value)
-        -> decltype(std::declval<T>().replace(value))
-    {
-        return first.replace(value);
-    }
-
-    template <typename T = Iterator>
-    inline auto index() -> decltype(std::declval<T>().index()) const {
-        return first.index();
-    }
-
-    template <typename T = Iterator>
-    inline auto idx() -> decltype(std::declval<T>().idx()) const {
-        return first.idx();
-    }
 
 protected:
     Iterator first, second;
