@@ -1101,9 +1101,9 @@ inline auto sequence(Iterable&& iterable) {
         ) {
             return std::forward<Iterable>(iterable);
         } else {
-            auto iter = iter(iterable);
-            auto it = iter.begin();
-            auto end = iter.end();
+            auto proxy = iter(iterable);
+            auto it = proxy.begin();
+            auto end = proxy.end();
             using Deref = decltype(*std::declval<decltype(it)>());
             return std::vector<Deref>(it, end);
         }

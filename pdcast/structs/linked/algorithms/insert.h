@@ -13,19 +13,6 @@ namespace bertrand {
 namespace structs {
 namespace linked {
 
-    // TODO:
-    // >>> l
-    // LinkedList(["a", "b", "c", "d", "e", "f"])
-    // >>> l.insert(6, "g")
-    // >>> l
-    // LinkedList(["a", "b", "c", "d", "e", "g", "f"])
-
-    // >>> p
-    // ["a", "b", "c", "d", "e", "f"]
-    // >>> p.insert(6, "g")
-    // >>> p
-    // ["a", "b", "c", "d", "e", "f", "g"]
-
 
     /* Insert an item into a linked list, set, or dictionary at the given index. */
     template <typename View, typename Item>
@@ -33,7 +20,16 @@ namespace linked {
         -> std::enable_if_t<ViewTraits<View>::linked, void>
     {
         using MemGuard = typename View::MemGuard;
-        size_t norm_index = normalize_index(index, view.size(), true);
+
+        if (index < 0) {
+            index += view.size();
+            if (index < 0) {
+                index = 0;
+            }
+        } else if (index > static_cast<long long>(view.size())) {
+            index = view.size();
+        }
+        size_t norm_index = static_cast<size_t>(index);
 
         // NOTE: if we don't reserve ahead of time, then the iterator might be
         // invalidated by the node() constructor

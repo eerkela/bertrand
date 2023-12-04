@@ -802,8 +802,8 @@ public:
             );
 
         } catch (...) {
-            throw_python();
             Py_DECREF(result);
+            throw_python();
             return nullptr;
         }
     }
@@ -837,8 +837,8 @@ public:
             );
 
         } catch (...) {
-            throw_python();
             Py_DECREF(result);
+            throw_python();
             return nullptr;
         }
     }
@@ -929,8 +929,8 @@ public:
             );
 
         } catch (...) {
-            throw_python();
             Py_DECREF(result);
+            throw_python();
             return nullptr;
         }
     }
@@ -991,8 +991,8 @@ public:
             );
 
         } catch (...) {
-            throw_python();
             Py_DECREF(result);
+            throw_python();
             return nullptr;
         }
     }
@@ -1039,8 +1039,8 @@ public:
             );
 
         } catch (...) {
-            throw_python();
             Py_DECREF(result);
+            throw_python();
             return nullptr;
         }
     }
@@ -1064,8 +1064,8 @@ public:
             );
 
         } catch (...) {
-            throw_python();
             Py_DECREF(result);
+            throw_python();
             return nullptr;
         }
     }
@@ -1997,32 +1997,69 @@ class PyLinkedSet :
         SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>
         // SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
     >;
+    template <size_t I>
+    using Alt = typename std::variant_alternative_t<I, Variant>;
 
     friend Base;
     friend IList;
     friend ISet;
     Variant variant;
 
-    /* Construct a PyLinkedSet around an existing C++ LinkedSet. */
-    template <typename Set>
-    inline void from_cpp(Set&& set) {
-        new (&variant) Variant(std::forward<Set>(set));
-    }
-
-    /* Construct a particular alternative stored in the variant. */
-    template <size_t I>
-    inline static void alt(
-        PyLinkedSet* self,
-        PyObject* iterable,
-        std::optional<size_t> max_size,
-        PyObject* spec,
-        bool reverse
-    ) {
-        using Alt = typename std::variant_alternative_t<I, Variant>;
-        if (iterable == nullptr) {
-            new (&self->variant) Variant(Alt(max_size, spec));
-        } else { \
-            new (&self->variant) Variant(Alt(iterable, max_size, spec, reverse));
+    /* Parse the configuration code and initialize the variant with the forwarded
+    arguments. */
+    template <typename... Args>
+    static void build_variant(unsigned int code, PyLinkedSet* self, Args&&... args) {
+        switch (code) {
+            case (Config::DEFAULT):
+                new (&self->variant) Variant(Alt<0>(std::forward<Args>(args)...));
+                break;
+            // case (Config::PACKED):
+            //     new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
+            //     break;
+            case (Config::STRICTLY_TYPED):
+                new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
+                break;
+            // case (Config::PACKED | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
+            //     break;
+            case (Config::FIXED_SIZE):
+                new (&self->variant) Variant(Alt<2>(std::forward<Args>(args)...));
+                break;
+            // case (Config::FIXED_SIZE | Config::PACKED):
+            //     new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
+            //     break;
+            case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
+                break;
+            // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
+            //     break;
+            case (Config::SINGLY_LINKED):
+                new (&self->variant) Variant(Alt<4>(std::forward<Args>(args)...));
+                break;
+            // case (Config::SINGLY_LINKED | Config::PACKED):
+            //     new (&self->variant) Variant(Alt<9>(std::forward<Args>(args)...));
+            //     break;
+            case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
+                new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
+                break;
+            // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<11>(std::forward<Args>(args)...));
+            //     break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
+                new (&self->variant) Variant(Alt<6>(std::forward<Args>(args)...));
+                break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
+            //     new (&self->variant) Variant(Alt<13>(std::forward<Args>(args)...));
+            //     break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
+                break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<15>(std::forward<Args>(args)...));
+            //     break;
+            default:
+                throw ValueError("invalid argument configuration");
         }
     }
 
@@ -2043,58 +2080,17 @@ class PyLinkedSet :
             Config::PACKED * packed |
             Config::STRICTLY_TYPED * strictly_typed
         );
-        switch (code) {
-            case (Config::DEFAULT):
-                alt<0>(self, iterable, max_size, spec, reverse);
-                break;
-            // case (Config::PACKED):
-            //     alt<1>(self, iterable, max_size, spec, reverse);
-            //     break;
-            case (Config::STRICTLY_TYPED):
-                alt<1>(self, iterable, max_size, spec, reverse);
-                break;
-            // case (Config::PACKED | Config::STRICTLY_TYPED):
-            //     alt<3>(self, iterable, max_size, spec, reverse);
-            //     break;
-            case (Config::FIXED_SIZE):
-                alt<2>(self, iterable, max_size, spec, reverse);
-                break;
-            // case (Config::FIXED_SIZE | Config::PACKED):
-            //     alt<5>(self, iterable, max_size, spec, reverse);
-            //     break;
-            case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                alt<3>(self, iterable, max_size, spec, reverse);
-                break;
-            // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     alt<7>(self, iterable, max_size, spec, reverse);
-            //     break;
-            case (Config::SINGLY_LINKED):
-                alt<4>(self, iterable, max_size, spec, reverse);
-                break;
-            // case (Config::SINGLY_LINKED | Config::PACKED):
-            //     alt<9>(self, iterable, max_size, spec, reverse);
-            //     break;
-            case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
-                alt<5>(self, iterable, max_size, spec, reverse);
-                break;
-            // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
-            //     alt<11>(self, iterable, max_size, spec, reverse);
-            //     break;
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
-                alt<6>(self, iterable, max_size, spec, reverse);
-                break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
-            //     alt<13>(self, iterable, max_size, spec, reverse);
-            //     break;
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                alt<7>(self, iterable, max_size, spec, reverse);
-                break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     alt<15>(self, iterable, max_size, spec, reverse);
-            //     break;
-            default:
-                throw ValueError("invalid argument configuration");
+        if (iterable == nullptr) {
+            build_variant(code, self, max_size, spec);
+        } else {
+            build_variant(code, self, iterable, max_size, spec, reverse);
         }
+    }
+
+    /* Construct a PyLinkedSet around an existing C++ LinkedSet. */
+    template <typename Set>
+    inline void from_cpp(Set&& set) {
+        new (&variant) Variant(std::forward<Set>(set));
     }
 
 public:

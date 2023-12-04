@@ -67,9 +67,9 @@ namespace bertrand {
 namespace util {
 
 
-/////////////////////////////////
-////    ITERATOR WRAPPERS    ////
-/////////////////////////////////
+////////////////////////////
+////    C++ BINDINGS    ////
+////////////////////////////
 
 
 /* NOTE: CoupledIterators are used to share state between the begin() and end()
@@ -93,12 +93,167 @@ namespace util {
  */
 
 
-/* A coupled pair of begin() and end() iterators to simplify the iterator interface. */
-template <typename IteratorType>
-class CoupledIterator {
-public:
-    using Iterator = IteratorType;
+/* A wrapper around an iterator that forwards all operators to the wrapped object. */
+template <typename Iterator>
+class ForwardedIterator {
+protected:
+    Iterator wrapped;
 
+public:
+    using iterator_category = typename std::iterator_traits<Iterator>::iterator_category;
+    using difference_type = typename std::iterator_traits<Iterator>::difference_type;
+    using value_type = typename std::iterator_traits<Iterator>::value_type;
+    using pointer = typename std::iterator_traits<Iterator>::pointer;
+    using reference = typename std::iterator_traits<Iterator>::reference;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct a forwarded iterator from a standard C++ iterator. */
+    inline ForwardedIterator(Iterator&& iter) : wrapped(std::move(iter)) {}
+
+    /* Trivial copy/move constructors/assignment operators */
+    ForwardedIterator(const ForwardedIterator&) = default;
+    ForwardedIterator(ForwardedIterator&&) = default;
+    ForwardedIterator& operator=(const ForwardedIterator&) = default;
+    ForwardedIterator& operator=(ForwardedIterator&&) = default;
+
+    ///////////////////////////////////
+    ////    FORWARDED OPERATORS    ////
+    ///////////////////////////////////
+
+    inline auto operator*() const -> decltype(*wrapped) {
+        return *wrapped;
+    }
+
+    template <typename T>
+    inline auto operator[](T&& idx) const -> decltype(wrapped[std::forward<T>(idx)]) {
+        return wrapped[std::forward<T>(idx)];
+    }
+
+    inline ForwardedIterator& operator++() {
+        ++wrapped;
+        return *this;
+    }
+
+    inline ForwardedIterator operator++(int) {
+        ForwardedIterator temp(*this);
+        ++wrapped;
+        return temp;
+    }
+
+    template <typename T>
+    inline ForwardedIterator operator+(T&& n) const {
+        return ForwardedIterator(wrapped + std::forward<T>(n));
+    }
+
+    template <typename T>
+    inline ForwardedIterator& operator+=(T&& other) {
+        wrapped += std::forward<T>(other);
+        return *this;
+    }
+
+    inline ForwardedIterator& operator--() {
+        --wrapped;
+        return *this;
+    }
+
+    inline ForwardedIterator operator--(int) {
+        ForwardedIterator temp(*this);
+        --wrapped;
+        return temp;
+    }
+
+    template <typename T>
+    inline ForwardedIterator operator-(T&& n) const {
+        return ForwardedIterator(wrapped - std::forward<T>(n));
+    }
+
+    template <typename T>
+    inline ForwardedIterator& operator-=(T&& other) {
+        wrapped -= std::forward<T>(other);
+        return *this;
+    }
+
+    template <typename T>
+    inline auto operator<(const T& other) const
+        -> std::enable_if_t<!std::is_base_of_v<ForwardedIterator, T>, bool>
+    {
+        return wrapped < other;
+    }
+
+    inline bool operator<(const ForwardedIterator& other) const {
+        return wrapped < other.wrapped;
+    }
+
+    template <typename T>
+    inline auto operator<=(const T& other) const
+        -> std::enable_if_t<!std::is_base_of_v<ForwardedIterator, T>, bool>
+    {
+        return wrapped <= other;
+    }
+
+    inline bool operator<=(const ForwardedIterator& other) const {
+        return wrapped <= other.wrapped;
+    }
+
+    template <typename T>
+    inline auto operator==(const T& other) const
+        -> std::enable_if_t<!std::is_base_of_v<ForwardedIterator, T>, bool>
+    {
+        return wrapped == other;
+    }
+
+    inline bool operator==(const ForwardedIterator& other) const {
+        return wrapped == other.wrapped;
+    }
+
+    template <typename T>
+    inline auto operator!=(const T& other) const
+        -> std::enable_if_t<!std::is_base_of_v<ForwardedIterator, T>, bool>
+    {
+        return wrapped != other;
+    }
+
+    inline auto operator!=(const ForwardedIterator& other) const {
+        return wrapped != other.wrapped;
+    }
+
+    template <typename T>
+    inline auto operator>=(const T& other) const
+        -> std::enable_if_t<!std::is_base_of_v<ForwardedIterator, T>, bool>
+    {
+        return wrapped >= other;
+    }
+
+    inline bool operator>=(const ForwardedIterator& other) const {
+        return wrapped >= other.wrapped;
+    }
+
+    template <typename T>
+    inline auto operator>(const T& other) const
+        -> std::enable_if_t<!std::is_base_of_v<ForwardedIterator, T>, bool>
+    {
+        return wrapped > other;
+    }
+
+    inline bool operator>(const ForwardedIterator& other) const {
+        return wrapped > other.wrapped;
+    }
+
+};
+
+
+/* A coupled pair of begin() and end() iterators to simplify the iterator interface. */
+template <typename Iterator>
+class CoupledIterator : public ForwardedIterator<Iterator> {
+    using Base = ForwardedIterator<Iterator>;
+
+protected:
+    Iterator second;
+
+public:
     using iterator_category     = typename Iterator::iterator_category;
     using difference_type       = typename Iterator::difference_type;
     using value_type            = typename Iterator::value_type;
@@ -107,23 +262,19 @@ public:
 
     /* couple the begin() and end() iterators into a single object */
     CoupledIterator(Iterator&& first, Iterator&& second) :
-        first(std::move(first)), second(std::move(second))
+        Base(std::move(first)), second(std::move(second))
     {}
 
     /* allow use of the CoupledIterator in a range-based for loop */
-    Iterator& begin() { return first; }
-    Iterator& end() { return second; }
+    Iterator& begin() {
+        return this->wrapped;
+    }
+    Iterator& end() {
+        return second;
+    }
 
-    // TODO: conditionally compile all other iterator methods, similar to
-    // ConvertedIterator.  This might be a CRTP base class.
+    // NOTE: all other operators are forwarded to the begin() iterator
 
-    /* pass iterator protocol through to begin() */
-    inline value_type operator*() const { return *first; }
-    inline CoupledIterator& operator++() { ++first; return *this; }
-    inline bool operator!=(const Iterator& other) const { return first != other; }
-
-protected:
-    Iterator first, second;
 };
 
 
@@ -149,213 +300,37 @@ protected:
 /* A decorator for a standard C++ iterator that applies a custom conversion at
 each step. */
 template <typename Iterator, typename Func>
-class ConvertedIterator {
+class ConvertedIterator : public ForwardedIterator<Iterator> {
+    using Base = ForwardedIterator<Iterator>;
     Func convert;
 
     /* Ensure that Func is callable with a single argument of the iterator's
     dereferenced value type and infer the corresponding return type. */
-    using ConvTraits = FuncTraits<Func, decltype(*std::declval<Iterator>())>;
-    using ReturnType = typename ConvTraits::ReturnType;
-
-    /* Get iterator_traits from wrapped iterator. */
-    using Traits = std::iterator_traits<Iterator>;
-
-    /* Force SFINAE evaluation of the templated type. */
-    template <typename T>
-    static constexpr bool exists = std::is_same_v<T, T>;
-
-    /* Detect whether the templated type supports the -> operator. */
-    template <typename T, typename = void>  // default
-    struct arrow_operator {
-        using type = void;
-        static constexpr bool value = false;
-    };
-    template <typename T>  // smart pointers
-    struct arrow_operator<T, std::void_t<decltype(std::declval<T>().operator->())>> {
-        using type = decltype(std::declval<T>().operator->());
-        static constexpr bool value = true;
-    };
-    template <typename T>  // raw pointers
-    struct arrow_operator<T*> {
-        using type = T*;
-        static constexpr bool value = true;
-    };
+    using ReturnType = typename FuncTraits<
+        Func,
+        decltype(*std::declval<Iterator>())
+    >::ReturnType;
 
 public:
-    Iterator wrapped;
 
-    /* Forwards for std::iterator_traits. */
-    using iterator_category = std::enable_if_t<
-        exists<typename Traits::iterator_category>,
-        typename Traits::iterator_category
-    >;
-    using pointer = std::enable_if_t<
-        exists<typename Traits::pointer>,
-        typename Traits::pointer
-    >;
-    using reference = std::enable_if_t<
-        exists<typename Traits::reference>,
-        typename Traits::reference
-    >;
-    using value_type = std::enable_if_t<
-        exists<typename Traits::value_type>,
-        typename Traits::value_type
-    >;
-    using difference_type = std::enable_if_t<
-        exists<typename Traits::difference_type>,
-        typename Traits::difference_type
-    >;
-
-    /* Construct a converted iterator from a standard C++ iterator and a conversion
+    /* Construct a converted iterator from a standard C++ iterator and conversion
     function. */
-    inline ConvertedIterator(Iterator& i, Func f) : convert(f), wrapped(i) {}
-    inline ConvertedIterator(Iterator&& i, Func f) : convert(f), wrapped(std::move(i)) {}
-    inline ConvertedIterator(const ConvertedIterator& other) :
-        convert(other.convert), wrapped(other.wrapped)
-    {}
-    inline ConvertedIterator(ConvertedIterator&& other) :
-        convert(std::move(other.convert)), wrapped(std::move(other.wrapped))
-    {}
-    inline ConvertedIterator& operator=(const ConvertedIterator& other) {
-        convert = other.convert;
-        wrapped = other.wrapped;
-        return *this;
-    }
-    inline ConvertedIterator& operator=(ConvertedIterator&& other) {
-        convert = std::move(other.convert);
-        wrapped = std::move(other.wrapped);
-        return *this;
+    inline ConvertedIterator(Iterator&& i, Func f) : Base(std::move(i)), convert(f) {}
+
+    /* Apply the conversion function whenever the iterator is dereferenced. */
+    inline ReturnType operator*() const {
+        return convert(*(this->wrapped));
     }
 
-    /* Dereference the iterator and apply the conversion function. */
-    inline ReturnType operator*() const {
-        return convert(*wrapped);
-    }
+    /* Apply the conversion function whenever the iterator is indexed. */
     template <typename T>
     inline ReturnType operator[](T&& index) const {
-        return convert(wrapped[index]);
-    }
-    template <
-        bool cond = arrow_operator<ReturnType>::value,
-        std::enable_if_t<cond, int> = 0
-    >
-    inline auto operator->() const -> typename arrow_operator<ReturnType>::type {
-        return this->operator*().operator->();
+        return convert(this->wrapped[index]);
     }
 
-    /* Forward all other methods to the wrapped iterator. */
-    inline ConvertedIterator& operator++() {
-        ++wrapped;
-        return *this;
-    }
-    inline ConvertedIterator operator++(int) {
-        ConvertedIterator temp(*this);
-        ++wrapped;
-        return temp;
-    }
-    inline ConvertedIterator& operator--() {
-        --wrapped;
-        return *this;
-    }
-    inline ConvertedIterator operator--(int) {
-        ConvertedIterator temp(*this);
-        --wrapped;
-        return temp;
-    }
-    inline bool operator==(const ConvertedIterator& other) const {
-        return wrapped == other.wrapped;
-    }
-    inline bool operator!=(const ConvertedIterator& other) const {
-        return wrapped != other.wrapped;
-    }
-    template <typename T>
-    inline ConvertedIterator& operator+=(T&& other) {
-        wrapped += other;
-        return *this;
-    }
-    template <typename T>
-    inline ConvertedIterator& operator-=(T&& other) {
-        wrapped -= other;
-        return *this;
-    }
-    inline bool operator<(const ConvertedIterator& other) const {
-        return wrapped < other.wrapped;
-    }
-    inline bool operator>(const ConvertedIterator& other) const {
-        return wrapped > other.wrapped;
-    }
-    inline bool operator<=(const ConvertedIterator& other) const {
-        return wrapped <= other.wrapped;
-    }
-    inline bool operator>=(const ConvertedIterator& other) const {
-        return wrapped >= other.wrapped;
-    }
-
-    /* operator+ implemented as a non-member function for commutativity. */
-    template <typename T, typename _Iterator, typename _Func>
-    friend ConvertedIterator<_Iterator, _Func> operator+(
-        const ConvertedIterator<_Iterator, _Func>& iter,
-        T n
-    );
-    template <typename T, typename _Iterator, typename _Func>
-    friend ConvertedIterator<_Iterator, _Func> operator+(
-        T n,
-        const ConvertedIterator<_Iterator, _Func>& iter
-    );
-
-    /* operator- implemented as a non-member function for commutativity. */
-    template <typename T, typename _Iterator, typename _Func>
-    friend ConvertedIterator<_Iterator, _Func> operator-(
-        const ConvertedIterator<_Iterator, _Func>& iter,
-        T n
-    );
-    template <typename T, typename _Iterator, typename _Func>
-    friend ConvertedIterator<_Iterator, _Func> operator-(
-        T n,
-        const ConvertedIterator<_Iterator, _Func>& iter
-    );
+    // NOTE: all other operators are forwarded to the wrapped iterator
 
 };
-
-
-/* Non-member operator+ overload to allow for commutativity. */
-template <typename T, typename Iterator, typename Func>
-ConvertedIterator<Iterator, Func> operator+(
-    const ConvertedIterator<Iterator, Func>& iter,
-    T n
-) {
-    return ConvertedIterator<Iterator, Func>(iter.wrapped + n, iter.convert);
-}
-
-
-/* Non-member operator+ overload to allow for commutativity. */
-template <typename T, typename Iterator, typename Func>
-ConvertedIterator<Iterator, Func> operator+(
-    T n,
-    const ConvertedIterator<Iterator, Func>& iter
-) {
-    return ConvertedIterator<Iterator, Func>(n + iter.wrapped, iter.convert);
-}
-
-
-/* Non-member operator- overload to allow for commutativity. */
-template <typename T, typename Iterator, typename Func>
-ConvertedIterator<Iterator, Func> operator-(
-    const ConvertedIterator<Iterator, Func>& iter,
-    T n
-) {
-    return ConvertedIterator<Iterator, Func>(iter.wrapped - n, iter.convert);
-}
-
-
-/* Non-member operator- overload to allow for commutativity. */
-template <typename T, typename Iterator, typename Func>
-ConvertedIterator<Iterator, Func> operator-(
-    T n,
-    const ConvertedIterator<Iterator, Func>& iter
-) {
-    return ConvertedIterator<Iterator, Func>(n - iter.wrapped, iter.convert);
-}
 
 
 /* NOTE: PyIterators are wrappers around standard C++ iterators that allow them to be
@@ -487,11 +462,6 @@ public:
     inline static PyTypeObject Type = init_type();
 
 };
-
-
-////////////////////////////
-////    C++ BINDINGS    ////
-////////////////////////////
 
 
 /* C++ bindings consist of a battery of compile-time SFINAE checks to detect the
@@ -1062,8 +1032,7 @@ public:
 
         /* Ensure that Func is callable with a single argument of the iterator's
         dereferenced value type and infer the corresponding return type. */
-        using ConvTraits = FuncTraits<Func, PyObject*>;
-        using ReturnType = typename ConvTraits::ReturnType;
+        using ReturnType = typename FuncTraits<Func, PyObject*&>::ReturnType;
 
         friend PyIterProxy;
 
@@ -1124,7 +1093,7 @@ public:
         }
 
         /* Get current item. */
-        inline value_type operator*() const {
+        inline auto operator*() const {
             if constexpr (is_identity) {
                 return curr;
             } else {

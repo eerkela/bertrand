@@ -31,7 +31,7 @@ namespace linked {
                 copy.link(copy.tail(), node, nullptr);
             }
 
-            for (auto item : iter(container)) {
+            for (const auto& item : iter(container)) {
                 Node* node = copy.node(item);
                 copy.link(copy.tail(), node, nullptr);
             }

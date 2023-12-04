@@ -3,7 +3,6 @@
 
 #include <sstream>  // std::ostringstream
 #include <type_traits>  // std::enable_if_t<>
-#include "../../util/iter.h"  // iter()
 #include "../../util/ops.h"  // eq(), repr()
 #include "../core/node.h"  // NodeTraits
 #include "../core/view.h"  // ViewTraits

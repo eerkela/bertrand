@@ -94,7 +94,7 @@ namespace linked {
         std::optional<long long> step = std::nullopt
     ) {
         // apply defaults
-        long long lsize = static_cast<long long>(view.size());
+        long long lsize = view.size();
         long long default_start = step.value_or(0) < 0 ? lsize - 1 : 0;
         long long default_stop = step.value_or(0) < 0 ? -1 : lsize;
 

@@ -16,7 +16,7 @@ namespace linked {
     inline auto contains(const View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::listlike, bool>
     {
-        for (auto val : view) {
+        for (const auto& val : view) {
             if (eq(val, item)) return true;
         }
         return false;

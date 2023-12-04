@@ -30,7 +30,7 @@ namespace linked {
         MemGuard guard = view.try_reserve(items);  // preallocate if size is known
         size_t size = view.size();
         try {
-            for (auto item : iter(items)) {
+            for (const auto& item : iter(items)) {
                 view.link(view.tail(), view.node(item), nullptr);
             }
 
@@ -69,7 +69,7 @@ namespace linked {
         MemGuard guard = view.try_reserve(items);  // preallocate if size is known
         size_t size = view.size();
         try {
-            for (auto item : iter(items)) {
+            for (const auto& item : iter(items)) {
                 view.link(nullptr, view.node(item), view.head());
             }
 

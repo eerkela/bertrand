@@ -1497,7 +1497,7 @@ private:
     struct RecycleRetVal<flags, true> {
         using Mapped = typename Node::MappedValue;
         using OptMapped = std::optional<Mapped>;
-        using type = std::conditional_t<flags & RETURN_MAPPED, OptMapped, void>;
+        using type = std::conditional_t<!!(flags & RETURN_MAPPED), OptMapped, void>;
     };
 
     template <unsigned int flags>

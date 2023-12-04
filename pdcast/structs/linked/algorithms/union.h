@@ -38,7 +38,7 @@ namespace linked {
         }
 
         // allow copy to grow dynamically
-        for (auto item : iter(items)) {
+        for (const auto& item : iter(items)) {
             copy.template node<flags>(item);
         }
 
@@ -173,7 +173,7 @@ namespace linked {
 
         // iterate over items and mark all found nodes
         std::unordered_set<const Node*> found;
-        for (auto item : iter(items)) {
+        for (const auto& item : iter(items)) {
             Node* node = view.search(item);
             if (node != nullptr) found.insert(node);
         }
@@ -200,7 +200,7 @@ namespace linked {
 
         // iterate over items and mark all found nodes
         std::unordered_set<const Node*> found;
-        for (auto item : iter(items)) {
+        for (const auto& item : iter(items)) {
             Node* node = view.search(item);
             if (node != nullptr) found.insert(node);
         }

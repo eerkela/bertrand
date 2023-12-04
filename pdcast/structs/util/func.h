@@ -68,11 +68,12 @@ private:
         "Func is not a valid function pointer or Python callable"
     );
     static_assert(
-        (cat == Category::PYTHON_CALLABLE) || std::is_invocable_v<Func, Args...>,
+        cat == Category::PYTHON_CALLABLE || std::is_invocable_v<Func, Args...>,
         "Func cannot be called with the provided arguments"
     );
 
-    /* Detect the presence of const, volatile, and reference qualifiers. */
+    /* Detect the presence of const, volatile, and reference qualifiers for member
+    methods of a class. */
     template <typename _Func>
     struct Qualifiers {
         using Parent = void;
@@ -81,53 +82,39 @@ private:
         static constexpr bool is_lvalue_ref = false;
         static constexpr bool is_rvalue_ref = false;
     };
-
-    /* Detect the presence of const, volatile, and reference qualifiers. */
     template <typename R, typename P, typename... A>
     struct Qualifiers<R(P::*)(A...) const> : public Qualifiers<R(P::*)(A...)> {
         using Parent = P;
         static constexpr bool is_const = true;
     };
-
-    /* Detect the presence of const, volatile, and reference qualifiers. */
     template <typename R, typename P, typename... A>
     struct Qualifiers<R(P::*)(A...) volatile> : public Qualifiers<R(P::*)(A...)> {
         using Parent = P;
         static constexpr bool is_volatile = true;
     };
-
-    /* Detect the presence of const, volatile, and reference qualifiers. */
     template <typename R, typename P, typename... A>
     struct Qualifiers<R(P::*)(A...) const volatile> : public Qualifiers<R(P::*)(A...)> {
         using Parent = P;
         static constexpr bool is_const = true;
         static constexpr bool is_volatile = true;
     };
-
-    /* Detect the presence of const, volatile, and reference qualifiers. */
     template <typename R, typename P, typename... A>
     struct Qualifiers<R(P::*)(A...) &> : public Qualifiers<R(P::*)(A...)> {
         using Parent = P;
         static constexpr bool is_lvalue_ref = true;
     };
-
-    /* Detect the presence of const, volatile, and reference qualifiers. */
     template <typename R, typename P, typename... A>
     struct Qualifiers<R(P::*)(A...) const &> : public Qualifiers<R(P::*)(A...)> {
         using Parent = P;
         static constexpr bool is_const = true;
         static constexpr bool is_lvalue_ref = true;
     };
-
-    /* Detect the presence of const, volatile, and reference qualifiers. */
     template <typename R, typename P, typename... A>
     struct Qualifiers<R(P::*)(A...) volatile &> : public Qualifiers<R(P::*)(A...)> {
         using Parent = P;
         static constexpr bool is_volatile = true;
         static constexpr bool is_lvalue_ref = true;
     };
-
-    /* Detect the presence of const, volatile, and reference qualifiers. */
     template <typename R, typename P, typename... A>
     struct Qualifiers<R(P::*)(A...) const volatile &> : public Qualifiers<R(P::*)(A...)> {
         using Parent = P;
@@ -135,31 +122,23 @@ private:
         static constexpr bool is_volatile = true;
         static constexpr bool is_lvalue_ref = true;
     };
-
-    /* Detect the presence of const, volatile, and reference qualifiers. */
     template <typename R, typename P, typename... A>
     struct Qualifiers<R(P::*)(A...) &&> : public Qualifiers<R(P::*)(A...)> {
         using Parent = P;
         static constexpr bool is_rvalue_ref = true;
     };
-
-    /* Detect the presence of const, volatile, and reference qualifiers. */
     template <typename R, typename P, typename... A>
     struct Qualifiers<R(P::*)(A...) const &&> : public Qualifiers<R(P::*)(A...)> {
         using Parent = P;
         static constexpr bool is_const = true;
         static constexpr bool is_rvalue_ref = true;
     };
-
-    /* Detect the presence of const, volatile, and reference qualifiers. */
     template <typename R, typename P, typename... A>
     struct Qualifiers<R(P::*)(A...) volatile &&> : public Qualifiers<R(P::*)(A...)> {
         using Parent = P;
         static constexpr bool is_volatile = true;
         static constexpr bool is_rvalue_ref = true;
     };
-
-    /* Detect the presence of const, volatile, and reference qualifiers. */
     template <typename R, typename P, typename... A>
     struct Qualifiers<R(P::*)(A...) const volatile &&> : public Qualifiers<R(P::*)(A...)> {
         using Parent = P;
@@ -170,27 +149,18 @@ private:
 
     /* Detect whether a function is a free function or static member of its parent
     class (i.e. does not have a `this` pointer). */
-    template <typename T, typename = void>
+    template <typename T, bool cond = cat == Category::PYTHON_CALLABLE, typename = void>
     struct _is_static : std:: false_type {};
-
-    /* Detect whether a function is a free function or static member of its parent
-    class (i.e. does not have a `this` pointer). */
     template <typename R, typename... A>
     struct _is_static<R(*)(A...)> : std::true_type {};
-
-    /* Detect whether a Python callable is static (true by definition). */
-    template <typename T>
-    struct _is_static<T, std::enable_if_t<cat == Category::PYTHON_CALLABLE>> :
-        std::true_type
-    {};
+    template <typename T, bool cond>
+    struct _is_static<T, cond, std::enable_if_t<cond>> : std::true_type {};
 
     /* Infer the return type for a C++ function or lambda. */
-    template <typename T, bool cond = (cat == Category::PYTHON_CALLABLE), typename = void>
+    template <typename T, bool cond = cat == Category::PYTHON_CALLABLE, typename = void>
     struct _ReturnType {
         using type = std::invoke_result_t<T, Args...>;
     };
-
-    /* Infer the return type for a Python callable. */
     template <typename T, bool cond>
     struct _ReturnType<T, cond, std::enable_if_t<cond, void>> {
         using type = PyObject*;

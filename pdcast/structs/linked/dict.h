@@ -129,20 +129,17 @@ public:
 
     /* Create a new dictionary from a sequence of keys and a default value. */
     template <typename Container>
-    inline static LinkedDict fromkeys(Container&& keys, const Value& value) {
-        // TODO: account for different flag configurations.  If LinkedDict is
-        // fixed-size, then we can't just default-construct it here, since we're
-        // likely to hit the size limit.  We also can't preallocate ahead of
-        // time, since we don't know how many duplicates there will be.
-        LinkedDict result;
-
-        // TODO: allocate a new view, then pass it to linked::fromkeys(), then
-        // move it into a new LinkedDict
-
-        return linked::fromkeys<View, LinkedDict>(
-            std::forward<Container>(keys),
-            value
-        );
+    inline static LinkedDict fromkeys(
+        Container&& keys,
+        const Value& value,
+        std::optional<size_t> capacity = std::nullopt,
+        PyObject* spec = nullptr
+    ) {
+        View view(capacity, spec);
+        for (auto& key : iter(keys)) {
+            view.template node<View::Allocator::INSERT_TAIL>(key, value);
+        }
+        return LinkedDict(view);
     }
 
     /* Add a key-value pair to the end of the dictionary if it is not already
@@ -417,6 +414,9 @@ public:
     inline void move_to_index(const Key& key, long long index) {
         linked::move_to_index(this->view, key, index);
     }
+
+    // TODO: issuperset, issubset, isdisjoint()
+
 
     ///////////////////////
     ////    PROXIES    ////
@@ -1465,13 +1465,9 @@ template <typename Derived>
 class PyDictInterface {
 public:
 
-    // TODO: figure out how to implement fromkeys() as a class method.  Basically,
-    // this is an alternate constructor without any of the __init__ flags.  It should
-    // either return a dynamic dict or offer optional keyword arguments for the flags.
-
     /* Implement `LinkedDict.fromkeys()` in Python. */
-    static PyObject* fromkeys(PyObject* type, PyObject* const* args, Py_ssize_t nargs) {
-        Derived* self = reinterpret_cast<Derived*>(
+    static PyObject* fromkeys(PyObject* type, PyObject* args, PyObject* kwargs) {
+        Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
         if (result == nullptr) {
@@ -1480,28 +1476,59 @@ public:
 
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
+        using bertrand::util::parse_int;
+        using bertrand::util::none_to_null;
+        using bertrand::util::is_truthy;
         static constexpr std::string_view meth_name{"fromkeys"};
         try {
             // parse arguments
-            PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+            PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
             PyObject* keys = pyargs.parse("keys");
             PyObject* value = pyargs.parse("value", nullptr, Py_None);
+            std::optional<size_t> max_size = pyargs.parse(
+                "max_size",
+                [](PyObject* obj) -> std::optional<size_t> {
+                    if (obj == Py_None) {
+                        return std::nullopt;
+                    }
+                    long long result = parse_int(obj);
+                    if (result < 0) {
+                        throw ValueError("max_size cannot be negative");
+                    }
+                    return std::make_optional(static_cast<size_t>(result));
+                },
+                std::optional<size_t>()
+            );
+            PyObject* spec = pyargs.parse("spec", none_to_null, (PyObject*) nullptr);
+            bool singly_linked = pyargs.parse("singly_linked", is_truthy, false);
+            bool packed = pyargs.parse("packed", is_truthy, false);
             pyargs.finalize();
-    
-            // TODO: choose first variant from Derived::Variant?  Or include
-            // singly_linked, packed?
 
-            // invoked equivalent C++ method
-            // TODO: this uses a specific instance rather than the type in general.
+            // TODO: rather than this, just implement a construct-like method that
+            // this hooks into, and which keeps track of strictly-typed.
+
+            // generate config code and initialize variant with empty dictionary
+            unsigned int code = (
+                Config::SINGLY_LINKED * singly_linked |
+                Config::FIXED_SIZE * max_size.has_value() |
+                Config::PACKED * packed
+            );
+            Derived::build_variant(code, result, max_size, spec);
+
+            // add all key-value pairs
             std::visit(
                 [&keys, &value](auto& dict) {
-                    dict.fromkeys(keys, value);
+                    for (PyObject* key : iter(keys)) {
+                        dict.add(key, value);
+                    }
                 },
-                self->variant
+                result->variant
             );
+
+            return reinterpret_cast<PyObject*>(result);
     
-        // translate C++ errors into Python exceptions
         } catch (...) {
+            Py_DECREF(result);
             throw_python();
             return nullptr;
         }
@@ -2325,6 +2352,8 @@ class PyLinkedDict :
         // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>
         // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
     >;
+    template <size_t I>
+    using Alt = typename std::variant_alternative_t<I, Variant>;
 
     friend Base;
     friend IList;
@@ -2338,20 +2367,61 @@ class PyLinkedDict :
         new (&variant) Variant(std::forward<Dict>(dict));
     }
 
-    /* Construct a particular alternative stored in the variant. */
-    template <size_t I>
-    inline static void alt(
-        PyLinkedDict* self,
-        PyObject* iterable,
-        std::optional<size_t> max_size,
-        PyObject* spec,
-        bool reverse
-    ) {
-        using Alt = typename std::variant_alternative_t<I, Variant>;
-        if (iterable == nullptr) {
-            new (&self->variant) Variant(Alt(max_size, spec));
-        } else { \
-            new (&self->variant) Variant(Alt(iterable, max_size, spec, reverse));
+    /* Parse the configuration code and initialize the variant with the forwarded
+    arguments. */
+    template <typename... Args>
+    static void build_variant(unsigned int code, PyLinkedDict* self, Args&&... args) {
+        switch (code) {
+            case (Config::DEFAULT):
+                new (&self->variant) Variant(Alt<0>(std::forward<Args>(args)...));
+                break;
+            // case (Config::PACKED):
+            //     new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::PACKED | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::FIXED_SIZE):
+            //     new (&self->variant) Variant(Alt<2>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::FIXED_SIZE | Config::PACKED):
+            //     new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED):
+            //     new (&self->variant) Variant(Alt<4>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::PACKED):
+            //     new (&self->variant) Variant(Alt<9>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<11>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
+            //     new (&self->variant) Variant(Alt<6>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
+            //     new (&self->variant) Variant(Alt<13>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<15>(std::forward<Args>(args)...));
+            //     break;
+            default:
+                throw ValueError("invalid argument configuration");
         }
     }
 
@@ -2372,57 +2442,10 @@ class PyLinkedDict :
             Config::PACKED * packed |
             Config::STRICTLY_TYPED * strictly_typed
         );
-        switch (code) {
-            case (Config::DEFAULT):
-                alt<0>(self, iterable, max_size, spec, reverse);
-                break;
-            // // case (Config::PACKED):
-            // //     alt<1>(self, iterable, max_size, spec, reverse);
-            // //     break;
-            // case (Config::STRICTLY_TYPED):
-            //     alt<1>(self, iterable, max_size, spec, reverse);
-            //     break;
-            // // case (Config::PACKED | Config::STRICTLY_TYPED):
-            // //     alt<3>(self, iterable, max_size, spec, reverse);
-            // //     break;
-            // case (Config::FIXED_SIZE):
-            //     alt<2>(self, iterable, max_size, spec, reverse);
-            //     break;
-            // // case (Config::FIXED_SIZE | Config::PACKED):
-            // //     alt<5>(self, iterable, max_size, spec, reverse);
-            // //     break;
-            // case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-            //     alt<3>(self, iterable, max_size, spec, reverse);
-            //     break;
-            // // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            // //     alt<7>(self, iterable, max_size, spec, reverse);
-            // //     break;
-            // case (Config::SINGLY_LINKED):
-            //     alt<4>(self, iterable, max_size, spec, reverse);
-            //     break;
-            // // case (Config::SINGLY_LINKED | Config::PACKED):
-            // //     alt<9>(self, iterable, max_size, spec, reverse);
-            // //     break;
-            // case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
-            //     alt<5>(self, iterable, max_size, spec, reverse);
-            //     break;
-            // // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
-            // //     alt<11>(self, iterable, max_size, spec, reverse);
-            // //     break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
-            //     alt<6>(self, iterable, max_size, spec, reverse);
-            //     break;
-            // // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
-            // //     alt<13>(self, iterable, max_size, spec, reverse);
-            // //     break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-            //     alt<7>(self, iterable, max_size, spec, reverse);
-            //     break;
-            // // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            // //     alt<15>(self, iterable, max_size, spec, reverse);
-            // //     break;
-            default:
-                throw ValueError("invalid argument configuration");
+        if (iterable == nullptr) {
+            build_variant(code, self, max_size, spec);
+        } else {
+            build_variant(code, self, iterable, max_size, spec, reverse);
         }
     }
 

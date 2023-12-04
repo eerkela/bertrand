@@ -725,8 +725,8 @@ public:
             );
 
         } catch (...) {
-            throw_python();
             Py_DECREF(result);
+            throw_python();
             return nullptr;
         }
     }
@@ -846,13 +846,18 @@ public:
                 if (result == nullptr) {
                     throw catch_python();
                 }
-                return std::visit(
-                    [&result, &key](auto& list) {
-                        result->from_cpp(list.slice(key).get());
-                        return reinterpret_cast<PyObject*>(result);
-                    },
-                    self->variant
-                );
+                try {
+                    return std::visit(
+                        [&result, &key](auto& list) {
+                            result->from_cpp(list.slice(key).get());
+                            return reinterpret_cast<PyObject*>(result);
+                        },
+                        self->variant
+                    );
+                } catch (...) {
+                    Py_DECREF(result);
+                    throw;
+                }
             }
 
             // unrecognized key type
@@ -1397,52 +1402,90 @@ class PyLinkedList :
     template <unsigned int Flags>
     using ListConfig = linked::LinkedList<PyObject*, Flags, BasicLock>;
     using Variant = std::variant<
-        ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>,
+        ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>
         // ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
-        ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
+        // ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
         // ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
-        ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
+        // ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
         // ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
+        // ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
         // ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
-        ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
+        // ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
         // ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
-        ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
+        // ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
         // ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
-        ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
+        // ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
         // ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>
+        // ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>
         // ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
     >;
+    template <size_t I>
+    using Alt = typename std::variant_alternative_t<I, Variant>;
 
     friend Base;
     friend IList;
     Variant variant;
 
-    /* Construct a PyLinkedList around an existing C++ LinkedList. */
-    template <typename List>
-    inline void from_cpp(List&& list) {
-        new (&variant) Variant(std::forward<List>(list));
-    }
-
-    /* Construct a particular alternative stored in the variant. */
-    template <size_t I>
-    inline static void alt(
-        PyLinkedList* self,
-        PyObject* iterable,
-        std::optional<size_t> max_size,
-        PyObject* spec,
-        bool reverse
-    ) {
-        using Alt = typename std::variant_alternative_t<I, Variant>;
-        if (iterable == nullptr) {
-            new (&self->variant) Variant(Alt(max_size, spec));
-        } else { \
-            new (&self->variant) Variant(Alt(iterable, max_size, spec, reverse));
+    /* Parse the configuration code and initialize the variant with the forwarded
+    arguments. */
+    template <typename... Args>
+    static void build_variant(unsigned int code, PyLinkedList* self, Args&&... args) {
+        switch (code) {
+            case (Config::DEFAULT):
+                new (&self->variant) Variant(Alt<0>(std::forward<Args>(args)...));
+                break;
+            // case (Config::PACKED):
+            //     new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::PACKED | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::FIXED_SIZE):
+            //     new (&self->variant) Variant(Alt<2>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::FIXED_SIZE | Config::PACKED):
+            //     new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED):
+            //     new (&self->variant) Variant(Alt<4>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::PACKED):
+            //     new (&self->variant) Variant(Alt<9>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<11>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
+            //     new (&self->variant) Variant(Alt<6>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
+            //     new (&self->variant) Variant(Alt<13>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            //     new (&self->variant) Variant(Alt<15>(std::forward<Args>(args)...));
+            //     break;
+            default:
+                throw ValueError("invalid argument configuration");
         }
     }
 
-    /* Construct a PyLinkedList from scratch using the given constructor arguments. */
+    /* Translate Python constructor arguments into a specific template configuration
+    and initialize the variant accordingly. */
     static void construct(
         PyLinkedList* self,
         PyObject* iterable,
@@ -1459,58 +1502,17 @@ class PyLinkedList :
             Config::PACKED * packed |
             Config::STRICTLY_TYPED * strictly_typed
         );
-        switch (code) {
-            case (Config::DEFAULT):
-                alt<0>(self, iterable, max_size, spec, reverse);
-                break;
-            // case (Config::PACKED):
-            //     alt<1>(self, iterable, max_size, spec, reverse);
-            //     break;
-            case (Config::STRICTLY_TYPED):
-                alt<1>(self, iterable, max_size, spec, reverse);
-                break;
-            // case (Config::PACKED | Config::STRICTLY_TYPED):
-            //     alt<3>(self, iterable, max_size, spec, reverse);
-            //     break;
-            case (Config::FIXED_SIZE):
-                alt<2>(self, iterable, max_size, spec, reverse);
-                break;
-            // case (Config::FIXED_SIZE | Config::PACKED):
-            //     alt<5>(self, iterable, max_size, spec, reverse);
-            //     break;
-            case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                alt<3>(self, iterable, max_size, spec, reverse);
-                break;
-            // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     alt<7>(self, iterable, max_size, spec, reverse);
-            //     break;
-            case (Config::SINGLY_LINKED):
-                alt<4>(self, iterable, max_size, spec, reverse);
-                break;
-            // case (Config::SINGLY_LINKED | Config::PACKED):
-            //     alt<9>(self, iterable, max_size, spec, reverse);
-            //     break;
-            case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
-                alt<5>(self, iterable, max_size, spec, reverse);
-                break;
-            // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
-            //     alt<11>(self, iterable, max_size, spec, reverse);
-            //     break;
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
-                alt<6>(self, iterable, max_size, spec, reverse);
-                break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
-            //     alt<13>(self, iterable, max_size, spec, reverse);
-            //     break;
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                alt<7>(self, iterable, max_size, spec, reverse);
-                break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     alt<15>(self, iterable, max_size, spec, reverse);
-            //     break;
-            default:
-                throw ValueError("invalid argument configuration");
+        if (iterable == nullptr) {
+            build_variant(code, self, max_size, spec);
+        } else {
+            build_variant(code, self, iterable, max_size, spec, reverse);
         }
+    }
+
+    /* Construct a PyLinkedList around an existing C++ LinkedList. */
+    template <typename List>
+    inline void from_cpp(List&& list) {
+        new (&variant) Variant(std::forward<List>(list));
     }
 
 public:

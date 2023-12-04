@@ -364,7 +364,7 @@ public:
         bool reverse
     ) : allocator(init_size(iterable, capacity), spec == Py_None ? nullptr : spec)
     {
-        for (auto item : iter(iterable)) {
+        for (const auto& item : iter(iterable)) {
             Node* curr = node(item);
             if (reverse) {
                 link(nullptr, curr, head());
@@ -745,7 +745,7 @@ public:
         bool reverse
     ) : Base(capacity, spec)
     {
-        for (auto item : iter(iterable)) {
+        for (const auto& item : iter(iterable)) {
             if (reverse) {
                 node<Allocator::EXIST_OK | Allocator::INSERT_HEAD>(item);
             } else {
@@ -907,7 +907,7 @@ public:
     ) : Base(capacity, spec)
     {
         PyDict dict(iterable);
-        for (auto item : iter(dict)) {
+        for (const auto& item : iter(dict)) {
             if (reverse) {
                 this->node<Allocator::EXIST_OK | Allocator::INSERT_HEAD>(item);
             } else {

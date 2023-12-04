@@ -586,7 +586,7 @@ class Mapped : public Wrapped {
     MappedType _mapped;
 
     /* Unpack a python tuple containing a key and value. */
-    inline static std::pair<PyObject*, PyObject*> unpack_python(const PyObject* tuple) {
+    inline static std::pair<PyObject*, PyObject*> unpack_python(PyObject* tuple) {
         static_assert(
             is_pyobject<KeyType> && is_pyobject<MappedType>,
             "Python tuples can only be unpacked by PyObject* nodes"
@@ -618,7 +618,7 @@ public:
     Mapped(const std::tuple<KeyType, MappedValue>& tuple) :
         Mapped(std::get<0>(tuple), std::get<1>(tuple))
     {}
-    Mapped(const PyObject* tuple) : Mapped(unpack_python(tuple)) {}
+    Mapped(PyObject* tuple) : Mapped(unpack_python(tuple)) {}
 
     /* Copy constructor. */
     Mapped(const Mapped& other) noexcept : Wrapped(other), _mapped(other._mapped) {

@@ -32,7 +32,7 @@ namespace linked {
 
         size_t size = view.size();
         try {
-            for (auto item : iter(items)) {
+            for (const auto& item : iter(items)) {
                 view.template node<flags>(item);
             }
 
@@ -87,7 +87,7 @@ namespace linked {
 
         // NOTE: This method is inherently destructive, so no attempt is made to return
         // the view to its original state if an error occurs.
-        for (auto item : iter(items)) {
+        for (const auto& item : iter(items)) {
             view.template node<flags>(item);
         }
     }
@@ -262,7 +262,7 @@ namespace linked {
         // if set is doubly-linked, we can remove nodes while searching them to avoid
         // an extra loop
         if constexpr (NodeTraits<Node>::has_prev) {
-            for (auto item : iter(items)) {
+            for (const auto& item : iter(items)) {
                 Node* node = view.search(item);
                 if (node != nullptr) {
                     view.unlink(node->prev(), node, node->next());
@@ -274,7 +274,7 @@ namespace linked {
         // otherwise, we iterate through the container and mark all nodes to remove
         } else {
             std::unordered_set<Node*> to_remove;
-            for (auto item : iter(items)) {
+            for (const auto& item : iter(items)) {
                 Node* node = view.search(item);
                 if (node != nullptr) to_remove.insert(node);
             }
@@ -308,7 +308,7 @@ namespace linked {
 
         // iterate through the container and mark all nodes to keep
         std::unordered_set<Node*> keep;
-        for (auto item : iter(items)) {
+        for (const auto& item : iter(items)) {
             Node* node = view.search(item);
             if (node != nullptr) keep.insert(node);
         }
