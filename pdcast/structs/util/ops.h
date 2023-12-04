@@ -26,10 +26,12 @@ namespace bertrand {
 
 namespace util {
 
+
+    // TODO: add string -> PyUnicode?
+
     /* Attempt to convert a C++ argument into an equivalent Python object. */
     template <typename T>
     PyObject* as_pyobject(T&& obj) {
-        // object must be a basic type
         static constexpr bool is_bool = std::is_same_v<std::decay_t<T>, bool>;
         static constexpr bool is_integer = std::is_integral_v<std::decay_t<T>>;
         static constexpr bool is_float = std::is_floating_point_v<std::decay_t<T>>;
@@ -48,13 +50,13 @@ namespace util {
             if constexpr (std::is_unsigned_v<T>) {
                 PyObject* result = PyLong_FromUnsignedLongLong(obj);
                 if (result == nullptr) {
-                    throw catch_python<TypeError>();
+                    throw catch_python();
                 }
                 return result;
             } else {
                 PyObject* result = PyLong_FromLongLong(obj);
                 if (result == nullptr) {
-                    throw catch_python<TypeError>();
+                    throw catch_python();
                 }
                 return result;
             }
@@ -64,7 +66,7 @@ namespace util {
         else {
             PyObject* result = PyFloat_FromDouble(obj);
             if (result == nullptr) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return result;
         }
@@ -73,12 +75,10 @@ namespace util {
     /* Wrap a pure C++/Python operation to allow mixed C++/Python arguments. */
     template <typename LHS, typename RHS, typename F>
     auto allow_mixed_args(F func, LHS lhs, RHS rhs) {
-        // case 1: both arguments are Python objects
         if constexpr (is_pyobject<LHS> && is_pyobject<RHS>) {
             return func(lhs, rhs);
         }
 
-        // case 2: left argument is Python object
         else if constexpr (is_pyobject<LHS>) {
             PyObject* b = as_pyobject(rhs);
             try {
@@ -91,7 +91,6 @@ namespace util {
             }
         }
 
-        // case 3: right argument is Python object
         else if constexpr (is_pyobject<RHS>) {
             PyObject* a = as_pyobject(lhs);
             try {
@@ -104,7 +103,6 @@ namespace util {
             }
         }
 
-        // case 4: neither argument is Python object
         else {
             return func(lhs, rhs);
         }
@@ -191,7 +189,7 @@ inline auto abs(const T& x) {
     if constexpr (is_pyobject<T>) {
         PyObject* val = PyNumber_Absolute(x);
         if (val == nullptr) {
-            throw catch_python<TypeError>();
+            throw catch_python();
         }
         return val;  // new reference
     } else {
@@ -206,7 +204,7 @@ inline auto invert(const T& x) {
     if constexpr (is_pyobject<T>) {
         PyObject* val = PyNumber_Invert(x);
         if (val == nullptr) {
-            throw catch_python<TypeError>();
+            throw catch_python();
         }
         return val;  // new reference
     } else {
@@ -221,7 +219,7 @@ inline auto negative(const T& x) {
     if constexpr (is_pyobject<T>) {
         PyObject* val = PyNumber_Negative(x);
         if (val == nullptr) {
-            throw catch_python<TypeError>();
+            throw catch_python();
         }
         return val;  // new reference
     } else {
@@ -236,7 +234,7 @@ inline auto positive(const T& x) {
     if constexpr (is_pyobject<T>) {
         PyObject* val = PyNumber_Positive(x);
         if (val == nullptr) {
-            throw catch_python<TypeError>();
+            throw catch_python();
         }
         return val;  // new reference
     } else {
@@ -259,12 +257,12 @@ inline size_t hash(const T& key) {
             // fall back to PyObject_Hash()
             result = PyObject_Hash(key);
             if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
         }
 
-        // convert to size_t
         return static_cast<size_t>(result);
+
     } else {
         return std::hash<T>()(key);
     }
@@ -274,17 +272,15 @@ inline size_t hash(const T& key) {
 /* Get the length of a C++ or Python object. */
 template <typename T>
 inline std::optional<size_t> len(const T& x) {
-    // check for x.size()
     if constexpr (util::ContainerTraits<T>::has_size) {
         return std::make_optional(x.size());
     }
 
-    // check for PyObject_Length()
     else if constexpr (is_pyobject<T>) {
         if (PyObject_HasAttrString(x, "__len__")) {
             Py_ssize_t size = PyObject_Length(x);
             if (size == -1 && PyErr_Occurred()) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return std::make_optional(static_cast<size_t>(size));
         } else {
@@ -324,11 +320,11 @@ std::string repr(const T& obj) {
     }
     PyObject* py_repr = PyObject_Repr(obj);
     if (py_repr == nullptr) {
-        throw catch_python<RuntimeError>();
+        throw catch_python();
     }
     const char* c_repr = PyUnicode_AsUTF8(py_repr);
     if (c_repr == nullptr) {
-        throw catch_python<RuntimeError>();
+        throw catch_python();
     }
     Py_DECREF(py_repr);
     return std::string(c_repr);
@@ -395,7 +391,7 @@ inline bool lt(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             int result = PyObject_RichCompareBool(a, b, Py_LT);
             if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return static_cast<bool>(result);
         } else {
@@ -414,7 +410,7 @@ inline bool le(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             int result = PyObject_RichCompareBool(a, b, Py_LE);
             if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return static_cast<bool>(result);
         } else {
@@ -432,7 +428,9 @@ inline bool eq(const LHS& lhs, const RHS& rhs) {
     auto execute = [](auto a, auto b) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             // fast path: check pointer equality
-            if (a == b) return true;
+            if (a == b) {
+                return true;
+            }
 
             // fast path: use string comparison if both objects are strings
             if (PyUnicode_CheckExact(a) && PyUnicode_CheckExact(b)) {
@@ -440,8 +438,12 @@ inline bool eq(const LHS& lhs, const RHS& rhs) {
                 // see: cpython/Objects/unicodeobject.c; unicode_compare_eq()
                 if (PyUnicode_IS_ASCII(a) && PyUnicode_IS_ASCII(b)) {
                     Py_ssize_t length = PyUnicode_GET_LENGTH(a);
-                    if (PyUnicode_GET_LENGTH(b) != length) return false;
-                    if (length == 0) return true;  // both strings are empty
+                    if (PyUnicode_GET_LENGTH(b) != length) {
+                        return false;
+                    }
+                    if (length == 0) {
+                        return true;
+                    }
                     const void* data_a = PyUnicode_DATA(a);
                     const void* data_b = PyUnicode_DATA(b);
                     return std::memcmp(data_a, data_b, length) == 0;
@@ -450,7 +452,7 @@ inline bool eq(const LHS& lhs, const RHS& rhs) {
                 // fall back to normal string comparison
                 int result = PyUnicode_Compare(a, b);
                 if (result == -1 && PyErr_Occurred()) {
-                    throw catch_python<TypeError>();
+                    throw catch_python();
                 }
                 return static_cast<bool>(result == 0);
             }
@@ -458,7 +460,7 @@ inline bool eq(const LHS& lhs, const RHS& rhs) {
             // fall back to normal == comparison
             int result = PyObject_RichCompareBool(a, b, Py_EQ);
             if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return static_cast<bool>(result);
         } else {
@@ -477,7 +479,7 @@ inline bool ne(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             int result = PyObject_RichCompareBool(a, b, Py_NE);
             if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return static_cast<bool>(result);
         } else {
@@ -496,7 +498,7 @@ inline bool ge(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             int result = PyObject_RichCompareBool(a, b, Py_GE);
             if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return static_cast<bool>(result);
         } else {
@@ -515,7 +517,7 @@ inline bool gt(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             int result = PyObject_RichCompareBool(a, b, Py_GT);
             if (result == -1 && PyErr_Occurred()) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return static_cast<bool>(result);
         } else {
@@ -535,17 +537,19 @@ bool lexical_lt(const LHS& lhs, const RHS& rhs) {
     auto it_lhs = iter(lhs).forward();
     auto it_rhs = iter(rhs).forward();
 
-    // compare until one of the sequences is exhausted
     while (it_lhs != it_lhs.end() && it_rhs != it_rhs.end()) {
         auto x = *it_lhs;
         auto y = *it_rhs;
-        if (lt(x, y)) return true;
-        if (lt(y, x)) return false;
+        if (lt(x, y)) {
+            return true;
+        }
+        if (lt(y, x)) {
+            return false;
+        }
         ++it_lhs;
         ++it_rhs;
     }
 
-    // check if lhs is shorter than rhs
     return (!(it_lhs != it_lhs.end()) && it_rhs != it_rhs.end());
 }
 
@@ -559,17 +563,19 @@ bool lexical_le(const LHS& lhs, const RHS& rhs) {
     auto it_lhs = iter(lhs).forward();
     auto it_rhs = iter(rhs).forward();
 
-    // compare until one of the sequences is exhausted
     while (it_lhs != it_lhs.end() && it_rhs != it_rhs.end()) {
         auto x = *it_lhs;
         auto y = *it_rhs;
-        if (lt(x, y)) return true;
-        if (lt(y, x)) return false;
+        if (lt(x, y)) {
+            return true;
+        }
+        if (lt(y, x)) {
+            return false;
+        }
         ++it_lhs;
         ++it_rhs;
     }
 
-    // check if lhs is shorter than or equal to rhs
     return !(it_lhs != it_lhs.end());
 }
 
@@ -582,14 +588,14 @@ bool lexical_eq(const LHS& lhs, const RHS& rhs) {
     auto it_lhs = iter(lhs).forward();
     auto it_rhs = iter(rhs).forward();
 
-    // compare until one of the sequences is exhausted
     while (it_lhs != it_lhs.end() && it_rhs != it_rhs.end()) {
-        if (ne(*it_lhs, *it_rhs)) return false;
+        if (ne(*it_lhs, *it_rhs)) {
+            return false;
+        }
         ++it_lhs;
         ++it_rhs;
     }
 
-    // check if both sequences are the same length
     return (!(it_lhs != it_lhs.end()) && !(it_rhs != it_rhs.end()));
 }
 
@@ -603,17 +609,19 @@ bool lexical_ge(const LHS& lhs, const RHS& rhs) {
     auto it_lhs = iter(lhs).forward();
     auto it_rhs = iter(rhs).forward();
 
-    // compare until one of the sequences is exhausted
     while (it_lhs != it_lhs.end() && it_rhs != it_rhs.end()) {
         auto x = *it_lhs;
         auto y = *it_rhs;
-        if (lt(y, x)) return true;
-        if (lt(x, y)) return false;
+        if (lt(y, x)) {
+            return true;
+        }
+        if (lt(x, y)) {
+            return false;
+        }
         ++it_lhs;
         ++it_rhs;
     }
 
-    // check if lhs is longer than or equal to rhs
     return !(it_rhs != it_rhs.end());
 }
 
@@ -626,17 +634,19 @@ bool lexical_gt(const LHS& lhs, const RHS& rhs) {
     auto it_lhs = iter(lhs).forward();
     auto it_rhs = iter(rhs).forward();
 
-    // compare until one of the sequences is exhausted
     while (it_lhs != it_lhs.end() && it_rhs != it_rhs.end()) {
         auto x = *it_lhs;
         auto y = *it_rhs;
-        if (lt(y, x)) return true;
-        if (lt(x, y)) return false;
+        if (lt(y, x)) {
+            return true;
+        }
+        if (lt(x, y)) {
+            return false;
+        }
         ++it_lhs;
         ++it_rhs;
     }
 
-    // check if lhs is longer than rhs
     return (!(it_rhs != it_rhs.end()) && it_lhs != it_lhs.end());
 }
 
@@ -648,7 +658,7 @@ inline auto plus(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_Add(a, b);
             if (result == nullptr) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return result;  // new reference
         } else {
@@ -667,7 +677,7 @@ inline auto minus(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_Subtract(a, b);
             if (result == nullptr) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return result;  // new reference
         } else {
@@ -686,7 +696,7 @@ inline auto multiply(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_Multiply(a, b);
             if (result == nullptr) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return result;  // new reference
         } else {
@@ -705,7 +715,7 @@ inline auto power(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_Power(a, b, Py_None);
             if (result == nullptr) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return result;  // new reference
         } else {
@@ -752,14 +762,16 @@ inline auto divide(const LHS& lhs, const RHS& rhs) {
                 PyErr_Clear();
                 result = PyNumber_FloorDivide(a, b);
                 if (result == nullptr) {
-                    throw catch_python<TypeError>();
+                    throw catch_python();
                 }
 
                 // if result < 0, check remainder != 0 and correct
                 try {
                     if (lt(result, 0)) {
                         PyObject* remainder = PyNumber_Remainder(a, b);
-                        if (remainder == nullptr) throw catch_python<TypeError>();
+                        if (remainder == nullptr) {
+                            throw catch_python();
+                        }
                         try {
                             bool nonzero = ne(remainder, 0);
                             if (nonzero) {
@@ -785,7 +797,7 @@ inline auto divide(const LHS& lhs, const RHS& rhs) {
             } else {
                 PyObject* result = PyNumber_TrueDivide(a, b);
                 if (result == nullptr) {
-                    throw catch_python<TypeError>();
+                    throw catch_python();
                 }
                 return result;  // new reference
             }
@@ -810,13 +822,17 @@ inline auto modulo(const LHS& lhs, const RHS& rhs) {
             if (lt(a, 0)) {
                 if (lt(b, 0)) {  // (a < 0, b < 0)  ===  a % b
                     PyObject* result = PyNumber_Remainder(a, b);
-                    if (result == nullptr) throw catch_python<TypeError>();
+                    if (result == nullptr) {
+                        throw catch_python();
+                    }
                     return result;
                 } else {  // (a < 0, b >= 0)  ===  -(-a % b)
                     PyObject* a = negative(a);
                     try {
                         PyObject* c = PyNumber_Remainder(a, b);
-                        if (c == nullptr) throw catch_python<TypeError>();
+                        if (c == nullptr) {
+                            throw catch_python();
+                        }
                         try {
                             PyObject* result = negative(c);
                             Py_DECREF(c);
@@ -837,7 +853,9 @@ inline auto modulo(const LHS& lhs, const RHS& rhs) {
                     PyObject* b = negative(b);
                     try {
                         PyObject* result = PyNumber_Remainder(a, b);
-                        if (result == nullptr) throw catch_python<TypeError>();
+                        if (result == nullptr) {
+                            throw catch_python();
+                        }
                         Py_DECREF(b);
                         return result;
                     } catch (...) {
@@ -846,7 +864,9 @@ inline auto modulo(const LHS& lhs, const RHS& rhs) {
                     }
                 } else {  // (a >= 0, b >= 0)  ===  a % b
                     PyObject* result = PyNumber_Remainder(a, b);
-                    if (result == nullptr) throw catch_python<TypeError>();
+                    if (result == nullptr) {
+                        throw catch_python();
+                    }
                     return result;
                 }
             }
@@ -867,7 +887,7 @@ inline auto bit_and(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_And(a, b);
             if (result == nullptr) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return result;  // new reference
         } else {
@@ -886,7 +906,7 @@ inline auto bit_or(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_Or(a, b);
             if (result == nullptr) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return result;  // new reference
         } else {
@@ -905,7 +925,7 @@ inline auto bit_xor(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_Xor(a, b);
             if (result == nullptr) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return result;  // new reference
         } else {
@@ -924,7 +944,7 @@ inline auto lshift(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_Lshift(a, b);
             if (result == nullptr) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return result;  // new reference
         } else {
@@ -943,7 +963,7 @@ inline auto rshift(const LHS& lhs, const RHS& rhs) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             PyObject* result = PyNumber_Rshift(a, b);
             if (result == nullptr) {
-                throw catch_python<TypeError>();
+                throw catch_python();
             }
             return result;  // new reference
         } else {

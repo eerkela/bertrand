@@ -1,22 +1,294 @@
-// include guard: BERTRAND_STRUCTS_LINKED_CORE_VIEW_H
 #ifndef BERTRAND_STRUCTS_LINKED_CORE_VIEW_H
 #define BERTRAND_STRUCTS_LINKED_CORE_VIEW_H
 
 #include <cstddef>  // size_t
 #include <optional>  // std::optional
 #include <stack>  // std::stack
+#include <type_traits>  // std::conditional_t<>
 #include <Python.h>  // CPython API
 #include "node.h"  // Hashed<>, Mapped<>
 #include "allocate.h"  // allocators
-#include "iter.h"  // Iterator, Direction
 #include "../../util/container.h"  // PyDict
-#include "../../util/iter.h"  // iter()
 #include "../../util/ops.h"  // len()
 
 
 namespace bertrand {
 namespace structs {
 namespace linked {
+
+
+/////////////////////////
+////    ITERATORS    ////
+/////////////////////////
+
+
+/* enum to make iterator direction hints more readable. */
+enum class Direction {
+    forward,
+    backward
+};
+
+
+/* Base class for forward iterators and reverse iterators over doubly-linked lists. */
+template <typename NodeType, bool has_stack = false>
+class BaseIterator {};
+
+
+/* Base class for reverse iterators over singly-linked lists.
+
+NOTE: these use an auxiliary stack to allow reverse iteration even when no `prev`
+pointer is available.  This requires an additional iteration over the list to populate
+the stack, but is only applied in the special case of a reverse iterator over a
+singly-linked list.  The upside is that we can use the same interface for both singly-
+and doubly-linked lists. */
+template <typename NodeType>
+class BaseIterator<NodeType, true> {
+    static constexpr bool constant = std::is_const_v<NodeType>;
+    using Node = std::conditional_t<constant, const NodeType, NodeType>;
+
+protected:
+    std::stack<Node*> stack;
+    BaseIterator() {}
+    BaseIterator(std::stack<Node*>&& stack) : stack(std::move(stack)) {}
+    BaseIterator(const BaseIterator& other) : stack(other.stack) {}
+    BaseIterator(BaseIterator&& other) : stack(std::move(other.stack)) {}
+};
+
+
+/* An optionally const iterator over the templated view, with the given direction. */
+template <typename ViewType, Direction dir>
+class Iterator :
+    public BaseIterator<
+        std::conditional_t<
+            std::is_const_v<ViewType>,
+            const typename ViewType::Node,
+            typename ViewType::Node
+        >,
+        dir == Direction::backward && !NodeTraits<typename ViewType::Node>::has_prev
+    >
+{
+    static constexpr bool constant = std::is_const_v<ViewType>;
+
+public:
+    using View = ViewType;
+    using Node = std::conditional_t<
+        constant,
+        const typename View::Node,
+        typename View::Node
+    >;
+    using Value = std::conditional_t<
+        constant,
+        const typename Node::Value,
+        typename Node::Value
+    >;
+    static constexpr Direction direction = dir;
+
+protected:
+    static constexpr bool has_stack = (
+        direction == Direction::backward && !NodeTraits<Node>::has_prev
+    );
+    using Base = BaseIterator<Node, has_stack>;
+
+public:
+    using iterator_category     = std::forward_iterator_tag;
+    using difference_type       = std::ptrdiff_t;
+    using value_type            = std::remove_reference_t<Value>;
+    using pointer               = value_type*;
+    using reference             = value_type&;
+
+    /////////////////////////////////
+    ////    ITERATOR PROTOCOL    ////
+    /////////////////////////////////
+
+    /* Dereference the iterator to get the value at the current position. */
+    inline Value operator*() const noexcept {
+        return _curr->value();
+    }
+
+    /* Prefix increment to advance the iterator to the next node in the view. */
+    inline Iterator& operator++() noexcept {
+        if constexpr (direction == Direction::backward) {
+            _next = _curr;
+            _curr = _prev;
+            if (_prev != nullptr) {
+                if constexpr (has_stack) {
+                    if (this->stack.empty()) {
+                        _prev = nullptr;
+                    } else {
+                        _prev = this->stack.top();
+                        this->stack.pop();
+                    }
+                } else {
+                    _prev = _prev->prev();
+                }
+            }
+        } else {
+            _prev = _curr;
+            _curr = _next;
+            if (_next != nullptr) {
+                _next = _next->next();
+            }
+        }
+        return *this;
+    }
+
+    /* Inequality comparison to terminate the sequence. */
+    template <Direction T>
+    inline bool operator!=(const Iterator<View, T>& other) const noexcept {
+        return _curr != other.curr();
+    }
+
+    //////////////////////////////
+    ////    HELPER METHODS    ////
+    //////////////////////////////
+
+    /* Get the previous node in the list. */
+    inline Node* prev() const noexcept {
+        return _prev;
+    }
+
+    /* Get the current node in the list. */
+    inline Node* curr() const noexcept {
+        return _curr;
+    }
+
+    /* Get the next node in the list. */
+    inline Node* next() const noexcept {
+        return _next;
+    }
+
+    /* NOTE: View iterators also provide the following convenience methods for
+     * efficiently changing the state of the list.  These are not part of the standard
+     * iterator protocol, but they are useful for implementing algorithms that modify
+     * the list while iterating over it, such as index-based insertions, removals, etc.
+     * Here's a basic diagram showing how they work.  The current iterator position is
+     * denoted by the caret (^):
+     *
+     * original:    a -> b -> c
+     *                   ^
+     * insert(d):   a -> d -> b -> c
+     *                   ^
+     * drop():      a -> b -> c             (returns dropped node)
+     *                   ^
+     * replace(e):  a -> e -> c             (returns replaced node)
+     *                   ^
+     *
+     * NOTE: these methods are only available on mutable iterators, and care must be
+     * taken to ensure that the iterator is not invalidated by the operation.  This can
+     * happen if the operation triggers a reallocation of the underlying data (via the
+     * allocator's resize() method).  In this case, the Node pointers stored in the
+     * iterator will no longer be valid, and accessing them can lead to undefined
+     * behavior.
+     */
+
+    /* Insert a node in between the previous and current nodes, implicitly rewinding
+    the iterator. */
+    template <bool cond = !constant>
+    inline auto insert(Node* node) -> std::enable_if_t<cond, void> {
+        if constexpr (direction == Direction::backward) {
+            view.link(_curr, node, _next);
+        } else {
+            view.link(_prev, node, _curr);
+        }
+
+        // move current node to subsequent node, new node replaces curr
+        if constexpr (direction == Direction::backward) {
+            if constexpr (has_stack) {
+                this->stack.push(_prev);
+            }
+            _prev = _curr;
+        } else {
+            _next = _curr;
+        }
+        _curr = node;
+    }
+
+    /* Remove the node at the current position, implicitly advancing the iterator. */
+    template <bool cond = !constant>
+    inline auto drop() -> std::enable_if_t<cond, Node*> {
+        Node* removed = _curr;
+        view.unlink(_prev, _curr, _next);
+
+        // move subsequent node to current node, then get following node
+        if constexpr (dir == Direction::backward) {
+            _curr = _prev;
+            if (_prev != nullptr) {
+                if constexpr (has_stack) {
+                    if (this->stack.empty()) {
+                        _prev = nullptr;
+                    } else {
+                        _prev = this->stack.top();
+                        this->stack.pop();
+                    }
+                } else {
+                    _prev = _prev->prev();
+                }
+            }
+        } else {
+            _curr = _next;
+            if (_next != nullptr) {
+                _next = _next->next();
+            }
+        }
+
+        return removed;
+    }
+
+    /* Replace the node at the current position without advancing the iterator. */
+    template <bool cond = !constant>
+    inline auto replace(Node* node) -> std::enable_if_t<cond, Node*> {
+        view.unlink(_prev, _curr, _next);
+        view.link(_prev, node, _next);
+        Node* result = _curr;
+        _curr = node;
+        return result;
+    }
+
+    /* Create an empty iterator. */
+    Iterator(View& view) :
+        view(view), _prev(nullptr), _curr(nullptr), _next(nullptr)
+    {}
+
+    /* Create an iterator around a particular linkage within the view. */
+    Iterator(View& view, Node* prev, Node* curr, Node* next) :
+        view(view), _prev(prev), _curr(curr), _next(next)
+    {}
+
+    /* Create a reverse iterator over a singly-linked view. */
+    template <bool cond = has_stack, std::enable_if_t<cond, int> = 0>
+    Iterator(View& view, std::stack<Node*>&& prev, Node* curr, Node* next) :
+        Base(std::move(prev)), view(view), _prev(this->stack.top()), _curr(curr),
+        _next(next)
+    {
+        this->stack.pop();  // always has at least one element (nullptr)
+    }
+
+    /* Copy constructor. */
+    Iterator(const Iterator& other) :
+        Base(other), view(other.view), _prev(other._prev), _curr(other._curr),
+        _next(other._next)
+    {}
+
+    /* Move constructor. */
+    Iterator(Iterator&& other) :
+        Base(std::move(other)), view(other.view), _prev(other._prev),
+        _curr(other._curr), _next(other._next)
+    {
+        other._prev = nullptr;
+        other._curr = nullptr;
+        other._next = nullptr;
+    }
+
+    /* Assignment operators deleted for simplicity. */
+    Iterator& operator=(const Iterator&) = delete;
+    Iterator& operator=(Iterator&&) = delete;
+
+protected:
+    View& view;
+    Node* _prev;
+    Node* _curr;
+    Node* _next;
+};
 
 
 ////////////////////
@@ -47,8 +319,8 @@ match the algorithms that are used simply by including the appropriate headers, 
 regard to the underlying implementation details.
 
 Each allocator must at minimum conform to the interface found in the BaseAllocator
-class template in the allocate.h header.  They may add additional functionality as
-specified in the extensions to BaseView listed below. */
+class template in allocate.h.  They may add additional functionality as specified in
+the extensions to BaseView listed below. */
 template <typename Derived, typename AllocatorType>
 class BaseView : public ViewTag {
 public:
@@ -71,7 +343,7 @@ public:
     static constexpr bool PACKED = Allocator::PACKED;
     static constexpr bool STRICTLY_TYPED = Allocator::STRICTLY_TYPED;
 
-    // low-level memory management
+    // low-level node allocation/deallocation
     mutable Allocator allocator;  // use at your own risk!
 
     ////////////////////////////
@@ -80,7 +352,7 @@ public:
 
     /* Construct an empty view. */
     BaseView(std::optional<size_t> capacity, PyObject* spec) :
-        allocator(capacity, spec)
+        allocator(capacity, spec == Py_None ? nullptr : spec)
     {}
 
     /* Construct a view from an input iterable. */
@@ -90,7 +362,7 @@ public:
         std::optional<size_t> capacity,
         PyObject* spec,
         bool reverse
-    ) : allocator(init_size(iterable, capacity), spec)
+    ) : allocator(init_size(iterable, capacity), spec == Py_None ? nullptr : spec)
     {
         for (auto item : iter(iterable)) {
             Node* curr = node(item);
@@ -110,7 +382,7 @@ public:
         std::optional<size_t> capacity,
         PyObject* spec,
         bool reverse
-    ) : allocator(capacity, spec)
+    ) : allocator(capacity, spec == Py_None ? nullptr : spec)
     {
         for (; begin != end; ++begin) {
             Node* curr = node(*begin);
@@ -130,24 +402,18 @@ public:
 
     /* Copy assignment operator. */
     BaseView& operator=(const BaseView& other) {
-        // check for self-assignment
         if (this == &other) {
             return *this;
         }
-
-        // copy nodes
         allocator = other.allocator;
         return *this;
     }
 
     /* Move assignment operator. */
     BaseView& operator=(BaseView&& other) noexcept {
-        // check for self-assignment
         if (this == &other) {
             return *this;
         }
-
-        // transfer ownership of nodes
         allocator = std::move(other.allocator);
         return *this;
     }
@@ -205,15 +471,23 @@ public:
     /* Link a node to its neighbors to form a linked list. */
     inline void link(Node* prev, Node* curr, Node* next) {
         Node::link(prev, curr, next);  // as defined by Node
-        if (prev == nullptr) allocator.head = curr;
-        if (next == nullptr) allocator.tail = curr;
+        if (prev == nullptr) {
+            allocator.head = curr;
+        }
+        if (next == nullptr) {
+            allocator.tail = curr;
+        }
     }
 
     /* Unlink a node from its neighbors. */
     inline void unlink(Node* prev, Node* curr, Node* next) {
         Node::unlink(prev, curr, next);  // as defined by Node
-        if (prev == nullptr) allocator.head = next;
-        if (next == nullptr) allocator.tail = prev;
+        if (prev == nullptr) {
+            allocator.head = next;
+        }
+        if (next == nullptr) {
+            allocator.tail = prev;
+        }
     }
 
     /* Get the current size of the list. */
@@ -261,7 +535,7 @@ public:
     implements a `size()` method or is a Python object with a `__len__()` attribute.
     Otherwise, produce an empty MemGuard. */
     template <typename Container>
-    inline MemGuard try_reserve(Container& container) const {
+    inline MemGuard try_reserve(const Container& container) const {
         return allocator.try_reserve(container);
     }
 
@@ -306,7 +580,6 @@ public:
      * other C++ containers, as well as its more streamlined/intuitive interface.
      */
 
-    /* Return a mutable forward iterator to the head of a view. */
     Iterator<Direction::forward> begin() {
         if (head() == nullptr) {
             return end();
@@ -315,23 +588,21 @@ public:
         return Iterator<Direction::forward>(*this, nullptr, head(), next);
     }
 
-    /* Return a mutable forward iterator to terminate a view. */
     Iterator<Direction::forward> end() {
         return Iterator<Direction::forward>(*this);
     }
 
-    /* Return a mutable reverse iterator to the tail of a view. */
     Iterator<Direction::backward> rbegin() {
         if (tail() == nullptr) {
             return rend();
         }
 
-        // if list is doubly-linked, we can just use the prev pointer to get neighbors
+        // if list is doubly-linked, we can use prev to get neighbors
         if constexpr (NodeTraits<Node>::has_prev) {
             Node* prev = tail()->prev();
             return Iterator<Direction::backward>(*this, prev, tail(), nullptr);
 
-        // Otherwise, we have to build a temporary stack of prev pointers
+        // Otherwise, build a temporary stack of prev pointers
         } else {
             std::stack<Node*> prev;
             prev.push(nullptr);  // stack always has at least one element (nullptr)
@@ -346,18 +617,26 @@ public:
         }
     }
 
-    /* Return a mutable reverse iterator to terminate a view. */
     Iterator<Direction::backward> rend() {
         return Iterator<Direction::backward>(*this);
     }
 
-    /* Return a set of iterators over a const view. */
-    ConstIterator<Direction::forward> begin() const { return cbegin(); }
-    ConstIterator<Direction::forward> end() const { return cend(); }
-    ConstIterator<Direction::backward> rbegin() const { return crbegin(); }
-    ConstIterator<Direction::backward> rend() const { return crend(); }
+    ConstIterator<Direction::forward> begin() const {
+        return cbegin();
+    }
 
-    /* Return a const forward iterator to the head of a view. */
+    ConstIterator<Direction::forward> end() const {
+        return cend();
+    }
+
+    ConstIterator<Direction::backward> rbegin() const {
+        return crbegin();
+    }
+
+    ConstIterator<Direction::backward> rend() const {
+        return crend();
+    }
+
     ConstIterator<Direction::forward> cbegin() const {
         if (head() == nullptr) {
             return cend();
@@ -366,23 +645,21 @@ public:
         return ConstIterator<Direction::forward>(*this, nullptr, head(), next);
     }
 
-    /* Return a const forward iterator to terminate thae view. */
     ConstIterator<Direction::forward> cend() const {
         return ConstIterator<Direction::forward>(*this);
     }
 
-    /* Return a const reverse iterator to the tail of a view. */
     ConstIterator<Direction::backward> crbegin() const {
         if (tail() == nullptr) {
             return crend();
         }
 
-        // if list is doubly-linked, we can just use the prev pointer to get neighbors
+        // if list is doubly-linked, we can use prev to get neighbors
         if constexpr (NodeTraits<Node>::has_prev) {
             Node* prev = tail()->prev();
             return ConstIterator<Direction::backward>(*this, prev, tail(), nullptr);
 
-        // Otherwise, we have to build a temporary stack of prev pointers
+        // Otherwise, build a temporary stack of prev pointers
         } else {
             std::stack<Node*> prev;
             prev.push(nullptr);  // stack always has at least one element (nullptr)
@@ -397,7 +674,6 @@ public:
         }
     }
 
-    /* Return a const reverse iterator to terminate a view. */
     ConstIterator<Direction::backward> crend() const {
         return ConstIterator<Direction::backward>(*this);
     }
@@ -412,11 +688,7 @@ public:
     }
 
     /* Check whether a given index is closer to the tail of the list than it is to the
-    head.
-    
-    NOTE: this is used to optimize certain operations for doubly-linked lists, which
-    can be traversed in either direction.  If the index is closer to the tail, then we
-    can save time by traversing backward rather than forward from the head. */
+    head. */
     inline bool closer_to_tail(size_t index) const noexcept {
         return index > (size() + 1) / 2;
     }
@@ -430,7 +702,6 @@ protected:
         Container&& container,
         std::optional<size_t> capacity
     ) {
-        // if dynamic, get length of container and compare with specified capacity
         if constexpr (DYNAMIC) {
             std::optional<size_t> size = len(container);
 
@@ -445,7 +716,6 @@ protected:
             }
         }
 
-        // otherwise, use capacity directly
         return capacity;
     }
 

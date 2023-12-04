@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_LINKED_BASE_H
 #ifndef BERTRAND_STRUCTS_LINKED_BASE_H
 #define BERTRAND_STRUCTS_LINKED_BASE_H
 
@@ -7,7 +6,7 @@
 #include <optional>  // std::optional
 #include <string_view>  // std::string_view
 #include <variant>  // std::visit
-#include "core/iter.h"  // Direction
+#include "core/view.h"  // Views, Direction
 #include "../util/iter.h"  // iter(), IterProxy
 #include "../util/ops.h"  // PyIterator
 #include "../util/string.h"  // string concatenation
@@ -57,8 +56,11 @@ public:
     static constexpr bool PACKED = View::PACKED;
     static constexpr bool STRICTLY_TYPED = View::STRICTLY_TYPED;
 
-    /* Every LinkedList contains a view that manages low-level node
-    allocation/deallocation and links between nodes. */
+    /* Every linked data structure encapsulates a view that represents the core of the
+    data structure and holds the low-level nodes.  For safety, these are not exposed
+    directly to the public due to the risk of memory corruption and/or invalidating the
+    list.  However, if you know what you're doing, they can be accessed via this
+    attribute. */
     View view;
 
     ////////////////////////////
@@ -110,14 +112,18 @@ public:
 
     /* Copy assignment operator. */
     LinkedBase& operator=(const LinkedBase& other) {
-        if (this == &other) return *this;  // check for self-assignment
+        if (this == &other) {
+            return *this;
+        }
         view = other.view;
         return *this;
     }
 
     /* Move assignment operator. */
     LinkedBase& operator=(LinkedBase&& other) {
-        if (this == &other) return *this;  // check for self-assignment
+        if (this == &other) {
+            return *this;
+        }
         view = std::move(other.view);
         return *this;
     }
@@ -146,11 +152,11 @@ public:
         return view.max_size();
     }
 
-    /* Reserve memory for a specific number of nodes ahead of time. */
+    /* Reserve memory for a specific number of nodes ahead of time.  NOTE: the new
+    capacity is absolute, not relative to the current capacity.  If a capacity of 25 is
+    requested (for example), then the allocator array will be resized to house at least
+    25 nodes, regardless of the current capacity. */
     inline MemGuard reserve(std::optional<size_t> capacity = std::nullopt) {
-        // NOTE: the new capacity is absolute, not relative to the current capacity.  If
-        // a capacity of 25 is requested (for example), then the allocator array will be
-        // resized to house at least 25 nodes, regardless of the current capacity.
         return view.reserve(capacity);
     }
 
@@ -457,25 +463,24 @@ public:
             );
             pyargs.finalize();
 
-            // assert value is non-negative
             if (capacity.value_or(0) < 0) {
                 PyErr_SetString(PyExc_ValueError, "capacity cannot be negative");
                 return nullptr;
             }
 
-            // get context manager
+            // build context manager
             return std::visit(
                 [&capacity](auto& list) {
                     using List = typename std::decay_t<decltype(list)>;
                     using Allocator = typename List::Allocator;
                     using PyMemGuard = typename Allocator::PyMemGuard;
+
                     size_t size = capacity.value_or(list.size());
                     return PyMemGuard::construct(&list.view.allocator, size);
                 },
                 self->variant
             );
 
-        // translate C++ exceptions into Python errors
         } catch (...) {
             throw_python();
             return nullptr;
@@ -491,9 +496,8 @@ public:
                 },
                 self->variant
             );
-            Py_RETURN_NONE;  // void
+            Py_RETURN_NONE;
 
-        // translate C++ exceptions into Python errors
         } catch (...) {
             throw_python();
             return nullptr;
@@ -521,9 +525,8 @@ public:
                 },
                 self->variant
             );
-            Py_RETURN_NONE;  // void
+            Py_RETURN_NONE;
 
-        // translate C++ exceptions into Python errors
         } catch (...) {
             throw_python();
             return nullptr;
@@ -538,7 +541,9 @@ public:
             &Specialized::specialized_spec,
             type
         );
-        if (specialized_type == nullptr) return nullptr;
+        if (specialized_type == nullptr) {
+            return nullptr;
+        }
 
         // set specialization attribute so __init__()/specialize() can retrieve it
         if (PyObject_SetAttrString(specialized_type, "_specialization", spec) < 0) {
@@ -546,7 +551,6 @@ public:
             return nullptr;
         }
 
-        // return the new type
         return specialized_type;
     }
 
@@ -590,7 +594,9 @@ protected:
         PyObject* /* ignored */
     ) {
         Derived* self = reinterpret_cast<Derived*>(type->tp_alloc(type, 0));
-        if (self == nullptr) return nullptr;
+        if (self == nullptr) {
+            return nullptr;
+        }
         return reinterpret_cast<PyObject*>(self);
     }
 
@@ -605,7 +611,9 @@ protected:
     inline static int __traverse__(Derived* self, visitproc visit, void* arg) noexcept {
         return std::visit(
             [&](auto& list) {
-                for (auto item : list) Py_VISIT(item);
+                for (auto item : list) {
+                    Py_VISIT(item);
+                }
                 return 0;
             },
             self->variant
@@ -616,7 +624,9 @@ protected:
     inline static int __clear__(Derived* self) noexcept {
         return std::visit(
             [&](auto& list) {
-                for (auto item : list) Py_CLEAR(item);
+                for (auto item : list) {
+                    Py_CLEAR(item);
+                }
                 return 0;
             },
             self->variant
@@ -645,9 +655,13 @@ protected:
                 std::optional<size_t> max_size = pyargs.parse(
                     "max_size",
                     [](PyObject* obj) -> std::optional<size_t> {
-                        if (obj == Py_None) return std::nullopt;
+                        if (obj == Py_None) {
+                            return std::nullopt;
+                        }
                         long long result = bertrand::util::parse_int(obj);
-                        if (result < 0) throw ValueError("max_size cannot be negative");
+                        if (result < 0) {
+                            throw ValueError("max_size cannot be negative");
+                        }
                         return std::make_optional(static_cast<size_t>(result));
                     },
                     std::optional<size_t>()
@@ -675,7 +689,6 @@ protected:
                 // exit normally
                 return 0;
 
-            // translate C++ errors into Python exceptions
             } catch (...) {
                 throw_python();
                 return -1;

@@ -5,9 +5,8 @@
 #include <sstream>  // std::ostringstream
 #include <type_traits>  // std::enable_if_t<>
 #include "../../util/ops.h"  // repr()
-#include "../core/iter.h"  // Iterator
 #include "../core/node.h"  // NodeTraits
-#include "../core/view.h"  // ViewTraits
+#include "../core/view.h"  // ViewTraits, Direction
 
 
 // TODO: move_to_index() has same problem as insert() when it comes to handling the

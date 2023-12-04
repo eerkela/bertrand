@@ -1,15 +1,9 @@
-// include guard: BERTRAND_STRUCTS_UTIL_FUNC_H
 #ifndef BERTRAND_STRUCTS_UTIL_FUNC_H
 #define BERTRAND_STRUCTS_UTIL_FUNC_H
 
 #include <type_traits>  // std::enable_if_t<>, std::invoke_result_t<>, etc.
 #include <utility>  // std::tuple<>, std::index_sequence_for<>, etc.
 #include <Python.h>  // CPython API
-
-
-/* NOTE: This file contains utilities for working with C++ function pointers and Python
- * callables, including various traits for compile-time introspection.
- */
 
 
 namespace bertrand {
@@ -37,7 +31,7 @@ public:
         MEMBER_FUNCTION_PTR,
         LAMBDA,  // specifically those that do not capture any local variables
         FUNCTOR,  // any callable object that is not a lambda
-        PYTHON_CALLABLE,  // A PyObject* of any kind (no type checking is done)
+        PYTHON_CALLABLE,  // A PyObject* of any kind (no runtime checking is done)
         UNKNOWN
     };
 
@@ -69,7 +63,6 @@ private:
         }
     }();
 
-    // sanity check
     static_assert(
         cat != Category::UNKNOWN,
         "Func is not a valid function pointer or Python callable"

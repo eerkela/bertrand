@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_LINKED_LIST_H
 #ifndef BERTRAND_STRUCTS_LINKED_LIST_H
 #define BERTRAND_STRUCTS_LINKED_LIST_H
 
@@ -496,7 +495,6 @@ public:
     /* Implement `LinkedList.append()` in Python. */
     static PyObject* append(Derived* self, PyObject* item) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&item](auto& list) {
                     list.append(item);
@@ -505,7 +503,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -515,7 +512,6 @@ public:
     /* Implement `LinkedList.append_left()` in Python. */
     static PyObject* append_left(Derived* self, PyObject* item) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&item](auto& list) {
                     list.append_left(item);
@@ -524,7 +520,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -544,7 +539,6 @@ public:
             PyObject* item = pyargs.parse("item");
             pyargs.finalize();
 
-            // invoke equivalent C++ method
             std::visit(
                 [&index, &item](auto& list) {
                     list.insert(index, item);
@@ -553,7 +547,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -563,7 +556,6 @@ public:
     /* Implement `LinkedList.extend()` in Python. */
     static PyObject* extend(Derived* self, PyObject* items) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&items](auto& list) {
                     list.extend(items);
@@ -572,7 +564,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -582,7 +573,6 @@ public:
     /* Implement `LinkedList.extend_left()` in Python. */
     static PyObject* extend_left(Derived* self, PyObject* items) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&items](auto& list) {
                     list.extend_left(items);
@@ -591,7 +581,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -613,7 +602,6 @@ public:
             Index stop = pyargs.parse("stop", parse_opt_int, Index());
             pyargs.finalize();
 
-            // invoke equivalent C++ method
             size_t result = std::visit(
                 [&item, &start, &stop](auto& list) {
                     return list.index(item, start, stop);
@@ -621,10 +609,8 @@ public:
                 self->variant
             );
 
-            // return as Python integer
             return PyLong_FromSize_t(result);
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -646,7 +632,6 @@ public:
             Index stop = pyargs.parse("stop", parse_opt_int, Index());
             pyargs.finalize();
 
-            // invoke equivalent C++ method
             size_t result = std::visit(
                 [&item, &start, &stop](auto& list) {
                     return list.count(item, start, stop);
@@ -654,10 +639,8 @@ public:
                 self->variant
             );
 
-            // return as Python integer
             return PyLong_FromSize_t(result);
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -667,7 +650,6 @@ public:
     /* Implement `LinkedList.remove()` in Python. */
     static PyObject* remove(Derived* self, PyObject* item) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&item](auto& list) {
                     list.remove(item);
@@ -676,7 +658,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -695,15 +676,13 @@ public:
             long long index = pyargs.parse("index", parse_int, (long long)-1);
             pyargs.finalize();
 
-            // invoke equivalent C++ method
             return std::visit(
                 [&index](auto& list) {
-                    return list.pop(index);  // returns new reference
+                    return list.pop(index);  // new reference
                 },
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -713,7 +692,6 @@ public:
     /* Implement `LinkedList.clear()` in Python. */
     static PyObject* clear(Derived* self, PyObject* /* ignored */) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [](auto& list) {
                     list.clear();
@@ -722,7 +700,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -734,9 +711,10 @@ public:
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
-        if (result == nullptr) return nullptr;  // propagate
+        if (result == nullptr) {
+            return nullptr;  // propagate
+        }
 
-        // delegate to equivalent C++ method
         try {
             return std::visit(
                 [&result](auto& list) {
@@ -746,7 +724,6 @@ public:
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             Py_DECREF(result);
@@ -773,7 +750,6 @@ public:
             bool reverse = pyargs.keyword("reverse", is_truthy, false);
             pyargs.finalize();
 
-            // invoke equivalent C++ method
             std::visit(
                 [&key, &reverse](auto& list) {
                     list.sort(key, reverse);
@@ -782,7 +758,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -792,7 +767,6 @@ public:
     /* Implement `LinkedList.reverse()` in Python. */
     static PyObject* reverse(Derived* self, PyObject* /* ignored */) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [](auto& list) {
                     list.reverse();
@@ -801,7 +775,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -820,7 +793,6 @@ public:
             long long steps = pyargs.parse("steps", parse_int, (long long)1);
             pyargs.finalize();
 
-            // invoke equivalent C++ method
             std::visit(
                 [&steps](auto& list) {
                     list.rotate(steps);
@@ -829,7 +801,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -839,7 +810,6 @@ public:
     /* Implement `LinkedList.__contains__()` in Python. */
     static int __contains__(Derived* self, PyObject* item) {
         try {
-            // invoke equivalent C++ method
             return std::visit(
                 [&item](auto& list) {
                     return list.contains(item);
@@ -847,7 +817,6 @@ public:
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return -1;
@@ -874,7 +843,9 @@ public:
                 Derived* result = reinterpret_cast<Derived*>(
                     Derived::__new__(&Derived::Type, nullptr, nullptr)
                 );
-                if (result == nullptr) throw catch_python();
+                if (result == nullptr) {
+                    throw catch_python();
+                }
                 return std::visit(
                     [&result, &key](auto& list) {
                         result->from_cpp(list.slice(key).get());
@@ -892,7 +863,6 @@ public:
             );
             return nullptr;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -952,9 +922,10 @@ public:
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
-        if (result == nullptr) return nullptr;  // propagate
+        if (result == nullptr) {
+            return nullptr;  // propagate
+        }
 
-        // delegate to equivalent C++ operator
         try {
             return std::visit(
                 [&other, &result](auto& list) {
@@ -964,7 +935,6 @@ public:
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             Py_DECREF(result);
             throw_python();
@@ -984,7 +954,6 @@ public:
             Py_INCREF(self);
             return reinterpret_cast<PyObject*>(self);
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -996,9 +965,10 @@ public:
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
-        if (result == nullptr) return nullptr;  // propagate
+        if (result == nullptr) {
+            return nullptr;  // propagate
+        }
 
-        // delegate to equivalent C++ operator
         try {
             return std::visit(
                 [&count, &result](auto& list) {
@@ -1008,7 +978,6 @@ public:
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             Py_DECREF(result);
             throw_python();
@@ -1028,7 +997,6 @@ public:
             Py_INCREF(self);
             return reinterpret_cast<PyObject*>(self);
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1080,7 +1048,6 @@ protected:
             );
             return Py_NewRef(result);
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1102,7 +1069,6 @@ protected:
             );
             return 0;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return -1;
@@ -1566,9 +1532,13 @@ public:
             std::optional<size_t> max_size = pyargs.parse(
                 "max_size",
                 [](PyObject* obj) -> std::optional<size_t> {
-                    if (obj == Py_None) return std::nullopt;
+                    if (obj == Py_None) {
+                        return std::nullopt;
+                    }
                     long long result = parse_int(obj);
-                    if (result < 0) throw ValueError("max_size cannot be negative");
+                    if (result < 0) {
+                        throw ValueError("max_size cannot be negative");
+                    }
                     return std::make_optional(static_cast<size_t>(result));
                 },
                 std::optional<size_t>()
@@ -1587,7 +1557,6 @@ public:
             // exit normally
             return 0;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return -1;
@@ -1616,7 +1585,6 @@ public:
             auto str = stream.str();
             return PyUnicode_FromStringAndSize(str.c_str(), str.size());
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1636,7 +1604,6 @@ public:
             auto str = stream.str();
             return PyUnicode_FromStringAndSize(str.c_str(), str.size());
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1848,7 +1815,9 @@ public:
     /* Check whether another PyObject* is of this type. */
     inline static bool typecheck(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &Type);
-        if (result == -1) throw catch_python();
+        if (result == -1) {
+            throw catch_python();
+        }
         return static_cast<bool>(result);
     }
 
@@ -1871,11 +1840,15 @@ static struct PyModuleDef module_list = {
 /* Python import hook. */
 PyMODINIT_FUNC PyInit_list(void) {
     // initialize type objects
-    if (PyType_Ready(&PyLinkedList::Type) < 0) return nullptr;
+    if (PyType_Ready(&PyLinkedList::Type) < 0) {
+        return nullptr;
+    }
 
     // initialize module
     PyObject* mod = PyModule_Create(&module_list);
-    if (mod == nullptr) return nullptr;
+    if (mod == nullptr) {
+        return nullptr;
+    }
 
     // link type to module
     Py_INCREF(&PyLinkedList::Type);

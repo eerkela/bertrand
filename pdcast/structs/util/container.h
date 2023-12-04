@@ -1,8 +1,13 @@
-// include guard: BERTRAND_STRUCTS_UTIL_CONTAINER_H
 #ifndef BERTRAND_STRUCTS_UTIL_CONTAINER_H
 #define BERTRAND_STRUCTS_UTIL_CONTAINER_H
 
+#include <array>  // std::array
 #include <cstddef>  // size_t
+#include <deque>  // std::deque
+#include <string>  // std::string
+#include <string_view>  // std::string_view
+#include <type_traits>  // std::enable_if_t<>
+#include <valarray>  // std::valarray
 #include <vector>  // std::vector
 #include <Python.h>  // CPython API
 #include "base.h"  // is_pyobject<>
@@ -32,7 +37,9 @@ class PyTuple {
 
     /* Adopt an existing Python tuple. */
     inline static PyObject* adopt(PyObject* tuple) {
-        if (!PyTuple_Check(tuple)) throw TypeError("expected a tuple");
+        if (!PyTuple_Check(tuple)) {
+            throw TypeError("expected a tuple");
+        }
         return tuple;
     }
 
@@ -47,12 +54,16 @@ public:
     >
     PyTuple(Args&&... args) : obj(nullptr), length(sizeof...(Args)) {
         obj = PyTuple_Pack(length, std::forward<Args>(args)...);
-        if (obj == nullptr) throw catch_python();
+        if (obj == nullptr) {
+            throw catch_python();
+        }
     }
 
     /* Construct an empty Python tuple of the specified size. */
     PyTuple(Py_ssize_t size) : obj(PyTuple_New(size)), length(size) {
-        if (obj == nullptr) throw catch_python();
+        if (obj == nullptr) {
+            throw catch_python();
+        }
     }
 
     /* Construct a PyTuple around an existing CPython tuple.  Steals a reference. */
@@ -62,7 +73,9 @@ public:
     PyTuple(const PyTuple& other) :
         obj(PyTuple_New(other.length)), length(other.length)
     {
-        if (obj == nullptr) throw catch_python();
+        if (obj == nullptr) {
+            throw catch_python();
+        }
         for (Py_ssize_t i = 0; i < length; ++i) {
             SET_ITEM(i, Py_NewRef(other.GET_ITEM(i)));
         }
@@ -76,16 +89,18 @@ public:
 
     /* Copy assignment. */
     PyTuple& operator=(const PyTuple& other) {
-        if (this == &other) return *this;
+        if (this == &other) {
+            return *this;
+        }
 
-        // create a new tuple
         PyObject* new_tuple = PyTuple_New(other.length);
-        if (new_tuple == nullptr) throw catch_python();
+        if (new_tuple == nullptr) {
+            throw catch_python();
+        }
         for (Py_ssize_t i = 0; i < other.length; ++i) {
             PyTuple_SET_ITEM(new_tuple, i, Py_NewRef(other.GET_ITEM(i)));
         }
 
-        // release the old tuple and replace
         Py_XDECREF(obj);
         obj = new_tuple;
         length = other.length;
@@ -94,7 +109,9 @@ public:
 
     /* Move assignment. */
     PyTuple& operator=(PyTuple&& other) {
-        if (this == &other) return *this;
+        if (this == &other) {
+            return *this;
+        }
         Py_XDECREF(obj);
         obj = other.obj;
         length = other.length;
@@ -151,7 +168,9 @@ public:
 
         /* Get the item at this index. */
         inline PyObject* get() const {
-            if (index >= tuple.length) throw IndexError("index out of range");
+            if (index >= tuple.length) {
+                throw IndexError("index out of range");
+            }
             return tuple.GET_ITEM(index);  // borrowed reference
         }
 
@@ -163,7 +182,9 @@ public:
 
         /* Set the item at this index.  Steals a reference to `value`. */
         inline void set(PyObject* value) {
-            if (index >= tuple.length) throw IndexError("index out of range");
+            if (index >= tuple.length) {
+                throw IndexError("index out of range");
+            }
             Py_XDECREF(tuple.GET_ITEM(index));
             tuple.SET_ITEM(index, value);
         }
@@ -200,9 +221,15 @@ public:
 
     /* Get a new PyTuple representing a slice within this tuple. */
     inline PyTuple get_slice(size_t start, size_t stop) const {
-        if (start > size()) throw IndexError("start index out of range");
-        if (stop > size()) throw IndexError("stop index out of range");
-        if (start > stop) throw IndexError("start index greater than stop index");
+        if (start > size()) {
+            throw IndexError("start index out of range");
+        }
+        if (stop > size()) {
+            throw IndexError("stop index out of range");
+        }
+        if (start > stop) {
+            throw IndexError("start index greater than stop index");
+        }
         return PyTuple(PyTuple_GetSlice(obj, start, stop));
     }
 
@@ -215,7 +242,9 @@ class PyList {
 
     /* adopt an existing Python list. */
     inline static PyObject* adopt(PyObject* list) {
-        if (!PyList_Check(list)) throw TypeError("expected a list");
+        if (!PyList_Check(list)) {
+            throw TypeError("expected a list");
+        }
         return list;
     }
 
@@ -225,7 +254,9 @@ public:
 
     /* Construct an empty Python list of the specified size. */
     PyList(Py_ssize_t size) : obj(PyList_New(size)), length(size) {
-        if (obj == nullptr) throw catch_python();
+        if (obj == nullptr) {
+            throw catch_python();
+        }
     }
 
     /* Construct a PyList around an existing CPython list.  Steals a reference. */
@@ -235,7 +266,9 @@ public:
     PyList(const PyList& other) :
         obj(PyList_New(other.length)), length(other.length)
     {
-        if (obj == nullptr) throw catch_python();
+        if (obj == nullptr) {
+            throw catch_python();
+        }
         for (Py_ssize_t i = 0; i < length; ++i) {
             SET_ITEM(i, Py_NewRef(other.GET_ITEM(i)));
         }
@@ -249,16 +282,18 @@ public:
 
     /* Copy assignment. */
     PyList& operator=(const PyList& other) {
-        if (this == &other) return *this;
+        if (this == &other) {
+            return *this;
+        }
 
-        // create a new list
         PyObject* new_list = PyList_New(other.length);
-        if (new_list == nullptr) throw catch_python();
+        if (new_list == nullptr) {
+            throw catch_python();
+        }
         for (Py_ssize_t i = 0; i < other.length; ++i) {
             PyList_SET_ITEM(new_list, i, Py_NewRef(other.GET_ITEM(i)));
         }
 
-        // release the old list and replace
         Py_XDECREF(obj);
         obj = new_list;
         length = other.length;
@@ -267,7 +302,9 @@ public:
 
     /* Move assignment. */
     PyList& operator=(PyList&& other) {
-        if (this == &other) return *this;
+        if (this == &other) {
+            return *this;
+        }
         Py_XDECREF(obj);
         obj = other.obj;
         length = other.length;
@@ -305,22 +342,30 @@ public:
 
     /* Append an element to a mutable list. */
     inline void append(PyObject* value) {
-        if (PyList_Append(obj, value)) throw catch_python();
+        if (PyList_Append(obj, value)) {
+            throw catch_python();
+        }
     }
 
     /* Insert an element into a mutable list. */
     inline void insert(size_t index, PyObject* value) {
-        if (PyList_Insert(obj, index, value)) throw catch_python();
+        if (PyList_Insert(obj, index, value)) {
+            throw catch_python();
+        }
     }
 
     /* Sort a mutable list. */
     inline void sort() {
-        if (PyList_Sort(obj)) throw catch_python();
+        if (PyList_Sort(obj)) {
+            throw catch_python();
+        }
     }
 
     /* Reverse a mutable list. */
     inline void reverse() {
-        if (PyList_Reverse(obj)) throw catch_python();
+        if (PyList_Reverse(obj)) {
+            throw catch_python();
+        }
     }
 
     /* Convert the list into an equivalent tuple. */
@@ -349,7 +394,9 @@ public:
 
         /* Get the item at this index. */
         inline PyObject* get() const {
-            if (index >= list.length) throw IndexError("index out of range");
+            if (index >= list.length) {
+                throw IndexError("index out of range");
+            }
             return list.GET_ITEM(index);  // borrowed reference
         }
 
@@ -361,7 +408,9 @@ public:
 
         /* Set the item at this index. */
         inline void set(PyObject* value) {
-            if (index >= list.length) throw IndexError("index out of range");
+            if (index >= list.length) {
+                throw IndexError("index out of range");
+            }
             Py_XDECREF(list.GET_ITEM(index));
             list.SET_ITEM(index, Py_NewRef(value));
         }
@@ -398,18 +447,32 @@ public:
 
     /* Get a new PyList representing a slice within this list. */
     inline PyList get_slice(size_t start, size_t stop) const {
-        if (start > size()) throw IndexError("start index out of range");
-        if (stop > size()) throw IndexError("stop index out of range");
-        if (start > stop) throw IndexError("start index greater than stop index");
+        if (start > size()) {
+            throw IndexError("start index out of range");
+        }
+        if (stop > size()) {
+            throw IndexError("stop index out of range");
+        }
+        if (start > stop) {
+            throw IndexError("start index greater than stop index");
+        }
         return PyList(PyList_GetSlice(obj, start, stop));
     }
 
     /* Set a slice within a mutable list. */
     inline void set_slice(size_t start, size_t stop, PyObject* value) {
-        if (start > size()) throw IndexError("start index out of range");
-        if (stop > size()) throw IndexError("stop index out of range");
-        if (start > stop) throw IndexError("start index greater than stop index");
-        if (PyList_SetSlice(obj, start, stop, value)) throw catch_python();
+        if (start > size()) {
+            throw IndexError("start index out of range");
+        }
+        if (stop > size()) {
+            throw IndexError("stop index out of range");
+        }
+        if (start > stop) {
+            throw IndexError("start index greater than stop index");
+        }
+        if (PyList_SetSlice(obj, start, stop, value)) {
+            throw catch_python();
+        }
     }
 
 };
@@ -420,7 +483,9 @@ class PySet {
 
     /* adopt an existing Python set. */
     inline static PyObject* adopt(PyObject* set) {
-        if (!PyAnySet_Check(set)) throw TypeError("expected a set");
+        if (!PyAnySet_Check(set)) {
+            throw TypeError("expected a set");
+        }
         return set;
     }
 
@@ -430,7 +495,9 @@ public:
 
     /* Construct an empty Python set. */
     PySet() : obj(PySet_New(nullptr)), length(0) {
-        if (obj == nullptr) throw catch_python();
+        if (obj == nullptr) {
+            throw catch_python();
+        }
     }
 
     /* Construct a PySet around an existing CPython set.  Steals a reference. */
@@ -438,7 +505,9 @@ public:
 
     /* Copy constructor. */
     PySet(const PySet& other) : obj(PySet_New(other.obj)), length(other.length) {
-        if (obj == nullptr) throw catch_python();
+        if (obj == nullptr) {
+            throw catch_python();
+        }
     }
 
     /* Move constructor. */
@@ -449,13 +518,15 @@ public:
 
     /* Copy assignment. */
     PySet& operator=(const PySet& other) {
-        if (this == &other) return *this;
+        if (this == &other) {
+            return *this;
+        }
 
-        // create a new set
         PyObject* new_set = PySet_New(other.obj);
-        if (new_set == nullptr) throw catch_python();
+        if (new_set == nullptr) {
+            throw catch_python();
+        }
 
-        // release the old set and replace
         Py_XDECREF(obj);
         obj = new_set;
         length = other.length;
@@ -464,7 +535,9 @@ public:
 
     /* Move assignment. */
     PySet& operator=(PySet&& other) {
-        if (this == &other) return *this;
+        if (this == &other) {
+            return *this;
+        }
         Py_XDECREF(obj);
         obj = other.obj;
         length = other.length;
@@ -498,7 +571,9 @@ public:
     /* Check if the set contains a particular key. */
     inline bool contains(PyObject* key) const {
         int result = PySet_Contains(obj, key);
-        if (result == -1) throw catch_python();
+        if (result == -1) {
+            throw catch_python();
+        }
         return result;
     }
 
@@ -510,7 +585,9 @@ public:
     /* Remove an element from a mutable set. */
     inline void remove(PyObject* value) {
         int result = PySet_Discard(obj, value);
-        if (result == -1) throw catch_python();
+        if (result == -1) {
+            throw catch_python();
+        }
         if (result == 0) {
             std::ostringstream msg;
             msg << repr(value);
@@ -520,19 +597,25 @@ public:
 
     /* Discard an element from a mutable set. */
     inline void discard(PyObject* value) {
-        if (PySet_Discard(obj, value) == -1) throw catch_python();
+        if (PySet_Discard(obj, value) == -1) {
+            throw catch_python();
+        }
     }
 
     /* Pop an item from a mutable set. */
     inline PyObject* pop() {
         PyObject* value = PySet_Pop(obj);
-        if (value == nullptr) throw catch_python();
+        if (value == nullptr) {
+            throw catch_python();
+        }
         return value;
     }
 
     /* Clear a mutable set. */
     inline void clear() {
-        if (!PySet_Clear(obj)) throw catch_python();
+        if (!PySet_Clear(obj)) {
+            throw catch_python();
+        }
     }
 
 };
@@ -543,7 +626,9 @@ class PyDict {
 
     /* adopt an existing Python dictionary. */
     inline static PyObject* adopt(PyObject* dict) {
-        if (!PyDict_Check(dict)) throw TypeError("expected a dict");
+        if (!PyDict_Check(dict)) {
+            throw TypeError("expected a dict");
+        }
         return dict;
     }
 
@@ -553,7 +638,9 @@ public:
 
     /* Construct an empty Python dictionary. */
     PyDict() : obj(PyDict_New()), length(0) {
-        if (obj == nullptr) throw catch_python();
+        if (obj == nullptr) {
+            throw catch_python();
+        }
     }
 
     /* Construct a PyDict around an existing CPython dictionary.  Steals a reference. */
@@ -561,8 +648,10 @@ public:
 
     /* Copy constructor. */
     PyDict(const PyDict& other) : obj(PyDict_New()), length(other.length) {
-        if (obj == nullptr) throw catch_python();
-        update(other.obj);  // copy the contents of the other dict
+        if (obj == nullptr) {
+            throw catch_python();
+        }
+        update(other.obj);
     }
 
     /* Move constructor. */
@@ -573,14 +662,16 @@ public:
 
     /* Copy assignment. */
     PyDict& operator=(const PyDict& other) {
-        if (this == &other) return *this;
+        if (this == &other) {
+            return *this;
+        }
 
-        // create a new dict
         PyObject* new_dict = PyDict_New();
-        if (new_dict == nullptr) throw catch_python();
-        update(other.obj);  // copy the contents of the other dict
+        if (new_dict == nullptr) {
+            throw catch_python();
+        }
+        update(other.obj);
 
-        // release the old dict and replace
         Py_XDECREF(obj);
         obj = new_dict;
         length = other.length;
@@ -589,7 +680,9 @@ public:
 
     /* Move assignment. */
     PyDict& operator=(PyDict&& other) {
-        if (this == &other) return *this;
+        if (this == &other) {
+            return *this;
+        }
         Py_XDECREF(obj);
         obj = other.obj;
         length = other.length;
@@ -625,7 +718,6 @@ public:
         }
 
     public:
-        // iterator tags for std::iterator_traits
         using iterator_category     = std::forward_iterator_tag;
         using difference_type       = std::ptrdiff_t;
         using value_type            = std::pair<PyObject*, PyObject*>;
@@ -682,7 +774,9 @@ public:
     /* Check if the dictionary contains a particular key. */
     inline bool contains(PyObject* key) const {
         int result = PyDict_Contains(obj, key);
-        if (result == -1) throw catch_python();
+        if (result == -1) {
+            throw catch_python();
+        }
         return result;
     }
 
@@ -706,25 +800,33 @@ public:
     /* Update this dictionary with another Python mapping, overriding the current
     values on collision. */
     inline void update(PyObject* other) {
-        if (PyDict_Merge(obj, other, 1)) throw catch_python();
+        if (PyDict_Merge(obj, other, 1)) {
+            throw catch_python();
+        }
     }
 
     /* Update this dictionary with another Python container that is known to contain
     key-value pairs of length 2, overriding the current values on collision. */
     inline void update_pairs(PyObject* other) {
-        if (PyDict_MergeFromSeq2(obj, other, 1)) throw catch_python();
+        if (PyDict_MergeFromSeq2(obj, other, 1)) {
+            throw catch_python();
+        }
     }
 
     /* Update this dictionary with another Python mapping, keeping the current values
     on collision. */
     inline void merge(PyObject* other) {
-        if (PyDict_Merge(obj, other, 0)) throw catch_python();
+        if (PyDict_Merge(obj, other, 0)) {
+            throw catch_python();
+        }
     }
 
     /* Update this dictionary with another Python container that is known to contain
     key-value pairs of length 2, keeping the current values on collision. */
     inline void merge_pairs(PyObject* other) {
-        if (PyDict_MergeFromSeq2(obj, other, 0)) throw catch_python();
+        if (PyDict_MergeFromSeq2(obj, other, 0)) {
+            throw catch_python();
+        }
     }
 
     /* An assignable proxy for a particular key within the dictionary. */
@@ -766,9 +868,13 @@ public:
         and does not clear the previous value if one is present. */
         inline void set(PyObject* value) {
             if constexpr (std::is_same_v<U, const char *>) {
-                if (PyDict_SetItemString(dict.obj, key, value)) throw catch_python();
+                if (PyDict_SetItemString(dict.obj, key, value)) {
+                    throw catch_python();
+                }
             } else {
-                if (PyDict_SetItem(dict.obj, key, value)) throw catch_python();
+                if (PyDict_SetItem(dict.obj, key, value)) {
+                    throw catch_python();
+                }
             }
         }
 
@@ -781,9 +887,13 @@ public:
         /* Delete the key from the dictionary. */
         inline void del() {
             if constexpr (std::is_same_v<U, const char *>) {
-                if (PyDict_DelItemString(dict.obj, key)) throw catch_python();
+                if (PyDict_DelItemString(dict.obj, key)) {
+                    throw catch_python();
+                }
             } else {
-                if (PyDict_DelItem(dict.obj, key)) throw catch_python();
+                if (PyDict_DelItem(dict.obj, key)) {
+                    throw catch_python();
+                }
             }
         }
 
@@ -836,9 +946,10 @@ class PyFastSequence {
             return Py_NewRef(iterable);
         }
 
-        // unpack into a fast sequence
         PyObject* seq = PySequence_Fast(iterable, "could not unpack Python iterable");
-        if (seq == nullptr) throw catch_python();
+        if (seq == nullptr) {
+            throw catch_python();
+        }
         return seq;
     }
 
@@ -864,7 +975,9 @@ public:
 
     /* Copy assignment. */
     PyFastSequence& operator=(const PyFastSequence& other) {
-        if (this == &other) return *this;
+        if (this == &other) {
+            return *this;
+        }
         PyObject* seq = unpack(other.obj);
         Py_XDECREF(obj);
         obj = seq;
@@ -874,7 +987,9 @@ public:
 
     /* Move assignment. */
     PyFastSequence& operator=(PyFastSequence&& other) {
-        if (this == &other) return *this;
+        if (this == &other) {
+            return *this;
+        }
         Py_XDECREF(obj);
         obj = other.obj;
         length = other.length;
@@ -909,7 +1024,9 @@ public:
     /* Get the value at a particular index of the sequence.  Returns a borrowed
     reference. */
     inline PyObject* operator[](size_t index) const {
-        if (index >= size()) throw IndexError("index out of range");
+        if (index >= size()) {
+            throw IndexError("index out of range");
+        }
         return GET_ITEM(index);
     }
 
@@ -920,6 +1037,48 @@ public:
     }
 
 };
+
+
+
+/* A trait that controls which C++ types are passed through the sequence() helper
+without modification.  These must be vector or array types that support a definite
+`.size()` method as well as integer-based indexing via the `[]` operator.  If a type
+does not appear here, then it is wrapped in a std::vector. */
+template <typename T>
+struct SequenceFilter : std::false_type {};
+
+template <typename T, typename Alloc>
+struct SequenceFilter<std::vector<T, Alloc>> : std::true_type {};
+
+template <typename T, size_t N> 
+struct SequenceFilter<std::array<T, N>> : std::true_type {};
+
+template <typename T, typename Alloc>
+struct SequenceFilter<std::deque<T, Alloc>> : std::true_type {};
+
+template <>
+struct SequenceFilter<std::string> : std::true_type {};
+template <>
+struct SequenceFilter<std::wstring> : std::true_type {};
+template <>
+struct SequenceFilter<std::u16string> : std::true_type {};
+template <>
+struct SequenceFilter<std::u32string> : std::true_type {};
+
+template <>
+struct SequenceFilter<std::string_view> : std::true_type {};
+template <>
+struct SequenceFilter<std::wstring_view> : std::true_type {};
+template <>
+struct SequenceFilter<std::u16string_view> : std::true_type {};
+template <>
+struct SequenceFilter<std::u32string_view> : std::true_type {};
+
+template <typename T>
+struct SequenceFilter<std::valarray<T>> : std::true_type {};
+
+
+// TODO: add std::span, std::u8string, std::u8string_view (C++20)
 
 
 /* Unpack an arbitrary Python iterable or C++ container into a sequence that supports
@@ -933,7 +1092,13 @@ inline auto sequence(Iterable&& iterable) {
         static_assert(Traits::forward_iterable, "container must be forward iterable");
 
         // if the container already supports random access, then return it directly
-        if constexpr (Traits::has_size && Traits::indexable) {
+        if constexpr (
+            SequenceFilter<
+                std::remove_cv_t<
+                    std::remove_reference_t<Iterable>
+                >
+            >::value
+        ) {
             return std::forward<Iterable>(iterable);
         } else {
             auto iter = iter(iterable);

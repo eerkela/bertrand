@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_UTIL_THREAD_H
 #ifndef BERTRAND_STRUCTS_UTIL_THREAD_H
 #define BERTRAND_STRUCTS_UTIL_THREAD_H
 
@@ -27,8 +26,8 @@ namespace util {
 
 /* Enum holding all possible guard types. */
 enum class LockMode {
-    EXCLUSIVE,  // returned by functor()  <- default call operator
-    SHARED  // returned by functor.shared()
+    EXCLUSIVE,
+    SHARED
 };
 
 
@@ -477,7 +476,6 @@ public:
         // successfully acquired.  The second thread will then proceed to acquire the
         // lock and update the owner set accordingly.
 
-        // otherwise, attempt to acquire the lock
         _SharedGuard guard = LockType::shared(std::forward<Args>(args)...);  // blocks
         shared_owners.insert(id);
         return SharedGuard(*this, std::move(guard));
@@ -522,7 +520,6 @@ public:
         // thread will proceed to modify the owner.  The second just waits until the
         // first thread releases the lock, and then updates the owner accordingly.
 
-        // otherwise, attempt to acquire the lock
         _ExclusiveGuard guard = LockType::operator()(std::forward<Args>(args)...);  // blocks
         owner = id;
         return ExclusiveGuard(*this, std::move(guard));
@@ -569,10 +566,8 @@ class SpinLock : public LockType {
         using namespace std::chrono;
         std::ostringstream msg;
 
-        // get numeric component
         msg << duration.count();
 
-        // add units
         if constexpr (std::is_same_v<Duration, nanoseconds>) {
             msg << "ns";
         } else if constexpr (std::is_same_v<Duration, microseconds>) {
@@ -590,7 +585,6 @@ class SpinLock : public LockType {
             msg << std::to_string(Duration::period::den) << " s)";
         }
 
-        // return as std::string
         return msg.str();
     }
 
@@ -616,7 +610,7 @@ public:
             // try to lock the mutex
             std::optional<Guard> guard = LockType::try_lock();
             if (guard.has_value()) {
-                return guard.value();  // lock succeeded
+                return guard.value();
             }
 
             // check for maximum number of retries
@@ -661,7 +655,7 @@ public:
             // try to lock the mutex
             std::optional<Guard> guard = LockType::try_shared();
             if (guard.has_value()) {
-                return guard.value();  // lock succeeded
+                return guard.value();
             }
 
             // check for maximum number of retries
@@ -713,14 +707,12 @@ public:
     inline auto operator()(Args&&... args) const {
         auto start = Clock::now();
 
-        // acquire lock
         auto result = LockType::operator()(std::forward<Args>(args)...);
 
         auto end = Clock::now();
         lock_time += std::chrono::duration_cast<Resolution>(end - start);
         ++lock_count;
 
-        // create a guard using the acquired lock
         return result;
     }
 
@@ -731,14 +723,12 @@ public:
     {
         auto start = Clock::now();
 
-        // acquire lock
         auto result = LockType::shared(std::forward<Args>(args)...);
 
         auto end = Clock::now();
         lock_time += std::chrono::duration_cast<Resolution>(end - start);
         ++lock_count;
 
-        // create a guard using the acquired lock
         return result;
     }
 
@@ -749,7 +739,7 @@ public:
 
     /* Get the total time spent waiting to acquire the lock. */
     inline Resolution duration() const {
-        return lock_time;  // includes a small overhead for lock acquisition
+        return lock_time;
     }
 
     /* Get the average time spent waiting to acquire the lock. */
@@ -908,7 +898,6 @@ public:
 
         /* Enter the context manager's block, acquiring a new lock. */
         static PyObject* __enter__(PyThreadGuard* self, PyObject* /* ignored */) {
-            // check if the lock has already been acquired
             if (self->has_guard) {
                 PyErr_SetString(
                     PyExc_RuntimeError,
@@ -917,7 +906,6 @@ public:
                 return nullptr;
             }
 
-            // acquire the lock
             try {
                 if constexpr (Traits::mode == LockMode::EXCLUSIVE) {
                     new (&self->guard) GuardType(self->lock->operator()());
@@ -928,13 +916,11 @@ public:
                     return nullptr;
                 }
 
-            // translate C++ exceptions to Python errors
             } catch (...) {
                 throw_python();
                 return nullptr;
             }
 
-            // return new reference
             self->has_guard = true;
             return Py_NewRef(self);
         }
@@ -958,7 +944,6 @@ public:
 
         /* Construct a Python lock from a C++ lock guard. */
         inline static PyObject* construct(LockType* lock) {
-            // allocate
             PyThreadGuard* self = PyObject_New(PyThreadGuard, &Type);
             if (self == nullptr) {
                 PyErr_SetString(
@@ -968,7 +953,6 @@ public:
                 return nullptr;
             }
 
-            // initialize
             self->lock = lock;
             self->has_guard = false;
             return reinterpret_cast<PyObject*>(self);
@@ -1057,7 +1041,6 @@ bool
                 .tp_getset = properties,
             };
 
-            // register Python type
             if (PyType_Ready(&slots) < 0) {
                 throw std::runtime_error("could not initialize PyThreadGuard type");
             }
@@ -1085,14 +1068,12 @@ bool
 
     /* Construct a Python wrapper around a C++ lock functor. */
     inline static PyObject* construct(LockType& lock) {
-        // allocate
         PyLock* result = PyObject_New(PyLock, &Type);
         if (result == nullptr) {
             PyErr_SetString(PyExc_RuntimeError, "could not allocate Python lock proxy");
             return nullptr;
         }
 
-        // initialize
         result->lock = &lock;
         return reinterpret_cast<PyObject*>(result);
     }
@@ -1177,7 +1158,7 @@ private:
 
     /* Deallocate the lock functor. */
     inline static void __dealloc__(PyLock* self) {
-        Type.tp_free(self);  // no additional cleanup required
+        Type.tp_free(self);
     }
 
     /* Docstrings for public attributes of the lock functor. */
@@ -1354,7 +1335,6 @@ Examples
             .tp_getset = properties,
         };
 
-        // register Python type
         if (PyType_Ready(&slots) < 0) {
             throw std::runtime_error("could not initialize PyLock type");
         }

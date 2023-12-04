@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_LINKED_CORE_NODE_H
 #ifndef BERTRAND_STRUCTS_LINKED_CORE_NODE_H
 #define BERTRAND_STRUCTS_LINKED_CORE_NODE_H
 
@@ -21,81 +20,106 @@ namespace linked {
 ////////////////////
 
 
-/* Empty tag class marking a node for a linked data structure.
-
-NOTE: this class is inherited by all nodes, and can be used for easy SFINAE checks via
-std::is_base_of, without requiring any foreknowledge of template parameters. */
+/* Empty tag class marking a node for a linked data structure.  This class is inherited
+by all nodes, and can be used for easy SFINAE checks via std::is_base_of, without
+requiring any foreknowledge of template parameters. */
 class NodeTag {};
 
 
 /* Base class containing common functionality across all nodes. */
 template <typename ValueType>
 class BaseNode : public NodeTag {
-    ValueType _value;
-
 public:
     using Value = ValueType;
 
-    /* Get the value within the node. */
+    /* Get the value held by the node. */
     inline Value value() const noexcept {
         return _value;
     }
 
-    /* Apply an explicit type check to the wrapped value if it is a Python object. */
+    /* Apply an explicit type check to the value if it is a Python object. */
     template <bool cond = is_pyobject<Value>>
     inline std::enable_if_t<cond, bool> typecheck(PyObject* specialization) const {
+        if (specialization == nullptr) {
+            return true;
+        }
         int comp = PyObject_IsInstance(_value, specialization);
-        if (comp == -1) throw catch_python();
-        return static_cast<bool>(comp);
+        if (comp == -1) {
+            throw catch_python();
+        }
+        return comp;
     }
 
 protected:
+    Value _value;
 
     /* Initialize a node with a given value. */
-    inline BaseNode(Value value) noexcept : _value(value) {
-        if constexpr (is_pyobject<Value>) Py_XINCREF(value);
+    inline BaseNode(const Value& value) noexcept : _value(value) {
+        if constexpr (is_pyobject<Value>) {
+            Py_XINCREF(value);
+        }
     }
 
     /* Copy constructor. */
     inline BaseNode(const BaseNode& other) noexcept : _value(other._value) {
-        if constexpr (is_pyobject<Value>) Py_XINCREF(_value);
+        if constexpr (is_pyobject<Value>) {
+            Py_XINCREF(_value);
+        }
     }
 
     /* Move constructor. */
     inline BaseNode(BaseNode&& other) noexcept : _value(std::move(other._value)) {
-        if constexpr (std::is_pointer_v<Value>) other._value = nullptr;
+        if constexpr (std::is_pointer_v<Value>) {
+            other._value = nullptr;
+        }
     }
 
     /* Copy assignment operator. */
     inline BaseNode& operator=(const BaseNode& other) noexcept {
-        if (this == &other) return *this;  // check for self-assignment
+        if (this == &other) {
+            return *this;
+        }
 
         // clear current node
-        if constexpr (is_pyobject<Value>) Py_XDECREF(_value);
+        if constexpr (is_pyobject<Value>) {
+            Py_XDECREF(_value);
+        }
 
         // copy other node
         _value = other._value;
-        if constexpr (is_pyobject<Value>) Py_XINCREF(_value);
+        if constexpr (is_pyobject<Value>) {
+            Py_XINCREF(_value);
+        }
         return *this;
     }
 
     /* Move assignment operator. */
     inline BaseNode& operator=(BaseNode&& other) noexcept {
-        if (this == &other) return *this;  // check for self-assignment
+        if (this == &other) {
+            return *this;
+        }
 
         // clear current node
-        if constexpr (is_pyobject<Value>) Py_XDECREF(_value);
+        if constexpr (is_pyobject<Value>) {
+            Py_XDECREF(_value);
+        }
 
         // move other node
         _value = std::move(other._value);
-        if constexpr (std::is_pointer_v<Value>) other._value = nullptr;
+        if constexpr (std::is_pointer_v<Value>) {
+            other._value = nullptr;
+        }
         return *this;
     }
 
     /* Destroy a node and release its resources. */
     inline ~BaseNode() noexcept {
-        if constexpr (is_pyobject<Value>) Py_XDECREF(_value);
-        if constexpr (std::is_pointer_v<Value>) _value = nullptr;
+        if constexpr (is_pyobject<Value>) {
+            Py_XDECREF(_value);
+        }
+        if constexpr (std::is_pointer_v<Value>) {
+            _value = nullptr;
+        }
     }
 
 };
@@ -128,7 +152,7 @@ public:
     static constexpr bool doubly_linked = false;
 
     /* Initialize a singly-linked node with a given value. */
-    SingleNode(Value value) noexcept : Base(value), _next(nullptr) {}
+    SingleNode(const Value& value) noexcept : Base(value), _next(nullptr) {}
 
     /* Copy constructor. */
     SingleNode(const SingleNode& other) noexcept : Base(other), _next(nullptr) {}
@@ -142,24 +166,20 @@ public:
 
     /* Copy assignment operator. */
     SingleNode& operator=(const SingleNode& other) noexcept {
-        if (this == &other) return *this;  // check for self-assignment
-
-        // copy value from other node
+        if (this == &other) {
+            return *this;
+        }
         Base::operator=(other);
-
-        // clear current node's next pointer
         _next = nullptr;
         return *this;
     }
 
     /* Move assignment operator. */
     SingleNode& operator=(SingleNode&& other) noexcept {
-        if (this == &other) return *this;  // check for self-assignment
-
-        // move value from other node
+        if (this == &other) {
+            return *this;
+        }
         Base::operator=(other);
-
-        // move next pointer from other node
         _next = other._next;
         other._next = nullptr;
         return *this;
@@ -167,7 +187,7 @@ public:
 
     /* Destroy a singly-linked node and release its resources. */
     ~SingleNode() noexcept {
-        _next = nullptr;  // Base::~Base() releases _value
+        _next = nullptr;
     }
 
     /* Get the next node in the list. */
@@ -186,7 +206,9 @@ public:
         SingleNode* curr,
         SingleNode* next
     ) noexcept {
-        if (prev != nullptr) prev->next(curr);
+        if (prev != nullptr) {
+            prev->next(curr);
+        }
         curr->next(next);
     }
 
@@ -196,17 +218,23 @@ public:
         SingleNode* curr,
         SingleNode* next
     ) noexcept {
-        if (prev != nullptr) prev->next(next);
+        if (prev != nullptr) {
+            prev->next(next);
+        }
     }
 
     /* Break a linked list at a specific junction. */
     inline static void split(SingleNode* prev, SingleNode* curr) noexcept {
-        if (prev != nullptr) prev->next(nullptr);
+        if (prev != nullptr) {
+            prev->next(nullptr);
+        }
     }
 
     /* Join the list at a specific junction. */
     inline static void join(SingleNode* prev, SingleNode* curr) noexcept {
-        if (prev != nullptr) prev->next(curr);
+        if (prev != nullptr) {
+            prev->next(curr);
+        }
     }
 
 };
@@ -223,7 +251,7 @@ public:
     static constexpr bool doubly_linked = true;
 
     /* Initialize a doubly-linked node with a given value. */
-    DoubleNode(Value value) noexcept : Base(value), _prev(nullptr) {}
+    DoubleNode(const Value& value) noexcept : Base(value), _prev(nullptr) {}
 
     /* Copy constructor. */
     DoubleNode(const DoubleNode& other) noexcept : Base(other), _prev(nullptr) {}
@@ -237,24 +265,20 @@ public:
 
     /* Copy assignment operator. */
     DoubleNode& operator=(const DoubleNode& other) {
-        if (this == &other) return *this;  // check for self-assignment
-
-        // copy value from other node and clear current node's next pointer
+        if (this == &other) {
+            return *this;
+        }
         Base::operator=(other);
-
-        // clear current node's prev pointer
         _prev = nullptr;
         return *this;
     }
 
     /* Move assignment operator. */
     DoubleNode& operator=(DoubleNode&& other) {
-        if (this == &other) return *this;  // check for self-assignment
-
-        // move value/next from other node
+        if (this == &other) {
+            return *this;
+        }
         Base::operator=(other);
-
-        // move prev pointer from other node
         _prev = other._prev;
         other._prev = nullptr;
         return *this;
@@ -262,7 +286,7 @@ public:
 
     /* Destroy a doubly-linked node and release its resources. */
     ~DoubleNode() noexcept {
-        _prev = nullptr;  // Base::~Base() releases _value/_next
+        _prev = nullptr;
     }
 
     /* Get the next node in the list. */
@@ -291,10 +315,14 @@ public:
         DoubleNode* curr,
         DoubleNode* next
     ) noexcept {
-        if (prev != nullptr) prev->next(curr);
+        if (prev != nullptr) {
+            prev->next(curr);
+        }
         curr->prev(prev);
         curr->next(next);
-        if (next != nullptr) next->prev(curr);
+        if (next != nullptr) {
+            next->prev(curr);
+        }
     }
 
     /* Unlink the node from its neighbors. */
@@ -303,20 +331,32 @@ public:
         DoubleNode* curr,
         DoubleNode* next
     ) noexcept {
-        if (prev != nullptr) prev->next(next);
-        if (next != nullptr) next->prev(prev);
+        if (prev != nullptr) {
+            prev->next(next);
+        }
+        if (next != nullptr) {
+            next->prev(prev);
+        }
     }
 
     /* Break a linked list at the specified nodes. */
     inline static void split(DoubleNode* prev, DoubleNode* curr) noexcept {
-        if (prev != nullptr) prev->next(nullptr);
-        if (curr != nullptr) curr->prev(nullptr);
+        if (prev != nullptr) {
+            prev->next(nullptr);
+        }
+        if (curr != nullptr) {
+            curr->prev(nullptr);
+        }
     }
 
     /* Join the list at the specified nodes. */
     inline static void join(DoubleNode* prev, DoubleNode* curr) noexcept {
-        if (prev != nullptr) prev->next(curr);
-        if (curr != nullptr) curr->prev(prev);
+        if (prev != nullptr) {
+            prev->next(curr);
+        }
+        if (curr != nullptr) {
+            curr->prev(prev);
+        }
     }
 
 };
@@ -330,40 +370,36 @@ function to each value in a list.  It is not meant to be used in any other conte
 template <
     typename Wrapped,
     typename Func,
-    typename _Value = typename bertrand::util::FuncTraits<
+    typename DecoratedValue = typename bertrand::util::FuncTraits<
         Func,
         typename Wrapped::Value
     >::ReturnType
 >
-class Keyed : public SingleNode<_Value> {
+class Keyed : public SingleNode<DecoratedValue> {
 private:
-    using Base = SingleNode<_Value>;
+    using Base = SingleNode<DecoratedValue>;
+    using ArgValue = typename Wrapped::Value;
     Wrapped* _node;  // reference to decorated node
 
     /* Invoke the key function on the specified value and return the computed result. */
-    _Value invoke(Func func, typename Wrapped::Value arg) {
-        // Python key
+    static DecoratedValue invoke(Func func, const ArgValue& arg) {
         if constexpr (is_pyobject<Func>) {
             static_assert(
                 is_pyobject<typename Base::Value>,
                 "Python functions can only be applied to PyObject* nodes"
             );
-
-            // apply key function to node value
             PyObject* val = PyObject_CallFunctionObjArgs(func, arg, nullptr);
             if (val == nullptr) {
                 throw catch_python();
             }
             return val;  // new reference
-
-        // C++ key
         } else {
             return func(arg);
         }
     }
 
 public:
-    using Value = _Value;
+    using Value = DecoratedValue;
     static constexpr bool doubly_linked = false;
 
     /* Initialize a keyed node by applying a Python callable to an existing node. */
@@ -383,12 +419,10 @@ public:
 
     /* Move assignment operator. */
     Keyed& operator=(Keyed&& other) noexcept {
-        if (this == &other) return *this;  // check for self-assignment
-
-        // move value from other node
+        if (this == &other) {
+            return *this;
+        }
         Base::operator=(other);
-
-        // move node pointer from other node
         _node = other._node;
         other._node = nullptr;
         return *this;
@@ -396,7 +430,7 @@ public:
 
     /* Destroy a keyed decorator and release its resources. */
     ~Keyed() noexcept {
-        _node = nullptr;  // Base::~Base() releases _value/_next
+        _node = nullptr;
     }
 
     /* Get the decorated node. */
@@ -476,24 +510,20 @@ public:
 
     /* Copy assignment operator. */
     Hashed& operator=(const Hashed& other) {
-        if (this == &other) return *this;  // check for self-assignment
-
-        // copy wrapped node
+        if (this == &other) {
+            return *this;
+        }
         Wrapped::operator=(other);
-
-        // copy hash
         _hash = other._hash;
         return *this;
     }
 
     /* Move assignment operator. */
     Hashed& operator=(Hashed&& other) {
-        if (this == &other) return *this;  // check for self-assignment
-
-        // move wrapped node
+        if (this == &other) {
+            return *this;
+        }
         Wrapped::operator=(other);
-
-        // move hash
         _hash = other._hash;
         return *this;
     }
@@ -556,20 +586,18 @@ class Mapped : public Wrapped {
     MappedType _mapped;
 
     /* Unpack a python tuple containing a key and value. */
-    inline static std::pair<PyObject*, PyObject*> unpack_python(PyObject* tuple) {
+    inline static std::pair<PyObject*, PyObject*> unpack_python(const PyObject* tuple) {
         static_assert(
             is_pyobject<KeyType> && is_pyobject<MappedType>,
             "Python tuples can only be unpacked by PyObject* nodes"
         );
 
-        // Check that item is a tuple of size 2 (key-value pair)
         if (!PyTuple_Check(tuple) || PyTuple_Size(tuple) != 2) {
             std::ostringstream msg;
             msg << "Expected tuple of size 2 (key, value), not: " << repr(tuple);
             throw TypeError(msg.str());
         }
 
-        // unpack tuple and return pair
         PyObject* key = PyTuple_GET_ITEM(tuple, 0);
         PyObject* mapped = PyTuple_GET_ITEM(tuple, 1);
         return std::make_pair(key, mapped);
@@ -579,58 +607,66 @@ public:
     using MappedValue = MappedType;
 
     /* Initialize a mapped node with a separate key and value. */
-    Mapped(KeyType key, MappedValue value) : Wrapped(key), _mapped(value) {
-        if constexpr (is_pyobject<MappedType>) Py_XINCREF(value);
+    Mapped(const KeyType& key, const MappedValue& value) : Wrapped(key), _mapped(value) {
+        if constexpr (is_pyobject<MappedType>) {
+            Py_XINCREF(value);
+        }
     }
 
     /* Initialize a mapped node with a coupled key and value. */
-    Mapped(std::pair<KeyType, MappedValue> pair) : Mapped(pair.first, pair.second) {}
-    Mapped(std::tuple<KeyType, MappedValue> tuple) :
+    Mapped(const std::pair<KeyType, MappedValue>& pair) : Mapped(pair.first, pair.second) {}
+    Mapped(const std::tuple<KeyType, MappedValue>& tuple) :
         Mapped(std::get<0>(tuple), std::get<1>(tuple))
     {}
-    Mapped(PyObject* tuple) : Mapped(unpack_python(tuple)) {}
+    Mapped(const PyObject* tuple) : Mapped(unpack_python(tuple)) {}
 
     /* Copy constructor. */
     Mapped(const Mapped& other) noexcept : Wrapped(other), _mapped(other._mapped) {
-        if constexpr (is_pyobject<MappedType>) Py_XINCREF(_mapped);
+        if constexpr (is_pyobject<MappedType>) {
+            Py_XINCREF(_mapped);
+        }
     }
 
     /* Move constructor. */
     Mapped(Mapped&& other) noexcept :
         Wrapped(std::move(other)), _mapped(std::move(other._mapped))
     {
-        if constexpr (std::is_pointer_v<MappedValue>) other._mapped = nullptr;
+        if constexpr (std::is_pointer_v<MappedValue>) {
+            other._mapped = nullptr;
+        }
     }
 
     /* Copy assignment operator. */
     Mapped& operator=(const Mapped& other) noexcept {
-        if (this == &other) return *this;  // check for self-assignment
-
-        // copy wrapped node
+        if (this == &other) {
+            return *this;
+        }
         Wrapped::operator=(other);
-
-        // copy mapped value
         _mapped = other._mapped;
-        if constexpr (is_pyobject<MappedType>) Py_XINCREF(_mapped);
+        if constexpr (is_pyobject<MappedType>) {
+            Py_XINCREF(_mapped);
+        }
         return *this;
     }
 
     /* Move assignment operator. */
     Mapped& operator=(Mapped&& other) noexcept {
-        if (this == &other) return *this;  // check for self-assignment
-
-        // move wrapped node
+        if (this == &other) {
+            return *this;
+        }
         Wrapped::operator=(other);
-
-        // move mapped value
         _mapped = std::move(other._mapped);
-        if constexpr (std::is_pointer_v<MappedValue>) other._mapped = nullptr;
+        if constexpr (std::is_pointer_v<MappedValue>) {
+            other._mapped = nullptr;
+        }
         return *this;
     }
 
     /* Destroy a mapped node and release its resources. */
     ~Mapped() noexcept {
-        if constexpr (is_pyobject<MappedType>) Py_XDECREF(_mapped);
+        if constexpr (is_pyobject<MappedType>) {
+            Py_XDECREF(_mapped);
+        }
     }
 
     /* Get the mapped value. */
@@ -687,6 +723,63 @@ public:
     /* Join the list at the specified nodes. */
     inline static void join(Mapped* prev, Mapped* curr) noexcept {
         Wrapped::join(prev, curr);
+    }
+
+    /* Allow specialization of both the key and value of a mapped node. */
+    template <bool cond = is_pyobject<typename Wrapped::Value>>
+    inline std::enable_if_t<cond, bool> typecheck(PyObject* specialization) const {
+        if (specialization == nullptr) {
+            return true;
+        }
+
+        if (PySlice_Check(specialization)) {
+            PyObject* start = PyObject_GetAttrString(specialization, "start");
+            if (start == nullptr) {
+                throw catch_python();
+            }
+            PyObject* stop = PyObject_GetAttrString(specialization, "stop");
+            if (stop == nullptr) {
+                Py_DECREF(start);
+                throw catch_python();
+            }
+
+            // start index corresponds to key type
+            if (start != Py_None) {
+                int comp = PyObject_IsInstance(this->value(), start);
+                if (comp == -1) {
+                    Py_DECREF(start);
+                    Py_DECREF(stop);
+                    throw catch_python();
+                }
+                if (!comp) {
+                    Py_DECREF(start);
+                    Py_DECREF(stop);
+                    return false;
+                }
+            }
+
+            // stop index corresponds to value type
+            if (stop != Py_None) {
+                int comp = PyObject_IsInstance(_mapped, stop);
+                if (comp == -1) {
+                    Py_DECREF(start);
+                    Py_DECREF(stop);
+                    throw catch_python();
+                }
+                if (!comp) {
+                    Py_DECREF(start);
+                    Py_DECREF(stop);
+                    return false;
+                }
+            }
+
+            Py_DECREF(start);
+            Py_DECREF(stop);
+            return true;
+        }
+
+        // fall back to only checking keys
+        return Wrapped::typecheck(specialization);
     }
 
 };

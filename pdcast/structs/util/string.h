@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_UTIL_STRING_H
 #ifndef BERTRAND_STRUCTS_UTIL_STRING_H
 #define BERTRAND_STRUCTS_UTIL_STRING_H
 
@@ -264,21 +263,33 @@ public:
     /* Check if all characters in the string are alphabetic. */
     template <typename = void>
     static constexpr bool isalpha = [] {
-        for (auto c : str) if (!is_alpha(c)) return false;
+        for (auto c : str) {
+            if (!is_alpha(c)) {
+                return false;
+            }
+        }
         return !str.empty();
     }();
 
     /* Check if all characters in the string are digits. */
     template <typename = void>
     static constexpr bool isdigit = [] {
-        for (auto c : str) if (!is_digit(c)) return false;
+        for (auto c : str) {
+            if (!is_digit(c)) {
+                return false;
+            }
+        }
         return !str.empty();
     }();
 
     /* Check if all characters in the string are alphanumeric. */
     template <typename = void>
     static constexpr bool isalnum = [] {
-        for (auto c : str) if (!is_alnum(c)) return false;
+        for (auto c : str) {
+            if (!is_alnum(c)) {
+                return false;
+            }
+        }
         return !str.empty();
     }();
 
@@ -321,10 +332,14 @@ public:
             char c = str[i];
             if (is_alpha(c)) {
                 if (expect_capital) {
-                    if (is_lower(c)) return false;
+                    if (is_lower(c)) {
+                        return false;
+                    }
                     expect_capital = false;
                 } else {
-                    if (is_upper(c)) return false;
+                    if (is_upper(c)) {
+                        return false;
+                    }
                 }
             } else if (is_delimeter(c)) {
                 expect_capital = true;
@@ -336,14 +351,22 @@ public:
     /* Check if all characters in the string are whitespace. */
     template <typename = void>
     static constexpr bool isspace = [] {
-        for (auto c : str) if (!is_space(c)) return false;
+        for (auto c : str) {
+            if (!is_space(c)) {
+                return false;
+            }
+        }
         return !str.empty();
     }();
 
     /* Check if all characters in the string are in the ASCII character set. */
     template <typename = void>
     static constexpr bool isascii = [] {
-        for (auto c : str) if (!is_ascii(c)) return false;
+        for (auto c : str) {
+            if (!is_ascii(c)) {
+                return false;
+            }
+        }
         return true;
     }();
 
@@ -447,7 +470,9 @@ private:
             std::array<char, width + 1> array{};  // null-terminated
             size_t i = 0;
             bool has_sign = (str.size() > 0 && (str[0] == '-' || str[0] == '+'));
-            if (has_sign) array[i++] = str[0];
+            if (has_sign) {
+                array[i++] = str[0];
+            }
             size_t offset = width - str.size();
             for (; i < offset + has_sign; ++i) {
                 array[i] = '0';
@@ -522,7 +547,9 @@ private:
     static constexpr size_t first(const std::string_view& chars) {
         size_t i = 0;
         for (; i < str.size(); ++i) {
-            if (chars.find(str[i]) == chars.npos) break;
+            if (chars.find(str[i]) == chars.npos) {
+                break;
+            }
         }
         return i;
     }
@@ -531,7 +558,9 @@ private:
     static constexpr size_t last(const std::string_view& chars, size_t start) {
         size_t i = str.size();
         for (; i > start; --i) {
-            if (chars.find(str[i - 1]) == chars.npos) break;
+            if (chars.find(str[i - 1]) == chars.npos) {
+                break;
+            }
         }
         return i;
     };
@@ -590,9 +619,13 @@ public:
     /* Find the first occurrence of a substring within the templated string. */
     template <const std::string_view& sub, size_t start = 0, size_t end = str.size()>
     static constexpr size_t find = [] {
-        if (end < sub.size()) return str.npos;
+        if (end < sub.size()) {
+            return str.npos;
+        }
         for (size_t i = start; i <= end - sub.size(); ++i) {
-            if (str.substr(i, sub.size()) == sub) return i;
+            if (str.substr(i, sub.size()) == sub) {
+                return i;
+            }
         }
         return str.npos;
     }();
@@ -600,10 +633,14 @@ public:
     /* Find the last occurrence of a substring within the templated string. */
     template <const std::string_view& sub, size_t start = 0, size_t end = str.size()>
     static constexpr size_t rfind = [] {
-        if (end < sub.size()) return str.npos;
+        if (end < sub.size()) {
+            return str.npos;
+        }
         for (size_t i = end - sub.size() + 1; i > start; --i) {
             size_t j = i - 1;  // avoid underflow
-            if (str.substr(j, sub.size()) == sub) return j;
+            if (str.substr(j, sub.size()) == sub) {
+                return j;
+            }
         }
         return str.npos;
     }();
@@ -631,7 +668,9 @@ public:
     /* Check if the templated string ends with a given sequence of characters. */
     template <const std::string_view& suffix>
     static constexpr bool endswith = [] {
-        if (str.size() < suffix.size()) return false;
+        if (str.size() < suffix.size()) {
+            return false;
+        }
         return str.substr(str.size() - suffix.size()) == suffix;
     }();
 
@@ -870,7 +909,7 @@ private:
 
         /* Check whether a character represents a line break. */
         static constexpr bool is_line_break(const char c) {
-            // NOTE: multi-character line breaks have to be checked separately 
+            // NOTE: multi-character line breaks (\r\n) have to be checked separately 
             switch (c) {
                 case '\n':      // newline
                 case '\r':      // carriage return

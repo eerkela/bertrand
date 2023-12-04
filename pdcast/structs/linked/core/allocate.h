@@ -88,10 +88,9 @@ namespace Config {
 }
 
 
-/* Empty tag class marking a node allocator for a linked data structure.
-
-NOTE: this class is inherited by all allocators, and can be used for easy SFINAE checks
-via std::is_base_of, without requiring any foreknowledge of template parameters. */
+/* Empty tag class marking a node allocator for a linked data structure.  This class is
+inherited by all allocators, and can be used for easy SFINAE checks via
+std::is_base_of, without requiring any foreknowledge of template parameters. */
 class AllocatorTag {};
 
 
@@ -123,8 +122,8 @@ public:
     static constexpr bool STRICTLY_TYPED = Flags & Config::STRICTLY_TYPED;
 
 protected:
-    bool _frozen;  // indicates whether the allocator is frozen for memory stability
     alignas(Node) mutable unsigned char _temp[sizeof(Node)];  // for internal use
+    bool _frozen;
 
     /* Allocate a contiguous block of uninitialized items with the specified size. */
     inline static Node* malloc_nodes(size_t capacity) {
@@ -141,9 +140,8 @@ protected:
         // variadic dispatch to node constructor
         new (node) Node(std::forward<Args>(args)...);
 
-        // check python specialization if enabled
         if constexpr (is_pyobject<typename Node::Value>) {
-            if (specialization != nullptr && !node->typecheck(specialization)) {
+            if (!node->typecheck(specialization)) {
                 std::ostringstream msg;
                 msg << repr(node->value()) << " is not of type ";
                 msg << repr(specialization);
@@ -228,10 +226,9 @@ public:
             );
         }
 
-        // destroy current
         Py_XDECREF(specialization);
         if (head != nullptr) {
-            destroy_list();  // calls destructors
+            destroy_list();
             head = nullptr;
             tail = nullptr;
         }
@@ -239,7 +236,6 @@ public:
             std::cout << "    -> deallocate: " << capacity << " nodes" << std::endl;
         }
 
-        // copy from other
         _frozen = other._frozen;
         capacity = other.capacity;
         occupied = other.occupied;
@@ -257,22 +253,20 @@ public:
             );
         }
 
-        // destroy current
         Py_XDECREF(specialization);
-        if (head != nullptr) destroy_list();
+        if (head != nullptr) {
+            destroy_list();
+        }
         if constexpr (DEBUG) {
             std::cout << "    -> deallocate: " << capacity << " nodes" << std::endl;
         }
 
-        // transfer ownership
         _frozen = other._frozen;
         head = other.head;
         tail = other.tail;
         capacity = other.capacity;
         occupied = other.occupied;
         specialization = other.specialization;
-
-        // reset other
         other._frozen = false;
         other.head = nullptr;
         other.tail = nullptr;
@@ -350,15 +344,14 @@ public:
 
     /* Rearrange the nodes in memory to reduce fragmentation. */
     void defragment() {
-        // ensure list is not frozen for memory stability
         if (frozen()) {
             std::ostringstream msg;
             msg << "array cannot be reallocated while a MemGuard is active";
             throw MemoryError(msg.str());
         }
 
-        // invoke derived method
-        static_cast<Derived*>(this)->resize(capacity);  // in-place reallocate
+        // NOTE: all allocators must implement a resize() method
+        static_cast<Derived*>(this)->resize(capacity);
     }
 
     /* Enforce strict type checking for python values within the list. */
@@ -372,9 +365,9 @@ public:
             "type specialization is only supported for PyObject* values"
         );
 
-        // handle null assignment
+        // null/None disables specialization
         if (spec == nullptr || spec == Py_None) {
-            Py_XDECREF(specialization);  // release old spec
+            Py_XDECREF(specialization);
             specialization = nullptr;
             return;
         }
@@ -384,7 +377,6 @@ public:
             return;
         }
 
-        // check the contents of the list
         Node* curr = head;
         while (curr != nullptr) {
             if (!curr->typecheck(spec)) {
@@ -396,7 +388,6 @@ public:
             curr = curr->next();
         }
 
-        // replace old specialization
         Py_INCREF(spec);
         Py_XDECREF(specialization);
         specialization = spec;
@@ -459,7 +450,9 @@ public:
                 std::cout << "UNFREEZE: " << allocator->capacity << " NODES";
                 std::cout << std::endl;
             }
-            allocator->shrink();  // every allocator implements this
+
+            // NOTE: all allocators must implement a shrink() method
+            allocator->shrink();
         }
 
     public:
@@ -490,7 +483,9 @@ public:
         /* Unfreeze and potentially shrink the allocator when the outermost MemGuard falls
         out of scope. */
         ~MemGuard() noexcept {
-            if (active()) destroy();
+            if (active()) {
+                destroy();
+            }
         }
 
         /* Check whether the guard is active. */
@@ -717,7 +712,7 @@ public:
     static constexpr size_t DEFAULT_CAPACITY = 8;  // minimum array size
 
 private:
-    Node* array;  // dynamic array of nodes
+    Node* array;  // dynamic array of allocated nodes
     std::pair<Node*, Node*> free_list;  // singly-linked list of open nodes
 
     /* Adjust the starting capacity of a dynamic list to a power of two. */
@@ -843,18 +838,14 @@ public:
         if (this == &other) {
             return *this;
         }
-
-        // invoke parent operator
         Base::operator=(other);
 
-        // destroy array
         free_list.first = nullptr;
         free_list.second = nullptr;
         if (array != nullptr) {
             free(array);
         }
 
-        // copy array
         array = Base::malloc_nodes(this->capacity);
         if (this->occupied != 0) {
             auto [head, tail] = other.template transfer<false>(array);
@@ -872,16 +863,12 @@ public:
         if (this == &other) {
             return *this;
         }
-
-        // invoke parent
         Base::operator=(std::move(other));
 
-        // destroy array
         if (array != nullptr) {
             free(array);
         }
 
-        // transfer ownership
         array = other.array;
         free_list.first = other.free_list.first;
         free_list.second = other.free_list.second;
@@ -894,7 +881,7 @@ public:
     /* Destroy an allocator and release its resources. */
     ~ListAllocator() noexcept {
         if (this->occupied) {
-            Base::destroy_list();  // calls destructors
+            Base::destroy_list();
         }
         if (array != nullptr) {
             free(array);
@@ -919,7 +906,9 @@ public:
                 throw;  // propagate
             }
             free_list.first = temp;
-            if (free_list.first == nullptr) free_list.second = nullptr;
+            if (free_list.first == nullptr) {
+                free_list.second = nullptr;
+            }
             ++this->occupied;
             return node;
         }
@@ -1022,13 +1011,6 @@ public:
 //////////////////////////////
 
 
-// TODO: dictionaries require a different approach to type specialization if they're
-// going to support slicing syntax.  This will require conditional compilation of the
-// specialization.  If we're going to do that, then we might as well not even compile
-// it at all if the data structure doesn't store Python objects.
-
-
-
 /* A custom allocator that directly hashes the node array to allow for constant-time
 lookups.  Uses a modified hopscotch strategy to resolve collisions.
 
@@ -1072,19 +1054,19 @@ public:
 
     /* An enum containing compile-time flags to control the behavior of the create()
     and recycle() factory methods in an optimized fashion. */
-    enum : unsigned int {
+    enum DIRECTIVES : unsigned int {
         DEFAULT = 0,
-        EXIST_OK = 1 << 0,
-        NOEXIST_OK = 1 << 1,
-        REPLACE_MAPPED = 1 << 2,
-        RETURN_MAPPED = 1 << 3,
-        UNLINK = 1 << 4,
-        EVICT_HEAD = 1 << 5,
-        EVICT_TAIL = 1 << 6,
-        INSERT_HEAD = 1 << 7,
-        INSERT_TAIL = 1 << 8,
-        MOVE_HEAD = 1 << 9,
-        MOVE_TAIL = 1 << 10,
+        EXIST_OK = 1 << 1,
+        NOEXIST_OK = 1 << 2,
+        REPLACE_MAPPED = 1 << 3,
+        RETURN_MAPPED = 1 << 4,
+        UNLINK = 1 << 5,
+        EVICT_HEAD = 1 << 6,
+        EVICT_TAIL = 1 << 7,
+        INSERT_HEAD = 1 << 8,
+        INSERT_TAIL = 1 << 9,
+        MOVE_HEAD = 1 << 10,
+        MOVE_TAIL = 1 << 11,
     };
 
 private:
@@ -1128,7 +1110,7 @@ private:
         struct Bucket {
             unsigned char collisions = EMPTY;
             unsigned char next = EMPTY;
-            alignas(Node) unsigned char data[sizeof(Node)];  // uninitialized payload
+            alignas(Node) unsigned char data[sizeof(Node)];
 
             /* Get a pointer to the node within the bucket. */
             inline Node* node() noexcept {
@@ -1162,7 +1144,7 @@ private:
         struct Bucket {
             unsigned char collisions = EMPTY;
             unsigned char next = EMPTY;
-            alignas(Node) unsigned char data[sizeof(Node)];  // uninitialized payload
+            alignas(Node) unsigned char data[sizeof(Node)];
 
             /* Get a pointer to the node within the bucket. */
             inline Node* node() noexcept {
@@ -1226,7 +1208,6 @@ private:
         // move nodes into new table
         Node* curr_node = this->head;
         while (curr_node != nullptr) {
-            // rehash node
             size_t hash;
             if constexpr (NodeTraits<Node>::has_hash) {
                 hash = curr_node->hash();
@@ -1283,7 +1264,6 @@ private:
             curr_node = next_node;
         }
 
-        // return head/tail pointers for new list
         return std::make_pair(new_head, new_tail);
     }
 
@@ -1313,7 +1293,6 @@ private:
             }
         }
 
-        // replace table
         free(table);
         if constexpr (DEBUG) {
             std::cout << "    -> deallocate: " << this->capacity << " nodes";
@@ -1507,9 +1486,29 @@ private:
         return nullptr;
     }
 
+    /* A conditional return type for the recycle() method based on the RETURN_MAPPED
+    flag used in dict.pop() */
+    template <unsigned int flags, bool dictlike = false>
+    struct RecycleRetVal {
+        using type = void;
+    };
+
+    template <unsigned int flags>
+    struct RecycleRetVal<flags, true> {
+        using Mapped = typename Node::MappedValue;
+        using OptMapped = std::optional<Mapped>;
+        using type = std::conditional_t<flags & RETURN_MAPPED, OptMapped, void>;
+    };
+
+    template <unsigned int flags>
+    using RecycleRetVal_t = typename RecycleRetVal<
+        flags,
+        NodeTraits<Node>::has_mapped
+    >::type;
+
     /* Remove a value in the hash table by providing an explicit hash/value. */
     template <unsigned int flags = DEFAULT>
-    void _recycle(const size_t hash, const Value& value) {
+    auto _recycle(const size_t hash, const Value& value) -> RecycleRetVal_t<flags> {
         size_t idx = hash & modulo;
         Bucket* origin = table + idx;
 
@@ -1534,6 +1533,7 @@ private:
                         prev->next = has_next * (prev->next + bucket->next);
                     }
 
+                    // unlink from neighbors if directed
                     if constexpr (flags & UNLINK) {
                         unlink(node);
                     }
@@ -1542,10 +1542,29 @@ private:
                         std::cout << "    -> recycle: " << repr(value);
                         std::cout << std::endl;
                     }
-                    bucket->destroy();
-                    --this->occupied;
-                    this->shrink();
-                    return;
+
+                    // return mapped value if directed
+                    if constexpr (
+                        NodeTraits<Node>::has_mapped &&
+                        (flags & RETURN_MAPPED)
+                    ) {
+                        using Mapped = typename Node::MappedValue;
+                        Mapped mapped = std::move(node->mapped());
+                        if constexpr (is_pyobject<Mapped>) {
+                            Py_INCREF(mapped);
+                        }
+                        bucket->destroy();
+                        --this->occupied;
+                        this->shrink();
+                        return std::make_optional(mapped);
+
+                    // otherwise destroy and return void
+                    } else {
+                        bucket->destroy();
+                        --this->occupied;
+                        this->shrink();
+                        return;
+                    }
                 }
 
                 // advance to next bucket
@@ -1561,7 +1580,11 @@ private:
 
         // node not found
         if constexpr (flags & NOEXIST_OK) {
-            return;
+            if constexpr (NodeTraits<Node>::has_mapped && (flags & RETURN_MAPPED)) {
+                return std::nullopt;
+            } else {
+                return;
+            }
         } else {
             std::ostringstream msg;
             msg << "key not found: " << repr(value);
@@ -1605,14 +1628,12 @@ public:
         if (this == &other) {
             return *this;
         }
-
-        // invoke parent
         Base::operator=(other);
 
-        // destroy current table
-        if (table != nullptr) free(table);
+        if (table != nullptr) {
+            free(table);
+        }
 
-        // copy new table
         table = new Bucket[this->capacity];
         modulo = other.modulo;
         max_occupants = other.max_occupants;
@@ -1632,14 +1653,12 @@ public:
         if (this == &other) {
             return *this;
         }
-
-        // invoke parent
         Base::operator=(std::move(other));
 
-        // destroy current table
-        if (table != nullptr) free(table);
+        if (table != nullptr) {
+            free(table);
+        }
 
-        // transfer ownership
         table = other.table;
         modulo = other.modulo;
         max_occupants = other.max_occupants;
@@ -1650,7 +1669,7 @@ public:
     /* Destroy an allocator and release its resources. */
     ~HashAllocator() noexcept {
         if (this->head != nullptr) {
-            Base::destroy_list();  // calls destructors
+            Base::destroy_list();
         }
         if (table != nullptr) {
             free(table);
@@ -1802,14 +1821,14 @@ public:
 
     /* Release a node from the table. */
     template <unsigned int flags = DEFAULT>
-    inline void recycle(Node* node) {
-        _recycle<flags>(node->hash(), node->value());
+    inline auto recycle(Node* node) {
+        return _recycle<flags>(node->hash(), node->value());
     }
 
     /* Release a node from the table after looking up its value. */
     template <unsigned int flags = DEFAULT>
-    inline void recycle(const Value& key) {
-        _recycle<flags>(bertrand::hash(key), key);
+    inline auto recycle(const Value& key) {
+        return _recycle<flags>(bertrand::hash(key), key);
     }
 
     /* Remove all elements from the table. */

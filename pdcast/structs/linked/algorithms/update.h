@@ -15,19 +15,10 @@ namespace structs {
 namespace linked {
 
 
-    // TODO: dict compatibility uses an unordered_map rather than unordered_set for
-    // auxiliary data structures.
-
-    // TODO: if error correction in update() is supposed to work with dictionaries,
-    // then we need some way of storing the old values.  This could be done with a
-    // separate unordered_map.  We wouldn't be able to store node addresses though
-    // due to possible reallocations.  Instead, we'd have to store the values
-    // themselves.
-
-
     ///////////////////////
     ////    PRIVATE    ////
     ///////////////////////
+
 
     /* Container-independent implementation for update(). */
     template <typename View, typename Container, bool left>
@@ -47,6 +38,13 @@ namespace linked {
 
         // restore set on error
         } catch (...) {
+            /* NOTE: no attempt is made to restore the original values if an error
+             * occurs during a dictlike update using REPLACE_MAPPED.  Handling this
+             * would add significant complexity and reduce performance for the intended
+             * path where no errors occur.  Extra keys will still be removed like
+             * normal, but any that have replaced an existing value will remain.
+             */
+
             size_t idx = view.size() - size;
             if (idx == 0) {
                 throw;
@@ -56,15 +54,21 @@ namespace linked {
             MemGuard inner = view.reserve();
             if constexpr (left) {
                 auto it = view.begin();
-                for (size_t i = 0; i < idx; ++i) view.recycle(it.drop());
+                for (size_t i = 0; i < idx; ++i) {
+                    view.recycle(it.drop());
+                }
             } else {
                 if constexpr (NodeTraits<typename View::Node>::has_prev) {
                     auto it = view.rbegin();
-                    for (size_t i = 0; i < idx; ++i) view.recycle(it.drop());
+                    for (size_t i = 0; i < idx; ++i) {
+                        view.recycle(it.drop());
+                    }
                 } else {
                     auto it = view.begin();
-                    for (size_t i = 0; i < view.size() - idx; ++i) ++it;
-                    for (size_t i = 0; i < idx; ++i) view.recycle(it.drop());
+                    for (size_t i = 0; i < view.size() - idx; ++i, ++it);
+                    for (size_t i = 0; i < idx; ++i) {
+                        view.recycle(it.drop());
+                    }
                 }
             }
             throw;

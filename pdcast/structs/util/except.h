@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_UTIL_EXCEPT_H
 #ifndef BERTRAND_STRUCTS_UTIL_EXCEPT_H
 #define BERTRAND_STRUCTS_UTIL_EXCEPT_H
 
@@ -131,7 +130,6 @@ struct RuntimeError : public Exception {
 the error message.  Requires the GIL. */
 template <typename Exc = Exception>
 Exc catch_python() {
-    // sanity check
     static_assert(
         std::is_convertible_v<Exc, Exception>,
         "Exception type must inherit from util::Exception"
@@ -160,15 +158,12 @@ Exc catch_python() {
                 msg = utf8_str;
             }
         }
-        Py_XDECREF(str);  // release python string
+        Py_XDECREF(str);
     }
 
-    // throw away Python exception
     Py_XDECREF(type);
     Py_XDECREF(value);
     Py_XDECREF(traceback);
-
-    // return as templated exception type
     if constexpr (std::is_same_v<Exc, Exception>) {
         return Exc(msg, type);
     } else {
@@ -180,12 +175,11 @@ Exc catch_python() {
 /* Convert the most recent C++ exception into an equivalent Python error, preserving
 the error message.  Requires the GIL. */
 inline void throw_python() {
-    // catch the most recent C++ error
     try {
         throw;
     }
 
-    // handle custom Exceptions
+    // custom, Python-style Exceptions
     catch (const Exception& e) {
         e.to_python();
     }

@@ -56,85 +56,125 @@ namespace linked {
     }
 
 
-    // TODO: pop() for dictlike views should be optimized at the allocator level.
-    // -> single lookup, optional default value, in-place recycle.  Requires allocator
-    // integration.
-
-
     /* Pop a key from a linked dictionary and return its corresponding value. */
     template <typename View, typename Key, typename Value = typename View::MappedValue>
     auto pop(View& view, const Key& key)
         -> std::enable_if_t<ViewTraits<View>::dictlike, Value>
     {
-        using Node = typename View::Node;
+        using Allocator = typename View::Allocator;
+        static constexpr unsigned int flags = (
+            Allocator::UNLINK | Allocator::RETURN_MAPPED
+        );
+
         if (view.size() == 0) {
-            throw IndexError("pop from empty list");
+            throw IndexError("pop from empty dict");
         }
 
-        Node* curr = view.search(key);
-        if (curr == nullptr) {
-            std::ostringstream msg;
-            msg << repr(key);
-            throw KeyError(msg.str());
+        std::optional<Value> result = view.template recycle<flags>(key);
+        if (result.has_value()) {
+            return result.value();
         }
 
-        // get current neighbors
-        Node* prev;
-        if constexpr (NodeTraits<Node>::has_prev) {
-            prev = curr->prev();
-        } else {
-            auto it = view.begin();
-            while (it.next() != curr) {
-                ++it;
-            }
-            prev = it.curr();
-        }
-
-        Value value = curr->mapped();
-        if constexpr (is_pyobject<Value>) {
-            Py_INCREF(value);  // new reference
-        }
-        view.unlink(prev, curr, curr->next());
-        view.recycle(curr);
-        return value;
+        std::ostringstream msg;
+        msg << repr(key);
+        throw KeyError(msg.str());
     }
 
 
     /* Pop a key from a linked dictionary and return its corresponding value. */
     template <typename View, typename Key, typename Value>
-    auto pop(View& view, const Key& key, const Value& default_value)
+    auto pop(View& view, const Key& key, Value& default_value)
         -> std::enable_if_t<ViewTraits<View>::dictlike, Value>
     {
-        using Node = typename View::Node;
+        using Allocator = typename View::Allocator;
+        static constexpr unsigned int flags = (
+            Allocator::NOEXIST_OK | Allocator::UNLINK | Allocator::RETURN_MAPPED
+        );
+
         if (view.size() == 0) {
-            throw IndexError("pop from empty list");
+            throw IndexError("pop from empty dict");
         }
 
-        Node* curr = view.search(key);
-        if (curr == nullptr) {
-            return default_value;
-        }
-
-        // get current neighbors
-        Node* prev;
-        if constexpr (NodeTraits<Node>::has_prev) {
-            prev = curr->prev();
-        } else {
-            auto it = view.begin();
-            while (it.next() != curr) {
-                ++it;
-            }
-            prev = it.curr();
-        }
-
-        Value value = curr->mapped();
-        if constexpr (is_pyobject<Value>) {
-            Py_INCREF(value);  // new reference
-        }
-        view.unlink(prev, curr, curr->next());
-        view.recycle(curr);
-        return value;
+        std::optional<Value> result = view.template recycle<flags>(key);
+        return result.value_or(default_value);
     }
+
+
+
+    // /* Pop a key from a linked dictionary and return its corresponding value. */
+    // template <typename View, typename Key, typename Value = typename View::MappedValue>
+    // auto pop(View& view, const Key& key)
+    //     -> std::enable_if_t<ViewTraits<View>::dictlike, Value>
+    // {
+    //     using Node = typename View::Node;
+    //     if (view.size() == 0) {
+    //         throw IndexError("pop from empty list");
+    //     }
+
+    //     Node* curr = view.search(key);
+    //     if (curr == nullptr) {
+    //         std::ostringstream msg;
+    //         msg << repr(key);
+    //         throw KeyError(msg.str());
+    //     }
+
+    //     // get current neighbors
+    //     Node* prev;
+    //     if constexpr (NodeTraits<Node>::has_prev) {
+    //         prev = curr->prev();
+    //     } else {
+    //         auto it = view.begin();
+    //         while (it.next() != curr) {
+    //             ++it;
+    //         }
+    //         prev = it.curr();
+    //     }
+
+    //     Value value = curr->mapped();
+    //     if constexpr (is_pyobject<Value>) {
+    //         Py_INCREF(value);  // new reference
+    //     }
+    //     view.unlink(prev, curr, curr->next());
+    //     view.recycle(curr);
+    //     return value;
+    // }
+
+
+    // /* Pop a key from a linked dictionary and return its corresponding value. */
+    // template <typename View, typename Key, typename Value>
+    // auto pop(View& view, const Key& key, const Value& default_value)
+    //     -> std::enable_if_t<ViewTraits<View>::dictlike, Value>
+    // {
+    //     using Node = typename View::Node;
+    //     if (view.size() == 0) {
+    //         throw IndexError("pop from empty list");
+    //     }
+
+    //     Node* curr = view.search(key);
+    //     if (curr == nullptr) {
+    //         return default_value;
+    //     }
+
+    //     // get current neighbors
+    //     Node* prev;
+    //     if constexpr (NodeTraits<Node>::has_prev) {
+    //         prev = curr->prev();
+    //     } else {
+    //         auto it = view.begin();
+    //         while (it.next() != curr) {
+    //             ++it;
+    //         }
+    //         prev = it.curr();
+    //     }
+
+    //     Value value = curr->mapped();
+    //     if constexpr (is_pyobject<Value>) {
+    //         Py_INCREF(value);  // new reference
+    //     }
+    //     view.unlink(prev, curr, curr->next());
+    //     view.recycle(curr);
+    //     return value;
+    // }
 
 
 }  // namespace linked

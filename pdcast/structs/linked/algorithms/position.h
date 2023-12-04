@@ -8,8 +8,7 @@
 #include "../../util/base.h"  // is_pyobject<>
 #include "../../util/except.h"  // TypeError
 #include "../../util/ops.h"  // lt(), ge(), plus()
-#include "../core/iter.h"  // Direction
-#include "../core/view.h"  // ViewTraits
+#include "../core/view.h"  // ViewTraits, Direction
 
 
 namespace bertrand {

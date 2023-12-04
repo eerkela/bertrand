@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_UTIL_ARGS_H
 #ifndef BERTRAND_STRUCTS_UTIL_ARGS_H
 #define BERTRAND_STRUCTS_UTIL_ARGS_H
 
@@ -51,7 +50,6 @@ struct PyArgs<CallProtocol::ARGS> {
     {}
 
     #define PARSE_POSITIONAL \
-        /* check for positional argument */ \
         if (arg_idx < n_args) { \
             PyObject* val = PyTuple_GET_ITEM(args, arg_idx++); \
             if constexpr (std::is_same_v<ReturnType, PyObject*>) { \
@@ -72,7 +70,6 @@ struct PyArgs<CallProtocol::ARGS> {
     ) {
         PARSE_POSITIONAL
 
-        // no matching argument
         std::ostringstream msg;
         msg << this->name << "() missing required positional argument: '" << name;
         msg << "'";
@@ -97,7 +94,6 @@ struct PyArgs<CallProtocol::ARGS> {
         );
         PARSE_POSITIONAL
 
-        // no matching argument
         return default_value;
     }
 
@@ -140,7 +136,6 @@ struct PyArgs<CallProtocol::KWARGS> {
     //////////////////////////
 
     #define PARSE_POSITIONAL \
-        /* check for positional argument */ \
         if (arg_idx < n_args) { \
             PyObject* val = PyTuple_GET_ITEM(args, arg_idx++); \
             if constexpr (std::is_same_v<ReturnType, PyObject*>) { \
@@ -151,7 +146,6 @@ struct PyArgs<CallProtocol::KWARGS> {
         } \
 
     #define PARSE_KEYWORD \
-        /* check for keyword argument */ \
         if (kwargs != nullptr) { \
             PyObject* val = PyDict_GetItemString(kwargs, name.data()); \
             if (val != nullptr) { \
@@ -176,7 +170,6 @@ struct PyArgs<CallProtocol::KWARGS> {
     ) {
         PARSE_POSITIONAL
 
-        // no matching argument
         std::ostringstream msg;
         msg << this->name << "() missing required positional argument: '" << name;
         msg << "'";
@@ -201,7 +194,6 @@ struct PyArgs<CallProtocol::KWARGS> {
         );
         PARSE_POSITIONAL
 
-        // no matching argument
         return default_value;
     }
 
@@ -232,7 +224,6 @@ struct PyArgs<CallProtocol::KWARGS> {
     ) {
         PARSE_KEYWORD
 
-        // no matching argument
         std::ostringstream msg;
         msg << this->name << "() missing required keyword-only argument: '" << name;
         msg << "'";
@@ -257,7 +248,6 @@ struct PyArgs<CallProtocol::KWARGS> {
         );
         PARSE_KEYWORD
 
-        // no matching argument
         return default_value;
     }
 
@@ -292,7 +282,6 @@ struct PyArgs<CallProtocol::KWARGS> {
         PARSE_KEYWORD
         PARSE_POSITIONAL
 
-        // no matching argument
         std::ostringstream msg;
         msg << this->name << "() missing required argument: '" << name << "'";
         throw std::runtime_error(msg.str());
@@ -317,7 +306,6 @@ struct PyArgs<CallProtocol::KWARGS> {
         PARSE_KEYWORD
         PARSE_POSITIONAL
 
-        // no matching argument
         return default_value;
     }
 
@@ -348,7 +336,6 @@ struct PyArgs<CallProtocol::FASTCALL> {
     {}
 
     #define PARSE_POSITIONAL \
-        /* check for positional argument */ \
         if (arg_idx < n_args) { \
             PyObject* val = args[arg_idx++]; \
             if constexpr (std::is_same_v<ReturnType, PyObject*>) { \
@@ -369,7 +356,6 @@ struct PyArgs<CallProtocol::FASTCALL> {
     ) {
         PARSE_POSITIONAL
 
-        // no matching argument
         std::ostringstream msg;
         msg << this->name << "() missing required positional argument: '" << name;
         msg << "'";
@@ -394,7 +380,6 @@ struct PyArgs<CallProtocol::FASTCALL> {
         );
         PARSE_POSITIONAL
 
-        // no matching argument
         return default_value;
     }
 
@@ -413,6 +398,11 @@ struct PyArgs<CallProtocol::FASTCALL> {
     #undef PARSE_POSITIONAL
 
 };
+
+
+
+// TODO: don't allocate any extra memory for the keyword argument names
+
 
 
 /* A parser for C methods implementing the METH_FASTCALL | METH_KEYWORDS protocol. */
@@ -472,7 +462,6 @@ struct PyArgs<CallProtocol::VECTORCALL> {
     //////////////////////////
 
     #define PARSE_POSITIONAL \
-        /* check for positional argument */ \
         if (arg_idx < n_args) { \
             PyObject* val = args[arg_idx++]; \
             if constexpr (std::is_same_v<ReturnType, PyObject*>) { \
@@ -483,7 +472,6 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         } \
 
     #define PARSE_KEYWORD \
-        /* check for keyword argument */ \
         for (Py_ssize_t i = 0; i < n_kwargs; ++i) { \
             if (kwnames[i] == name) { \
                 found[i] = true; \
@@ -509,7 +497,6 @@ struct PyArgs<CallProtocol::VECTORCALL> {
     ) {
         PARSE_POSITIONAL
 
-        // no matching argument
         std::ostringstream msg;
         msg << this->name << "() missing required positional argument: '" << name;
         msg << "'";
@@ -534,7 +521,6 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         );
         PARSE_POSITIONAL
 
-        // no matching argument
         return default_value;
     }
 
@@ -565,7 +551,6 @@ struct PyArgs<CallProtocol::VECTORCALL> {
     ) {
         PARSE_KEYWORD
 
-        // no matching argument
         std::ostringstream msg;
         msg << this->name << "() missing required keyword argument: '" << name;
         msg << "'";
@@ -590,7 +575,6 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         );
         PARSE_KEYWORD
 
-        // no matching argument
         return default_value;
     }
 
@@ -624,7 +608,6 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         PARSE_KEYWORD
         PARSE_POSITIONAL
 
-        // no matching argument
         std::ostringstream msg;
         msg << this->name << "() missing required argument: '" << name << "'";
         throw std::runtime_error(msg.str());
@@ -649,7 +632,6 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         PARSE_KEYWORD
         PARSE_POSITIONAL
 
-        // no matching argument
         return default_value;
     }
 
@@ -680,7 +662,9 @@ inline static PyObject* none_to_null(PyObject* obj) {
 /* Check if a Python object is truthy. */
 inline static bool is_truthy(PyObject* obj) {
     int result = PyObject_IsTrue(obj);
-    if (result == -1) throw catch_python();
+    if (result == -1) {
+        throw catch_python();
+    }
     return static_cast<bool>(result);
 }
 
@@ -688,10 +672,14 @@ inline static bool is_truthy(PyObject* obj) {
 /* Convert a python integer into a long long index. */
 inline static long long parse_int(PyObject* obj) {
     PyObject* integer = PyNumber_Index(obj);
-    if (integer == nullptr) throw catch_python();
+    if (integer == nullptr) {
+        throw catch_python();
+    }
     long long result = PyLong_AsLongLong(integer);
     Py_DECREF(integer);
-    if (result == -1 && PyErr_Occurred()) throw catch_python();
+    if (result == -1 && PyErr_Occurred()) {
+        throw catch_python();
+    }
     return result;
 }
 

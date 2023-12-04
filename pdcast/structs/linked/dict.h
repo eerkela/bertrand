@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_LINKED_DICT_H
 #ifndef BERTRAND_STRUCTS_LINKED_DICT_H
 #define BERTRAND_STRUCTS_LINKED_DICT_H
 
@@ -1031,7 +1030,11 @@ public:
 
     /* Check if the referenced dictionary contains the given value. */
     inline bool contains(const Value& value) const {
-        for (auto val : *this) if (eq(val, value)) return true;
+        for (auto val : *this) {
+            if (eq(val, value)) {
+                return true;
+            }
+        }
         return false;
     }
 
@@ -1471,7 +1474,9 @@ public:
         Derived* self = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
-        if (result == nullptr) return nullptr;  // propagate
+        if (result == nullptr) {
+            return nullptr;  // propagate
+        }
 
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -2440,9 +2445,13 @@ public:
             std::optional<size_t> max_size = pyargs.parse(
                 "max_size",
                 [](PyObject* obj) -> std::optional<size_t> {
-                    if (obj == Py_None) return std::nullopt;
+                    if (obj == Py_None) {
+                        return std::nullopt;
+                    }
                     long long result = parse_int(obj);
-                    if (result < 0) throw ValueError("max_size cannot be negative");
+                    if (result < 0) {
+                        throw ValueError("max_size cannot be negative");
+                    }
                     return std::make_optional(static_cast<size_t>(result));
                 },
                 std::optional<size_t>()
@@ -2791,7 +2800,9 @@ public:
     /* Check whether another PyObject* is of this type. */
     inline static bool typecheck(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &Type);
-        if (result == -1) throw catch_python();
+        if (result == -1) {
+            throw catch_python();
+        }
         return static_cast<bool>(result);
     }
 
@@ -2814,11 +2825,15 @@ static struct PyModuleDef module_dict = {
 /* Python import hook. */
 PyMODINIT_FUNC PyInit_dict(void) {
     // initialize type objects
-    if (PyType_Ready(&PyLinkedDict::Type) < 0) return nullptr;
+    if (PyType_Ready(&PyLinkedDict::Type) < 0) {
+        return nullptr;
+    }
 
     // initialize module
     PyObject* mod = PyModule_Create(&module_dict);
-    if (mod == nullptr) return nullptr;
+    if (mod == nullptr) {
+        return nullptr;
+    }
 
     // link type to module
     Py_INCREF(&PyLinkedDict::Type);

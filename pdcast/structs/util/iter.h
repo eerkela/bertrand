@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_UTIL_ITER_H
 #ifndef BERTRAND_STRUCTS_UTIL_ITER_H
 #define BERTRAND_STRUCTS_UTIL_ITER_H
 
@@ -100,26 +99,25 @@ class CoupledIterator {
 public:
     using Iterator = IteratorType;
 
-    // iterator tags for std::iterator_traits
     using iterator_category     = typename Iterator::iterator_category;
     using difference_type       = typename Iterator::difference_type;
     using value_type            = typename Iterator::value_type;
     using pointer               = typename Iterator::pointer;
     using reference             = typename Iterator::reference;
 
-    // couple the begin() and end() iterators into a single object
+    /* couple the begin() and end() iterators into a single object */
     CoupledIterator(Iterator&& first, Iterator&& second) :
         first(std::move(first)), second(std::move(second))
     {}
 
-    // allow use of the CoupledIterator in a range-based for loop
+    /* allow use of the CoupledIterator in a range-based for loop */
     Iterator& begin() { return first; }
     Iterator& end() { return second; }
 
     // TODO: conditionally compile all other iterator methods, similar to
     // ConvertedIterator.  This might be a CRTP base class.
 
-    // pass iterator protocol through to begin()
+    /* pass iterator protocol through to begin() */
     inline value_type operator*() const { return *first; }
     inline CoupledIterator& operator++() { ++first; return *this; }
     inline bool operator!=(const Iterator& other) const { return first != other; }
@@ -172,12 +170,12 @@ class ConvertedIterator {
         using type = void;
         static constexpr bool value = false;
     };
-    template <typename T>  // specialization for smart pointers
+    template <typename T>  // smart pointers
     struct arrow_operator<T, std::void_t<decltype(std::declval<T>().operator->())>> {
         using type = decltype(std::declval<T>().operator->());
         static constexpr bool value = true;
     };
-    template <typename T>  // specialization for raw pointers
+    template <typename T>  // raw pointers
     struct arrow_operator<T*> {
         using type = T*;
         static constexpr bool value = true;
@@ -396,7 +394,6 @@ ConvertedIterator<Iterator, Func> operator-(
 /* A wrapper around a C++ iterator that allows it to be used from Python. */
 template <typename Iterator>
 class PyIterator {
-    // sanity check
     static_assert(
         std::is_convertible_v<typename Iterator::value_type, PyObject*>,
         "Iterator must dereference to PyObject*"
@@ -423,13 +420,11 @@ public:
 
     /* Construct a Python iterator from a C++ iterator range. */
     inline static PyObject* construct(Iterator&& begin, Iterator&& end) {
-        // allocate
         PyIterator* result = PyObject_New(PyIterator, &Type);
         if (result == nullptr) {
             throw std::runtime_error("could not allocate Python iterator");
         }
 
-        // initialize
         new (&(result->first)) Iterator(std::move(begin));
         new (&(result->second)) Iterator(std::move(end));
         return reinterpret_cast<PyObject*>(result);
@@ -445,12 +440,11 @@ public:
         Iterator& begin = reinterpret_cast<Iterator&>(self->first);
         Iterator& end = reinterpret_cast<Iterator&>(self->second);
 
-        if (!(begin != end)) {  // terminate the sequence
+        if (!(begin != end)) {
             PyErr_SetNone(PyExc_StopIteration);
             return nullptr;
         }
 
-        // increment iterator and return current value
         PyObject* result = *begin;
         ++begin;
         return Py_NewRef(result);  // new reference
@@ -481,7 +475,6 @@ private:
             .tp_iternext = (iternextfunc) __next__,
         };
 
-        // register iterator type with Python
         if (PyType_Ready(&slots) < 0) {
             throw std::runtime_error("could not initialize PyIterator type");
         }
@@ -1078,10 +1071,10 @@ public:
         Iterator(PyObject* i, Func f) : convert(f), py_iterator(i), curr(nullptr) {
             // NOTE: py_iterator is a borrowed reference from PyObject_GetIter()
             if (py_iterator != nullptr) {
-                curr = PyIter_Next(py_iterator);  // get first item
+                curr = PyIter_Next(py_iterator);
                 if (curr == nullptr && PyErr_Occurred()) {
                     Py_DECREF(py_iterator);
-                    throw catch_python<RuntimeError>();
+                    throw catch_python();
                 }
             }
         }
@@ -1090,7 +1083,6 @@ public:
         Iterator(Func f) : convert(f), py_iterator(nullptr), curr(nullptr) {}
 
     public:
-        // iterator tags for std::iterator_traits
         using iterator_category     = std::forward_iterator_tag;
         using difference_type       = std::ptrdiff_t;
         using value_type            = std::remove_reference_t<ReturnType>;
@@ -1193,7 +1185,7 @@ public:
     inline PyObject* python() {
         PyObject* iter = PyObject_GetIter(this->container);
         if (iter == nullptr && PyErr_Occurred()) {
-            throw catch_python<TypeError>();
+            throw catch_python();
         }
         return iter;
     }
@@ -1202,12 +1194,12 @@ public:
     inline PyObject* rpython() {
         PyObject* attr = PyObject_GetAttrString(this->container, "__reversed__");
         if (attr == nullptr && PyErr_Occurred()) {
-            throw catch_python<TypeError>();
+            throw catch_python();
         }
         PyObject* iter = PyObject_CallObject(attr, nullptr);
         Py_DECREF(attr);
         if (iter == nullptr && PyErr_Occurred()) {
-            throw catch_python<TypeError>();
+            throw catch_python();
         }
         return iter;  // new reference
     }

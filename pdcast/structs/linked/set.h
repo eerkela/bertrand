@@ -1,4 +1,3 @@
-// include guard: BERTRAND_STRUCTS_LINKED_SET_H
 #ifndef BERTRAND_STRUCTS_LINKED_SET_H
 #define BERTRAND_STRUCTS_LINKED_SET_H
 
@@ -676,7 +675,6 @@ public:
     /* Implement `LinkedSet.add()` in Python. */
     static PyObject* add(Derived* self, PyObject* key) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&key](auto& set) {
                     set.add(key);
@@ -685,7 +683,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -695,7 +692,6 @@ public:
     /* Implement `LinkedSet.add_left()` in Python. */
     static PyObject* add_left(Derived* self, PyObject* key) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&key](auto& set) {
                     set.add_left(key);
@@ -704,7 +700,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -714,7 +709,6 @@ public:
     /* Implement `LinkedSet.lru_add()` in Python. */
     static PyObject* lru_add(Derived* self, PyObject* key) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&key](auto& set) {
                     set.lru_add(key);
@@ -723,7 +717,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -733,7 +726,6 @@ public:
     /* Implement `LinkedSet.remove()` in Python. */
     static PyObject* remove(Derived* self, PyObject* key) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&key](auto& set) {
                     set.remove(key);
@@ -742,7 +734,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -752,7 +743,6 @@ public:
     /* Implement `LinkedSet.discard()` in Python. */
     static PyObject* discard(Derived* self, PyObject* key) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&key](auto& set) {
                     set.discard(key);
@@ -761,7 +751,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -771,7 +760,6 @@ public:
     /* Implement `LinkedSet.lru_contains()` in Python. */
     static PyObject* lru_contains(Derived* self, PyObject* key) {
         try {
-            // invoke equivalent C++ method
             return std::visit(
                 [&key](auto& set) {
                     return PyBool_FromLong(set.lru_contains(key));
@@ -779,7 +767,6 @@ public:
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -791,10 +778,11 @@ public:
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
-        if (result == nullptr) return nullptr;  // propagate
+        if (result == nullptr) {
+            return nullptr;  // propagate
+        }
 
         try {
-            // invoke equivalent C++ method
             return std::visit(
                 [&args, &nargs, &result](auto& set) {
                     if (nargs == 0) {
@@ -813,7 +801,6 @@ public:
                 self->variant
             );
 
-        // translate C++ exceptions into Python errors
         } catch (...) {
             throw_python();
             Py_DECREF(result);
@@ -826,10 +813,11 @@ public:
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
-        if (result == nullptr) return nullptr;  // propagate
+        if (result == nullptr) {
+            return nullptr;  // propagate
+        }
 
         try {
-            // invoke equivalent C++ method
             return std::visit(
                 [&args, &nargs, &result](auto& set) {
                     if (nargs == 0) {
@@ -848,7 +836,6 @@ public:
                 self->variant
             );
 
-        // translate C++ exceptions into Python errors
         } catch (...) {
             throw_python();
             Py_DECREF(result);
@@ -859,7 +846,6 @@ public:
     /* Implement `LinkedSet.update()` in Python. */
     static PyObject* update(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&args, &nargs](auto& set) {
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
@@ -870,7 +856,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -880,7 +865,6 @@ public:
     /* Implement `LinkedSet.update()` in Python. */
     static PyObject* update_left(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&args, &nargs](auto& set) {
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
@@ -891,7 +875,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -901,7 +884,6 @@ public:
     /* Implement `LinkedSet.lru_update()` in Python. */
     static PyObject* lru_update(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&args, &nargs](auto& set) {
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
@@ -912,7 +894,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -924,10 +905,11 @@ public:
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
-        if (result == nullptr) return nullptr;  // propagate
+        if (result == nullptr) {
+            return nullptr;  // propagate
+        }
 
         try {
-            // invoke equivalent C++ method
             return std::visit(
                 [&args, &nargs, &result](auto& set) {
                     if (nargs == 0) {
@@ -935,7 +917,7 @@ public:
                         return reinterpret_cast<PyObject*>(result);
                     }
 
-                    // get union with first item, then update with all others
+                    // get difference with first item, then update with all others
                     auto copy = set.difference(args[0]);
                     for (Py_ssize_t i = 1; i < nargs; ++i) {
                         copy.difference_update(args[i]);
@@ -946,7 +928,6 @@ public:
                 self->variant
             );
 
-        // translate C++ exceptions into Python errors
         } catch (...) {
             throw_python();
             Py_DECREF(result);
@@ -961,7 +942,6 @@ public:
         Py_ssize_t nargs
     ) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&args, &nargs](auto& set) {
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
@@ -972,7 +952,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -988,10 +967,11 @@ public:
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
-        if (result == nullptr) return nullptr;  // propagate
+        if (result == nullptr) {
+            return nullptr;  // propagate
+        }
 
         try {
-            // invoke equivalent C++ method
             return std::visit(
                 [&args, &nargs, &result](auto& set) {
                     if (nargs == 0) {
@@ -999,7 +979,7 @@ public:
                         return reinterpret_cast<PyObject*>(result);
                     }
 
-                    // get union with first item, then update with all others
+                    // get intersection with first item, then update with all others
                     auto copy = set.intersection(args[0]);
                     for (Py_ssize_t i = 1; i < nargs; ++i) {
                         copy.intersection_update(args[i]);
@@ -1010,7 +990,6 @@ public:
                 self->variant
             );
 
-        // translate C++ exceptions into Python errors
         } catch (...) {
             throw_python();
             Py_DECREF(result);
@@ -1025,7 +1004,6 @@ public:
         Py_ssize_t nargs
     ) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&args, &nargs](auto& set) {
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
@@ -1036,7 +1014,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1048,10 +1025,11 @@ public:
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
-        if (result == nullptr) return nullptr;  // propagate
+        if (result == nullptr) {
+            return nullptr;  // propagate
+        }
 
         try {
-            // invoke equivalent C++ method
             return std::visit(
                 [&result, &items](auto& set) {
                     result->from_cpp(set.symmetric_difference(items));
@@ -1060,7 +1038,6 @@ public:
                 self->variant
             );
 
-        // translate C++ exceptions into Python errors
         } catch (...) {
             throw_python();
             Py_DECREF(result);
@@ -1073,10 +1050,11 @@ public:
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
-        if (result == nullptr) return nullptr;  // propagate
+        if (result == nullptr) {
+            return nullptr;  // propagate
+        }
 
         try {
-            // invoke equivalent C++ method
             return std::visit(
                 [&result, &items](auto& set) {
                     result->from_cpp(set.symmetric_difference_left(items));
@@ -1085,7 +1063,6 @@ public:
                 self->variant
             );
 
-        // translate C++ exceptions into Python errors
         } catch (...) {
             throw_python();
             Py_DECREF(result);
@@ -1096,7 +1073,6 @@ public:
     /* Implement `LinkedSet.symmetric_difference_update()` in Python. */
     static PyObject* symmetric_difference_update(Derived* self, PyObject* items) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&items](auto& set) {
                     set.symmetric_difference_update(items);
@@ -1105,7 +1081,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1115,7 +1090,6 @@ public:
     /* Implement `LinkedSet.symmetric_difference_update_left()` in Python. */
     static PyObject* symmetric_difference_update_left(Derived* self, PyObject* items) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&items](auto& set) {
                     set.symmetric_difference_update_left(items);
@@ -1124,7 +1098,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1141,7 +1114,6 @@ public:
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1158,7 +1130,6 @@ public:
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1175,7 +1146,6 @@ public:
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1194,7 +1164,6 @@ public:
             PyObject* key2 = pyargs.parse("key2");
             pyargs.finalize();
 
-            // invoke equivalent C++ method
             return std::visit(
                 [&key1, &key2](auto& set) {
                     return PyLong_FromLongLong(set.distance(key1, key2));
@@ -1202,7 +1171,6 @@ public:
                 self->variant
             );
 
-        // translate C++ exceptions into Python errors
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1221,7 +1189,6 @@ public:
             PyObject* key2 = pyargs.parse("key2");
             pyargs.finalize();
 
-            // invoke equivalent C++ method
             std::visit(
                 [&key1, &key2](auto& set) {
                     set.swap(key1, key2);
@@ -1230,7 +1197,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ exceptions into Python errors
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1251,7 +1217,6 @@ public:
             long long steps = pyargs.parse("steps", parse_int);
             pyargs.finalize();
 
-            // invoke equivalent C++ method
             std::visit(
                 [&key, &steps](auto& set) {
                     set.move(key, steps);
@@ -1260,7 +1225,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ exceptions into Python errors
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1285,7 +1249,6 @@ public:
             long long index = pyargs.parse("index", parse_int);
             pyargs.finalize();
 
-            // invoke equivalent C++ method
             std::visit(
                 [&key, &index](auto& set) {
                     set.move_to_index(key, index);
@@ -1294,7 +1257,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ exceptions into Python errors
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1306,9 +1268,10 @@ public:
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
-        if (result == nullptr) return nullptr;  // propagate
+        if (result == nullptr) {
+            return nullptr;  // propagate
+        }
 
-        // delegate to equivalent C++ operator
         try {
             return std::visit(
                 [&other, &result](auto& set) {
@@ -1318,7 +1281,6 @@ public:
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             Py_DECREF(result);
             throw_python();
@@ -1328,7 +1290,6 @@ public:
 
     /* Implement `LinkedSet.__ior__()` (in-place union operator) in Python. */
     static PyObject* __ior__(Derived* self, PyObject* other) {
-        // delegate to equivalent C++ operator
         try {
             std::visit(
                 [&other](auto& set) {
@@ -1339,7 +1300,6 @@ public:
             Py_INCREF(self);
             return reinterpret_cast<PyObject*>(self);
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1351,9 +1311,10 @@ public:
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
-        if (result == nullptr) return nullptr;  // propagate
+        if (result == nullptr) {
+            return nullptr;  // propagate
+        }
 
-        // delegate to equivalent C++ operator
         try {
             return std::visit(
                 [&other, &result](auto& set) {
@@ -1363,7 +1324,6 @@ public:
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             Py_DECREF(result);
             throw_python();
@@ -1373,7 +1333,6 @@ public:
 
     /* Implement `LinkedSet.__isub__()` (in-place difference operator) in Python. */
     static PyObject* __isub__(Derived* self, PyObject* other) {
-        // delegate to equivalent C++ operator
         try {
             std::visit(
                 [&other](auto& set) {
@@ -1384,7 +1343,6 @@ public:
             Py_INCREF(self);
             return reinterpret_cast<PyObject*>(self);
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1396,9 +1354,10 @@ public:
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
-        if (result == nullptr) return nullptr;  // propagate
+        if (result == nullptr) {
+            return nullptr;  // propagate
+        }
 
-        // delegate to equivalent C++ operator
         try {
             return std::visit(
                 [&other, &result](auto& set) {
@@ -1408,7 +1367,6 @@ public:
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             Py_DECREF(result);
             throw_python();
@@ -1418,7 +1376,6 @@ public:
 
     /* Implement `LinkedSet.__iand__()` (in-place intersection operator) in Python. */
     static PyObject* __iand__(Derived* self, PyObject* other) {
-        // delegate to equivalent C++ operator
         try {
             std::visit(
                 [&other](auto& set) {
@@ -1429,7 +1386,6 @@ public:
             Py_INCREF(self);
             return reinterpret_cast<PyObject*>(self);
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1441,9 +1397,10 @@ public:
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
         );
-        if (result == nullptr) return nullptr;  // propagate
+        if (result == nullptr) {
+            return nullptr;  // propagate
+        }
 
-        // delegate to equivalent C++ operator
         try {
             return std::visit(
                 [&other, &result](auto& set) {
@@ -1453,7 +1410,6 @@ public:
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             Py_DECREF(result);
             throw_python();
@@ -1464,7 +1420,6 @@ public:
     /* Implement `LinkedSet.__ixor__()` (in-place symmetric difference operator) in
     Python. */
     static PyObject* __ixor__(Derived* self, PyObject* other) {
-        // delegate to equivalent C++ operator
         try {
             std::visit(
                 [&other](auto& set) {
@@ -1475,7 +1430,6 @@ public:
             Py_INCREF(self);
             return reinterpret_cast<PyObject*>(self);
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -2162,9 +2116,13 @@ public:
             std::optional<size_t> max_size = pyargs.parse(
                 "max_size",
                 [](PyObject* obj) -> std::optional<size_t> {
-                    if (obj == Py_None) return std::nullopt;
+                    if (obj == Py_None) {
+                        return std::nullopt;
+                    }
                     long long result = parse_int(obj);
-                    if (result < 0) throw ValueError("max_size cannot be negative");
+                    if (result < 0) {
+                        throw ValueError("max_size cannot be negative");
+                    }
                     return std::make_optional(static_cast<size_t>(result));
                 },
                 std::optional<size_t>()
@@ -2183,7 +2141,6 @@ public:
             // exit normally
             return 0;
 
-        // translate C++ exceptions into Python eerrors
         } catch (...) {
             throw_python();
             return -1;
@@ -2212,7 +2169,6 @@ public:
             auto str = stream.str();
             return PyUnicode_FromStringAndSize(str.c_str(), str.size());
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -2232,7 +2188,6 @@ public:
             auto str = stream.str();
             return PyUnicode_FromStringAndSize(str.c_str(), str.size());
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -2487,7 +2442,9 @@ public:
     /* Check whether another PyObject* is of this type. */
     inline static bool typecheck(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &Type);
-        if (result == -1) throw catch_python();
+        if (result == -1) {
+            throw catch_python();
+        }
         return static_cast<bool>(result);
     }
 
@@ -2510,11 +2467,15 @@ static struct PyModuleDef module_set = {
 /* Python import hook. */
 PyMODINIT_FUNC PyInit_set(void) {
     // initialize type objects
-    if (PyType_Ready(&PyLinkedSet::Type) < 0) return nullptr;
+    if (PyType_Ready(&PyLinkedSet::Type) < 0) {
+        return nullptr;
+    }
 
     // initialize module
     PyObject* mod = PyModule_Create(&module_set);
-    if (mod == nullptr) return nullptr;
+    if (mod == nullptr) {
+        return nullptr;
+    }
 
     // link type to module
     Py_INCREF(&PyLinkedSet::Type);

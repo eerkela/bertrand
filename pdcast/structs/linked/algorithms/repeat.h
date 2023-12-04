@@ -2,7 +2,7 @@
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_REPEAT_H
 
 #include <type_traits>  // std::enable_if_t<>
-#include "../../util/except.h"  // catch_python<>, TypeError
+#include "../../util/except.h"  // catch_python, TypeError
 #include "../../util/ops.h"  // le(), eq()
 #include "../core/view.h"  // ViewTraits
 #include "extend.h"  // extend()
