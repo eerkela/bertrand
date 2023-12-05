@@ -773,45 +773,27 @@ public:
         }
     }
 
-    /* Construct a new node for the set using an optional template configuration.
-
-    Any number of the following options can be combined via bitwise OR to modify the
-    behavior of this method (available under the Allocator:: namespace):
-        EXIST_OK - do not throw an exception if the node already exists
-        EVICT_HEAD - evict the head node to make room if the set is full
-        EVICT_TAIL - evict the tail node to make room if the set is full
-        INSERT_HEAD - if the node is not already in the set, insert it at the head
-        INSERT_TAIL - if the node is not already in the set, insert it at the tail
-        MOVE_HEAD - if the node is already in the set, move it to the head
-        MOVE_TAIL - if the node is already in the set, move it to the tail
-    */
+    /* Construct a new node for the set using an optional template configuration. */
     template <unsigned int flags = Allocator::DEFAULT, typename... Args>
-    inline Node* node(Args&&... args) const {
+    inline Node* node(Args&&... args) {
         return this->allocator.template create<flags, Args&&...>(
             std::forward<Args>(args)...
         );
     }
 
-    /* Release a node, returning it to the allocator.
-
-    Any number of the following options can be combined via bitwise OR to modify the
-    behavior of this method (available under the Allocator:: namespace):
-        NOEXIST_OK - do not throw an exception if the node is not contained in the set
-        UNLINK - unlink the node from its neighbors before returning it to the allocator
-        RETURN_MAPPED - return the node's mapped value (void otherwise)
-    */
+    /* Release a node, returning it to the allocator. */
     template <unsigned int flags = Allocator::DEFAULT, typename... Args>
-    inline void recycle(Args&&... args) const {
-        this->allocator.template recycle<flags>(std::forward<Args>(args)...);
+    inline auto recycle(Args&&... args) {
+        return this->allocator.template recycle<flags>(std::forward<Args>(args)...);
     }
 
-    /* Search the set for a particular node/value.
+    /* Search the set for a particular node/value. */
+    template <unsigned int flags = Allocator::DEFAULT, typename... Args>
+    inline Node* search(Args&&... args) {
+        return this->allocator.template search<flags>(std::forward<Args>(args)...);
+    }
 
-    Any number of the following options can be combined via bitwise OR to modify the
-    behavior of this method (available under the Allocator:: namespace):
-        MOVE_HEAD - if the node is found, move it to the head of the set
-        MOVE_TAIL - if the node is found, move it to the tail of the set
-    */
+    /* Search the set for a particular node/value. */
     template <unsigned int flags = Allocator::DEFAULT, typename... Args>
     inline Node* search(Args&&... args) const {
         return this->allocator.template search<flags>(std::forward<Args>(args)...);
@@ -889,6 +871,7 @@ class DictView : public HashView<
 
 public:
     using Allocator = typename Base::Allocator;
+    using MappedValue = typename Base::Node::MappedValue;
     static constexpr bool dictlike = true;
 
     template <unsigned int NewFlags>

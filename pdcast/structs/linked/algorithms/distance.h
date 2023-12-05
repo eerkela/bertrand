@@ -3,7 +3,6 @@
 
 #include <cstddef>  // ssize_t
 #include <optional>  // std::optional<>
-#include <sstream>  // std::ostringstream
 #include "../../util/ops.h"  // repr()
 #include "../core/view.h"  // ViewTraits
 
@@ -32,9 +31,7 @@ namespace linked {
 
         // helper for throwing item not found error
         auto not_found = [](auto& item) {
-            std::ostringstream msg;
-            msg << repr(item) << " is not in set";
-            return KeyError(msg.str());
+            return KeyError(repr(item));
         };
 
         // search for nodes

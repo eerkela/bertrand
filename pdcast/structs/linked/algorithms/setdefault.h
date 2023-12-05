@@ -16,7 +16,7 @@ namespace linked {
     inline auto setdefault(
         View& view,
         const Key& key,
-        const Value& default_value
+        Value& default_value
     ) -> std::enable_if_t<ViewTraits<View>::dictlike, Value&>
     {
         using Node = typename View::Node;
@@ -34,7 +34,7 @@ namespace linked {
     inline auto setdefault_left(
         View& view,
         const Key& key,
-        const Value& default_value
+        Value& default_value
     ) -> std::enable_if_t<ViewTraits<View>::dictlike, Value&>
     {
         using Node = typename View::Node;
@@ -53,7 +53,7 @@ namespace linked {
     inline auto lru_setdefault(
         View& view,
         const Key& key,
-        const Value& default_value
+        Value& default_value
     ) -> std::enable_if_t<ViewTraits<View>::dictlike, Value&>
     {
         using Node = typename View::Node;

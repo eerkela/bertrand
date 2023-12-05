@@ -1,7 +1,6 @@
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_SWAP_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_SWAP_H
 
-#include <sstream>  // std::ostringstream
 #include <type_traits>  // std::enable_if_t<>
 #include "../../util/ops.h"  // repr()
 #include "../core/node.h"  // NodeTraits
@@ -22,9 +21,7 @@ namespace linked {
 
         // helper for throwing item not found error
         auto not_found = [](auto item) {
-            std::ostringstream msg;
-            msg << repr(item);
-            return KeyError(msg.str());
+            return KeyError(repr(item));
         };
 
         // search for both nodes

@@ -2,7 +2,6 @@
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_MOVE_H
 
 #include <cstddef>  // size_t
-#include <sstream>  // std::ostringstream
 #include <type_traits>  // std::enable_if_t<>
 #include "../../util/ops.h"  // repr()
 #include "../core/node.h"  // NodeTraits
@@ -28,9 +27,7 @@ namespace linked {
 
         Node* node = view.search(item);
         if (node == nullptr) {
-            std::ostringstream msg;
-            msg << repr(item) << " is not in set";
-            throw KeyError(msg.str());
+            throw KeyError(repr(item));
         }
 
         if (steps == 0 || node == (steps > 0 ? view.tail() : view.head())) {
@@ -110,9 +107,7 @@ namespace linked {
 
         Node* node = view.search(item);
         if (node == nullptr) {
-            std::ostringstream msg;
-            msg << repr(item) << " is not in set";
-            throw KeyError(msg.str());
+            throw KeyError(repr(item));
         }
 
         size_t norm_index = normalize_index(index, view.size(), true);

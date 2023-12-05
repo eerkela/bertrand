@@ -41,9 +41,7 @@ namespace linked {
 
         // helper for throwing not-found error
         auto not_found = [](const Item& item) {
-            std::ostringstream msg;
-            msg << repr(item) << " is not in the set";
-            return KeyError(msg.str());
+            return KeyError(repr(item));
         };
 
         if (view.size() == 0) {
@@ -113,9 +111,7 @@ namespace linked {
 
         // convenience function for throwing not-found error
         auto not_found = [](const Key& key) {
-            std::ostringstream msg;
-            msg << repr(key) << " is not in the set";
-            return KeyError(msg.str());
+            return KeyError(repr(key));
         };
 
         if (view.size() == 0) {
@@ -193,9 +189,7 @@ namespace linked {
 
         // convenience function for throwing not-found error
         auto not_found = [](const Item& item) {
-            std::ostringstream msg;
-            msg << repr(item) << " is not in the list";
-            return KeyError(msg.str());
+            return KeyError(repr(item));
         };
 
         if (view.size() == 0) {

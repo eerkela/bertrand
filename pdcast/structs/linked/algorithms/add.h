@@ -80,7 +80,7 @@ namespace linked {
     /* Add a key-value pair to the front of a dictionary, evicting the last item if
     necessary and moving pairs that are already present. */
     template <typename View, typename Key, typename Value>
-    inline auto lru_add(View& view, const Key& key, const Value& value, bool left)
+    inline auto lru_add(View& view, const Key& key, const Value& value)
         -> std::enable_if_t<ViewTraits<View>::dictlike, void>
     {
         using Allocator = typename View::Allocator;

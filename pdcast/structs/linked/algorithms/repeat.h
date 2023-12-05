@@ -1,6 +1,7 @@
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_REPEAT_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_REPEAT_H
 
+#include <sstream>  // std::ostringstream
 #include <type_traits>  // std::enable_if_t<>
 #include "../../util/except.h"  // catch_python, TypeError
 #include "../../util/ops.h"  // le(), eq()

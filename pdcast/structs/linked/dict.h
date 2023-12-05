@@ -204,19 +204,20 @@ public:
         linked::discard(this->view, key);
     }
 
-    // TODO: replace optional default with separate overloads
-
     /* Remove a key from the dictionary and return its value. */
-    inline Value pop(
-        const Key& key,
-        std::optional<Value> default_value = std::nullopt
-    ) {
+    inline Value pop(const Key& key) {
+        return linked::pop(this->view, key);
+    }
+
+    /* Remove a key from the dictionary and return its value, or return an optional
+    default if the key is not found. */
+    inline Value pop(const Key& key, const Value& default_value) {
         return linked::pop(this->view, key, default_value);
     }
 
     /* Remove and return a key, value pair from the dictionary. */
     inline std::pair<Key, Value> popitem(long long index = -1) {
-        return linked::pop(this->view, index);
+        return linked::popitem(this->view, index);
     }
 
     /* Remove all elements from the dictionary. */
@@ -224,40 +225,54 @@ public:
         this->view.clear();
     }
 
-    // TODO: replace optional default with separate overloads
+    /* Look up a value in the dictionary. */
+    inline Value& get(const Key& key) {
+        return linked::get(this->view, key);
+    }
 
-    /* Get a value from the dictionary using an optional default. */
-    inline std::optional<Value> get(
-        const Key& key,
-        std::optional<Value> default_value = std::nullopt
-    ) const {
+    /* Look up a value in the dictionary. */
+    inline Value& get(const Key& key) const {
+        return linked::get(this->view, key);
+    }
+
+    /* Look up a value in the dictionary, returning a default value if it does not
+    exist. */
+    inline Value& get(const Key& key, Value& default_value) {
         return linked::get(this->view, key, default_value);
     }
 
-    /* Get a value from the dictionary using an optional default, moving the key to
-    the front of the dictionary if it is found. */
-    inline std::optional<Value> lru_get(
-        const Key& key,
-        std::optional<Value> default_value = std::nullopt
-    ) {
+    /* Look up a value in the dictionary, returning a default value if it does not
+    exist. */
+    inline Value& get(const Key& key, Value& default_value) const {
+        return linked::get(this->view, key, default_value);
+    }
+
+    /* Look up a value in the dictionary and move it to the front if it is found. */
+    inline Value& lru_get(const Key& key) {
+        return linked::lru_get(this->view, key);
+    }
+
+    /* Look up a value in the dictionary and move it to the front if it is found.
+    Otherwise, return a default value. */
+    inline Value& lru_get(const Key& key, Value& default_value) {
         return linked::lru_get(this->view, key, default_value);
     }
 
     /* Set a value within the dictionary or insert it if it is not already present. */
-    inline Value& setdefault(const Key& key, const Value& default_value) {
+    inline Value& setdefault(const Key& key, Value& default_value) {
         return linked::setdefault(this->view, key, default_value);
     }
 
     /* Set a value within the dictionary or insert it at the front of the dictionary
     if it is not already present. */
-    inline Value& setdefault_left(const Key& key, const Value& default_value) {
+    inline Value& setdefault_left(const Key& key, Value& default_value) {
         return linked::setdefault_left(this->view, key, default_value);
     }
 
     /* Set a value within the dictionary and move it to the front of the dictionary,
     or insert it there if it is not already present.  Evicts the last element to make
     room if necessary. */
-    inline Value& lru_setdefault(const Key& key, const Value& default_value) {
+    inline Value& lru_setdefault(const Key& key, Value& default_value) {
         return linked::lru_setdefault(this->view, key, default_value);
     }
 
@@ -1481,7 +1496,6 @@ public:
         using bertrand::util::is_truthy;
         static constexpr std::string_view meth_name{"fromkeys"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
             PyObject* keys = pyargs.parse("keys");
             PyObject* value = pyargs.parse("value", nullptr, Py_None);
@@ -1540,13 +1554,11 @@ public:
         using bertrand::util::CallProtocol;
         static constexpr std::string_view meth_name{"add"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
             PyObject* value = pyargs.parse("value");
             pyargs.finalize();
 
-            // invoked equivalent C++ method
             std::visit(
                 [&key, &value](auto& dict) {
                     dict.add(key, value);
@@ -1555,7 +1567,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1568,13 +1579,11 @@ public:
         using bertrand::util::CallProtocol;
         static constexpr std::string_view meth_name{"add_left"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
             PyObject* value = pyargs.parse("value");
             pyargs.finalize();
 
-            // invoked equivalent C++ method
             std::visit(
                 [&key, &value](auto& dict) {
                     dict.add_left(key, value);
@@ -1583,7 +1592,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1596,13 +1604,11 @@ public:
         using bertrand::util::CallProtocol;
         static constexpr std::string_view meth_name{"lru_add"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
             PyObject* value = pyargs.parse("value");
             pyargs.finalize();
 
-            // invoked equivalent C++ method
             std::visit(
                 [&key, &value](auto& dict) {
                     dict.lru_add(key, value);
@@ -1611,7 +1617,6 @@ public:
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1622,24 +1627,23 @@ public:
     static PyObject* insert(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
+        using bertrand::util::parse_int;
         static constexpr std::string_view meth_name{"distance"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+            long long index = pyargs.parse("index", parse_int);
             PyObject* key = pyargs.parse("key");
             PyObject* value = pyargs.parse("value");
             pyargs.finalize();
 
-            // invoked equivalent C++ method
             std::visit(
-                [&key, &value](auto& dict) {
-                    dict.insert(key, value);
+                [&index, &key, &value](auto& dict) {
+                    dict.insert(index, key, value);
                 },
                 self->variant
             );
             Py_RETURN_NONE;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1652,13 +1656,11 @@ public:
         using bertrand::util::CallProtocol;
         static constexpr std::string_view meth_name{"pop"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
             PyObject* default_ = pyargs.parse("default", nullptr, (PyObject*) nullptr);
             pyargs.finalize();
 
-            // invoked equivalent C++ method
             return std::visit(
                 [&key, &default_](auto& dict) {
                     if (default_ == nullptr) {
@@ -1670,7 +1672,6 @@ public:
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1684,20 +1685,18 @@ public:
         using bertrand::util::parse_int;
         static constexpr std::string_view meth_name{"pop"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             long long index = pyargs.parse("index", parse_int, (long long)-1);
             pyargs.finalize();
 
-            // invoke equivalent C++ method
             return std::visit(
                 [&index](auto& dict) {
-                    return dict.popitem(index);  // returns new reference
+                    std::pair<PyObject*, PyObject*> pair = dict.popitem(index);
+                    return PyTuple_Pack(2, pair.first, pair.second);
                 },
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1710,13 +1709,11 @@ public:
         using bertrand::util::CallProtocol;
         static constexpr std::string_view meth_name{"get"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
             PyObject* default_ = pyargs.parse("default", nullptr, (PyObject*) nullptr);
             pyargs.finalize();
 
-            // invoke equivalent C++ method
             return std::visit(
                 [&key, &default_](auto& dict) {
                     if (default_ == nullptr) {
@@ -1728,7 +1725,6 @@ public:
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1741,13 +1737,11 @@ public:
         using bertrand::util::CallProtocol;
         static constexpr std::string_view meth_name{"lru_get"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
             PyObject* default_ = pyargs.parse("default", nullptr, (PyObject*) nullptr);
             pyargs.finalize();
 
-            // invoke equivalent C++ method
             return std::visit(
                 [&key, &default_](auto& dict) {
                     if (default_ == nullptr) {
@@ -1759,7 +1753,6 @@ public:
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1772,21 +1765,18 @@ public:
         using bertrand::util::CallProtocol;
         static constexpr std::string_view meth_name{"setdefault"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
             PyObject* value = pyargs.parse("value");
             pyargs.finalize();
 
-            // invoke equivalent C++ method
             return std::visit(
                 [&key, &value](auto& dict) {
-                    return dict.setdefault(key, value);  // returns new reference
+                    return dict.setdefault(key, value);  // new reference
                 },
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1799,21 +1789,18 @@ public:
         using bertrand::util::CallProtocol;
         static constexpr std::string_view meth_name{"setdefault_left"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
             PyObject* value = pyargs.parse("value");
             pyargs.finalize();
 
-            // invoke equivalent C++ method
             return std::visit(
                 [&key, &value](auto& dict) {
-                    return dict.setdefault_left(key, value);  // returns new reference
+                    return dict.setdefault_left(key, value);  // new reference
                 },
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1826,90 +1813,80 @@ public:
         using bertrand::util::CallProtocol;
         static constexpr std::string_view meth_name{"lru_setdefault"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
             PyObject* value = pyargs.parse("value");
             pyargs.finalize();
 
-            // invoke equivalent C++ method
             return std::visit(
                 [&key, &value](auto& dict) {
-                    return dict.lru_setdefault(key, value);  // returns new reference
+                    return dict.lru_setdefault(key, value);  // new reference
                 },
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
         }
     }
 
-    // TODO: thoroughly check these
+    // // TODO: thoroughly check these
 
-    /* Implement `LinkedDict.keys()` in Python. */
-    static PyObject* keys(Derived* self, PyObject* /* ignored */) {
-        try {
-            // invoke equivalent C++ method
-            return std::visit(
-                [](auto& dict) {
-                    using Proxy = typename std::decay_t<decltype(dict.keys())>;
-                    return Proxy::PyType.construct(dict.keys());
-                },
-                self->variant
-            );
+    // /* Implement `LinkedDict.keys()` in Python. */
+    // static PyObject* keys(Derived* self, PyObject* /* ignored */) {
+    //     try {
+    //         return std::visit(
+    //             [](auto& dict) {
+    //                 using Proxy = typename std::decay_t<decltype(dict.keys())>;
+    //                 return Proxy::PyType.construct(dict.keys());
+    //             },
+    //             self->variant
+    //         );
 
-        // translate C++ errors into Python exceptions
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
-    }
+    //     } catch (...) {
+    //         throw_python();
+    //         return nullptr;
+    //     }
+    // }
 
-    /* Implement `LinkedDict.values()` in Python. */
-    static PyObject* values(Derived* self, PyObject* /* ignored */) {
-        try {
-            // invoke equivalent C++ method
-            return std::visit(
-                [](auto& dict) {
-                    using Proxy = typename std::decay_t<decltype(dict.values())>;
-                    return Proxy::PyType.construct(dict.values());
-                },
-                self->variant
-            );
+    // /* Implement `LinkedDict.values()` in Python. */
+    // static PyObject* values(Derived* self, PyObject* /* ignored */) {
+    //     try {
+    //         return std::visit(
+    //             [](auto& dict) {
+    //                 using Proxy = typename std::decay_t<decltype(dict.values())>;
+    //                 return Proxy::PyType.construct(dict.values());
+    //             },
+    //             self->variant
+    //         );
 
-        // translate C++ errors into Python exceptions
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
-    }
+    //     } catch (...) {
+    //         throw_python();
+    //         return nullptr;
+    //     }
+    // }
 
-    /* Implement `LinkedDict.items()` in Python. */
-    static PyObject* items(Derived* self, PyObject* /* ignored */) {
-        try {
-            // invoke equivalent C++ method
-            return std::visit(
-                [](auto& dict) {
-                    using Proxy = typename std::decay_t<decltype(dict.items())>;
-                    return Proxy::PyType.construct(dict.items());
-                },
-                self->variant
-            );
+    // /* Implement `LinkedDict.items()` in Python. */
+    // static PyObject* items(Derived* self, PyObject* /* ignored */) {
+    //     try {
+    //         return std::visit(
+    //             [](auto& dict) {
+    //                 using Proxy = typename std::decay_t<decltype(dict.items())>;
+    //                 return Proxy::PyType.construct(dict.items());
+    //             },
+    //             self->variant
+    //         );
 
-        // translate C++ errors into Python exceptions
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
-    }
+    //     } catch (...) {
+    //         throw_python();
+    //         return nullptr;
+    //     }
+    // }
 
     /* Implement `LinkedDict.__getitem__()` in Python. */
     static PyObject* __getitem__(Derived* self, PyObject* key) {
         try {
-            // invoke equivalent C++ method
             return std::visit(
                 [&key](auto& dict) {
                     return Py_XNewRef(dict[key].get());
@@ -1917,7 +1894,6 @@ public:
                 self->variant
             );
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1927,7 +1903,6 @@ public:
     /* Implement `LinkedDict.__setitem__()/__delitem__()` in Python. */
     static int __setitem__(Derived* self, PyObject* key, PyObject* value) {
         try {
-            // invoke equivalent C++ method
             std::visit(
                 [&key, &value](auto& dict) {
                     dict[key] = value;
@@ -1936,7 +1911,6 @@ public:
             );
             return 0;
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return -1;
@@ -2335,22 +2309,22 @@ class PyLinkedDict :
     template <unsigned int Flags>
     using DictConfig = linked::LinkedDict<PyObject*, PyObject*, Flags, BasicLock>;
     using Variant = std::variant<
-        DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>
-        // DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
-        // DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
-        // DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
-        // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
-        // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
-        // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
-        // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
-        // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
-        // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
-        // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
-        // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
-        // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>
-        // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
+        DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>,
+        DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
+        DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
+        DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
+        DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
+        DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
+        DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
+        DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
+        DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
+        DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
+        DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
+        DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
     >;
     template <size_t I>
     using Alt = typename std::variant_alternative_t<I, Variant>;
@@ -2375,51 +2349,51 @@ class PyLinkedDict :
             case (Config::DEFAULT):
                 new (&self->variant) Variant(Alt<0>(std::forward<Args>(args)...));
                 break;
-            // case (Config::PACKED):
-            //     new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::STRICTLY_TYPED):
-            //     new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::PACKED | Config::STRICTLY_TYPED):
-            //     new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::FIXED_SIZE):
-            //     new (&self->variant) Variant(Alt<2>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::FIXED_SIZE | Config::PACKED):
-            //     new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-            //     new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::SINGLY_LINKED):
-            //     new (&self->variant) Variant(Alt<4>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::PACKED):
-            //     new (&self->variant) Variant(Alt<9>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
-            //     new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
-            //     new (&self->variant) Variant(Alt<11>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
-            //     new (&self->variant) Variant(Alt<6>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
-            //     new (&self->variant) Variant(Alt<13>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-            //     new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     new (&self->variant) Variant(Alt<15>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::PACKED):
+                new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
+                break;
+            case (Config::STRICTLY_TYPED):
+                new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
+                break;
+            case (Config::PACKED | Config::STRICTLY_TYPED):
+                new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
+                break;
+            case (Config::FIXED_SIZE):
+                new (&self->variant) Variant(Alt<2>(std::forward<Args>(args)...));
+                break;
+            case (Config::FIXED_SIZE | Config::PACKED):
+                new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
+                break;
+            case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
+                break;
+            case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+                new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED):
+                new (&self->variant) Variant(Alt<4>(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::PACKED):
+                new (&self->variant) Variant(Alt<9>(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
+                new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
+                new (&self->variant) Variant(Alt<11>(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
+                new (&self->variant) Variant(Alt<6>(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
+                new (&self->variant) Variant(Alt<13>(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+                new (&self->variant) Variant(Alt<15>(std::forward<Args>(args)...));
+                break;
             default:
                 throw ValueError("invalid argument configuration");
         }
@@ -2460,7 +2434,6 @@ public:
         using bertrand::util::is_truthy;
         static constexpr std::string_view meth_name{"__init__"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
             PyObject* iterable = pyargs.parse(
                 "iterable", none_to_null, (PyObject*) nullptr
@@ -2493,7 +2466,6 @@ public:
             // exit normally
             return 0;
 
-        // translate C++ exceptions into Python eerrors
         } catch (...) {
             throw_python();
             return -1;
@@ -2525,7 +2497,6 @@ public:
             auto str = stream.str();
             return PyUnicode_FromStringAndSize(str.c_str(), str.size());
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -2545,7 +2516,6 @@ public:
             auto str = stream.str();
             return PyUnicode_FromStringAndSize(str.c_str(), str.size());
 
-        // translate C++ errors into Python exceptions
         } catch (...) {
             throw_python();
             return nullptr;
@@ -2720,9 +2690,6 @@ in some cases.
         SET_METHOD(symmetric_difference_left, METH_O),
         SET_METHOD(symmetric_difference_update, METH_O),
         SET_METHOD(symmetric_difference_update_left, METH_O),
-        SET_METHOD(isdisjoint, METH_O),
-        SET_METHOD(issubset, METH_O),
-        SET_METHOD(issuperset, METH_O),
         SET_METHOD(distance, METH_FASTCALL),
         SET_METHOD(swap, METH_FASTCALL),
         SET_METHOD(move, METH_FASTCALL),
@@ -2739,9 +2706,9 @@ in some cases.
         DICT_METHOD(setdefault, METH_FASTCALL),
         DICT_METHOD(setdefault_left, METH_FASTCALL),
         DICT_METHOD(lru_setdefault, METH_FASTCALL),
-        DICT_METHOD(keys, METH_NOARGS),
-        DICT_METHOD(values, METH_NOARGS),
-        DICT_METHOD(items, METH_NOARGS),
+        // DICT_METHOD(keys, METH_NOARGS),
+        // DICT_METHOD(values, METH_NOARGS),
+        // DICT_METHOD(items, METH_NOARGS),
         {NULL}  // sentinel
     };
 

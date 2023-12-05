@@ -33,7 +33,12 @@ public:
     using Value = ValueType;
 
     /* Get the value held by the node. */
-    inline Value value() const noexcept {
+    inline Value& value() noexcept {
+        return _value;
+    }
+
+    /* Get the value held by the node. */
+    inline const Value& value() const noexcept {
         return _value;
     }
 
@@ -594,7 +599,7 @@ class Mapped : public Wrapped {
 
         if (!PyTuple_Check(tuple) || PyTuple_Size(tuple) != 2) {
             std::ostringstream msg;
-            msg << "Expected tuple of size 2 (key, value), not: " << repr(tuple);
+            msg << "expected tuple of size 2 (key, value), not " << repr(tuple);
             throw TypeError(msg.str());
         }
 
@@ -670,8 +675,22 @@ public:
     }
 
     /* Get the mapped value. */
-    inline MappedValue mapped() const noexcept {
+    inline MappedValue& mapped() noexcept {
         return _mapped;
+    }
+
+    /* Get the mapped value for a const node. */
+    inline const MappedValue& mapped() const noexcept {
+        return _mapped;
+    }
+
+    /* Overwrite the mapped value. */
+    inline void mapped(const MappedValue& mapped) noexcept {
+        if constexpr (is_pyobject<MappedType>) {
+            Py_XDECREF(_mapped);
+            Py_XINCREF(mapped);
+        }
+        _mapped = mapped;
     }
 
     /* Overwrite the mapped value. */
@@ -680,7 +699,7 @@ public:
             Py_XDECREF(_mapped);
             Py_XINCREF(mapped);
         }
-        _mapped = std::forward<MappedValue>(mapped);
+        _mapped = std::move(mapped);
     }
 
     /* Get the next node in the list. */

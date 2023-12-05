@@ -31,9 +31,9 @@ namespace linked {
 
 
 /* DEBUG=TRUE adds print statements for every memory allocation in order to help catch
-leaks.  This is a lot less elegant than using a logging library, but it gets the job
-done, avoids a dependency, and is easier to use from a Python REPL. */
-constexpr bool DEBUG = false;
+leaks.  This is a lot less elegant than using a formal logging library, but it gets the
+job done and is easier to use from a Python REPL. */
+inline constexpr bool DEBUG = false;
 
 
 ////////////////////
@@ -316,6 +316,20 @@ public:
         }
     }
 
+    /* Rearrange the nodes in memory to reduce fragmentation. */
+    void defragment() {
+        if (frozen()) {
+            std::ostringstream msg;
+            msg << "array cannot be reallocated while a MemGuard is active";
+            throw MemoryError(msg.str());
+        }
+    }
+
+    /* Attempt to shrink the allocator to fit the current occupants.  This is called
+    automatically whenever a MemGuard falls out of scope. The return value indicates
+    whether the allocator was successfully shrunk (no-op if false). */
+    bool shrink();
+
     /////////////////////////
     ////    INHERITED    ////
     /////////////////////////
@@ -340,18 +354,6 @@ public:
         }
         Derived* self = static_cast<Derived*>(this);
         return self->reserve(occupied + length.value());
-    }
-
-    /* Rearrange the nodes in memory to reduce fragmentation. */
-    void defragment() {
-        if (frozen()) {
-            std::ostringstream msg;
-            msg << "array cannot be reallocated while a MemGuard is active";
-            throw MemoryError(msg.str());
-        }
-
-        // NOTE: all allocators must implement a resize() method
-        static_cast<Derived*>(this)->resize(capacity);
     }
 
     /* Enforce strict type checking for python values within the list. */
@@ -417,10 +419,6 @@ public:
             return std::make_optional(capacity);
         }
     }
-
-    //////////////////////////////
-    ////    NESTED CLASSES    ////
-    //////////////////////////////
 
     /* An RAII-style memory guard that temporarily prevents an allocator from being resized
     or defragmented within a certain context. */
@@ -703,13 +701,11 @@ class ListAllocator : public BaseAllocator<
     ListAllocator<NodeType, Flags>, NodeType, Flags
 > {
     using Base = BaseAllocator<ListAllocator<NodeType, Flags>, NodeType, Flags>;
-    friend Base;
-    friend typename Base::MemGuard;
 
 public:
     using Node = typename Base::Node;
     using MemGuard = typename Base::MemGuard;
-    static constexpr size_t DEFAULT_CAPACITY = 8;  // minimum array size
+    static constexpr size_t MIN_CAPACITY = 8;
 
 private:
     Node* array;  // dynamic array of allocated nodes
@@ -717,15 +713,15 @@ private:
 
     /* Adjust the starting capacity of a dynamic list to a power of two. */
     inline static size_t init_capacity(std::optional<size_t> capacity) {
+        using bertrand::util::next_power_of_two;
+
         if (!capacity.has_value()) {
-            return DEFAULT_CAPACITY;
+            return MIN_CAPACITY;
         }
 
         if constexpr (Base::DYNAMIC) {
             size_t result = capacity.value();
-            return result < DEFAULT_CAPACITY ?
-                DEFAULT_CAPACITY :
-                bertrand::util::next_power_of_two(result);
+            return result < MIN_CAPACITY ? MIN_CAPACITY : next_power_of_two(result);
         } else {
             return capacity.value();
         }
@@ -781,30 +777,11 @@ private:
         this->capacity = new_capacity;
     }
 
-    /* Shrink a dynamic allocator if it is under the minimum load factor.  This is
-    called automatically by recycle() as well as when a MemGuard falls out of scope,
-    guaranteeing the load factor is never less than 25% of the list's capacity. */
-    inline bool shrink() {
-        if constexpr (Base::DYNAMIC) {
-            if (!this->frozen() &&
-                this->capacity > DEFAULT_CAPACITY &&
-                this->occupied <= this->capacity / 4
-            ) {
-                size_t size = bertrand::util::next_power_of_two(this->occupied * 2);
-                resize(size < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : size);
-                return true;
-            }
-        }
-        return false;
-    }
-
 public:
 
     /* Create an allocator with an optional fixed size. */
-    ListAllocator(
-        std::optional<size_t> capacity,
-        PyObject* specialization
-    ) : Base(init_capacity(capacity), specialization),
+    ListAllocator(std::optional<size_t> capacity, PyObject* specialization) :
+        Base(init_capacity(capacity), specialization),
         array(Base::malloc_nodes(this->capacity)),
         free_list(std::make_pair(nullptr, nullptr))
     {}
@@ -957,8 +934,8 @@ public:
         free_list.first = nullptr;
         free_list.second = nullptr;
         if constexpr (Base::DYNAMIC) {
-            if (!this->frozen() && this->capacity != DEFAULT_CAPACITY) {
-                this->capacity = DEFAULT_CAPACITY;
+            if (!this->frozen() && this->capacity > MIN_CAPACITY) {
+                this->capacity = MIN_CAPACITY;
                 free(array);
                 if constexpr (DEBUG) {
                     std::cout << "    -> deallocate: " << this->capacity << " nodes";
@@ -976,6 +953,7 @@ public:
     /* Resize the allocator to store a specific number of nodes. */
     MemGuard reserve(size_t new_size) {
         Base::reserve(new_size);
+        using bertrand::util::next_power_of_two;
 
         // if frozen or not dynamic, check against current capacity
         if constexpr (Base::DYNAMIC) {
@@ -994,13 +972,38 @@ public:
             }
         }
 
-        size_t new_capacity = bertrand::util::next_power_of_two(new_size);
+        size_t new_capacity = next_power_of_two(new_size);
         if (new_capacity > this->capacity) {
             resize(new_capacity);
         }
 
         // freeze allocator until guard falls out of scope
         return MemGuard(this);
+    }
+
+    /* Rearrange the nodes in memory to reflect their current list order. */
+    void defragment() {
+        Base::defragment();
+        resize(this->capacity);
+    }
+
+    /* Shrink a dynamic allocator if it is under the minimum load factor.  This is
+    called automatically by recycle() as well as when a MemGuard falls out of scope,
+    guaranteeing the load factor is never less than 25% of the list's capacity. */
+    inline bool shrink() {
+        using bertrand::util::next_power_of_two;
+
+        if constexpr (Base::DYNAMIC) {
+            if (!this->frozen() &&
+                this->capacity > MIN_CAPACITY &&
+                this->occupied <= this->capacity / 4
+            ) {
+                size_t size = next_power_of_two(this->occupied * 2);
+                resize(size < MIN_CAPACITY ? MIN_CAPACITY : size);
+                return true;
+            }
+        }
+        return false;
     }
 
 };
@@ -1044,16 +1047,41 @@ class HashAllocator : public BaseAllocator<
     HashAllocator<NodeType, Flags>, NodeType, Flags
 > {
     using Base = BaseAllocator<HashAllocator<NodeType, Flags>, NodeType, Flags>;
-    friend Base;
-    friend typename Base::MemGuard;
 
 public:
     using Node = NodeType;
     using MemGuard = typename Base::MemGuard;
-    static constexpr size_t DEFAULT_CAPACITY = 8;  // minimum table size
+    static constexpr size_t MIN_CAPACITY = 8;
 
-    /* An enum containing compile-time flags to control the behavior of the create()
-    and recycle() factory methods in an optimized fashion. */
+    /* An enum containing compile-time flags to control the behavior of the create(),
+    recycle(), and search() methods and prevent repeated lookups.
+
+    NOTE: the default behavior of these methods are identical to ListAllocator.
+    create() constructs a new node, while recycle() destroys the node and returns it
+    to the hash table.  Search() only exists for HashAllocator, and returns a pointer
+    to the node if it is found, or nullptr otherwise.
+    
+    The trouble is that all of these operations require a lookup to find a node's
+    position within the table, which is relatively expensive.  Many algorithms (e.g.
+    LRU methods, left/right adds, discard, etc.) require us to search the table for a
+    match and then perform some operation on it, which may include further lookups.
+    These flags allow us to inject those operations directly into the original lookup,
+    saving us the cost of a second search.  These combined operations can be customized
+    using template parameters, like so:
+    
+        Node* node = allocator.template create<EXIST_OK | INSERT_HEAD>(args...);
+
+    This will search the table for a matching node and return it directly if one is
+    found.  Otherwise, it will create a new node and insert it at the head of the list.
+    This is significantly faster than doing the lookup and insertion separately:
+
+        Node* node = allocator.search(args...);
+        if (node == nullptr) {
+            node = allocator.create(args...);  // triggers a second lookup
+            Node::join(node, allocator.head);
+            allocator.head = node;
+        }
+    */
     enum DIRECTIVES : unsigned int {
         DEFAULT = 0,
         EXIST_OK = 1 << 1,
@@ -1181,12 +1209,14 @@ private:
 
     /* Adjust the starting capacity of a set to a power of two. */
     inline static size_t init_capacity(std::optional<size_t> capacity) {
+        using bertrand::util::next_power_of_two;
+
         if (!capacity.has_value()) {
-            return DEFAULT_CAPACITY;
+            return MIN_CAPACITY;
         }
         size_t result = capacity.value();
-        result = bertrand::util::next_power_of_two(result + (result / 3));
-        return result < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : result;
+        result = next_power_of_two(result + (result / 3));
+        return result < MIN_CAPACITY ? MIN_CAPACITY : result;
     }
 
     /* Adjust the maximum occupants of a set based on its dynamic status. */
@@ -1301,25 +1331,6 @@ private:
         this->capacity = new_capacity;
         table = new_table;
         modulo = new_capacity - 1;
-    }
-
-    /* Shrink a dynamic allocator if it is under the minimum load factor.  This is
-    called automatically by recycle() as well as when a MemGuard falls out of scope,
-    guaranteeing the load factor is never less than 25% of the table's capacity. */
-    inline bool shrink() {
-        if constexpr (Base::DYNAMIC) {
-            if (!this->frozen() &&
-                this->capacity > DEFAULT_CAPACITY &&
-                this->occupied <= this->capacity / 4
-            ) {
-                size_t size = bertrand::util::next_power_of_two(
-                    this->occupied + (this->occupied / 3)
-                );
-                resize(size < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : size);
-                return true;
-            }
-        }
-        return false;
     }
 
     /* Move a node to the head of the list once it's been found */
@@ -1444,7 +1455,11 @@ private:
 
     /* Look up a value in the hash table by providing an explicit hash/value. */
     template <unsigned int flags = DEFAULT>
-    Node* _search(const size_t hash, const Value& value) {
+    Node* _search(size_t hash, const Value& value) {
+        static_assert(
+            !(flags & ~(MOVE_HEAD | MOVE_TAIL)),
+            "search() only accepts the MOVE_HEAD and MOVE_TAIL flags"
+        );
         static_assert(
             !((flags & MOVE_HEAD) && (flags & MOVE_TAIL)),
             "cannot move node to both head and tail of list"
@@ -1486,29 +1501,89 @@ private:
         return nullptr;
     }
 
+    /* Const equivalent for _search(hash, value). */
+    template <unsigned int flags = DEFAULT>
+    Node* _search(size_t hash, const Value& value) const {
+        static_assert(
+            !(flags & ~(MOVE_HEAD | MOVE_TAIL)),
+            "search() only accepts the MOVE_HEAD and MOVE_TAIL flags"
+        );
+        static_assert(
+            !(flags & (MOVE_HEAD | MOVE_TAIL)),
+            "cannot move nodes while search()-ing a const table"
+        );
+
+        // identify starting bucket
+        size_t idx = hash & modulo;
+        Bucket* bucket = table + idx;
+
+        // if collision chain is empty, then no match is possible
+        if (bucket->collisions != EMPTY) {
+            if (bucket->collisions) {  // advance to head of chain
+                idx += bucket->collisions;
+                idx &= modulo;
+                bucket = table + idx;
+            }
+            while (true) {
+                const Node* node = bucket->node();
+                if (node->hash() == hash && eq(node->value(), value)) {
+                    return node;
+                }
+
+                // advance to next bucket
+                if (!bucket->next) {
+                    break;
+                }
+                idx += bucket->next;
+                idx &= modulo;
+                bucket = table + idx;
+            }
+        }
+
+        // value not found
+        return nullptr;
+    }
+
+
+    // TODO: maybe using an auto return value is simpler here?
+
+    // TBH we should probably just split this into a separate function.
+    // -> MappedValue pop(key) and MappedValue pop(key, value)
+
+    // TODO: should also assert that NodeTraits::has_mapped is true if RETURN_MAPPED is
+    // given to recycle()
+
+
     /* A conditional return type for the recycle() method based on the RETURN_MAPPED
     flag used in dict.pop() */
-    template <unsigned int flags, bool dictlike = false>
+    template <unsigned int flags, bool return_mapped = false>
     struct RecycleRetVal {
         using type = void;
     };
 
     template <unsigned int flags>
     struct RecycleRetVal<flags, true> {
-        using Mapped = typename Node::MappedValue;
-        using OptMapped = std::optional<Mapped>;
-        using type = std::conditional_t<!!(flags & RETURN_MAPPED), OptMapped, void>;
+        using type = typename Node::MappedValue;
     };
 
     template <unsigned int flags>
     using RecycleRetVal_t = typename RecycleRetVal<
         flags,
-        NodeTraits<Node>::has_mapped
+        NodeTraits<Node>::has_mapped && !!(flags & RETURN_MAPPED)
     >::type;
 
     /* Remove a value in the hash table by providing an explicit hash/value. */
     template <unsigned int flags = DEFAULT>
-    auto _recycle(const size_t hash, const Value& value) -> RecycleRetVal_t<flags> {
+    RecycleRetVal_t<flags> _recycle(size_t hash, const Value& value) {
+        static_assert(
+            !(flags & ~(NOEXIST_OK | UNLINK | RETURN_MAPPED)),
+            "recycle() only accepts the NOEXIST_OK, UNLINK, and RETURN_MAPPED flags"
+        );
+        static_assert(
+            !((flags & RETURN_MAPPED) && !NodeTraits<Node>::has_mapped),
+            "cannot return mapped value if node does not have a mapped value"
+        );
+
         size_t idx = hash & modulo;
         Bucket* origin = table + idx;
 
@@ -1533,7 +1608,6 @@ private:
                         prev->next = has_next * (prev->next + bucket->next);
                     }
 
-                    // unlink from neighbors if directed
                     if constexpr (flags & UNLINK) {
                         unlink(node);
                     }
@@ -1544,19 +1618,16 @@ private:
                     }
 
                     // return mapped value if directed
-                    if constexpr (
-                        NodeTraits<Node>::has_mapped &&
-                        (flags & RETURN_MAPPED)
-                    ) {
+                    if constexpr (flags & RETURN_MAPPED) {
                         using Mapped = typename Node::MappedValue;
-                        Mapped mapped = std::move(node->mapped());
+                        Mapped mapped(std::move(node->mapped()));
                         if constexpr (is_pyobject<Mapped>) {
                             Py_INCREF(mapped);
                         }
                         bucket->destroy();
                         --this->occupied;
                         this->shrink();
-                        return std::make_optional(mapped);
+                        return mapped;
 
                     // otherwise destroy and return void
                     } else {
@@ -1580,25 +1651,116 @@ private:
 
         // node not found
         if constexpr (flags & NOEXIST_OK) {
-            if constexpr (NodeTraits<Node>::has_mapped && (flags & RETURN_MAPPED)) {
-                return std::nullopt;
+            if constexpr (flags & RETURN_MAPPED) {
+                throw KeyError(repr(value));
             } else {
                 return;
             }
         } else {
-            std::ostringstream msg;
-            msg << "key not found: " << repr(value);
-            throw KeyError(msg.str());
+            throw KeyError(repr(value));
+        }
+    }
+
+    /* Remove a value in a dictlike hash table by providing an explicit hash/key and an
+    optional default value if it is not found.  This is only used by dict.pop() when
+    called with 2 arguments. */
+    template <unsigned int flags = DEFAULT, typename Default>
+    RecycleRetVal_t<flags> _recycle(
+        size_t hash,
+        const Value& value,
+        const Default& default_value
+    ) {
+        static_assert(
+            !(flags & ~(NOEXIST_OK | UNLINK | RETURN_MAPPED)),
+            "recycle() only accepts the NOEXIST_OK, UNLINK, and RETURN_MAPPED flags"
+        );
+        static_assert(
+            !((flags & RETURN_MAPPED) && !NodeTraits<Node>::has_mapped),
+            "cannot return mapped value if node does not have a mapped value"
+        );
+
+        size_t idx = hash & modulo;
+        Bucket* origin = table + idx;
+
+        // if collision chain is empty, then no match is possible
+        if (origin->collisions != EMPTY) {
+            Bucket* prev = nullptr;
+            Bucket* bucket = origin;
+            if (origin->collisions) {
+                idx += origin->collisions;
+                idx &= modulo;
+                bucket = table + idx;
+            }
+            while (true) {
+                Node* node = bucket->node();
+                if (node->hash() == hash && eq(node->value(), value)) {
+                    // update hop information
+                    unsigned char has_next = (bucket->next > 0);
+                    if (prev == nullptr) {  // bucket is head of collision chain
+                        origin->collisions = has_next ?
+                            origin->collisions + bucket->next : EMPTY;
+                    } else {  // bucket is in middle or end of collision chain
+                        prev->next = has_next * (prev->next + bucket->next);
+                    }
+
+                    if constexpr (flags & UNLINK) {
+                        unlink(node);
+                    }
+
+                    if constexpr (DEBUG) {
+                        std::cout << "    -> recycle: " << repr(value);
+                        std::cout << std::endl;
+                    }
+
+                    // return mapped value if directed
+                    if constexpr (flags & RETURN_MAPPED) {
+                        using Mapped = typename Node::MappedValue;
+                        Mapped mapped(std::move(node->mapped()));
+                        if constexpr (is_pyobject<Mapped>) {
+                            Py_INCREF(mapped);
+                        }
+                        bucket->destroy();
+                        --this->occupied;
+                        this->shrink();
+                        return mapped;
+
+                    // otherwise destroy and return void
+                    } else {
+                        bucket->destroy();
+                        --this->occupied;
+                        this->shrink();
+                        return;
+                    }
+                }
+
+                // advance to next bucket
+                if (!bucket->next) {
+                    break;
+                }
+                idx += bucket->next;
+                idx &= modulo;
+                prev = bucket;
+                bucket = table + idx;
+            }
+        }
+
+        // node not found
+        if constexpr (flags & NOEXIST_OK) {
+            if constexpr (flags & RETURN_MAPPED) {
+                return default_value;
+            } else {
+                return;
+            }
+        } else {
+            throw KeyError(repr(value));
         }
     }
 
 public:
 
     /* Create an allocator with an optional fixed size. */
-    HashAllocator(
-        std::optional<size_t> capacity,
-        PyObject* specialization
-    ) : Base(init_capacity(capacity), specialization),
+    HashAllocator(std::optional<size_t> capacity, PyObject* specialization) :
+        Base(init_capacity(capacity), specialization),
         table(new Bucket[this->capacity]), modulo(this->capacity - 1),
         max_occupants(init_max_occupants(capacity))
     {}
@@ -1684,16 +1846,24 @@ public:
     template <unsigned int flags = DEFAULT, typename... Args>
     Node* create(Args&&... args) {
         static_assert(
+            !(flags & ~(
+                EXIST_OK | INSERT_HEAD | INSERT_TAIL | MOVE_HEAD | MOVE_TAIL |
+                EVICT_HEAD | EVICT_TAIL | REPLACE_MAPPED
+            )),
+            "create() only accepts the EXIST_OK, INSERT_HEAD, INSERT_TAIL, MOVE_HEAD, "
+            "MOVE_TAIL, EVICT_HEAD, EVICT_TAIL, and REPLACE_MAPPED flags"
+        );
+        static_assert(
+            !((flags & INSERT_HEAD) && (flags & INSERT_TAIL)),
+            "cannot insert node at both head and tail of list"
+        );
+        static_assert(
             !((flags & MOVE_HEAD) && (flags & MOVE_TAIL)),
             "cannot move node to both head and tail of list"
         );
         static_assert(
             !((flags & EVICT_HEAD) && (flags & EVICT_TAIL)),
             "cannot evict node from both head and tail of list"
-        );
-        static_assert(
-            !((flags & INSERT_HEAD) && (flags & INSERT_TAIL)),
-            "cannot insert node at both head and tail of list"
         );
 
         // allocate into temporary node
@@ -1831,14 +2001,21 @@ public:
         return _recycle<flags>(bertrand::hash(key), key);
     }
 
+    /* Release a node from the table after looking up its value.  Returns the default
+    value if a matching node is not found. */
+    template <unsigned int flags = DEFAULT, typename Default>
+    inline auto recycle(const Value& key, const Default& default_value) {
+        return _recycle<flags>(bertrand::hash(key), key, default_value);
+    }
+
     /* Remove all elements from the table. */
     void clear() noexcept {
         Base::clear();
 
         // shrink to default capacity
         if constexpr (Base::DYNAMIC) {
-            if (!this->frozen() && this->capacity > DEFAULT_CAPACITY) {
-                this->capacity = DEFAULT_CAPACITY;
+            if (!this->frozen() && this->capacity > MIN_CAPACITY) {
+                this->capacity = MIN_CAPACITY;
                 free(table);
                 if constexpr (DEBUG) {
                     std::cout << "    -> deallocate: " << this->capacity << " nodes";
@@ -1857,6 +2034,7 @@ public:
     /* Resize the allocator to store a specific number of nodes. */
     MemGuard reserve(size_t new_size) {
         Base::reserve(new_size);
+        using bertrand::util::next_power_of_two;
 
         // if frozen or not dynamic, check against current capacity
         if constexpr (Base::DYNAMIC) {
@@ -1875,9 +2053,7 @@ public:
             }
         }
 
-        size_t new_capacity = bertrand::util::next_power_of_two(
-            new_size + (new_size / 3)
-        );
+        size_t new_capacity = next_power_of_two(new_size + (new_size / 3));
         if (new_capacity > this->capacity) {
             resize(new_capacity);
         }
@@ -1886,9 +2062,34 @@ public:
         return MemGuard(this);
     }
 
+    /* Reallocate the hash table in-place to reduce collisions. */
+    void defragment() {
+        Base::defragment();
+        resize(this->capacity);  // in-place reallocation
+    }
+
+    /* Shrink a dynamic allocator if it is under the minimum load factor.  This is
+    called automatically by recycle() as well as when a MemGuard falls out of scope,
+    guaranteeing the load factor is never less than 25% of the table's capacity. */
+    inline bool shrink() {
+        using bertrand::util::next_power_of_two;
+
+        if constexpr (Base::DYNAMIC) {
+            if (!this->frozen() &&
+                this->capacity > MIN_CAPACITY &&
+                this->occupied <= this->capacity / 4
+            ) {
+                size_t size = next_power_of_two(this->occupied + (this->occupied / 3));
+                resize(size < MIN_CAPACITY ? MIN_CAPACITY : size);
+                return true;
+            }
+        }
+        return false;
+    }
+
     /* Get the total amount of dynamic memory being managed by this allocator.  Hop
     information takes 2 extra bytes per bucket (maybe padded to 4/8). */
-    inline size_t nbytes() const {
+    inline size_t nbytes() const noexcept {
         return sizeof(Node) + this->capacity * sizeof(Bucket);
     }
 
@@ -1902,9 +2103,15 @@ public:
         }
     }
 
-    /* Search for a node by its value directly. */
+    /* Search for a node by its value. */
     template <unsigned int flags = DEFAULT>
     inline Node* search(const Value& key) {
+        return _search<flags>(bertrand::hash(key), key);
+    }
+
+    /* Const allocator equivalent for search(value). */
+    template <unsigned int flags = DEFAULT>
+    inline const Node* search(const Value& key) const {
         return _search<flags>(bertrand::hash(key), key);
     }
 
@@ -1914,7 +2121,7 @@ public:
         typename N,
         bool cond = std::is_base_of_v<NodeTag, N>
     >
-    inline auto search(const N* node) -> std::enable_if_t<cond, Node*> {
+    inline std::enable_if_t<cond, Node*> search(const N* node) {
         if constexpr (NodeTraits<N>::has_hash) {
             return _search<flags>(node->hash(), node->value());
         } else {
@@ -1923,10 +2130,20 @@ public:
         }
     }
 
-    // TODO: optimize pop() in the same way.  Search value, get node, incref, unlink,
-    // recycle, and return value without any extra lookups.  Perhaps the return value
-    // for recycle() can be conditional?  void most of the time, but MappedValue if
-    // NodeTraits<Node>::has_mapped && (flags & RETURN_MAPPED)
+    /* Const allocator equivalent for search(node). */
+    template <
+        unsigned int flags = DEFAULT,
+        typename N,
+        bool cond = std::is_base_of_v<NodeTag, N>
+    >
+    inline std::enable_if_t<cond, const Node*> search(const N* node) const {
+        if constexpr (NodeTraits<N>::has_hash) {
+            return _search<flags>(node->hash(), node->value());
+        } else {
+            size_t hash = bertrand::hash(node->value());
+            return _search<flags>(hash, node->value());
+        }
+    }
 
 };
 

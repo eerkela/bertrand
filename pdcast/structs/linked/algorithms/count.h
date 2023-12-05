@@ -3,6 +3,7 @@
 
 #include <cstddef>  // size_t
 #include <optional>  // std::optional
+#include <sstream>  // std::ostringstream
 #include <type_traits>  // std::enable_if_t<>
 #include "../../util/ops.h"  // eq()
 #include "../core/view.h"  // ViewTraits

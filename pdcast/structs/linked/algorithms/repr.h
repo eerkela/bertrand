@@ -37,30 +37,31 @@ namespace linked {
         // append left bracket
         stream << "(" << lbracket;
 
-        // append first element
-        auto it = view.cbegin();
-        auto end = view.cend();
-        if (it != end) {
-            stream << bertrand::repr(*it);
-            ++it;
-        }
-
-        // Helper for generating a single token in the given data structure
-        auto execute = [](std::ostringstream& stream, auto it) {
+        // Helper for generating a token from a single element of the data structure
+        auto token = [](std::ostringstream& stream, auto it) {
             if constexpr (ViewTraits<View>::dictlike) {
-                stream << ", " << bertrand::repr(*it) << ": ";
+                stream << bertrand::repr(*it) << ": ";
                 stream << bertrand::repr(it.curr()->mapped());
             } else {
                 stream << ", " << bertrand::repr(*it);
             }
         };
 
+        // append first element
+        auto it = view.cbegin();
+        auto end = view.cend();
+        if (it != end) {
+            token(stream, it);
+            ++it;
+        }
+
         // abbreviate to avoid spamming the console
         if (view.size() > max_entries) {
             size_t count = 1;
             size_t threshold = max_entries / 2;
             for (; it != end && count < threshold; ++it, ++count) {
-                execute(stream, it);
+                stream << ", ";
+                token(stream, it);
             }
 
             stream << ", ...";
@@ -72,7 +73,7 @@ namespace linked {
                 auto r_end = view.crend();
                 for (; r_it != r_end && count < max_entries; ++r_it, ++count) {
                     std::ostringstream ss;
-                    execute(ss, r_it);
+                    token(ss, r_it);
                     stack.push(ss.str());
                 }
                 while (!stack.empty()) {
@@ -85,13 +86,15 @@ namespace linked {
                 threshold = view.size() - (max_entries - threshold);
                 for (size_t j = count; j < threshold; ++j, ++it);
                 for (; it != end; ++it) {
-                    execute(stream, it);
+                    stream << ", ";
+                    token(stream, it);
                 }
             }
 
         } else {
             for (; it != end; ++it) {
-                execute(stream, it);
+                stream << ", ";
+                token(stream, it);
             }
         }
 

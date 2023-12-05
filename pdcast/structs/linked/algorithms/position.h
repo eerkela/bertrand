@@ -2,7 +2,6 @@
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_POSITION_H
 
 #include <cstddef>  // size_t
-#include <sstream>  // std::ostringstream
 #include <type_traits>  // std::enable_if_t<>
 #include <Python.h>  // CPython API
 #include "../../util/base.h"  // is_pyobject<>

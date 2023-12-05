@@ -1158,7 +1158,6 @@ public:
         using bertrand::util::CallProtocol;
         static constexpr std::string_view meth_name{"distance"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key1 = pyargs.parse("key1");
             PyObject* key2 = pyargs.parse("key2");
@@ -1183,7 +1182,6 @@ public:
         using bertrand::util::CallProtocol;
         static constexpr std::string_view meth_name{"swap"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key1 = pyargs.parse("key1");
             PyObject* key2 = pyargs.parse("key2");
@@ -1211,7 +1209,6 @@ public:
         using bertrand::util::parse_int;
         static constexpr std::string_view meth_name{"move"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
             long long steps = pyargs.parse("steps", parse_int);
@@ -1243,7 +1240,6 @@ public:
         using bertrand::util::parse_int;
         static constexpr std::string_view meth_name{"move_to_index"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
             long long index = pyargs.parse("index", parse_int);
@@ -2104,7 +2100,6 @@ public:
         using bertrand::util::is_truthy;
         static constexpr std::string_view meth_name{"__init__"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
             PyObject* keys = pyargs.parse(
                 "keys", none_to_null, (PyObject*)nullptr

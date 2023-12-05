@@ -1,7 +1,6 @@
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_MAP_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_MAP_H
 
-#include <sstream>  // std::ostringstream
 #include <type_traits>  // std::enable_if_t<>
 #include "../../util/base.h"  // is_pyobject<>
 #include "../../util/except.h"  // KeyError
@@ -65,9 +64,7 @@ namespace linked {
         inline const Value& get() const {
             Node* node = view.search(key);
             if (node == nullptr) {
-                std::ostringstream msg;
-                msg << "key not found: " << repr(key);
-                throw KeyError(msg.str());
+                throw KeyError(repr(key));
             }
             return node->mapped();
         }

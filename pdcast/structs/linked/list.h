@@ -533,7 +533,6 @@ public:
         using bertrand::util::parse_int;
         static constexpr std::string_view meth_name{"insert"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             long long index = pyargs.parse("index", parse_int);
             PyObject* item = pyargs.parse("item");
@@ -595,7 +594,6 @@ public:
         using Index = std::optional<long long>;
         static constexpr std::string_view meth_name{"index"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* item = pyargs.parse("item");
             Index start = pyargs.parse("start", parse_opt_int, Index());
@@ -625,7 +623,6 @@ public:
         using Index = std::optional<long long>;
         static constexpr std::string_view meth_name{"count"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* item = pyargs.parse("item");
             Index start = pyargs.parse("start", parse_opt_int, Index());
@@ -671,7 +668,6 @@ public:
         using bertrand::util::parse_int;
         static constexpr std::string_view meth_name{"pop"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             long long index = pyargs.parse("index", parse_int, (long long)-1);
             pyargs.finalize();
@@ -744,7 +740,6 @@ public:
         using bertrand::util::is_truthy;
         static constexpr std::string_view meth_name{"sort"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::VECTORCALL> pyargs(meth_name, args, nargs, kwnames);
             PyObject* key = pyargs.keyword("key", none_to_null, (PyObject*)nullptr);
             bool reverse = pyargs.keyword("reverse", is_truthy, false);
@@ -788,7 +783,6 @@ public:
         using bertrand::util::parse_int;
         static constexpr std::string_view meth_name{"rotate"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             long long steps = pyargs.parse("steps", parse_int, (long long)1);
             pyargs.finalize();
@@ -1402,21 +1396,21 @@ class PyLinkedList :
     template <unsigned int Flags>
     using ListConfig = linked::LinkedList<PyObject*, Flags, BasicLock>;
     using Variant = std::variant<
-        ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>
+        ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>,
         // ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
-        // ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
+        ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
         // ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
-        // ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
+        ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
         // ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        // ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
+        ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
         // ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
-        // ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
+        ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
         // ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
-        // ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
+        ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
         // ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
-        // ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
+        ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
         // ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        // ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>
+        ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>
         // ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
     >;
     template <size_t I>
@@ -1437,45 +1431,45 @@ class PyLinkedList :
             // case (Config::PACKED):
             //     new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
             //     break;
-            // case (Config::STRICTLY_TYPED):
-            //     new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::STRICTLY_TYPED):
+                new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
+                break;
             // case (Config::PACKED | Config::STRICTLY_TYPED):
             //     new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
             //     break;
-            // case (Config::FIXED_SIZE):
-            //     new (&self->variant) Variant(Alt<2>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::FIXED_SIZE):
+                new (&self->variant) Variant(Alt<2>(std::forward<Args>(args)...));
+                break;
             // case (Config::FIXED_SIZE | Config::PACKED):
             //     new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
             //     break;
-            // case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-            //     new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
+                break;
             // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
             //     new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
             //     break;
-            // case (Config::SINGLY_LINKED):
-            //     new (&self->variant) Variant(Alt<4>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::SINGLY_LINKED):
+                new (&self->variant) Variant(Alt<4>(std::forward<Args>(args)...));
+                break;
             // case (Config::SINGLY_LINKED | Config::PACKED):
             //     new (&self->variant) Variant(Alt<9>(std::forward<Args>(args)...));
             //     break;
-            // case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
-            //     new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
+                new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
+                break;
             // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
             //     new (&self->variant) Variant(Alt<11>(std::forward<Args>(args)...));
             //     break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
-            //     new (&self->variant) Variant(Alt<6>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
+                new (&self->variant) Variant(Alt<6>(std::forward<Args>(args)...));
+                break;
             // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
             //     new (&self->variant) Variant(Alt<13>(std::forward<Args>(args)...));
             //     break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-            //     new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
+                break;
             // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
             //     new (&self->variant) Variant(Alt<15>(std::forward<Args>(args)...));
             //     break;
@@ -1526,7 +1520,6 @@ public:
         using bertrand::util::parse_int;
         static constexpr std::string_view meth_name{"__init__"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
             PyObject* iterable = pyargs.parse(
                 "iterable", none_to_null, (PyObject*)nullptr

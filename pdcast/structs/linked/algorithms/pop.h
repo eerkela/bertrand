@@ -1,7 +1,6 @@
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_POP_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_POP_H
 
-#include <sstream>  // std::ostringstream
 #include <tuple>  // std::tuple
 #include <type_traits>  // std::enable_if_t<>
 #include <Python.h>  // CPython API
@@ -19,8 +18,7 @@ namespace linked {
     template <typename View, typename Value = typename View::Value>
     inline auto pop(View& view, long long index)
         -> std::enable_if_t<
-            ViewTraits<View>::listlike || ViewTraits<View>::setlike,
-            Value
+            ViewTraits<View>::listlike || ViewTraits<View>::setlike, Value
         >
     {
         using Node = typename View::Node;
@@ -69,15 +67,7 @@ namespace linked {
         if (view.size() == 0) {
             throw IndexError("pop from empty dict");
         }
-
-        std::optional<Value> result = view.template recycle<flags>(key);
-        if (result.has_value()) {
-            return result.value();
-        }
-
-        std::ostringstream msg;
-        msg << repr(key);
-        throw KeyError(msg.str());
+        return view.template recycle<flags>(key);
     }
 
 
@@ -94,9 +84,53 @@ namespace linked {
         if (view.size() == 0) {
             throw IndexError("pop from empty dict");
         }
+        return view.template recycle<flags>(key, default_value);
+    }
 
-        std::optional<Value> result = view.template recycle<flags>(key);
-        return result.value_or(default_value);
+
+    /* Pop an key-value pair from a linked dictionary at the given index. */
+    template <
+        typename View,
+        typename Key = typename View::Value,
+        typename Value = typename View::MappedValue
+    >
+    inline auto popitem(View& view, long long index)
+        -> std::enable_if_t<ViewTraits<View>::dictlike, std::pair<Key, Value>>
+    {
+        using Node = typename View::Node;
+        if (view.size() == 0) {
+            throw IndexError("pop from empty dictionary");
+        }
+
+        size_t norm_index = normalize_index(index, view.size(), true);
+
+        // payload for return value
+        auto execute = [&view](Node* node) -> std::pair<Key, Value> {
+            Key key = node->value();
+            if constexpr (is_pyobject<Key>) {
+                Py_INCREF(key);  // new reference
+            }
+            Value value = node->mapped();
+            if constexpr (is_pyobject<Value>) {
+                Py_INCREF(value);  // new reference
+            }
+            view.recycle(node);
+            return std::make_pair(key, value);
+        };
+
+        // get iterator to index
+        if constexpr (NodeTraits<Node>::has_prev) {
+            if (view.closer_to_tail(norm_index)) {
+                auto it = view.rbegin();
+                for (size_t i = view.size() - 1; i > norm_index; --i, ++it);
+                return execute(it.drop());
+            }
+        }
+
+        // forward traversal
+        auto it = view.begin();
+        for (size_t i = 0; i < norm_index; ++i, ++it);
+        return execute(it.drop());
     }
 
 
@@ -113,9 +147,7 @@ namespace linked {
 
     //     Node* curr = view.search(key);
     //     if (curr == nullptr) {
-    //         std::ostringstream msg;
-    //         msg << repr(key);
-    //         throw KeyError(msg.str());
+    //         throw KeyError(repr(key));
     //     }
 
     //     // get current neighbors

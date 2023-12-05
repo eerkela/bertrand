@@ -1,7 +1,6 @@
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_REMOVE_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_REMOVE_H
 
-#include <sstream>  // std::ostringstream
 #include <type_traits>  // std::enable_if_t<>
 #include "../../util/ops.h"  // eq(), repr()
 #include "../core/node.h"  // NodeTraits
@@ -24,9 +23,7 @@ namespace linked {
                 return;
             }
         }
-        std::ostringstream msg;
-        msg << repr(item) << " is not in list";
-        throw KeyError(msg.str());  
+        throw KeyError(repr(item));  
     }
 
 
