@@ -43,6 +43,13 @@
 #include "algorithms/update.h"
 
 
+// TODO: del dict[key] seems to assign null rather than removing the item
+// TODO: implement dictview proxies
+// TODO: override __class__getitem__ to specialize the fromkeys() method as well
+// as __init__.  This means subclassing from Base::Specialized and filling in an
+// implementation for the specialized fromkeys() method.
+
+
 namespace bertrand {
 namespace structs {
 namespace linked {
@@ -135,11 +142,15 @@ public:
         std::optional<size_t> capacity = std::nullopt,
         PyObject* spec = nullptr
     ) {
+        using Allocator = typename View::Allocator;
+        static constexpr unsigned int flags = (
+            Allocator::EXIST_OK | Allocator::REPLACE_MAPPED | Allocator::INSERT_TAIL
+        );
         View view(capacity, spec);
-        for (auto& key : iter(keys)) {
-            view.template node<View::Allocator::INSERT_TAIL>(key, value);
+        for (const auto& key : iter(keys)) {
+            view.template node<flags>(key, value);
         }
-        return LinkedDict(view);
+        return LinkedDict(std::move(view));
     }
 
     /* Add a key-value pair to the end of the dictionary if it is not already
@@ -1480,74 +1491,6 @@ template <typename Derived>
 class PyDictInterface {
 public:
 
-    /* Implement `LinkedDict.fromkeys()` in Python. */
-    static PyObject* fromkeys(PyObject* type, PyObject* args, PyObject* kwargs) {
-        Derived* result = reinterpret_cast<Derived*>(
-            Derived::__new__(&Derived::Type, nullptr, nullptr)
-        );
-        if (result == nullptr) {
-            return nullptr;  // propagate
-        }
-
-        using bertrand::util::PyArgs;
-        using bertrand::util::CallProtocol;
-        using bertrand::util::parse_int;
-        using bertrand::util::none_to_null;
-        using bertrand::util::is_truthy;
-        static constexpr std::string_view meth_name{"fromkeys"};
-        try {
-            PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
-            PyObject* keys = pyargs.parse("keys");
-            PyObject* value = pyargs.parse("value", nullptr, Py_None);
-            std::optional<size_t> max_size = pyargs.parse(
-                "max_size",
-                [](PyObject* obj) -> std::optional<size_t> {
-                    if (obj == Py_None) {
-                        return std::nullopt;
-                    }
-                    long long result = parse_int(obj);
-                    if (result < 0) {
-                        throw ValueError("max_size cannot be negative");
-                    }
-                    return std::make_optional(static_cast<size_t>(result));
-                },
-                std::optional<size_t>()
-            );
-            PyObject* spec = pyargs.parse("spec", none_to_null, (PyObject*) nullptr);
-            bool singly_linked = pyargs.parse("singly_linked", is_truthy, false);
-            bool packed = pyargs.parse("packed", is_truthy, false);
-            pyargs.finalize();
-
-            // TODO: rather than this, just implement a construct-like method that
-            // this hooks into, and which keeps track of strictly-typed.
-
-            // generate config code and initialize variant with empty dictionary
-            unsigned int code = (
-                Config::SINGLY_LINKED * singly_linked |
-                Config::FIXED_SIZE * max_size.has_value() |
-                Config::PACKED * packed
-            );
-            Derived::build_variant(code, result, max_size, spec);
-
-            // add all key-value pairs
-            std::visit(
-                [&keys, &value](auto& dict) {
-                    for (PyObject* key : iter(keys)) {
-                        dict.add(key, value);
-                    }
-                },
-                result->variant
-            );
-
-            return reinterpret_cast<PyObject*>(result);
-    
-        } catch (...) {
-            Py_DECREF(result);
-            throw_python();
-            return nullptr;
-        }
-    }
-
     /* Implement `LinkedDict.add()` in Python. */
     static PyObject* add(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
@@ -1946,34 +1889,6 @@ protected:
     /* docstrings for public Python attributes. */
     struct docs {
 
-        static constexpr std::string_view fromkeys {R"doc(
-Create a new ``LinkedDict`` with keys from ``iterable`` and values set to
-``value``.
-
-This is a class method.
-
-Parameters
-----------
-iterable : Iterable[Hashable]
-    An iterable of keys to use for the new ``LinkedDict``.
-value : Any, default None
-    The value to use for all keys in ``iterable``.
-    
-Returns
--------
-LinkedDict
-    A new ``LinkedDict`` with keys from ``iterable`` and values set to
-    ``value``.
-
-Notes
------
-Note that all keys will refer to just a singly instance of ``value``.  This can
-lead to unexpected behavior if ``value`` is a mutable object, such as a list.
-To get distinct values, use a generator expression in the ``LinkedDict``
-constructor itself.
-)doc"
-        };
-
         static constexpr std::string_view add {R"doc(
 Add a new key-value pair to the ``LinkedDict``.
 
@@ -2309,22 +2224,22 @@ class PyLinkedDict :
     template <unsigned int Flags>
     using DictConfig = linked::LinkedDict<PyObject*, PyObject*, Flags, BasicLock>;
     using Variant = std::variant<
-        DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>,
-        DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
-        DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
-        DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
-        DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
-        DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
-        DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
-        DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
-        DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
-        DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
-        DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
-        DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
-        DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
-        DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
+        DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>
+        // DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
+        // DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
+        // DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
+        // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
+        // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
+        // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
+        // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
+        // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
+        // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
+        // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
+        // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
     >;
     template <size_t I>
     using Alt = typename std::variant_alternative_t<I, Variant>;
@@ -2347,59 +2262,61 @@ class PyLinkedDict :
     static void build_variant(unsigned int code, PyLinkedDict* self, Args&&... args) {
         switch (code) {
             case (Config::DEFAULT):
-                new (&self->variant) Variant(Alt<0>(std::forward<Args>(args)...));
+                self->from_cpp(Alt<0>(std::forward<Args>(args)...));
                 break;
-            case (Config::PACKED):
-                new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
-                break;
-            case (Config::STRICTLY_TYPED):
-                new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
-                break;
-            case (Config::PACKED | Config::STRICTLY_TYPED):
-                new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
-                break;
-            case (Config::FIXED_SIZE):
-                new (&self->variant) Variant(Alt<2>(std::forward<Args>(args)...));
-                break;
-            case (Config::FIXED_SIZE | Config::PACKED):
-                new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
-                break;
-            case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
-                break;
-            case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-                new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
-                break;
-            case (Config::SINGLY_LINKED):
-                new (&self->variant) Variant(Alt<4>(std::forward<Args>(args)...));
-                break;
-            case (Config::SINGLY_LINKED | Config::PACKED):
-                new (&self->variant) Variant(Alt<9>(std::forward<Args>(args)...));
-                break;
-            case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
-                new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
-                break;
-            case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
-                new (&self->variant) Variant(Alt<11>(std::forward<Args>(args)...));
-                break;
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
-                new (&self->variant) Variant(Alt<6>(std::forward<Args>(args)...));
-                break;
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
-                new (&self->variant) Variant(Alt<13>(std::forward<Args>(args)...));
-                break;
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
-                break;
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-                new (&self->variant) Variant(Alt<15>(std::forward<Args>(args)...));
-                break;
+            // case (Config::PACKED):
+            //     self->from_cpp(Alt<1>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::STRICTLY_TYPED):
+            //     self->from_cpp(Alt<1>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::PACKED | Config::STRICTLY_TYPED):
+            //     self->from_cpp(Alt<3>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::FIXED_SIZE):
+            //     self->from_cpp(Alt<2>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::FIXED_SIZE | Config::PACKED):
+            //     self->from_cpp(Alt<5>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+            //     self->from_cpp(Alt<3>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            //     self->from_cpp(Alt<7>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED):
+            //     self->from_cpp(Alt<4>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::PACKED):
+            //     self->from_cpp(Alt<9>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
+            //     self->from_cpp(Alt<5>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
+            //     self->from_cpp(Alt<11>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
+            //     self->from_cpp(Alt<6>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
+            //     self->from_cpp(Alt<13>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+            //     self->from_cpp(Alt<7>(std::forward<Args>(args)...));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            //     self->from_cpp(Alt<15>(std::forward<Args>(args)...));
+            //     break;
             default:
                 throw ValueError("invalid argument configuration");
         }
     }
 
-    /* Construct a PyLinkedDict from scratch using the given constructor arguments. */
+    /* Construct a PyLinkedDict from a Python-level __init__() method, or one of its
+    specialized equivalents using __class_getitem__().  Optional constructor arguments
+    are used to determine the appropriate template configuration. */
     static void construct(
         PyLinkedDict* self,
         PyObject* iterable,
@@ -2420,6 +2337,80 @@ class PyLinkedDict :
             build_variant(code, self, max_size, spec);
         } else {
             build_variant(code, self, iterable, max_size, spec, reverse);
+        }
+    }
+
+    /* Construct a PyLinkedDict from a Python-level fromkeys() method or one of its
+    specialized equivalents using __class_getitem__().  Optional constructor arguments
+    are used to determine the appropriate template configuration. */
+    static void construct(
+        PyLinkedDict* self,
+        PyObject* keys,
+        PyObject* value,
+        std::optional<size_t> max_size,
+        PyObject* spec,
+        bool reverse,
+        bool singly_linked,
+        bool packed,
+        bool strictly_typed
+    ) {
+        unsigned int code = (
+            Config::SINGLY_LINKED * singly_linked |
+            Config::FIXED_SIZE * max_size.has_value() |
+            Config::PACKED * packed |
+            Config::STRICTLY_TYPED * strictly_typed
+        );
+        switch (code) {
+            case (Config::DEFAULT):
+                self->from_cpp(Alt<0>::fromkeys(keys, value, max_size, spec));
+                break;
+            // case (Config::PACKED):
+            //     self->from_cpp(Alt<1>::fromkeys(keys, value, max_size, spec));
+            //     break;
+            // case (Config::STRICTLY_TYPED):
+            //     self->from_cpp(Alt<2>::fromkeys(keys, value, max_size, spec));
+            //     break;
+            // case (Config::PACKED | Config::STRICTLY_TYPED):
+            //     self->from_cpp(Alt<3>::fromkeys(keys, value, max_size, spec));
+            //     break;
+            // case (Config::FIXED_SIZE):
+            //     self->from_cpp(Alt<4>::fromkeys(keys, value, max_size, spec));
+            //     break;
+            // case (Config::FIXED_SIZE | Config::PACKED):
+            //     self->from_cpp(Alt<5>::fromkeys(keys, value, max_size, spec));
+            //     break;
+            // case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+            //     self->from_cpp(Alt<6>::fromkeys(keys, value, max_size, spec));
+            //     break;
+            // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            //     self->from_cpp(Alt<7>::fromkeys(keys, value, max_size, spec));
+            //     break;
+            // case (Config::SINGLY_LINKED):
+            //     self->from_cpp(Alt<8>::fromkeys(keys, value, max_size, spec));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::PACKED):
+            //     self->from_cpp(Alt<9>::fromkeys(keys, value, max_size, spec));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
+            //     self->from_cpp(Alt<10>::fromkeys(keys, value, max_size, spec));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
+            //     self->from_cpp(Alt<11>::fromkeys(keys, value, max_size, spec));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
+            //     self->from_cpp(Alt<12>::fromkeys(keys, value, max_size, spec));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
+            //     self->from_cpp(Alt<13>::fromkeys(keys, value, max_size, spec));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+            //     self->from_cpp(Alt<14>::fromkeys(keys, value, max_size, spec));
+            //     break;
+            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+            //     self->from_cpp(Alt<15>::fromkeys(keys, value, max_size, spec));
+            //     break;
+            default:
+                throw ValueError("invalid argument configuration");
         }
     }
 
@@ -2469,6 +2460,57 @@ public:
         } catch (...) {
             throw_python();
             return -1;
+        }
+    }
+
+    /* Implement `LinkedDict.fromkeys()` in Python. */
+    static PyObject* fromkeys(PyObject* type, PyObject* args, PyObject* kwargs) {
+        PyLinkedDict* self = reinterpret_cast<PyLinkedDict*>(
+            Base::__new__(&Type, nullptr, nullptr)
+        );
+        if (self == nullptr) {
+            return nullptr;  // propagate
+        }
+
+        using bertrand::util::PyArgs;
+        using bertrand::util::CallProtocol;
+        using bertrand::util::parse_int;
+        using bertrand::util::none_to_null;
+        using bertrand::util::is_truthy;
+        static constexpr std::string_view meth_name{"fromkeys"};
+        try {
+            PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
+            PyObject* keys = pyargs.parse("keys");
+            PyObject* value = pyargs.parse("value", nullptr, Py_None);
+            std::optional<size_t> max_size = pyargs.parse(
+                "max_size",
+                [](PyObject* obj) -> std::optional<size_t> {
+                    if (obj == Py_None) {
+                        return std::nullopt;
+                    }
+                    long long result = parse_int(obj);
+                    if (result < 0) {
+                        throw ValueError("max_size cannot be negative");
+                    }
+                    return std::make_optional(static_cast<size_t>(result));
+                },
+                std::optional<size_t>()
+            );
+            PyObject* spec = pyargs.parse("spec", none_to_null, (PyObject*) nullptr);
+            bool singly_linked = pyargs.parse("singly_linked", is_truthy, false);
+            bool packed = pyargs.parse("packed", is_truthy, false);
+            pyargs.finalize();
+
+            construct(
+                self, keys, value, max_size, spec, false, singly_linked, packed, false
+            );
+
+            return reinterpret_cast<PyObject*>(self);
+    
+        } catch (...) {
+            Py_DECREF(self);
+            throw_python();
+            return nullptr;
         }
     }
 
@@ -2617,6 +2659,34 @@ in some cases.
 )doc"
         };
 
+        static constexpr std::string_view fromkeys {R"doc(
+Create a new ``LinkedDict`` with keys from ``iterable`` and values set to
+``value``.
+
+This is a class method.
+
+Parameters
+----------
+iterable : Iterable[Hashable]
+    An iterable of keys to use for the new ``LinkedDict``.
+value : Any, default None
+    The value to use for all keys in ``iterable``.
+    
+Returns
+-------
+LinkedDict
+    A new ``LinkedDict`` with keys from ``iterable`` and values set to
+    ``value``.
+
+Notes
+-----
+Note that all keys will refer to just a singly instance of ``value``.  This can
+lead to unexpected behavior if ``value`` is a mutable object, such as a list.
+To get distinct values, use a generator expression in the ``LinkedDict``
+constructor itself.
+)doc"
+        };
+
     };
 
     ////////////////////////////////
@@ -2694,7 +2764,12 @@ in some cases.
         SET_METHOD(swap, METH_FASTCALL),
         SET_METHOD(move, METH_FASTCALL),
         SET_METHOD(move_to_index, METH_FASTCALL),
-        DICT_METHOD(fromkeys, METH_FASTCALL | METH_CLASS),
+        {
+            "fromkeys",
+            (PyCFunction) fromkeys,
+            METH_VARARGS | METH_KEYWORDS | METH_CLASS,
+            PyDoc_STR(docs::fromkeys.data())
+        },
         DICT_METHOD(add, METH_FASTCALL),
         DICT_METHOD(add_left, METH_FASTCALL),
         DICT_METHOD(lru_add, METH_FASTCALL),

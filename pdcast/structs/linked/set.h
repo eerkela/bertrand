@@ -1977,21 +1977,21 @@ class PyLinkedSet :
     using SetConfig = linked::LinkedSet<PyObject*, Flags, BasicLock>;
     using Variant = std::variant<
         SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>,
-        // SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
+        SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
         SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
-        // SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
         SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
-        // SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
         SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
-        // SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
+        SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
         SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
-        // SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
+        SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
         SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
-        // SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
         SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
-        // SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>
-        // SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
+        SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
+        SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
     >;
     template <size_t I>
     using Alt = typename std::variant_alternative_t<I, Variant>;
@@ -2001,59 +2001,65 @@ class PyLinkedSet :
     friend ISet;
     Variant variant;
 
+    /* Construct a PyLinkedSet around an existing C++ LinkedSet. */
+    template <typename Set>
+    inline void from_cpp(Set&& set) {
+        new (&variant) Variant(std::forward<Set>(set));
+    }
+
     /* Parse the configuration code and initialize the variant with the forwarded
     arguments. */
     template <typename... Args>
     static void build_variant(unsigned int code, PyLinkedSet* self, Args&&... args) {
         switch (code) {
             case (Config::DEFAULT):
-                new (&self->variant) Variant(Alt<0>(std::forward<Args>(args)...));
+                self->from_cpp(Alt<0>(std::forward<Args>(args)...));
                 break;
-            // case (Config::PACKED):
-            //     new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::PACKED):
+                self->from_cpp(Alt<1>(std::forward<Args>(args)...));
+                break;
             case (Config::STRICTLY_TYPED):
-                new (&self->variant) Variant(Alt<1>(std::forward<Args>(args)...));
+                self->from_cpp(Alt<2>(std::forward<Args>(args)...));
                 break;
-            // case (Config::PACKED | Config::STRICTLY_TYPED):
-            //     new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::PACKED | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<3>(std::forward<Args>(args)...));
+                break;
             case (Config::FIXED_SIZE):
-                new (&self->variant) Variant(Alt<2>(std::forward<Args>(args)...));
+                self->from_cpp(Alt<4>(std::forward<Args>(args)...));
                 break;
-            // case (Config::FIXED_SIZE | Config::PACKED):
-            //     new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::FIXED_SIZE | Config::PACKED):
+                self->from_cpp(Alt<5>(std::forward<Args>(args)...));
+                break;
             case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                new (&self->variant) Variant(Alt<3>(std::forward<Args>(args)...));
+                self->from_cpp(Alt<6>(std::forward<Args>(args)...));
                 break;
-            // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<7>(std::forward<Args>(args)...));
+                break;
             case (Config::SINGLY_LINKED):
-                new (&self->variant) Variant(Alt<4>(std::forward<Args>(args)...));
+                self->from_cpp(Alt<8>(std::forward<Args>(args)...));
                 break;
-            // case (Config::SINGLY_LINKED | Config::PACKED):
-            //     new (&self->variant) Variant(Alt<9>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::SINGLY_LINKED | Config::PACKED):
+                self->from_cpp(Alt<9>(std::forward<Args>(args)...));
+                break;
             case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
-                new (&self->variant) Variant(Alt<5>(std::forward<Args>(args)...));
+                self->from_cpp(Alt<10>(std::forward<Args>(args)...));
                 break;
-            // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
-            //     new (&self->variant) Variant(Alt<11>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<11>(std::forward<Args>(args)...));
+                break;
             case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
-                new (&self->variant) Variant(Alt<6>(std::forward<Args>(args)...));
+                self->from_cpp(Alt<12>(std::forward<Args>(args)...));
                 break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
-            //     new (&self->variant) Variant(Alt<13>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
+                self->from_cpp(Alt<13>(std::forward<Args>(args)...));
+                break;
             case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                new (&self->variant) Variant(Alt<7>(std::forward<Args>(args)...));
+                self->from_cpp(Alt<14>(std::forward<Args>(args)...));
                 break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     new (&self->variant) Variant(Alt<15>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<15>(std::forward<Args>(args)...));
+                break;
             default:
                 throw ValueError("invalid argument configuration");
         }
@@ -2081,12 +2087,6 @@ class PyLinkedSet :
         } else {
             build_variant(code, self, iterable, max_size, spec, reverse);
         }
-    }
-
-    /* Construct a PyLinkedSet around an existing C++ LinkedSet. */
-    template <typename Set>
-    inline void from_cpp(Set&& set) {
-        new (&variant) Variant(std::forward<Set>(set));
     }
 
 public:

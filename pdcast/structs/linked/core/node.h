@@ -587,13 +587,12 @@ public:
 as a dictionary. */
 template <typename Wrapped, typename MappedType>
 class Mapped : public Wrapped {
-    using KeyType = typename Wrapped::Value;
     MappedType _mapped;
 
     /* Unpack a python tuple containing a key and value. */
     inline static std::pair<PyObject*, PyObject*> unpack_python(PyObject* tuple) {
         static_assert(
-            is_pyobject<KeyType> && is_pyobject<MappedType>,
+            is_pyobject<Value> && is_pyobject<MappedType>,
             "Python tuples can only be unpacked by PyObject* nodes"
         );
 
@@ -609,20 +608,27 @@ class Mapped : public Wrapped {
     }
 
 public:
+    using Value = typename Wrapped::Value;
     using MappedValue = MappedType;
 
     /* Initialize a mapped node with a separate key and value. */
-    Mapped(const KeyType& key, const MappedValue& value) : Wrapped(key), _mapped(value) {
+    Mapped(const Value& key, const MappedValue& value) : Wrapped(key), _mapped(value) {
         if constexpr (is_pyobject<MappedType>) {
             Py_XINCREF(value);
         }
     }
 
-    /* Initialize a mapped node with a coupled key and value. */
-    Mapped(const std::pair<KeyType, MappedValue>& pair) : Mapped(pair.first, pair.second) {}
-    Mapped(const std::tuple<KeyType, MappedValue>& tuple) :
+    /* Initialize a mapped node with a std::pair holding a separate key and value. */
+    Mapped(const std::pair<Value, MappedValue>& pair) :
+        Mapped(pair.first, pair.second)
+    {}
+
+    /* Initialize a mapped node with a std::tuple holding a separate key and value. */
+    Mapped(const std::tuple<Value, MappedValue>& tuple) :
         Mapped(std::get<0>(tuple), std::get<1>(tuple))
     {}
+
+    /* Initialize a mapped node with a Python tuple holding a separate key and value. */
     Mapped(PyObject* tuple) : Mapped(unpack_python(tuple)) {}
 
     /* Copy constructor. */

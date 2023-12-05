@@ -180,23 +180,14 @@ namespace linked {
     inline auto update(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
-        update_impl<View, Container, false>(view, items);
-    }
-
-
-    /* A special case of update() for dictlike views that accounts for Python dict
-    inputs. */
-    template <typename View>
-    inline auto update(View& view, const PyObject* items)
-        -> std::enable_if_t<ViewTraits<View>::dictlike, void>
-    {
-        // wrap Python dictionaries to yield key-value pairs during iteration
-        if (PyDict_Check(items)) {
-            PyDict dict(items);
-            update_impl<View, PyDict, false>(view, dict);
-        } else {
-            update_impl<View, PyObject*, false>(view, items);
+        if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
+            if (PyDict_Check(items)) {
+                PyDict dict(items);
+                update_impl<View, PyDict, false>(view, dict);
+                return;
+            }
         }
+        update_impl<View, Container, false>(view, items);
     }
 
 
@@ -205,21 +196,14 @@ namespace linked {
     inline auto update_left(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
-        update_impl<View, Container, true>(view, items);
-    }
-
-
-    /* Wrap Python dictionaries to yield key-value pairs during iteration. */
-    template <typename View>
-    inline auto update_left(View& view, const PyObject* items)
-        -> std::enable_if_t<ViewTraits<View>::dictlike, void>
-    {
-        if (PyDict_Check(items)) {
-            PyDict dict(items);
-            update_impl<View, PyDict, true>(view, dict);
-        } else {
-            update_impl<View, PyObject*, true>(view, items);
+        if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
+            if (PyDict_Check(items)) {
+                PyDict dict(items);
+                update_impl<View, PyDict, true>(view, dict);
+                return;
+            }
         }
+        update_impl<View, Container, true>(view, items);
     }
 
 
@@ -229,21 +213,14 @@ namespace linked {
     inline auto lru_update(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
-        lru_update_impl(view, items);
-    }
-
-
-    /* Wrap Python dictionaries to yield key-value pairs during iteration. */
-    template <typename View>
-    inline auto lru_update(View& view, const PyObject* items)
-        -> std::enable_if_t<ViewTraits<View>::dictlike, void>
-    {
-        if (PyDict_Check(items)) {
-            PyDict dict(items);
-            lru_update_impl(view, dict);
-        } else {
-            lru_update_impl(view, items);
+        if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
+            if (PyDict_Check(items)) {
+                PyDict dict(items);
+                lru_update_impl(view, dict);
+                return;
+            }
         }
+        lru_update_impl(view, items);
     }
 
 
@@ -336,25 +313,14 @@ namespace linked {
     inline auto symmetric_difference_update(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
-        symmetric_difference_update_impl<View, Container, false>(view, items);
-    }
-
-
-    /* A special case of update() for dictlike views that accounts for Python dict
-    inputs. */
-    template <typename View>
-    inline auto symmetric_difference_update(View& view, const PyObject* items)
-        -> std::enable_if_t<ViewTraits<View>::dictlike, void>
-    {
-        // wrap dictionaries to yield key-value pairs during iteration
-        if (PyDict_Check(items)) {
-            PyDict dict(items);
-            symmetric_difference_update_impl<View, PyDict, false>(view, dict);
-
-        // otherwise, iterate through items directly
-        } else {
-            symmetric_difference_update_impl<View, PyObject*, false>(view, items);
+        if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
+            if (PyDict_Check(items)) {
+                PyDict dict(items);
+                symmetric_difference_update_impl<View, PyDict, false>(view, dict);
+                return;
+            }
         }
+        symmetric_difference_update_impl<View, Container, false>(view, items);
     }
 
 
@@ -365,25 +331,14 @@ namespace linked {
     inline auto symmetric_difference_update_left(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
-        symmetric_difference_update_impl<View, Container, true>(view, items);
-    }
-
-
-    /* A special case of symmetric_difference_update_left() for dictlike views that
-    accounts for Python dict inputs. */
-    template <typename View>
-    inline auto symmetric_difference_update_left(View& view, const PyObject* items)
-        -> std::enable_if_t<ViewTraits<View>::dictlike, void>
-    {
-        // wrap dictionaries to yield key-value pairs during iteration
-        if (PyDict_Check(items)) {
-            PyDict dict(items);
-            symmetric_difference_update_impl<View, PyDict, true>(view, dict);
-
-        // otherwise, iterate through items directly
-        } else {
-            symmetric_difference_update_impl<View, PyObject*, true>(view, items);
+        if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
+            if (PyDict_Check(items)) {
+                PyDict dict(items);
+                symmetric_difference_update_impl<View, PyDict, true>(view, dict);
+                return;
+            }
         }
+        symmetric_difference_update_impl<View, Container, true>(view, items);
     }
 
 

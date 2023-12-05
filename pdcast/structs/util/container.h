@@ -40,6 +40,7 @@ class PyTuple {
         if (!PyTuple_Check(tuple)) {
             throw TypeError("expected a tuple");
         }
+        Py_INCREF(tuple);
         return tuple;
     }
 
@@ -66,13 +67,11 @@ public:
         }
     }
 
-    /* Construct a PyTuple around an existing CPython tuple.  Steals a reference. */
+    /* Construct a PyTuple around an existing CPython tuple. */
     PyTuple(PyObject* tuple) : obj(adopt(tuple)), length(PyTuple_GET_SIZE(tuple)) {}
 
     /* Copy constructor. */
-    PyTuple(const PyTuple& other) :
-        obj(PyTuple_New(other.length)), length(other.length)
-    {
+    PyTuple(const PyTuple& other) : obj(PyTuple_New(other.length)), length(other.length) {
         if (obj == nullptr) {
             throw catch_python();
         }
@@ -121,7 +120,9 @@ public:
     }
 
     /* Release the Python tuple on destruction. */
-    ~PyTuple() { Py_XDECREF(obj); }
+    ~PyTuple() {
+        Py_XDECREF(obj);
+    }
 
     /* Get the size of the tuple. */
     inline size_t size() const {
@@ -180,12 +181,15 @@ public:
             return get();
         }
 
+        // TODO: figure out reference counting here
+
         /* Set the item at this index.  Steals a reference to `value`. */
         inline void set(PyObject* value) {
             if (index >= tuple.length) {
                 throw IndexError("index out of range");
             }
             Py_XDECREF(tuple.GET_ITEM(index));
+            Py_INCREF(value);  // new reference
             tuple.SET_ITEM(index, value);
         }
 
@@ -245,6 +249,7 @@ class PyList {
         if (!PyList_Check(list)) {
             throw TypeError("expected a list");
         }
+        Py_INCREF(list);
         return list;
     }
 
@@ -259,13 +264,11 @@ public:
         }
     }
 
-    /* Construct a PyList around an existing CPython list.  Steals a reference. */
+    /* Construct a PyList around an existing CPython list. */
     PyList(PyObject* list) : obj(adopt(list)), length(PyList_GET_SIZE(list)) {}
 
     /* Copy constructor. */
-    PyList(const PyList& other) :
-        obj(PyList_New(other.length)), length(other.length)
-    {
+    PyList(const PyList& other) : obj(PyList_New(other.length)), length(other.length) {
         if (obj == nullptr) {
             throw catch_python();
         }
@@ -314,7 +317,9 @@ public:
     }
 
     /* Release the Python list on destruction. */
-    ~PyList() { Py_XDECREF(obj); }
+    ~PyList() {
+        Py_XDECREF(obj);
+    }
 
     /* Get the size of the list. */
     inline size_t size() const {
@@ -406,6 +411,8 @@ public:
             return get();
         }
 
+        // TODO: figure out reference counting here
+
         /* Set the item at this index. */
         inline void set(PyObject* value) {
             if (index >= list.length) {
@@ -486,6 +493,7 @@ class PySet {
         if (!PyAnySet_Check(set)) {
             throw TypeError("expected a set");
         }
+        Py_INCREF(set);
         return set;
     }
 
@@ -500,7 +508,7 @@ public:
         }
     }
 
-    /* Construct a PySet around an existing CPython set.  Steals a reference. */
+    /* Construct a PySet around an existing CPython set. */
     PySet(PyObject* set) : obj(adopt(set)), length(PySet_GET_SIZE(set)) {}
 
     /* Copy constructor. */
@@ -547,7 +555,9 @@ public:
     }
 
     /* Release the Python set on destruction. */
-    ~PySet() { Py_XDECREF(obj); }
+    ~PySet() {
+        Py_XDECREF(obj);
+    }
 
     /* Get the size of the set. */
     inline size_t size() const {
@@ -629,6 +639,7 @@ class PyDict {
         if (!PyDict_Check(dict)) {
             throw TypeError("expected a dict");
         }
+        Py_INCREF(dict);
         return dict;
     }
 
@@ -643,8 +654,9 @@ public:
         }
     }
 
-    /* Construct a PyDict around an existing CPython dictionary.  Steals a reference. */
-    PyDict(PyObject* dict) : obj(adopt(dict)), length(PyDict_Size(dict)) {}
+    /* Construct a PyDict around an existing CPython dictionary. */
+    PyDict(PyObject* dict) : obj(adopt(dict)), length(PyDict_Size(dict)) {
+    }
 
     /* Copy constructor. */
     PyDict(const PyDict& other) : obj(PyDict_New()), length(other.length) {
@@ -692,7 +704,9 @@ public:
     }
 
     /* Release the Python dict on destruction. */
-    ~PyDict() { Py_XDECREF(obj); }
+    ~PyDict() {
+        Py_XDECREF(obj);
+    }
 
     /* Get the size of the dict. */
     inline size_t size() const {
@@ -703,18 +717,24 @@ public:
     like std::unordered_map. */
     template <typename T>
     class Iterator {
-        T& dict;
+        T* dict;
         Py_ssize_t pos;  // required by PyDict_Next
         std::pair<PyObject*, PyObject*> curr;
 
         friend PyDict;
 
         /* Construct an Iterator over the specified dictionary. */
-        Iterator(T& dict) : dict(dict), pos(0) {
-            if (!PyDict_Next(dict.obj, &pos, &curr.first, &curr.second)) {
+        Iterator(T* dict) : dict(dict), pos(0) {
+            if (!PyDict_Next(dict->obj, &pos, &curr.first, &curr.second)) {
                 curr.first = nullptr;
                 curr.second = nullptr;
             }
+        }
+
+        /* Construct an empty Iterator over the dictionary. */
+        Iterator() : dict(nullptr), pos(0) {
+            curr.first = nullptr;
+            curr.second = nullptr;
         }
 
     public:
@@ -749,7 +769,7 @@ public:
 
         /* Advance to the next item within the dictionary. */
         inline Iterator& operator++() {
-            if (!PyDict_Next(dict.obj, &pos, &curr.first, &curr.second)) {
+            if (!PyDict_Next(dict->obj, &pos, &curr.first, &curr.second)) {
                 curr.first = nullptr;
                 curr.second = nullptr;
             }
@@ -764,12 +784,12 @@ public:
     };
 
     /* Iterate over the dictionary. */
-    inline auto begin() { return Iterator<PyDict>(*this); }
-    inline auto begin() const { return Iterator<const PyDict>(*this); }
-    inline auto cbegin() const { return Iterator<const PyDict>(*this); }
-    inline auto end() { return Iterator<PyDict>(*this); }
-    inline auto end() const { return Iterator<const PyDict>(*this); }
-    inline auto cend() const { return Iterator<const PyDict>(*this); }
+    inline auto begin() { return Iterator<PyDict>(this); }
+    inline auto begin() const { return Iterator<const PyDict>(this); }
+    inline auto cbegin() const { return Iterator<const PyDict>(this); }
+    inline auto end() { return Iterator<PyDict>(); }
+    inline auto end() const { return Iterator<const PyDict>(); }
+    inline auto cend() const { return Iterator<const PyDict>(); }
 
     /* Check if the dictionary contains a particular key. */
     inline bool contains(PyObject* key) const {
@@ -863,6 +883,8 @@ public:
         inline operator PyObject*() const {
             return get();
         }
+
+        // TODO: figure out reference counting here
 
         /* Set the value associated with the given key.  Steals a reference to `value`
         and does not clear the previous value if one is present. */
@@ -999,7 +1021,9 @@ public:
     }
 
     /* Release the Python sequence on destruction. */
-    ~PyFastSequence() { Py_XDECREF(obj); }
+    ~PyFastSequence() {
+        Py_XDECREF(obj);
+    }
 
     /* Get the size of the sequence. */
     inline size_t size() const {

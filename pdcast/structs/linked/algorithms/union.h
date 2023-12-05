@@ -121,20 +121,13 @@ namespace linked {
     inline auto union_(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
-        return union_impl<View, Container, false>(view, items);
-    }
-
-
-    /* Wrap Python dictionaries to yield key-value pairs during iteration. */
-    template <typename View>
-    inline auto union_(const View& view, const PyObject* items)
-        -> std::enable_if_t<ViewTraits<View>::dictlike, View>
-    {
-        if (PyDict_Check(items)) {
-            PyDict dict(items);
-            return union_impl<View, PyDict, false>(view, dict);
+        if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
+            if (PyDict_Check(items)) {
+                PyDict dict(items);
+                return union_impl<View, PyDict, false>(view, dict);
+            }
         }
-        return union_impl<View, PyObject*, false>(view, items);
+        return union_impl<View, Container, false>(view, items);
     }
 
 
@@ -145,20 +138,13 @@ namespace linked {
     inline auto union_left(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
-        return union_impl<View, Container, true>(view, items);
-    }
-
-
-    /* Wrap Python dictionaries to yield key-value pairs during iteration. */
-    template <typename View>
-    inline auto union_left(const View& view, const PyObject* items)
-        -> std::enable_if_t<ViewTraits<View>::dictlike, View>
-    {
-        if (PyDict_Check(items)) {
-            PyDict dict(items);
-            return union_impl<View, PyDict, true>(view, dict);
+        if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
+            if (PyDict_Check(items)) {
+                PyDict dict(items);
+                return union_impl<View, PyDict, true>(view, dict);
+            }
         }
-        return union_impl<View, PyObject*, true>(view, items);
+        return union_impl<View, Container, true>(view, items);
     }
 
 
@@ -218,24 +204,17 @@ namespace linked {
 
     /* Get the symmetric difference between a linked set or dictionary and an arbitrary
     Python iterable. */
-    template <typename View, typename Container, bool left = false>
+    template <typename View, typename Container>
     inline auto symmetric_difference(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
-        return symmetric_difference_impl<View, Container, left>(view, items);
-    }
-
-
-    /* Wrap Python dictionaries to yield key-value pairs during iteration. */
-    template <typename View>
-    inline auto symmetric_difference(const View& view, const PyObject* items)
-        -> std::enable_if_t<ViewTraits<View>::dictlike, View>
-    {
-        if (PyDict_Check(items)) {
-            PyDict dict(items);
-            return symmetric_difference_impl<View, PyDict, false>(view, dict);
+        if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
+            if (PyDict_Check(items)) {
+                PyDict dict(items);
+                return symmetric_difference_impl<View, PyDict, false>(view, dict);
+            }
         }
-        return symmetric_difference_impl<View, PyObject*, false>(view, items);
+        return symmetric_difference_impl<View, Container, false>(view, items);
     }
 
 
@@ -243,23 +222,16 @@ namespace linked {
     Python iterable.  This method appends elements to the head of the set rather than
     the tail. */
     template <typename View, typename Container>
-    auto symmetric_difference_left(const View& view, const Container& items)
+    inline auto symmetric_difference_left(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
-        return symmetric_difference_impl<View, Container, true>(view, items);
-    }
-
-
-    /* Wrap Python dictionaries to yield key-value pairs during iteration. */
-    template <typename View>
-    inline auto symmetric_difference_left(const View& view, const PyObject* items)
-        -> std::enable_if_t<ViewTraits<View>::dictlike, View>
-    {
-        if (PyDict_Check(items)) {
-            PyDict dict(items);
-            return symmetric_difference_impl<View, PyDict, true>(view, dict);
+        if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
+            if (PyDict_Check(items)) {
+                PyDict dict(items);
+                return symmetric_difference_impl<View, PyDict, true>(view, dict);
+            }
         }
-        return symmetric_difference_impl<View, PyObject*, true>(view, items);
+        return symmetric_difference_impl<View, Container, true>(view, items);
     }
 
 

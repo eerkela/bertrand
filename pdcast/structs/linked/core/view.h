@@ -745,11 +745,22 @@ public:
         bool reverse
     ) : Base(capacity, spec)
     {
-        for (const auto& item : iter(iterable)) {
-            if (reverse) {
-                node<Allocator::EXIST_OK | Allocator::INSERT_HEAD>(item);
-            } else {
-                node<Allocator::EXIST_OK | Allocator::INSERT_TAIL>(item);
+        if constexpr (Derived::dictlike) {
+            PyDict dict(iterable);
+            for (const auto& item : iter(dict)) {
+                if (reverse) {
+                    node<Allocator::EXIST_OK | Allocator::INSERT_HEAD>(item);
+                } else {
+                    node<Allocator::EXIST_OK | Allocator::INSERT_TAIL>(item);
+                }
+            }
+        } else {
+            for (const auto& item : iter(iterable)) {
+                if (reverse) {
+                    node<Allocator::EXIST_OK | Allocator::INSERT_HEAD>(item);
+                } else {
+                    node<Allocator::EXIST_OK | Allocator::INSERT_TAIL>(item);
+                }
             }
         }
     }
@@ -880,24 +891,6 @@ public:
     // inherit constructors
     using Base::Base;
     using Base::operator=;
-
-    /* Account for key-value pairs when using Python dictionary as initializers. */
-    DictView(
-        const PyObject* iterable,
-        std::optional<size_t> capacity,
-        PyObject* spec,
-        bool reverse
-    ) : Base(capacity, spec)
-    {
-        PyDict dict(iterable);
-        for (const auto& item : iter(dict)) {
-            if (reverse) {
-                this->node<Allocator::EXIST_OK | Allocator::INSERT_HEAD>(item);
-            } else {
-                this->node<Allocator::EXIST_OK | Allocator::INSERT_TAIL>(item);
-            }
-        }
-    }
 
 };
 
