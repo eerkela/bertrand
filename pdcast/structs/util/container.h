@@ -6,6 +6,7 @@
 #include <deque>  // std::deque
 #include <string>  // std::string
 #include <string_view>  // std::string_view
+#include <tuple>  // std::tuple
 #include <type_traits>  // std::enable_if_t<>
 #include <valarray>  // std::valarray
 #include <vector>  // std::vector
@@ -946,6 +947,146 @@ public:
 };
 
 
+/* An object-oriented wrapper around the CPython slice API. */
+class PySlice {
+
+    /* Adopt an existing Python slice. */
+    inline static PyObject* adopt(PyObject* slice) {
+        if (!PySlice_Check(slice)) {
+            throw TypeError("expected a slice");
+        }
+        Py_INCREF(slice);
+        return slice;
+    }
+
+    PyObject* _start;
+    PyObject* _stop;
+    PyObject* _step;
+
+public:
+    PyObject* obj;
+
+    /* Construct an empty Python slice. */
+    PySlice() :
+        _start(Py_None), _stop(Py_None), _step(Py_None),
+        obj(PySlice_New(nullptr, nullptr, nullptr))
+    {
+        if (obj == nullptr) {
+            throw catch_python();
+        }
+    }
+
+    /* Construct a PySlice around an existing CPython slice. */
+    PySlice(PyObject* obj) :
+        _start(nullptr), _stop(nullptr), _step(nullptr), obj(adopt(obj))
+    {
+        _start = PyObject_GetAttrString(obj, "start");
+        if (_start == nullptr) {
+            throw catch_python();
+        }
+        _stop = PyObject_GetAttrString(obj, "stop");
+        if (_stop == nullptr) {
+            Py_DECREF(_start);
+            throw catch_python();
+        }
+        _step = PyObject_GetAttrString(obj, "step");
+        if (_step == nullptr) {
+            Py_DECREF(_start);
+            Py_DECREF(_stop);
+            throw catch_python();
+        }
+    }
+
+    /* Copy constructor. */
+    PySlice(const PySlice& other) : 
+        _start(Py_NewRef(other._start)), _stop(Py_NewRef(other._stop)),
+        _step(Py_NewRef(other._step)), obj(Py_NewRef(other.obj))
+    {}
+
+    /* Move constructor. */
+    PySlice(PySlice&& other) :
+        _start(other._start), _stop(other._stop), _step(other._step), obj(other.obj)
+    {
+        other._start = nullptr;
+        other._stop = nullptr;
+        other._step = nullptr;
+        other.obj = nullptr;
+    }
+
+    /* Copy assignment. */
+    PySlice& operator=(const PySlice& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Py_XDECREF(_start);
+        Py_XDECREF(_stop);
+        Py_XDECREF(_step);
+        Py_XDECREF(obj);
+        _start = Py_NewRef(other._start);
+        _stop = Py_NewRef(other._stop);
+        _step = Py_NewRef(other._step);
+        obj = Py_NewRef(other.obj);
+        return *this;
+    }
+
+    /* Move assignment. */
+    PySlice& operator=(PySlice&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Py_XDECREF(_start);
+        Py_XDECREF(_stop);
+        Py_XDECREF(_step);
+        Py_XDECREF(obj);
+        _start = other._start;
+        _stop = other._stop;
+        _step = other._step;
+        obj = other.obj;
+        other._start = nullptr;
+        other._stop = nullptr;
+        other._step = nullptr;
+        other.obj = nullptr;
+        return *this;
+    }
+
+    /* Release the Python slice on destruction. */
+    ~PySlice() {
+        Py_XDECREF(_start);
+        Py_XDECREF(_stop);
+        Py_XDECREF(_step);
+        Py_XDECREF(obj);
+    }
+
+    /* Get the start index of the slice. */
+    inline PyObject* start() const {
+        return _start;
+    }
+
+    /* Get the stop index of the slice. */
+    inline PyObject* stop() const {
+        return _stop;
+    }
+
+    /* Get the step index of the slice. */
+    inline PyObject* step() const {
+        return _step;
+    }
+
+    /* Normalize the slice for a given sequence length, returning a 4-tuple of
+    start, stop, step, and the number of elements included in the slice. */
+    inline auto normalize(Py_ssize_t length) const
+        -> std::tuple<long long, long long, long long, size_t>
+    {
+        Py_ssize_t nstart, nstop, nstep, nlength;
+        if (PySlice_GetIndicesEx(obj, length, &nstart, &nstop, &nstep, &nlength)) {
+            throw catch_python();
+        }
+        return {nstart, nstop, nstep, nlength};
+    }
+
+};
+
+
 /////////////////////////////
 ////    FAST SEQUENCE    ////
 /////////////////////////////
@@ -1142,6 +1283,7 @@ inline auto sequence(Iterable&& iterable) {
 using util::PyTuple;
 using util::PyList;
 using util::PyDict;
+using util::PySlice;
 using util::PyFastSequence;
 using util::sequence;
 

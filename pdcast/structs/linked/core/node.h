@@ -5,6 +5,7 @@
 #include <type_traits>  // std::enable_if_t<>, etc.
 #include <Python.h>  // CPython API
 #include "../../util/base.h"  // is_pyobject<>
+#include "../../util/container.h"  // PySlice
 #include "../../util/except.h"  // catch_python(), TypeError()
 #include "../../util/func.h"  // FuncTraits
 #include "../../util/ops.h"  // hash(), repr()
@@ -757,49 +758,27 @@ public:
             return true;
         }
 
+        // account for slice specialization
         if (PySlice_Check(specialization)) {
-            PyObject* start = PyObject_GetAttrString(specialization, "start");
-            if (start == nullptr) {
-                throw catch_python();
-            }
-            PyObject* stop = PyObject_GetAttrString(specialization, "stop");
-            if (stop == nullptr) {
-                Py_DECREF(start);
-                throw catch_python();
-            }
-
-            // start index corresponds to key type
-            if (start != Py_None) {
-                int comp = PyObject_IsInstance(this->value(), start);
+            PySlice slice = PySlice(specialization);
+            if (slice.start() != Py_None) {
+                int comp = PyObject_IsInstance(this->value(), slice.start());
                 if (comp == -1) {
-                    Py_DECREF(start);
-                    Py_DECREF(stop);
                     throw catch_python();
                 }
                 if (!comp) {
-                    Py_DECREF(start);
-                    Py_DECREF(stop);
                     return false;
                 }
             }
-
-            // stop index corresponds to value type
-            if (stop != Py_None) {
-                int comp = PyObject_IsInstance(_mapped, stop);
+            if (slice.stop() != Py_None) {
+                int comp = PyObject_IsInstance(_mapped, slice.stop());
                 if (comp == -1) {
-                    Py_DECREF(start);
-                    Py_DECREF(stop);
                     throw catch_python();
                 }
                 if (!comp) {
-                    Py_DECREF(start);
-                    Py_DECREF(stop);
                     return false;
                 }
             }
-
-            Py_DECREF(start);
-            Py_DECREF(stop);
             return true;
         }
 

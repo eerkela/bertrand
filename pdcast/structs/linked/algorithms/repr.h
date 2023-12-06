@@ -5,6 +5,7 @@
 #include <stack>  // std::stack
 #include <string>  // std::string
 #include <type_traits>  // std::enable_if_t<>
+#include "../../util/container.h"  // PySlice
 #include "../../util/ops.h"  // bertrand::repr()
 #include "../core/node.h"  // NodeTraits
 #include "../core/view.h"  // ViewTraits
@@ -31,7 +32,20 @@ namespace linked {
         // append prefix, specialization if given
         stream << prefix;
         if (view.specialization() != nullptr) {
-            stream << "[" << bertrand::repr(view.specialization()) << "]";
+            PyObject* spec = view.specialization();
+            stream << "[";
+            if constexpr (ViewTraits<View>::dictlike) {
+                if (PySlice_Check(spec)) {
+                    PySlice slice = PySlice(spec);
+                    stream << bertrand::repr(slice.start()) << " : ";
+                    stream << bertrand::repr(slice.stop());
+                } else {
+                    stream << bertrand::repr(spec);
+                }
+            } else {
+                stream << bertrand::repr(spec);
+            }
+            stream << "]";
         }
 
         // append left bracket
@@ -43,7 +57,7 @@ namespace linked {
                 stream << bertrand::repr(*it) << ": ";
                 stream << bertrand::repr(it.curr()->mapped());
             } else {
-                stream << ", " << bertrand::repr(*it);
+                stream << bertrand::repr(*it);
             }
         };
 

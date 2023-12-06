@@ -7,6 +7,7 @@
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
+#include "../../util/container.h"  // PySlice
 #include "../../util/except.h"  // catch_python(), TypeError(), KeyError()
 #include "../../util/math.h"  // next_power_of_two()
 #include "../../util/ops.h"  // hash(), eq(), len(), repr()
@@ -140,11 +141,25 @@ protected:
         // variadic dispatch to node constructor
         new (node) Node(std::forward<Args>(args)...);
 
+        // check Python type conforms to specialization
         if constexpr (is_pyobject<typename Node::Value>) {
             if (!node->typecheck(specialization)) {
                 std::ostringstream msg;
-                msg << repr(node->value()) << " is not of type ";
-                msg << repr(specialization);
+                if constexpr (NodeTraits<Node>::has_mapped) {
+                    if (PySlice_Check(specialization)) {
+                        PySlice slice = PySlice(specialization);
+                        msg << "(" << repr(node->value()) << ", ";
+                        msg << repr(node->mapped()) << ") is not of type (";
+                        msg << repr(slice.start()) << " : ";
+                        msg << repr(slice.stop()) << ")";
+                    } else {
+                        msg << repr(node->value()) << " is not of type ";
+                        msg << repr(specialization);
+                    }
+                } else {
+                    msg << repr(node->value()) << " is not of type ";
+                    msg << repr(specialization);
+                }
                 node->~Node();
                 throw TypeError(msg.str());
             }

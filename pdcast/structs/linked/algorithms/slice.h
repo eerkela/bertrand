@@ -6,7 +6,7 @@
 #include <sstream>  // std::ostringstream
 #include <stack>  // std::stack
 #include <Python.h>  // CPython API
-#include "../../util/container.h"  // PySequence
+#include "../../util/container.h"  // PySlice, PySequence
 #include "../../util/except.h"  // TypeError()
 #include "../../util/iter.h"  // iter()
 #include "../../util/math.h"  // py_modulo()
@@ -133,17 +133,17 @@ namespace linked {
     checking. */
     template <typename View>
     SliceIndices<View> normalize_slice(const View& view, PyObject* slice) {
-        if (!PySlice_Check(slice)) {
-            throw TypeError("index must be a Python slice");
-        }
+        using Indices = std::tuple<long long, long long, long long, size_t>;
 
-        size_t size = view.size();
-        Py_ssize_t start, stop, step, length;
-        if (PySlice_GetIndicesEx(slice, size, &start, &stop, &step, &length)) {
-            throw catch_python();
-        }
-
-        return SliceIndices<View>(start, stop, step, length, size);
+        PySlice py_slice(slice);
+        Indices indices(py_slice.normalize(view.size()));
+        return SliceIndices<View>(
+            std::get<0>(indices),
+            std::get<1>(indices),
+            std::get<2>(indices),
+            std::get<3>(indices),
+            view.size()
+        );
     }
 
 
