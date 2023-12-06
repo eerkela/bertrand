@@ -398,8 +398,21 @@ public:
         while (curr != nullptr) {
             if (!curr->typecheck(spec)) {
                 std::ostringstream msg;
-                msg << repr(curr->value()) << " is not of type ";
-                msg << repr(spec);
+                if constexpr (NodeTraits<Node>::has_mapped) {
+                    if (PySlice_Check(spec)) {
+                        PySlice slice = PySlice(spec);
+                        msg << "(" << repr(curr->value()) << ", ";
+                        msg << repr(curr->mapped()) << ") is not of type (";
+                        msg << repr(slice.start()) << " : ";
+                        msg << repr(slice.stop()) << ")";
+                    } else {
+                        msg << repr(curr->value()) << " is not of type ";
+                        msg << repr(spec);
+                    }
+                } else {
+                    msg << repr(curr->value()) << " is not of type ";
+                    msg << repr(spec);
+                }
                 throw TypeError(msg.str());
             }
             curr = curr->next();
