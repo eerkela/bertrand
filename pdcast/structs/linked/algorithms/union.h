@@ -10,6 +10,9 @@
 #include "update.h"  // update()
 
 
+// TODO: intersection should use value from other container if it is dictlike?
+
+
 namespace bertrand {
 namespace structs {
 namespace linked {

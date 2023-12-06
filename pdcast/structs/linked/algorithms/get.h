@@ -6,9 +6,6 @@
 #include "../core/view.h"  // ViewTraits
 
 
-// TODO: const-ness is weird here
-
-
 namespace bertrand {
 namespace structs {
 namespace linked {

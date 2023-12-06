@@ -43,13 +43,8 @@
 #include "algorithms/update.h"
 
 
-// TODO: del dict[key] seems to assign null rather than removing the item
 // TODO: implement dictview proxies
-// TODO: override __class__getitem__ to specialize the fromkeys() method as well
-// as __init__.  This means subclassing from Base::Specialized and filling in an
-// implementation for the specialized fromkeys() method.
-// TODO: repr should account for slice specializations and print them in a pretty
-// format.
+// TODO: implement operator overloads
 
 
 namespace bertrand {
@@ -443,9 +438,6 @@ public:
         linked::move_to_index(this->view, key, index);
     }
 
-    // TODO: issuperset, issubset, isdisjoint()
-
-
     ///////////////////////
     ////    PROXIES    ////
     ///////////////////////
@@ -484,42 +476,34 @@ public:
      * documentation in linked/list.h for more information.
      */
 
-    /* Get a read-only, setlike proxy for the keys within this dictionary. */
     inline const KeysProxy<LinkedDict> keys() const {
         return KeysProxy<LinkedDict>(*this);
     }
 
-    /* Get a read-only, setlike proxy for the values within this dictionary. */
     inline const ValuesProxy<LinkedDict> values() const {
         return ValuesProxy<LinkedDict>(*this);
     }
 
-    /* Get a read-only, setlike proxy for the key-value pairs within this dictionary. */
     inline const ItemsProxy<LinkedDict> items() const {
         return ItemsProxy<LinkedDict>(*this);
     }
 
-    /* Get a proxy for a particular key within the dictionary. */
     inline linked::MapProxy<View> map(const Key& key) {
         return linked::map(this->view, key);
     }
 
-    /* Get a const proxy for a particular key within a const dictionary. */
     inline const linked::MapProxy<const View> map(const Key& key) const {
         return linked::map(this->view, key);
     }
 
-    /* Get a proxy for a key at a particular index of the dictionary. */
     inline linked::ElementProxy<View> position(long long index) {
         return linked::position(this->view, index);
     }
 
-    /* Get a const proxy for a key at a particular index of a const dictionary. */
     inline const linked::ElementProxy<const View> position(long long index) const {
         return linked::position(this->view, index);
     }
 
-    /* Get a proxy for a slice within the dictionary. */
     template <typename... Args>
     inline linked::SliceProxy<View, LinkedDict> slice(Args&&... args) {
         return linked::slice<View, LinkedDict>(
@@ -528,7 +512,6 @@ public:
         );
     }
 
-    /* Get a const proxy for a slice within a const dictionary. */
     template <typename... Args>
     inline auto slice(Args&&... args) const
         -> const linked::SliceProxy<const View, const LinkedDict>
@@ -590,9 +573,11 @@ public:
      *      True
      */
 
-    /* Overload the index operator[] to return MapProxies for elements within this
-    dictionary. */
-    inline linked::MapProxy<View> operator[](const Key& key) {
+    inline auto operator[](const Key& key) {
+        return map(key);
+    }
+
+    inline auto operator[](const Key& key) const {
         return map(key);
     }
 
@@ -604,12 +589,11 @@ public:
 //////////////////////////////
 
 
-/* Override the << operator to print the abbreviated contents of a dictionary to an
-output stream (equivalent to Python repr()). */
+/* Print the abbreviated contents of a dictionary to an output stream (equivalent to
+Python repr()). */
 template <typename K, typename V, unsigned int Flags, typename... Ts>
 inline std::ostream& operator<<(
-    std::ostream& stream,
-    const LinkedDict<K, V, Flags, Ts...>& dict
+    std::ostream& stream, const LinkedDict<K, V, Flags, Ts...>& dict
 ) {
     stream << linked::build_repr(
         dict.view,
@@ -629,88 +613,68 @@ inline std::ostream& operator<<(
  */
 
 
-/* Get the union between a LinkedDict and an arbitrary container. */
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline LinkedDict<K, V, Flags, Ts...> operator|(
-    const LinkedDict<K, V, Flags, Ts...>& dict,
-    const Map& other
+    const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
 ) {
     return dict.union_(other);
 }
 
 
-/* Update a LinkedDict in-place, replacing it with the union of it and an arbitrary
-container. */
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline LinkedDict<K, V, Flags, Ts...>& operator|=(
-    LinkedDict<K, V, Flags, Ts...>& dict,
-    const Map& other
+    LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
 ) {
     dict.update(other);
     return dict;
 }
 
 
-/* Get the difference between a LinkedDict and an arbitrary container. */
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline LinkedDict<K, V, Flags, Ts...> operator-(
-    const LinkedDict<K, V, Flags, Ts...>& dict,
-    const Map& other
+    const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
 ) {
     return dict.difference(other);
 }
 
 
-/* Update a LinkedDict in-place, replacing it with the difference between it and an
-arbitrary container. */
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline LinkedDict<K, V, Flags, Ts...>& operator-=(
-    LinkedDict<K, V, Flags, Ts...>& dict,
-    const Map& other
+    LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
 ) {
     dict.difference_update(other);
     return dict;
 }
 
 
-/* Get the intersection between a LinkedDict and an arbitrary container. */
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline LinkedDict<K, V, Flags, Ts...> operator&(
-    const LinkedDict<K, V, Flags, Ts...>& dict,
-    const Map& other
+    const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
 ) {
     return dict.intersection(other);
 }
 
 
-/* Update a LinkedDict in-place, replacing it with the intersection between it and an
-arbitrary container. */
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline LinkedDict<K, V, Flags, Ts...>& operator&=(
-    LinkedDict<K, V, Flags, Ts...>& dict,
-    const Map& other
+    LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
 ) {
     dict.intersection_update(other);
     return dict;
 }
 
 
-/* Get the symmetric difference between a LinkedDict and an arbitrary container. */
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline LinkedDict<K, V, Flags, Ts...> operator^(
-    const LinkedDict<K, V, Flags, Ts...>& dict,
-    const Map& other
+    const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
 ) {
     return dict.symmetric_difference(other);
 }
 
 
-/* Update a LinkedDict in-place, replacing it with the symmetric difference between it
-and an arbitrary container. */
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline LinkedDict<K, V, Flags, Ts...>& operator^=(
-    LinkedDict<K, V, Flags, Ts...>& dict,
-    const Map& other
+    LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
 ) {
     dict.symmetric_difference_update(other);
     return dict;
@@ -726,7 +690,6 @@ inline LinkedDict<K, V, Flags, Ts...>& operator^=(
 // have a special case that calls PyDict_Next() to get key-value pairs.
 
 
-/* Check whether a LinkedDict is equal to another mapping or container of pairs. */
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator==(
     const LinkedDict<K, V, Flags, Ts...>& dict,
@@ -737,7 +700,6 @@ inline bool operator==(
 }
 
 
-/* Check whether a LinkedDict is not equal to an arbitrary container. */
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator!=(
     const LinkedDict<K, V, Flags, Ts...>& dict,
@@ -878,7 +840,6 @@ public:
      * overloads below for more details.
      */
 
-    /* Get the key at a particular index of the referenced dictionary. */
     inline const ElementProxy<View> operator[](long long index) const {
         return position(index);
     }
@@ -893,8 +854,6 @@ public:
  */
 
 
-/* Check whether the keys in a LinkedDict form a proper subset of an arbitrary
-container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator<(
     const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
@@ -904,7 +863,6 @@ inline bool operator<(
 }
 
 
-/* Apply a reversed < comparison. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator<(
     const Container& other,
@@ -914,7 +872,6 @@ inline bool operator<(
 }
 
 
-/* Check whether the keys in a LinkedDict form a subset of an arbitrary container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator<=(
     const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
@@ -924,7 +881,6 @@ inline bool operator<=(
 }
 
 
-/* Apply a reversed <= comparison. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator<=(
     const Container& other,
@@ -934,7 +890,6 @@ inline bool operator<=(
 }
 
 
-/* Check whether the keys in a LinkedDict are equal to an arbitrary container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator==(
     const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
@@ -944,7 +899,6 @@ inline bool operator==(
 }
 
 
-/* Apply a reversed == comparison. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator==(
     const Container& other,
@@ -954,7 +908,6 @@ inline bool operator==(
 }
 
 
-/* Check whether the keys in a LinkedDict are not equal to an arbitrary container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator!=(
     const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
@@ -964,7 +917,6 @@ inline bool operator!=(
 }
 
 
-/* Apply a reversed != comparison. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator!=(
     const Container& other,
@@ -974,7 +926,6 @@ inline bool operator!=(
 }
 
 
-/* Check whether the keys in a LinkedDict form a superset of an arbitrary container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator>=(
     const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
@@ -984,7 +935,6 @@ inline bool operator>=(
 }
 
 
-/* Apply a reversed >= comparison. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator>=(
     const Container& other,
@@ -994,8 +944,6 @@ inline bool operator>=(
 }
 
 
-/* Check whether the keys in a LinkedDict form a proper superset of an arbitrary
-container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator>(
     const KeysProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
@@ -1005,7 +953,6 @@ inline bool operator>(
 }
 
 
-/* Apply a reversed > comparison. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator>(
     const Container& other,
@@ -1126,8 +1073,6 @@ public:
  */
 
 
-/* Check whether the values in a LinkedDict are lexically less than those of an
-arbitrary container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator<(
     const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
@@ -1137,7 +1082,6 @@ inline bool operator<(
 }
 
 
-/* Apply a reversed < comparison. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator<(
     const Container& other,
@@ -1147,8 +1091,6 @@ inline bool operator<(
 }
 
 
-/* Check whether the values in a LinkedDict are lexically less than or equal to those
-of an arbitrary container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator<=(
     const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
@@ -1158,7 +1100,6 @@ inline bool operator<=(
 }
 
 
-/* Apply a reversed <= comparison. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator<=(
     const Container& other,
@@ -1168,8 +1109,6 @@ inline bool operator<=(
 }
 
 
-/* Check whether the values in a LinkedDict are lexically equal to an arbitrary
-container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator==(
     const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
@@ -1179,7 +1118,6 @@ inline bool operator==(
 }
 
 
-/* Apply a reversed == comparison. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator==(
     const Container& other,
@@ -1189,8 +1127,6 @@ inline bool operator==(
 }
 
 
-/* Check whether the values in a LinkedDict are not lexically equivalent to an
-arbitrary container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator!=(
     const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
@@ -1200,7 +1136,6 @@ inline bool operator!=(
 }
 
 
-/* Apply a reversed != comparison. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator!=(
     const Container& other,
@@ -1210,8 +1145,6 @@ inline bool operator!=(
 }
 
 
-/* Check whether the values in a LinkedDict are lexically greater than or equal to
-those of an arbitrary container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator>=(
     const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
@@ -1221,7 +1154,6 @@ inline bool operator>=(
 }
 
 
-/* Apply a reversed >= comparison. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator>=(
     const Container& other,
@@ -1231,8 +1163,6 @@ inline bool operator>=(
 }
 
 
-/* Check whether the values in a LinkedDict are lexically greater than those of an
-arbitrary container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator>(
     const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
@@ -1242,7 +1172,6 @@ inline bool operator>(
 }
 
 
-/* Apply a reversed > comparison. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator>(
     const Container& other,
@@ -1463,7 +1392,6 @@ public:
  */
 
 
-/* Check whether a LinkedDict is equal to an arbitrary container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator==(
     const ItemsProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
@@ -1473,7 +1401,6 @@ inline bool operator==(
 }
 
 
-/* Check whether a LinkedDict is not equal to an arbitrary container. */
 template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator!=(
     const ItemsProxy<LinkedDict<K, V, Flags, Ts...>>& proxy,
@@ -1493,7 +1420,6 @@ template <typename Derived>
 class PyDictInterface {
 public:
 
-    /* Implement `LinkedDict.add()` in Python. */
     static PyObject* add(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -1518,7 +1444,6 @@ public:
         }
     }
 
-    /* Implement `LinkedDict.add_left() in Python. */
     static PyObject* add_left(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -1543,7 +1468,6 @@ public:
         }
     }
 
-    /* Implement `LinkedDict.lru_add() in Python. */
     static PyObject* lru_add(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -1568,7 +1492,6 @@ public:
         }
     }
 
-    /* Implement `LinkedDict.insert()` in Python. */
     static PyObject* insert(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -1595,7 +1518,6 @@ public:
         }
     }
 
-    /* Implement `LinkedDict.pop()` in Python. */
     static PyObject* pop(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -1623,7 +1545,6 @@ public:
         }
     }
 
-    /* Implement `LinkedDict.popitem()` in Python. */
     static PyObject* popitem(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -1648,7 +1569,6 @@ public:
         }
     }
 
-    /* Implement `LinkedDict.get()` in Python. */
     static PyObject* get(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -1676,7 +1596,6 @@ public:
         }
     }
 
-    /* Implement `LinkedDict.lru_get()` in Python. */
     static PyObject* lru_get(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -1704,7 +1623,6 @@ public:
         }
     }
 
-    /* Implement `LinkedDict.setdefault()` in Python. */
     static PyObject* setdefault(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -1728,7 +1646,6 @@ public:
         }
     }
 
-    /* Implement `LinkedDict.setdefault_left()` in Python. */
     static PyObject* setdefault_left(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -1752,7 +1669,6 @@ public:
         }
     }
 
-    /* Implement `LinkedDict.lru_setdefault()` in Python. */
     static PyObject* lru_setdefault(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -1776,9 +1692,8 @@ public:
         }
     }
 
-    // // TODO: thoroughly check these
+    // TODO: thoroughly check these
 
-    // /* Implement `LinkedDict.keys()` in Python. */
     // static PyObject* keys(Derived* self, PyObject* /* ignored */) {
     //     try {
     //         return std::visit(
@@ -1795,7 +1710,6 @@ public:
     //     }
     // }
 
-    // /* Implement `LinkedDict.values()` in Python. */
     // static PyObject* values(Derived* self, PyObject* /* ignored */) {
     //     try {
     //         return std::visit(
@@ -1812,7 +1726,6 @@ public:
     //     }
     // }
 
-    // /* Implement `LinkedDict.items()` in Python. */
     // static PyObject* items(Derived* self, PyObject* /* ignored */) {
     //     try {
     //         return std::visit(
@@ -1829,7 +1742,6 @@ public:
     //     }
     // }
 
-    /* Implement `LinkedDict.__getitem__()` in Python. */
     static PyObject* __getitem__(Derived* self, PyObject* key) {
         try {
             return std::visit(
@@ -1845,12 +1757,15 @@ public:
         }
     }
 
-    /* Implement `LinkedDict.__setitem__()/__delitem__()` in Python. */
     static int __setitem__(Derived* self, PyObject* key, PyObject* value) {
         try {
             std::visit(
                 [&key, &value](auto& dict) {
-                    dict[key] = value;
+                    if (value == nullptr) {
+                        dict[key].del();
+                    } else {
+                        dict[key] = value;
+                    }
                 },
                 self->variant
             );
@@ -1862,8 +1777,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.__lt__()/__le__()/__eq__()/__ne__()/__ge__()/__gt__()` in
-    Python. */
     static PyObject* __richcompare__(Derived* self, PyObject* other, int cmp) {
         try {
             bool result = std::visit(
@@ -2205,6 +2118,76 @@ only if the dictionary's values are also hashable.
 
     };
 
+
+    // TODO: this must be templated on KeysProxy?  Then we just invoke construct()
+    // inside a std::visit lambda.
+
+
+    /* A custom Python type that exposes LinkedDict.keys() to Python. */
+    template <typename Proxy>
+    class PyKeysProxy {
+        PyObject_HEAD
+
+        Proxy proxy;
+        Derived* _mapping;
+
+    public:
+        PyKeysProxy() = delete;
+        PyKeysProxy(const PyKeysProxy&) = delete;
+        PyKeysProxy(PyKeysProxy&&) = delete;
+        PyKeysProxy& operator=(const PyKeysProxy&) = delete;
+        PyKeysProxy& operator=(PyKeysProxy&&) = delete;
+
+        static PyObject* mapping(PyKeysProxy* self, PyObject* /* ignored */) {
+            return self->_mapping;
+        }
+
+    private:
+        friend PyDictInterface;
+        friend Derived;
+
+        // TODO: within keys() std::visit, use decltype to get type of keys() method,
+        // then call PyKeysProxy<Proxy>::construct(self, dict.keys()) 
+
+        /* Construct a Python wrapper around a LinkedDict.keys() proxy. */
+        // inline static PyObject* construct(Derived* dict, Proxy&& proxy) {
+        //     PyKeysProxy* self = PyObject_New(PyKeysProxy, &Type);
+        //     if (self == nullptr) {
+        //         PyErr_SetString(
+        //             PyExc_RuntimeError,
+        //             "failed to allocate memory for PyKeysProxy"
+        //         );
+        //         return nullptr;
+        //     }
+        //     new (&self->proxy) KeysProxy(std::move(proxy));
+        //     self->_mapping = PyDictProxy_New(dict);
+        //     return reinterpret_cast<PyObject*>(self);
+        // }
+
+        /* Release the read-only dictionary reference when the proxy is garbage
+        collected. */
+        // inline static void __dealloc__(PyKeysProxy* self) {
+        //     Py_DECREF(self->_mapping);
+        //     self->proxy.~Proxy();
+        //     Type.tp_free(self);
+        // }
+
+        /* Docstrings for public Python attributes. */
+        struct docs {
+
+        };
+
+        // /* Vtable containing Python @properties for the proxy. */
+        // inline static PyGetSetDef properties[] = {
+        //     {"mapping", (getter) mapping, nullptr, docs::mapping.data()},
+        //     {NULL}  // sentinel
+        // }
+
+        /* Vtable containing Python methods for the  */
+
+
+    };
+
 };
 
 
@@ -2418,7 +2401,6 @@ class PyLinkedDict :
 
 public:
 
-    /* Initialize a LinkedDict instance from Python. */
     static int __init__(PyLinkedDict* self, PyObject* args, PyObject* kwargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -2465,7 +2447,6 @@ public:
         }
     }
 
-    /* Implement `LinkedDict.fromkeys()` in Python. */
     static PyObject* fromkeys(PyObject* type, PyObject* args, PyObject* kwargs) {
         PyLinkedDict* self = reinterpret_cast<PyLinkedDict*>(
             Base::__new__(&Type, nullptr, nullptr)
@@ -2516,15 +2497,11 @@ public:
         }
     }
 
-    /* Implement `LinkedDict.__class_getitem__()` in Python. */
     static PyObject* __class_getitem__(PyObject* type, PyObject* spec) {
-        // create a new heap type for the specialization
         PyObject* heap_type = PyType_FromSpecWithBases(&Specialized::py_spec, type);
         if (heap_type == nullptr) {
             return nullptr;
         }
-
-        // set specialization attribute so __init__()/specialize() can retrieve it
         if (PyObject_SetAttrString(heap_type, "_specialization", spec) < 0) {
             Py_DECREF(heap_type);
             return nullptr;
@@ -2532,7 +2509,6 @@ public:
         return heap_type;
     }
 
-    /* Implement `LinkedDict.__str__()` in Python. */
     static PyObject* __str__(PyLinkedDict* self) {
         try {
             std::ostringstream stream;
@@ -2563,7 +2539,6 @@ public:
         }
     }
 
-    /* Implement `LinkedDict.__repr__()` in Python. */
     static PyObject* __repr__(PyLinkedDict* self) {
         try {
             std::ostringstream stream;
@@ -2584,7 +2559,6 @@ public:
 
 private:
 
-    /* docstrings for public Python attributes. */
     struct docs {
 
         static constexpr std::string_view LinkedDict {R"doc(
@@ -2726,7 +2700,6 @@ constructor itself.
     #define DICT_METHOD(NAME, ARG_PROTOCOL) \
         { #NAME, (PyCFunction) IDict::NAME, ARG_PROTOCOL, PyDoc_STR(IDict::docs::NAME.data()) } \
 
-    /* Vtable containing Python @property definitions for the LinkedDict */
     inline static PyGetSetDef properties[] = {
         BASE_PROPERTY(SINGLY_LINKED),
         BASE_PROPERTY(DOUBLY_LINKED),
@@ -2743,7 +2716,6 @@ constructor itself.
         {NULL}  // sentinel
     };
 
-    /* Vtable containing Python method definitions for the LinkedDict. */
     inline static PyMethodDef methods[] = {
         BASE_METHOD(reserve, METH_FASTCALL),
         BASE_METHOD(defragment, METH_NOARGS),
@@ -2816,7 +2788,6 @@ constructor itself.
     #undef SET_METHOD
     #undef DICT_METHOD
 
-    /* Vtable containing special methods related to Python's mapping protocol. */
     inline static PyMappingMethods mapping = [] {
         PyMappingMethods slots;
         slots.mp_length = (lenfunc) Base::__len__;
@@ -2825,7 +2796,6 @@ constructor itself.
         return slots;
     }();
 
-    /* Vtable containing special methods related to Python's sequence protocol. */
     inline static PySequenceMethods sequence = [] {
         PySequenceMethods slots;
         slots.sq_length = (lenfunc) Base::__len__;
@@ -2835,7 +2805,6 @@ constructor itself.
         return slots;
     }();
 
-    /* Vtable containing special methods related to Python's number protocol. */
     inline static PyNumberMethods number = [] {
         PyNumberMethods slots;
         slots.nb_or = (binaryfunc) ISet::__or__;
@@ -2849,7 +2818,6 @@ constructor itself.
         return slots;
     }();
 
-    /* Initialize a PyTypeObject to represent the set in Python. */
     static PyTypeObject build_type() {
         return {
             .ob_base = PyObject_HEAD_INIT(NULL)
@@ -2882,7 +2850,6 @@ constructor itself.
 
 public:
 
-    /* The final Python type as a PyTypeObject. */
     inline static PyTypeObject Type = build_type();
 
     /* Check whether another PyObject* is of this type. */
@@ -2899,8 +2866,6 @@ private:
     /* Dynamic heap type generated by `LinkedDict.__class_getitem__()` in Python. */
     class Specialized {
 
-        /* Initialize a permanently-specialized LinkedList instance from
-        __class_getitem__(). */
         static int __init__(PyLinkedDict* self, PyObject* args, PyObject* kwargs) {
             using bertrand::util::PyArgs;
             using bertrand::util::CallProtocol;
@@ -2959,8 +2924,6 @@ private:
             }
         }
 
-        /* Initialize a permanently-specialized LinkedDict using the fromkeys() factory
-        method of a class returned from __class_getitem__(). */
         static PyObject* fromkeys(PyObject* type, PyObject* args, PyObject* kwargs) {
             PyLinkedDict* self = reinterpret_cast<PyLinkedDict*>(
                 PyLinkedDict::__new__(&PyLinkedDict::Type, nullptr, nullptr)

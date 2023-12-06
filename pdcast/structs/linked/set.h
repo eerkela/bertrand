@@ -402,17 +402,14 @@ public:
      * and will throw errors otherwise.  See structs/linked/list.h for more information.
      */
 
-    /* Get a proxy for a value at a particular index of the set. */
     inline linked::ElementProxy<View> position(long long index) {
         return linked::position(this->view, index);
     }
 
-    /* Get a const proxy for a value at a particular index of a const set. */
     inline const linked::ElementProxy<const View> position(long long index) const {
         return linked::position(this->view, index);
     }
 
-    /* Get a proxy for a slice within the set. */
     template <typename... Args>
     inline linked::SliceProxy<View, LinkedSet> slice(Args&&... args) {
         return linked::slice<View, LinkedSet>(
@@ -421,7 +418,6 @@ public:
         );
     }
 
-    /* Get a const proxy for a slice within a const set. */
     template <typename... Args>
     inline auto slice(Args&&... args) const
         -> const linked::SliceProxy<const View, const LinkedSet>
@@ -456,12 +452,10 @@ public:
      * structs/util/iter.h and structs/util/ops.h.
      */
 
-    /* Overload the array index operator ([]) to allow pythonic set indexing. */
     inline auto operator[](long long index) {
         return position(index);
     }
 
-    /* Allow [] operator to be used on const sets. */
     inline auto operator[](long long index) const {
         return position(index);
     }
@@ -474,12 +468,11 @@ public:
 /////////////////////////////
 
 
-/* Override the << operator to print the abbreviated contents of a set to an output
-stream (equivalent to Python repr()). */
+/* Print the abbreviated contents of a set to an output stream (equivalent to Python
+repr()). */
 template <typename T, unsigned int Flags, typename... Ts>
 inline std::ostream& operator<<(
-    std::ostream& stream,
-    const LinkedSet<T, Flags, Ts...>& set
+    std::ostream& stream, const LinkedSet<T, Flags, Ts...>& set
 ) {
     stream << linked::build_repr(
         set.view,
@@ -492,170 +485,140 @@ inline std::ostream& operator<<(
 }
 
 
-/* Get the union between a LinkedSet and an arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline LinkedSet<T, Flags, Ts...> operator|(
-    const LinkedSet<T, Flags, Ts...>& set,
-    const Container& other
+    const LinkedSet<T, Flags, Ts...>& set, const Container& other
 ) {
     return set.union_(other);
 }
 
 
-/* Update a LinkedSet in-place, replacing it with the union of it and an arbitrary
-container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline LinkedSet<T, Flags, Ts...>& operator|=(
-    LinkedSet<T, Flags, Ts...>& set,
-    const Container& other
+    LinkedSet<T, Flags, Ts...>& set, const Container& other
 ) {
     set.update(other);
     return set;
 }
 
 
-/* Get the difference between a LinkedSet and an arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline LinkedSet<T, Flags, Ts...> operator-(
-    const LinkedSet<T, Flags, Ts...>& set,
-    const Container& other
+    const LinkedSet<T, Flags, Ts...>& set, const Container& other
 ) {
     return set.difference(other);
 }
 
 
-/* Update a LinkedSet in-place, replacing it with the difference between it and an
-arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline LinkedSet<T, Flags, Ts...>& operator-=(
-    LinkedSet<T, Flags, Ts...>& set,
-    const Container& other
+    LinkedSet<T, Flags, Ts...>& set, const Container& other
 ) {
     set.difference_update(other);
     return set;
 }
 
 
-/* Get the intersection between a LinkedSet and an arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline LinkedSet<T, Flags, Ts...> operator&(
-    const LinkedSet<T, Flags, Ts...>& set,
-    const Container& other
+    const LinkedSet<T, Flags, Ts...>& set, const Container& other
 ) {
     return set.intersection(other);
 }
 
 
-/* Update a LinkedSet in-place, replacing it with the intersection between it and an
-arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline LinkedSet<T, Flags, Ts...>& operator&=(
-    LinkedSet<T, Flags, Ts...>& set,
-    const Container& other
+    LinkedSet<T, Flags, Ts...>& set, const Container& other
 ) {
     set.intersection_update(other);
     return set;
 }
 
 
-/* Get the symmetric difference between a LinkedSet and an arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline LinkedSet<T, Flags, Ts...> operator^(
-    const LinkedSet<T, Flags, Ts...>& set,
-    const Container& other
+    const LinkedSet<T, Flags, Ts...>& set, const Container& other
 ) {
     return set.symmetric_difference(other);
 }
 
 
-/* Update a LinkedSet in-place, replacing it with the symmetric difference between it
-and an arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline LinkedSet<T, Flags, Ts...>& operator^=(
-    LinkedSet<T, Flags, Ts...>& set,
-    const Container& other
+    LinkedSet<T, Flags, Ts...>& set, const Container& other
 ) {
     set.symmetric_difference_update(other);
     return set;
 }
 
-/* Check whether a LinkedSet is a proper subset of an arbitrary container. */
+
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return linked::issubset(set.view, other, true);
 }
 
-/* Apply a reversed < comparison. */
+
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
     return linked::issuperset(set.view, other, true);
 }
 
 
-/* Check whether a LinkedSet is a subset of an arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<=(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return linked::issubset(set.view, other, false);
 }
 
 
-/* Apply a reversed <= comparison. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<=(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
     return linked::issuperset(set.view, other, false);
 }
 
 
-/* Check whether a LinkedSet is equal to an arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator==(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return linked::set_equal(set.view, other);
 }
 
 
-/* Apply a reversed == comparison. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator==(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
     return linked::set_equal(set.view, other);
 }
 
 
-/* Check whether a LinkedSet is not equal to an arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator!=(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return linked::set_not_equal(set.view, other);
 }
 
 
-/* Apply a reversed != comparison. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator!=(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
     return linked::set_not_equal(set.view, other);
 }
 
 
-/* Check whether a LinkedSet is a superset of an arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>=(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return linked::issuperset(set.view, other, false);
 }
 
 
-/* Apply a reversed >= comparison. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>=(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
     return linked::issubset(set.view, other, false);
 }
 
 
-/* Check whether a LinkedSet is a proper superset of an arbitrary container. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return linked::issuperset(set.view, other, true);
 }
 
 
-/* Apply a reversed > comparison. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
     return linked::issubset(set.view, other, true);
@@ -672,7 +635,6 @@ template <typename Derived>
 class PySetInterface {
 public:
 
-    /* Implement `LinkedSet.add()` in Python. */
     static PyObject* add(Derived* self, PyObject* key) {
         try {
             std::visit(
@@ -689,7 +651,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.add_left()` in Python. */
     static PyObject* add_left(Derived* self, PyObject* key) {
         try {
             std::visit(
@@ -706,7 +667,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.lru_add()` in Python. */
     static PyObject* lru_add(Derived* self, PyObject* key) {
         try {
             std::visit(
@@ -723,7 +683,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.remove()` in Python. */
     static PyObject* remove(Derived* self, PyObject* key) {
         try {
             std::visit(
@@ -740,7 +699,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.discard()` in Python. */
     static PyObject* discard(Derived* self, PyObject* key) {
         try {
             std::visit(
@@ -757,7 +715,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.lru_contains()` in Python. */
     static PyObject* lru_contains(Derived* self, PyObject* key) {
         try {
             return std::visit(
@@ -773,7 +730,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.union()` in Python. */
     static PyObject* union_(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
@@ -808,7 +764,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.union_left()` in Python. */
     static PyObject* union_left(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
@@ -843,7 +798,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.update()` in Python. */
     static PyObject* update(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         try {
             std::visit(
@@ -862,7 +816,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.update()` in Python. */
     static PyObject* update_left(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         try {
             std::visit(
@@ -881,7 +834,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.lru_update()` in Python. */
     static PyObject* lru_update(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         try {
             std::visit(
@@ -900,7 +852,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.difference()` in Python. */
     static PyObject* difference(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
@@ -935,7 +886,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.difference_update()` in Python. */
     static PyObject* difference_update(
         Derived* self,
         PyObject* const* args,
@@ -958,7 +908,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.intersection()` in Python. */
     static PyObject* intersection(
         Derived* self,
         PyObject* const* args,
@@ -997,7 +946,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.intersection_update()` in Python. */
     static PyObject* intersection_update(
         Derived* self,
         PyObject* const* args,
@@ -1020,7 +968,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.symmetric_difference()` in Python. */
     static PyObject* symmetric_difference(Derived* self, PyObject* items) {
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
@@ -1045,7 +992,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.symmetric_difference()` in Python. */
     static PyObject* symmetric_difference_left(Derived* self, PyObject* items) {
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
@@ -1070,7 +1016,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.symmetric_difference_update()` in Python. */
     static PyObject* symmetric_difference_update(Derived* self, PyObject* items) {
         try {
             std::visit(
@@ -1087,7 +1032,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.symmetric_difference_update_left()` in Python. */
     static PyObject* symmetric_difference_update_left(Derived* self, PyObject* items) {
         try {
             std::visit(
@@ -1104,7 +1048,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.isdisjoint()` in Python. */
     static PyObject* isdisjoint(Derived* self, PyObject* other) {
         try {
             return std::visit(
@@ -1120,7 +1063,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.issubset()` in Python. */
     static PyObject* issubset(Derived* self, PyObject* other) {
         try {
             return std::visit(
@@ -1136,7 +1078,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.issubset()` in Python. */
     static PyObject* issuperset(Derived* self, PyObject* other) {
         try {
             return std::visit(
@@ -1152,7 +1093,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.distance()` in Python. */
     static PyObject* distance(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -1176,7 +1116,6 @@ public:
         }
     }
 
-    /* Implement LinkedSet.swap() in Python. */
     static PyObject* swap(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -1202,7 +1141,6 @@ public:
 
     }
 
-    /* Implement `LinkedSet.move()` in Python. */
     static PyObject* move(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -1229,7 +1167,6 @@ public:
 
     }
 
-    /* Implement `LinkedSet.move_to_index()` in Python. */
     static PyObject* move_to_index(
         Derived* self,
         PyObject* const* args,
@@ -1259,7 +1196,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.__or__()` (union operator) in Python. */
     static PyObject* __or__(Derived* self, PyObject* other) {
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
@@ -1284,7 +1220,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.__ior__()` (in-place union operator) in Python. */
     static PyObject* __ior__(Derived* self, PyObject* other) {
         try {
             std::visit(
@@ -1302,7 +1237,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.__sub__()` (difference operator) in Python. */
     static PyObject* __sub__(Derived* self, PyObject* other) {
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
@@ -1327,7 +1261,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.__isub__()` (in-place difference operator) in Python. */
     static PyObject* __isub__(Derived* self, PyObject* other) {
         try {
             std::visit(
@@ -1345,7 +1278,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.__and__()` (iuntersection operator) in Python. */
     static PyObject* __and__(Derived* self, PyObject* other) {
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
@@ -1370,7 +1302,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.__iand__()` (in-place intersection operator) in Python. */
     static PyObject* __iand__(Derived* self, PyObject* other) {
         try {
             std::visit(
@@ -1388,7 +1319,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.__xor__()` (symmetric difference operator) in Python. */
     static PyObject* __xor__(Derived* self, PyObject* other) {
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
@@ -1413,8 +1343,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.__ixor__()` (in-place symmetric difference operator) in
-    Python. */
     static PyObject* __ixor__(Derived* self, PyObject* other) {
         try {
             std::visit(
@@ -1434,7 +1362,6 @@ public:
 
 protected:
 
-    /* docstrings for public Python attributes. */
     struct docs {
 
         static constexpr std::string_view add {R"doc(
@@ -2091,7 +2018,6 @@ class PyLinkedSet :
 
 public:
 
-    /* Initialize a LinkedSet instance from Python. */
     static int __init__(PyLinkedSet* self, PyObject* args, PyObject* kwargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -2138,7 +2064,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.__str__()` in Python. */
     static PyObject* __str__(PyLinkedSet* self) {
         try {
             std::ostringstream stream;
@@ -2166,7 +2091,6 @@ public:
         }
     }
 
-    /* Implement `LinkedSet.__repr__()` in Python. */
     static PyObject* __repr__(PyLinkedSet* self) {
         try {
             std::ostringstream stream;
@@ -2187,7 +2111,6 @@ public:
 
 private:
 
-    /* docstrings for public Python attributes. */
     struct docs {
 
         static constexpr std::string_view LinkedSet {R"doc(
@@ -2289,7 +2212,6 @@ in some cases.
     #define SET_METHOD(NAME, ARG_PROTOCOL) \
         { #NAME, (PyCFunction) ISet::NAME, ARG_PROTOCOL, PyDoc_STR(ISet::docs::NAME.data()) } \
 
-    /* Vtable containing Python @property definitions for the LinkedSet. */
     inline static PyGetSetDef properties[] = {
         BASE_PROPERTY(SINGLY_LINKED),
         BASE_PROPERTY(DOUBLY_LINKED),
@@ -2306,7 +2228,6 @@ in some cases.
         {NULL}  // sentinel
     };
 
-    /* Vtable containing Python method definitions for the LinkedSet. */
     inline static PyMethodDef methods[] = {
         BASE_METHOD(reserve, METH_FASTCALL),
         BASE_METHOD(defragment, METH_NOARGS),
@@ -2361,7 +2282,6 @@ in some cases.
     #undef LIST_METHOD
     #undef SET_METHOD
 
-    /* Vtable containing special methods related to Python's mapping protocol. */
     inline static PyMappingMethods mapping = [] {
         PyMappingMethods slots;
         slots.mp_length = (lenfunc) Base::__len__;
@@ -2370,7 +2290,6 @@ in some cases.
         return slots;
     }();
 
-    /* Vtable containing special methods related to Python's sequence protocol. */
     inline static PySequenceMethods sequence = [] {
         PySequenceMethods slots;
         slots.sq_length = (lenfunc) Base::__len__;
@@ -2380,7 +2299,6 @@ in some cases.
         return slots;
     }();
 
-    /* Vtable containing special methods related to Python's number protocol. */
     inline static PyNumberMethods number = [] {
         PyNumberMethods slots;
         slots.nb_or = (binaryfunc) ISet::__or__;
@@ -2394,7 +2312,6 @@ in some cases.
         return slots;
     }();
 
-    /* Initialize a PyTypeObject to represent the set in Python. */
     static PyTypeObject build_type() {
         return {
             .ob_base = PyObject_HEAD_INIT(NULL)
@@ -2427,7 +2344,6 @@ in some cases.
 
 public:
 
-    /* The final Python type as a PyTypeObject. */
     inline static PyTypeObject Type = build_type();
 
     /* Check whether another PyObject* is of this type. */

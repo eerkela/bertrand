@@ -34,13 +34,12 @@ template <typename NodeType, bool has_stack = false>
 class BaseIterator {};
 
 
-/* Base class for reverse iterators over singly-linked lists.
-
-NOTE: these use an auxiliary stack to allow reverse iteration even when no `prev`
-pointer is available.  This requires an additional iteration over the list to populate
-the stack, but is only applied in the special case of a reverse iterator over a
-singly-linked list.  The upside is that we can use the same interface for both singly-
-and doubly-linked lists. */
+/* Base class for reverse iterators over singly-linked lists.  NOTE: these use an
+auxiliary stack to allow reverse iteration even when no `prev` pointer is available.
+This requires an additional iteration over the list to populate the stack, but is only
+applied in the special case of a reverse iterator over a singly-linked list.  The
+upside is that we can use the same interface for both singly- and doubly-linked
+lists. */
 template <typename NodeType>
 class BaseIterator<NodeType, true> {
     static constexpr bool constant = std::is_const_v<NodeType>;
@@ -55,7 +54,7 @@ protected:
 };
 
 
-/* An optionally const iterator over the templated view, with the given direction. */
+/* An optionally const iterator over the templated view with the given direction. */
 template <typename ViewType, Direction dir>
 class Iterator :
     public BaseIterator<
@@ -296,10 +295,9 @@ protected:
 ////////////////////
 
 
-/* Empty tag class marking a low-level view for a linked data structure.
-
-NOTE: this class is inherited by all views, and can be used for easy SFINAE checks via
-std::is_base_of, without requiring any foreknowledge of template parameters. */
+/* Empty tag class marking a low-level view for a linked data structure.  This class is
+inherited by all views, and can be used for easy SFINAE checks via std::is_base_of,
+without requiring any foreknowledge of template parameters. */
 struct ViewTag {
     static constexpr bool listlike = false;
     static constexpr bool setlike = false;
@@ -588,8 +586,28 @@ public:
         return Iterator<Direction::forward>(*this, nullptr, head(), next);
     }
 
+    ConstIterator<Direction::forward> begin() const {
+        return cbegin();
+    }
+
+    ConstIterator<Direction::forward> cbegin() const {
+        if (head() == nullptr) {
+            return cend();
+        }
+        Node* next = head()->next();
+        return ConstIterator<Direction::forward>(*this, nullptr, head(), next);
+    }
+
     Iterator<Direction::forward> end() {
         return Iterator<Direction::forward>(*this);
+    }
+
+    ConstIterator<Direction::forward> end() const {
+        return cend();
+    }
+
+    ConstIterator<Direction::forward> cend() const {
+        return ConstIterator<Direction::forward>(*this);
     }
 
     Iterator<Direction::backward> rbegin() {
@@ -617,36 +635,8 @@ public:
         }
     }
 
-    Iterator<Direction::backward> rend() {
-        return Iterator<Direction::backward>(*this);
-    }
-
-    ConstIterator<Direction::forward> begin() const {
-        return cbegin();
-    }
-
-    ConstIterator<Direction::forward> end() const {
-        return cend();
-    }
-
     ConstIterator<Direction::backward> rbegin() const {
         return crbegin();
-    }
-
-    ConstIterator<Direction::backward> rend() const {
-        return crend();
-    }
-
-    ConstIterator<Direction::forward> cbegin() const {
-        if (head() == nullptr) {
-            return cend();
-        }
-        Node* next = head()->next();
-        return ConstIterator<Direction::forward>(*this, nullptr, head(), next);
-    }
-
-    ConstIterator<Direction::forward> cend() const {
-        return ConstIterator<Direction::forward>(*this);
     }
 
     ConstIterator<Direction::backward> crbegin() const {
@@ -674,6 +664,14 @@ public:
         }
     }
 
+    Iterator<Direction::backward> rend() {
+        return Iterator<Direction::backward>(*this);
+    }
+
+    ConstIterator<Direction::backward> rend() const {
+        return crend();
+    }
+
     ConstIterator<Direction::backward> crend() const {
         return ConstIterator<Direction::backward>(*this);
     }
@@ -682,7 +680,8 @@ public:
     ////    INTERNAL    ////
     ////////////////////////
 
-    /* Get the allocator's temporary node. */
+    /* Get a reference to a temporary node held by the allocator for internal use.
+    Users should not access this node directly, as it may be overwritten at any time. */
     inline Node* temp() const noexcept {
         return allocator.temp();
     }

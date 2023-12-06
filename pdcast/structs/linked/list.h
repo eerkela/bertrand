@@ -245,17 +245,14 @@ public:
      *      Iterator end(): return an iterator to terminate the slice.
      */
 
-    /* Get a proxy for a value at a particular index of the list. */
     inline linked::ElementProxy<View> position(long long index) {
         return linked::position(this->view, index);
     }
 
-    /* Get a const proxy for a value at a particular index of a const list. */
     inline const linked::ElementProxy<const View> position(long long index) const {
         return linked::position(this->view, index);
     }
 
-    /* Get a proxy for a slice within the list. */
     template <typename... Args>
     inline linked::SliceProxy<View, LinkedList> slice(Args&&... args) {
         return linked::slice<View, LinkedList>(
@@ -264,7 +261,6 @@ public:
         );
     }
 
-    /* Get a const proxy for a slice within a const list. */
     template <typename... Args>
     inline auto slice(Args&&... args) const
         -> const linked::SliceProxy<const View, const LinkedList>
@@ -296,12 +292,10 @@ public:
      * structs/util/iter.h and structs/util/ops.h.
      */
 
-    /* Overload the array index operator ([]) to allow pythonic list indexing. */
     inline auto operator[](long long index) {
         return position(index);
     }
 
-    /* Allow [] operator to be used on const lists. */
     inline auto operator[](long long index) const {
         return position(index);
     }
@@ -314,12 +308,11 @@ public:
 //////////////////////////////
 
 
-/* Override the << operator to print the abbreviated contents of a list to an output
-stream (equivalent to Python repr()). */
+/* Print the abbreviated contents of a list to an output stream (equivalent to Python
+repr()). */
 template <typename T, unsigned int Flags, typename... Ts>
 inline std::ostream& operator<<(
-    std::ostream& stream,
-    const LinkedList<T, Flags, Ts...>& list
+    std::ostream& stream, const LinkedList<T, Flags, Ts...>& list
 ) {
     stream << linked::build_repr(
         list.view,
@@ -332,149 +325,114 @@ inline std::ostream& operator<<(
 }
 
 
-/* Concatenate a LinkedList with an arbitrary C++/Python container to produce a new
-list. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline LinkedList<T, Flags, Ts...> operator+(
-    const LinkedList<T, Flags, Ts...>& lhs,
-    const Container& rhs
+    const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs
 ) {
     return linked::concatenate(lhs.view, rhs);
 }
 
 
-/* Concatenate a LinkedList with an arbitrary C++/Python container in-place. */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline LinkedList<T, Flags, Ts...>& operator+=(
-    LinkedList<T, Flags, Ts...>& lhs,
-    const Container& rhs
+    LinkedList<T, Flags, Ts...>& lhs, const Container& rhs
 ) {
     linked::extend(lhs.view, rhs);
     return lhs;
 }
 
 
-/* Repeat the elements of a LinkedList the specified number of times. */
 template <typename T, unsigned int Flags, typename... Ts>
 inline LinkedList<T, Flags, Ts...> operator*(
-    const LinkedList<T, Flags, Ts...>& list,
-    const long long rhs
+    const LinkedList<T, Flags, Ts...>& list, const long long rhs
 ) {
     return linked::repeat(list.view, rhs);
 }
 
 
-/* Repeat the elements of a LinkedList the specified number of times (reversed). */
 template <typename T, unsigned int Flags, typename... Ts>
 inline LinkedList<T, Flags, Ts...> operator*(
-    const long long lhs,
-    const LinkedList<T, Flags, Ts...>& list
+    const long long lhs, const LinkedList<T, Flags, Ts...>& list
 ) {
     return linked::repeat(list.view, lhs);
 }
 
 
-/* Repeat the elements of a LinkedList in-place the specified number of times. */
 template <typename T, unsigned int Flags, typename... Ts>
 inline LinkedList<T, Flags, Ts...>& operator*=(
-    LinkedList<T, Flags, Ts...>& list,
-    const long long rhs
+    LinkedList<T, Flags, Ts...>& list, const long long rhs
 ) {
     linked::repeat_inplace(list.view, rhs);
     return list;
 }
 
 
-/* Apply a lexicographic `<` comparison between the elements of a LinkedList and
-another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
     return lexical_lt(lhs, rhs);
 }
 
 
-/* Apply a lexicographic `<` comparison between the elements of a LinkedList and
-another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
     return lexical_lt(lhs, rhs);
 }
 
 
-/* Apply a lexicographic `<=` comparison between the elements of a LinkedList and
-another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<=(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
     return lexical_le(lhs, rhs);
 }
 
 
-/* Apply a lexicographic `<=` comparison between the elements of a LinkedList and
-another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<=(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
     return lexical_lt(lhs, rhs);
 }
 
 
-/* Apply a lexicographic `==` comparison between the elements of a LinkedList and
-another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator==(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
     return lexical_eq(lhs, rhs);
 }
 
 
-/* Apply a lexicographic `==` comparison between the elements of a LinkedList and
-another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator==(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
     return lexical_eq(lhs, rhs);
 }
 
 
-/* Apply a lexicographic `!=` comparison between the elements of a LinkedList and
-another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator!=(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
     return !lexical_eq(lhs, rhs);
 }
 
 
-/* Apply a lexicographic `!=` comparison between the elements of a LinkedList and
-another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator!=(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
     return !lexical_eq(lhs, rhs);
 }
 
 
-/* Apply a lexicographic `>=` comparison between the elements of a LinkedList and
-another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>=(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
     return lexical_ge(lhs, rhs);
 }
 
 
-/* Apply a lexicographic `>=` comparison between the elements of a LinkedList and
-another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>=(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
     return lexical_ge(lhs, rhs);
 }
 
 
-/* Apply a lexicographic `>` comparison between the elements of a LinkedList and
-another container.  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
     return lexical_gt(lhs, rhs);
 }
 
 
-/* Apply a lexicographic `>` comparison between the elements of a LinkedList and
-another container (reversed).  */
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
     return lexical_gt(lhs, rhs);
@@ -492,7 +450,6 @@ template <typename Derived>
 class PyListInterface {
 public:
 
-    /* Implement `LinkedList.append()` in Python. */
     static PyObject* append(Derived* self, PyObject* item) {
         try {
             std::visit(
@@ -509,7 +466,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.append_left()` in Python. */
     static PyObject* append_left(Derived* self, PyObject* item) {
         try {
             std::visit(
@@ -526,7 +482,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.insert()` in Python. */
     static PyObject* insert(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -552,7 +507,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.extend()` in Python. */
     static PyObject* extend(Derived* self, PyObject* items) {
         try {
             std::visit(
@@ -569,7 +523,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.extend_left()` in Python. */
     static PyObject* extend_left(Derived* self, PyObject* items) {
         try {
             std::visit(
@@ -586,7 +539,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.index()` in Python. */
     static PyObject* index(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -615,7 +567,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.count()` in Python. */
     static PyObject* count(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -644,7 +595,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.remove()` in Python. */
     static PyObject* remove(Derived* self, PyObject* item) {
         try {
             std::visit(
@@ -661,7 +611,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.pop()` in Python. */
     static PyObject* pop(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -685,7 +634,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.clear()` in Python. */
     static PyObject* clear(Derived* self, PyObject* /* ignored */) {
         try {
             std::visit(
@@ -702,7 +650,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.copy()` in Python. */
     static PyObject* copy(Derived* self, PyObject* /* ignored */) {
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
@@ -727,7 +674,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.sort()` in Python. */
     static PyObject* sort(
         Derived* self,
         PyObject* const* args,
@@ -759,7 +705,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.reverse()` in Python. */
     static PyObject* reverse(Derived* self, PyObject* /* ignored */) {
         try {
             std::visit(
@@ -776,7 +721,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.rotate()` in Python. */
     static PyObject* rotate(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -801,7 +745,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.__contains__()` in Python. */
     static int __contains__(Derived* self, PyObject* item) {
         try {
             return std::visit(
@@ -817,7 +760,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.__getitem__()` in Python. */
     static PyObject* __getitem__(Derived* self, PyObject* key) {
         try {
             // check for integer index
@@ -868,7 +810,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.__setitem__()/__delitem__()` in Python (slice). */
     static int __setitem__(Derived* self, PyObject* key, PyObject* items) {
         try {
             // check for integer index
@@ -916,7 +857,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.__add__()` in Python. */
     static PyObject* __add__(Derived* self, PyObject* other) {
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
@@ -941,7 +881,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.__iadd__()` in Python. */
     static PyObject* __iadd__(Derived* self, PyObject* other) {
         try {
             std::visit(
@@ -959,7 +898,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.__mul__()__rmul__()` in Python. */
     static PyObject* __mul__(Derived* self, Py_ssize_t count) {
         Derived* result = reinterpret_cast<Derived*>(
             Derived::__new__(&Derived::Type, nullptr, nullptr)
@@ -984,7 +922,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.__imul__()` in Python. */
     static PyObject* __imul__(Derived* self, Py_ssize_t count) {
         try {
             std::visit(
@@ -1002,8 +939,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.__lt__()/__le__()/__eq__()/__ne__()/__ge__()/__gt__()` in
-    Python. */
     static PyObject* __richcompare__(Derived* self, PyObject* other, int cmp) {
         try {
             bool result = std::visit(
@@ -1074,7 +1009,6 @@ protected:
         }
     }
 
-    /* docstrings for public Python attributes. */
     struct docs {
 
         static constexpr std::string_view append {R"doc(
@@ -1511,7 +1445,6 @@ class PyLinkedList :
 
 public:
 
-    /* Initialize a LinkedList instance from Python. */
     static int __init__(PyLinkedList* self, PyObject* args, PyObject* kwargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -1558,7 +1491,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.__str__()` in Python. */
     static PyObject* __str__(PyLinkedList* self) {
         try {
             std::ostringstream stream;
@@ -1586,7 +1518,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.__repr__()` in Python. */
     static PyObject* __repr__(PyLinkedList* self) {
         try {
             std::ostringstream stream;
@@ -1607,7 +1538,6 @@ public:
 
 private:
 
-    /* docstrings for public Python attributes. */
     struct docs {
 
         static constexpr std::string_view LinkedList {R"doc(
@@ -1704,7 +1634,6 @@ in some cases.
     #define LIST_METHOD(NAME, ARG_PROTOCOL) \
         { #NAME, (PyCFunction) IList::NAME, ARG_PROTOCOL, PyDoc_STR(IList::docs::NAME.data()) } \
 
-    /* Vtable containing Python @property definitions for the LinkedList. */
     inline static PyGetSetDef properties[] = {
         BASE_PROPERTY(SINGLY_LINKED),
         BASE_PROPERTY(DOUBLY_LINKED),
@@ -1721,7 +1650,6 @@ in some cases.
         {NULL}  // sentinel
     };
 
-    /* Vtable containing Python method definitions for the LinkedList. */
     inline static PyMethodDef methods[] = {
         BASE_METHOD(reserve, METH_FASTCALL),
         BASE_METHOD(defragment, METH_NOARGS),
@@ -1749,7 +1677,6 @@ in some cases.
     #undef BASE_METHOD
     #undef LIST_METHOD
 
-    /* Vtable containing special methods related to Python's mapping protocol. */
     inline static PyMappingMethods mapping = [] {
         PyMappingMethods slots;
         slots.mp_length = (lenfunc) Base::__len__;
@@ -1758,7 +1685,6 @@ in some cases.
         return slots;
     }();
 
-    /* Vtable containing special methods related to Python's sequence protocol. */
     inline static PySequenceMethods sequence = [] {
         PySequenceMethods slots;
         slots.sq_length = (lenfunc) Base::__len__;
@@ -1772,7 +1698,6 @@ in some cases.
         return slots;
     }();
 
-    /* Initialize a PyTypeObject to represent the list in Python. */
     static PyTypeObject build_type() {
         return {
             .ob_base = PyObject_HEAD_INIT(NULL)
@@ -1804,7 +1729,6 @@ in some cases.
 
 public:
 
-    /* The final Python type as a PyTypeObject. */
     inline static PyTypeObject Type = build_type();
 
     /* Check whether another PyObject* is of this type. */

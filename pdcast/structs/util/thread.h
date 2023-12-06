@@ -194,10 +194,7 @@ class RecursiveThreadGuard : ThreadGuardTag {
     LockType& lock;
     std::optional<GuardType> guard;
 
-    /* Construct the outermost guard for the recursive lock.
-
-    NOTE: recursive lock proxies have to specify RecursiveGuard as a friend class in
-    order to access these constructors. */
+    /* Construct the outermost guard for the recursive lock. */
     RecursiveThreadGuard(LockType& lock, GuardType&& guard) :
         lock(lock), guard(std::move(guard))
     {}
@@ -364,12 +361,7 @@ public:
         return ExclusiveGuard(mtx);
     }
 
-    /* Return a wrapper around a std::shared_lock for the internal mutex.
-
-    NOTE: These locks allow concurrent access to the object as long as no exclusive
-    guards have been requested.  This is useful for read-only operations that do not
-    modify the underlying data structure.  They have the save RAII semantics as the
-    normal call operator. */
+    /* Return a wrapper around a std::shared_lock for the internal mutex. */
     inline SharedGuard shared() const {
         return SharedGuard(mtx);
     }
@@ -460,21 +452,13 @@ public:
         auto id = std::this_thread::get_id();
 
         // if the current thread already owns the lock, return an empty guard
-        if (shared_owners.count(id)) {
+        if (shared_owners.find(id) != shared_owners.end()) {
             return SharedGuard(*this);
         }
 
-        // NOTE: the handling of the `shared_owners` set is only thread-safe due to the
-        // exact order of operations here.  As written, the set is only modified AFTER
-        // a lock has been acquired, which guarantees that we will not encounter any
-        // race conditions during our comparisons.
-
-        // If two threads attempt to acquire the lock at the same time, the owner set
-        // will only be modified after the first thread has acquired the lock.  If this
-        // blocks for some reason (e.g. due to the presence of an exclusive lock on the
-        // same mutex), then the owner set will not be modified until the lock is
-        // successfully acquired.  The second thread will then proceed to acquire the
-        // lock and update the owner set accordingly.
+        // NOTE: As written, the handling of the `shared_owners` set is atomic since we
+        // only modify it AFTER a lock has been acquired.  This guarantees that we will
+        // not encounter race conditions during the above membership check.
 
         _SharedGuard guard = LockType::shared(std::forward<Args>(args)...);  // blocks
         shared_owners.insert(id);
@@ -506,19 +490,13 @@ public:
     inline ExclusiveGuard operator()(Args&&... args) const {
         auto id = std::this_thread::get_id();
 
-        // if the current thread already owns the lock, return an empty guard
         if (id == owner) {
             return ExclusiveGuard(*this);
         }
 
-        // NOTE: the handling of the `owner` identifier is only thread-safe due to the 
-        // exact order of operations here.  As written, the owner identifier is only
-        // modified AFTER a lock has been acquired, which guarantees that we will not
-        // encounter any race conditions during our comparisons.
-        
-        // If two threads attempt to acquire the lock at the same time, only the first
-        // thread will proceed to modify the owner.  The second just waits until the
-        // first thread releases the lock, and then updates the owner accordingly.
+        // NOTE: As written, the handling of the `owner` identifier is atomic since
+        // we only modify it AFTER a lock has been acquired.  This guarantees that we
+        // will not encounter race conditions during the above comparison.
 
         _ExclusiveGuard guard = LockType::operator()(std::forward<Args>(args)...);  // blocks
         owner = id;
@@ -607,13 +585,11 @@ public:
 
         // loop until the lock is acquired or we hit an error condition
         while (true) {
-            // try to lock the mutex
             std::optional<Guard> guard = LockType::try_lock();
             if (guard.has_value()) {
                 return guard.value();
             }
 
-            // check for maximum number of retries
             if constexpr (max_retries >= 0) {
                 if (++retries >= max_retries) {
                     std::ostringstream msg;
@@ -623,7 +599,6 @@ public:
                 }
             }
 
-            // check for timeout
             if constexpr (TimeoutValue >= 0) {
                 if (Clock::now() > end) {
                     std::ostringstream msg;
@@ -633,7 +608,6 @@ public:
                 }
             }
 
-            // wait and try again
             if constexpr (WaitValue > 0) {
                 std::this_thread::sleep_for(wait);
             }
@@ -652,13 +626,11 @@ public:
 
         // loop until the lock is acquired or we hit an error condition
         while (true) {
-            // try to lock the mutex
             std::optional<Guard> guard = LockType::try_shared();
             if (guard.has_value()) {
                 return guard.value();
             }
 
-            // check for maximum number of retries
             if constexpr (max_retries > 0) {
                 if (++retries >= max_retries) {
                     std::ostringstream msg;
@@ -668,7 +640,6 @@ public:
                 }
             }
 
-            // check for timeout
             if constexpr (TimeoutValue > 0) {
                 if (Clock::now() > end) {
                     std::ostringstream msg;
@@ -678,7 +649,6 @@ public:
                 }
             }
 
-            // wait and try again
             if constexpr (WaitValue > 0) {
                 std::this_thread::sleep_for(wait);
             }
@@ -712,7 +682,6 @@ public:
         auto end = Clock::now();
         lock_time += std::chrono::duration_cast<Resolution>(end - start);
         ++lock_count;
-
         return result;
     }
 
@@ -728,7 +697,6 @@ public:
         auto end = Clock::now();
         lock_time += std::chrono::duration_cast<Resolution>(end - start);
         ++lock_count;
-
         return result;
     }
 
@@ -845,8 +813,8 @@ public:
     using Mutex = typename LockType::Mutex;
     using ExclusiveGuard = typename _exclusive::type;  // void if not exclusive
     using SharedGuard = typename _shared::type;  // void if not shared
-    using TimeoutUnit = typename _timeout::type;  // ns if not spin
-    using WaitUnit = typename _wait::type;  // ns if not spin
+    using TimeoutUnit = typename _timeout::type;  // std::chrono::ns if not spin
+    using WaitUnit = typename _wait::type;  // std::chrono::ns if not spin
     using DiagnosticUnit = typename _diagnostic_unit::type;  // void if not diagnostic
 
     static constexpr bool exclusive = _exclusive::value;
@@ -875,6 +843,11 @@ class PyLock {
     LockType* lock;
 
 public:
+    PyLock() = delete;
+    PyLock(const PyLock&) = delete;
+    PyLock(PyLock&&) = delete;
+    PyLock& operator=(const PyLock&) = delete;
+    PyLock& operator=(PyLock&&) = delete;
 
     /* A wrapper around a C++ thread guard that allows it to be used as a Python
     context manager. */
@@ -885,11 +858,11 @@ public:
         PyObject_HEAD
         LockType* lock;
         bool has_guard;
-        union { GuardType guard; };
+        union {
+            GuardType guard;
+        };
 
     public:
-
-        /* Force users to use construct() factory method. */
         PyThreadGuard() = delete;
         PyThreadGuard(const PyThreadGuard&) = delete;
         PyThreadGuard(PyThreadGuard&&) = delete;
@@ -948,7 +921,7 @@ public:
             if (self == nullptr) {
                 PyErr_SetString(
                     PyExc_RuntimeError,
-                    "could not allocate Python lock guard"
+                    "failed to allocate memory for PyLock guard"
                 );
                 return nullptr;
             }
@@ -968,7 +941,6 @@ public:
             Type.tp_free(self);
         }
 
-        /* Docstrings for public attributes of PyLock. */
         struct docs {
 
             static constexpr std::string_view PyThreadGuard {R"doc(
@@ -1012,21 +984,18 @@ bool
 
         };
 
-        /* Vtable containing Python @properties for the context manager. */
         inline static PyGetSetDef properties[] = {
             {"active", (getter) active, NULL, docs::active.data()},
             {NULL}  // sentinel
         };
 
-        /* Vtable containing Python methods for the context manager. */
         inline static PyMethodDef methods[] = {
             {"__enter__", (PyCFunction) __enter__, METH_NOARGS, docs::__enter__.data()},
             {"__exit__", (PyCFunction) __exit__, METH_VARARGS, docs::__exit__.data()},
             {NULL}  // sentinel
         };
 
-        /* Initialize a PyTypeObject to represent this lock from Python. */
-        static PyTypeObject init_type() {
+        static PyTypeObject build_type() {
             PyTypeObject slots = {
                 .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
                 .tp_name = PyName<GuardType>.data(),
@@ -1050,21 +1019,8 @@ bool
     public:
 
         /* Final Python type. */
-        inline static PyTypeObject Type = init_type();
+        inline static PyTypeObject Type = build_type();
     };
-
-    /* C++ constructors/assignment operators deleted for compatibility with Python
-    API.
-
-    NOTE: the Python C API does not always respect C++ construction semantics, and can
-    lead to some very subtle bugs related to memory initialization, particularly as it
-    relates to Python object headers and stack-allocated memory.  We're better off
-    disabling C++ constructors entirely in favor of explicit factory methods instead. */
-    PyLock() = delete;
-    PyLock(const PyLock&) = delete;
-    PyLock(PyLock&&) = delete;
-    PyLock& operator=(const PyLock&) = delete;
-    PyLock& operator=(PyLock&&) = delete;
 
     /* Construct a Python wrapper around a C++ lock functor. */
     inline static PyObject* construct(LockType& lock) {
@@ -1161,7 +1117,6 @@ private:
         Type.tp_free(self);
     }
 
-    /* Docstrings for public attributes of the lock functor. */
     struct docs {
 
         static constexpr std::string_view shared {R"doc(
@@ -1303,7 +1258,6 @@ Examples
 
     };
 
-    /* Vtable containing @property definitions for the Python lock. */
     inline static PyGetSetDef properties[] = {
         {"count", (getter) count, NULL, docs::count.data(), NULL},
         {"duration", (getter) duration, NULL, docs::duration.data(), NULL},
@@ -1311,15 +1265,13 @@ Examples
         {NULL}  // sentinel
     };
 
-    /* Vtable containing Python methods for the context manager. */
     inline static PyMethodDef methods[] = {
         {"shared", (PyCFunction) shared, METH_NOARGS, docs::shared.data()},
         {"reset_diagnostics", (PyCFunction) reset_diagnostics, METH_NOARGS, docs::reset_diagnostics.data()},
         {NULL}  // sentinel
     };
 
-    /* Initialize a PyTypeObject to represent this lock from Python. */
-    static PyTypeObject init_type() {
+    static PyTypeObject build_type() {
         PyTypeObject slots = {
             .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
             .tp_name = PyName<LockType>.data(),
@@ -1343,8 +1295,7 @@ Examples
 
 public:
 
-    /* C-style Python type declaration. */
-    inline static PyTypeObject Type = init_type();
+    inline static PyTypeObject Type = build_type();
 
 };
 

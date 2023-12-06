@@ -1572,16 +1572,6 @@ private:
         return nullptr;
     }
 
-
-    // TODO: maybe using an auto return value is simpler here?
-
-    // TBH we should probably just split this into a separate function.
-    // -> MappedValue pop(key) and MappedValue pop(key, value)
-
-    // TODO: should also assert that NodeTraits::has_mapped is true if RETURN_MAPPED is
-    // given to recycle()
-
-
     /* A conditional return type for the recycle() method based on the RETURN_MAPPED
     flag used in dict.pop() */
     template <unsigned int flags, bool return_mapped = false>

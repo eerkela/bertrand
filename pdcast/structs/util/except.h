@@ -59,11 +59,10 @@ public:
 struct MemoryError : public Exception {
     using Exception::Exception;
     using Exception::operator=;
-    using Exception::what;
 
-    explicit MemoryError(const char* what) : Exception(what, PyExc_MemoryError) {}
-    explicit MemoryError(const std::string& what) : Exception(what, PyExc_MemoryError) {}
-    explicit MemoryError(const std::string_view& what) : Exception(what, PyExc_MemoryError) {}
+    MemoryError(const char* what) : Exception(what, PyExc_MemoryError) {}
+    MemoryError(const std::string& what) : Exception(what, PyExc_MemoryError) {}
+    MemoryError(const std::string_view& what) : Exception(what, PyExc_MemoryError) {}
 };
 
 

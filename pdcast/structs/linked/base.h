@@ -23,10 +23,9 @@ namespace linked {
 ////////////////////
 
 
-/* Empty tag class marking a linked data structure.
-
-Using an empty class like this allows for easy SFINAE checks via a simple
-std::is_base_of check, without requiring any foreknowledge of template parameters. */
+/* Empty tag class marking a linked data structure.  This class is inherited by every
+Linked data structure, and can be used for easy SFINAE checks via std::is_base_of
+without any foreknowledge of template parameters. */
 class LinkedTag {};
 
 
@@ -307,16 +306,12 @@ class PyLinkedBase {
     PyObject_HEAD
 
 public:
-
-    /* C++ constructors/assignment operators deleted for compatibility with Python
-    API. */
     PyLinkedBase() = delete;
     PyLinkedBase(const PyLinkedBase&) = delete;
     PyLinkedBase(PyLinkedBase&&) = delete;
     PyLinkedBase& operator=(const PyLinkedBase&) = delete;
     PyLinkedBase& operator=(PyLinkedBase&&) = delete;
 
-    /* Getter for `LinkedList.SINGLY_LINKED` in Python. */
     inline static PyObject* SINGLY_LINKED(Derived* self, PyObject* /* ignored */) noexcept {
         return std::visit(
             [](auto& list) {
@@ -326,7 +321,6 @@ public:
         );
     }
 
-    /* Getter for `LinkedList.DOUBLY_LINKED` in Python. */
     inline static PyObject* DOUBLY_LINKED(Derived* self, PyObject* /* ignored */) noexcept {
         return std::visit(
             [](auto& list) {
@@ -336,7 +330,6 @@ public:
         );
     }
 
-    /* Getter for `LinkedList.XOR` in Python. */
     inline static PyObject* XOR(Derived* self, PyObject* /* ignored */) noexcept {
         return std::visit(
             [](auto& list) {
@@ -346,7 +339,6 @@ public:
         );
     }
 
-    /* Getter for `LinkedList.DYNAMIC` in Python. */
     inline static PyObject* DYNAMIC(Derived* self, PyObject* /* ignored */) noexcept {
         return std::visit(
             [](auto& list) {
@@ -356,7 +348,6 @@ public:
         );
     }
 
-    /* Getter for `LinkedList.PACKED` in Python. */
     inline static PyObject* PACKED(Derived* self, PyObject* /* ignored */) noexcept {
         return std::visit(
             [](auto& list) {
@@ -366,7 +357,6 @@ public:
         );
     }
 
-    /* Getter for `LinkedList.STRICTLY_TYPED` in Python. */
     inline static PyObject* STRICTLY_TYPED(Derived* self, PyObject* /* ignored */) noexcept {
         return std::visit(
             [](auto& list) {
@@ -376,7 +366,6 @@ public:
         );
     }
 
-    /* Wrap LinkedList.lock functor as a managed @property in Python. */
     inline static PyObject* lock(Derived* self, void* /* ignored */) noexcept {
         return std::visit(
             [](auto& list) {
@@ -387,7 +376,6 @@ public:
         );
     }
 
-    /* Getter for `LinkedList.capacity` in Python. */
     inline static PyObject* capacity(Derived* self, PyObject* /* ignored */) noexcept {
         size_t result = std::visit(
             [](auto& list) {
@@ -398,7 +386,6 @@ public:
         return PyLong_FromSize_t(result);
     }
 
-    /* Getter for `LinkedList.max_size` in Python. */
     inline static PyObject* max_size(Derived* self, PyObject* /* ignored */) noexcept {
         std::optional<size_t> result = std::visit(
             [](auto& list) {
@@ -413,7 +400,6 @@ public:
         }
     }
 
-    /* Getter for `LinkedList.frozen` in Python. */
     inline static PyObject* frozen(Derived* self, PyObject* /* ignored */) noexcept {
         bool result = std::visit(
             [](auto& list) {
@@ -424,7 +410,6 @@ public:
         return PyBool_FromLong(result);
     }
 
-    /* Getter for `LinkedList.specialization` in Python. */
     inline static PyObject* specialization(Derived* self, PyObject* /* ignored */) noexcept {
         PyObject* result = std::visit(
             [](auto& list) {
@@ -438,7 +423,6 @@ public:
         return Py_NewRef(result);
     }
 
-    /* Getter for `LinkedList.nbytes` in Python. */
     inline static PyObject* nbytes(Derived* self, PyObject* /* ignored */) noexcept {
         size_t result = std::visit(
             [](auto& list) {
@@ -449,7 +433,6 @@ public:
         return PyLong_FromSize_t(result);
     }
 
-    /* Implement `LinkedList.reserve()` in Python. */
     static PyObject* reserve(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
@@ -487,7 +470,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.defragment()` in Python. */
     static PyObject* defragment(Derived* self, PyObject* /* ignored */) {
         try {
             std::visit(
@@ -504,7 +486,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.specialize()` in Python. */
     static PyObject* specialize(Derived* self, PyObject* spec) {
         try {
             std::visit(
@@ -549,7 +530,6 @@ public:
         }
     }
 
-    /* Implement `LinkedList.__class_getitem__()` in Python. */
     static PyObject* __class_getitem__(PyObject* type, PyObject* spec) {
         // create a new heap type for the specialization
         PyObject* heap_type = PyType_FromSpecWithBases(&Specialized::py_spec, type);
@@ -565,7 +545,6 @@ public:
         return heap_type;
     }
 
-    /* Implement `LinkedList.__len__()` in Python. */
     inline static Py_ssize_t __len__(Derived* self) noexcept {
         return std::visit(
             [](auto& list) {
@@ -575,7 +554,6 @@ public:
         );
     }
 
-    /* Implement `LinkedList.__iter__()` in Python. */
     inline static PyObject* __iter__(Derived* self) noexcept {
         return std::visit(
             [](auto& list) {
@@ -585,7 +563,6 @@ public:
         );
     }
 
-    /* Implement `LinkedList.__reversed__()` in Python. */
     inline static PyObject* __reversed__(Derived* self, PyObject* /* ignored */) noexcept {
         return std::visit(
             [](auto& list) {
@@ -648,8 +625,6 @@ protected:
     class Specialized {
     public:
 
-        /* Initialize a permanently-specialized LinkedList instance from
-        __class_getitem__(). */
         static int __init__(Derived* self, PyObject* args, PyObject* kwargs) {
             using bertrand::util::PyArgs;
             using bertrand::util::CallProtocol;
@@ -740,7 +715,6 @@ protected:
     ////    DOCSTRINGS    ////
     //////////////////////////
 
-    /* Compile-time docstrings for all public Python methods. */
     struct docs {
 
         static constexpr std::string_view SINGLY_LINKED {R"doc(
