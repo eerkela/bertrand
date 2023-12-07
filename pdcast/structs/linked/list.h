@@ -43,10 +43,10 @@ namespace list_config {
     static constexpr unsigned int defaults(unsigned int flags) {
         unsigned int result = flags;
         if (!(result & (Config::DOUBLY_LINKED | Config::SINGLY_LINKED | Config::XOR))) {
-            result |= Config::DOUBLY_LINKED;  // default to doubly-linked
+            result |= Config::DOUBLY_LINKED;
         }
         if (!(result & (Config::DYNAMIC | Config::FIXED_SIZE))) {
-            result |= Config::DYNAMIC;  // default to dynamic allocator
+            result |= Config::DYNAMIC;
         }
         return result;
     }
@@ -90,7 +90,6 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    // inherit constructors from LinkedBase
     using Base::Base;
     using Base::operator=;
 
@@ -459,7 +458,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -475,7 +473,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -516,7 +513,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -532,7 +528,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -604,7 +599,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -634,7 +628,7 @@ public:
         }
     }
 
-    static PyObject* clear(Derived* self, PyObject* /* ignored */) {
+    static PyObject* clear(Derived* self, PyObject* /* ignored */ = nullptr) {
         try {
             std::visit(
                 [](auto& list) {
@@ -643,32 +637,21 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
         }
     }
 
-    static PyObject* copy(Derived* self, PyObject* /* ignored */) {
-        Derived* result = reinterpret_cast<Derived*>(
-            Derived::__new__(&Derived::Type, nullptr, nullptr)
-        );
-        if (result == nullptr) {
-            return nullptr;  // propagate
-        }
-
+    static PyObject* copy(Derived* self, PyObject* /* ignored */ = nullptr) {
         try {
             return std::visit(
-                [&result](auto& list) {
-                    result->from_cpp(list.copy());
-                    return reinterpret_cast<PyObject*>(result);
+                [](auto& list) {
+                    return Derived::construct(list.copy());
                 },
                 self->variant
             );
-
         } catch (...) {
-            Py_DECREF(result);
             throw_python();
             return nullptr;
         }
@@ -705,7 +688,7 @@ public:
         }
     }
 
-    static PyObject* reverse(Derived* self, PyObject* /* ignored */) {
+    static PyObject* reverse(Derived* self, PyObject* /* ignored */ = nullptr) {
         try {
             std::visit(
                 [](auto& list) {
@@ -714,7 +697,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -753,7 +735,6 @@ public:
                 },
                 self->variant
             );
-
         } catch (...) {
             throw_python();
             return -1;
@@ -762,7 +743,6 @@ public:
 
     static PyObject* __getitem__(Derived* self, PyObject* key) {
         try {
-            // check for integer index
             if (PyIndex_Check(key)) {
                 long long index = bertrand::util::parse_int(key);
                 PyObject* result = std::visit(
@@ -774,32 +754,18 @@ public:
                 return Py_XNewRef(result);
             }
 
-            // check for slice
             if (PySlice_Check(key)) {
-                Derived* result = reinterpret_cast<Derived*>(
-                    Derived::__new__(&Derived::Type, nullptr, nullptr)
+                return std::visit(
+                    [&key](auto& list) {
+                        return Derived::construct(list.slice(key).get());
+                    },
+                    self->variant
                 );
-                if (result == nullptr) {
-                    throw catch_python();
-                }
-                try {
-                    return std::visit(
-                        [&result, &key](auto& list) {
-                            result->from_cpp(list.slice(key).get());
-                            return reinterpret_cast<PyObject*>(result);
-                        },
-                        self->variant
-                    );
-                } catch (...) {
-                    Py_DECREF(result);
-                    throw;
-                }
             }
 
-            // unrecognized key type
             PyErr_Format(
                 PyExc_TypeError,
-                "list indices must be integers or slices, not %s",
+                "indices must be integers or slices, not %s",
                 Py_TYPE(key)->tp_name
             );
             return nullptr;
@@ -812,7 +778,6 @@ public:
 
     static int __setitem__(Derived* self, PyObject* key, PyObject* items) {
         try {
-            // check for integer index
             if (PyIndex_Check(key)) {
                 long long index = bertrand::util::parse_int(key);
                 std::visit(
@@ -828,7 +793,6 @@ public:
                 return 0;
             }
 
-            // check for slice
             if (PySlice_Check(key)) {
                 std::visit(
                     [&key, &items](auto& list) {
@@ -843,10 +807,9 @@ public:
                 return 0;
             }
 
-            // unrecognized key type
             PyErr_Format(
                 PyExc_TypeError,
-                "list indices must be integers or slices, not %s",
+                "indices must be integers or slices, not %s",
                 Py_TYPE(key)->tp_name
             );
             return -1;
@@ -858,24 +821,14 @@ public:
     }
 
     static PyObject* __add__(Derived* self, PyObject* other) {
-        Derived* result = reinterpret_cast<Derived*>(
-            Derived::__new__(&Derived::Type, nullptr, nullptr)
-        );
-        if (result == nullptr) {
-            return nullptr;  // propagate
-        }
-
         try {
             return std::visit(
-                [&other, &result](auto& list) {
-                    result->from_cpp(list + other);
-                    return reinterpret_cast<PyObject*>(result);
+                [&other](auto& list) {
+                    return Derived::construct(list + other);
                 },
                 self->variant
             );
-
         } catch (...) {
-            Py_DECREF(result);
             throw_python();
             return nullptr;
         }
@@ -889,9 +842,7 @@ public:
                 },
                 self->variant
             );
-            Py_INCREF(self);
-            return reinterpret_cast<PyObject*>(self);
-
+            return Py_NewRef(reinterpret_cast<PyObject*>(self));
         } catch (...) {
             throw_python();
             return nullptr;
@@ -899,24 +850,14 @@ public:
     }
 
     static PyObject* __mul__(Derived* self, Py_ssize_t count) {
-        Derived* result = reinterpret_cast<Derived*>(
-            Derived::__new__(&Derived::Type, nullptr, nullptr)
-        );
-        if (result == nullptr) {
-            return nullptr;  // propagate
-        }
-
         try {
             return std::visit(
-                [&count, &result](auto& list) {
-                    result->from_cpp(list * count);
-                    return reinterpret_cast<PyObject*>(result);
+                [&count](auto& list) {
+                    return Derived::construct(list * count);
                 },
                 self->variant
             );
-
         } catch (...) {
-            Py_DECREF(result);
             throw_python();
             return nullptr;
         }
@@ -930,9 +871,7 @@ public:
                 },
                 self->variant
             );
-            Py_INCREF(self);
-            return reinterpret_cast<PyObject*>(self);
-
+            return Py_NewRef(reinterpret_cast<PyObject*>(self));
         } catch (...) {
             throw_python();
             return nullptr;
@@ -941,28 +880,27 @@ public:
 
     static PyObject* __richcompare__(Derived* self, PyObject* other, int cmp) {
         try {
-            bool result = std::visit(
+            return std::visit(
                 [&other, &cmp](auto& list) {
                     switch (cmp) {
                         case Py_LT:
-                            return list < other;
+                            return list < other ? Py_True : Py_False;
                         case Py_LE:
-                            return list <= other;
+                            return list <= other ? Py_True : Py_False;
                         case Py_EQ:
-                            return list == other;
+                            return list == other ? Py_True : Py_False;
                         case Py_NE:
-                            return list != other;
+                            return list != other ? Py_True : Py_False;
                         case Py_GE:
-                            return list >= other;
+                            return list >= other ? Py_True : Py_False;
                         case Py_GT:
-                            return list > other;
+                            return list > other ? Py_True : Py_False;
                         default:
                             throw TypeError("invalid comparison");
                     }
                 },
                 self->variant
             );
-            return PyBool_FromLong(result);
         } catch (...) {
             throw_python();
             return nullptr;
@@ -974,14 +912,12 @@ protected:
     /* Implement `PySequence_GetItem()` in CPython API. */
     static PyObject* __getitem_scalar__(Derived* self, Py_ssize_t index) {
         try {
-            PyObject* result = std::visit(
+            return std::visit(
                 [&index](auto& list) {
                     return Py_XNewRef(list.position(index).get());
                 },
                 self->variant
             );
-            return Py_NewRef(result);
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1002,7 +938,6 @@ protected:
                 self->variant
             );
             return 0;
-
         } catch (...) {
             throw_python();
             return -1;
@@ -1420,7 +1355,7 @@ class PyLinkedList :
 
     /* Translate Python constructor arguments into a specific template configuration
     and initialize the variant accordingly. */
-    static void construct(
+    static void initialize(
         PyLinkedList* self,
         PyObject* iterable,
         std::optional<size_t> max_size,
@@ -1477,12 +1412,10 @@ public:
             bool packed = pyargs.parse("packed", is_truthy, false);
             pyargs.finalize();
 
-            // initialize
-            construct(
+            initialize(
                 self, iterable, max_size, spec, reverse, singly_linked, packed, false
             );
 
-            // exit normally
             return 0;
 
         } catch (...) {
@@ -1498,12 +1431,14 @@ public:
             std::visit(
                 [&stream](auto& list) {
                     auto it = list.begin();
-                    if (it != list.end()) {
+                    auto end = list.end();
+                    if (it != end) {
                         stream << repr(*it);
                         ++it;
                     }
-                    for (; it != list.end(); ++it) {
+                    while (it != list.end()) {
                         stream << ", " << repr(*it);
+                        ++it;
                     }
                 },
                 self->variant
@@ -1647,7 +1582,7 @@ in some cases.
         BASE_PROPERTY(frozen),
         BASE_PROPERTY(nbytes),
         BASE_PROPERTY(specialization),
-        {NULL}  // sentinel
+        {NULL}
     };
 
     inline static PyMethodDef methods[] = {
@@ -1670,10 +1605,10 @@ in some cases.
         LIST_METHOD(sort, METH_FASTCALL | METH_KEYWORDS),
         LIST_METHOD(reverse, METH_NOARGS),
         LIST_METHOD(rotate, METH_FASTCALL),
-        {NULL}  // sentinel
+        {NULL}
     };
 
-    #undef PROPERTY
+    #undef BASE_PROPERTY
     #undef BASE_METHOD
     #undef LIST_METHOD
 
@@ -1708,7 +1643,7 @@ in some cases.
             .tp_repr = (reprfunc) __repr__,
             .tp_as_sequence = &sequence,
             .tp_as_mapping = &mapping,
-            .tp_hash = (hashfunc) PyObject_HashNotImplemented,  // not hashable
+            .tp_hash = (hashfunc) PyObject_HashNotImplemented,
             .tp_str = (reprfunc) __str__,
             .tp_flags = (
                 Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC |
@@ -1730,6 +1665,23 @@ in some cases.
 public:
 
     inline static PyTypeObject Type = build_type();
+
+    /* Allocate and construct a fully-formed PyLinkedList from its C++ equivalent. */
+    template <typename List>
+    inline static PyObject* construct(List&& list) {
+        PyLinkedList* result = reinterpret_cast<PyLinkedList*>(Base::__new__(&Type));
+        if (result == nullptr) {
+            return nullptr;
+        }
+
+        try {
+            result->from_cpp(std::forward<List>(list));
+            return reinterpret_cast<PyObject*>(result);
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+    }
 
     /* Check whether another PyObject* is of this type. */
     inline static bool typecheck(PyObject* obj) {
@@ -1758,18 +1710,15 @@ static struct PyModuleDef module_list = {
 
 /* Python import hook. */
 PyMODINIT_FUNC PyInit_list(void) {
-    // initialize type objects
     if (PyType_Ready(&PyLinkedList::Type) < 0) {
         return nullptr;
     }
 
-    // initialize module
     PyObject* mod = PyModule_Create(&module_list);
     if (mod == nullptr) {
         return nullptr;
     }
 
-    // link type to module
     Py_INCREF(&PyLinkedList::Type);
     if (PyModule_AddObject(mod, "LinkedList", (PyObject*) &PyLinkedList::Type) < 0) {
         Py_DECREF(&PyLinkedList::Type);

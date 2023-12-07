@@ -49,10 +49,10 @@ namespace set_config {
     static constexpr unsigned int defaults(unsigned int flags) {
         unsigned int result = flags;
         if (!(result & (Config::DOUBLY_LINKED | Config::SINGLY_LINKED | Config::XOR))) {
-            result |= Config::DOUBLY_LINKED;  // default to doubly-linked
+            result |= Config::DOUBLY_LINKED;
         }
         if (!(result & (Config::DYNAMIC | Config::FIXED_SIZE))) {
-            result |= Config::DYNAMIC;  // default to dynamic allocator
+            result |= Config::DYNAMIC;
         }
         return result;
     }
@@ -97,7 +97,6 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    // inherit constructors from LinkedBase
     using Base::Base;
     using Base::operator=;
 
@@ -644,7 +643,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -660,7 +658,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -676,7 +673,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -692,7 +688,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -708,7 +703,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -723,7 +717,6 @@ public:
                 },
                 self->variant
             );
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -731,68 +724,43 @@ public:
     }
 
     static PyObject* union_(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        Derived* result = reinterpret_cast<Derived*>(
-            Derived::__new__(&Derived::Type, nullptr, nullptr)
-        );
-        if (result == nullptr) {
-            return nullptr;  // propagate
-        }
-
         try {
             return std::visit(
-                [&args, &nargs, &result](auto& set) {
+                [&args, &nargs](auto& set) {
                     if (nargs == 0) {
-                        result->from_cpp(set.copy());
-                        return reinterpret_cast<PyObject*>(result);
+                        return Derived::construct(set.copy());
                     }
-
-                    // get union with first item, then update with all others
                     auto copy = set.union_(args[0]);
                     for (Py_ssize_t i = 1; i < nargs; ++i) {
                         copy.update(args[i]);
                     }
-                    result->from_cpp(copy);
-                    return reinterpret_cast<PyObject*>(result);
+                    return Derived::construct(std::move(copy));
                 },
                 self->variant
             );
-
         } catch (...) {
-            Py_DECREF(result);
             throw_python();
             return nullptr;
         }
     }
 
     static PyObject* union_left(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        Derived* result = reinterpret_cast<Derived*>(
-            Derived::__new__(&Derived::Type, nullptr, nullptr)
-        );
-        if (result == nullptr) {
-            return nullptr;  // propagate
-        }
-
         try {
             return std::visit(
-                [&args, &nargs, &result](auto& set) {
+                [&args, &nargs](auto& set) {
                     if (nargs == 0) {
-                        result->from_cpp(set.copy());
-                        return reinterpret_cast<PyObject*>(result);
+                        return Derived::construct(set.copy());
                     }
 
-                    // get union with first item, then update with all others
                     auto copy = set.union_left(args[0]);
                     for (Py_ssize_t i = 1; i < nargs; ++i) {
                         copy.update_left(args[i]);
                     }
-                    result->from_cpp(copy);
-                    return reinterpret_cast<PyObject*>(result);
+                    return Derived::construct(std::move(copy));
                 },
                 self->variant
             );
-
         } catch (...) {
-            Py_DECREF(result);
             throw_python();
             return nullptr;
         }
@@ -809,7 +777,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -827,7 +794,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -845,7 +811,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -853,34 +818,22 @@ public:
     }
 
     static PyObject* difference(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        Derived* result = reinterpret_cast<Derived*>(
-            Derived::__new__(&Derived::Type, nullptr, nullptr)
-        );
-        if (result == nullptr) {
-            return nullptr;  // propagate
-        }
-
         try {
             return std::visit(
-                [&args, &nargs, &result](auto& set) {
+                [&args, &nargs](auto& set) {
                     if (nargs == 0) {
-                        result->from_cpp(set.copy());
-                        return reinterpret_cast<PyObject*>(result);
+                        return Derived::construct(set.copy());
                     }
 
-                    // get difference with first item, then update with all others
                     auto copy = set.difference(args[0]);
                     for (Py_ssize_t i = 1; i < nargs; ++i) {
                         copy.difference_update(args[i]);
                     }
-                    result->from_cpp(copy);
-                    return reinterpret_cast<PyObject*>(result);
+                    return Derived::construct(std::move(copy));
                 },
                 self->variant
             );
-
         } catch (...) {
-            Py_DECREF(result);
             throw_python();
             return nullptr;
         }
@@ -901,7 +854,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -913,34 +865,22 @@ public:
         PyObject* const* args,
         Py_ssize_t nargs
     ) {
-        Derived* result = reinterpret_cast<Derived*>(
-            Derived::__new__(&Derived::Type, nullptr, nullptr)
-        );
-        if (result == nullptr) {
-            return nullptr;  // propagate
-        }
-
         try {
             return std::visit(
-                [&args, &nargs, &result](auto& set) {
+                [&args, &nargs](auto& set) {
                     if (nargs == 0) {
-                        result->from_cpp(set.copy());
-                        return reinterpret_cast<PyObject*>(result);
+                        return Derived::construct(set.copy());
                     }
 
-                    // get intersection with first item, then update with all others
                     auto copy = set.intersection(args[0]);
                     for (Py_ssize_t i = 1; i < nargs; ++i) {
                         copy.intersection_update(args[i]);
                     }
-                    result->from_cpp(copy);
-                    return reinterpret_cast<PyObject*>(result);
+                    return Derived::construct(std::move(copy));
                 },
                 self->variant
             );
-
         } catch (...) {
-            Py_DECREF(result);
             throw_python();
             return nullptr;
         }
@@ -961,7 +901,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -969,48 +908,28 @@ public:
     }
 
     static PyObject* symmetric_difference(Derived* self, PyObject* items) {
-        Derived* result = reinterpret_cast<Derived*>(
-            Derived::__new__(&Derived::Type, nullptr, nullptr)
-        );
-        if (result == nullptr) {
-            return nullptr;  // propagate
-        }
-
         try {
             return std::visit(
-                [&result, &items](auto& set) {
-                    result->from_cpp(set.symmetric_difference(items));
-                    return reinterpret_cast<PyObject*>(result);
+                [&items](auto& set) {
+                    return Derived::construct(set.symmetric_difference(items));
                 },
                 self->variant
             );
-
         } catch (...) {
-            Py_DECREF(result);
             throw_python();
             return nullptr;
         }
     }
 
     static PyObject* symmetric_difference_left(Derived* self, PyObject* items) {
-        Derived* result = reinterpret_cast<Derived*>(
-            Derived::__new__(&Derived::Type, nullptr, nullptr)
-        );
-        if (result == nullptr) {
-            return nullptr;  // propagate
-        }
-
         try {
             return std::visit(
-                [&result, &items](auto& set) {
-                    result->from_cpp(set.symmetric_difference_left(items));
-                    return reinterpret_cast<PyObject*>(result);
+                [&items](auto& set) {
+                    return Derived::construct(set.symmetric_difference_left(items));
                 },
                 self->variant
             );
-
         } catch (...) {
-            Py_DECREF(result);
             throw_python();
             return nullptr;
         }
@@ -1025,7 +944,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1041,7 +959,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1056,7 +973,6 @@ public:
                 },
                 self->variant
             );
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1071,7 +987,6 @@ public:
                 },
                 self->variant
             );
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1086,7 +1001,6 @@ public:
                 },
                 self->variant
             );
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1197,24 +1111,14 @@ public:
     }
 
     static PyObject* __or__(Derived* self, PyObject* other) {
-        Derived* result = reinterpret_cast<Derived*>(
-            Derived::__new__(&Derived::Type, nullptr, nullptr)
-        );
-        if (result == nullptr) {
-            return nullptr;  // propagate
-        }
-
         try {
             return std::visit(
-                [&other, &result](auto& set) {
-                    result->from_cpp(set | other);
-                    return reinterpret_cast<PyObject*>(result);
+                [&other](auto& set) {
+                    return Derived::construct(set | other);
                 },
                 self->variant
             );
-
         } catch (...) {
-            Py_DECREF(result);
             throw_python();
             return nullptr;
         }
@@ -1228,9 +1132,7 @@ public:
                 },
                 self->variant
             );
-            Py_INCREF(self);
-            return reinterpret_cast<PyObject*>(self);
-
+            return Py_NewRef(reinterpret_cast<PyObject*>(self));
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1238,24 +1140,14 @@ public:
     }
 
     static PyObject* __sub__(Derived* self, PyObject* other) {
-        Derived* result = reinterpret_cast<Derived*>(
-            Derived::__new__(&Derived::Type, nullptr, nullptr)
-        );
-        if (result == nullptr) {
-            return nullptr;  // propagate
-        }
-
         try {
             return std::visit(
-                [&other, &result](auto& set) {
-                    result->from_cpp(set - other);
-                    return reinterpret_cast<PyObject*>(result);
+                [&other](auto& set) {
+                    return Derived::construct(set - other);
                 },
                 self->variant
             );
-
         } catch (...) {
-            Py_DECREF(result);
             throw_python();
             return nullptr;
         }
@@ -1269,9 +1161,7 @@ public:
                 },
                 self->variant
             );
-            Py_INCREF(self);
-            return reinterpret_cast<PyObject*>(self);
-
+            return Py_NewRef(reinterpret_cast<PyObject*>(self));
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1279,24 +1169,14 @@ public:
     }
 
     static PyObject* __and__(Derived* self, PyObject* other) {
-        Derived* result = reinterpret_cast<Derived*>(
-            Derived::__new__(&Derived::Type, nullptr, nullptr)
-        );
-        if (result == nullptr) {
-            return nullptr;  // propagate
-        }
-
         try {
             return std::visit(
-                [&other, &result](auto& set) {
-                    result->from_cpp(set & other);
-                    return reinterpret_cast<PyObject*>(result);
+                [&other](auto& set) {
+                    return Derived::construct(set & other);
                 },
                 self->variant
             );
-
         } catch (...) {
-            Py_DECREF(result);
             throw_python();
             return nullptr;
         }
@@ -1310,9 +1190,7 @@ public:
                 },
                 self->variant
             );
-            Py_INCREF(self);
-            return reinterpret_cast<PyObject*>(self);
-
+            return Py_NewRef(reinterpret_cast<PyObject*>(self));
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1320,24 +1198,14 @@ public:
     }
 
     static PyObject* __xor__(Derived* self, PyObject* other) {
-        Derived* result = reinterpret_cast<Derived*>(
-            Derived::__new__(&Derived::Type, nullptr, nullptr)
-        );
-        if (result == nullptr) {
-            return nullptr;  // propagate
-        }
-
         try {
             return std::visit(
-                [&other, &result](auto& set) {
-                    result->from_cpp(set ^ other);
-                    return reinterpret_cast<PyObject*>(result);
+                [&other](auto& set) {
+                    return Derived::construct(set ^ other);
                 },
                 self->variant
             );
-
         } catch (...) {
-            Py_DECREF(result);
             throw_python();
             return nullptr;
         }
@@ -1351,9 +1219,7 @@ public:
                 },
                 self->variant
             );
-            Py_INCREF(self);
-            return reinterpret_cast<PyObject*>(self);
-
+            return Py_NewRef(reinterpret_cast<PyObject*>(self));
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1993,7 +1859,7 @@ class PyLinkedSet :
     }
 
     /* Construct a PyLinkedSet from scratch using the given constructor arguments. */
-    static void construct(
+    static void initialize(
         PyLinkedSet* self,
         PyObject* iterable,
         std::optional<size_t> max_size,
@@ -2050,12 +1916,10 @@ public:
             bool packed = pyargs.parse("packed", is_truthy, false);
             pyargs.finalize();
 
-            // initialize
-            construct(
+            initialize(
                 self, keys, max_size, spec, reverse, singly_linked, packed, false
             );
 
-            // exit normally
             return 0;
 
         } catch (...) {
@@ -2071,12 +1935,14 @@ public:
             std::visit(
                 [&stream](auto& set) {
                     auto it = set.begin();
-                    if (it != set.end()) {
+                    auto end = set.end();
+                    if (it != end) {
                         stream << repr(*it);
                         ++it;
                     }
-                    for (; it != set.end(); ++it) {
+                    while (it != end) {
                         stream << ", " << repr(*it);
+                        ++it;
                     }
                 },
                 self->variant
@@ -2225,7 +2091,7 @@ in some cases.
         BASE_PROPERTY(frozen),
         BASE_PROPERTY(nbytes),
         BASE_PROPERTY(specialization),
-        {NULL}  // sentinel
+        {NULL}
     };
 
     inline static PyMethodDef methods[] = {
@@ -2274,10 +2140,10 @@ in some cases.
         SET_METHOD(swap, METH_FASTCALL),
         SET_METHOD(move, METH_FASTCALL),
         SET_METHOD(move_to_index, METH_FASTCALL),
-        {NULL}  // sentinel
+        {NULL}
     };
 
-    #undef PROPERTY
+    #undef BASE_PROPERTY
     #undef BASE_METHOD
     #undef LIST_METHOD
     #undef SET_METHOD
@@ -2323,7 +2189,7 @@ in some cases.
             .tp_as_number = &number,
             .tp_as_sequence = &sequence,
             .tp_as_mapping = &mapping,
-            .tp_hash = (hashfunc) PyObject_HashNotImplemented,  // not hashable
+            .tp_hash = (hashfunc) PyObject_HashNotImplemented,
             .tp_str = (reprfunc) __str__,
             .tp_flags = (
                 Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC |
@@ -2345,6 +2211,23 @@ in some cases.
 public:
 
     inline static PyTypeObject Type = build_type();
+
+    /* Allocate and construct a fully-formed PyLinkedSet from its C++ equivalent. */
+    template <typename Set>
+    inline static PyObject* construct(Set&& list) {
+        PyLinkedSet* result = reinterpret_cast<PyLinkedSet*>(Base::__new__(&Type));
+        if (result == nullptr) {
+            return nullptr;
+        }
+
+        try {
+            result->from_cpp(std::forward<Set>(list));
+            return reinterpret_cast<PyObject*>(result);
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+    }
 
     /* Check whether another PyObject* is of this type. */
     inline static bool typecheck(PyObject* obj) {
@@ -2373,18 +2256,15 @@ static struct PyModuleDef module_set = {
 
 /* Python import hook. */
 PyMODINIT_FUNC PyInit_set(void) {
-    // initialize type objects
     if (PyType_Ready(&PyLinkedSet::Type) < 0) {
         return nullptr;
     }
 
-    // initialize module
     PyObject* mod = PyModule_Create(&module_set);
     if (mod == nullptr) {
         return nullptr;
     }
 
-    // link type to module
     Py_INCREF(&PyLinkedSet::Type);
     if (PyModule_AddObject(mod, "LinkedSet", (PyObject*) &PyLinkedSet::Type) < 0) {
         Py_DECREF(&PyLinkedSet::Type);

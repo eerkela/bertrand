@@ -209,7 +209,7 @@ public:
     /* Functor that produces threading locks for a linked data structure. */
     Lock lock;
     /* BasicLock:
-     * lock()  // lock guard
+     * lock()  // lock guard (exclusive)
      *
      * ReadWriteLock:
      * lock()  // lock guard (exclusive)
@@ -282,7 +282,7 @@ private:
     const std::shared_ptr<T> _self;
 
     // NOTE: custom deleter prevents the shared_ptr from trying to delete the object
-    // when it goes out of scope, which can cause a segfault due to a double free.
+    // when it goes out of scope, which can cause a double free.
 
     SelfRef(T& self) : _self(&self, [](auto&) {}) {}
 };
@@ -312,7 +312,10 @@ public:
     PyLinkedBase& operator=(const PyLinkedBase&) = delete;
     PyLinkedBase& operator=(PyLinkedBase&&) = delete;
 
-    inline static PyObject* SINGLY_LINKED(Derived* self, PyObject* /* ignored */) noexcept {
+    inline static PyObject* SINGLY_LINKED(
+        Derived* self,
+        PyObject* /* ignored */ = nullptr
+    ) noexcept {
         return std::visit(
             [](auto& list) {
                 return PyBool_FromLong(std::decay_t<decltype(list)>::SINGLY_LINKED);
@@ -321,7 +324,10 @@ public:
         );
     }
 
-    inline static PyObject* DOUBLY_LINKED(Derived* self, PyObject* /* ignored */) noexcept {
+    inline static PyObject* DOUBLY_LINKED(
+        Derived* self,
+        PyObject* /* ignored */ = nullptr
+    ) noexcept {
         return std::visit(
             [](auto& list) {
                 return PyBool_FromLong(std::decay_t<decltype(list)>::DOUBLY_LINKED);
@@ -330,7 +336,10 @@ public:
         );
     }
 
-    inline static PyObject* XOR(Derived* self, PyObject* /* ignored */) noexcept {
+    inline static PyObject* XOR(
+        Derived* self,
+        PyObject* /* ignored */ = nullptr
+    ) noexcept {
         return std::visit(
             [](auto& list) {
                 return PyBool_FromLong(std::decay_t<decltype(list)>::XOR);
@@ -339,7 +348,10 @@ public:
         );
     }
 
-    inline static PyObject* DYNAMIC(Derived* self, PyObject* /* ignored */) noexcept {
+    inline static PyObject* DYNAMIC(
+        Derived* self,
+        PyObject* /* ignored */ = nullptr
+    ) noexcept {
         return std::visit(
             [](auto& list) {
                 return PyBool_FromLong(std::decay_t<decltype(list)>::DYNAMIC);
@@ -348,7 +360,10 @@ public:
         );
     }
 
-    inline static PyObject* PACKED(Derived* self, PyObject* /* ignored */) noexcept {
+    inline static PyObject* PACKED(
+        Derived* self,
+        PyObject* /* ignored */ = nullptr
+    ) noexcept {
         return std::visit(
             [](auto& list) {
                 return PyBool_FromLong(std::decay_t<decltype(list)>::PACKED);
@@ -357,7 +372,10 @@ public:
         );
     }
 
-    inline static PyObject* STRICTLY_TYPED(Derived* self, PyObject* /* ignored */) noexcept {
+    inline static PyObject* STRICTLY_TYPED(
+        Derived* self,
+        PyObject* /* ignored */ = nullptr
+    ) noexcept {
         return std::visit(
             [](auto& list) {
                 return PyBool_FromLong(std::decay_t<decltype(list)>::STRICTLY_TYPED);
@@ -366,7 +384,10 @@ public:
         );
     }
 
-    inline static PyObject* lock(Derived* self, void* /* ignored */) noexcept {
+    inline static PyObject* lock(
+        Derived* self,
+        PyObject* /* ignored */ = nullptr
+    ) noexcept {
         return std::visit(
             [](auto& list) {
                 using Lock = typename std::decay_t<decltype(list)>::Lock;
@@ -376,7 +397,10 @@ public:
         );
     }
 
-    inline static PyObject* capacity(Derived* self, PyObject* /* ignored */) noexcept {
+    inline static PyObject* capacity(
+        Derived* self,
+        PyObject* /* ignored */ = nullptr
+    ) noexcept {
         size_t result = std::visit(
             [](auto& list) {
                 return list.capacity();
@@ -386,7 +410,10 @@ public:
         return PyLong_FromSize_t(result);
     }
 
-    inline static PyObject* max_size(Derived* self, PyObject* /* ignored */) noexcept {
+    inline static PyObject* max_size(
+        Derived* self,
+        PyObject* /* ignored */ = nullptr
+    ) noexcept {
         std::optional<size_t> result = std::visit(
             [](auto& list) {
                 return list.max_size();
@@ -400,7 +427,10 @@ public:
         }
     }
 
-    inline static PyObject* frozen(Derived* self, PyObject* /* ignored */) noexcept {
+    inline static PyObject* frozen(
+        Derived* self,
+        PyObject* /* ignored */ = nullptr
+    ) noexcept {
         bool result = std::visit(
             [](auto& list) {
                 return list.frozen();
@@ -410,7 +440,10 @@ public:
         return PyBool_FromLong(result);
     }
 
-    inline static PyObject* specialization(Derived* self, PyObject* /* ignored */) noexcept {
+    inline static PyObject* specialization(
+        Derived* self,
+        PyObject* /* ignored */ = nullptr
+    ) noexcept {
         PyObject* result = std::visit(
             [](auto& list) {
                 return list.specialization();
@@ -423,7 +456,10 @@ public:
         return Py_NewRef(result);
     }
 
-    inline static PyObject* nbytes(Derived* self, PyObject* /* ignored */) noexcept {
+    inline static PyObject* nbytes(
+        Derived* self,
+        PyObject* /* ignored */ = nullptr
+    ) noexcept {
         size_t result = std::visit(
             [](auto& list) {
                 return list.nbytes();
@@ -439,7 +475,6 @@ public:
         using bertrand::util::parse_opt_int;
         static constexpr std::string_view meth_name{"reserve"};
         try {
-            // parse arguments
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             std::optional<long long> capacity = pyargs.parse(
                 "capacity", parse_opt_int, std::optional<long long>()
@@ -451,7 +486,6 @@ public:
                 return nullptr;
             }
 
-            // build context manager
             return std::visit(
                 [&capacity](auto& list) {
                     using List = typename std::decay_t<decltype(list)>;
@@ -470,7 +504,10 @@ public:
         }
     }
 
-    static PyObject* defragment(Derived* self, PyObject* /* ignored */) {
+    static PyObject* defragment(
+        Derived* self,
+        PyObject* /* ignored */ = nullptr
+    ) {
         try {
             std::visit(
                 [](auto& list) {
@@ -479,7 +516,6 @@ public:
                 self->variant
             );
             Py_RETURN_NONE;
-
         } catch (...) {
             throw_python();
             return nullptr;
@@ -531,13 +567,11 @@ public:
     }
 
     static PyObject* __class_getitem__(PyObject* type, PyObject* spec) {
-        // create a new heap type for the specialization
         PyObject* heap_type = PyType_FromSpecWithBases(&Specialized::py_spec, type);
         if (heap_type == nullptr) {
             return nullptr;
         }
 
-        // set specialization attribute so __init__()/specialize() can retrieve it
         if (PyObject_SetAttrString(heap_type, "_specialization", spec) < 0) {
             Py_DECREF(heap_type);
             return nullptr;
@@ -563,7 +597,10 @@ public:
         );
     }
 
-    inline static PyObject* __reversed__(Derived* self, PyObject* /* ignored */) noexcept {
+    inline static PyObject* __reversed__(
+        Derived* self,
+        PyObject* /* ignored */ = nullptr
+    ) noexcept {
         return std::visit(
             [](auto& list) {
                 return iter(list).rpython();
@@ -578,8 +615,8 @@ protected:
     garbage collector. */
     inline static PyObject* __new__(
         PyTypeObject* type,
-        PyObject* /* ignored */,
-        PyObject* /* ignored */
+        PyObject* /* ignored */ = nullptr,
+        PyObject* /* ignored */ = nullptr
     ) {
         Derived* self = reinterpret_cast<Derived*>(type->tp_alloc(type, 0));
         if (self == nullptr) {
@@ -633,7 +670,6 @@ protected:
             using bertrand::util::is_truthy;
             static constexpr std::string_view meth_name{"__init__"};
             try {
-                // parse arguments
                 PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
                 PyObject* iterable = pyargs.parse(
                     "iterable", none_to_null, (PyObject*)nullptr
@@ -657,12 +693,11 @@ protected:
                 bool packed = pyargs.parse("packed", is_truthy, false);
                 pyargs.finalize();
 
-                // initialize
                 PyObject* spec = PyObject_GetAttrString(
                     reinterpret_cast<PyObject*>(Py_TYPE(self)),
                     "_specialization"  // injected by __class_getitem__()
                 );
-                Derived::construct(
+                Derived::initialize(
                     self,
                     iterable,
                     max_size,
@@ -674,7 +709,6 @@ protected:
                 );
                 Py_DECREF(spec);
 
-                // exit normally
                 return 0;
 
             } catch (...) {
@@ -688,14 +722,14 @@ protected:
         /* Overridden methods for permanently-specialized types. */
         inline static PyMethodDef specialized_methods[] = {
             {"__init__", (PyCFunction)__init__, METH_VARARGS | METH_KEYWORDS, nullptr},
-            {NULL}  // sentinel
+            {NULL}
         };
 
         /* Overridden slots for permanently-specialized types. */
         inline static PyType_Slot specialized_slots[] = {
             {Py_tp_init, (void*) __init__},
             {Py_tp_methods, specialized_methods},
-            {0}  // sentinel
+            {0}
         };
 
     public:

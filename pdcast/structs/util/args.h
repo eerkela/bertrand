@@ -12,6 +12,11 @@
 #include "iter.h"  // iter()
 
 
+// TODO: These argument handlers can have a significant impact on performance.  It may
+// be worth it to handle arguments in the Python methods themselves, rather than
+// offering a nice interface here.
+
+
 namespace bertrand {
 namespace util {
 
@@ -64,12 +69,8 @@ struct PyArgs<CallProtocol::ARGS> {
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    ReturnType parse(
-        const std::string_view& name,
-        Func convert = nullptr
-    ) {
+    inline ReturnType parse(const std::string_view& name, Func convert = nullptr) {
         PARSE_POSITIONAL
-
         std::ostringstream msg;
         msg << this->name << "() missing required positional argument: '" << name;
         msg << "'";
@@ -83,17 +84,14 @@ struct PyArgs<CallProtocol::ARGS> {
         typename Type = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    ReturnType parse(
-        const std::string_view& name,
-        Func convert,
-        Type default_value
+    inline ReturnType parse(
+        const std::string_view& name, Func convert, Type default_value
     ) {
         static_assert(
             std::is_same_v<ReturnType, Type>,
             "Conversion function must return same type as default value."
         );
         PARSE_POSITIONAL
-
         return default_value;
     }
 
@@ -164,12 +162,8 @@ struct PyArgs<CallProtocol::KWARGS> {
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    ReturnType positional(
-        const std::string_view& name,
-        Func convert = nullptr
-    ) {
+    inline ReturnType positional(const std::string_view& name, Func convert = nullptr) {
         PARSE_POSITIONAL
-
         std::ostringstream msg;
         msg << this->name << "() missing required positional argument: '" << name;
         msg << "'";
@@ -183,17 +177,14 @@ struct PyArgs<CallProtocol::KWARGS> {
         typename Type = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    ReturnType positional(
-        const std::string_view& name,
-        Func convert,
-        Type default_value
+    inline ReturnType positional(
+        const std::string_view& name, Func convert, Type default_value
     ) {
         static_assert(
             std::is_same_v<ReturnType, Type>,
             "Conversion function must return same type as default value."
         );
         PARSE_POSITIONAL
-
         return default_value;
     }
 
@@ -218,12 +209,8 @@ struct PyArgs<CallProtocol::KWARGS> {
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    ReturnType keyword(
-        const std::string_view& name,
-        Func convert = nullptr
-    ) {
+    inline ReturnType keyword(const std::string_view& name, Func convert = nullptr) {
         PARSE_KEYWORD
-
         std::ostringstream msg;
         msg << this->name << "() missing required keyword-only argument: '" << name;
         msg << "'";
@@ -237,17 +224,14 @@ struct PyArgs<CallProtocol::KWARGS> {
         typename Type = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    ReturnType keyword(
-        const std::string_view& name,
-        Func convert,
-        Type default_value
+    inline ReturnType keyword(
+        const std::string_view& name, Func convert, Type default_value
     ) {
         static_assert(
             std::is_same_v<ReturnType, Type>,
             "Conversion function must return same type as default value."
         );
         PARSE_KEYWORD
-
         return default_value;
     }
 
@@ -275,13 +259,9 @@ struct PyArgs<CallProtocol::KWARGS> {
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    ReturnType parse(
-        const std::string_view& name,
-        Func convert = nullptr
-    ) {
+    inline ReturnType parse(const std::string_view& name, Func convert = nullptr) {
         PARSE_KEYWORD
         PARSE_POSITIONAL
-
         std::ostringstream msg;
         msg << this->name << "() missing required argument: '" << name << "'";
         throw std::runtime_error(msg.str());
@@ -294,10 +274,8 @@ struct PyArgs<CallProtocol::KWARGS> {
         typename Type = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    ReturnType parse(
-        const std::string_view& name,
-        Func convert,
-        Type default_value
+    inline ReturnType parse(
+        const std::string_view& name, Func convert, Type default_value
     ) {
         static_assert(
             std::is_same_v<ReturnType, Type>,
@@ -305,7 +283,6 @@ struct PyArgs<CallProtocol::KWARGS> {
         );
         PARSE_KEYWORD
         PARSE_POSITIONAL
-
         return default_value;
     }
 
@@ -350,12 +327,8 @@ struct PyArgs<CallProtocol::FASTCALL> {
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    ReturnType parse(
-        const std::string_view& name,
-        Func convert = nullptr
-    ) {
+    inline ReturnType parse(const std::string_view& name, Func convert = nullptr) {
         PARSE_POSITIONAL
-
         std::ostringstream msg;
         msg << this->name << "() missing required positional argument: '" << name;
         msg << "'";
@@ -369,17 +342,14 @@ struct PyArgs<CallProtocol::FASTCALL> {
         typename Type = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    ReturnType parse(
-        const std::string_view& name,
-        Func convert,
-        Type default_value
+    inline ReturnType parse(
+        const std::string_view& name, Func convert, Type default_value
     ) {
         static_assert(
             std::is_same_v<ReturnType, Type>,
             "Conversion function must return same type as default value."
         );
         PARSE_POSITIONAL
-
         return default_value;
     }
 
@@ -491,12 +461,8 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    ReturnType positional(
-        const std::string_view& name,
-        Func convert = nullptr
-    ) {
+    inline ReturnType positional(const std::string_view& name, Func convert = nullptr) {
         PARSE_POSITIONAL
-
         std::ostringstream msg;
         msg << this->name << "() missing required positional argument: '" << name;
         msg << "'";
@@ -510,17 +476,14 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         typename Type = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    ReturnType positional(
-        const std::string_view& name,
-        Func convert,
-        Type default_value
+    inline ReturnType positional(
+        const std::string_view& name, Func convert, Type default_value
     ) {
         static_assert(
             std::is_same_v<ReturnType, Type>,
             "Conversion function must return same type as default value."
         );
         PARSE_POSITIONAL
-
         return default_value;
     }
 
@@ -545,12 +508,8 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    ReturnType keyword(
-        const std::string_view& name,
-        Func convert = nullptr
-    ) {
+    inline ReturnType keyword(const std::string_view& name, Func convert = nullptr) {
         PARSE_KEYWORD
-
         std::ostringstream msg;
         msg << this->name << "() missing required keyword argument: '" << name;
         msg << "'";
@@ -564,17 +523,14 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         typename Type = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    ReturnType keyword(
-        const std::string_view& name,
-        Func convert,
-        Type default_value
+    inline ReturnType keyword(
+        const std::string_view& name, Func convert, Type default_value
     ) {
         static_assert(
             std::is_same_v<ReturnType, Type>,
             "Conversion function must return same type as default value."
         );
         PARSE_KEYWORD
-
         return default_value;
     }
 
@@ -601,13 +557,9 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    ReturnType parse(
-        const std::string_view& name,
-        Func convert = nullptr
-    ) {
+    inline ReturnType parse(const std::string_view& name, Func convert = nullptr) {
         PARSE_KEYWORD
         PARSE_POSITIONAL
-
         std::ostringstream msg;
         msg << this->name << "() missing required argument: '" << name << "'";
         throw std::runtime_error(msg.str());
@@ -620,10 +572,8 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         typename Type = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    ReturnType parse(
-        const std::string_view& name,
-        Func convert,
-        Type default_value
+    inline ReturnType parse(
+        const std::string_view& name, Func convert, Type default_value
     ) {
         static_assert(
             std::is_same_v<ReturnType, Type>,
@@ -631,7 +581,6 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         );
         PARSE_KEYWORD
         PARSE_POSITIONAL
-
         return default_value;
     }
 

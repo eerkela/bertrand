@@ -22,7 +22,7 @@ namespace linked {
 /////////////////////////
 
 
-/* enum to make iterator direction hints more readable. */
+/* Enum to make iterator direction hints more readable. */
 enum class Direction {
     forward,
     backward

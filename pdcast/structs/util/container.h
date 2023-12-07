@@ -41,8 +41,7 @@ class PyTuple {
         if (!PyTuple_Check(tuple)) {
             throw TypeError("expected a tuple");
         }
-        Py_INCREF(tuple);
-        return tuple;
+        return Py_NewRef(tuple);
     }
 
 public:
@@ -1104,7 +1103,6 @@ class PyFastSequence {
 
     /* Unpack a Python iterable into a fast sequence. */
     inline PyObject* unpack(PyObject* iterable) {
-        // don't unpack if iterable is already a tuple or list
         if (PyTuple_Check(iterable) || PyList_Check(iterable)) {
             return Py_NewRef(iterable);
         }

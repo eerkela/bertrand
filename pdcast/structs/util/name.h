@@ -71,7 +71,6 @@ template <typename T>
 class TypeName {
 private:
 
-    /* Extract the fully qualified C++ name of the templated class. */
     #if defined(__GNUC__) || defined(__clang__)
         /* GCC and Clang both support the __PRETTY_FUNCTION__ macro, which gives us
          * a string of the following form:
@@ -220,6 +219,12 @@ constexpr std::string_view PyName = TypeName<T>::mangled;
 
 
 }  // namespace util
+
+
+/* Export to base namespace. */
+using util::PyName;
+
+
 }  // namespace bertrand
 
 
