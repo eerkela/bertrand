@@ -2204,7 +2204,9 @@ in some cases.
             .tp_methods = methods,
             .tp_getset = properties,
             .tp_init = (initproc) __init__,
-            .tp_new = (newfunc) Base::__new__,
+            .tp_alloc = (allocfunc) PyType_GenericAlloc,
+            .tp_new = (newfunc) PyType_GenericNew,
+            .tp_free = (freefunc) PyObject_GC_Del,
         };
     };
 
@@ -2215,7 +2217,9 @@ public:
     /* Allocate and construct a fully-formed PyLinkedSet from its C++ equivalent. */
     template <typename Set>
     inline static PyObject* construct(Set&& set) {
-        PyLinkedSet* result = PyObject_New(PyLinkedSet, &PyLinkedSet::Type);
+        PyLinkedSet* result = reinterpret_cast<PyLinkedSet*>(
+            Type.tp_new(&Type, nullptr, nullptr)
+        );
         if (result == nullptr) {
             return nullptr;
         }

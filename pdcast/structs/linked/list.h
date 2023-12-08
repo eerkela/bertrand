@@ -1658,7 +1658,9 @@ in some cases.
             .tp_methods = methods,
             .tp_getset = properties,
             .tp_init = (initproc) __init__,
-            .tp_new = (newfunc) Base::__new__,
+            .tp_alloc = (allocfunc) PyType_GenericAlloc,
+            .tp_new = (newfunc) PyType_GenericNew,
+            .tp_free = (freefunc) PyObject_GC_Del,
         };
     };
 
@@ -1669,7 +1671,9 @@ public:
     /* Allocate and construct a fully-formed PyLinkedList from its C++ equivalent. */
     template <typename List>
     inline static PyObject* construct(List&& list) {
-        PyLinkedList* result = PyObject_New(PyLinkedList, &PyLinkedList::Type);
+        PyLinkedList* result = reinterpret_cast<PyLinkedList*>(
+            Type.tp_new(&Type, nullptr, nullptr)
+        );
         if (result == nullptr) {
             return nullptr;
         }

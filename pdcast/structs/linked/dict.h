@@ -2316,6 +2316,9 @@ only if the dictionary's values are also hashable.
         /* Construct a Python wrapper around a LinkedDict.keys() proxy. */
         inline static PyObject* construct(Derived* dict, CppProxy&& proxy) {
             PyProxy* self = PyObject_New(PyProxy, &PyProxy::Type);
+            // PyProxy* self = reinterpret_cast<PyProxy*>(
+            //     PyType_GenericAlloc(&PyProxy::Type, 0)
+            // );
             if (self == nullptr) {
                 PyErr_SetString(
                     PyExc_RuntimeError,
@@ -2333,7 +2336,7 @@ only if the dictionary's values are also hashable.
         inline static void __dealloc__(PyProxy* self) {
             Py_XDECREF(self->_mapping);
             self->~PyProxy();
-            PyProxy::Type.tp_free(reinterpret_cast<PyObject*>(self));
+            Py_TYPE(self)->tp_free(reinterpret_cast<PyObject*>(self));
         }
 
         /* Implement `PySequence_GetItem()` in CPython API. */
@@ -3482,7 +3485,9 @@ constructor itself.
             .tp_methods = methods,
             .tp_getset = properties,
             .tp_init = (initproc) __init__,
-            .tp_new = (newfunc) Base::__new__,
+            .tp_alloc = (allocfunc) PyType_GenericAlloc,
+            .tp_new = (newfunc) PyType_GenericNew,
+            .tp_free = (freefunc) PyObject_GC_Del,
         };
     };
 
@@ -3493,7 +3498,9 @@ public:
     /* Allocate and construct a fully-formed PyLinkedDict from its C++ equivalent. */
     template <typename Dict>
     inline static PyObject* construct(Dict&& dict) {
-        PyLinkedDict* result = PyObject_New(PyLinkedDict, &PyLinkedDict::Type);
+        PyLinkedDict* result = reinterpret_cast<PyLinkedDict*>(
+            Type.tp_new(&Type, nullptr, nullptr)
+        );
         if (result == nullptr) {
             return nullptr;
         }

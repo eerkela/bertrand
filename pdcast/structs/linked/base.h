@@ -303,14 +303,14 @@ private:
 Python. */
 template <typename Derived>
 class PyLinkedBase {
-    PyObject_HEAD
-
 public:
     PyLinkedBase() = delete;
     PyLinkedBase(const PyLinkedBase&) = delete;
     PyLinkedBase(PyLinkedBase&&) = delete;
     PyLinkedBase& operator=(const PyLinkedBase&) = delete;
     PyLinkedBase& operator=(PyLinkedBase&&) = delete;
+
+    PyObject_HEAD
 
     inline static PyObject* SINGLY_LINKED(
         Derived* self,
@@ -611,20 +611,10 @@ public:
 
 protected:
 
-    /* Allocate a new linked data structure from Python and register it with the cyclic
-    garbage collector. */
-    inline static PyObject* __new__(
-        PyTypeObject* type,
-        PyObject* /* ignored */ = nullptr,
-        PyObject* /* ignored */ = nullptr
-    ) {
-        return type->tp_alloc(type, 0);
-    }
-
     /* Deallocate the C++ class when its Python reference count falls to zero. */
     inline static void __dealloc__(Derived* self) noexcept {
-        PyObject_GC_UnTrack(self);  // unregister from cyclic garbage collector
-        self->~Derived();  // hook into C++ destructor
+        PyObject_GC_UnTrack(self);
+        self->~Derived();
         Derived::Type.tp_free(reinterpret_cast<PyObject*>(self));
     }
 
