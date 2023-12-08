@@ -1669,7 +1669,7 @@ public:
     /* Allocate and construct a fully-formed PyLinkedList from its C++ equivalent. */
     template <typename List>
     inline static PyObject* construct(List&& list) {
-        PyLinkedList* result = reinterpret_cast<PyLinkedList*>(Base::__new__(&Type));
+        PyLinkedList* result = PyObject_New(PyLinkedList, &PyLinkedList::Type);
         if (result == nullptr) {
             return nullptr;
         }

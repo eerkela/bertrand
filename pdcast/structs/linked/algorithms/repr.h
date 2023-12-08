@@ -37,13 +37,12 @@ namespace linked {
             if constexpr (ViewTraits<View>::dictlike) {
                 if (PySlice_Check(spec)) {
                     PySlice slice = PySlice(spec);
-                    stream << bertrand::repr(slice.start()) << " : ";
-                    stream << bertrand::repr(slice.stop());
+                    stream << repr(slice.start()) << " : " << repr(slice.stop());
                 } else {
-                    stream << bertrand::repr(spec);
+                    stream << repr(spec);
                 }
             } else {
-                stream << bertrand::repr(spec);
+                stream << repr(spec);
             }
             stream << "]";
         }
@@ -54,10 +53,9 @@ namespace linked {
         // Helper for generating a token from a single element of the data structure
         auto token = [](std::ostringstream& stream, auto it) {
             if constexpr (ViewTraits<View>::dictlike) {
-                stream << bertrand::repr(*it) << ": ";
-                stream << bertrand::repr(it.curr()->mapped());
+                stream << repr(*it) << ": " << repr(it.curr()->mapped());
             } else {
-                stream << bertrand::repr(*it);
+                stream << repr(*it);
             }
         };
 
@@ -99,16 +97,18 @@ namespace linked {
             } else {
                 threshold = view.size() - (max_entries - threshold);
                 for (size_t j = count; j < threshold; ++j, ++it);
-                for (; it != end; ++it) {
+                while (it != end) {
                     stream << ", ";
                     token(stream, it);
+                    ++it;
                 }
             }
 
         } else {
-            for (; it != end; ++it) {
+            while (it != end) {
                 stream << ", ";
                 token(stream, it);
+                ++it;
             }
         }
 

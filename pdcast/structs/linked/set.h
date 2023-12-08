@@ -2214,14 +2214,14 @@ public:
 
     /* Allocate and construct a fully-formed PyLinkedSet from its C++ equivalent. */
     template <typename Set>
-    inline static PyObject* construct(Set&& list) {
-        PyLinkedSet* result = reinterpret_cast<PyLinkedSet*>(Base::__new__(&Type));
+    inline static PyObject* construct(Set&& set) {
+        PyLinkedSet* result = PyObject_New(PyLinkedSet, &PyLinkedSet::Type);
         if (result == nullptr) {
             return nullptr;
         }
 
         try {
-            result->from_cpp(std::forward<Set>(list));
+            result->from_cpp(std::forward<Set>(set));
             return reinterpret_cast<PyObject*>(result);
         } catch (...) {
             Py_DECREF(result);

@@ -5,6 +5,8 @@
 #include <optional>  // std::optional
 #include <ostream>  // std::ostream
 #include <sstream>  // std::ostringstream
+#include <stack>  // std::stack
+#include <string>  // std::string
 #include <type_traits>  // std::conditional_t
 #include <utility>  // std::pair
 #include <variant>  // std::variant
@@ -17,7 +19,7 @@
 #include "core/view.h"  // DictView
 #include "base.h"  // LinkedBase
 #include "list.h"  // PyListInterface
-#include "set.h"  // PySetInterface
+#include "set.h"  // PySetInterface, PyLinkedSet
 
 #include "algorithms/add.h"
 #include "algorithms/contains.h"
@@ -47,6 +49,10 @@
 
 // TODO: implement dictview proxies
 // TODO: implement operator overloads
+
+
+// TODO: union, update, __init__ should accept other LinkedDicts, and use
+// .items() to iterate over them
 
 
 namespace bertrand {
@@ -691,6 +697,9 @@ inline LinkedDict<K, V, Flags, Ts...>& operator^=(
 // -> Iterators over python dictionaries only dereference to keys, so we need to
 // have a special case that calls PyDict_Next() to get key-value pairs.
 
+// -> Other LinkedDicts need to use .items() to get key-value pairs, but this is
+// not currently implemented.
+
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator==(
@@ -842,7 +851,6 @@ public:
     ////    ITERATORS    ////
     /////////////////////////
 
-    /* Iterate through each key in the referenced dictionary. */
     inline auto begin() const { return dict.begin(); }
     inline auto end() const { return dict.end(); }
     inline auto cbegin() const { return dict.cbegin(); }
@@ -856,9 +864,8 @@ public:
     ////    INDEXING    ////
     ////////////////////////
 
-
-    // /* Get a read-only proxy for a key at a certain index of the referenced
-    // dictionary. */
+    /* Get a read-only proxy for a key at a certain index of the referenced
+    dictionary. */
     // inline auto position(long long index) const {
     //     return dict.position(index);
     // }
@@ -900,9 +907,80 @@ Python repr()). */
 template <typename Dict>
 inline std::ostream& operator<<(std::ostream& stream, const KeysProxy<Dict>& keys) {
     stream << "LinkedDict_keys";
+
+    // append prefix, specialization if appropriate
+    if (keys.mapping().specialization() != nullptr) {
+        PyObject* spec = keys.mapping().specialization();
+        stream << "[";
+        if constexpr (ViewTraits<typename Dict::View>::dictlike) {
+            if (PySlice_Check(spec)) {
+                PySlice slice = PySlice(spec);
+                stream << repr(slice.start());
+            } else {
+                stream << repr(spec);
+            }
+        } else {
+            stream << repr(spec);
+        }
+        stream << "]";
+    }
+
+    // append left bracket
+    stream << "({";
+
+    // append first element
+    auto it = keys.begin();
+    auto end = keys.end();
+    if (it != end) {
+        stream << repr(*it);
+        ++it;
+    }
+
+    // abbreviate to avoid spamming the console
+    size_t max_entries = 64;
+    if (keys.size() > max_entries) {
+        size_t count = 1;
+        size_t threshold = max_entries / 2;
+        for (; it != end && count < threshold; ++it, ++count) {
+            stream << ", " << repr(*it);
+        }
+
+        stream << ", ...";
+
+        // NOTE: if doubly-linked, skip to the end and iterate backwards
+        if constexpr (NodeTraits<typename Dict::View::Node>::has_prev) {
+            std::stack<std::string> stack;
+            auto r_it = keys.crbegin();
+            auto r_end = keys.crend();
+            for (; r_it != r_end && count < max_entries; ++r_it, ++count) {
+                stack.push(repr(*r_it));
+            }
+            while (!stack.empty()) {
+                stream << ", " << stack.top();
+                stack.pop();
+            }
+
+        // otherwise, continue until we hit remaining elements
+        } else {
+            threshold = keys.size() - (max_entries - threshold);
+            for (size_t j = count; j < threshold; ++j, ++it);
+            while (it != end) {
+                stream << ", " << repr(*it);
+                ++it;
+            }
+        }
+
+    } else {
+        while (it != end) {
+            stream << ", " << repr(*it);
+            ++it;
+        }
+    }
+
+    // append right bracket
+    stream << "})";
     return stream;
 }
-
 
 
 template <typename Container, typename Dict>
@@ -2155,17 +2233,17 @@ only if the dictionary's values are also hashable.
         DictProxy& operator=(DictProxy&&) = delete;
 
         inline static PyObject* mapping(
-            DictProxy* self,
+            PyProxy* self,
             PyObject* /* ignored */ = nullptr
         ) noexcept {
             return self->_mapping;
         }
 
-        inline static Py_ssize_t __len__(DictProxy* self) noexcept {
+        inline static Py_ssize_t __len__(PyProxy* self) noexcept {
             return self->proxy.size();
         }
 
-        inline static int __contains__(DictProxy* self, PyObject* item) {
+        inline static int __contains__(PyProxy* self, PyObject* item) {
             try {
                 return self->proxy.contains(item);
             } catch (...) {
@@ -2174,7 +2252,7 @@ only if the dictionary's values are also hashable.
             }
         }
 
-        inline static PyObject* __iter__(DictProxy* self) noexcept {
+        inline static PyObject* __iter__(PyProxy* self) noexcept {
             try {
                 return iter(self->proxy).cpython();
             } catch (...) {
@@ -2184,7 +2262,7 @@ only if the dictionary's values are also hashable.
         }
 
         inline static PyObject* __reversed__(
-            DictProxy* self,
+            PyProxy* self,
             PyObject* /* ignored */ = nullptr
         ) noexcept {
             try {
@@ -2195,7 +2273,7 @@ only if the dictionary's values are also hashable.
             }
         }
 
-        static PyObject* __richcompare__(DictProxy* self, PyObject* other, int cmp) {
+        static PyObject* __richcompare__(PyProxy* self, PyObject* other, int cmp) {
             try {
                 switch (cmp) {
                     case Py_LT:
@@ -2220,7 +2298,7 @@ only if the dictionary's values are also hashable.
             }
         }
 
-        static PyObject* __repr__(DictProxy* self) {
+        static PyObject* __repr__(PyProxy* self) {
             try {
                 std::ostringstream stream;
                 stream << self->proxy;
@@ -2252,14 +2330,14 @@ only if the dictionary's values are also hashable.
 
         /* Release the read-only dictionary reference when the proxy is garbage
         collected. */
-        inline static void __dealloc__(DictProxy* self) {
-            Py_DECREF(self->_mapping);
-            self->proxy.~CppProxy();
-            PyProxy::Type.tp_free(self);
+        inline static void __dealloc__(PyProxy* self) {
+            Py_XDECREF(self->_mapping);
+            self->~PyProxy();
+            PyProxy::Type.tp_free(reinterpret_cast<PyObject*>(self));
         }
 
         /* Implement `PySequence_GetItem()` in CPython API. */
-        static PyObject* __getitem_scalar__(DictProxy* self, Py_ssize_t index) {
+        static PyObject* __getitem_scalar__(PyProxy* self, Py_ssize_t index) {
             try {
                 return nullptr;
                 // TODO: return Py_XNewRef(self->proxy.position(index).get());
@@ -2736,6 +2814,7 @@ These proxies support the following operations:
                 .tp_iter = (getiterfunc) BaseProxy::__iter__,
                 .tp_methods = methods,
                 .tp_getset = properties,
+                // .tp_new = PyType_GenericNew,
             };
 
             if (PyType_Ready(&slots) < 0) {
@@ -3008,9 +3087,7 @@ public:
     }
 
     static PyObject* fromkeys(PyObject* type, PyObject* args, PyObject* kwargs) {
-        PyLinkedDict* self = reinterpret_cast<PyLinkedDict*>(
-            Base::__new__(&Type, nullptr, nullptr)
-        );
+        PyLinkedDict* self = PyObject_New(PyLinkedDict, &PyLinkedDict::Type);
         if (self == nullptr) {
             return nullptr;  // propagate
         }
@@ -3415,14 +3492,14 @@ public:
 
     /* Allocate and construct a fully-formed PyLinkedDict from its C++ equivalent. */
     template <typename Dict>
-    inline static PyObject* construct(Dict&& list) {
-        PyLinkedDict* result = reinterpret_cast<PyLinkedDict*>(Base::__new__(&Type));
+    inline static PyObject* construct(Dict&& dict) {
+        PyLinkedDict* result = PyObject_New(PyLinkedDict, &PyLinkedDict::Type);
         if (result == nullptr) {
             return nullptr;
         }
 
         try {
-            result->from_cpp(std::forward<Dict>(list));
+            result->from_cpp(std::forward<Dict>(dict));
             return reinterpret_cast<PyObject*>(result);
         } catch (...) {
             Py_DECREF(result);
@@ -3503,9 +3580,7 @@ private:
         }
 
         static PyObject* fromkeys(PyObject* type, PyObject* args, PyObject* kwargs) {
-            PyLinkedDict* self = reinterpret_cast<PyLinkedDict*>(
-                PyLinkedDict::__new__(&PyLinkedDict::Type, nullptr, nullptr)
-            );
+            PyLinkedDict* self = PyObject_New(PyLinkedDict, &PyLinkedDict::Type);
             if (self == nullptr) {
                 return nullptr;  // propagate
             }
