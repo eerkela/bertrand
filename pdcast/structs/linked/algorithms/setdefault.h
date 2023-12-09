@@ -6,7 +6,6 @@
 
 
 namespace bertrand {
-namespace structs {
 namespace linked {
 
 
@@ -67,7 +66,6 @@ namespace linked {
 
 
 }  // namespace linked
-}  // namespace structs
 }  // namespace bertrand
 
 

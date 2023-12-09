@@ -12,9 +12,10 @@
 
 // TODO: intersection should use value from other container if it is dictlike?
 
+// TODO: work in Yield::VALUE/ITEM for dictlike views.
+
 
 namespace bertrand {
-namespace structs {
 namespace linked {
 
 
@@ -26,8 +27,8 @@ namespace linked {
     /* Container-independent implementation for union_(). */
     template <typename View, typename Container, bool left>
     View union_impl(const View& view, const Container& items) {
-        using DynamicView = typename ViewTraits<View>::As::Dynamic;
-        using FixedView = typename ViewTraits<View>::As::FixedSize;
+        using DynamicView = typename ViewTraits<View>::As::DYNAMIC;
+        using FixedView = typename ViewTraits<View>::As::FIXED_SIZE;
         using Allocator = typename View::Allocator;
         static constexpr unsigned int flags = (
             Allocator::EXIST_OK | Allocator::REPLACE_MAPPED |
@@ -61,8 +62,8 @@ namespace linked {
         using TempView = typename View::template Reconfigure<
             Config::SINGLY_LINKED | Config::DYNAMIC
         >;
-        using DynamicView = typename ViewTraits<View>::As::Dynamic;
-        using FixedView = typename ViewTraits<View>::As::FixedSize;
+        using DynamicView = typename ViewTraits<View>::As::DYNAMIC;
+        using FixedView = typename ViewTraits<View>::As::FIXED_SIZE;
         using Allocator = typename View::Allocator;
         using Node = typename View::Node;
 
@@ -83,7 +84,7 @@ namespace linked {
         }
 
         for (auto it = temp_view.begin(), end = temp_view.end(); it != end; ++it) {
-            Node* node = view.search(it.curr());
+            const Node* node = view.search(it.curr());
             if (node == nullptr) {
                 if constexpr (left) {
                     copy.template node<Allocator::INSERT_HEAD>(std::move(*(it.curr())));
@@ -154,7 +155,7 @@ namespace linked {
 
         std::unordered_set<const Node*> found;
         for (const auto& item : iter(items)) {
-            Node* node = view.search(item);
+            const Node* node = view.search(item);
             if (node != nullptr) found.insert(node);
         }
 
@@ -179,7 +180,7 @@ namespace linked {
 
         std::unordered_set<const Node*> found;
         for (const auto& item : iter(items)) {
-            Node* node = view.search(item);
+            const Node* node = view.search(item);
             if (node != nullptr) found.insert(node);
         }
 
@@ -227,7 +228,6 @@ namespace linked {
 
 
 }  // namespace linked
-}  // namespace structs
 }  // namespace bertrand
 
 

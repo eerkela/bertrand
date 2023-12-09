@@ -6,6 +6,7 @@
 #include <sstream>  // std::ostringstream
 #include <string_view>  // std::string_view
 #include <unordered_set>  // std::unordered_set
+#include <vector>  // std::vector
 #include <Python.h>  // CPython API
 #include "except.h"  // TypeError
 #include "func.h"  // FuncTraits
@@ -118,7 +119,7 @@ struct PyArgs<CallProtocol::KWARGS> {
     const std::string_view& name;
     PyObject* args;
     PyObject* kwargs;
-    std::unordered_set<std::string_view> found;
+    std::vector<std::string_view> found;
     const Py_ssize_t n_args;
     const Py_ssize_t n_kwargs;
     Py_ssize_t arg_idx;
@@ -145,13 +146,34 @@ struct PyArgs<CallProtocol::KWARGS> {
 
     #define PARSE_KEYWORD \
         if (kwargs != nullptr) { \
-            PyObject* val = PyDict_GetItemString(kwargs, name.data()); \
-            if (val != nullptr) { \
-                found.insert(name); \
-                if constexpr (std::is_same_v<ReturnType, PyObject*>) { \
-                    return val; \
-                } else { \
-                    return convert(val); \
+            if (n_kwargs < 5) { \
+                Py_ssize_t pos = 0; \
+                PyObject* key; \
+                PyObject* val; \
+                while (PyDict_Next(kwargs, &pos, &key, &val)) { \
+                    Py_ssize_t len; \
+                    std::string_view keyword{ \
+                        PyUnicode_AsUTF8AndSize(key, &len), \
+                        static_cast<size_t>(len) \
+                    }; \
+                    if (keyword == name) { \
+                        found.push_back(keyword); \
+                        if constexpr (std::is_same_v<ReturnType, PyObject*>) { \
+                            return val; \
+                        } else { \
+                            return convert(val); \
+                        } \
+                    } \
+                } \
+            } else { \
+                PyObject* val = PyDict_GetItemString(kwargs, name.data()); \
+                if (val != nullptr) { \
+                    found.push_back(name); \
+                    if constexpr (std::is_same_v<ReturnType, PyObject*>) { \
+                        return val; \
+                    } else { \
+                        return convert(val); \
+                    } \
                 } \
             } \
         } \
@@ -237,10 +259,25 @@ struct PyArgs<CallProtocol::KWARGS> {
 
     /* Finalize the keyword arguments to the function. */
     inline void finalize_keyword() {
-        if (static_cast<Py_ssize_t>(found.size()) < n_kwargs) {
+        Py_ssize_t observed = static_cast<Py_ssize_t>(found.size());
+
+        if (observed < n_kwargs) {
+            auto was_found = [&](const std::string_view& keyword) {
+                for (const std::string_view& name : found) {
+                    if (keyword == name) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+
             for (PyObject* key : iter(kwargs)) {
-                std::string_view keyword{PyUnicode_AsUTF8(key)};
-                if (found.find(keyword) == found.end()) {
+                Py_ssize_t len;
+                std::string_view keyword{
+                    PyUnicode_AsUTF8AndSize(key, &len),
+                    static_cast<size_t>(len)
+                };
+                if (!was_found(keyword)) {
                     std::ostringstream msg;
                     msg << name << "() got an unexpected keyword argument: '";
                     msg << keyword << "'";

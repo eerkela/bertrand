@@ -18,7 +18,6 @@
 
 
 namespace bertrand {
-namespace structs {
 namespace linked {
 
 
@@ -34,11 +33,11 @@ namespace linked {
             return KeyError(repr(item));
         };
 
-        Node* node1 = view.search(item1);
+        const Node* node1 = view.search(item1);
         if (node1 == nullptr) {
             throw not_found(item1);
         }
-        Node* node2 = view.search(item2);
+        const Node* node2 = view.search(item2);
         if (node2 == nullptr) {
             throw not_found(item2);
         } else if (node1 == node2) {
@@ -71,7 +70,6 @@ namespace linked {
 
 
 }  // namespace linked
-}  // namespace structs
 }  // namespace bertrand
 
 

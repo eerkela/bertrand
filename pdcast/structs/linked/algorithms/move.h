@@ -14,7 +14,6 @@
 
 
 namespace bertrand {
-namespace structs {
 namespace linked {
 
 
@@ -42,13 +41,13 @@ namespace linked {
         if constexpr (NodeTraits<Node>::has_prev) {  // O(m) if doubly-linked
             old_prev = node->prev();
             if (steps > 0) {
-                using Iter = typename View::template Iterator<Direction::forward>;
+                using Iter = typename View::template Iterator<Direction::FORWARD>;
                 auto it = Iter(view, old_prev, node, old_next);
                 for (auto end = view.end(); steps > 0 && it != end; --steps, ++it);
                 new_prev = it.curr();
                 new_next = it.next();
             } else {
-                using Iter = typename View::template Iterator<Direction::backward>;
+                using Iter = typename View::template Iterator<Direction::BACKWARD>;
                 auto it = Iter(view, old_prev, node, old_next);
                 for (auto end = view.begin(); steps < 0 && it != end; ++steps, ++it);
                 new_prev = it.prev();
@@ -155,7 +154,6 @@ namespace linked {
 
 
 }  // namespace linked
-}  // namespace structs
 }  // namespace bertrand
 
 

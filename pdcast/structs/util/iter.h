@@ -102,9 +102,9 @@ protected:
 public:
     using iterator_category = typename std::iterator_traits<Iterator>::iterator_category;
     using difference_type = typename std::iterator_traits<Iterator>::difference_type;
-    using value_type = typename std::iterator_traits<Iterator>::value_type;
-    using pointer = typename std::iterator_traits<Iterator>::pointer;
-    using reference = typename std::iterator_traits<Iterator>::reference;
+    using value_type = std::remove_reference_t<decltype(*std::declval<Iterator>())>;
+    using pointer = value_type*;
+    using reference = value_type&;
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -254,11 +254,6 @@ protected:
     Iterator second;
 
 public:
-    using iterator_category     = typename Iterator::iterator_category;
-    using difference_type       = typename Iterator::difference_type;
-    using value_type            = typename Iterator::value_type;
-    using pointer               = typename Iterator::pointer;
-    using reference             = typename Iterator::reference;
 
     /* Couple the begin() and end() iterators into a single object */
     CoupledIterator(Iterator&& first, Iterator&& second) :
@@ -308,6 +303,9 @@ class ConvertedIterator : public ForwardedIterator<Iterator> {
     >::ReturnType;
 
 public:
+    // TODO: use return type as value_type, etc.
+
+
 
     /* Construct a converted iterator from a standard C++ iterator and conversion
     function. */
@@ -1059,7 +1057,7 @@ public:
             Py_DECREF(curr);
             curr = PyIter_Next(py_iterator);
             if (curr == nullptr && PyErr_Occurred()) {
-                throw std::runtime_error("could not get next(iterator)");
+                throw catch_python();
             }
             return *this;
         }

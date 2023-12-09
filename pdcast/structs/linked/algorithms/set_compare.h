@@ -11,7 +11,6 @@
 
 
 namespace bertrand {
-namespace structs {
 namespace linked {
 
 
@@ -38,9 +37,9 @@ namespace linked {
     {
         using Node = typename View::Node;
 
-        std::unordered_set<Node*> found;
+        std::unordered_set<const Node*> found;
         for (const auto& item : iter(items)) {
-            Node* node = view.search(item);
+            const Node* node = view.search(item);
             if (node == nullptr) {
                 return false;
             }
@@ -59,9 +58,9 @@ namespace linked {
     {
         using Node = typename View::Node;
 
-        std::unordered_set<Node*> found;
+        std::unordered_set<const Node*> found;
         for (const auto& item : iter(items)) {
-            Node* node = view.search(item);
+            const Node* node = view.search(item);
             if (node != nullptr) {
                 return false;
             }
@@ -80,10 +79,10 @@ namespace linked {
     {
         using Node = typename View::Node;
 
-        std::unordered_set<Node*> found;
+        std::unordered_set<const Node*> found;
         bool larger = false;
         for (const auto& item : iter(items)) {
-            Node* node = view.search(item);
+            const Node* node = view.search(item);
             if (node == nullptr) {
                 larger = true;
             } else {
@@ -103,9 +102,9 @@ namespace linked {
     {
         using Node = typename View::Node;
 
-        std::unordered_set<Node*> found;
+        std::unordered_set<const Node*> found;
         for (const auto& item : iter(items)) {
-            Node* node = view.search(item);
+            const Node* node = view.search(item);
             if (node == nullptr) {
                 return false;
             }
@@ -117,7 +116,6 @@ namespace linked {
 
 
 }  // namespace linked
-}  // namespace structs
 }  // namespace bertrand
 
 

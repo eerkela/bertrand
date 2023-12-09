@@ -9,7 +9,6 @@
 
 
 namespace bertrand {
-namespace structs {
 namespace linked {
 
 
@@ -238,7 +237,6 @@ public:
 
 
 }  // namespace linked
-}  // namespace structs
 }  // namespace bertrand
 
 

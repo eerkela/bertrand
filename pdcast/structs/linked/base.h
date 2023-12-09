@@ -14,7 +14,6 @@
 
 
 namespace bertrand {
-namespace structs {
 namespace linked {
 
 
@@ -41,10 +40,10 @@ public:
     using MemGuard = typename View::MemGuard;
     using Lock = LockType;
 
-    template <Direction dir>
-    using Iterator = typename View::template Iterator<dir>;
-    template <Direction dir>
-    using ConstIterator = typename View::template ConstIterator<dir>;
+    template <Direction dir, Yield yield = Yield::KEY>
+    using Iterator = typename View::template Iterator<dir, yield>;
+    template <Direction dir, Yield  yield = Yield::KEY>
+    using ConstIterator = typename View::template ConstIterator<dir, yield>;
 
     static constexpr unsigned int FLAGS = View::FLAGS;
     static constexpr bool SINGLY_LINKED = View::SINGLY_LINKED;
@@ -189,18 +188,53 @@ public:
     ////    ITERATOR PROTOCOL    ////
     /////////////////////////////////
 
-    inline Iterator<Direction::forward> begin() { return view.begin(); }
-    inline Iterator<Direction::forward> end() { return view.end(); }
-    inline Iterator<Direction::backward> rbegin() { return view.rbegin(); }
-    inline Iterator<Direction::backward> rend() { return view.rend(); }
-    inline ConstIterator<Direction::forward> begin() const { return view.begin(); }
-    inline ConstIterator<Direction::forward> end() const { return view.end(); }
-    inline ConstIterator<Direction::backward> rbegin() const { return view.rbegin(); }
-    inline ConstIterator<Direction::backward> rend() const { return view.rend(); }
-    inline ConstIterator<Direction::forward> cbegin() const { return view.cbegin(); }
-    inline ConstIterator<Direction::forward> cend() const { return view.cend(); }
-    inline ConstIterator<Direction::backward> crbegin() const { return view.crbegin(); }
-    inline ConstIterator<Direction::backward> crend() const { return view.crend(); }
+    inline Iterator<Direction::FORWARD, Yield::KEY> begin() {
+        return view.begin();
+    }
+
+    inline Iterator<Direction::FORWARD, Yield::KEY> end() {
+        return view.end();
+    }
+
+    inline Iterator<Direction::BACKWARD, Yield::KEY> rbegin() {
+        return view.rbegin();
+    }
+
+    inline Iterator<Direction::BACKWARD, Yield::KEY> rend() {
+        return view.rend();
+    }
+
+    inline ConstIterator<Direction::FORWARD, Yield::KEY> begin() const {
+        return view.begin();
+    }
+
+    inline ConstIterator<Direction::FORWARD, Yield::KEY> end() const {
+        return view.end();
+    }
+
+    inline ConstIterator<Direction::BACKWARD, Yield::KEY> rbegin() const {
+        return view.rbegin();
+    }
+
+    inline ConstIterator<Direction::BACKWARD, Yield::KEY> rend() const {
+        return view.rend();
+    }
+
+    inline ConstIterator<Direction::FORWARD, Yield::KEY> cbegin() const {
+        return view.cbegin();
+    }
+
+    inline ConstIterator<Direction::FORWARD, Yield::KEY> cend() const {
+        return view.cend();
+    }
+
+    inline ConstIterator<Direction::BACKWARD, Yield::KEY> crbegin() const {
+        return view.crbegin();
+    }
+
+    inline ConstIterator<Direction::BACKWARD, Yield::KEY> crend() const {
+        return view.crend();
+    }
 
     ///////////////////////////////
     ////    THREADING LOCKS    ////
@@ -1358,7 +1392,6 @@ than one.
 
 
 }  // namespace linked
-}  // namespace structs
 }  // namespace bertrand
 
 

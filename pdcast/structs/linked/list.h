@@ -33,7 +33,6 @@
 
 
 namespace bertrand {
-namespace structs {
 namespace linked {
 
 
@@ -628,7 +627,7 @@ public:
         }
     }
 
-    static PyObject* clear(Derived* self, PyObject* /* ignored */ = nullptr) {
+    static PyObject* clear(Derived* self, PyObject* = nullptr) {
         try {
             std::visit(
                 [](auto& list) {
@@ -643,7 +642,7 @@ public:
         }
     }
 
-    static PyObject* copy(Derived* self, PyObject* /* ignored */ = nullptr) {
+    static PyObject* copy(Derived* self, PyObject* = nullptr) {
         try {
             return std::visit(
                 [](auto& list) {
@@ -688,7 +687,7 @@ public:
         }
     }
 
-    static PyObject* reverse(Derived* self, PyObject* /* ignored */ = nullptr) {
+    static PyObject* reverse(Derived* self, PyObject* = nullptr) {
         try {
             std::visit(
                 [](auto& list) {
@@ -1734,12 +1733,11 @@ PyMODINIT_FUNC PyInit_list(void) {
 
 
 }  // namespace linked
-}  // namespace structs
 
 
 /* Export to base namespace */
-using structs::linked::LinkedList;
-using structs::linked::PyLinkedList;
+using linked::LinkedList;
+using linked::PyLinkedList;
 
 
 }  // namespace bertrand

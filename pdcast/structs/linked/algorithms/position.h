@@ -7,11 +7,10 @@
 #include "../../util/base.h"  // is_pyobject<>
 #include "../../util/except.h"  // TypeError
 #include "../../util/ops.h"  // lt(), ge(), plus()
-#include "../core/view.h"  // ViewTraits, Direction
+#include "../core/view.h"  // ViewTraits, Direction, Yield
 
 
 namespace bertrand {
-namespace structs {
 namespace linked {
 
 
@@ -62,65 +61,46 @@ namespace linked {
     /////////////////////
 
 
-    /* A proxy for an element at a particular index of the list, as returned by the []
-    operator. */
-    template <typename View>
+    /* A proxy for an element at a particular index of a linked data structure, as
+    returned by the [] operator. */
+    template <typename View, Yield yield = Yield::KEY>
     class ElementProxy {
         using Node = typename View::Node;
         using Value = typename View::Value;
 
         template <Direction dir>
-        using ViewIter = typename View::template Iterator<dir>;
-        template <Direction dir>
-        using ConstViewIter = typename View::template ConstIterator<dir>;
+        using Iter = linked::Iterator<View, dir, yield>;
 
-        View& view;
-        bool is_fwd;
         union {
-            ViewIter<Direction::forward> fwd;
-            ViewIter<Direction::backward> bwd;
-            ConstViewIter<Direction::forward> cfwd;
-            ConstViewIter<Direction::backward> cbwd;
+            Iter<Direction::FORWARD> fwd;
+            Iter<Direction::BACKWARD> bwd;
         };
+        bool is_fwd;
+        View& view;
 
-        template <typename _View>
+        template <Yield _yield, typename _View>
         friend auto position(_View& view, long long index)
             -> std::enable_if_t<
                 ViewTraits<_View>::linked,
-                ElementProxy<_View>
-            >;
-
-        template <typename _View>
-        friend auto position(const _View& view, long long index)
-            -> std::enable_if_t<
-                ViewTraits<_View>::linked,
-                const ElementProxy<const _View>
+                std::conditional_t<
+                    std::is_const_v<_View>,
+                    const ElementProxy<_View, _yield>,
+                    ElementProxy<_View, _yield>
+                >
             >;
 
         template <Direction dir>
-        ElementProxy(View& view, ViewIter<dir>&& it) : view(view) {
-            if constexpr (dir == Direction::forward) {
+        ElementProxy(View& view, Iter<dir>&& it) : view(view) {
+            if constexpr (dir == Direction::FORWARD) {
                 is_fwd = true;
-                new (&fwd) ViewIter<Direction::forward>(std::move(it));
+                new (&fwd) Iter<Direction::FORWARD>(std::move(it));
             } else {
                 is_fwd = false;
-                new (&bwd) ViewIter<Direction::backward>(std::move(it));
-            }
-        }
-
-        template <Direction dir>
-        ElementProxy(View& view, ConstViewIter<dir>&& it) : view(view) {
-            if constexpr (dir == Direction::forward) {
-                is_fwd = true;
-                new (&cfwd) ConstViewIter<Direction::forward>(std::move(it));
-            } else {
-                is_fwd = false;
-                new (&cbwd) ConstViewIter<Direction::backward>(std::move(it));
+                new (&bwd) Iter<Direction::BACKWARD>(std::move(it));
             }
         }
 
     public:
-        /* Disallow ElementProxies from being stored as lvalues. */
         ElementProxy(const ElementProxy&) = delete;
         ElementProxy(ElementProxy&&) = delete;
         ElementProxy& operator=(const ElementProxy&) = delete;
@@ -128,56 +108,31 @@ namespace linked {
 
         /* Clean up the union iterator when the proxy is destroyed. */
         ~ElementProxy() {
-            if constexpr (std::is_const_v<View>) {
-                if (is_fwd) {
-                    cfwd.~ConstViewIter<Direction::forward>();
-                } else {
-                    cbwd.~ConstViewIter<Direction::backward>();
-                }
-                return;
+            if (is_fwd) {
+                fwd.~Iter<Direction::FORWARD>();
             } else {
-                if (is_fwd) {
-                    fwd.~ViewIter<Direction::forward>();
-                } else {
-                    bwd.~ViewIter<Direction::backward>();
-                }
+                bwd.~Iter<Direction::BACKWARD>();
             }
         }
 
         /* Get the value at the current index. */
-        inline Value get() const {
-            if constexpr (std::is_const_v<View>) {
-                if constexpr (is_pyobject<Value>) {
-                    return Py_NewRef(is_fwd ? *cfwd : *cbwd);
-                } else {
-                    return is_fwd ? *cfwd : *cbwd;
-                }
+        inline auto get() const {
+            if constexpr (is_pyobject<Value>) {
+                return Py_NewRef(is_fwd ? *fwd : *bwd);
             } else {
-                if constexpr (is_pyobject<Value>) {
-                    return Py_NewRef(is_fwd ? *fwd : *bwd);
-                } else {
-                    return is_fwd ? *fwd : *bwd;
-                }
+                return is_fwd ? *fwd : *bwd;
             }
         }
 
         /* Set the value at the current index. */
-        inline void set(const Value value) {
+        inline void set(const Value& value) {
             Node* node = view.node(value);
-            if constexpr (std::is_const_v<View>) {
-                view.recycle(is_fwd ? cfwd.replace(node) : cbwd.replace(node));
-            } else {
-                view.recycle(is_fwd ? fwd.replace(node) : bwd.replace(node));
-            }
+            view.recycle(is_fwd ? fwd.replace(node) : bwd.replace(node));
         }
 
         /* Delete the value at the current index. */
         inline void del() {
-            if constexpr (std::is_const_v<View>) {
-                view.recycle(is_fwd ? cfwd.drop() : cbwd.drop());
-            } else {
-                view.recycle(is_fwd ? fwd.drop() : bwd.drop());
-            }
+            view.recycle(is_fwd ? fwd.drop() : bwd.drop());
         }
 
         /* Implicitly convert the proxy to the value where applicable.  This is
@@ -199,53 +154,34 @@ namespace linked {
 
 
     /* Get a proxy for a value at a particular index of the list. */
-    template <typename View>
+    template <Yield yield = Yield::KEY, typename View>
     auto position(View& view, long long index)
-        -> std::enable_if_t<ViewTraits<View>::linked, ElementProxy<View>>
+        -> std::enable_if_t<
+            ViewTraits<View>::linked,
+            std::conditional_t<
+                std::is_const_v<View>,
+                const ElementProxy<View, yield>,
+                ElementProxy<View, yield>
+            >
+        >
     {
         size_t norm_index = normalize_index(index, view.size(), false);
 
-        // maybe get backward iterator if closer to tail
         if constexpr (NodeTraits<typename View::Node>::has_prev) {
             if (view.closer_to_tail(norm_index)) {
-                auto it = view.rbegin();
+                auto it = view.template rbegin<yield>();
                 for (size_t i = view.size() - 1; i > norm_index; --i, ++it);
-                return ElementProxy<View>(view, std::move(it));
+                return ElementProxy<View, yield>(view, std::move(it));
             }
         }
 
-        // otherwise, use forward iterator
-        auto it = view.begin();
+        auto it = view.template begin<yield>();
         for (size_t i = 0; i < norm_index; ++i, ++it);
-        return ElementProxy<View>(view, std::move(it));
-    }
-
-
-    /* Get a proxy for a value at a particular index of the list. */
-    template <typename View>
-    auto position(const View& view, long long index)
-        -> std::enable_if_t<ViewTraits<View>::linked, const ElementProxy<const View>>
-    {
-        size_t norm_index = normalize_index(index, view.size(), false);
-
-        // maybe get backward iterator if closer to tail
-        if constexpr (NodeTraits<typename View::Node>::has_prev) {
-            if (view.closer_to_tail(norm_index)) {
-                auto it = view.crbegin();
-                for (size_t i = view.size() - 1; i > norm_index; --i, ++it);
-                return ElementProxy<const View>(view, std::move(it));
-            }
-        }
-
-        // otherwise, use forward iterator
-        auto it = view.cbegin();
-        for (size_t i = 0; i < norm_index; ++i, ++it);
-        return ElementProxy<const View>(view, std::move(it));
+        return ElementProxy<View, yield>(view, std::move(it));
     }
 
 
 }  // namespace linked
-}  // namespace structs
 }  // namespace bertrand
 
 

@@ -10,8 +10,10 @@
 #include "slice.h"  // normalize_slice()
 
 
+// TODO: work in Yield::VALUE/ITEM for dictlike views.
+
+
 namespace bertrand {
-namespace structs {
 namespace linked {
 
 
@@ -57,7 +59,7 @@ namespace linked {
             throw IndexError("start index cannot be greater than stop index");
         }
 
-        Node* node = view.search(item);
+        const Node* node = view.search(item);
         if (node == nullptr) {
             throw not_found(item);
         }
@@ -239,7 +241,6 @@ namespace linked {
 
 
 }  // namespace linked
-}  // namespace structs
 }  // namespace bertrand
 
 

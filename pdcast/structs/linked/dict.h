@@ -56,7 +56,6 @@
 
 
 namespace bertrand {
-namespace structs {
 namespace linked {
 
 
@@ -607,7 +606,7 @@ template <typename K, typename V, unsigned int Flags, typename... Ts>
 inline std::ostream& operator<<(
     std::ostream& stream, const LinkedDict<K, V, Flags, Ts...>& dict
 ) {
-    stream << linked::build_repr(
+    stream << linked::build_repr<Yield::ITEM>(
         dict.view,
         "LinkedDict",
         "{",
@@ -862,14 +861,14 @@ public:
     ////    ITERATORS    ////
     /////////////////////////
 
-    inline auto begin() const { return dict.begin(); }
-    inline auto end() const { return dict.end(); }
-    inline auto cbegin() const { return dict.cbegin(); }
-    inline auto cend() const { return dict.cend(); }
-    inline auto rbegin() const { return dict.rbegin(); }
-    inline auto rend() const { return dict.rend(); }
-    inline auto crbegin() const { return dict.crbegin(); }
-    inline auto crend() const { return dict.crend(); }
+    inline auto begin() const { return dict.view.template begin<Yield::KEY>(); }
+    inline auto end() const { return dict.view.template end<Yield::KEY>(); }
+    inline auto cbegin() const { return dict.view.template cbegin<Yield::KEY>(); }
+    inline auto cend() const { return dict.view.template cend<Yield::KEY>(); }
+    inline auto rbegin() const { return dict.view.template rbegin<Yield::KEY>(); }
+    inline auto rend() const { return dict.view.template rend<Yield::KEY>(); }
+    inline auto crbegin() const { return dict.view.template crbegin<Yield::KEY>(); }
+    inline auto crend() const { return dict.view.template crend<Yield::KEY>(); }
 
     ////////////////////////
     ////    INDEXING    ////
@@ -878,13 +877,13 @@ public:
     /* Get a read-only proxy for a key at a certain index of the referenced
     dictionary. */
     inline auto position(long long index) const {
-        return dict.position(index);
+        return linked::position<Yield::KEY>(dict.view, index);
     }
 
     // /* Get a read-only proxy for a slice of the referenced dictionary. */
     // template <typename... Args>
     // inline const auto slice(Args&&... args) const {
-    //     return to_set().slice(std::forward<Args>(args)...);  // TODO: does this hold a temporary reference?
+    //     return to_set().slice(std::forward<Args>(args)...);
     // }
 
     //////////////////////////////////
@@ -917,79 +916,13 @@ public:
 Python repr()). */
 template <typename Dict>
 inline std::ostream& operator<<(std::ostream& stream, const KeysProxy<Dict>& keys) {
-    stream << "LinkedDict_keys";
-
-    // append prefix, specialization if appropriate
-    if (keys.mapping().specialization() != nullptr) {
-        PyObject* spec = keys.mapping().specialization();
-        stream << "[";
-        if constexpr (ViewTraits<typename Dict::View>::dictlike) {
-            if (PySlice_Check(spec)) {
-                PySlice slice = PySlice(spec);
-                stream << repr(slice.start());
-            } else {
-                stream << repr(spec);
-            }
-        } else {
-            stream << repr(spec);
-        }
-        stream << "]";
-    }
-
-    // append left bracket
-    stream << "({";
-
-    // append first element
-    auto it = keys.begin();
-    auto end = keys.end();
-    if (it != end) {
-        stream << repr(*it);
-        ++it;
-    }
-
-    // abbreviate to avoid spamming the console
-    size_t max_entries = 64;
-    if (keys.size() > max_entries) {
-        size_t count = 1;
-        size_t threshold = max_entries / 2;
-        for (; it != end && count < threshold; ++it, ++count) {
-            stream << ", " << repr(*it);
-        }
-
-        stream << ", ...";
-
-        // NOTE: if doubly-linked, skip to the end and iterate backwards
-        if constexpr (NodeTraits<typename Dict::View::Node>::has_prev) {
-            std::stack<std::string> stack;
-            auto r_it = keys.crbegin();
-            auto r_end = keys.crend();
-            for (; r_it != r_end && count < max_entries; ++r_it, ++count) {
-                stack.push(repr(*r_it));
-            }
-            while (!stack.empty()) {
-                stream << ", " << stack.top();
-                stack.pop();
-            }
-
-        // otherwise, continue until we hit remaining elements
-        } else {
-            threshold = keys.size() - (max_entries - threshold);
-            for (size_t j = count; j < threshold; ++j, ++it);
-            while (it != end) {
-                stream << ", " << repr(*it);
-                ++it;
-            }
-        }
-
-    } else {
-        while (it != end) {
-            stream << ", " << repr(*it);
-            ++it;
-        }
-    }
-
-    // append right bracket
-    stream << "})";
+    stream << linked::build_repr<Yield::KEY>(
+        keys.mapping().view,
+        "LinkedDict_keys",
+        "{",
+        "}",
+        64
+    );
     return stream;
 }
 
@@ -1158,50 +1091,14 @@ public:
     ////    ITERATORS    ////
     /////////////////////////
 
-    /* A custom iterator that dereferences to the value associated with each key,
-    rather than the keys themselves. */
-    template <Direction dir>
-    struct Iterator {
-        using Iter = typename Dict::template ConstIterator<dir>;
-        using Value = typename Dict::Value;
-
-        using iterator_category     = std::forward_iterator_tag;
-        using difference_type       = std::ptrdiff_t;
-        using value_type            = std::remove_reference_t<Value>;
-        using pointer               = value_type*;
-        using reference             = value_type&;
-
-        Iter it;
-
-        Iterator(Iter&& it) : it(std::move(it)) {}
-
-        /* Dereference to the mapped value rather than the key. */
-        inline Value operator*() const noexcept {
-            return it.curr()->mapped();
-        }
-
-        /* Advance to the next node. */
-        inline Iterator& operator++() noexcept {
-            ++it;
-            return *this;
-        }
-
-        /* Terminate the sequence. */
-        template <Direction T>
-        inline bool operator!=(const Iterator<T>& other) const noexcept {
-            return it != other.it;
-        }
-
-    };
-
-    inline auto begin() const { return Iterator<Direction::forward>(dict.begin()); }
-    inline auto end() const { return Iterator<Direction::forward>(dict.end()); }
-    inline auto cbegin() const { return Iterator<Direction::forward>(dict.cbegin()); }
-    inline auto cend() const { return Iterator<Direction::forward>(dict.cend()); }
-    inline auto rbegin() const { return Iterator<Direction::backward>(dict.rbegin()); }
-    inline auto rend() const { return Iterator<Direction::backward>(dict.rend()); }
-    inline auto crbegin() const { return Iterator<Direction::backward>(dict.crbegin()); }
-    inline auto crend() const { return Iterator<Direction::backward>(dict.crend()); }
+    inline auto begin() const { return dict.view.template begin<Yield::VALUE>(); }
+    inline auto end() const { return dict.view.template end<Yield::VALUE>(); }
+    inline auto cbegin() const { return dict.view.template cbegin<Yield::VALUE>(); }
+    inline auto cend() const { return dict.view.template cend<Yield::VALUE>(); }
+    inline auto rbegin() const { return dict.view.template rbegin<Yield::VALUE>(); }
+    inline auto rend() const { return dict.view.template rend<Yield::VALUE>(); }
+    inline auto crbegin() const { return dict.view.template crbegin<Yield::VALUE>(); }
+    inline auto crend() const { return dict.view.template crend<Yield::VALUE>(); }
 
     ////////////////////////
     ////    INDEXING    ////
@@ -1212,7 +1109,7 @@ public:
     /* Get a read-only proxy for a key at a certain index of the referenced
     dictionary. */
     inline auto position(long long index) const {
-        return dict.position(index);
+        return linked::position<Yield::VALUE>(dict.view, index);
     }
 
     // /* Get a read-only proxy for a slice of the referenced dictionary. */
@@ -1250,79 +1147,13 @@ public:
 Python repr()). */
 template <typename Dict>
 inline std::ostream& operator<<(std::ostream& stream, const ValuesProxy<Dict>& values) {
-    stream << "LinkedDict_values";
-
-    // append prefix, specialization if appropriate
-    if (values.mapping().specialization() != nullptr) {
-        PyObject* spec = values.mapping().specialization();
-        stream << "[";
-        if constexpr (ViewTraits<typename Dict::View>::dictlike) {
-            if (PySlice_Check(spec)) {
-                PySlice slice = PySlice(spec);
-                stream << repr(slice.start());
-            } else {
-                stream << repr(spec);
-            }
-        } else {
-            stream << repr(spec);
-        }
-        stream << "]";
-    }
-
-    // append left bracket
-    stream << "([";
-
-    // append first element
-    auto it = values.begin();
-    auto end = values.end();
-    if (it != end) {
-        stream << repr(*it);
-        ++it;
-    }
-
-    // abbreviate to avoid spamming the console
-    size_t max_entries = 64;
-    if (values.size() > max_entries) {
-        size_t count = 1;
-        size_t threshold = max_entries / 2;
-        for (; it != end && count < threshold; ++it, ++count) {
-            stream << ", " << repr(*it);
-        }
-
-        stream << ", ...";
-
-        // NOTE: if doubly-linked, skip to the end and iterate backwards
-        if constexpr (NodeTraits<typename Dict::View::Node>::has_prev) {
-            std::stack<std::string> stack;
-            auto r_it = values.crbegin();
-            auto r_end = values.crend();
-            for (; r_it != r_end && count < max_entries; ++r_it, ++count) {
-                stack.push(repr(*r_it));
-            }
-            while (!stack.empty()) {
-                stream << ", " << stack.top();
-                stack.pop();
-            }
-
-        // otherwise, continue until we hit remaining elements
-        } else {
-            threshold = values.size() - (max_entries - threshold);
-            for (size_t j = count; j < threshold; ++j, ++it);
-            while (it != end) {
-                stream << ", " << repr(*it);
-                ++it;
-            }
-        }
-
-    } else {
-        while (it != end) {
-            stream << ", " << repr(*it);
-            ++it;
-        }
-    }
-
-    // append right bracket
-    stream << "])";
+    stream << linked::build_repr<Yield::VALUE>(
+        values.mapping().view,
+        "LinkedDict_values",
+        "[",
+        "]",
+        64
+    );
     return stream;
 }
 
@@ -1565,52 +1396,18 @@ public:
         return dict.size();
     }
 
-    /* A custom iterator that dereferences to the value associated with each key,
-    rather than the keys themselves. */
-    template <Direction dir>
-    struct Iterator {
-        using Iter = typename Dict::template Iterator<dir>;
-        using Key = typename Dict::Key;
-        using Value = typename Dict::Value;
-        Iter iter;
+    /////////////////////////
+    ////    ITERATORS    ////
+    /////////////////////////
 
-        /* Iterator traits. */
-        using iterator_category     = std::forward_iterator_tag;
-        using difference_type       = std::ptrdiff_t;
-        using value_type            = std::remove_reference_t<Value>;
-        using pointer               = value_type*;
-        using reference             = value_type&;
-
-        Iterator(const Iter&& base) : iter(std::move(base)) {}
-
-        /* Dereference to the mapped value rather than the key. */
-        inline std::pair<Key, Value> operator*() const noexcept {
-            return std::make_pair(*iter, iter->curr()->mapped());
-        }
-
-        /* Advance to the next node. */
-        inline Iterator& operator++() noexcept {
-            ++iter;
-            return *this;
-        }
-
-        /* Terminate the sequence. */
-        template <Direction T>
-        inline bool operator!=(const Iterator<T>& other) const noexcept {
-            return iter != other.iter;
-        }
-
-    };
-
-    /* Iterate through the values of the referenced dictionary. */
-    inline auto begin() const { return Iterator<Direction::forward>(dict.begin()); }
-    inline auto end() const { return Iterator<Direction::forward>(dict.end()); }
-    inline auto cbegin() const { return Iterator<Direction::forward>(dict.cbegin()); }
-    inline auto cend() const { return Iterator<Direction::forward>(dict.cend()); }
-    inline auto rbegin() const { return Iterator<Direction::backward>(dict.rbegin()); }
-    inline auto rend() const { return Iterator<Direction::backward>(dict.rend()); }
-    inline auto crbegin() const { return Iterator<Direction::backward>(dict.crbegin()); }
-    inline auto crend() const { return Iterator<Direction::backward>(dict.crend()); }
+    inline auto begin() const { return dict.view.template begin<Yield::ITEM>(); }
+    inline auto end() const { return dict.view.template end<Yield::ITEM>(); }
+    inline auto cbegin() const { return dict.view.template cbegin<Yield::ITEM>(); }
+    inline auto cend() const { return dict.view.template cend<Yield::ITEM>(); }
+    inline auto rbegin() const { return dict.view.template rbegin<Yield::ITEM>(); }
+    inline auto rend() const { return dict.view.template rend<Yield::ITEM>(); }
+    inline auto crbegin() const { return dict.view.template crbegin<Yield::ITEM>(); }
+    inline auto crend() const { return dict.view.template crend<Yield::ITEM>(); }
 
 };
 
@@ -1620,6 +1417,24 @@ public:
  * key-value pairs, and comparisons will be based on both the keys and values of the
  * dictionary.  If the values are not hashable, then only == and != are supported.
  */
+
+
+/* Print the abbreviated contents of a ItemsProxy to an output stream (equivalent to
+Python repr()). */
+template <typename Dict>
+inline std::ostream& operator<<(std::ostream& stream, const ItemsProxy<Dict>& values) {
+    stream << linked::build_repr<Yield::ITEM>(
+        values.mapping().view,
+        "LinkedDict_items",
+        "[",
+        "]",
+        64,
+        "(",
+        ", ",
+        ")"
+    );
+    return stream;
+}
 
 
 template <typename Container, typename Dict>
@@ -1918,7 +1733,7 @@ public:
 
     // TODO: thoroughly check these
 
-    static PyObject* keys(Derived* self, PyObject* /* ignored */ = nullptr) {
+    static PyObject* keys(Derived* self, PyObject* = nullptr) {
         try {
             return std::visit(
                 [&self](auto& dict) {
@@ -1933,7 +1748,7 @@ public:
         }
     }
 
-    static PyObject* values(Derived* self, PyObject* /* ignored */ = nullptr) {
+    static PyObject* values(Derived* self, PyObject* = nullptr) {
         try {
             return std::visit(
                 [&self](auto& dict) {
@@ -1949,7 +1764,7 @@ public:
         }
     }
 
-    // static PyObject* items(Derived* self, PyObject* /* ignored */ = nullptr) {
+    // static PyObject* items(Derived* self, PyObject* = nullptr) {
     //     try {
     //         return std::visit(
     //             [](auto& dict) {
@@ -2353,10 +2168,7 @@ only if the dictionary's values are also hashable.
         DictProxy& operator=(const DictProxy&) = delete;
         DictProxy& operator=(DictProxy&&) = delete;
 
-        inline static PyObject* mapping(
-            PyProxy* self,
-            PyObject* /* ignored */ = nullptr
-        ) noexcept {
+        inline static PyObject* mapping(PyProxy* self, PyObject* = nullptr) noexcept {
             return Py_NewRef(self->_mapping);
         }
 
@@ -2382,10 +2194,7 @@ only if the dictionary's values are also hashable.
             }
         }
 
-        inline static PyObject* __reversed__(
-            PyProxy* self,
-            PyObject* /* ignored */ = nullptr
-        ) noexcept {
+        inline static PyObject* __reversed__(PyProxy* self, PyObject* = nullptr) noexcept {
             try {
                 return iter(self->proxy).crpython();
             } catch (...) {
@@ -4059,12 +3868,11 @@ PyMODINIT_FUNC PyInit_dict(void) {
 
 
 }  // namespace linked
-}  // namespace structs
 
 
 /* Export to base namespace. */
-using structs::linked::LinkedDict;
-using structs::linked::PyLinkedDict;
+using linked::LinkedDict;
+using linked::PyLinkedDict;
 
 
 }  // namespace bertrand

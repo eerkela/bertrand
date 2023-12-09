@@ -10,8 +10,10 @@
 #include "slice.h"  // normalize_slice()
 
 
+// TODO: work in Yield::VALUE/ITEM for dictlike views.
+
+
 namespace bertrand {
-namespace structs {
 namespace linked {
 
 
@@ -52,7 +54,7 @@ namespace linked {
         }
         
 
-        Node* node = view.search(item);
+        const Node* node = view.search(item);
         if (node == nullptr) {
             return 0;
         } else if (norm_start == 0 && norm_stop == view.size() - 1) {
@@ -174,7 +176,6 @@ namespace linked {
 
 
 }  // namespace linked
-}  // namespace structs
 }  // namespace bertrand
 
 

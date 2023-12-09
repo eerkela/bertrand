@@ -8,23 +8,25 @@
 #include "../../util/container.h"  // PySlice
 #include "../../util/ops.h"  // bertrand::repr()
 #include "../core/node.h"  // NodeTraits
-#include "../core/view.h"  // ViewTraits
+#include "../core/view.h"  // ViewTraits, Yield
 
 
 namespace bertrand {
-namespace structs {
 namespace linked {
 
 
     /* Get a comma-separated, possibly abbreviated string representing the contents
     of the list, for use in repr()-style string formatting. */
-    template <typename View>
+    template <Yield yield = Yield::KEY, typename View>
     auto build_repr(
         const View& view,
         const char* prefix,
         const char* lbracket,
         const char* rbracket,
-        size_t max_entries
+        size_t max_entries,
+        const char* item_prefix = "",
+        const char* item_separator = ": ",
+        const char* item_suffix = ""
     ) -> std::enable_if_t<ViewTraits<View>::linked, std::string>
     {
         std::ostringstream stream;
@@ -37,7 +39,14 @@ namespace linked {
             if constexpr (ViewTraits<View>::dictlike) {
                 if (PySlice_Check(spec)) {
                     PySlice slice = PySlice(spec);
-                    stream << repr(slice.start()) << " : " << repr(slice.stop());
+                    if constexpr (yield == Yield::KEY) {
+                        stream << repr(slice.start());
+                    } else if constexpr (yield == Yield::VALUE) {
+                        stream << repr(slice.stop());
+                    } else {
+                        stream << repr(slice.start()) << " : ";
+                        stream << repr(slice.stop());
+                    }
                 } else {
                     stream << repr(spec);
                 }
@@ -51,17 +60,19 @@ namespace linked {
         stream << "(" << lbracket;
 
         // Helper for generating a token from a single element of the data structure
-        auto token = [](std::ostringstream& stream, auto it) {
-            if constexpr (ViewTraits<View>::dictlike) {
-                stream << repr(*it) << ": " << repr(it.curr()->mapped());
+        auto token = [&](std::ostringstream& stream, auto it) {
+            if constexpr (ViewTraits<View>::dictlike && yield == Yield::ITEM) {
+                auto item = *it;
+                stream << item_prefix << repr(item.first) << item_separator;
+                stream << repr(item.second) << item_suffix;
             } else {
                 stream << repr(*it);
             }
         };
 
         // append first element
-        auto it = view.cbegin();
-        auto end = view.cend();
+        auto it = view.template cbegin<yield>();
+        auto end = view.template cend<yield>();
         if (it != end) {
             token(stream, it);
             ++it;
@@ -81,8 +92,8 @@ namespace linked {
             // NOTE: if doubly-linked, skip to the end and iterate backwards
             if constexpr (NodeTraits<typename View::Node>::has_prev) {
                 std::stack<std::string> stack;
-                auto r_it = view.crbegin();
-                auto r_end = view.crend();
+                auto r_it = view.template crbegin<yield>();
+                auto r_end = view.template crend<yield>();
                 for (; r_it != r_end && count < max_entries; ++r_it, ++count) {
                     std::ostringstream ss;
                     token(ss, r_it);
@@ -119,7 +130,6 @@ namespace linked {
 
 
 }  // namespace linked
-}  // namespace structs
 }  // namespace bertrand
 
 
