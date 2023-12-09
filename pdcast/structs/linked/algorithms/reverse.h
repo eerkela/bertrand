@@ -15,13 +15,10 @@ namespace linked {
     template <typename View>
     auto reverse(View& view) -> std::enable_if_t<ViewTraits<View>::linked, void> {
         using Node = typename View::Node;
-
-        // save original head
         Node* head = view.head();
         Node* curr = head;
 
         if constexpr (NodeTraits<Node>::has_prev) {
-            // swap `next`/`prev` pointers
             while (curr != nullptr) {
                 Node* next = curr->next();
                 curr->next(curr->prev());
@@ -29,7 +26,6 @@ namespace linked {
                 curr = next;
             }
         } else {
-            // swap `next` pointers
             Node* prev = nullptr;
             while (curr != nullptr) {
                 Node* next = curr->next();
@@ -39,7 +35,6 @@ namespace linked {
             }
         }
 
-        // swap head/tail pointers
         view.head(view.tail());
         view.tail(head);
     }

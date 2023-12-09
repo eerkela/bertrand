@@ -28,13 +28,13 @@ namespace linked {
     {
         using MemGuard = typename View::MemGuard;
         MemGuard guard = view.try_reserve(items);  // preallocate if size is known
+
         size_t size = view.size();
         try {
             for (const auto& item : iter(items)) {
                 view.link(view.tail(), view.node(item), nullptr);
             }
 
-        // restore list on error
         } catch (...) {
             size_t idx = view.size() - size;
             if (idx == 0) {
@@ -67,13 +67,13 @@ namespace linked {
     {
         using MemGuard = typename View::MemGuard;
         MemGuard guard = view.try_reserve(items);  // preallocate if size is known
+
         size_t size = view.size();
         try {
             for (const auto& item : iter(items)) {
                 view.link(nullptr, view.node(item), view.head());
             }
 
-        // restore list on error
         } catch (...) {
             size_t idx = view.size() - size;
             if (idx == 0) {

@@ -504,6 +504,10 @@ public:
         return linked::map(this->view, key);
     }
 
+    // TODO: dict.position() should return a std::pair<Key, Value>?  Would require
+    // changes to keys().position().  The ideal way to do this would be to have the
+    // proxy encapsulate a const SetView that points to the same allocator.
+
     inline linked::ElementProxy<View> position(long long index) {
         return linked::position(this->view, index);
     }
@@ -727,6 +731,13 @@ inline bool operator!=(
 //////////////////////
 
 
+// TODO: keys() seems to work for everything except indexing/slicing.  The solution
+// would need to involve creating a SetView that references the dictionary's DictView.
+// we could then apply the same logic as for linked sets.  Currently, each proxy just
+// references the DictView itself, which means we have to jump through hoops to get
+// setlike rather than dictlike behavior.
+
+
 /* A read-only proxy for a dictionary's keys, in the same style as Python's
 `dict.keys()` accessor. */
 template <typename Dict>
@@ -866,9 +877,9 @@ public:
 
     /* Get a read-only proxy for a key at a certain index of the referenced
     dictionary. */
-    // inline auto position(long long index) const {
-    //     return dict.position(index);
-    // }
+    inline auto position(long long index) const {
+        return dict.position(index);
+    }
 
     // /* Get a read-only proxy for a slice of the referenced dictionary. */
     // template <typename... Args>
@@ -888,9 +899,9 @@ public:
      * overloads below for more details.
      */
 
-    // inline const auto operator[](long long index) const {
-    //     return position(index);
-    // }
+    inline const auto operator[](long long index) const {
+        return position(index);
+    }
 
 };
 
@@ -1088,14 +1099,22 @@ inline bool operator>(const Container& other, const KeysProxy<Dict>& proxy) {
 `dict.values()` accessor. */
 template <typename Dict>
 class ValuesProxy {
+    using View = typename Dict::View;
+    using Value = typename Dict::Value;
+    using List = LinkedList<Value, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock>;
+
     friend Dict;
     const Dict& dict;
 
     ValuesProxy(const Dict& dict) : dict(dict) {}
 
 public:
-    using Node = typename Dict::Node;  // used in index(), count() implementations
-    using Value = typename Dict::Value;
+    using Node = typename Dict::View::Node;
+
+    /* Convert the values proxy into an equivalent list. */
+    inline List to_list() const {
+        return List(*this, dict.size(), dict.specialization());
+    }
 
     /* Get a read-only reference to the proxied dictionary. */
     inline const Dict& mapping() const {
@@ -1135,43 +1154,46 @@ public:
         return dict.size();
     }
 
+    /////////////////////////
+    ////    ITERATORS    ////
+    /////////////////////////
+
     /* A custom iterator that dereferences to the value associated with each key,
     rather than the keys themselves. */
     template <Direction dir>
     struct Iterator {
-        using Iter = typename Dict::template Iterator<dir>;
+        using Iter = typename Dict::template ConstIterator<dir>;
         using Value = typename Dict::Value;
-        Iter iter;
 
-        /* Iterator traits. */
         using iterator_category     = std::forward_iterator_tag;
         using difference_type       = std::ptrdiff_t;
         using value_type            = std::remove_reference_t<Value>;
         using pointer               = value_type*;
         using reference             = value_type&;
 
-        Iterator(const Iter&& base) : iter(std::move(base)) {}
+        Iter it;
+
+        Iterator(Iter&& it) : it(std::move(it)) {}
 
         /* Dereference to the mapped value rather than the key. */
         inline Value operator*() const noexcept {
-            return iter->curr()->mapped();
+            return it.curr()->mapped();
         }
 
         /* Advance to the next node. */
         inline Iterator& operator++() noexcept {
-            ++iter;
+            ++it;
             return *this;
         }
 
         /* Terminate the sequence. */
         template <Direction T>
         inline bool operator!=(const Iterator<T>& other) const noexcept {
-            return iter != other.iter;
+            return it != other.it;
         }
 
     };
 
-    /* Iterate through the values of the referenced dictionary. */
     inline auto begin() const { return Iterator<Direction::forward>(dict.begin()); }
     inline auto end() const { return Iterator<Direction::forward>(dict.end()); }
     inline auto cbegin() const { return Iterator<Direction::forward>(dict.cbegin()); }
@@ -1180,6 +1202,40 @@ public:
     inline auto rend() const { return Iterator<Direction::backward>(dict.rend()); }
     inline auto crbegin() const { return Iterator<Direction::backward>(dict.crbegin()); }
     inline auto crend() const { return Iterator<Direction::backward>(dict.crend()); }
+
+    ////////////////////////
+    ////    INDEXING    ////
+    ////////////////////////
+
+    // TODO: indexing/slicing does not work as expected.
+
+    /* Get a read-only proxy for a key at a certain index of the referenced
+    dictionary. */
+    inline auto position(long long index) const {
+        return dict.position(index);
+    }
+
+    // /* Get a read-only proxy for a slice of the referenced dictionary. */
+    // template <typename... Args>
+    // inline const auto slice(Args&&... args) const {
+    //     return to_set().slice(std::forward<Args>(args)...);  // TODO: does this hold a temporary reference?
+    // }
+
+    //////////////////////////////////
+    ////    OPERATOR OVERLOADS    ////
+    //////////////////////////////////
+
+    /* NOTE: KeysProxies support set comparisons using the <, <=, ==, !=, >=, and >
+     * operators,  even though the underlying dictionary does not.  They also support
+     * the |, &, -, and ^ operators for set arithmetic, but not their in-place
+     * equivalents (|=, &=, -=, ^=).  This is consistent with Python, which enforces
+     * the same restrictions for its built-in dict type.  See the non-member operator
+     * overloads below for more details.
+     */
+
+    inline const auto operator[](long long index) const {
+        return position(index);
+    }
 
 };
 
@@ -1190,98 +1246,167 @@ public:
  */
 
 
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator<(
-    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy, const Container& other
-) {
+/* Print the abbreviated contents of a KeysProxy to an output stream (equivalent to
+Python repr()). */
+template <typename Dict>
+inline std::ostream& operator<<(std::ostream& stream, const ValuesProxy<Dict>& values) {
+    stream << "LinkedDict_values";
+
+    // append prefix, specialization if appropriate
+    if (values.mapping().specialization() != nullptr) {
+        PyObject* spec = values.mapping().specialization();
+        stream << "[";
+        if constexpr (ViewTraits<typename Dict::View>::dictlike) {
+            if (PySlice_Check(spec)) {
+                PySlice slice = PySlice(spec);
+                stream << repr(slice.start());
+            } else {
+                stream << repr(spec);
+            }
+        } else {
+            stream << repr(spec);
+        }
+        stream << "]";
+    }
+
+    // append left bracket
+    stream << "([";
+
+    // append first element
+    auto it = values.begin();
+    auto end = values.end();
+    if (it != end) {
+        stream << repr(*it);
+        ++it;
+    }
+
+    // abbreviate to avoid spamming the console
+    size_t max_entries = 64;
+    if (values.size() > max_entries) {
+        size_t count = 1;
+        size_t threshold = max_entries / 2;
+        for (; it != end && count < threshold; ++it, ++count) {
+            stream << ", " << repr(*it);
+        }
+
+        stream << ", ...";
+
+        // NOTE: if doubly-linked, skip to the end and iterate backwards
+        if constexpr (NodeTraits<typename Dict::View::Node>::has_prev) {
+            std::stack<std::string> stack;
+            auto r_it = values.crbegin();
+            auto r_end = values.crend();
+            for (; r_it != r_end && count < max_entries; ++r_it, ++count) {
+                stack.push(repr(*r_it));
+            }
+            while (!stack.empty()) {
+                stream << ", " << stack.top();
+                stack.pop();
+            }
+
+        // otherwise, continue until we hit remaining elements
+        } else {
+            threshold = values.size() - (max_entries - threshold);
+            for (size_t j = count; j < threshold; ++j, ++it);
+            while (it != end) {
+                stream << ", " << repr(*it);
+                ++it;
+            }
+        }
+
+    } else {
+        while (it != end) {
+            stream << ", " << repr(*it);
+            ++it;
+        }
+    }
+
+    // append right bracket
+    stream << "])";
+    return stream;
+}
+
+
+template <typename Container, typename Dict>
+inline auto operator+(const ValuesProxy<Dict>& proxy, const Container& other) {
+    return proxy.to_list() + other;
+}
+
+
+template <typename Dict, typename T>
+inline auto operator*(const ValuesProxy<Dict>& proxy, T&& other) {
+    return proxy.to_list() * std::forward<T>(other);
+}
+
+
+template <typename Container, typename Dict>
+inline bool operator<(const ValuesProxy<Dict>& proxy, const Container& other) {
     return lexical_lt(proxy, other);
 }
 
 
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator<(
-    const Container& other, const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
-) {
+template <typename Container, typename Dict>
+inline bool operator<(const Container& other, const ValuesProxy<Dict>& proxy) {
     return lexical_lt(other, proxy);
 }
 
 
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator<=(
-    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy, const Container& other
-) {
+template <typename Container, typename Dict>
+inline bool operator<=(const ValuesProxy<Dict>& proxy, const Container& other) {
     return lexical_le(proxy, other);
 }
 
 
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator<=(
-    const Container& other, const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
-) {
+template <typename Container, typename Dict>
+inline bool operator<=(const Container& other, const ValuesProxy<Dict>& proxy) {
     return lexical_le(other, proxy);
 }
 
 
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator==(
-    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy, const Container& other
-) {
+template <typename Container, typename Dict>
+inline bool operator==(const ValuesProxy<Dict>& proxy, const Container& other) {
     return lexical_eq(proxy, other);
 }
 
 
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator==(
-    const Container& other, const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
-) {
+template <typename Container, typename Dict>
+inline bool operator==(const Container& other, const ValuesProxy<Dict>& proxy) {
     return lexical_eq(other, proxy);
 }
 
 
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator!=(
-    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy, const Container& other
-) {
+template <typename Container, typename Dict>
+inline bool operator!=(const ValuesProxy<Dict>& proxy, const Container& other) {
     return !lexical_eq(proxy, other);
 }
 
 
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator!=(
-    const Container& other, const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
-) {
+template <typename Container, typename Dict>
+inline bool operator!=(const Container& other, const ValuesProxy<Dict>& proxy) {
     return !lexical_eq(other, proxy);
 }
 
 
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator>=(
-    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy, const Container& other
-) {
+template <typename Container, typename Dict>
+inline bool operator>=(const ValuesProxy<Dict>& proxy, const Container& other) {
     return lexical_ge(proxy, other);
 }
 
 
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator>=(
-    const Container& other, const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
-) {
+template <typename Container, typename Dict>
+inline bool operator>=(const Container& other, const ValuesProxy<Dict>& proxy) {
     return lexical_ge(other, proxy);
 }
 
 
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator>(
-    const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy, const Container& other
-) {
+template <typename Container, typename Dict>
+inline bool operator>(const ValuesProxy<Dict>& proxy, const Container& other) {
     return lexical_gt(proxy, other);
 }
 
 
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator>(
-    const Container& other, const ValuesProxy<LinkedDict<K, V, Flags, Ts...>>& proxy
-) {
+template <typename Container, typename Dict>
+inline bool operator>(const Container& other, const ValuesProxy<Dict>& proxy) {
     return lexical_gt(other, proxy);
 }
 
@@ -1497,19 +1622,15 @@ public:
  */
 
 
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator==(
-    const ItemsProxy<LinkedDict<K, V, Flags, Ts...>>& proxy, const Container& other
-) {
-    return proxy.mapping() == other;  // same as LinkedDict
+template <typename Container, typename Dict>
+inline bool operator==(const ItemsProxy<Dict>& proxy, const Container& other) {
+    return proxy.mapping() == other;
 }
 
 
-template <typename Container, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator!=(
-    const ItemsProxy<LinkedDict<K, V, Flags, Ts...>>& proxy, const Container& other
-) {
-    return proxy.mapping() != other;  // same as LinkedDict
+template <typename Container, typename Dict>
+inline bool operator!=(const ItemsProxy<Dict>& proxy, const Container& other) {
+    return proxy.mapping() != other;
 }
 
 
@@ -1812,28 +1933,28 @@ public:
         }
     }
 
-    // static PyObject* values(Derived* self, PyObject* /* ignored */ = nullptr) {
-    //     try {
-    //         return std::visit(
-    //             [](auto& dict) {
-    //                 using Proxy = typename std::decay_t<decltype(dict.values())>;
-    //                 return Proxy::PyType.construct(dict.values());
-    //             },
-    //             self->variant
-    //         );
+    static PyObject* values(Derived* self, PyObject* /* ignored */ = nullptr) {
+        try {
+            return std::visit(
+                [&self](auto& dict) {
+                    using Proxy = typename std::decay_t<decltype(dict.values())>;
+                    return PyValuesProxy<Proxy>::construct(self, dict.values());
+                },
+                self->variant
+            );
 
-    //     } catch (...) {
-    //         throw_python();
-    //         return nullptr;
-    //     }
-    // }
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
 
     // static PyObject* items(Derived* self, PyObject* /* ignored */ = nullptr) {
     //     try {
     //         return std::visit(
     //             [](auto& dict) {
     //                 using Proxy = typename std::decay_t<decltype(dict.items())>;
-    //                 return Proxy::PyType.construct(dict.items());
+    //                 return PyItemsProxy<Proxy>::construct(dict.items());
     //             },
     //             self->variant
     //         );
@@ -2236,7 +2357,7 @@ only if the dictionary's values are also hashable.
             PyProxy* self,
             PyObject* /* ignored */ = nullptr
         ) noexcept {
-            return self->_mapping;
+            return Py_NewRef(self->_mapping);
         }
 
         inline static Py_ssize_t __len__(PyProxy* self) noexcept {
@@ -2315,10 +2436,9 @@ only if the dictionary's values are also hashable.
 
         /* Construct a Python wrapper around a LinkedDict.keys() proxy. */
         inline static PyObject* construct(Derived* dict, CppProxy&& proxy) {
-            PyProxy* self = PyObject_New(PyProxy, &PyProxy::Type);
-            // PyProxy* self = reinterpret_cast<PyProxy*>(
-            //     PyType_GenericAlloc(&PyProxy::Type, 0)
-            // );
+            PyProxy* self = reinterpret_cast<PyProxy*>(
+                PyProxy::Type.tp_alloc(&PyProxy::Type, 0)
+            );
             if (self == nullptr) {
                 PyErr_SetString(
                     PyExc_RuntimeError,
@@ -2334,16 +2454,15 @@ only if the dictionary's values are also hashable.
         /* Release the read-only dictionary reference when the proxy is garbage
         collected. */
         inline static void __dealloc__(PyProxy* self) {
-            Py_XDECREF(self->_mapping);
+            Py_DECREF(self->_mapping);
             self->~PyProxy();
-            Py_TYPE(self)->tp_free(reinterpret_cast<PyObject*>(self));
+            PyProxy::Type.tp_free(reinterpret_cast<PyObject*>(self));
         }
 
         /* Implement `PySequence_GetItem()` in CPython API. */
         static PyObject* __getitem_scalar__(PyProxy* self, Py_ssize_t index) {
             try {
-                return nullptr;
-                // TODO: return Py_XNewRef(self->proxy.position(index).get());
+                return Py_XNewRef(self->proxy.position(index).get());
             } catch (...) {
                 throw_python();
                 return nullptr;
@@ -2388,7 +2507,7 @@ than one.
 
     };
 
-    /* A custom Python type that exposes LinkedDict.keys() to Python. */
+    /* Python wrapper for LinkedDict.keys(). */
     template <typename Proxy>
     struct PyKeysProxy : public DictProxy<PyKeysProxy<Proxy>, Proxy> {
 
@@ -2639,9 +2758,9 @@ than one.
 
         static PyObject* __getitem__(PyKeysProxy* self, PyObject* key) {
             try {
-                // if (PyIndex_Check(key)) {
-                //     return Py_XNewRef(self->proxy[bertrand::util::parse_int(key)]);
-                // }
+                if (PyIndex_Check(key)) {
+                    return Py_XNewRef(self->proxy[bertrand::util::parse_int(key)].get());
+                }
 
                 // if (PySlice_Check(key)) {
                 //     return PyLinkedSet::construct(self->proxy.slice(key).get());
@@ -2711,10 +2830,10 @@ These proxies support the following operations:
         ``keys.intersection()``, ``keys.difference()``,
         ``keys.symmetric_difference()``, ``keys.symmetric_difference_left()``,
         ``keys.issubset()``, ``keys.issuperset()``, ``keys.isdisjoint()``
-    #.  Set operators: ``keys | other``, ``keys & other``, ``keys - other``,
-        ``keys ^ other``, ``keys <= other``, ``keys < other``,
-        ``keys >= other``, ``keys > other``, ``keys == other``,
-        ``keys != other``,
+    #.  Set operators: ``keys | other``, ``keys - other``, ``keys & other``,
+        ``keys ^ other``, ``keys < other``, ``keys <= other``,
+        ``keys == other``, ``keys != other``, ``keys >= other``,
+        ``keys > other``
 )doc"
             };
 
@@ -2817,11 +2936,11 @@ These proxies support the following operations:
                 .tp_iter = (getiterfunc) BaseProxy::__iter__,
                 .tp_methods = methods,
                 .tp_getset = properties,
-                // .tp_new = PyType_GenericNew,
+                .tp_alloc = (allocfunc) PyType_GenericAlloc,
             };
 
             if (PyType_Ready(&slots) < 0) {
-                throw std::runtime_error("could not initialize PyLock type");
+                throw std::runtime_error("could not initialize DictProxy type");
             }
             return slots;
         }
@@ -2829,6 +2948,232 @@ These proxies support the following operations:
     public:
 
         inline static PyTypeObject Type = build_type();
+
+    };
+
+    /* Python wrapper for LinkedDict.values(). */
+    template <typename Proxy>
+    struct PyValuesProxy : public DictProxy<PyValuesProxy<Proxy>, Proxy> {
+
+        static PyObject* index(
+            PyValuesProxy* self,
+            PyObject* const* args,
+            Py_ssize_t nargs
+        ) {
+            using bertrand::util::PyArgs;
+            using bertrand::util::CallProtocol;
+            using bertrand::util::parse_opt_int;
+            using Index = std::optional<long long>;
+            static constexpr std::string_view meth_name{"index"};
+            try {
+                PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+                PyObject* value = pyargs.parse("value");
+                Index start = pyargs.parse("start", parse_opt_int, Index());
+                Index stop = pyargs.parse("stop", parse_opt_int, Index());
+                pyargs.finalize();
+
+                return PyLong_FromSize_t(self->proxy.index(value, start, stop));
+
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* count(
+            PyValuesProxy* self,
+            PyObject* const* args,
+            Py_ssize_t nargs
+        ) {
+            using bertrand::util::PyArgs;
+            using bertrand::util::CallProtocol;
+            using bertrand::util::parse_opt_int;
+            using Index = std::optional<long long>;
+            static constexpr std::string_view meth_name{"count"};
+            try {
+                PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+                PyObject* value = pyargs.parse("value");
+                Index start = pyargs.parse("start", parse_opt_int, Index());
+                Index stop = pyargs.parse("stop", parse_opt_int, Index());
+                pyargs.finalize();
+
+                return PyLong_FromSize_t(self->proxy.count(value, start, stop));
+
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __add__(PyValuesProxy* self, PyObject* other) {
+            try {
+                return PyLinkedList::construct(self->proxy + other);
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __mul__(PyValuesProxy* self, Py_ssize_t count) {
+            try {
+                return PyLinkedList::construct(self->proxy * count);
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __getitem__(PyValuesProxy* self, PyObject* key) {
+            try {
+                if (PyIndex_Check(key)) {
+                    return Py_XNewRef(self->proxy[bertrand::util::parse_int(key)].get());
+                }
+
+                // if (PySlice_Check(key)) {
+                //     return PyLinkedSet::construct(self->proxy.slice(key).get());
+                // }
+
+                PyErr_Format(
+                    PyExc_TypeError,
+                    "indices must be integers or slices, not %s",
+                    Py_TYPE(key)->tp_name
+                );
+                return nullptr;
+
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __str__(PyValuesProxy* self) {
+            try {
+                std::ostringstream stream;
+                stream << "[";
+                auto it = self->proxy.begin();
+                auto end = self->proxy.end();
+                if (it != end) {
+                    stream << repr(*it);
+                    ++it;
+                }
+                while (it != end) {
+                    stream << ", " << repr(*it);
+                    ++it;
+                }
+                stream << "]";
+                auto str = stream.str();
+                return PyUnicode_FromStringAndSize(str.c_str(), str.size());
+
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+    private:
+        friend PyDictInterface;
+        friend Derived;
+        using BaseProxy = DictProxy<PyValuesProxy, Proxy>;
+        using IList = PyListInterface<Derived>;
+        using ISet = PySetInterface<Derived>;
+
+        struct docs {
+
+            static constexpr std::string_view PyValuesProxy {R"doc(
+A read-only, listlike proxy for the values within a ``LinkedDict``.
+
+Notes
+-----
+This class is not meant to be instantiated directly.  Instead, it is returned
+by the :meth:`LinkedDict.values()` method, which behaves analogously to the
+built-in :meth:`dict.values()`.
+
+These proxies support the following operations:
+
+    #.  Iteration: ``len(vals)``, ``for val in vals: ...``, ``val in vals``
+    #.  Indexing: ``vals[0]``, ``vals[1:3]``, ``vals.index(val)``,
+        ``vals.count(val)``
+    #.  List operators: ``vals + other``, ``vals * other``, ``vals < other``,
+        ``vals <= other``, ``vals == other``, ``vals != other``,
+        ``vals >= other``, ``vals > other``
+)doc"
+            };
+
+        };
+
+        inline static PyMappingMethods mapping_methods = [] {
+            PyMappingMethods slots;
+            slots.mp_length = (lenfunc) BaseProxy::__len__;
+            slots.mp_subscript = (binaryfunc) __getitem__;
+            return slots;
+        }();
+
+        inline static PySequenceMethods sequence = [] {
+            PySequenceMethods slots;
+            slots.sq_length = (lenfunc) BaseProxy::__len__;
+            slots.sq_concat = (binaryfunc) __add__;
+            slots.sq_repeat = (ssizeargfunc) __mul__;
+            slots.sq_item = (ssizeargfunc) BaseProxy::__getitem_scalar__;
+            slots.sq_contains = (objobjproc) BaseProxy::__contains__;
+            return slots;
+        }();
+
+        inline static PyGetSetDef properties[] = {
+            {"mapping", (getter) BaseProxy::mapping, nullptr, BaseProxy::docs::mapping.data()},
+            {NULL}  // sentinel
+        };
+
+        inline static PyMethodDef methods[] = {
+            {"index", (PyCFunction) index, METH_FASTCALL, IList::docs::index.data()},
+            {"count", (PyCFunction) count, METH_FASTCALL, IList::docs::count.data()},
+            {
+                "__reversed__",
+                (PyCFunction) BaseProxy::__reversed__,
+                METH_NOARGS,
+                BaseProxy::docs::__reversed__.data()
+            },
+            {NULL}  // sentinel
+        };
+
+        static PyTypeObject build_type() {
+            PyTypeObject slots = {
+                .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+                .tp_name = PyName<PyValuesProxy>.data(),
+                .tp_basicsize = sizeof(PyValuesProxy),
+                .tp_itemsize = 0,
+                .tp_dealloc = (destructor) BaseProxy::__dealloc__,
+                .tp_repr = (reprfunc) BaseProxy::__repr__,
+                .tp_as_sequence = &sequence,
+                .tp_as_mapping = &mapping_methods,
+                .tp_hash = (hashfunc) PyObject_HashNotImplemented,
+                .tp_str = (reprfunc) __str__,
+                .tp_flags = (
+                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
+                    Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_SEQUENCE
+                ),
+                .tp_doc = PyDoc_STR(docs::PyValuesProxy.data()),
+                .tp_richcompare = (richcmpfunc) BaseProxy::__richcompare__,
+                .tp_iter = (getiterfunc) BaseProxy::__iter__,
+                .tp_methods = methods,
+                .tp_getset = properties,
+                .tp_alloc = (allocfunc) PyType_GenericAlloc,
+            };
+
+            if (PyType_Ready(&slots) < 0) {
+                throw std::runtime_error("could not initialize DictProxy type");
+            }
+            return slots;
+        }
+
+    public:
+
+        inline static PyTypeObject Type = build_type();
+
+    };
+
+    /* Python wrapper for LinkedDict.items(). */
+    template <typename Proxy>
+    struct PyItemsProxy : public DictProxy<PyItemsProxy<Proxy>, Proxy> {
 
     };
 
@@ -3418,7 +3763,7 @@ constructor itself.
         DICT_METHOD(setdefault_left, METH_FASTCALL),
         DICT_METHOD(lru_setdefault, METH_FASTCALL),
         DICT_METHOD(keys, METH_NOARGS),
-        // DICT_METHOD(values, METH_NOARGS),
+        DICT_METHOD(values, METH_NOARGS),
         // DICT_METHOD(items, METH_NOARGS),
         {NULL}  // sentinel
     };

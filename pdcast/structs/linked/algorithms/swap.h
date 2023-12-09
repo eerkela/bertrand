@@ -24,7 +24,6 @@ namespace linked {
             return KeyError(repr(item));
         };
 
-        // search for both nodes
         Node* node1 = view.search(item1);
         if (node1 == nullptr) {
             throw not_found(item1);
@@ -36,7 +35,6 @@ namespace linked {
             return;
         }
 
-        // get current neighborss
         Node* prev1 = nullptr;
         Node* prev2 = nullptr;
         if constexpr (NodeTraits<Node>::has_prev) {
@@ -58,7 +56,6 @@ namespace linked {
             }
         }
 
-        // swap nodes
         Node* next1 = node1->next();
         Node* next2 = node2->next();
         view.unlink(prev1, node1, next1);

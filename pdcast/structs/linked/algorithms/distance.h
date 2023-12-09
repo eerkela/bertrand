@@ -34,7 +34,6 @@ namespace linked {
             return KeyError(repr(item));
         };
 
-        // search for nodes
         Node* node1 = view.search(item1);
         if (node1 == nullptr) {
             throw not_found(item1);
@@ -46,7 +45,6 @@ namespace linked {
             return 0;
         }
 
-        // get indices of both nodes
         size_t idx = 0;
         std::optional<size_t> index1, index2;
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {

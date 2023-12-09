@@ -66,9 +66,8 @@ namespace linked {
                 new_prev = it.curr();
                 new_next = it.next();
 
-            // lookahead iterator is offset from the head of list by an amount equal to
-            // `steps`.  When it reaches the removal point, lookbehind will be at
-            // insertion point.
+            // lookahead iterator is offset from head by an amount equal to `steps`.
+            // When it reaches the removal point, lookbehind will be at insertion point.
             } else {
                 bool truncate = false;
                 for (; steps < 0; ++steps, ++it) {  // `it` becomes lookahead iterator
@@ -92,7 +91,6 @@ namespace linked {
             }
         }
 
-        // move node to new position
         view.unlink(old_prev, node, old_next);
         view.link(new_prev, node, new_next);
     }
@@ -148,10 +146,9 @@ namespace linked {
             }
         }
 
-        // trivial case: node is already at index
-        if (new_prev == node || new_next == node) return;
-
-        // move node to new position
+        if (new_prev == node || new_next == node) {
+            return;
+        }
         view.unlink(old_prev, node, old_next);
         view.link(new_prev, node, new_next);
     }

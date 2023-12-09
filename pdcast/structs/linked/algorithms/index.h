@@ -48,7 +48,6 @@ namespace linked {
             throw not_found(item);
         }
 
-        // normalize start/stop indices
         SliceIndices<View> indices = normalize_slice(view, start, stop);
         size_t norm_start = indices.start;
         size_t norm_stop = indices.stop;
@@ -58,7 +57,6 @@ namespace linked {
             throw IndexError("start index cannot be greater than stop index");
         }
 
-        // search for item
         Node* node = view.search(item);
         if (node == nullptr) {
             throw not_found(item);
@@ -118,7 +116,6 @@ namespace linked {
             throw not_found(key);
         }
 
-        // normalize start/stop indices
         SliceIndices<View> indices = normalize_slice(view, start, stop);
         size_t norm_start = indices.start;
         size_t norm_stop = indices.stop;
@@ -128,7 +125,6 @@ namespace linked {
             throw IndexError("start index cannot be greater than stop index");
         }
 
-        // search for key
         Node* node = view.search(key);
         if (node == nullptr) {
             throw not_found(key);
@@ -196,7 +192,6 @@ namespace linked {
             throw not_found(item);
         }
 
-        // normalize start/stop indices
         SliceIndices<View> indices = normalize_slice(view, start, stop);
         size_t norm_start = indices.start;
         size_t norm_stop = indices.stop;
@@ -214,7 +209,6 @@ namespace linked {
                 auto it = view.rbegin();
                 for (; idx > norm_stop; --idx, ++it);
 
-                // keep track of last matching index
                 bool found = false;
                 size_t last_observed;
                 for (; idx >= norm_start; --idx, ++it) {

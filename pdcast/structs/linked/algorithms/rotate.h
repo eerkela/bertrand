@@ -21,10 +21,9 @@ namespace linked {
         using Node = typename View::Node;
         size_t norm_steps = std::llabs(steps) % view.size();
         if (norm_steps == 0) {
-            return;  // rotated list is identical to original
+            return;
         }
 
-        // get index at which to split the list
         size_t index;
         if (steps < 0) {
             index = norm_steps;
@@ -35,7 +34,6 @@ namespace linked {
         Node* new_head;
         Node* new_tail;
 
-        // identify new head and tail of rotated list
         if constexpr (NodeTraits<Node>::has_prev) {
             if (view.closer_to_tail(index)) {
                 new_head = view.tail();
@@ -52,7 +50,6 @@ namespace linked {
             }
         }
 
-        // forward traversal
         new_tail = view.head();
         for (size_t i = 1; i < index; ++i) {
             new_tail = new_tail->next();

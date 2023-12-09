@@ -7,6 +7,9 @@
 #include "../core/view.h"  // ViewTraits
 
 
+// TODO: write dict_compare.h that takes values into account?
+
+
 namespace bertrand {
 namespace structs {
 namespace linked {
@@ -35,7 +38,6 @@ namespace linked {
     {
         using Node = typename View::Node;
 
-        // use auxiliary set to keep track of visited nodes
         std::unordered_set<Node*> found;
         for (const auto& item : iter(items)) {
             Node* node = view.search(item);
@@ -57,7 +59,6 @@ namespace linked {
     {
         using Node = typename View::Node;
 
-        // use auxiliary set to keep track of visited nodes
         std::unordered_set<Node*> found;
         for (const auto& item : iter(items)) {
             Node* node = view.search(item);
@@ -79,7 +80,6 @@ namespace linked {
     {
         using Node = typename View::Node;
 
-        // use auxiliary set to keep track of visited nodes
         std::unordered_set<Node*> found;
         bool larger = false;
         for (const auto& item : iter(items)) {
@@ -103,7 +103,6 @@ namespace linked {
     {
         using Node = typename View::Node;
 
-        // use auxiliary set to keep track of visited nodes as we iterate over items
         std::unordered_set<Node*> found;
         for (const auto& item : iter(items)) {
             Node* node = view.search(item);
@@ -113,7 +112,6 @@ namespace linked {
             found.insert(node);
         }
 
-        // if strict, assert that view has at least one extra element
         return found.size() < view.size() || !strict;
     }
 

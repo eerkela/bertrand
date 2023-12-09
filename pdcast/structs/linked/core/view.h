@@ -362,12 +362,13 @@ public:
         bool reverse
     ) : allocator(init_size(iterable, capacity), spec == Py_None ? nullptr : spec)
     {
-        for (const auto& item : iter(iterable)) {
-            Node* curr = node(item);
-            if (reverse) {
-                link(nullptr, curr, head());
-            } else {
-                link(tail(), curr, nullptr);
+        if (reverse) {
+            for (const auto& item : iter(iterable)) {
+                link(nullptr, node(item), head());
+            }
+        } else {
+            for (const auto& item : iter(iterable)) {
+                link(tail(), node(item), nullptr);
             }
         }
     }
@@ -382,12 +383,15 @@ public:
         bool reverse
     ) : allocator(capacity, spec == Py_None ? nullptr : spec)
     {
-        for (; begin != end; ++begin) {
-            Node* curr = node(*begin);
-            if (reverse) {
-                link(nullptr, curr, head());
-            } else {
-                link(tail(), curr, nullptr);
+        if (reverse) {
+            while (begin != end) {
+                link(nullptr, node(*begin), head());
+                ++begin;
+            }
+        } else {
+            while (begin != end) {
+                link(tail(), node(*begin), nullptr);
+                ++begin;
             }
         }
     }
@@ -746,18 +750,22 @@ public:
     {
         if constexpr (Derived::dictlike) {
             PyDict dict(iterable);
-            for (const auto& item : iter(dict)) {
-                if (reverse) {
+            if (reverse) {
+                for (const auto& item : iter(dict)) {
                     node<Allocator::EXIST_OK | Allocator::INSERT_HEAD>(item);
-                } else {
+                }
+            } else {
+                for (const auto& item : iter(dict)) {
                     node<Allocator::EXIST_OK | Allocator::INSERT_TAIL>(item);
                 }
             }
         } else {
-            for (const auto& item : iter(iterable)) {
-                if (reverse) {
+            if (reverse) {
+                for (const auto& item : iter(iterable)) {
                     node<Allocator::EXIST_OK | Allocator::INSERT_HEAD>(item);
-                } else {
+                }
+            } else {
+                for (const auto& item : iter(iterable)) {
                     node<Allocator::EXIST_OK | Allocator::INSERT_TAIL>(item);
                 }
             }
@@ -774,11 +782,15 @@ public:
         bool reverse
     ) : Base(capacity, spec)
     {
-        for (; begin != end; ++begin) {
-            if (reverse) {
+        if (reverse) {
+            while (begin != end) {
                 node<Allocator::EXIST_OK | Allocator::INSERT_HEAD>(*begin);
-            } else {
+                ++begin;
+            }
+        } else {
+            while (begin != end) {
                 node<Allocator::EXIST_OK | Allocator::INSERT_TAIL>(*begin);
+                ++begin;
             }
         }
     }

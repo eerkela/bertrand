@@ -159,6 +159,8 @@ namespace linked {
 
         template <Direction dir>
         using ViewIter = typename View::template Iterator<dir>;
+        template <Direction dir>
+        using ConstViewIter = typename View::template ConstIterator<dir>;
 
         View& view;
         const SliceIndices<View> indices;
@@ -167,7 +169,17 @@ namespace linked {
 
         template <typename _View, typename _Result, typename... Args>
         friend auto slice(_View& view, Args&&... args)
-            -> std::enable_if_t<ViewTraits<_View>::linked, SliceProxy<_View, _Result>>;
+            -> std::enable_if_t<
+                ViewTraits<_View>::linked,
+                SliceProxy<_View, _Result>
+            >;
+
+        template <typename _View, typename _Result, typename... Args>
+        friend auto slice(const _View& view, Args&&... args)
+            -> std::enable_if_t<
+                ViewTraits<_View>::linked,
+                const SliceProxy<const _View, const _Result>
+            >;
 
         /* Construct a SliceProxy using the normalized indices. */
         SliceProxy(View& view, SliceIndices<View>&& indices) :
@@ -391,7 +403,6 @@ namespace linked {
         }
 
     public:
-        /* Disallow SliceProxies from being stored as lvalues. */
         SliceProxy(const SliceProxy&) = delete;
         SliceProxy(SliceProxy&&) = delete;
         SliceProxy& operator=(const SliceProxy&) = delete;
@@ -566,7 +577,6 @@ namespace linked {
 
         };
 
-        /* Return an iterator to the start of the slice. */
         inline Iterator<Direction::forward> begin() const {
             if (indices.length == 0) {
                 return end();
@@ -574,22 +584,18 @@ namespace linked {
             return Iterator<Direction::forward>(view, indices, origin());
         }
 
-        /* Return an explicitly const iterator to the start of the slice. */
         inline Iterator<Direction::forward> cbegin() const {
             return begin();
         }
 
-        /* Return an iterator to terminate the slice. */
         inline Iterator<Direction::forward> end() const {
             return Iterator<Direction::forward>(view, indices);
         }
 
-        /* Return an explicitly const iterator to terminate the slice. */
         inline Iterator<Direction::forward> cend() const {
             return end();
         }
 
-        /* Return a reverse iterator over the slice. */
         inline Iterator<Direction::backward> rbegin() const {
             if (indices.length == 0) {
                 return rend();
@@ -597,17 +603,14 @@ namespace linked {
             return Iterator<Direction::backward>(view, indices, origin());
         }
 
-        /* Return an explicitly const reverse iterator over the slice. */
         inline Iterator<Direction::backward> crbegin() const {
             return rbegin();
         }
 
-        /* Return a reverse iterator to terminate the slice. */
         inline Iterator<Direction::backward> rend() const {
             return Iterator<Direction::backward>(view, indices);
         }
 
-        /* Return an explicitly const reverse iterator to terminate the slice. */
         inline Iterator<Direction::backward> crend() const {
             return rend();
         }
@@ -702,17 +705,13 @@ namespace linked {
         /* Replace a slice within a linked list. */
         template <typename Container>
         inline void set(const Container& items) {
-            _set_impl(items);
-        }
-
-        /* A special case of slice().set() on dictlike views that accounts for both
-        keys and values of Python dictionary inputs. */
-        template <bool cond = ViewTraits<View>::dictlike>
-        inline auto set(const PyObject* items)-> std::enable_if_t<cond, void> {
-            // wrap Python dictionaries to yield key-value pairs during iteration
-            if (PyDict_Check(items)) {
-                PyDict dict(items);
-                _set_impl(dict);
+            if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
+                if (PyDict_Check(items)) {
+                    PyDict dict(items);
+                    _set_impl(dict);
+                } else {
+                    _set_impl(items);
+                }
             } else {
                 _set_impl(items);
             }
@@ -791,9 +790,12 @@ namespace linked {
     /* Get a const proxy for a slice within a const list. */
     template <typename View, typename Result = View, typename... Args>
     auto slice(const View& view, Args&&... args)
-        -> std::enable_if_t<ViewTraits<View>::linked, const SliceProxy<View, Result>>
+        -> std::enable_if_t<
+            ViewTraits<View>::linked,
+            const SliceProxy<const View, const Result>
+        >
     {
-        return SliceProxy<View, Result>(
+        return SliceProxy<const View, const Result>(
             view, normalize_slice(view, std::forward<Args>(args)...)
         );
     }

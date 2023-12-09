@@ -34,18 +34,15 @@ namespace linked {
             (left ? Allocator::INSERT_HEAD : Allocator::INSERT_TAIL)
         );
 
-        // copy existing view
         DynamicView copy(view.size(), view.specialization());
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             copy.template node<Allocator::INSERT_TAIL>(*(it.curr()));
         }
 
-        // allow copy to grow dynamically
         for (const auto& item : iter(items)) {
             copy.template node<flags>(item);
         }
 
-        // if original view was not dynamic, move into new view of fixed size
         if constexpr (ViewTraits<View>::FIXED_SIZE) {
             FixedView result(copy.size(), view.specialization());
             for (auto it = copy.begin(), end = copy.end(); it != end; ++it) {
@@ -69,7 +66,6 @@ namespace linked {
         using Allocator = typename View::Allocator;
         using Node = typename View::Node;
 
-        // unpack items into temporary view
         TempView temp_view(
             items,
             std::nullopt,  // capacity: dynamic
@@ -77,10 +73,8 @@ namespace linked {
             false  // reverse: false
         );
 
-        // allocate dynamic view to store result
         DynamicView copy(std::nullopt, view.specialization());
 
-        // add all elements from view that are not in temp view
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             Node* node = temp_view.search(it.curr());
             if (node == nullptr) {
@@ -88,7 +82,6 @@ namespace linked {
             }
         }
 
-        // add all elements from temp view that are not in view
         for (auto it = temp_view.begin(), end = temp_view.end(); it != end; ++it) {
             Node* node = view.search(it.curr());
             if (node == nullptr) {
@@ -100,7 +93,6 @@ namespace linked {
             }
         }
 
-        // if original view was not dynamic, move into new view of fixed size
         if constexpr (ViewTraits<View>::FIXED_SIZE) {
             FixedView result(copy.size(), view.specialization());
             for (auto it = copy.begin(), end = copy.end(); it != end; ++it) {
@@ -160,14 +152,12 @@ namespace linked {
         using Allocator = typename View::Allocator;
         using Node = typename View::Node;
 
-        // iterate over items and mark all found nodes
         std::unordered_set<const Node*> found;
         for (const auto& item : iter(items)) {
             Node* node = view.search(item);
             if (node != nullptr) found.insert(node);
         }
 
-        // add all elements that were not found
         View copy(view.size() - found.size(), view.specialization());
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             if (found.find(it.curr()) == found.end()) {
@@ -187,14 +177,12 @@ namespace linked {
         using Allocator = typename View::Allocator;
         using Node = typename View::Node;
 
-        // iterate over items and mark all found nodes
         std::unordered_set<const Node*> found;
         for (const auto& item : iter(items)) {
             Node* node = view.search(item);
             if (node != nullptr) found.insert(node);
         }
 
-        // add all elements that were found
         View copy(found.size(), view.specialization());
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             if (found.find(it.curr()) != found.end()) {

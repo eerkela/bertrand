@@ -31,9 +31,9 @@ namespace linked {
     dictionary. */
     template <typename View, typename Key>
     auto map(const View& view, const Key& key)
-        -> std::enable_if_t<ViewTraits<View>::dictlike, const MapProxy<View>>
+        -> std::enable_if_t<ViewTraits<View>::dictlike, const MapProxy<const View>>
     {
-        return MapProxy<View>(view, key);
+        return MapProxy<const View>(view, key);
     }
 
 
@@ -51,10 +51,16 @@ namespace linked {
         friend auto map(_View& view, const _Key& key)
             -> std::enable_if_t<ViewTraits<_View>::dictlike, MapProxy<_View>>;
 
+        template <typename _View, typename _Key>
+        friend auto map(const _View& view, const _Key& key)
+            -> std::enable_if_t<
+                ViewTraits<_View>::dictlike,
+                const MapProxy<const _View>
+            >;
+
         MapProxy(View& view, const Key& key) : view(view), key(key) {}
 
     public:
-        /* Disallow ElementProxies from being stored as lvalues. */
         MapProxy(const MapProxy&) = delete;
         MapProxy(MapProxy&&) = delete;
         MapProxy& operator=(const MapProxy&) = delete;

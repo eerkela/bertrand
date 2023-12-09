@@ -42,7 +42,6 @@ namespace linked {
             return 0;
         }
 
-        // normalize start/stop indices
         SliceIndices<View> indices = normalize_slice(view, start, stop);
         size_t norm_start = indices.start;
         size_t norm_stop = indices.stop;
@@ -57,7 +56,7 @@ namespace linked {
         if (node == nullptr) {
             return 0;
         } else if (norm_start == 0 && norm_stop == view.size() - 1) {
-            return 1;  // slice covers whole set
+            return 1;
         }
 
         size_t idx = 0;
@@ -84,7 +83,6 @@ namespace linked {
             return 0;
         }
 
-        // normalize start/stop indices
         SliceIndices<View> indices = normalize_slice(view, start, stop);
         size_t norm_start = indices.start;
         size_t norm_stop = indices.stop;
@@ -94,7 +92,6 @@ namespace linked {
             throw IndexError("start index cannot be greater than stop index");
         } 
 
-        // check if key is contained in hash table
         Node* node = view.search(key);
         if (node == nullptr) {
             return 0;
@@ -138,7 +135,6 @@ namespace linked {
             return 0;
         }
 
-        // normalize start/stop indices
         SliceIndices<View> indices = normalize_slice(view, start, stop);
         size_t norm_start = indices.start;
         size_t norm_stop = indices.stop;

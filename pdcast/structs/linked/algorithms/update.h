@@ -36,7 +36,6 @@ namespace linked {
                 view.template node<flags>(item);
             }
 
-        // restore set on error
         } catch (...) {
             /* NOTE: no attempt is made to restore the original values if an error
              * occurs during a dictlike update using REPLACE_MAPPED.  Handling this
@@ -102,15 +101,12 @@ namespace linked {
         using Node = typename View::Node;
         using MemGuard = typename View::MemGuard;
 
-        // unpack items into temporary view
         TempView temp_view(
             items,
             std::nullopt,  // capacity: inferred from items
             nullptr,  // specialization: generic
             false  // reverse: false
         );
-
-        // keep track of nodes as they are added in order to avoid cycles
         std::unordered_set<Node*> added;
 
         // if doubly-linked, we can remove nodes while searching to avoid an extra loop
@@ -157,11 +153,11 @@ namespace linked {
                 }
             }
 
-            // remove marked nodes
-            MemGuard inner = view.reserve();  // hold allocator at current size
+            // hold allocator at current size while we remove nodes
+            MemGuard inner = view.reserve();
             for (auto it = view.begin(), end = view.end(); it != end;) {
                 if (to_remove.find(it.curr()) != to_remove.end()) {
-                    view.recycle(it.drop());  // implicitly advances iterator
+                    view.recycle(it.drop());
                 } else {
                     ++it;
                 }

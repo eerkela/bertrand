@@ -75,7 +75,7 @@ namespace linked {
             if (view.closer_to_tail(norm_index)) {
                 auto it = view.rbegin();
                 for (size_t i = view.size(); i > norm_index; --i, ++it);
-                it.insert(view.node(key, value));  // using 2-argument init
+                it.insert(view.node(key, value));  // use 2-argument init
                 return;
             }
         }

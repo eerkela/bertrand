@@ -24,9 +24,9 @@ namespace linked {
             return View(view.capacity(), view.specialization());  // empty view
         }
 
-        // preallocate exact size
         size_t reps = static_cast<size_t>(repetitions);
         View copy(view.size() * reps, view.specialization());
+
         for (size_t i = 0; i < reps; ++i) {
             for (auto it = view.begin(), end = view.end(); it != end; ++it) {
                 Node* node = copy.node(*(it.curr()));
@@ -74,7 +74,6 @@ namespace linked {
         // done by recording the original tail and repeatedly iterating through the
         // beginning portion while extending the list.
 
-        // reserve exact size
         size_t reps = static_cast<size_t>(repetitions);
         view.reserve(view.size() * reps);
         Node* tail = view.tail();
@@ -82,10 +81,10 @@ namespace linked {
         for (size_t i = 1; i < reps; ++i) {
             auto it = view.begin();
             for (; it.curr() != tail; ++it) {
-                Node* copy = view.node(*it.curr());  // copy constructor
+                Node* copy = view.node(*it.curr());
                 view.link(view.tail(), copy, nullptr);
             }
-            Node* copy = view.node(*it.curr());  // account for last item
+            Node* copy = view.node(*it.curr());
             view.link(view.tail(), copy, nullptr);
         }
     }

@@ -20,9 +20,8 @@ namespace linked {
         -> std::enable_if_t<ViewTraits<View>::listlike, View>
     {
         using Node = typename View::Node;
-
-        // use exact container length if available
         std::optional<size_t> length = len(container);
+
         if (length.has_value()) {
             View copy(view.size() + length.value(), view.specialization());
 

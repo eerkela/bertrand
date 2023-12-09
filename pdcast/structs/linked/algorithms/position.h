@@ -71,17 +71,31 @@ namespace linked {
 
         template <Direction dir>
         using ViewIter = typename View::template Iterator<dir>;
+        template <Direction dir>
+        using ConstViewIter = typename View::template ConstIterator<dir>;
 
         View& view;
         bool is_fwd;
         union {
             ViewIter<Direction::forward> fwd;
             ViewIter<Direction::backward> bwd;
+            ConstViewIter<Direction::forward> cfwd;
+            ConstViewIter<Direction::backward> cbwd;
         };
 
         template <typename _View>
         friend auto position(_View& view, long long index)
-            -> std::enable_if_t<ViewTraits<_View>::linked, ElementProxy<_View>>;
+            -> std::enable_if_t<
+                ViewTraits<_View>::linked,
+                ElementProxy<_View>
+            >;
+
+        template <typename _View>
+        friend auto position(const _View& view, long long index)
+            -> std::enable_if_t<
+                ViewTraits<_View>::linked,
+                const ElementProxy<const _View>
+            >;
 
         template <Direction dir>
         ElementProxy(View& view, ViewIter<dir>&& it) : view(view) {
@@ -94,6 +108,17 @@ namespace linked {
             }
         }
 
+        template <Direction dir>
+        ElementProxy(View& view, ConstViewIter<dir>&& it) : view(view) {
+            if constexpr (dir == Direction::forward) {
+                is_fwd = true;
+                new (&cfwd) ConstViewIter<Direction::forward>(std::move(it));
+            } else {
+                is_fwd = false;
+                new (&cbwd) ConstViewIter<Direction::backward>(std::move(it));
+            }
+        }
+
     public:
         /* Disallow ElementProxies from being stored as lvalues. */
         ElementProxy(const ElementProxy&) = delete;
@@ -103,31 +128,56 @@ namespace linked {
 
         /* Clean up the union iterator when the proxy is destroyed. */
         ~ElementProxy() {
-            if (is_fwd) {
-                fwd.~ViewIter<Direction::forward>();
+            if constexpr (std::is_const_v<View>) {
+                if (is_fwd) {
+                    cfwd.~ConstViewIter<Direction::forward>();
+                } else {
+                    cbwd.~ConstViewIter<Direction::backward>();
+                }
+                return;
             } else {
-                bwd.~ViewIter<Direction::backward>();
+                if (is_fwd) {
+                    fwd.~ViewIter<Direction::forward>();
+                } else {
+                    bwd.~ViewIter<Direction::backward>();
+                }
             }
         }
 
         /* Get the value at the current index. */
         inline Value get() const {
-            if constexpr (is_pyobject<Value>) {
-                return Py_NewRef(is_fwd ? *fwd : *bwd);
+            if constexpr (std::is_const_v<View>) {
+                if constexpr (is_pyobject<Value>) {
+                    return Py_NewRef(is_fwd ? *cfwd : *cbwd);
+                } else {
+                    return is_fwd ? *cfwd : *cbwd;
+                }
             } else {
-                return is_fwd ? *fwd : *bwd;
+                if constexpr (is_pyobject<Value>) {
+                    return Py_NewRef(is_fwd ? *fwd : *bwd);
+                } else {
+                    return is_fwd ? *fwd : *bwd;
+                }
             }
         }
 
         /* Set the value at the current index. */
         inline void set(const Value value) {
             Node* node = view.node(value);
-            view.recycle(is_fwd ? fwd.replace(node) : bwd.replace(node));
+            if constexpr (std::is_const_v<View>) {
+                view.recycle(is_fwd ? cfwd.replace(node) : cbwd.replace(node));
+            } else {
+                view.recycle(is_fwd ? fwd.replace(node) : bwd.replace(node));
+            }
         }
 
         /* Delete the value at the current index. */
         inline void del() {
-            view.recycle(is_fwd ? fwd.drop() : bwd.drop());
+            if constexpr (std::is_const_v<View>) {
+                view.recycle(is_fwd ? cfwd.drop() : cbwd.drop());
+            } else {
+                view.recycle(is_fwd ? fwd.drop() : bwd.drop());
+            }
         }
 
         /* Implicitly convert the proxy to the value where applicable.  This is
@@ -174,23 +224,23 @@ namespace linked {
     /* Get a proxy for a value at a particular index of the list. */
     template <typename View>
     auto position(const View& view, long long index)
-        -> std::enable_if_t<ViewTraits<View>::linked, const ElementProxy<View>>
+        -> std::enable_if_t<ViewTraits<View>::linked, const ElementProxy<const View>>
     {
         size_t norm_index = normalize_index(index, view.size(), false);
 
         // maybe get backward iterator if closer to tail
         if constexpr (NodeTraits<typename View::Node>::has_prev) {
             if (view.closer_to_tail(norm_index)) {
-                auto it = view.rbegin();
+                auto it = view.crbegin();
                 for (size_t i = view.size() - 1; i > norm_index; --i, ++it);
-                return ElementProxy<View>(view, std::move(it));
+                return ElementProxy<const View>(view, std::move(it));
             }
         }
 
         // otherwise, use forward iterator
-        auto it = view.begin();
+        auto it = view.cbegin();
         for (size_t i = 0; i < norm_index; ++i, ++it);
-        return ElementProxy<View>(view, std::move(it));
+        return ElementProxy<const View>(view, std::move(it));
     }
 
 
