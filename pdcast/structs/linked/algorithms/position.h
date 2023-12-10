@@ -21,7 +21,7 @@ namespace linked {
 
     /* Normalize a numeric index, applying Python-style wraparound and bounds
     checking. */
-    size_t normalize_index(long long index, size_t size, bool truncate) {
+    inline size_t normalize_index(long long index, size_t size, bool truncate) {
         // wraparound
         bool lt_zero = index < 0;
         if (lt_zero) {
@@ -42,7 +42,7 @@ namespace linked {
 
 
     /* Normalize a Python integer for use as an index to a list. */
-    size_t normalize_index(PyObject* index, size_t size, bool truncate) {
+    inline size_t normalize_index(PyObject* index, size_t size, bool truncate) {
         if (!PyLong_Check(index)) {
             throw TypeError("index must be a Python integer");
         }
@@ -63,9 +63,8 @@ namespace linked {
 
     /* A proxy for an element at a particular index of a linked data structure, as
     returned by the [] operator. */
-    template <typename View, Yield yield = Yield::KEY>
+    template <typename View, Yield yield>
     class ElementProxy {
-        using Node = typename View::Node;
         using Value = typename View::Value;
 
         template <Direction dir>
@@ -126,7 +125,7 @@ namespace linked {
 
         /* Set the value at the current index. */
         inline void set(const Value& value) {
-            Node* node = view.node(value);
+            typename View::Node* node = view.node(value);
             view.recycle(is_fwd ? fwd.replace(node) : bwd.replace(node));
         }
 
@@ -155,7 +154,7 @@ namespace linked {
 
     /* Get a proxy for a value at a particular index of the list. */
     template <Yield yield = Yield::KEY, typename View>
-    auto position(View& view, long long index)
+    inline auto position(View& view, long long index)
         -> std::enable_if_t<
             ViewTraits<View>::linked,
             std::conditional_t<

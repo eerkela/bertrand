@@ -25,6 +25,10 @@ namespace linked {
 // lists, for example.
 
 
+// TODO: implement a fastpath for HashAllocator.search() that uses a linear probe for
+// small sets (<= MIN_CAPACITY).
+
+
 /////////////////////////
 ////    CONSTANTS    ////
 /////////////////////////
@@ -33,7 +37,7 @@ namespace linked {
 /* DEBUG=TRUE adds print statements for every memory allocation in order to help catch
 leaks.  This is a lot less elegant than using a formal logging library, but it gets the
 job done and is easier to use from a Python REPL. */
-inline constexpr bool DEBUG = false;
+inline constexpr bool DEBUG = true;
 
 
 ////////////////////

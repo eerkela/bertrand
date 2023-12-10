@@ -243,29 +243,33 @@ public:
      *      Iterator end(): return an iterator to terminate the slice.
      */
 
-    inline linked::ElementProxy<View> position(long long index) {
-        return linked::position(this->view, index);
+    inline auto position(long long index)
+        -> linked::ElementProxy<View, Yield::KEY>
+    {
+        return linked::position<Yield::KEY>(this->view, index);
     }
 
-    inline const linked::ElementProxy<const View> position(long long index) const {
-        return linked::position(this->view, index);
+    inline auto position(long long index) const
+        -> const linked::ElementProxy<const View, Yield::KEY>
+    {
+        return linked::position<Yield::KEY>(this->view, index);
     }
 
     template <typename... Args>
-    inline linked::SliceProxy<View, LinkedList> slice(Args&&... args) {
-        return linked::slice<View, LinkedList>(
-            this->view,
-            std::forward<Args>(args)...
+    inline auto slice(Args&&... args)
+        -> linked::SliceProxy<View, LinkedList, Yield::KEY>
+    {
+        return linked::slice<LinkedList, Yield::KEY>(
+            this->view, std::forward<Args>(args)...
         );
     }
 
     template <typename... Args>
     inline auto slice(Args&&... args) const
-        -> const linked::SliceProxy<const View, const LinkedList>
+        -> const linked::SliceProxy<const View, const LinkedList, Yield::KEY>
     {
-        return linked::slice<View, LinkedList>(
-            this->view,
-            std::forward<Args>(args)...
+        return linked::slice<LinkedList, Yield::KEY>(
+            this->view, std::forward<Args>(args)...
         );
     }
 

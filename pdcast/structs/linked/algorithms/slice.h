@@ -27,14 +27,14 @@ namespace linked {
     class SliceIndices {
         template <typename _View>
         friend SliceIndices<_View> normalize_slice(
-            const _View& view,
+            _View& view,
             std::optional<long long> start,
             std::optional<long long> stop,
             std::optional<long long> step
         );
 
         template <typename _View>
-        friend SliceIndices<_View> normalize_slice(const _View& view, PyObject* slice);
+        friend SliceIndices<_View> normalize_slice(_View& view, PyObject* slice);
 
         /* Construct a SliceIndices object from normalized indices. */
         SliceIndices(
@@ -42,44 +42,38 @@ namespace linked {
             long long stop,
             long long step,
             size_t length,
-            size_t view_size
+            size_t vsize
         ) : start(start), stop(stop), step(step), abs_step(std::llabs(step)),
             first(0), last(0), length(length), inverted(false), backward(false)
         {
-            using Node = typename View::Node;
-
-            // make closed interval
+            // convert from half-open to closed interval
             long long mod = bertrand::util::py_modulo((stop - start), step);
-            long long closed = (mod == 0) ? (stop - step) : (stop - mod);
+            long long nstop = (mod == 0) ? (stop - step) : (stop - mod);
 
             // flip start/stop based on singly-/doubly-linked status
-            if constexpr (NodeTraits<Node>::has_prev) {
-                long long lsize = static_cast<long long>(view_size);
-                bool congruent = (
-                    (step > 0 && start <= lsize - closed) ||
-                    (step < 0 && lsize - start <= closed)
+            if constexpr (NodeTraits<typename View::Node>::has_prev) {
+                long long lsize = static_cast<long long>(vsize);
+                inverted = (
+                    (step > 0 && lsize - nstop <= start) ||
+                    (step < 0 && nstop <= lsize - start)
                 );
-                first = congruent ? start : closed;
-                last = congruent ? closed : start;
-                backward = (
-                    first > last ||
-                    (first == last && first > ((view_size - (view_size > 0)) / 2))
-                );
+                first = inverted ? nstop : start;
+                last = inverted ? start : nstop;
+                backward = first > last || (first == last && first > (vsize + 1) / 2);
             } else {
-                first = step > 0 ? start : closed;
-                last = step > 0 ? closed : start;
+                inverted = step < 0;
+                first = inverted ? nstop : start;
+                last = inverted ? start : nstop;
             }
-            inverted = backward ^ (step < 0);
         }
 
     public:
-        long long start, stop, step;  // original indices supplied to constructor
+        long long start, stop, step;
         size_t abs_step;
-        size_t first, last;  // first and last indices included in slice
-        size_t length;  // total number of items
-        bool inverted;  // if true, first and last indices contradict step size
-        bool backward;  // if true, traverse from tail
-
+        size_t first, last;
+        size_t length;
+        bool inverted;
+        bool backward;
     };
 
 
@@ -87,21 +81,18 @@ namespace linked {
     checking. */
     template <typename View>
     SliceIndices<View> normalize_slice(
-        const View& view,
+        View& view,
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt,
         std::optional<long long> step = std::nullopt
     ) {
-        // apply defaults
         long long lsize = view.size();
         long long default_start = step.value_or(0) < 0 ? lsize - 1 : 0;
         long long default_stop = step.value_or(0) < 0 ? -1 : lsize;
 
-        // normalize step
         long long nstep = step.value_or(1);
         if (nstep == 0) throw ValueError("slice step cannot be zero");
 
-        // normalize start
         long long nstart = start.value_or(default_start);
         if (nstart < 0) {
             nstart += lsize;
@@ -112,7 +103,6 @@ namespace linked {
             nstart = nstep < 0 ? lsize - 1 : lsize;
         }
 
-        // normalize stop
         long long nstop = stop.value_or(default_stop);
         if (nstop < 0) {
             nstop += lsize;
@@ -131,11 +121,12 @@ namespace linked {
     /* Normalize a Python slice object, applying Python-style wraparound and bounds
     checking. */
     template <typename View>
-    SliceIndices<View> normalize_slice(const View& view, PyObject* slice) {
+    inline SliceIndices<View> normalize_slice(View& view, PyObject* slice) {
         using Indices = std::tuple<long long, long long, long long, size_t>;
 
         PySlice py_slice(slice);
         Indices indices(py_slice.normalize(view.size()));
+
         return SliceIndices<View>(
             std::get<0>(indices),
             std::get<1>(indices),
@@ -152,32 +143,31 @@ namespace linked {
 
 
     /* A proxy for a slice within a list, as returned by the slice() factory method. */
-    template <typename View, typename Result = View, Yield yield = Yield::KEY>
+    template <typename View, typename Result, Yield yield>
     class SliceProxy {
-        using Node = typename View::Node;
+        using Node = std::conditional_t<
+            std::is_const_v<View>,
+            const typename View::Node,
+            typename View::Node
+        >;
 
         template <Direction dir>
-        using ViewIter = typename View::template Iterator<dir, yield>;
-        template <Direction dir>
-        using ConstViewIter = typename View::template ConstIterator<dir, yield>;
+        using Iter = linked::Iterator<View, dir, yield>;
 
         View& view;
         const SliceIndices<View> indices;
         mutable bool cached;
-        mutable Node* _origin;  // node immediately preceding slice (can be null)
+        mutable Node* _origin;
 
-        template <typename _View, typename _Result, Yield _yield, typename... Args>
+        template <typename _Result, Yield _yield, typename _View, typename... Args>
         friend auto slice(_View& view, Args&&... args)
             -> std::enable_if_t<
                 ViewTraits<_View>::linked,
-                SliceProxy<_View, _Result, _yield>
-            >;
-
-        template <typename _View, typename _Result, Yield _yield, typename... Args>
-        friend auto slice(const _View& view, Args&&... args)
-            -> std::enable_if_t<
-                ViewTraits<_View>::linked,
-                const SliceProxy<const _View, const _Result, _yield>
+                std::conditional_t<
+                    std::is_const_v<_View>,
+                    const SliceProxy<_View, _Result, _yield>,
+                    SliceProxy<_View, _Result, _yield>
+                >
             >;
 
         /* Construct a SliceProxy using the normalized indices. */
@@ -256,11 +246,11 @@ namespace linked {
             // if doubly-linked, then we can potentially use a reverse iterator
             if constexpr (NodeTraits<Node>::has_prev) {
                 if (indices.backward) {
-                    auto iter = [&]() -> ViewIter<Direction::BACKWARD> {
+                    auto iter = [&]() -> Iter<Direction::BACKWARD> {
                         Node* next = origin();
                         Node* curr = (next == nullptr) ? view.tail() : next->prev();
                         Node* prev = (curr == nullptr) ? nullptr : curr->prev();
-                        return ViewIter<Direction::BACKWARD>(view, prev, curr, next);
+                        return Iter<Direction::BACKWARD>(view, prev, curr, next);
                     };
 
                     // remove current occupants
@@ -330,11 +320,11 @@ namespace linked {
             }
 
             // otherwise we do the same thing, but with a forward iterator
-            auto iter = [&]() -> ViewIter<Direction::FORWARD> {
+            auto iter = [&]() -> Iter<Direction::FORWARD> {
                 Node* prev = origin();
                 Node* curr = (prev == nullptr) ? view.head() : prev->next();
                 Node* next = (curr == nullptr) ? nullptr : curr->next();
-                return ViewIter<Direction::FORWARD>(view, prev, curr, next);
+                return Iter<Direction::FORWARD>(view, prev, curr, next);
             };
 
             // remove current occupants
@@ -438,8 +428,8 @@ namespace linked {
              */
 
             union {
-                ViewIter<Direction::FORWARD> fwd;
-                ViewIter<Direction::BACKWARD> bwd;
+                Iter<Direction::FORWARD> fwd;
+                Iter<Direction::BACKWARD> bwd;
             };
 
             std::stack<Node*> stack;
@@ -457,7 +447,7 @@ namespace linked {
                     Node* prev = origin;
                     Node* curr = (prev == nullptr) ? view.head() : prev->next();
                     Node* next = (curr == nullptr) ? nullptr : curr->next();
-                    new (&fwd) ViewIter<Direction::FORWARD>(view, prev, curr, next);
+                    new (&fwd) Iter<Direction::FORWARD>(view, prev, curr, next);
 
                     // use stack to cancel out inverted traversal
                     if (indices.inverted ^ (dir == Direction::BACKWARD)) {
@@ -476,7 +466,7 @@ namespace linked {
                         Node* next = origin;
                         Node* curr = (next == nullptr) ? view.tail() : next->prev();
                         Node* prev = (curr == nullptr) ? nullptr : curr->prev();
-                        new (&bwd) ViewIter<Direction::BACKWARD>(view, prev, curr, next);
+                        new (&bwd) Iter<Direction::BACKWARD>(view, prev, curr, next);
 
                         // use stack to cancel out inverted traversal
                         if (indices.inverted ^ (dir == Direction::BACKWARD)) {
@@ -500,7 +490,7 @@ namespace linked {
                 }
             }
 
-            /* Get an iterator to terminate a slice. */
+            /* Get an empty iterator to terminate the slice. */
             Iterator(View& view, const SliceIndices<View>& indices) :
                 view(view), indices(indices), idx(indices.length)
             {}
@@ -518,9 +508,9 @@ namespace linked {
                 idx(other.idx)
             {
                 if (indices.backward) {
-                    new (&bwd) ViewIter<Direction::BACKWARD>(other.bwd);
+                    new (&bwd) Iter<Direction::BACKWARD>(other.bwd);
                 } else {
-                    new (&fwd) ViewIter<Direction::FORWARD>(other.fwd);
+                    new (&fwd) Iter<Direction::FORWARD>(other.fwd);
                 }
             }
 
@@ -530,18 +520,18 @@ namespace linked {
                 indices(other.indices), idx(other.idx)
             {
                 if (indices.backward) {
-                    new (&bwd) ViewIter<Direction::BACKWARD>(std::move(other.bwd));
+                    new (&bwd) Iter<Direction::BACKWARD>(std::move(other.bwd));
                 } else {
-                    new (&fwd) ViewIter<Direction::FORWARD>(std::move(other.fwd));
+                    new (&fwd) Iter<Direction::FORWARD>(std::move(other.fwd));
                 }
             }
 
             /* Clean up union iterator on destruction. */
             ~Iterator() {
                 if (indices.backward) {
-                    bwd.~ViewIter<Direction::BACKWARD>();
+                    bwd.~Iter<Direction::BACKWARD>();
                 } else {
-                    fwd.~ViewIter<Direction::FORWARD>();
+                    fwd.~Iter<Direction::FORWARD>();
                 }
             }
 
@@ -627,14 +617,9 @@ namespace linked {
 
         /* Extract a slice from a linked list. */
         Result get() const {
-            // preallocate to exact size
-            View result(indices.length, view.specialization());
+            Result result(indices.length, view.specialization());
             if (indices.length == 0) {
-                if constexpr (std::is_same_v<View, Result>) {
-                    return result;
-                } else {
-                    return Result(std::move(result));
-                }
+                return result;
             }
 
             // if doubly-linked, then we can potentially use a reverse iterator
@@ -644,11 +629,18 @@ namespace linked {
                     Node* next = origin();
                     Node* curr = (next == nullptr) ? view.tail() : next->prev();
                     Node* prev = (curr == nullptr) ? nullptr : curr->prev();
-                    ViewIter<Direction::BACKWARD> it(view, prev, curr, next);
+                    Iter<Direction::BACKWARD> it(view, prev, curr, next);
                     if (indices.inverted) {
                         while (true) {
-                            Node* copy = result.node(*(it.curr()));
-                            result.link(nullptr, copy, result.head());  // prepend
+                            if constexpr (std::is_same_v<
+                                std::remove_const_t<View>, typename Result::View
+                            >) {
+                                Node* copy = result.view.node(*(it.curr()));
+                                result.view.link(nullptr, copy, result.view.head());
+                            } else {
+                                typename Result::Node* copy = result.view.node(*it);
+                                result.view.link(nullptr, copy, result.view.head());
+                            }
                             if (++idx == indices.length) {
                                 break;
                             }
@@ -656,21 +648,22 @@ namespace linked {
                         }
                     } else {
                         while (true) {
-                            Node* copy = result.node(*(it.curr()));
-                            result.link(result.tail(), copy, nullptr);  // append
+                            if constexpr (std::is_same_v<
+                                std::remove_const_t<View>, typename Result::View
+                            >) {
+                                Node* copy = result.view.node(*(it.curr()));
+                                result.view.link(result.view.tail(), copy, nullptr);
+                            } else {
+                                typename Result::Node* copy = result.view.node(*it);
+                                result.view.link(result.view.tail(), copy, nullptr);
+                            }
                             if (++idx == indices.length) {
                                 break;
                             }
                             for (size_t i = 0; i < indices.abs_step; ++i, ++it);
                         }
                     }
-
-                    // possibly wrap in higher-level container
-                    if constexpr (std::is_same_v<View, Result>) {
-                        return result;
-                    } else {
-                        return Result(std::move(result));
-                    }
+                    return result;
                 }
             }
 
@@ -679,11 +672,18 @@ namespace linked {
             Node* prev = origin();
             Node* curr = (prev == nullptr) ? view.head() : prev->next();
             Node* next = (curr == nullptr) ? nullptr : curr->next();
-            ViewIter<Direction::FORWARD> it(view, prev, curr, next);
+            Iter<Direction::FORWARD> it(view, prev, curr, next);
             if (indices.inverted) {
                 while (true) {
-                    Node* copy = result.node(*(it.curr()));
-                    result.link(nullptr, copy, result.head());  // prepend
+                    if constexpr (std::is_same_v<
+                        std::remove_const_t<View>, typename Result::View
+                    >) {
+                        Node* copy = result.view.node(*(it.curr()));
+                        result.view.link(nullptr, copy, result.view.head());
+                    } else {
+                        typename Result::Node* copy = result.view.node(*it);
+                        result.view.link(nullptr, copy, result.view.head());
+                    }
                     if (++idx == indices.length) {
                         break;
                     }
@@ -691,21 +691,22 @@ namespace linked {
                 }
             } else {
                 while (true) {
-                    Node* copy = result.node(*(it.curr()));
-                    result.link(result.tail(), copy, nullptr);  // append
+                    if constexpr (std::is_same_v<
+                        std::remove_const_t<View>, typename Result::View
+                    >) {
+                        Node* copy = result.view.node(*(it.curr()));
+                        result.view.link(result.view.tail(), copy, nullptr);
+                    } else {
+                        typename Result::Node* copy = result.view.node(*it);
+                        result.view.link(result.view.tail(), copy, nullptr);
+                    }
                     if (++idx == indices.length) {
                         break;
                     }
                     for (size_t i = 0; i < indices.abs_step; ++i, ++it);
                 }
             }
-
-            // possibly wrap in higher-level container
-            if constexpr (std::is_same_v<View, Result>) {
-                return result;
-            } else {
-                return Result(std::move(result));
-            }
+            return result;
         }
 
         /* Replace a slice within a linked list. */
@@ -735,7 +736,7 @@ namespace linked {
                         Node* next = origin();
                         Node* curr = (next == nullptr) ? view.tail() : next->prev();
                         Node* prev = (curr == nullptr) ? nullptr : curr->prev();
-                        ViewIter<Direction::BACKWARD> it(view, prev, curr, next);
+                        Iter<Direction::BACKWARD> it(view, prev, curr, next);
                         while (true) {
                             view.recycle(it.drop());
                             if (++idx == indices.length) {
@@ -752,7 +753,7 @@ namespace linked {
                 Node* prev = origin();
                 Node* curr = (prev == nullptr) ? view.head() : prev->next();
                 Node* next = (curr == nullptr) ? nullptr : curr->next();
-                ViewIter<Direction::FORWARD> it(view, prev, curr, next);
+                Iter<Direction::FORWARD> it(view, prev, curr, next);
                 while (true) {
                     view.recycle(it.drop());
                     if (++idx == indices.length) {
@@ -784,36 +785,24 @@ namespace linked {
 
     /* Get a proxy for a slice within the list. */
     template <
-        typename View,
-        typename Result = View,
+        typename Result,
         Yield yield = Yield::KEY,
+        typename View,
         typename... Args
     >
-    auto slice(View& view, Args&&... args)
-        -> std::enable_if_t<ViewTraits<View>::linked, SliceProxy<View, Result, yield>>
+    inline auto slice(View& view, Args&&... args)
+        -> std::enable_if_t<
+            ViewTraits<View>::linked,
+            std::conditional_t<
+                std::is_const_v<View>,
+                const SliceProxy<View, Result, yield>,
+                SliceProxy<View, Result, yield>
+            >
+        >
     {
         return SliceProxy<View, Result, yield>(
             view, normalize_slice(view, std::forward<Args>(args)...))
         ;
-    }
-
-
-    /* Get a const proxy for a slice within a const list. */
-    template <
-        typename View,
-        typename Result = View,
-        Yield yield = Yield::KEY,
-        typename... Args
-    >
-    auto slice(const View& view, Args&&... args)
-        -> std::enable_if_t<
-            ViewTraits<View>::linked,
-            const SliceProxy<const View, const Result, yield>
-        >
-    {
-        return SliceProxy<const View, const Result, yield>(
-            view, normalize_slice(view, std::forward<Args>(args)...)
-        );
     }
 
 

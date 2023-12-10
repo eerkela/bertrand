@@ -44,7 +44,7 @@ namespace linked {
             return 0;
         }
 
-        SliceIndices<View> indices = normalize_slice(view, start, stop);
+        SliceIndices<const View> indices = normalize_slice(view, start, stop);
         size_t norm_start = indices.start;
         size_t norm_stop = indices.stop;
         if (norm_start == norm_stop) {
@@ -85,7 +85,7 @@ namespace linked {
             return 0;
         }
 
-        SliceIndices<View> indices = normalize_slice(view, start, stop);
+        SliceIndices<const View> indices = normalize_slice(view, start, stop);
         size_t norm_start = indices.start;
         size_t norm_stop = indices.stop;
         if (norm_start == norm_stop) {
@@ -137,7 +137,7 @@ namespace linked {
             return 0;
         }
 
-        SliceIndices<View> indices = normalize_slice(view, start, stop);
+        SliceIndices<const View> indices = normalize_slice(view, start, stop);
         size_t norm_start = indices.start;
         size_t norm_stop = indices.stop;
         if (norm_start == norm_stop) {

@@ -400,29 +400,31 @@ public:
      * and will throw errors otherwise.  See structs/linked/list.h for more information.
      */
 
-    inline linked::ElementProxy<View> position(long long index) {
-        return linked::position(this->view, index);
+    inline auto position(long long index)
+        -> linked::ElementProxy<View, Yield::KEY>
+    {
+        return linked::position<Yield::KEY>(this->view, index);
     }
 
-    inline const linked::ElementProxy<const View> position(long long index) const {
-        return linked::position(this->view, index);
+    inline auto position(long long index) const
+        -> const linked::ElementProxy<const View, Yield::KEY>
+    {
+        return linked::position<Yield::KEY>(this->view, index);
     }
 
     template <typename... Args>
-    inline linked::SliceProxy<View, LinkedSet> slice(Args&&... args) {
-        return linked::slice<View, LinkedSet>(
-            this->view,
-            std::forward<Args>(args)...
+    inline linked::SliceProxy<View, LinkedSet, Yield::KEY> slice(Args&&... args) {
+        return linked::slice<LinkedSet, Yield::KEY>(
+            this->view, std::forward<Args>(args)...
         );
     }
 
     template <typename... Args>
     inline auto slice(Args&&... args) const
-        -> const linked::SliceProxy<const View, const LinkedSet>
+        -> const linked::SliceProxy<const View, const LinkedSet, Yield::KEY>
     {
-        return linked::slice<View, const LinkedSet>(
-            this->view,
-            std::forward<Args>(args)...
+        return linked::slice<const LinkedSet, Yield::KEY>(
+            this->view, std::forward<Args>(args)...
         );
     }
 

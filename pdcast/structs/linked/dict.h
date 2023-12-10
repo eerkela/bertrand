@@ -503,33 +503,37 @@ public:
         return linked::map(this->view, key);
     }
 
-    // TODO: dict.position() should return a std::pair<Key, Value>?  Would require
-    // changes to keys().position().  The ideal way to do this would be to have the
-    // proxy encapsulate a const SetView that points to the same allocator.
+    // TODO: position() should yield key-value pairs, not just keys.
+    // -> adjust behavior of __getitem_scalar__/__setitem_scalar__ to return a Python
+    // tuple.
 
-    inline linked::ElementProxy<View> position(long long index) {
-        return linked::position(this->view, index);
+    inline auto position(long long index)
+        -> linked::ElementProxy<View, Yield::KEY>
+    {
+        return linked::position<Yield::KEY>(this->view, index);
     }
 
-    inline const linked::ElementProxy<const View> position(long long index) const {
-        return linked::position(this->view, index);
+    inline auto position(long long index) const
+        -> const linked::ElementProxy<const View, Yield::KEY>
+    {
+        return linked::position<Yield::KEY>(this->view, index);
     }
 
     template <typename... Args>
-    inline linked::SliceProxy<View, LinkedDict> slice(Args&&... args) {
-        return linked::slice<View, LinkedDict>(
-            this->view,
-            std::forward<Args>(args)...
+    inline auto slice(Args&&... args)
+        -> linked::SliceProxy<View, LinkedDict, Yield::KEY>
+    {
+        return linked::slice<LinkedDict, Yield::KEY>(
+            this->view, std::forward<Args>(args)...
         );
     }
 
     template <typename... Args>
     inline auto slice(Args&&... args) const
-        -> const linked::SliceProxy<const View, const LinkedDict>
+        -> const linked::SliceProxy<const View, const LinkedDict, Yield::KEY>
     {
-        return linked::slice<const View, const LinkedDict>(
-            this->view,
-            std::forward<Args>(args)...
+        return linked::slice<const LinkedDict, Yield::KEY>(
+            this->view, std::forward<Args>(args)...
         );
     }
 
@@ -725,6 +729,9 @@ inline bool operator!=(
 // TODO: reverse equivalents for ==, !=
 
 
+// TODO: this is as simple as injecting the Yield:: directive into set comparisons.
+
+
 //////////////////////
 ////    keys()    ////
 //////////////////////
@@ -876,15 +883,19 @@ public:
 
     /* Get a read-only proxy for a key at a certain index of the referenced
     dictionary. */
-    inline auto position(long long index) const {
+    inline auto position(long long index) const
+        -> linked::ElementProxy<const View, Yield::KEY>
+    {
         return linked::position<Yield::KEY>(dict.view, index);
     }
 
-    // /* Get a read-only proxy for a slice of the referenced dictionary. */
-    // template <typename... Args>
-    // inline const auto slice(Args&&... args) const {
-    //     return to_set().slice(std::forward<Args>(args)...);
-    // }
+    /* Get a read-only proxy for a slice of the referenced dictionary. */
+    template <typename... Args>
+    inline auto slice(Args&&... args) const
+        -> linked::SliceProxy<const View, Set, Yield::KEY>
+    {
+        return linked::slice<Set, Yield::KEY>(dict.view, std::forward<Args>(args)...);
+    }
 
     //////////////////////////////////
     ////    OPERATOR OVERLOADS    ////
@@ -1104,19 +1115,19 @@ public:
     ////    INDEXING    ////
     ////////////////////////
 
-    // TODO: indexing/slicing does not work as expected.
-
     /* Get a read-only proxy for a key at a certain index of the referenced
     dictionary. */
-    inline auto position(long long index) const {
+    inline auto position(long long index) const
+        -> linked::ElementProxy<const View, Yield::VALUE>
+    {
         return linked::position<Yield::VALUE>(dict.view, index);
     }
 
-    // /* Get a read-only proxy for a slice of the referenced dictionary. */
-    // template <typename... Args>
-    // inline const auto slice(Args&&... args) const {
-    //     return to_set().slice(std::forward<Args>(args)...);  // TODO: does this hold a temporary reference?
-    // }
+    /* Get a read-only proxy for a slice of the referenced dictionary. */
+    template <typename... Args>
+    inline const auto slice(Args&&... args) const {
+        return linked::slice<List, Yield::VALUE>(dict.view, std::forward<Args>(args)...);
+    }
 
     //////////////////////////////////
     ////    OPERATOR OVERLOADS    ////
@@ -2571,9 +2582,9 @@ than one.
                     return Py_XNewRef(self->proxy[bertrand::util::parse_int(key)].get());
                 }
 
-                // if (PySlice_Check(key)) {
-                //     return PyLinkedSet::construct(self->proxy.slice(key).get());
-                // }
+                if (PySlice_Check(key)) {
+                    return PyLinkedSet::construct(self->proxy.slice(key).get());
+                }
 
                 PyErr_Format(
                     PyExc_TypeError,
@@ -2838,9 +2849,9 @@ These proxies support the following operations:
                     return Py_XNewRef(self->proxy[bertrand::util::parse_int(key)].get());
                 }
 
-                // if (PySlice_Check(key)) {
-                //     return PyLinkedSet::construct(self->proxy.slice(key).get());
-                // }
+                if (PySlice_Check(key)) {
+                    return PyLinkedList::construct(self->proxy.slice(key).get());
+                }
 
                 PyErr_Format(
                     PyExc_TypeError,
@@ -3804,14 +3815,14 @@ private:
         inline static PyMethodDef specialized_methods[] = {
             {"__init__", (PyCFunction) __init__, METH_VARARGS | METH_KEYWORDS, nullptr},
             {"fromkeys", (PyCFunction) fromkeys, METH_VARARGS | METH_KEYWORDS | METH_CLASS, nullptr},
-            {NULL}  // sentinel
+            {NULL}
         };
 
         /* Overridden slots for permanently-specialized types. */
         inline static PyType_Slot specialized_slots[] = {
             {Py_tp_init, (void*) __init__},
             {Py_tp_methods, specialized_methods},
-            {0}  // sentinel
+            {0}
         };
 
     public:
@@ -3845,18 +3856,15 @@ static struct PyModuleDef module_dict = {
 
 /* Python import hook. */
 PyMODINIT_FUNC PyInit_dict(void) {
-    // initialize type objects
     if (PyType_Ready(&PyLinkedDict::Type) < 0) {
         return nullptr;
     }
 
-    // initialize module
     PyObject* mod = PyModule_Create(&module_dict);
     if (mod == nullptr) {
         return nullptr;
     }
 
-    // link type to module
     Py_INCREF(&PyLinkedDict::Type);
     if (PyModule_AddObject(mod, "LinkedDict", (PyObject*) &PyLinkedDict::Type) < 0) {
         Py_DECREF(&PyLinkedDict::Type);
