@@ -65,10 +65,29 @@ namespace linked {
     returned by the [] operator. */
     template <typename View, Yield yield>
     class ElementProxy {
-        using Value = typename View::Value;
 
         template <Direction dir>
         using Iter = linked::Iterator<View, dir, yield>;
+
+        /* Infer result type based on `yield` parameter. */
+        template <Yield Y = Yield::KEY, typename Dummy = void>
+        struct DerefType {
+            using type = typename View::Value;
+        };
+        template <typename Dummy>
+        struct DerefType<Yield::VALUE, Dummy> {
+            using type = typename View::MappedValue;
+        };
+        template <typename Dummy>
+        struct DerefType<Yield::ITEM, Dummy> {
+            using type = std::pair<typename View::Value, typename View::MappedValue>;
+        };
+
+        using Deref = std::conditional_t<
+            std::is_const_v<View>,
+            const typename DerefType<yield>::type,
+            typename DerefType<yield>::type
+        >;
 
         union {
             Iter<Direction::FORWARD> fwd;
@@ -115,17 +134,14 @@ namespace linked {
         }
 
         /* Get the value at the current index. */
-        inline auto get() const {
-            if constexpr (is_pyobject<Value>) {
-                return Py_NewRef(is_fwd ? *fwd : *bwd);
-            } else {
-                return is_fwd ? *fwd : *bwd;
-            }
+        inline Deref get() const {
+            return is_fwd ? *fwd : *bwd;
         }
 
         /* Set the value at the current index. */
-        inline void set(const Value& value) {
-            typename View::Node* node = view.node(value);
+        template <typename... Args>
+        inline void set(Args&&... args) {
+            typename View::Node* node = view.node(std::forward<Args>(args)...);
             view.recycle(is_fwd ? fwd.replace(node) : bwd.replace(node));
         }
 
@@ -137,14 +153,14 @@ namespace linked {
         /* Implicitly convert the proxy to the value where applicable.  This is
         syntactic sugar for the get() method, such that `Value value = list[i]` is
         equivalent to `Value value = list[i].get()`. */
-        inline operator Value() const {
+        inline operator Deref() const {
             return get();
         }
 
         /* Assign the value at the current index.  This is syntactic sugar for the
         set() method, such that `list[i] = value` is equivalent to
         `list[i].set(value)`. */
-        inline ElementProxy& operator=(const Value& value) {
+        inline ElementProxy& operator=(const Deref& value) {
             set(value);
             return *this;
         }

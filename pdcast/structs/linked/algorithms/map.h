@@ -88,8 +88,7 @@ namespace linked {
         /* Delete the value stored with this key, or raise an error if it is not
         found. */
         inline void del() {
-            using Allocator = typename View::Allocator;
-            view.template recycle<Allocator::UNLINK>(key);
+            view.template recycle<View::Allocator::UNLINK>(key);
         }
 
         /* Allow simple assignment to the value stored under this key.  This is

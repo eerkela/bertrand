@@ -748,13 +748,12 @@ public:
         try {
             if (PyIndex_Check(key)) {
                 long long index = bertrand::util::parse_int(key);
-                PyObject* result = std::visit(
+                return std::visit(
                     [&index](auto& list) -> PyObject* {
-                        return list[index];
+                        return Py_XNewRef(list[index].get());
                     },
                     self->variant
                 );
-                return Py_XNewRef(result);
             }
 
             if (PySlice_Check(key)) {

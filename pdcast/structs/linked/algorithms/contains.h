@@ -11,23 +11,33 @@ namespace linked {
 
 
     /* Check if an item is contained within a linked list. */
-    template <typename View, typename Item>
+    template <Yield yield = Yield::KEY, typename View, typename Item>
     inline auto contains(const View& view, const Item& item)
-        -> std::enable_if_t<ViewTraits<View>::listlike, bool>
+        -> std::enable_if_t<ViewTraits<View>::listlike || yield == Yield::VALUE, bool>
     {
-        for (const auto& val : view) {
-            if (eq(val, item)) return true;
+        auto it = view.template begin<yield>();
+        auto end = view.template end<yield>();
+        for (; it != end; ++it) {
+            if (eq(*it, item)) {
+                return true;
+            }
         }
         return false;
     }
 
 
     /* Check if an item is contained within a linked set or dictionary. */
-    template <typename View, typename Item>
+    template <Yield yield = Yield::KEY, typename View, typename Item>
     inline auto contains(const View& view, const Item& item)
-        -> std::enable_if_t<ViewTraits<View>::hashed, bool>
+        -> std::enable_if_t<ViewTraits<View>::hashed && yield != Yield::VALUE, bool>
     {
-        return view.search(item) != nullptr;
+        if constexpr (yield == Yield::KEY) {
+            return view.search(item) != nullptr;
+        } else {
+            using Node = typename View::Node;
+            const Node* node = view.search(item.first);
+            return node != nullptr && eq(node->mapped(), item.second);
+        }
     }
 
     /* Check if an item is contained within a linked set or dictionary and move it to

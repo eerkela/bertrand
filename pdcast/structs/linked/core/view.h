@@ -112,7 +112,7 @@ class Iterator :
         "Yield::VALUE and Yield::ITEM can only be used on dictlike views."
     );
 
-    /* Infer dereference type based on `yield` parameter */
+    /* Infer dereference type based on `yield` parameter. */
     template <Yield Y = Yield::KEY, typename Dummy = void>
     struct DerefType {
         using type = typename Node::Value;

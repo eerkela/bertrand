@@ -10,182 +10,21 @@
 #include "slice.h"  // normalize_slice()
 
 
-// TODO: work in Yield::VALUE/ITEM for dictlike views.
-
-
 namespace bertrand {
 namespace linked {
 
 
     /* Get the index of an item within a linked list. */
-    template <typename View, typename Item>
+    template <Yield yield = Yield::KEY, typename View, typename Item>
     inline auto index(
         const View& view,
         const Item& item,
         std::optional<long long> start,
         std::optional<long long> stop
-    ) -> std::enable_if_t<ViewTraits<View>::listlike, size_t>
-    {
-        return _listlike_index(view, item, start, stop);
-    }
-
-
-    /* Get the index of a key within a linked set or dictionary. */
-    template <typename View, typename Item>
-    auto index(
-        const View& view,
-        const Item& item,
-        std::optional<long long> start,
-        std::optional<long long> stop
-    ) -> std::enable_if_t<ViewTraits<View>::hashed, size_t>
+    ) -> std::enable_if_t<ViewTraits<View>::listlike || yield == Yield::VALUE, size_t>
     {
         using Node = typename View::Node;
 
-        // helper for throwing not-found error
-        auto not_found = [](const Item& item) {
-            return KeyError(repr(item));
-        };
-
-        if (view.size() == 0) {
-            throw not_found(item);
-        }
-
-        SliceIndices<const View> indices = normalize_slice(view, start, stop);
-        size_t norm_start = indices.start;
-        size_t norm_stop = indices.stop;
-        if (norm_start == norm_stop) {
-            throw not_found(item);
-        }else if (norm_start > norm_stop) {
-            throw IndexError("start index cannot be greater than stop index");
-        }
-
-        const Node* node = view.search(item);
-        if (node == nullptr) {
-            throw not_found(item);
-        }
-
-        // NOTE: if list is doubly-linked and stop is closer to tail than start is to
-        // head, then we iterate backward from the tail
-        if constexpr (NodeTraits<Node>::has_prev) {
-            if (indices.backward) {
-                size_t idx = view.size() - 1;
-                auto it = view.rbegin();
-                for (; idx > norm_start; --idx, ++it);
-                for (; idx >= norm_stop; --idx, ++it) {
-                    if (it.curr() == node) {
-                        return idx;
-                    }
-                }
-                throw not_found(item);  // item comes before start
-            }
-        }
-
-        // otherwise, we have to iterate forward from the head
-        size_t idx = 0;
-        auto it = view.begin();
-        for (; idx < norm_start; ++idx, ++it) {
-            if (it.curr() == node) {
-                throw not_found(item);  // item comes before start
-            }
-        }
-        for (; idx < norm_stop; ++idx, ++it) {
-            if (it.curr() == node) {
-                return idx;
-            }
-        }
-        throw not_found(item);  // item comes after stop
-    }
-
-
-    /* Get the index of a key-value pair within a linked dictionary. */
-    template <typename View, typename Key, typename Value>
-    auto index(
-        const View& view,
-        const Key& key,
-        const Value& value,
-        std::optional<long long> start,
-        std::optional<long long> stop
-    ) -> std::enable_if_t<ViewTraits<View>::dictlike, size_t>
-    {
-        using Node = typename View::Node;
-
-        // convenience function for throwing not-found error
-        auto not_found = [](const Key& key) {
-            return KeyError(repr(key));
-        };
-
-        if (view.size() == 0) {
-            throw not_found(key);
-        }
-
-        SliceIndices<const View> indices = normalize_slice(view, start, stop);
-        size_t norm_start = indices.start;
-        size_t norm_stop = indices.stop;
-        if (norm_start == norm_stop) {
-            throw not_found(key);
-        } else if (norm_start > norm_stop) {
-            throw IndexError("start index cannot be greater than stop index");
-        }
-
-        Node* node = view.search(key);
-        if (node == nullptr) {
-            throw not_found(key);
-        } else if (!eq(node->mapped(), value)) {
-            std::ostringstream msg;
-            msg << "value mismatch for key " << repr(key) << ": ";
-            msg << repr(node->mapped()) << " != " << repr(value);
-            throw KeyError(msg.str());
-        }
-
-        // NOTE: if list is doubly-linked and stop is closer to tail than start is to
-        // head, then we iterate backward from the tail
-        if constexpr (NodeTraits<Node>::has_prev) {
-            if (indices.backward) {
-                size_t idx = view.size() - 1;
-                auto it = view.rbegin();
-                for (; idx > norm_start; --idx, ++it);
-                for (; idx >= norm_stop; --idx, ++it) {
-                    if (it.curr() == node) return idx;
-                }
-                throw not_found(key);  // key comes before start
-            }
-        }
-
-        // otherwise, we iterate forward from the head
-        size_t idx = 0;
-        auto it = view.begin();
-        for (; idx < norm_start; ++idx, ++it) {
-            if (it.curr() == node) {
-                throw not_found(key);  // comes before start
-            }
-        }
-        for (; idx < norm_stop; ++idx, ++it) {
-            if (it.curr() == node) {
-                return idx;
-            }
-        }
-        throw not_found(key);  // key comes after stop
-    }
-
-
-    ////////////////////////
-    ////    INTERNAL    ////
-    ////////////////////////
-
-    // NOTE: this used for both the listlike index() method as well as
-    // LinkedDict.values().index().
-
-    /* Get the index of an item within a linked list. */
-    template <typename View, typename Item>
-    size_t _listlike_index(
-        const View& view,
-        const Item& item,
-        std::optional<long long> start,
-        std::optional<long long> stop
-    ) {
-        using Node = typename View::Node;
-
-        // convenience function for throwing not-found error
         auto not_found = [](const Item& item) {
             return KeyError(repr(item));
         };
@@ -208,7 +47,7 @@ namespace linked {
         if constexpr (NodeTraits<Node>::has_prev) {
             if (indices.backward) {
                 size_t idx = view.size() - 1;
-                auto it = view.rbegin();
+                auto it = view.template rbegin<yield>();
                 for (; idx > norm_stop; --idx, ++it);
 
                 bool found = false;
@@ -228,7 +67,7 @@ namespace linked {
 
         // otherwise, we have to iterate forward from head
         size_t idx = 0;
-        auto it = view.begin();
+        auto it = view.template begin<yield>();
         for (; idx < norm_start; ++idx, ++it);
         for (; idx < norm_stop; ++idx, ++it) {
             if (eq(*it, item)) {
@@ -238,6 +77,88 @@ namespace linked {
         throw not_found(item);
     }
 
+
+    /* Get the index of a key within a linked set or dictionary. */
+    template <Yield yield = Yield::KEY, typename View, typename Item>
+    auto index(
+        const View& view,
+        const Item& item,
+        std::optional<long long> start,
+        std::optional<long long> stop
+    ) -> std::enable_if_t<ViewTraits<View>::hashed && yield != Yield::VALUE, size_t>
+    {
+        using Node = typename View::Node;
+
+        auto not_found = [](const Item& item) {
+            if constexpr (yield == Yield::ITEM) {
+                return KeyError(repr(item.first));
+            } else {
+                return KeyError(repr(item));
+            }
+        };
+
+        if (view.size() == 0) {
+            throw not_found(item);
+        }
+
+        SliceIndices<const View> indices = normalize_slice(view, start, stop);
+        size_t norm_start = indices.start;
+        size_t norm_stop = indices.stop;
+        if (norm_start == norm_stop) {
+            throw not_found(item);
+        } else if (norm_start > norm_stop) {
+            throw IndexError("start index cannot be greater than stop index");
+        }
+
+        const Node* node;
+        if constexpr (yield == Yield::ITEM) {
+            node = view.search(item.first);
+            if (node == nullptr) {
+                throw not_found(item);
+            } else if (!eq(node->mapped(), item.second)) {
+                std::ostringstream msg;
+                msg << "value mismatch for key " << repr(item.first) << ": ";
+                msg << repr(node->mapped()) << " != " << repr(item.second);
+                throw KeyError(msg.str());
+            }
+        } else {
+            node = view.search(item);
+            if (node == nullptr) {
+                throw not_found(item);
+            }
+        }
+
+        // NOTE: if list is doubly-linked and stop is closer to tail than start is to
+        // head, then we iterate backward from the tail
+        if constexpr (NodeTraits<Node>::has_prev) {
+            if (indices.backward) {
+                size_t idx = view.size() - 1;
+                auto it = view.template rbegin<yield>();
+                for (; idx > norm_start; --idx, ++it);
+                for (; idx >= norm_stop; --idx, ++it) {
+                    if (it.curr() == node) {
+                        return idx;
+                    }
+                }
+                throw not_found(item);
+            }
+        }
+
+        // otherwise, we have to iterate forward from the head
+        size_t idx = 0;
+        auto it = view.template begin<yield>();
+        for (; idx < norm_start; ++idx, ++it) {
+            if (it.curr() == node) {
+                throw not_found(item);
+            }
+        }
+        for (; idx < norm_stop; ++idx, ++it) {
+            if (it.curr() == node) {
+                return idx;
+            }
+        }
+        throw not_found(item);
+    }
 
 
 }  // namespace linked

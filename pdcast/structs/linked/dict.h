@@ -503,20 +503,16 @@ public:
         return linked::map(this->view, key);
     }
 
-    // TODO: position() should yield key-value pairs, not just keys.
-    // -> adjust behavior of __getitem_scalar__/__setitem_scalar__ to return a Python
-    // tuple.
-
     inline auto position(long long index)
-        -> linked::ElementProxy<View, Yield::KEY>
+        -> linked::ElementProxy<View, Yield::ITEM>
     {
-        return linked::position<Yield::KEY>(this->view, index);
+        return linked::position<Yield::ITEM>(this->view, index);
     }
 
     inline auto position(long long index) const
-        -> const linked::ElementProxy<const View, Yield::KEY>
+        -> const linked::ElementProxy<const View, Yield::ITEM>
     {
-        return linked::position<Yield::KEY>(this->view, index);
+        return linked::position<Yield::ITEM>(this->view, index);
     }
 
     template <typename... Args>
@@ -780,7 +776,7 @@ public:
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
-        return dict.index(key, start, stop);
+        return linked::index<Yield::KEY>(dict.view, key, start, stop);
     }
 
     /* Count the number of occurrences of a key within the dictionary. */
@@ -789,12 +785,12 @@ public:
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
-        return dict.count(key, start, stop);
+        return linked::count<Yield::KEY>(dict.view, key, start, stop);
     }
 
     /* Check if the referenced dictionary contains the given key. */
     inline bool contains(Key& key) const {
-        return dict.contains(key);
+        return linked::contains<Yield::KEY>(dict.view, key);
     }
 
     /* Check whether the referenced dictionary has no keys in common with another
@@ -884,7 +880,7 @@ public:
     /* Get a read-only proxy for a key at a certain index of the referenced
     dictionary. */
     inline auto position(long long index) const
-        -> linked::ElementProxy<const View, Yield::KEY>
+        -> const linked::ElementProxy<const View, Yield::KEY>
     {
         return linked::position<Yield::KEY>(dict.view, index);
     }
@@ -892,9 +888,11 @@ public:
     /* Get a read-only proxy for a slice of the referenced dictionary. */
     template <typename... Args>
     inline auto slice(Args&&... args) const
-        -> linked::SliceProxy<const View, Set, Yield::KEY>
+        -> const linked::SliceProxy<const View, Set, Yield::KEY>
     {
-        return linked::slice<Set, Yield::KEY>(dict.view, std::forward<Args>(args)...);
+        return linked::slice<Set, Yield::KEY>(
+            dict.view, std::forward<Args>(args)...
+        );
     }
 
     //////////////////////////////////
@@ -909,7 +907,9 @@ public:
      * overloads below for more details.
      */
 
-    inline const auto operator[](long long index) const {
+    inline auto operator[](long long index) const
+        -> const linked::ElementProxy<const View, Yield::KEY>
+    {
         return position(index);
     }
 
@@ -1053,6 +1053,7 @@ class ValuesProxy {
     ValuesProxy(const Dict& dict) : dict(dict) {}
 
 public:
+    // TODO: eliminate this by integrating Yield:: with index()/count()
     using Node = typename Dict::View::Node;
 
     /* Convert the values proxy into an equivalent list. */
@@ -1065,37 +1066,32 @@ public:
         return dict;
     }
 
-    /* Get the index of a key within the dictionary. */
-    inline size_t index(
-        const Value& key,
-        std::optional<long long> start = std::nullopt,
-        std::optional<long long> stop = std::nullopt
-    ) const {
-        return linked::_listlike_index(*this, key, start, stop);
+    /* Get the total number of values stored in the proxied dictionary. */
+    inline size_t size() const {
+        return dict.size();
     }
 
-    /* Count the number of occurrences of a key within the dictionary. */
-    inline size_t count(
-        const Value& key,
+    /* Get the index of a value within the dictionary. */
+    inline size_t index(
+        const Value& value,
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
-        return linked::_listlike_count(*this, key, start, stop);
+        return linked::index<Yield::VALUE>(dict.view, value, start, stop);
+    }
+
+    /* Count the number of occurrences of a value within the dictionary. */
+    inline size_t count(
+        const Value& value,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        return linked::count<Yield::VALUE>(dict.view, value, start, stop);
     }
 
     /* Check if the referenced dictionary contains the given value. */
     inline bool contains(const Value& value) const {
-        for (auto val : *this) {
-            if (eq(val, value)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /* Get the total number of values stored in the proxied dictionary. */
-    inline size_t size() const {
-        return dict.size();
+        return linked::contains<Yield::VALUE>(dict.view, value);
     }
 
     /////////////////////////
@@ -1118,15 +1114,19 @@ public:
     /* Get a read-only proxy for a key at a certain index of the referenced
     dictionary. */
     inline auto position(long long index) const
-        -> linked::ElementProxy<const View, Yield::VALUE>
+        -> const linked::ElementProxy<const View, Yield::VALUE>
     {
         return linked::position<Yield::VALUE>(dict.view, index);
     }
 
     /* Get a read-only proxy for a slice of the referenced dictionary. */
     template <typename... Args>
-    inline const auto slice(Args&&... args) const {
-        return linked::slice<List, Yield::VALUE>(dict.view, std::forward<Args>(args)...);
+    inline auto slice(Args&&... args) const
+        -> const linked::SliceProxy<const View, List, Yield::VALUE>
+    {
+        return linked::slice<List, Yield::VALUE>(
+            dict.view, std::forward<Args>(args)...
+        );
     }
 
     //////////////////////////////////
@@ -1141,7 +1141,9 @@ public:
      * overloads below for more details.
      */
 
-    inline const auto operator[](long long index) const {
+    inline auto operator[](long long index) const
+        -> const linked::ElementProxy<const View, Yield::VALUE>
+    {
         return position(index);
     }
 
@@ -1265,10 +1267,21 @@ inline bool operator>(const Container& other, const ValuesProxy<Dict>& proxy) {
 `dict.items()` accessor. */
 template <typename Dict>
 class ItemsProxy {
+    using View = typename Dict::View;
+    using Key = typename Dict::Key;
+    using Value = typename Dict::Value;
+    using List = LinkedList<
+        std::pair<Key, Value>,
+        Dict::FLAGS & ~Config::FIXED_SIZE,
+        typename Dict::Lock
+    >;
+
     friend Dict;
     const Dict& dict;
 
     ItemsProxy(const Dict& dict) : dict(dict) {}
+
+    // TODO: do we really care whether values are hashable?
 
     /* Check whether the value type is hashable. */
     template <typename T, typename U = void>
@@ -1279,13 +1292,21 @@ class ItemsProxy {
     {};
 
 public:
-    using Key = typename Dict::Key;
-    using Value = typename Dict::Value;
     static constexpr bool hashable = is_hashable<Value>::value;
+
+    /* Convert the items proxy in an equivalent list. */
+    inline List to_list() const {
+        return List(*this, dict.size(), dict.specialization());
+    }
 
     /* Get a read-only reference to the proxied dictionary. */
     inline const Dict& mapping() const {
         return dict;
+    }
+
+    /* Get the total number of items stored in the proxied dictionary. */
+    inline size_t size() const {
+        return dict.size();
     }
 
     /* Get the index of a key within the dictionary. */
@@ -1295,7 +1316,8 @@ public:
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
-        return linked::index(dict.view, key, value, start, stop);
+        std::pair<Key, Value> item(key, value);
+        return linked::index<Yield::ITEM>(dict.view, item, start, stop);
     }
 
     /* Apply an index() check using a C++ pair. */
@@ -1304,7 +1326,7 @@ public:
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
-        return index(item.first, item.second, start, stop);
+        return linked::index<Yield::ITEM>(dict.view, item, start, stop);
     }
 
     /* Apply an index() check using a C++ tuple of size 2. */
@@ -1313,7 +1335,8 @@ public:
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
-        return index(std::get<0>(item), std::get<1>(item), start, stop);
+        std::pair<Key, Value> pair(std::get<0>(item), std::get<1>(item));
+        return linked::index<Yield::ITEM>(dict.view, pair, start, stop);
     }
 
     /* Apply an index() check using a Python tuple of size 2. */
@@ -1325,12 +1348,8 @@ public:
         if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 2) {
             throw TypeError("expected a tuple of size 2");
         }
-        return index(
-            PyTuple_GET_ITEM(item, 0),
-            PyTuple_GET_ITEM(item, 1),
-            start,
-            stop
-        );
+        std::pair<Key, Value> pair(PyTuple_GET_ITEM(item, 0), PyTuple_GET_ITEM(item, 1));
+        return linked::index<Yield::ITEM>(pair, start, stop);
     }
 
     /* Count the number of occurrences of a key within the dictionary. */
@@ -1340,7 +1359,8 @@ public:
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
-        return linked::count(dict.view, key, value, start, stop);
+        std::pair<Key, Value> item(key, value);
+        return linked::count<Yield::ITEM>(dict.view, item, start, stop);
     }
 
     /* Apply a count() check using a C++ pair. */
@@ -1349,7 +1369,7 @@ public:
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
-        return count(item.first, item.second, start, stop);
+        return linked::count<Yield::ITEM>(dict.view, item, start, stop);
     }
 
     /* Apply a count() check using a C++ tuple of size 2. */
@@ -1358,7 +1378,8 @@ public:
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
-        return count(std::get<0>(item), std::get<1>(item), start, stop);
+        std::pair<Key, Value> pair(std::get<0>(item), std::get<1>(item));
+        return linked::count<Yield::ITEM>(dict.view, pair, start, stop);
     }
 
     /* Apply a count() check using a Python tuple of size 2. */
@@ -1370,28 +1391,25 @@ public:
         if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 2) {
             throw TypeError("expected a tuple of size 2");
         }
-        return count(
-            PyTuple_GET_ITEM(item, 0),
-            PyTuple_GET_ITEM(item, 1),
-            start,
-            stop
-        );
+        std::pair<Key, Value> pair(PyTuple_GET_ITEM(item, 0), PyTuple_GET_ITEM(item, 1));
+        return linked::count<Yield::ITEM>(dict.view, pair, start, stop);
     }
 
     /* Check if the referenced dictionary contains the given key-value pair. */
     inline bool contains(const Key& key, const Value& value) const {
-        typename Dict::Node* node = dict.view.search(key);
-        return node != nullptr && eq(node->mapped(), value);
+        std::pair<Key, Value> item(key, value);
+        return linked::contains<Yield::ITEM>(dict.view, item);
     }
 
     /* Apply a contains() check using a C++ pair. */
     inline bool contains(const std::pair<Key, Value> item) const {
-        return contains(item.first, item.second);
+        return linked::contains<Yield::ITEM>(dict.view, item);
     }
 
     /* Apply a contains() check using a C++ tuple of size 2. */
     inline bool contains(const std::tuple<Key, Value>& item) const {
-        return contains(std::get<0>(item), std::get<1>(item));
+        std::pair<Key, Value> pair(std::get<0>(item), std::get<1>(item));
+        return linked::contains<Yield::ITEM>(dict.view, pair);
     }
 
     /* Apply a contains() check using a Python tuple of size 2. */
@@ -1399,12 +1417,8 @@ public:
         if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) != 2) {
             throw TypeError("expected a tuple of size 2");
         }
-        return contains(PyTuple_GET_ITEM(item, 0), PyTuple_GET_ITEM(item, 1));
-    }
-
-    /* Get the total number of items stored in the proxied dictionary. */
-    inline size_t size() const {
-        return dict.size();
+        std::pair<Key, Value> pair(PyTuple_GET_ITEM(item, 0), PyTuple_GET_ITEM(item, 1));
+        return linked::contains<Yield::ITEM>(dict.view, pair);
     }
 
     /////////////////////////
@@ -1742,8 +1756,6 @@ public:
         }
     }
 
-    // TODO: thoroughly check these
-
     static PyObject* keys(Derived* self, PyObject* = nullptr) {
         try {
             return std::visit(
@@ -1848,6 +1860,22 @@ public:
     }
 
 protected:
+
+    /* Implement `PySequence_GetItem()` in CPython API. */
+    static PyObject* __getitem_scalar__(Derived* self, Py_ssize_t index) {
+        try {
+            return std::visit(
+                [&index](auto& dict) -> PyObject* {
+                    std::pair<PyObject*, PyObject*> item = dict.position(index).get();
+                    return PyTuple_Pack(2, item.first, item.second);
+                },
+                self->variant
+            );
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
 
     struct docs {
 
@@ -3605,7 +3633,7 @@ constructor itself.
     inline static PySequenceMethods sequence = [] {
         PySequenceMethods slots;
         slots.sq_length = (lenfunc) Base::__len__;
-        slots.sq_item = (ssizeargfunc) IList::__getitem_scalar__;
+        slots.sq_item = (ssizeargfunc) IDict::__getitem_scalar__;
         slots.sq_ass_item = (ssizeobjargproc) IList::__setitem_scalar__;
         slots.sq_contains = (objobjproc) IList::__contains__;
         return slots;
