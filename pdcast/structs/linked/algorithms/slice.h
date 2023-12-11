@@ -143,8 +143,14 @@ namespace linked {
 
 
     /* A proxy for a slice within a list, as returned by the slice() factory method. */
-    template <typename View, typename Result, Yield yield>
+    template <typename View, typename Result, Yield yield, bool as_pytuple = false>
     class SliceProxy {
+        static_assert(
+            !(ViewTraits<View>::dictlike && yield != Yield::ITEM && as_pytuple),
+            "as_pytuple is only valid if view is dictlike and yield is set to "
+            "Yield::ITEM"
+        );
+
         using Node = std::conditional_t<
             std::is_const_v<View>,
             const typename View::Node,
@@ -159,14 +165,20 @@ namespace linked {
         mutable bool cached;
         mutable Node* _origin;
 
-        template <typename _Result, Yield _yield, typename _View, typename... Args>
+        template <
+            typename _Result,
+            Yield _yield,
+            bool _as_pyobject,
+            typename _View,
+            typename... Args
+        >
         friend auto slice(_View& view, Args&&... args)
             -> std::enable_if_t<
                 ViewTraits<_View>::linked,
                 std::conditional_t<
                     std::is_const_v<_View>,
-                    const SliceProxy<_View, _Result, _yield>,
-                    SliceProxy<_View, _Result, _yield>
+                    const SliceProxy<_View, _Result, _yield, _as_pyobject>,
+                    SliceProxy<_View, _Result, _yield, _as_pyobject>
                 >
             >;
 
@@ -622,6 +634,25 @@ namespace linked {
                 return result;
             }
 
+            // helper for generating an appropriate node from a view iterator
+            auto parse = [&result](const auto& it) {
+                if constexpr (std::is_same_v<
+                    std::remove_const_t<View>, typename Result::View
+                >) {
+                    return result.view.node(*(it.curr()));
+                } else {
+                    if constexpr (as_pytuple) {
+                        std::pair<PyObject*, PyObject*> item = *it;
+                        PyObject* tup = PyTuple_Pack(2, item.first, item.second);
+                        typename Result::Node* parsed = result.view.node(tup);
+                        Py_DECREF(tup);
+                        return parsed;
+                    } else {
+                        return result.view.node(*it);
+                    }
+                }
+            };
+
             // if doubly-linked, then we can potentially use a reverse iterator
             if constexpr (NodeTraits<Node>::has_prev) {
                 if (indices.backward) {
@@ -632,15 +663,7 @@ namespace linked {
                     Iter<Direction::BACKWARD> it(view, prev, curr, next);
                     if (indices.inverted) {
                         while (true) {
-                            if constexpr (std::is_same_v<
-                                std::remove_const_t<View>, typename Result::View
-                            >) {
-                                Node* copy = result.view.node(*(it.curr()));
-                                result.view.link(nullptr, copy, result.view.head());
-                            } else {
-                                typename Result::Node* copy = result.view.node(*it);
-                                result.view.link(nullptr, copy, result.view.head());
-                            }
+                            result.view.link(nullptr, parse(it), result.view.head());
                             if (++idx == indices.length) {
                                 break;
                             }
@@ -648,15 +671,7 @@ namespace linked {
                         }
                     } else {
                         while (true) {
-                            if constexpr (std::is_same_v<
-                                std::remove_const_t<View>, typename Result::View
-                            >) {
-                                Node* copy = result.view.node(*(it.curr()));
-                                result.view.link(result.view.tail(), copy, nullptr);
-                            } else {
-                                typename Result::Node* copy = result.view.node(*it);
-                                result.view.link(result.view.tail(), copy, nullptr);
-                            }
+                            result.view.link(result.view.tail(), parse(it), nullptr);
                             if (++idx == indices.length) {
                                 break;
                             }
@@ -675,15 +690,7 @@ namespace linked {
             Iter<Direction::FORWARD> it(view, prev, curr, next);
             if (indices.inverted) {
                 while (true) {
-                    if constexpr (std::is_same_v<
-                        std::remove_const_t<View>, typename Result::View
-                    >) {
-                        Node* copy = result.view.node(*(it.curr()));
-                        result.view.link(nullptr, copy, result.view.head());
-                    } else {
-                        typename Result::Node* copy = result.view.node(*it);
-                        result.view.link(nullptr, copy, result.view.head());
-                    }
+                    result.view.link(nullptr, parse(it), result.view.head());
                     if (++idx == indices.length) {
                         break;
                     }
@@ -691,15 +698,7 @@ namespace linked {
                 }
             } else {
                 while (true) {
-                    if constexpr (std::is_same_v<
-                        std::remove_const_t<View>, typename Result::View
-                    >) {
-                        Node* copy = result.view.node(*(it.curr()));
-                        result.view.link(result.view.tail(), copy, nullptr);
-                    } else {
-                        typename Result::Node* copy = result.view.node(*it);
-                        result.view.link(result.view.tail(), copy, nullptr);
-                    }
+                    result.view.link(result.view.tail(), parse(it), nullptr);
                     if (++idx == indices.length) {
                         break;
                     }
@@ -787,6 +786,7 @@ namespace linked {
     template <
         typename Result,
         Yield yield = Yield::KEY,
+        bool as_pytuple = false,
         typename View,
         typename... Args
     >
@@ -795,12 +795,12 @@ namespace linked {
             ViewTraits<View>::linked,
             std::conditional_t<
                 std::is_const_v<View>,
-                const SliceProxy<View, Result, yield>,
-                SliceProxy<View, Result, yield>
+                const SliceProxy<View, Result, yield, as_pytuple>,
+                SliceProxy<View, Result, yield, as_pytuple>
             >
         >
     {
-        return SliceProxy<View, Result, yield>(
+        return SliceProxy<View, Result, yield, as_pytuple>(
             view, normalize_slice(view, std::forward<Args>(args)...))
         ;
     }

@@ -313,9 +313,9 @@ public:
 /* Print the abbreviated contents of a list to an output stream (equivalent to Python
 repr()). */
 template <typename T, unsigned int Flags, typename... Ts>
-inline std::ostream& operator<<(
-    std::ostream& stream, const LinkedList<T, Flags, Ts...>& list
-) {
+inline auto operator<<(std::ostream& stream, const LinkedList<T, Flags, Ts...>& list)
+    -> std::ostream&
+{
     stream << linked::build_repr(
         list.view,
         "LinkedList",
@@ -328,42 +328,42 @@ inline std::ostream& operator<<(
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline LinkedList<T, Flags, Ts...> operator+(
-    const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs
-) {
+inline auto operator+(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs)
+    -> LinkedList<T, Flags, Ts...>
+{
     return linked::concatenate(lhs.view, rhs);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline LinkedList<T, Flags, Ts...>& operator+=(
-    LinkedList<T, Flags, Ts...>& lhs, const Container& rhs
-) {
+inline auto operator+=(LinkedList<T, Flags, Ts...>& lhs, const Container& rhs)
+    -> LinkedList<T, Flags, Ts...>&
+{
     linked::extend(lhs.view, rhs);
     return lhs;
 }
 
 
 template <typename T, unsigned int Flags, typename... Ts>
-inline LinkedList<T, Flags, Ts...> operator*(
-    const LinkedList<T, Flags, Ts...>& list, const long long rhs
-) {
+inline auto operator*(const LinkedList<T, Flags, Ts...>& list, const long long rhs)
+    -> LinkedList<T, Flags, Ts...>
+{
     return linked::repeat(list.view, rhs);
 }
 
 
 template <typename T, unsigned int Flags, typename... Ts>
-inline LinkedList<T, Flags, Ts...> operator*(
-    const long long lhs, const LinkedList<T, Flags, Ts...>& list
-) {
+inline auto operator*(const long long lhs, const LinkedList<T, Flags, Ts...>& list)
+    -> LinkedList<T, Flags, Ts...>
+{
     return linked::repeat(list.view, lhs);
 }
 
 
 template <typename T, unsigned int Flags, typename... Ts>
-inline LinkedList<T, Flags, Ts...>& operator*=(
-    LinkedList<T, Flags, Ts...>& list, const long long rhs
-) {
+inline auto operator*=(LinkedList<T, Flags, Ts...>& list, const long long rhs)
+    -> LinkedList<T, Flags, Ts...>&
+{
     linked::repeat_inplace(list.view, rhs);
     return list;
 }

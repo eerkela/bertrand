@@ -156,7 +156,9 @@ namespace linked {
         std::unordered_set<const Node*> found;
         for (const auto& item : iter(items)) {
             const Node* node = view.search(item);
-            if (node != nullptr) found.insert(node);
+            if (node != nullptr) {
+                found.insert(node);
+            }
         }
 
         View copy(view.size() - found.size(), view.specialization());
@@ -167,6 +169,10 @@ namespace linked {
         }
         return copy;
     }
+
+
+    // TODO: if yield = Yield::ITEM, then the result should use values from the
+    // other container if it is dictlike.
 
 
     /* Get the intersection between a linked set or dictionary and an arbitrary Python
@@ -181,7 +187,9 @@ namespace linked {
         std::unordered_set<const Node*> found;
         for (const auto& item : iter(items)) {
             const Node* node = view.search(item);
-            if (node != nullptr) found.insert(node);
+            if (node != nullptr) {
+                found.insert(node);
+            }
         }
 
         View copy(found.size(), view.specialization());

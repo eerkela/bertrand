@@ -89,7 +89,7 @@ template <typename Dict>
 class KeysProxy;
 template <typename Dict>
 class ValuesProxy;
-template <typename Dict>
+template <typename Dict, bool as_pytuple>
 class ItemsProxy;
 
 
@@ -130,7 +130,6 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    // inherit constructors from LinkedBase
     using Base::Base;
     using Base::operator=;
 
@@ -483,29 +482,28 @@ public:
      * documentation in linked/list.h for more information.
      */
 
-    inline KeysProxy<LinkedDict> keys() const {
+    inline auto keys() const -> KeysProxy<LinkedDict> {
         return KeysProxy<LinkedDict>(*this);
     }
 
-    inline ValuesProxy<LinkedDict> values() const {
+    inline auto values() const -> ValuesProxy<LinkedDict> {
         return ValuesProxy<LinkedDict>(*this);
     }
 
-    inline ItemsProxy<LinkedDict> items() const {
-        return ItemsProxy<LinkedDict>(*this);
+    template <bool as_pytuple = false>
+    inline auto items() const -> ItemsProxy<LinkedDict, as_pytuple> {
+        return ItemsProxy<LinkedDict, as_pytuple>(*this);
     }
 
-    inline linked::MapProxy<View> map(const Key& key) {
+    inline auto map(const Key& key) -> linked::MapProxy<View> {
         return linked::map(this->view, key);
     }
 
-    inline const linked::MapProxy<const View> map(const Key& key) const {
+    inline auto map(const Key& key) const -> const linked::MapProxy<const View> {
         return linked::map(this->view, key);
     }
 
-    inline auto position(long long index)
-        -> linked::ElementProxy<View, Yield::ITEM>
-    {
+    inline auto position(long long index) -> linked::ElementProxy<View, Yield::ITEM> {
         return linked::position<Yield::ITEM>(this->view, index);
     }
 
@@ -584,11 +582,11 @@ public:
      *      True
      */
 
-    inline auto operator[](const Key& key) {
+    inline linked::MapProxy<View> operator[](const Key& key) {
         return map(key);
     }
 
-    inline auto operator[](const Key& key) const {
+    inline const linked::MapProxy<const View> operator[](const Key& key) const {
         return map(key);
     }
 
@@ -603,9 +601,9 @@ public:
 /* Print the abbreviated contents of a dictionary to an output stream (equivalent to
 Python repr()). */
 template <typename K, typename V, unsigned int Flags, typename... Ts>
-inline std::ostream& operator<<(
-    std::ostream& stream, const LinkedDict<K, V, Flags, Ts...>& dict
-) {
+inline auto operator<<(std::ostream& stream, const LinkedDict<K, V, Flags, Ts...>& dict)
+    -> std::ostream&
+{
     stream << linked::build_repr<Yield::ITEM>(
         dict.view,
         "LinkedDict",
@@ -625,68 +623,68 @@ inline std::ostream& operator<<(
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline LinkedDict<K, V, Flags, Ts...> operator|(
-    const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
-) {
+inline auto operator|(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
+    -> LinkedDict<K, V, Flags, Ts...>
+{
     return dict.union_(other);
 }
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline LinkedDict<K, V, Flags, Ts...>& operator|=(
-    LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
-) {
+inline auto operator|=(LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
+    -> LinkedDict<K, V, Flags, Ts...>&
+{
     dict.update(other);
     return dict;
 }
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline LinkedDict<K, V, Flags, Ts...> operator-(
-    const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
-) {
+inline auto operator-(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
+    -> LinkedDict<K, V, Flags, Ts...>
+{
     return dict.difference(other);
 }
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline LinkedDict<K, V, Flags, Ts...>& operator-=(
-    LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
-) {
+inline auto operator-=(LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
+    -> LinkedDict<K, V, Flags, Ts...>&
+{
     dict.difference_update(other);
     return dict;
 }
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline LinkedDict<K, V, Flags, Ts...> operator&(
-    const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
-) {
+inline auto operator&(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
+    -> LinkedDict<K, V, Flags, Ts...>
+{
     return dict.intersection(other);
 }
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline LinkedDict<K, V, Flags, Ts...>& operator&=(
-    LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
-) {
+inline auto operator&=(LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
+    -> LinkedDict<K, V, Flags, Ts...>&
+{
     dict.intersection_update(other);
     return dict;
 }
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline LinkedDict<K, V, Flags, Ts...> operator^(
-    const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
-) {
+inline auto operator^(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
+    -> LinkedDict<K, V, Flags, Ts...>
+{
     return dict.symmetric_difference(other);
 }
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline LinkedDict<K, V, Flags, Ts...>& operator^=(
-    LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
-) {
+inline auto operator^=(LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
+    -> LinkedDict<K, V, Flags, Ts...>&
+{
     dict.symmetric_difference_update(other);
     return dict;
 }
@@ -705,18 +703,43 @@ inline LinkedDict<K, V, Flags, Ts...>& operator^=(
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator==(
-    const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
-) {
+inline bool operator==(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other) {
+    // using Dict = LinkedDict<K, V, Flags, Ts...>;
+    // using Node = typename Dict::Node;
+
+    // auto convert = [](const auto& item) {
+    //     if constexpr (is_pyobject<std::decay_t<decltype(item)>>) {
+    //         PyObject* key;
+    //         PyObject* value;
+    //         if (PyTuple_Check(item) && PyTuple_GET_SIZE(item) == 2) {
+    //             key = PyTuple_GET_ITEM(item, 0);
+    //             value = PyTuple_GET_ITEM(item, 1);
+    //         } else if (PyList_Check(item) && PyList_GET_SIZE(item) == 2) {
+    //             key = PyList_GET_ITEM(item, 0);
+    //             value = PyList_GET_ITEM(item, 1);
+    //         } else {
+    //             std::ostringstream msg;
+    //             msg << "expected tuple or list of size 2, not " << repr(item);
+    //             throw TypeError(msg.str());
+    //         }
+    //         return std::make_pair(key, value);
+    //     } else {
+    //         return item;
+    //     }
+    // };
+
+    // std::unordered_set<const Node*> found;
+    // for (const auto& item : iter(other, convert)) {
+
+    // }
+
     // TODO: compare both keys and values
     return linked::set_equal(dict.view, other);
 }
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator!=(
-    const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other
-) {
+inline bool operator!=(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other) {
     // TODO: compare both keys and values
     return linked::set_not_equal(dict.view, other);
 }
@@ -731,13 +754,6 @@ inline bool operator!=(
 //////////////////////
 ////    keys()    ////
 //////////////////////
-
-
-// TODO: keys() seems to work for everything except indexing/slicing.  The solution
-// would need to involve creating a SetView that references the dictionary's DictView.
-// we could then apply the same logic as for linked sets.  Currently, each proxy just
-// references the DictView itself, which means we have to jump through hoops to get
-// setlike rather than dictlike behavior.
 
 
 /* A read-only proxy for a dictionary's keys, in the same style as Python's
@@ -1260,13 +1276,13 @@ inline bool operator>(const Container& other, const ValuesProxy<Dict>& proxy) {
 
 /* A read-only proxy for a dictionary's items, in the same style as Python's
 `dict.items()` accessor. */
-template <typename Dict>
+template <typename Dict, bool as_pytuple>
 class ItemsProxy {
     using View = typename Dict::View;
     using Key = typename Dict::Key;
     using Value = typename Dict::Value;
     using List = LinkedList<
-        std::pair<Key, Value>,
+        std::conditional_t<as_pytuple, PyObject*, std::pair<Key, Value>>,
         Dict::FLAGS & ~Config::FIXED_SIZE,
         typename Dict::Lock
     >;
@@ -1291,6 +1307,7 @@ public:
 
     /* Convert the items proxy in an equivalent list. */
     inline List to_list() const {
+        // TODO: account for as_pytuple
         return List(*this, dict.size(), dict.specialization());
     }
 
@@ -1444,9 +1461,9 @@ public:
     /* Get a read-only proxy for a slice of the referenced dictionary. */
     template <typename... Args>
     inline auto slice(Args&&... args) const
-        -> const linked::SliceProxy<const View, List, Yield::ITEM>
+        -> const linked::SliceProxy<const View, List, Yield::ITEM, as_pytuple>
     {
-        return linked::slice<List, Yield::ITEM>(
+        return linked::slice<List, Yield::ITEM, as_pytuple>(
             dict.view, std::forward<Args>(args)...
         );
     }
@@ -1479,8 +1496,10 @@ public:
 
 /* Print the abbreviated contents of a ItemsProxy to an output stream (equivalent to
 Python repr()). */
-template <typename Dict>
-inline std::ostream& operator<<(std::ostream& stream, const ItemsProxy<Dict>& values) {
+template <typename Dict, bool as_pytuple>
+inline auto operator<<(std::ostream& stream, const ItemsProxy<Dict, as_pytuple>& values)
+    -> std::ostream&
+{
     stream << linked::build_repr<Yield::ITEM>(
         values.mapping().view,
         "LinkedDict_items",
@@ -1495,14 +1514,14 @@ inline std::ostream& operator<<(std::ostream& stream, const ItemsProxy<Dict>& va
 }
 
 
-template <typename Container, typename Dict>
-inline bool operator==(const ItemsProxy<Dict>& proxy, const Container& other) {
+template <typename Container, typename Dict, bool as_pytuple>
+inline bool operator==(const ItemsProxy<Dict, as_pytuple>& proxy, const Container& other) {
     return proxy.mapping() == other;
 }
 
 
-template <typename Container, typename Dict>
-inline bool operator!=(const ItemsProxy<Dict>& proxy, const Container& other) {
+template <typename Container, typename Dict, bool as_pytuple>
+inline bool operator!=(const ItemsProxy<Dict, as_pytuple>& proxy, const Container& other) {
     return proxy.mapping() != other;
 }
 
@@ -1793,7 +1812,7 @@ public:
         try {
             return std::visit(
                 [&self](auto& dict) {
-                    using Proxy = typename std::decay_t<decltype(dict.keys())>;
+                    using Proxy = std::decay_t<decltype(dict.keys())>;
                     return PyKeysProxy<Proxy>::construct(self, dict.keys());
                 },
                 self->variant
@@ -1808,7 +1827,7 @@ public:
         try {
             return std::visit(
                 [&self](auto& dict) {
-                    using Proxy = typename std::decay_t<decltype(dict.values())>;
+                    using Proxy = std::decay_t<decltype(dict.values())>;
                     return PyValuesProxy<Proxy>::construct(self, dict.values());
                 },
                 self->variant
@@ -1824,8 +1843,10 @@ public:
         try {
             return std::visit(
                 [&self](auto& dict) {
-                    using Proxy = typename std::decay_t<decltype(dict.items())>;
-                    return PyItemsProxy<Proxy>::construct(self, dict.items());
+                    using Proxy = std::decay_t<decltype(dict.template items<true>())>;
+                    return PyItemsProxy<Proxy>::construct(
+                        self, dict.template items<true>()
+                    );
                 },
                 self->variant
             );
@@ -3130,17 +3151,9 @@ These proxies support the following operations:
                     return PyTuple_Pack(2, item.first, item.second);
                 }
 
-                // TODO: this syntax for slicing the list and returning to Python
-                // returns a LinkedList<std::pair<PyObject*, PyObject*>> rather than
-                // LinkedList<PyObject*>.  We must find a way to convert each item into
-                // a Python tuple before returning it to the caller.
-                // -> This probably needs some integration with the slice().get()
-                // accessor itself (i.e. a template flag that converts the results into
-                // a tuple before adding them to the resulting list.
-
-                // if (PySlice_Check(key)) {
-                //     return PyLinkedList::construct(self->proxy.slice(key).get());
-                // }
+                if (PySlice_Check(key)) {
+                    return PyLinkedList::construct(self->proxy.slice(key).get());
+                }
 
                 PyErr_Format(
                     PyExc_TypeError,

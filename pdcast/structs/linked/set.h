@@ -413,7 +413,9 @@ public:
     }
 
     template <typename... Args>
-    inline linked::SliceProxy<View, LinkedSet, Yield::KEY> slice(Args&&... args) {
+    inline auto slice(Args&&... args)
+        -> linked::SliceProxy<View, LinkedSet, Yield::KEY>
+    {
         return linked::slice<LinkedSet, Yield::KEY>(
             this->view, std::forward<Args>(args)...
         );
@@ -471,9 +473,9 @@ public:
 /* Print the abbreviated contents of a set to an output stream (equivalent to Python
 repr()). */
 template <typename T, unsigned int Flags, typename... Ts>
-inline std::ostream& operator<<(
-    std::ostream& stream, const LinkedSet<T, Flags, Ts...>& set
-) {
+inline auto operator<<(std::ostream& stream, const LinkedSet<T, Flags, Ts...>& set)
+    -> std::ostream&
+{
     stream << linked::build_repr(
         set.view,
         "LinkedSet",
@@ -486,68 +488,68 @@ inline std::ostream& operator<<(
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline LinkedSet<T, Flags, Ts...> operator|(
-    const LinkedSet<T, Flags, Ts...>& set, const Container& other
-) {
+inline auto operator|(const LinkedSet<T, Flags, Ts...>& set, const Container& other)
+    -> LinkedSet<T, Flags, Ts...>
+{
     return set.union_(other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline LinkedSet<T, Flags, Ts...>& operator|=(
-    LinkedSet<T, Flags, Ts...>& set, const Container& other
-) {
+inline auto operator|=(LinkedSet<T, Flags, Ts...>& set, const Container& other)
+    -> LinkedSet<T, Flags, Ts...>&
+{
     set.update(other);
     return set;
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline LinkedSet<T, Flags, Ts...> operator-(
-    const LinkedSet<T, Flags, Ts...>& set, const Container& other
-) {
+inline auto operator-(const LinkedSet<T, Flags, Ts...>& set, const Container& other)
+    -> LinkedSet<T, Flags, Ts...>
+{
     return set.difference(other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline LinkedSet<T, Flags, Ts...>& operator-=(
-    LinkedSet<T, Flags, Ts...>& set, const Container& other
-) {
+inline auto operator-=(LinkedSet<T, Flags, Ts...>& set, const Container& other)
+    -> LinkedSet<T, Flags, Ts...>&
+{
     set.difference_update(other);
     return set;
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline LinkedSet<T, Flags, Ts...> operator&(
-    const LinkedSet<T, Flags, Ts...>& set, const Container& other
-) {
+inline auto operator&(const LinkedSet<T, Flags, Ts...>& set, const Container& other)
+    -> LinkedSet<T, Flags, Ts...>
+{
     return set.intersection(other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline LinkedSet<T, Flags, Ts...>& operator&=(
-    LinkedSet<T, Flags, Ts...>& set, const Container& other
-) {
+inline auto operator&=(LinkedSet<T, Flags, Ts...>& set, const Container& other)
+    -> LinkedSet<T, Flags, Ts...>&
+{
     set.intersection_update(other);
     return set;
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline LinkedSet<T, Flags, Ts...> operator^(
-    const LinkedSet<T, Flags, Ts...>& set, const Container& other
-) {
+inline auto operator^(const LinkedSet<T, Flags, Ts...>& set, const Container& other)
+    -> LinkedSet<T, Flags, Ts...>
+{
     return set.symmetric_difference(other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline LinkedSet<T, Flags, Ts...>& operator^=(
-    LinkedSet<T, Flags, Ts...>& set, const Container& other
-) {
+inline auto operator^=(LinkedSet<T, Flags, Ts...>& set, const Container& other)
+    -> LinkedSet<T, Flags, Ts...>&
+{
     set.symmetric_difference_update(other);
     return set;
 }
