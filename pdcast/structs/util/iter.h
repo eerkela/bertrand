@@ -298,14 +298,13 @@ class ConvertedIterator : public ForwardedIterator<Iterator> {
     /* Ensure that Func is callable with a single argument of the iterator's
     dereferenced value type and infer the corresponding return type. */
     using ReturnType = typename FuncTraits<
-        Func,
-        decltype(*std::declval<Iterator>())
+        Func, decltype(*std::declval<Iterator>())
     >::ReturnType;
 
 public:
-    // TODO: use return type as value_type, etc.
-
-
+    using value_type = std::remove_reference_t<ReturnType>;
+    using pointer = value_type*;
+    using reference = value_type&;
 
     /* Construct a converted iterator from a standard C++ iterator and conversion
     function. */

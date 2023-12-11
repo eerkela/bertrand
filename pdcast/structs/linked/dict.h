@@ -1133,12 +1133,10 @@ public:
     ////    OPERATOR OVERLOADS    ////
     //////////////////////////////////
 
-    /* NOTE: KeysProxies support set comparisons using the <, <=, ==, !=, >=, and >
-     * operators,  even though the underlying dictionary does not.  They also support
-     * the |, &, -, and ^ operators for set arithmetic, but not their in-place
-     * equivalents (|=, &=, -=, ^=).  This is consistent with Python, which enforces
-     * the same restrictions for its built-in dict type.  See the non-member operator
-     * overloads below for more details.
+    /* NOTE: ValuesProxies support listlike operators, including concatenation (+),
+     * repetition (*), and lexical comparisons (<, <=, ==, !=, >=, >), but not their
+     * in-place equivalents (+=, *=).  They also support indexing ([]) and slicing
+     * (.slice()) just like LinkedLists.
      */
 
     inline auto operator[](long long index) const
@@ -1260,9 +1258,6 @@ inline bool operator>(const Container& other, const ValuesProxy<Dict>& proxy) {
 ///////////////////////
 
 
-// TODO: this one's a doozy.  Dealing with sets of tuples is kind of a nightmare.
-
-
 /* A read-only proxy for a dictionary's items, in the same style as Python's
 `dict.items()` accessor. */
 template <typename Dict>
@@ -1349,7 +1344,7 @@ public:
             throw TypeError("expected a tuple of size 2");
         }
         std::pair<Key, Value> pair(PyTuple_GET_ITEM(item, 0), PyTuple_GET_ITEM(item, 1));
-        return linked::index<Yield::ITEM>(pair, start, stop);
+        return linked::index<Yield::ITEM>(dict.view, pair, start, stop);
     }
 
     /* Count the number of occurrences of a key within the dictionary. */
@@ -1433,6 +1428,44 @@ public:
     inline auto rend() const { return dict.view.template rend<Yield::ITEM>(); }
     inline auto crbegin() const { return dict.view.template crbegin<Yield::ITEM>(); }
     inline auto crend() const { return dict.view.template crend<Yield::ITEM>(); }
+
+    ////////////////////////
+    ////    INDEXING    ////
+    ////////////////////////
+
+    /* Get a read-only proxy for a key-value pair at a certain index of the referenced
+    dictionary. */
+    inline auto position(long long index) const
+        -> const linked::ElementProxy<const View, Yield::ITEM>
+    {
+        return linked::position<Yield::ITEM>(dict.view, index);
+    }
+
+    /* Get a read-only proxy for a slice of the referenced dictionary. */
+    template <typename... Args>
+    inline auto slice(Args&&... args) const
+        -> const linked::SliceProxy<const View, List, Yield::ITEM>
+    {
+        return linked::slice<List, Yield::ITEM>(
+            dict.view, std::forward<Args>(args)...
+        );
+    }
+
+    //////////////////////////////////
+    ////    OPERATOR OVERLOADS    ////
+    //////////////////////////////////
+
+    /* NOTE: ItemsProxies support listlike operators, including concatenation (+),
+     * repetition (*), and lexical comparisons (<, <=, ==, !=, >=, >), but not their
+     * in-place equivalents (+=, *=).  They also support indexing ([]) and slicing
+     * (.slice()) just like LinkedLists.
+     */
+
+    inline auto operator[](long long index) const
+        -> const linked::ElementProxy<const View, Yield::ITEM>
+    {
+        return position(index);
+    }
 
 };
 
@@ -1787,21 +1820,21 @@ public:
         }
     }
 
-    // static PyObject* items(Derived* self, PyObject* = nullptr) {
-    //     try {
-    //         return std::visit(
-    //             [](auto& dict) {
-    //                 using Proxy = typename std::decay_t<decltype(dict.items())>;
-    //                 return PyItemsProxy<Proxy>::construct(dict.items());
-    //             },
-    //             self->variant
-    //         );
+    static PyObject* items(Derived* self, PyObject* = nullptr) {
+        try {
+            return std::visit(
+                [&self](auto& dict) {
+                    using Proxy = typename std::decay_t<decltype(dict.items())>;
+                    return PyItemsProxy<Proxy>::construct(self, dict.items());
+                },
+                self->variant
+            );
 
-    //     } catch (...) {
-    //         throw_python();
-    //         return nullptr;
-    //     }
-    // }
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
 
     static PyObject* __getitem__(Derived* self, PyObject* key) {
         try {
@@ -2665,9 +2698,8 @@ A read-only, setlike proxy for the keys within a ``LinkedDict``.
 
 Notes
 -----
-This class is not meant to be instantiated directly.  Instead, it is returned
-by the :meth:`LinkedDict.keys()` method, which behaves analogously to the
-built-in :meth:`dict.keys()`.
+Instances of this class are returned by the :meth:`LinkedDict.keys()` accessor,
+which behaves in the same way as the built-in :meth:`dict.keys()`.
 
 These proxies support the following operations:
 
@@ -2764,7 +2796,7 @@ These proxies support the following operations:
 
         static PyTypeObject build_type() {
             PyTypeObject slots = {
-                .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+                .ob_base = PyObject_HEAD_INIT(NULL)
                 .tp_name = PyName<PyKeysProxy>.data(),
                 .tp_basicsize = sizeof(PyKeysProxy),
                 .tp_itemsize = 0,
@@ -2932,9 +2964,8 @@ A read-only, listlike proxy for the values within a ``LinkedDict``.
 
 Notes
 -----
-This class is not meant to be instantiated directly.  Instead, it is returned
-by the :meth:`LinkedDict.values()` method, which behaves analogously to the
-built-in :meth:`dict.values()`.
+Instances of this class are returned by the :meth:`LinkedDict.values()`
+accessor, which behaves in the same way as the built-in :meth:`dict.values()`.
 
 These proxies support the following operations:
 
@@ -2985,7 +3016,7 @@ These proxies support the following operations:
 
         static PyTypeObject build_type() {
             PyTypeObject slots = {
-                .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+                .ob_base = PyObject_HEAD_INIT(NULL)
                 .tp_name = PyName<PyValuesProxy>.data(),
                 .tp_basicsize = sizeof(PyValuesProxy),
                 .tp_itemsize = 0,
@@ -3022,6 +3053,275 @@ These proxies support the following operations:
     /* Python wrapper for LinkedDict.items(). */
     template <typename Proxy>
     struct PyItemsProxy : public DictProxy<PyItemsProxy<Proxy>, Proxy> {
+
+        static PyObject* index(
+            PyItemsProxy* self,
+            PyObject* const* args,
+            Py_ssize_t nargs
+        ) {
+            using bertrand::util::PyArgs;
+            using bertrand::util::CallProtocol;
+            using bertrand::util::parse_opt_int;
+            using Index = std::optional<long long>;
+            static constexpr std::string_view meth_name{"index"};
+            try {
+                PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+                PyObject* item = pyargs.parse("item");
+                Index start = pyargs.parse("start", parse_opt_int, Index());
+                Index stop = pyargs.parse("stop", parse_opt_int, Index());
+                pyargs.finalize();
+
+                return PyLong_FromSize_t(self->proxy.index(item, start, stop));
+
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* count(
+            PyItemsProxy* self,
+            PyObject* const* args,
+            Py_ssize_t nargs
+        ) {
+            using bertrand::util::PyArgs;
+            using bertrand::util::CallProtocol;
+            using bertrand::util::parse_opt_int;
+            using Index = std::optional<long long>;
+            static constexpr std::string_view meth_name{"count"};
+            try {
+                PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+                PyObject* item = pyargs.parse("item");
+                Index start = pyargs.parse("start", parse_opt_int, Index());
+                Index stop = pyargs.parse("stop", parse_opt_int, Index());
+                pyargs.finalize();
+
+                return PyLong_FromSize_t(self->proxy.count(item, start, stop));
+
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __add__(PyItemsProxy* self, PyObject* other) {
+            try {
+                return PyLinkedList::construct(self->proxy + other);
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __mul__(PyItemsProxy* self, Py_ssize_t count) {
+            try {
+                return PyLinkedList::construct(self->proxy * count);
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __getitem__(PyItemsProxy* self, PyObject* key) {
+            using bertrand::util::parse_int;
+            try {
+                if (PyIndex_Check(key)) {
+                    std::pair<PyObject*, PyObject*> item = self->proxy[parse_int(key)];
+                    return PyTuple_Pack(2, item.first, item.second);
+                }
+
+                // TODO: this syntax for slicing the list and returning to Python
+                // returns a LinkedList<std::pair<PyObject*, PyObject*>> rather than
+                // LinkedList<PyObject*>.  We must find a way to convert each item into
+                // a Python tuple before returning it to the caller.
+                // -> This probably needs some integration with the slice().get()
+                // accessor itself (i.e. a template flag that converts the results into
+                // a tuple before adding them to the resulting list.
+
+                // if (PySlice_Check(key)) {
+                //     return PyLinkedList::construct(self->proxy.slice(key).get());
+                // }
+
+                PyErr_Format(
+                    PyExc_TypeError,
+                    "indices must be integers or slices, not %s",
+                    Py_TYPE(key)->tp_name
+                );
+                return nullptr;
+
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* __str__(PyItemsProxy* self) {
+            std::ostringstream stream;
+
+            auto token = [&stream](std::pair<PyObject*, PyObject*> item) {
+                stream << "(" << repr(item.first) << ", ";
+                stream << repr(item.second) << ")";
+            };
+
+            try {
+                
+                stream << "[";
+                auto it = self->proxy.begin();
+                auto end = self->proxy.end();
+                if (it != end) {
+                    token(*it);
+                    ++it;
+                }
+                while (it != end) {
+                    stream << ", ";
+                    token(*it);
+                    ++it;
+                }
+                stream << "]";
+                auto str = stream.str();
+                return PyUnicode_FromStringAndSize(str.c_str(), str.size());
+
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+        inline static PyObject* __iter__(PyItemsProxy* self) noexcept {
+            try {
+                return iter(self->proxy, pair_as_pytuple).cpython();
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+        inline static PyObject* __reversed__(
+            PyItemsProxy* self,
+            PyObject* = nullptr
+        ) noexcept {
+            try {
+                return iter(self->proxy, pair_as_pytuple).crpython();
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+    private:
+        friend PyDictInterface;
+        friend Derived;
+        using BaseProxy = DictProxy<PyItemsProxy, Proxy>;
+        using IList = PyListInterface<Derived>;
+        using ISet = PySetInterface<Derived>;
+
+        inline static PyObject* pair_as_pytuple(std::pair<PyObject*, PyObject*> item) {
+            return PyTuple_Pack(2, item.first, item.second);
+        }
+
+        /* Implement `PySequence_GetItem()` in CPython API. */
+        static PyObject* __getitem_scalar__(PyItemsProxy* self, Py_ssize_t index) {
+            try {
+                return pair_as_pytuple(self->proxy.position(index).get());
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+        struct docs {
+
+            static constexpr std::string_view PyItemsProxy {R"doc(
+A read-only, listlike proxy for the key-value pairs contained within a
+``LinkedDict``.
+
+Notes
+-----
+Instances of this class are returned by the :meth:`LinkedDict.items()`
+accessor, which behaves in the same way as the built-in :meth:`dict.items()`.
+
+These proxies support the following operations:
+
+    #.  Iteration: ``len(items)``, ``for key, value in items: ...``,
+        ``item in items``
+    #.  Indexing: ``items[0]``, ``items[1:3]``, ``items.index(key, value)``,
+        ``items.index(item)``, ``items.count(key, value)``,
+        ``items.count(item)``
+    #.  List operators: ``items + other``, ``items * other``,
+        ``items < other``, ``items <= other``, ``items == other``,
+        ``items != other``, ``items >= other``, ``items > other``
+)doc"
+            };
+
+        };
+
+        inline static PyMappingMethods mapping_methods = [] {
+            PyMappingMethods slots;
+            slots.mp_length = (lenfunc) BaseProxy::__len__;
+            slots.mp_subscript = (binaryfunc) __getitem__;
+            return slots;
+        }();
+
+        inline static PySequenceMethods sequence = [] {
+            PySequenceMethods slots;
+            slots.sq_length = (lenfunc) BaseProxy::__len__;
+            // slots.sq_concat = (binaryfunc) __add__;  // TODO
+            // slots.sq_repeat = (ssizeargfunc) __mul__;  // TODO
+            slots.sq_item = (ssizeargfunc) __getitem_scalar__;
+            slots.sq_contains = (objobjproc) BaseProxy::__contains__;
+            return slots;
+        }();
+
+        inline static PyGetSetDef properties[] = {
+            {"mapping", (getter) BaseProxy::mapping, nullptr, BaseProxy::docs::mapping.data()},
+            {NULL}  // sentinel
+        };
+
+        inline static PyMethodDef methods[] = {
+            {"index", (PyCFunction) index, METH_FASTCALL, IList::docs::index.data()},
+            {"count", (PyCFunction) count, METH_FASTCALL, IList::docs::count.data()},
+            {
+                "__reversed__",
+                (PyCFunction) __reversed__,
+                METH_NOARGS,
+                BaseProxy::docs::__reversed__.data()
+            },
+            {NULL}  // sentinel
+        };
+
+        static PyTypeObject build_type() {
+            PyTypeObject slots = {
+                .ob_base = PyObject_HEAD_INIT(NULL)
+                .tp_name = PyName<PyItemsProxy>.data(),
+                .tp_basicsize = sizeof(PyItemsProxy),
+                .tp_itemsize = 0,
+                .tp_dealloc = (destructor) BaseProxy::__dealloc__,
+                .tp_repr = (reprfunc) BaseProxy::__repr__,
+                .tp_as_sequence = &sequence,
+                .tp_as_mapping = &mapping_methods,
+                .tp_hash = (hashfunc) PyObject_HashNotImplemented,
+                .tp_str = (reprfunc) __str__,
+                .tp_flags = (
+                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
+                    Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_SEQUENCE
+                ),
+                .tp_doc = PyDoc_STR(docs::PyItemsProxy.data()),
+                // .tp_richcompare = (richcmpfunc) BaseProxy::__richcompare__,  // TODO
+                .tp_iter = (getiterfunc) __iter__,
+                .tp_methods = methods,
+                .tp_getset = properties,
+                .tp_alloc = (allocfunc) PyType_GenericAlloc,
+            };
+
+            if (PyType_Ready(&slots) < 0) {
+                throw std::runtime_error("could not initialize DictProxy type");
+            }
+            return slots;
+        }
+
+    public:
+
+        inline static PyTypeObject Type = build_type();
 
     };
 
@@ -3612,7 +3912,7 @@ constructor itself.
         DICT_METHOD(lru_setdefault, METH_FASTCALL),
         DICT_METHOD(keys, METH_NOARGS),
         DICT_METHOD(values, METH_NOARGS),
-        // DICT_METHOD(items, METH_NOARGS),
+        DICT_METHOD(items, METH_NOARGS),
         {NULL}  // sentinel
     };
 

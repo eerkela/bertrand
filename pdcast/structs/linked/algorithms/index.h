@@ -117,8 +117,9 @@ namespace linked {
                 throw not_found(item);
             } else if (!eq(node->mapped(), item.second)) {
                 std::ostringstream msg;
-                msg << "value mismatch for key " << repr(item.first) << ": ";
+                msg << "value mismatch for key " << repr(item.first) << " (";
                 msg << repr(node->mapped()) << " != " << repr(item.second);
+                msg << ")";
                 throw KeyError(msg.str());
             }
         } else {

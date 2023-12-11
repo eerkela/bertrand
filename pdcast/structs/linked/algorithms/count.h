@@ -94,13 +94,8 @@ namespace linked {
         const Node* node;
         if constexpr (yield == Yield::ITEM) {
             node = view.search(item.first);
-            if (node == nullptr) {
+            if (node == nullptr || !eq(node->mapped(), item.second)) {
                 return 0;
-            } else if (!eq(node->mapped(), item.second)) {
-                std::ostringstream msg;
-                msg << "value mismatch for key " << repr(item.first) << ": ";
-                msg << repr(node->mapped()) << " != " << repr(item.second);
-                throw KeyError(msg.str());
             }
         } else {
             node = view.search(item);
