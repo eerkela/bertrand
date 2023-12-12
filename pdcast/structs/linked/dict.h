@@ -751,6 +751,120 @@ inline bool operator!=(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& ot
 // TODO: this is as simple as injecting the Yield:: directive into set comparisons.
 
 
+
+///////////////////////
+////    PROXIES    ////
+///////////////////////
+
+
+/* A proxy for a linked dictionary that accesses specifically its keys, values, or
+key-value pairs. */
+template <typename Dict, typename Result, Yield yield>
+class DictProxy {
+protected:
+    using View = typename Dict::View;
+    using Element = std::conditional_t<
+        yield == Yield::KEY,
+        typename View::Value,
+        std::conditional_t<
+            yield == Yield::VALUE,
+            typename View::MappedValue,
+            std::pair<typename View::Value, typename View::MappedValue>
+        >
+    >;
+
+    const Dict& dict;
+
+    DictProxy(const Dict& dict) : dict(dict) {}
+
+public:
+
+    /* Get a read-only reference to the parent dictionary. */
+    inline const Dict& mapping() const {
+        return dict;
+    }
+
+    /* Get the total number of elements stored in the subset. */
+    inline size_t size() const {
+        return dict.size();
+    }
+
+    /* Check if an element is contained within the subset. */
+    inline bool contains(const Element& key) const {
+        return linked::contains<yield>(dict.view, key);
+    }
+
+    /* Get the index of a particular element within the subset. */
+    inline size_t index(
+        const Element& key,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        return linked::index<yield>(dict.view, key, start, stop);
+    }
+
+    /* Get the number of matching elements within the subset. */
+    inline size_t count(
+        const Element& key,
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt
+    ) const {
+        return linked::count<yield>(dict.view, key, start, stop);
+    }
+
+    /////////////////////////
+    ////    ITERATORS    ////
+    /////////////////////////
+
+    inline auto begin() const { return dict.view.template begin<yield>(); }
+    inline auto end() const { return dict.view.template end<yield>(); }
+    inline auto cbegin() const { return dict.view.template cbegin<yield>(); }
+    inline auto cend() const { return dict.view.template cend<yield>(); }
+    inline auto rbegin() const { return dict.view.template rbegin<yield>(); }
+    inline auto rend() const { return dict.view.template rend<yield>(); }
+    inline auto crbegin() const { return dict.view.template crbegin<yield>(); }
+    inline auto crend() const { return dict.view.template crend<yield>(); }
+
+    ////////////////////////
+    ////    INDEXING    ////
+    ////////////////////////
+
+    /* Get a read-only proxy for an element at a certain index of the subset. */
+    inline auto position(long long index) const
+        -> const linked::ElementProxy<const View, yield>
+    {
+        return linked::position<yield>(dict.view, index);
+    }
+
+    /* Extract a slice from the subset. */
+    template <typename... Args>
+    inline auto slice(Args&&... args) const
+        -> const linked::SliceProxy<const View, Result, yield>
+    {
+        return linked::slice<Result, yield>(dict.view, std::forward<Args>(args)...);
+    }
+
+    //////////////////////////////////
+    ////    OPERATOR OVERLOADS    ////
+    //////////////////////////////////
+
+    /* NOTE: KeysProxies support set comparisons using the <, <=, ==, !=, >=, and >
+    * operators,  even though the underlying dictionary does not.  They also support
+    * the |, &, -, and ^ operators for set arithmetic, but not their in-place
+    * equivalents (|=, &=, -=, ^=).  This is consistent with Python, which enforces
+    * the same restrictions for its built-in dict type.  See the non-member operator
+    * overloads below for more details.
+    */
+
+    inline auto operator[](long long index) const
+        -> const linked::ElementProxy<const View, yield>
+    {
+        return position(index);
+    }
+
+};
+
+
 //////////////////////
 ////    keys()    ////
 //////////////////////
@@ -759,61 +873,34 @@ inline bool operator!=(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& ot
 /* A read-only proxy for a dictionary's keys, in the same style as Python's
 `dict.keys()` accessor. */
 template <typename Dict>
-class KeysProxy {
+class KeysProxy : public DictProxy<
+    Dict,
+    LinkedSet<typename Dict::Key, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock>,
+    Yield::KEY
+> {
     using View = typename Dict::View;
     using Key = typename Dict::Key;
     using Set = LinkedSet<Key, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock>;
+    using Base = DictProxy<Dict, Set, Yield::KEY>;
 
     friend Dict;
-    const Dict& dict;
 
-    KeysProxy(const Dict& dict) : dict(dict) {}
+    KeysProxy(const Dict& dict) : Base(dict) {}
 
 public:
 
     /* Convert the keys proxy into an equivalent set. */
     inline Set to_set() const {
-        return Set(*this, dict.size(), dict.specialization());
-    }
-
-    /* Get a read-only reference to the dictionary. */
-    inline const Dict& mapping() const {
-        return dict;
-    }
-
-    /* Get the total number of keys stored in the referenced dictionary. */
-    inline size_t size() const {
-        return dict.size();
-    }
-
-    /* Get the index of a key within the dictionary. */
-    inline size_t index(
-        const Key& key,
-        std::optional<long long> start = std::nullopt,
-        std::optional<long long> stop = std::nullopt
-    ) const {
-        return linked::index<Yield::KEY>(dict.view, key, start, stop);
-    }
-
-    /* Count the number of occurrences of a key within the dictionary. */
-    inline size_t count(
-        const Key& key,
-        std::optional<long long> start = std::nullopt,
-        std::optional<long long> stop = std::nullopt
-    ) const {
-        return linked::count<Yield::KEY>(dict.view, key, start, stop);
-    }
-
-    /* Check if the referenced dictionary contains the given key. */
-    inline bool contains(Key& key) const {
-        return linked::contains<Yield::KEY>(dict.view, key);
+        return Set(*this, this->dict.size(), this->dict.specialization());
     }
 
     /* Check whether the referenced dictionary has no keys in common with another
     container. */
     template <typename Container>
     inline bool isdisjoint(Container&& items) const {
-        return linked::isdisjoint(dict.view, std::forward<Container>(items));
+        return linked::isdisjoint(
+            this->dict.view, std::forward<Container>(items)
+        );
     }
 
     /* Check whether all the keys of the referenced dictionary are also present in
@@ -821,7 +908,7 @@ public:
     template <typename Container>
     inline bool issubset(Container&& items) const {
         return linked::issubset(
-            dict.view, std::forward<Container>(items), false
+            this->dict.view, std::forward<Container>(items), false
         );
     }
 
@@ -830,7 +917,7 @@ public:
     template <typename Container>
     inline bool issuperset(Container&& items) const {
         return linked::issuperset(
-            dict.view, std::forward<Container>(items), false
+            this->dict.view, std::forward<Container>(items), false
         );
     }
 
@@ -874,59 +961,6 @@ public:
     template <typename... Containers>
     inline Set symmetric_difference_left(Containers&&... items) const {
         return to_set().symmetric_difference_left(std::forward<Containers>(items)...);
-    }
-
-    /////////////////////////
-    ////    ITERATORS    ////
-    /////////////////////////
-
-    inline auto begin() const { return dict.view.template begin<Yield::KEY>(); }
-    inline auto end() const { return dict.view.template end<Yield::KEY>(); }
-    inline auto cbegin() const { return dict.view.template cbegin<Yield::KEY>(); }
-    inline auto cend() const { return dict.view.template cend<Yield::KEY>(); }
-    inline auto rbegin() const { return dict.view.template rbegin<Yield::KEY>(); }
-    inline auto rend() const { return dict.view.template rend<Yield::KEY>(); }
-    inline auto crbegin() const { return dict.view.template crbegin<Yield::KEY>(); }
-    inline auto crend() const { return dict.view.template crend<Yield::KEY>(); }
-
-    ////////////////////////
-    ////    INDEXING    ////
-    ////////////////////////
-
-    /* Get a read-only proxy for a key at a certain index of the referenced
-    dictionary. */
-    inline auto position(long long index) const
-        -> const linked::ElementProxy<const View, Yield::KEY>
-    {
-        return linked::position<Yield::KEY>(dict.view, index);
-    }
-
-    /* Get a read-only proxy for a slice of the referenced dictionary. */
-    template <typename... Args>
-    inline auto slice(Args&&... args) const
-        -> const linked::SliceProxy<const View, Set, Yield::KEY>
-    {
-        return linked::slice<Set, Yield::KEY>(
-            dict.view, std::forward<Args>(args)...
-        );
-    }
-
-    //////////////////////////////////
-    ////    OPERATOR OVERLOADS    ////
-    //////////////////////////////////
-
-    /* NOTE: KeysProxies support set comparisons using the <, <=, ==, !=, >=, and >
-     * operators,  even though the underlying dictionary does not.  They also support
-     * the |, &, -, and ^ operators for set arithmetic, but not their in-place
-     * equivalents (|=, &=, -=, ^=).  This is consistent with Python, which enforces
-     * the same restrictions for its built-in dict type.  See the non-member operator
-     * overloads below for more details.
-     */
-
-    inline auto operator[](long long index) const
-        -> const linked::ElementProxy<const View, Yield::KEY>
-    {
-        return position(index);
     }
 
 };
@@ -1058,107 +1092,25 @@ inline bool operator>(const Container& other, const KeysProxy<Dict>& proxy) {
 /* A read-only proxy for a dictionary's values in the same style as Python's
 `dict.values()` accessor. */
 template <typename Dict>
-class ValuesProxy {
+class ValuesProxy : public DictProxy<
+    Dict,
+    LinkedList<typename Dict::Value, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock>,
+    Yield::VALUE
+> {
     using View = typename Dict::View;
     using Value = typename Dict::Value;
     using List = LinkedList<Value, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock>;
+    using Base = DictProxy<Dict, List, Yield::VALUE>;
 
     friend Dict;
-    const Dict& dict;
 
-    ValuesProxy(const Dict& dict) : dict(dict) {}
+    ValuesProxy(const Dict& dict) : Base(dict) {}
 
 public:
-    // TODO: eliminate this by integrating Yield:: with index()/count()
-    using Node = typename Dict::View::Node;
 
     /* Convert the values proxy into an equivalent list. */
     inline List to_list() const {
-        return List(*this, dict.size(), dict.specialization());
-    }
-
-    /* Get a read-only reference to the proxied dictionary. */
-    inline const Dict& mapping() const {
-        return dict;
-    }
-
-    /* Get the total number of values stored in the proxied dictionary. */
-    inline size_t size() const {
-        return dict.size();
-    }
-
-    /* Get the index of a value within the dictionary. */
-    inline size_t index(
-        const Value& value,
-        std::optional<long long> start = std::nullopt,
-        std::optional<long long> stop = std::nullopt
-    ) const {
-        return linked::index<Yield::VALUE>(dict.view, value, start, stop);
-    }
-
-    /* Count the number of occurrences of a value within the dictionary. */
-    inline size_t count(
-        const Value& value,
-        std::optional<long long> start = std::nullopt,
-        std::optional<long long> stop = std::nullopt
-    ) const {
-        return linked::count<Yield::VALUE>(dict.view, value, start, stop);
-    }
-
-    /* Check if the referenced dictionary contains the given value. */
-    inline bool contains(const Value& value) const {
-        return linked::contains<Yield::VALUE>(dict.view, value);
-    }
-
-    /////////////////////////
-    ////    ITERATORS    ////
-    /////////////////////////
-
-    inline auto begin() const { return dict.view.template begin<Yield::VALUE>(); }
-    inline auto end() const { return dict.view.template end<Yield::VALUE>(); }
-    inline auto cbegin() const { return dict.view.template cbegin<Yield::VALUE>(); }
-    inline auto cend() const { return dict.view.template cend<Yield::VALUE>(); }
-    inline auto rbegin() const { return dict.view.template rbegin<Yield::VALUE>(); }
-    inline auto rend() const { return dict.view.template rend<Yield::VALUE>(); }
-    inline auto crbegin() const { return dict.view.template crbegin<Yield::VALUE>(); }
-    inline auto crend() const { return dict.view.template crend<Yield::VALUE>(); }
-
-    ////////////////////////
-    ////    INDEXING    ////
-    ////////////////////////
-
-    /* Get a read-only proxy for a key at a certain index of the referenced
-    dictionary. */
-    inline auto position(long long index) const
-        -> const linked::ElementProxy<const View, Yield::VALUE>
-    {
-        return linked::position<Yield::VALUE>(dict.view, index);
-    }
-
-    /* Get a read-only proxy for a slice of the referenced dictionary. */
-    template <typename... Args>
-    inline auto slice(Args&&... args) const
-        -> const linked::SliceProxy<const View, List, Yield::VALUE>
-    {
-        return linked::slice<List, Yield::VALUE>(
-            dict.view, std::forward<Args>(args)...
-        );
-    }
-
-    //////////////////////////////////
-    ////    OPERATOR OVERLOADS    ////
-    //////////////////////////////////
-
-    /* NOTE: ValuesProxies support listlike operators, including concatenation (+),
-     * repetition (*), and lexical comparisons (<, <=, ==, !=, >=, >), but not their
-     * in-place equivalents (+=, *=).  They also support indexing ([]) and slicing
-     * (.slice()) just like LinkedLists.
-     */
-
-    inline auto operator[](long long index) const
-        -> const linked::ElementProxy<const View, Yield::VALUE>
-    {
-        return position(index);
+        return List(*this, this->dict.size(), this->dict.specialization());
     }
 
 };
@@ -1277,7 +1229,17 @@ inline bool operator>(const Container& other, const ValuesProxy<Dict>& proxy) {
 /* A read-only proxy for a dictionary's items, in the same style as Python's
 `dict.items()` accessor. */
 template <typename Dict, bool as_pytuple>
-class ItemsProxy {
+class ItemsProxy : public DictProxy<
+    Dict,
+    LinkedList<
+        std::conditional_t<
+            as_pytuple, PyObject*, std::pair<typename Dict::Key, typename Dict::Value>
+        >,
+        Dict::FLAGS & ~Config::FIXED_SIZE,
+        typename Dict::Lock
+    >,
+    Yield::ITEM
+> {
     using View = typename Dict::View;
     using Key = typename Dict::Key;
     using Value = typename Dict::Value;
@@ -1286,11 +1248,11 @@ class ItemsProxy {
         Dict::FLAGS & ~Config::FIXED_SIZE,
         typename Dict::Lock
     >;
+    using Base = DictProxy<Dict, List, Yield::ITEM>;
 
     friend Dict;
-    const Dict& dict;
 
-    ItemsProxy(const Dict& dict) : dict(dict) {}
+    ItemsProxy(const Dict& dict) : Base(dict) {}
 
     // TODO: do we really care whether values are hashable?
 
@@ -1308,17 +1270,7 @@ public:
     /* Convert the items proxy in an equivalent list. */
     inline List to_list() const {
         // TODO: account for as_pytuple
-        return List(*this, dict.size(), dict.specialization());
-    }
-
-    /* Get a read-only reference to the proxied dictionary. */
-    inline const Dict& mapping() const {
-        return dict;
-    }
-
-    /* Get the total number of items stored in the proxied dictionary. */
-    inline size_t size() const {
-        return dict.size();
+        return List(*this, this->dict.size(), this->dict.specialization());
     }
 
     /* Get the index of a key within the dictionary. */
@@ -1329,7 +1281,7 @@ public:
         std::optional<long long> stop = std::nullopt
     ) const {
         std::pair<Key, Value> item(key, value);
-        return linked::index<Yield::ITEM>(dict.view, item, start, stop);
+        return linked::index<Yield::ITEM>(this->dict.view, item, start, stop);
     }
 
     /* Apply an index() check using a C++ pair. */
@@ -1338,7 +1290,7 @@ public:
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
-        return linked::index<Yield::ITEM>(dict.view, item, start, stop);
+        return linked::index<Yield::ITEM>(this->dict.view, item, start, stop);
     }
 
     /* Apply an index() check using a C++ tuple of size 2. */
@@ -1348,7 +1300,7 @@ public:
         std::optional<long long> stop = std::nullopt
     ) const {
         std::pair<Key, Value> pair(std::get<0>(item), std::get<1>(item));
-        return linked::index<Yield::ITEM>(dict.view, pair, start, stop);
+        return linked::index<Yield::ITEM>(this->dict.view, pair, start, stop);
     }
 
     /* Apply an index() check using a Python tuple of size 2. */
@@ -1361,7 +1313,7 @@ public:
             throw TypeError("expected a tuple of size 2");
         }
         std::pair<Key, Value> pair(PyTuple_GET_ITEM(item, 0), PyTuple_GET_ITEM(item, 1));
-        return linked::index<Yield::ITEM>(dict.view, pair, start, stop);
+        return linked::index<Yield::ITEM>(this->dict.view, pair, start, stop);
     }
 
     /* Count the number of occurrences of a key within the dictionary. */
@@ -1372,7 +1324,7 @@ public:
         std::optional<long long> stop = std::nullopt
     ) const {
         std::pair<Key, Value> item(key, value);
-        return linked::count<Yield::ITEM>(dict.view, item, start, stop);
+        return linked::count<Yield::ITEM>(this->dict.view, item, start, stop);
     }
 
     /* Apply a count() check using a C++ pair. */
@@ -1381,7 +1333,7 @@ public:
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
-        return linked::count<Yield::ITEM>(dict.view, item, start, stop);
+        return linked::count<Yield::ITEM>(this->dict.view, item, start, stop);
     }
 
     /* Apply a count() check using a C++ tuple of size 2. */
@@ -1391,7 +1343,7 @@ public:
         std::optional<long long> stop = std::nullopt
     ) const {
         std::pair<Key, Value> pair(std::get<0>(item), std::get<1>(item));
-        return linked::count<Yield::ITEM>(dict.view, pair, start, stop);
+        return linked::count<Yield::ITEM>(this->dict.view, pair, start, stop);
     }
 
     /* Apply a count() check using a Python tuple of size 2. */
@@ -1404,24 +1356,24 @@ public:
             throw TypeError("expected a tuple of size 2");
         }
         std::pair<Key, Value> pair(PyTuple_GET_ITEM(item, 0), PyTuple_GET_ITEM(item, 1));
-        return linked::count<Yield::ITEM>(dict.view, pair, start, stop);
+        return linked::count<Yield::ITEM>(this->dict.view, pair, start, stop);
     }
 
     /* Check if the referenced dictionary contains the given key-value pair. */
     inline bool contains(const Key& key, const Value& value) const {
         std::pair<Key, Value> item(key, value);
-        return linked::contains<Yield::ITEM>(dict.view, item);
+        return linked::contains<Yield::ITEM>(this->dict.view, item);
     }
 
     /* Apply a contains() check using a C++ pair. */
     inline bool contains(const std::pair<Key, Value> item) const {
-        return linked::contains<Yield::ITEM>(dict.view, item);
+        return linked::contains<Yield::ITEM>(this->dict.view, item);
     }
 
     /* Apply a contains() check using a C++ tuple of size 2. */
     inline bool contains(const std::tuple<Key, Value>& item) const {
         std::pair<Key, Value> pair(std::get<0>(item), std::get<1>(item));
-        return linked::contains<Yield::ITEM>(dict.view, pair);
+        return linked::contains<Yield::ITEM>(this->dict.view, pair);
     }
 
     /* Apply a contains() check using a Python tuple of size 2. */
@@ -1430,32 +1382,7 @@ public:
             throw TypeError("expected a tuple of size 2");
         }
         std::pair<Key, Value> pair(PyTuple_GET_ITEM(item, 0), PyTuple_GET_ITEM(item, 1));
-        return linked::contains<Yield::ITEM>(dict.view, pair);
-    }
-
-    /////////////////////////
-    ////    ITERATORS    ////
-    /////////////////////////
-
-    inline auto begin() const { return dict.view.template begin<Yield::ITEM>(); }
-    inline auto end() const { return dict.view.template end<Yield::ITEM>(); }
-    inline auto cbegin() const { return dict.view.template cbegin<Yield::ITEM>(); }
-    inline auto cend() const { return dict.view.template cend<Yield::ITEM>(); }
-    inline auto rbegin() const { return dict.view.template rbegin<Yield::ITEM>(); }
-    inline auto rend() const { return dict.view.template rend<Yield::ITEM>(); }
-    inline auto crbegin() const { return dict.view.template crbegin<Yield::ITEM>(); }
-    inline auto crend() const { return dict.view.template crend<Yield::ITEM>(); }
-
-    ////////////////////////
-    ////    INDEXING    ////
-    ////////////////////////
-
-    /* Get a read-only proxy for a key-value pair at a certain index of the referenced
-    dictionary. */
-    inline auto position(long long index) const
-        -> const linked::ElementProxy<const View, Yield::ITEM>
-    {
-        return linked::position<Yield::ITEM>(dict.view, index);
+        return linked::contains<Yield::ITEM>(this->dict.view, pair);
     }
 
     /* Get a read-only proxy for a slice of the referenced dictionary. */
@@ -1464,24 +1391,8 @@ public:
         -> const linked::SliceProxy<const View, List, Yield::ITEM, as_pytuple>
     {
         return linked::slice<List, Yield::ITEM, as_pytuple>(
-            dict.view, std::forward<Args>(args)...
+            this->dict.view, std::forward<Args>(args)...
         );
-    }
-
-    //////////////////////////////////
-    ////    OPERATOR OVERLOADS    ////
-    //////////////////////////////////
-
-    /* NOTE: ItemsProxies support listlike operators, including concatenation (+),
-     * repetition (*), and lexical comparisons (<, <=, ==, !=, >=, >), but not their
-     * in-place equivalents (+=, *=).  They also support indexing ([]) and slicing
-     * (.slice()) just like LinkedLists.
-     */
-
-    inline auto operator[](long long index) const
-        -> const linked::ElementProxy<const View, Yield::ITEM>
-    {
-        return position(index);
     }
 
 };
@@ -2265,6 +2176,48 @@ only if the dictionary's values are also hashable.
             return Py_NewRef(self->_mapping);
         }
 
+        static PyObject* index(PyProxy* self, PyObject* const* args, Py_ssize_t nargs) {
+            using bertrand::util::PyArgs;
+            using bertrand::util::CallProtocol;
+            using bertrand::util::parse_opt_int;
+            using Index = std::optional<long long>;
+            static constexpr std::string_view meth_name{"index"};
+            try {
+                PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+                PyObject* element = pyargs.parse("element");
+                Index start = pyargs.parse("start", parse_opt_int, Index());
+                Index stop = pyargs.parse("stop", parse_opt_int, Index());
+                pyargs.finalize();
+
+                return PyLong_FromSize_t(self->proxy.index(element, start, stop));
+
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+        static PyObject* count(PyProxy* self, PyObject* const* args, Py_ssize_t nargs) {
+            using bertrand::util::PyArgs;
+            using bertrand::util::CallProtocol;
+            using bertrand::util::parse_opt_int;
+            using Index = std::optional<long long>;
+            static constexpr std::string_view meth_name{"count"};
+            try {
+                PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
+                PyObject* element = pyargs.parse("element");
+                Index start = pyargs.parse("start", parse_opt_int, Index());
+                Index stop = pyargs.parse("stop", parse_opt_int, Index());
+                pyargs.finalize();
+
+                return PyLong_FromSize_t(self->proxy.count(element, start, stop));
+
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
         inline static Py_ssize_t __len__(PyProxy* self) noexcept {
             return self->proxy.size();
         }
@@ -2290,6 +2243,30 @@ only if the dictionary's values are also hashable.
         inline static PyObject* __reversed__(PyProxy* self, PyObject* = nullptr) noexcept {
             try {
                 return iter(self->proxy).crpython();
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+        template <typename Result>
+        static PyObject* __getitem__(PyProxy* self, PyObject* key) {
+            try {
+                if (PyIndex_Check(key)) {
+                    return Py_XNewRef(self->proxy[bertrand::util::parse_int(key)].get());
+                }
+
+                if (PySlice_Check(key)) {
+                    return Result::construct(self->proxy.slice(key).get());
+                }
+
+                PyErr_Format(
+                    PyExc_TypeError,
+                    "indices must be integers or slices, not %s",
+                    Py_TYPE(key)->tp_name
+                );
+                return nullptr;
+
             } catch (...) {
                 throw_python();
                 return nullptr;
@@ -2412,56 +2389,6 @@ than one.
     /* Python wrapper for LinkedDict.keys(). */
     template <typename Proxy>
     struct PyKeysProxy : public DictProxy<PyKeysProxy<Proxy>, Proxy> {
-
-        static PyObject* index(
-            PyKeysProxy* self,
-            PyObject* const* args,
-            Py_ssize_t nargs
-        ) {
-            using bertrand::util::PyArgs;
-            using bertrand::util::CallProtocol;
-            using bertrand::util::parse_opt_int;
-            using Index = std::optional<long long>;
-            static constexpr std::string_view meth_name{"index"};
-            try {
-                PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
-                PyObject* key = pyargs.parse("key");
-                Index start = pyargs.parse("start", parse_opt_int, Index());
-                Index stop = pyargs.parse("stop", parse_opt_int, Index());
-                pyargs.finalize();
-
-                return PyLong_FromSize_t(self->proxy.index(key, start, stop));
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* count(
-            PyKeysProxy* self,
-            PyObject* const* args,
-            Py_ssize_t nargs
-        ) {
-            using bertrand::util::PyArgs;
-            using bertrand::util::CallProtocol;
-            using bertrand::util::parse_opt_int;
-            using Index = std::optional<long long>;
-            static constexpr std::string_view meth_name{"count"};
-            try {
-                PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
-                PyObject* key = pyargs.parse("key");
-                Index start = pyargs.parse("start", parse_opt_int, Index());
-                Index stop = pyargs.parse("stop", parse_opt_int, Index());
-                pyargs.finalize();
-
-                return PyLong_FromSize_t(self->proxy.count(key, start, stop));
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
-        }
 
         static PyObject* isdisjoint(PyKeysProxy* self, PyObject* other) {
             try {
@@ -2658,29 +2585,6 @@ than one.
             }
         }
 
-        static PyObject* __getitem__(PyKeysProxy* self, PyObject* key) {
-            try {
-                if (PyIndex_Check(key)) {
-                    return Py_XNewRef(self->proxy[bertrand::util::parse_int(key)].get());
-                }
-
-                if (PySlice_Check(key)) {
-                    return PyLinkedSet::construct(self->proxy.slice(key).get());
-                }
-
-                PyErr_Format(
-                    PyExc_TypeError,
-                    "indices must be integers or slices, not %s",
-                    Py_TYPE(key)->tp_name
-                );
-                return nullptr;
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
-        }
-
         static PyObject* __str__(PyKeysProxy* self) {
             try {
                 std::ostringstream stream;
@@ -2707,8 +2611,7 @@ than one.
 
     private:
         friend PyDictInterface;
-        friend Derived;
-        using BaseProxy = DictProxy<PyKeysProxy, Proxy>;
+        using Base = DictProxy<PyKeysProxy, Proxy>;
         using IList = PyListInterface<Derived>;
         using ISet = PySetInterface<Derived>;
 
@@ -2742,16 +2645,16 @@ These proxies support the following operations:
 
         inline static PyMappingMethods mapping_methods = [] {
             PyMappingMethods slots;
-            slots.mp_length = (lenfunc) BaseProxy::__len__;
-            slots.mp_subscript = (binaryfunc) __getitem__;
+            slots.mp_length = (lenfunc) Base::__len__;
+            slots.mp_subscript = (binaryfunc) Base::template __getitem__<PyLinkedSet>;
             return slots;
         }();
 
         inline static PySequenceMethods sequence = [] {
             PySequenceMethods slots;
-            slots.sq_length = (lenfunc) BaseProxy::__len__;
-            slots.sq_item = (ssizeargfunc) BaseProxy::__getitem_scalar__;
-            slots.sq_contains = (objobjproc) BaseProxy::__contains__;
+            slots.sq_length = (lenfunc) Base::__len__;
+            slots.sq_item = (ssizeargfunc) Base::__getitem_scalar__;
+            slots.sq_contains = (objobjproc) Base::__contains__;
             return slots;
         }();
 
@@ -2765,13 +2668,13 @@ These proxies support the following operations:
         }();
 
         inline static PyGetSetDef properties[] = {
-            {"mapping", (getter) BaseProxy::mapping, nullptr, BaseProxy::docs::mapping.data()},
+            {"mapping", (getter) Base::mapping, nullptr, Base::docs::mapping.data()},
             {NULL}  // sentinel
         };
 
         inline static PyMethodDef methods[] = {
-            {"index", (PyCFunction) index, METH_FASTCALL, IList::docs::index.data()},
-            {"count", (PyCFunction) count, METH_FASTCALL, IList::docs::count.data()},
+            {"index", (PyCFunction) Base::index, METH_FASTCALL, IList::docs::index.data()},
+            {"count", (PyCFunction) Base::count, METH_FASTCALL, IList::docs::count.data()},
             {"isdisjoint", (PyCFunction) isdisjoint, METH_O, ISet::docs::isdisjoint.data()},
             {"issubset", (PyCFunction) issubset, METH_O, ISet::docs::issubset.data()},
             {"issuperset", (PyCFunction) issuperset, METH_O, ISet::docs::issuperset.data()},
@@ -2808,9 +2711,9 @@ These proxies support the following operations:
             },
             {
                 "__reversed__",
-                (PyCFunction) BaseProxy::__reversed__,
+                (PyCFunction) Base::__reversed__,
                 METH_NOARGS,
-                BaseProxy::docs::__reversed__.data()
+                Base::docs::__reversed__.data()
             },
             {NULL}  // sentinel
         };
@@ -2821,8 +2724,8 @@ These proxies support the following operations:
                 .tp_name = PyName<PyKeysProxy>.data(),
                 .tp_basicsize = sizeof(PyKeysProxy),
                 .tp_itemsize = 0,
-                .tp_dealloc = (destructor) BaseProxy::__dealloc__,
-                .tp_repr = (reprfunc) BaseProxy::__repr__,
+                .tp_dealloc = (destructor) Base::__dealloc__,
+                .tp_repr = (reprfunc) Base::__repr__,
                 .tp_as_number = &number,
                 .tp_as_sequence = &sequence,
                 .tp_as_mapping = &mapping_methods,
@@ -2833,8 +2736,8 @@ These proxies support the following operations:
                     Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_SEQUENCE
                 ),
                 .tp_doc = PyDoc_STR(docs::PyKeysProxy.data()),
-                .tp_richcompare = (richcmpfunc) BaseProxy::__richcompare__,
-                .tp_iter = (getiterfunc) BaseProxy::__iter__,
+                .tp_richcompare = (richcmpfunc) Base::__richcompare__,
+                .tp_iter = (getiterfunc) Base::__iter__,
                 .tp_methods = methods,
                 .tp_getset = properties,
                 .tp_alloc = (allocfunc) PyType_GenericAlloc,
@@ -2856,56 +2759,6 @@ These proxies support the following operations:
     template <typename Proxy>
     struct PyValuesProxy : public DictProxy<PyValuesProxy<Proxy>, Proxy> {
 
-        static PyObject* index(
-            PyValuesProxy* self,
-            PyObject* const* args,
-            Py_ssize_t nargs
-        ) {
-            using bertrand::util::PyArgs;
-            using bertrand::util::CallProtocol;
-            using bertrand::util::parse_opt_int;
-            using Index = std::optional<long long>;
-            static constexpr std::string_view meth_name{"index"};
-            try {
-                PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
-                PyObject* value = pyargs.parse("value");
-                Index start = pyargs.parse("start", parse_opt_int, Index());
-                Index stop = pyargs.parse("stop", parse_opt_int, Index());
-                pyargs.finalize();
-
-                return PyLong_FromSize_t(self->proxy.index(value, start, stop));
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* count(
-            PyValuesProxy* self,
-            PyObject* const* args,
-            Py_ssize_t nargs
-        ) {
-            using bertrand::util::PyArgs;
-            using bertrand::util::CallProtocol;
-            using bertrand::util::parse_opt_int;
-            using Index = std::optional<long long>;
-            static constexpr std::string_view meth_name{"count"};
-            try {
-                PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
-                PyObject* value = pyargs.parse("value");
-                Index start = pyargs.parse("start", parse_opt_int, Index());
-                Index stop = pyargs.parse("stop", parse_opt_int, Index());
-                pyargs.finalize();
-
-                return PyLong_FromSize_t(self->proxy.count(value, start, stop));
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
-        }
-
         static PyObject* __add__(PyValuesProxy* self, PyObject* other) {
             try {
                 return PyLinkedList::construct(self->proxy + other);
@@ -2918,29 +2771,6 @@ These proxies support the following operations:
         static PyObject* __mul__(PyValuesProxy* self, Py_ssize_t count) {
             try {
                 return PyLinkedList::construct(self->proxy * count);
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* __getitem__(PyValuesProxy* self, PyObject* key) {
-            try {
-                if (PyIndex_Check(key)) {
-                    return Py_XNewRef(self->proxy[bertrand::util::parse_int(key)].get());
-                }
-
-                if (PySlice_Check(key)) {
-                    return PyLinkedList::construct(self->proxy.slice(key).get());
-                }
-
-                PyErr_Format(
-                    PyExc_TypeError,
-                    "indices must be integers or slices, not %s",
-                    Py_TYPE(key)->tp_name
-                );
-                return nullptr;
-
             } catch (...) {
                 throw_python();
                 return nullptr;
@@ -2973,8 +2803,7 @@ These proxies support the following operations:
 
     private:
         friend PyDictInterface;
-        friend Derived;
-        using BaseProxy = DictProxy<PyValuesProxy, Proxy>;
+        using Base = DictProxy<PyValuesProxy, Proxy>;
         using IList = PyListInterface<Derived>;
         using ISet = PySetInterface<Derived>;
 
@@ -3003,34 +2832,34 @@ These proxies support the following operations:
 
         inline static PyMappingMethods mapping_methods = [] {
             PyMappingMethods slots;
-            slots.mp_length = (lenfunc) BaseProxy::__len__;
-            slots.mp_subscript = (binaryfunc) __getitem__;
+            slots.mp_length = (lenfunc) Base::__len__;
+            slots.mp_subscript = (binaryfunc) Base::template __getitem__<PyLinkedList>;
             return slots;
         }();
 
         inline static PySequenceMethods sequence = [] {
             PySequenceMethods slots;
-            slots.sq_length = (lenfunc) BaseProxy::__len__;
+            slots.sq_length = (lenfunc) Base::__len__;
             slots.sq_concat = (binaryfunc) __add__;
             slots.sq_repeat = (ssizeargfunc) __mul__;
-            slots.sq_item = (ssizeargfunc) BaseProxy::__getitem_scalar__;
-            slots.sq_contains = (objobjproc) BaseProxy::__contains__;
+            slots.sq_item = (ssizeargfunc) Base::__getitem_scalar__;
+            slots.sq_contains = (objobjproc) Base::__contains__;
             return slots;
         }();
 
         inline static PyGetSetDef properties[] = {
-            {"mapping", (getter) BaseProxy::mapping, nullptr, BaseProxy::docs::mapping.data()},
+            {"mapping", (getter) Base::mapping, nullptr, Base::docs::mapping.data()},
             {NULL}  // sentinel
         };
 
         inline static PyMethodDef methods[] = {
-            {"index", (PyCFunction) index, METH_FASTCALL, IList::docs::index.data()},
-            {"count", (PyCFunction) count, METH_FASTCALL, IList::docs::count.data()},
+            {"index", (PyCFunction) Base::index, METH_FASTCALL, IList::docs::index.data()},
+            {"count", (PyCFunction) Base::count, METH_FASTCALL, IList::docs::count.data()},
             {
                 "__reversed__",
-                (PyCFunction) BaseProxy::__reversed__,
+                (PyCFunction) Base::__reversed__,
                 METH_NOARGS,
-                BaseProxy::docs::__reversed__.data()
+                Base::docs::__reversed__.data()
             },
             {NULL}  // sentinel
         };
@@ -3041,8 +2870,8 @@ These proxies support the following operations:
                 .tp_name = PyName<PyValuesProxy>.data(),
                 .tp_basicsize = sizeof(PyValuesProxy),
                 .tp_itemsize = 0,
-                .tp_dealloc = (destructor) BaseProxy::__dealloc__,
-                .tp_repr = (reprfunc) BaseProxy::__repr__,
+                .tp_dealloc = (destructor) Base::__dealloc__,
+                .tp_repr = (reprfunc) Base::__repr__,
                 .tp_as_sequence = &sequence,
                 .tp_as_mapping = &mapping_methods,
                 .tp_hash = (hashfunc) PyObject_HashNotImplemented,
@@ -3052,8 +2881,8 @@ These proxies support the following operations:
                     Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_SEQUENCE
                 ),
                 .tp_doc = PyDoc_STR(docs::PyValuesProxy.data()),
-                .tp_richcompare = (richcmpfunc) BaseProxy::__richcompare__,
-                .tp_iter = (getiterfunc) BaseProxy::__iter__,
+                .tp_richcompare = (richcmpfunc) Base::__richcompare__,
+                .tp_iter = (getiterfunc) Base::__iter__,
                 .tp_methods = methods,
                 .tp_getset = properties,
                 .tp_alloc = (allocfunc) PyType_GenericAlloc,
@@ -3074,56 +2903,6 @@ These proxies support the following operations:
     /* Python wrapper for LinkedDict.items(). */
     template <typename Proxy>
     struct PyItemsProxy : public DictProxy<PyItemsProxy<Proxy>, Proxy> {
-
-        static PyObject* index(
-            PyItemsProxy* self,
-            PyObject* const* args,
-            Py_ssize_t nargs
-        ) {
-            using bertrand::util::PyArgs;
-            using bertrand::util::CallProtocol;
-            using bertrand::util::parse_opt_int;
-            using Index = std::optional<long long>;
-            static constexpr std::string_view meth_name{"index"};
-            try {
-                PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
-                PyObject* item = pyargs.parse("item");
-                Index start = pyargs.parse("start", parse_opt_int, Index());
-                Index stop = pyargs.parse("stop", parse_opt_int, Index());
-                pyargs.finalize();
-
-                return PyLong_FromSize_t(self->proxy.index(item, start, stop));
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
-        }
-
-        static PyObject* count(
-            PyItemsProxy* self,
-            PyObject* const* args,
-            Py_ssize_t nargs
-        ) {
-            using bertrand::util::PyArgs;
-            using bertrand::util::CallProtocol;
-            using bertrand::util::parse_opt_int;
-            using Index = std::optional<long long>;
-            static constexpr std::string_view meth_name{"count"};
-            try {
-                PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
-                PyObject* item = pyargs.parse("item");
-                Index start = pyargs.parse("start", parse_opt_int, Index());
-                Index stop = pyargs.parse("stop", parse_opt_int, Index());
-                pyargs.finalize();
-
-                return PyLong_FromSize_t(self->proxy.count(item, start, stop));
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
-        }
 
         static PyObject* __add__(PyItemsProxy* self, PyObject* other) {
             try {
@@ -3223,8 +3002,7 @@ These proxies support the following operations:
 
     private:
         friend PyDictInterface;
-        friend Derived;
-        using BaseProxy = DictProxy<PyItemsProxy, Proxy>;
+        using Base = DictProxy<PyItemsProxy, Proxy>;
         using IList = PyListInterface<Derived>;
         using ISet = PySetInterface<Derived>;
 
@@ -3235,7 +3013,7 @@ These proxies support the following operations:
         /* Implement `PySequence_GetItem()` in CPython API. */
         static PyObject* __getitem_scalar__(PyItemsProxy* self, Py_ssize_t index) {
             try {
-                return pair_as_pytuple(self->proxy.position(index).get());
+                return pair_as_pytuple(self->proxy[index].get());
             } catch (...) {
                 throw_python();
                 return nullptr;
@@ -3270,34 +3048,34 @@ These proxies support the following operations:
 
         inline static PyMappingMethods mapping_methods = [] {
             PyMappingMethods slots;
-            slots.mp_length = (lenfunc) BaseProxy::__len__;
+            slots.mp_length = (lenfunc) Base::__len__;
             slots.mp_subscript = (binaryfunc) __getitem__;
             return slots;
         }();
 
         inline static PySequenceMethods sequence = [] {
             PySequenceMethods slots;
-            slots.sq_length = (lenfunc) BaseProxy::__len__;
+            slots.sq_length = (lenfunc) Base::__len__;
             // slots.sq_concat = (binaryfunc) __add__;  // TODO
             // slots.sq_repeat = (ssizeargfunc) __mul__;  // TODO
             slots.sq_item = (ssizeargfunc) __getitem_scalar__;
-            slots.sq_contains = (objobjproc) BaseProxy::__contains__;
+            slots.sq_contains = (objobjproc) Base::__contains__;
             return slots;
         }();
 
         inline static PyGetSetDef properties[] = {
-            {"mapping", (getter) BaseProxy::mapping, nullptr, BaseProxy::docs::mapping.data()},
+            {"mapping", (getter) Base::mapping, nullptr, Base::docs::mapping.data()},
             {NULL}  // sentinel
         };
 
         inline static PyMethodDef methods[] = {
-            {"index", (PyCFunction) index, METH_FASTCALL, IList::docs::index.data()},
-            {"count", (PyCFunction) count, METH_FASTCALL, IList::docs::count.data()},
+            {"index", (PyCFunction) Base::index, METH_FASTCALL, IList::docs::index.data()},
+            {"count", (PyCFunction) Base::count, METH_FASTCALL, IList::docs::count.data()},
             {
                 "__reversed__",
                 (PyCFunction) __reversed__,
                 METH_NOARGS,
-                BaseProxy::docs::__reversed__.data()
+                Base::docs::__reversed__.data()
             },
             {NULL}  // sentinel
         };
@@ -3308,8 +3086,8 @@ These proxies support the following operations:
                 .tp_name = PyName<PyItemsProxy>.data(),
                 .tp_basicsize = sizeof(PyItemsProxy),
                 .tp_itemsize = 0,
-                .tp_dealloc = (destructor) BaseProxy::__dealloc__,
-                .tp_repr = (reprfunc) BaseProxy::__repr__,
+                .tp_dealloc = (destructor) Base::__dealloc__,
+                .tp_repr = (reprfunc) Base::__repr__,
                 .tp_as_sequence = &sequence,
                 .tp_as_mapping = &mapping_methods,
                 .tp_hash = (hashfunc) PyObject_HashNotImplemented,
@@ -3319,7 +3097,7 @@ These proxies support the following operations:
                     Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_SEQUENCE
                 ),
                 .tp_doc = PyDoc_STR(docs::PyItemsProxy.data()),
-                // .tp_richcompare = (richcmpfunc) BaseProxy::__richcompare__,  // TODO
+                // .tp_richcompare = (richcmpfunc) Base::__richcompare__,  // TODO
                 .tp_iter = (getiterfunc) __iter__,
                 .tp_methods = methods,
                 .tp_getset = properties,
