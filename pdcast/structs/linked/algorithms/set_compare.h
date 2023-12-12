@@ -4,16 +4,11 @@
 #include <type_traits>  // std::enable_if_t<>
 #include <unordered_set>  // std::unordered_set
 #include "../../util/iter.h"  // iter()
-#include "../core/view.h"  // ViewTraits, Yield
+#include "../core/view.h"  // ViewTraits
 
 
 namespace bertrand {
 namespace linked {
-
-
-    //////////////////////
-    ////    PUBLIC    ////
-    //////////////////////
 
 
     /* Check whether a linked set or dictionary has any elements in common with

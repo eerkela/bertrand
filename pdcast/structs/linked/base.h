@@ -346,10 +346,7 @@ public:
 
     PyObject_HEAD
 
-    inline static PyObject* SINGLY_LINKED(
-        Derived* self,
-        PyObject* /* ignored */ = nullptr
-    ) noexcept {
+    inline static PyObject* SINGLY_LINKED(Derived* self, PyObject* = nullptr) noexcept {
         return std::visit(
             [](auto& list) {
                 return PyBool_FromLong(std::decay_t<decltype(list)>::SINGLY_LINKED);
@@ -358,10 +355,7 @@ public:
         );
     }
 
-    inline static PyObject* DOUBLY_LINKED(
-        Derived* self,
-        PyObject* /* ignored */ = nullptr
-    ) noexcept {
+    inline static PyObject* DOUBLY_LINKED(Derived* self, PyObject* = nullptr) noexcept {
         return std::visit(
             [](auto& list) {
                 return PyBool_FromLong(std::decay_t<decltype(list)>::DOUBLY_LINKED);
@@ -370,10 +364,7 @@ public:
         );
     }
 
-    inline static PyObject* XOR(
-        Derived* self,
-        PyObject* /* ignored */ = nullptr
-    ) noexcept {
+    inline static PyObject* XOR(Derived* self, PyObject* = nullptr) noexcept {
         return std::visit(
             [](auto& list) {
                 return PyBool_FromLong(std::decay_t<decltype(list)>::XOR);
@@ -382,10 +373,7 @@ public:
         );
     }
 
-    inline static PyObject* DYNAMIC(
-        Derived* self,
-        PyObject* /* ignored */ = nullptr
-    ) noexcept {
+    inline static PyObject* DYNAMIC(Derived* self, PyObject* = nullptr) noexcept {
         return std::visit(
             [](auto& list) {
                 return PyBool_FromLong(std::decay_t<decltype(list)>::DYNAMIC);
@@ -394,10 +382,7 @@ public:
         );
     }
 
-    inline static PyObject* PACKED(
-        Derived* self,
-        PyObject* /* ignored */ = nullptr
-    ) noexcept {
+    inline static PyObject* PACKED(Derived* self, PyObject* = nullptr) noexcept {
         return std::visit(
             [](auto& list) {
                 return PyBool_FromLong(std::decay_t<decltype(list)>::PACKED);
@@ -406,10 +391,7 @@ public:
         );
     }
 
-    inline static PyObject* STRICTLY_TYPED(
-        Derived* self,
-        PyObject* /* ignored */ = nullptr
-    ) noexcept {
+    inline static PyObject* STRICTLY_TYPED(Derived* self, PyObject* = nullptr) noexcept {
         return std::visit(
             [](auto& list) {
                 return PyBool_FromLong(std::decay_t<decltype(list)>::STRICTLY_TYPED);
@@ -418,10 +400,7 @@ public:
         );
     }
 
-    inline static PyObject* lock(
-        Derived* self,
-        PyObject* /* ignored */ = nullptr
-    ) noexcept {
+    inline static PyObject* lock(Derived* self, PyObject* = nullptr) noexcept {
         return std::visit(
             [](auto& list) {
                 using Lock = typename std::decay_t<decltype(list)>::Lock;
@@ -431,10 +410,7 @@ public:
         );
     }
 
-    inline static PyObject* capacity(
-        Derived* self,
-        PyObject* /* ignored */ = nullptr
-    ) noexcept {
+    inline static PyObject* capacity(Derived* self, PyObject* = nullptr) noexcept {
         size_t result = std::visit(
             [](auto& list) {
                 return list.capacity();
@@ -444,10 +420,7 @@ public:
         return PyLong_FromSize_t(result);
     }
 
-    inline static PyObject* max_size(
-        Derived* self,
-        PyObject* /* ignored */ = nullptr
-    ) noexcept {
+    inline static PyObject* max_size(Derived* self, PyObject* = nullptr) noexcept {
         std::optional<size_t> result = std::visit(
             [](auto& list) {
                 return list.max_size();
@@ -461,10 +434,7 @@ public:
         }
     }
 
-    inline static PyObject* frozen(
-        Derived* self,
-        PyObject* /* ignored */ = nullptr
-    ) noexcept {
+    inline static PyObject* frozen(Derived* self, PyObject* = nullptr) noexcept {
         bool result = std::visit(
             [](auto& list) {
                 return list.frozen();
@@ -474,10 +444,7 @@ public:
         return PyBool_FromLong(result);
     }
 
-    inline static PyObject* specialization(
-        Derived* self,
-        PyObject* /* ignored */ = nullptr
-    ) noexcept {
+    inline static PyObject* specialization(Derived* self, PyObject* = nullptr) noexcept {
         PyObject* result = std::visit(
             [](auto& list) {
                 return list.specialization();
@@ -490,10 +457,7 @@ public:
         return Py_NewRef(result);
     }
 
-    inline static PyObject* nbytes(
-        Derived* self,
-        PyObject* /* ignored */ = nullptr
-    ) noexcept {
+    inline static PyObject* nbytes(Derived* self, PyObject* = nullptr) noexcept {
         size_t result = std::visit(
             [](auto& list) {
                 return list.nbytes();
@@ -538,10 +502,7 @@ public:
         }
     }
 
-    static PyObject* defragment(
-        Derived* self,
-        PyObject* /* ignored */ = nullptr
-    ) {
+    static PyObject* defragment(Derived* self, PyObject* = nullptr) {
         try {
             std::visit(
                 [](auto& list) {
@@ -631,16 +592,31 @@ public:
         );
     }
 
-    inline static PyObject* __reversed__(
-        Derived* self,
-        PyObject* /* ignored */ = nullptr
-    ) noexcept {
+    inline static PyObject* __reversed__(Derived* self, PyObject* = nullptr) noexcept {
         return std::visit(
             [](auto& list) {
                 return iter(list).rpython();
             },
             self->variant
         );
+    }
+
+    static PyObject* __repr__(Derived* self) {
+        try {
+            std::ostringstream stream;
+            std::visit(
+                [&stream](auto& container) {
+                    stream << container;
+                },
+                self->variant
+            );
+            auto str = stream.str();
+            return PyUnicode_FromStringAndSize(str.c_str(), str.size());
+
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
     }
 
 protected:

@@ -590,21 +590,27 @@ class Mapped : public Wrapped {
     MappedType _mapped;
 
     /* Unpack a python tuple containing a key and value. */
-    inline static std::pair<PyObject*, PyObject*> unpack_python(PyObject* tuple) {
+    inline static std::pair<PyObject*, PyObject*> unpack_python(PyObject* item) {
         static_assert(
             is_pyobject<Value> && is_pyobject<MappedType>,
             "Python tuples can only be unpacked by PyObject* nodes"
         );
 
-        if (!PyTuple_Check(tuple) || PyTuple_Size(tuple) != 2) {
+        PyObject* key;
+        PyObject* value;
+        if (PyTuple_Check(item) && PyTuple_GET_SIZE(item) == 2) {
+            key = PyTuple_GET_ITEM(item, 0);
+            value = PyTuple_GET_ITEM(item, 1);
+        } else if (PyList_Check(item) && PyList_GET_SIZE(item) == 2) {
+            key = PyList_GET_ITEM(item, 0);
+            value = PyList_GET_ITEM(item, 1);
+        } else {
             std::ostringstream msg;
-            msg << "expected tuple of size 2 (key, value), not " << repr(tuple);
+            msg << "expected tuple of size 2 (key, value), not " << repr(item);
             throw TypeError(msg.str());
         }
 
-        PyObject* key = PyTuple_GET_ITEM(tuple, 0);
-        PyObject* mapped = PyTuple_GET_ITEM(tuple, 1);
-        return std::make_pair(key, mapped);
+        return std::make_pair(key, value);
     }
 
 public:
@@ -629,7 +635,7 @@ public:
     {}
 
     /* Initialize a mapped node with a Python tuple holding a separate key and value. */
-    Mapped(PyObject* tuple) : Mapped(unpack_python(tuple)) {}
+    Mapped(PyObject* item) : Mapped(unpack_python(item)) {}
 
     /* Copy constructor. */
     Mapped(const Mapped& other) noexcept : Wrapped(other), _mapped(other._mapped) {

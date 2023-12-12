@@ -24,6 +24,7 @@
 #include "algorithms/add.h"
 #include "algorithms/contains.h"
 #include "algorithms/count.h"
+#include "algorithms/dict_compare.h"
 #include "algorithms/discard.h"
 #include "algorithms/distance.h"
 #include "algorithms/get.h"
@@ -51,8 +52,8 @@
 // TODO: implement operator overloads
 
 
-// TODO: union, update, __init__ should accept other LinkedDicts, and use
-// .items() to iterate over them
+// TODO: union, update, __init__, comparisons, concatenate/repeat, etc. should accept
+// other LinkedDicts, and use .items() to iterate over them
 
 
 namespace bertrand {
@@ -690,66 +691,28 @@ inline auto operator^=(LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
 }
 
 
-// TODO: implement proper == operators, accounting for both keys and values of this
-// and the other container.  The other container should be any mapping type
-// (python dict, std::unordered_map, etc.) or a sequence of key-value pairs.
-// -> use SFINAE to determine whether an iterator over the other container
-// dereferences to a key-value pair.
-// -> Iterators over python dictionaries only dereference to keys, so we need to
-// have a special case that calls PyDict_Next() to get key-value pairs.
-
-// -> Other LinkedDicts need to use .items() to get key-value pairs, but this is
-// not currently implemented.
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator==(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other) {
+    return linked::dict_equal(dict.view, other);
+}
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline bool operator==(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other) {
-    // using Dict = LinkedDict<K, V, Flags, Ts...>;
-    // using Node = typename Dict::Node;
-
-    // auto convert = [](const auto& item) {
-    //     if constexpr (is_pyobject<std::decay_t<decltype(item)>>) {
-    //         PyObject* key;
-    //         PyObject* value;
-    //         if (PyTuple_Check(item) && PyTuple_GET_SIZE(item) == 2) {
-    //             key = PyTuple_GET_ITEM(item, 0);
-    //             value = PyTuple_GET_ITEM(item, 1);
-    //         } else if (PyList_Check(item) && PyList_GET_SIZE(item) == 2) {
-    //             key = PyList_GET_ITEM(item, 0);
-    //             value = PyList_GET_ITEM(item, 1);
-    //         } else {
-    //             std::ostringstream msg;
-    //             msg << "expected tuple or list of size 2, not " << repr(item);
-    //             throw TypeError(msg.str());
-    //         }
-    //         return std::make_pair(key, value);
-    //     } else {
-    //         return item;
-    //     }
-    // };
-
-    // std::unordered_set<const Node*> found;
-    // for (const auto& item : iter(other, convert)) {
-
-    // }
-
-    // TODO: compare both keys and values
-    return linked::set_equal(dict.view, other);
+inline bool operator==(const Map& other, const LinkedDict<K, V, Flags, Ts...>& dict) {
+    return linked::dict_equal(dict.view, other);
 }
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator!=(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other) {
-    // TODO: compare both keys and values
-    return linked::set_not_equal(dict.view, other);
+    return linked::dict_not_equal(dict.view, other);
 }
 
 
-// TODO: reverse equivalents for ==, !=
-
-
-// TODO: this is as simple as injecting the Yield:: directive into set comparisons.
-
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
+inline bool operator!=(const Map& other, const LinkedDict<K, V, Flags, Ts...>& dict) {
+    return linked::dict_not_equal(dict.view, other);
+}
 
 
 ///////////////////////
@@ -829,13 +792,6 @@ public:
     ////    INDEXING    ////
     ////////////////////////
 
-    /* Get a read-only proxy for an element at a certain index of the subset. */
-    inline auto position(long long index) const
-        -> const linked::ElementProxy<const View, yield>
-    {
-        return linked::position<yield>(dict.view, index);
-    }
-
     /* Extract a slice from the subset. */
     template <typename... Args>
     inline auto slice(Args&&... args) const
@@ -844,17 +800,12 @@ public:
         return linked::slice<Result, yield>(dict.view, std::forward<Args>(args)...);
     }
 
-    //////////////////////////////////
-    ////    OPERATOR OVERLOADS    ////
-    //////////////////////////////////
-
-    /* NOTE: KeysProxies support set comparisons using the <, <=, ==, !=, >=, and >
-    * operators,  even though the underlying dictionary does not.  They also support
-    * the |, &, -, and ^ operators for set arithmetic, but not their in-place
-    * equivalents (|=, &=, -=, ^=).  This is consistent with Python, which enforces
-    * the same restrictions for its built-in dict type.  See the non-member operator
-    * overloads below for more details.
-    */
+    /* Get a read-only proxy for an element at a certain index of the subset. */
+    inline auto position(long long index) const
+        -> const linked::ElementProxy<const View, yield>
+    {
+        return linked::position<yield>(dict.view, index);
+    }
 
     inline auto operator[](long long index) const
         -> const linked::ElementProxy<const View, yield>
@@ -875,12 +826,11 @@ public:
 template <typename Dict>
 class KeysProxy : public DictProxy<
     Dict,
-    LinkedSet<typename Dict::Key, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock>,
+    LinkedSet<typename Dict::Key, Dict::FLAGS, typename Dict::Lock>,
     Yield::KEY
 > {
-    using View = typename Dict::View;
     using Key = typename Dict::Key;
-    using Set = LinkedSet<Key, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock>;
+    using Set = LinkedSet<Key, Dict::FLAGS, typename Dict::Lock>;
     using Base = DictProxy<Dict, Set, Yield::KEY>;
 
     friend Dict;
@@ -1094,12 +1044,11 @@ inline bool operator>(const Container& other, const KeysProxy<Dict>& proxy) {
 template <typename Dict>
 class ValuesProxy : public DictProxy<
     Dict,
-    LinkedList<typename Dict::Value, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock>,
+    LinkedList<typename Dict::Value, Dict::FLAGS, typename Dict::Lock>,
     Yield::VALUE
 > {
-    using View = typename Dict::View;
     using Value = typename Dict::Value;
-    using List = LinkedList<Value, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock>;
+    using List = LinkedList<Value, Dict::FLAGS, typename Dict::Lock>;
     using Base = DictProxy<Dict, List, Yield::VALUE>;
 
     friend Dict;
@@ -1235,7 +1184,7 @@ class ItemsProxy : public DictProxy<
         std::conditional_t<
             as_pytuple, PyObject*, std::pair<typename Dict::Key, typename Dict::Value>
         >,
-        Dict::FLAGS & ~Config::FIXED_SIZE,
+        Dict::FLAGS,
         typename Dict::Lock
     >,
     Yield::ITEM
@@ -1245,7 +1194,7 @@ class ItemsProxy : public DictProxy<
     using Value = typename Dict::Value;
     using List = LinkedList<
         std::conditional_t<as_pytuple, PyObject*, std::pair<Key, Value>>,
-        Dict::FLAGS & ~Config::FIXED_SIZE,
+        Dict::FLAGS,
         typename Dict::Lock
     >;
     using Base = DictProxy<Dict, List, Yield::ITEM>;
@@ -1254,18 +1203,7 @@ class ItemsProxy : public DictProxy<
 
     ItemsProxy(const Dict& dict) : Base(dict) {}
 
-    // TODO: do we really care whether values are hashable?
-
-    /* Check whether the value type is hashable. */
-    template <typename T, typename U = void>
-    struct is_hashable : std::false_type {};
-    template <typename T>
-    struct is_hashable<T, std::void_t<decltype(std::hash<T>{}(std::declval<T>()))>> :
-        std::true_type
-    {};
-
 public:
-    static constexpr bool hashable = is_hashable<Value>::value;
 
     /* Convert the items proxy in an equivalent list. */
     inline List to_list() const {
@@ -1805,19 +1743,21 @@ public:
 
     static PyObject* __richcompare__(Derived* self, PyObject* other, int cmp) {
         try {
-            return std::visit(
+            bool result = std::visit(
                 [&other, &cmp](auto& list) {
                     switch (cmp) {
                         case Py_EQ:
-                            return list == other ? Py_True : Py_False;
+                            return list == other;
                         case Py_NE:
-                            return list != other ? Py_True : Py_False;
+                            return list != other;
                         default:
                             throw TypeError("invalid comparison");
                     }
                 },
                 self->variant
             );
+            return Py_NewRef(result ? Py_True : Py_False);
+
         } catch (...) {
             throw_python();
             return nullptr;
@@ -2277,17 +2217,17 @@ only if the dictionary's values are also hashable.
             try {
                 switch (cmp) {
                     case Py_LT:
-                        return self->proxy < other ? Py_True : Py_False;
+                        return Py_NewRef(self->proxy < other ? Py_True : Py_False);
                     case Py_LE:
-                        return self->proxy <= other ? Py_True : Py_False;
+                        return Py_NewRef(self->proxy <= other ? Py_True : Py_False);
                     case Py_EQ:
-                        return self->proxy == other ? Py_True : Py_False;
+                        return Py_NewRef(self->proxy == other ? Py_True : Py_False);
                     case Py_NE:
-                        return self->proxy != other ? Py_True : Py_False;
+                        return Py_NewRef(self->proxy != other ? Py_True : Py_False);
                     case Py_GE:
-                        return self->proxy >= other ? Py_True : Py_False;
+                        return Py_NewRef(self->proxy >= other ? Py_True : Py_False);
                     case Py_GT:
-                        return self->proxy > other ? Py_True : Py_False;
+                        return Py_NewRef(self->proxy > other ? Py_True : Py_False);
                     default:
                         throw TypeError("invalid comparison");
                 }
@@ -2669,7 +2609,7 @@ These proxies support the following operations:
 
         inline static PyGetSetDef properties[] = {
             {"mapping", (getter) Base::mapping, nullptr, Base::docs::mapping.data()},
-            {NULL}  // sentinel
+            {NULL}
         };
 
         inline static PyMethodDef methods[] = {
@@ -2715,7 +2655,7 @@ These proxies support the following operations:
                 METH_NOARGS,
                 Base::docs::__reversed__.data()
             },
-            {NULL}  // sentinel
+            {NULL}
         };
 
         static PyTypeObject build_type() {
@@ -2849,7 +2789,7 @@ These proxies support the following operations:
 
         inline static PyGetSetDef properties[] = {
             {"mapping", (getter) Base::mapping, nullptr, Base::docs::mapping.data()},
-            {NULL}  // sentinel
+            {NULL}
         };
 
         inline static PyMethodDef methods[] = {
@@ -2861,7 +2801,7 @@ These proxies support the following operations:
                 METH_NOARGS,
                 Base::docs::__reversed__.data()
             },
-            {NULL}  // sentinel
+            {NULL}
         };
 
         static PyTypeObject build_type() {
@@ -3065,7 +3005,7 @@ These proxies support the following operations:
 
         inline static PyGetSetDef properties[] = {
             {"mapping", (getter) Base::mapping, nullptr, Base::docs::mapping.data()},
-            {NULL}  // sentinel
+            {NULL}
         };
 
         inline static PyMethodDef methods[] = {
@@ -3077,7 +3017,7 @@ These proxies support the following operations:
                 METH_NOARGS,
                 Base::docs::__reversed__.data()
             },
-            {NULL}  // sentinel
+            {NULL}
         };
 
         static PyTypeObject build_type() {
@@ -3464,24 +3404,6 @@ public:
         }
     }
 
-    static PyObject* __repr__(PyLinkedDict* self) {
-        try {
-            std::ostringstream stream;
-            std::visit(
-                [&stream](auto& dict) {
-                    stream << dict;
-                },
-                self->variant
-            );
-            auto str = stream.str();
-            return PyUnicode_FromStringAndSize(str.c_str(), str.size());
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
-    }
-
 private:
 
     struct docs {
@@ -3638,7 +3560,7 @@ constructor itself.
         BASE_PROPERTY(frozen),
         BASE_PROPERTY(nbytes),
         BASE_PROPERTY(specialization),
-        {NULL}  // sentinel
+        {NULL}
     };
 
     inline static PyMethodDef methods[] = {
@@ -3704,7 +3626,7 @@ constructor itself.
         DICT_METHOD(keys, METH_NOARGS),
         DICT_METHOD(values, METH_NOARGS),
         DICT_METHOD(items, METH_NOARGS),
-        {NULL}  // sentinel
+        {NULL}
     };
 
     #undef BASE_PROPERTY
@@ -3750,7 +3672,7 @@ constructor itself.
             .tp_basicsize = sizeof(PyLinkedDict),
             .tp_itemsize = 0,
             .tp_dealloc = (destructor) Base::__dealloc__,
-            .tp_repr = (reprfunc) __repr__,
+            .tp_repr = (reprfunc) Base::__repr__,
             .tp_as_number = &number,
             .tp_as_sequence = &sequence,
             .tp_as_mapping = &mapping,
@@ -3810,65 +3732,7 @@ public:
 private:
 
     /* Dynamic heap type generated by `LinkedDict.__class_getitem__()` in Python. */
-    class Specialized {
-
-        static int __init__(PyLinkedDict* self, PyObject* args, PyObject* kwargs) {
-            using bertrand::util::PyArgs;
-            using bertrand::util::CallProtocol;
-            using bertrand::util::none_to_null;
-            using bertrand::util::parse_int;
-            using bertrand::util::is_truthy;
-            static constexpr std::string_view meth_name{"__init__"};
-            try {
-                // parse arguments
-                PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
-                PyObject* iterable = pyargs.parse(
-                    "iterable", none_to_null, (PyObject*)nullptr
-                );
-                std::optional<size_t> max_size = pyargs.parse(
-                    "max_size",
-                    [](PyObject* obj) -> std::optional<size_t> {
-                        if (obj == Py_None) {
-                            return std::nullopt;
-                        }
-                        long long result = parse_int(obj);
-                        if (result < 0) {
-                            throw ValueError("max_size cannot be negative");
-                        }
-                        return std::make_optional(static_cast<size_t>(result));
-                    },
-                    std::optional<size_t>()
-                );
-                bool reverse = pyargs.parse("reverse", is_truthy, false);
-                bool singly_linked = pyargs.parse("singly_linked", is_truthy, false);
-                bool packed = pyargs.parse("packed", is_truthy, false);
-                pyargs.finalize();
-
-                // initialize
-                PyObject* spec = PyObject_GetAttrString(
-                    reinterpret_cast<PyObject*>(Py_TYPE(self)),
-                    "_specialization"  // injected by __class_getitem__()
-                );
-                PyLinkedDict::initialize(
-                    self,
-                    iterable,
-                    max_size,
-                    spec,
-                    reverse,
-                    singly_linked,
-                    packed,
-                    true  // strictly typed
-                );
-                Py_DECREF(spec);
-
-                // exit normally
-                return 0;
-
-            } catch (...) {
-                throw_python();
-                return -1;
-            }
-        }
+    class Specialized : public Base::Specialized {
 
         static PyObject* fromkeys(PyObject* type, PyObject* args, PyObject* kwargs) {
             PyLinkedDict* self = PyObject_New(PyLinkedDict, &PyLinkedDict::Type);
@@ -3929,10 +3793,11 @@ private:
         }
 
     private:
+        using BaseSpec = Base::Specialized;
 
         /* Overridden methods for permanently-specialized types. */
         inline static PyMethodDef specialized_methods[] = {
-            {"__init__", (PyCFunction) __init__, METH_VARARGS | METH_KEYWORDS, nullptr},
+            {"__init__", (PyCFunction) BaseSpec::__init__, METH_VARARGS | METH_KEYWORDS, nullptr},
             {"fromkeys", (PyCFunction) fromkeys, METH_VARARGS | METH_KEYWORDS | METH_CLASS, nullptr},
             {NULL}
         };

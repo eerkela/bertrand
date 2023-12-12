@@ -882,27 +882,29 @@ public:
 
     static PyObject* __richcompare__(Derived* self, PyObject* other, int cmp) {
         try {
-            return std::visit(
+            bool result = std::visit(
                 [&other, &cmp](auto& list) {
                     switch (cmp) {
                         case Py_LT:
-                            return list < other ? Py_True : Py_False;
+                            return list < other;
                         case Py_LE:
-                            return list <= other ? Py_True : Py_False;
+                            return list <= other;
                         case Py_EQ:
-                            return list == other ? Py_True : Py_False;
+                            return list == other;
                         case Py_NE:
-                            return list != other ? Py_True : Py_False;
+                            return list != other;
                         case Py_GE:
-                            return list >= other ? Py_True : Py_False;
+                            return list >= other;
                         case Py_GT:
-                            return list > other ? Py_True : Py_False;
+                            return list > other;
                         default:
                             throw TypeError("invalid comparison");
                     }
                 },
                 self->variant
             );
+            return Py_NewRef(result ? Py_True : Py_False);
+
         } catch (...) {
             throw_python();
             return nullptr;
@@ -1455,23 +1457,7 @@ public:
         }
     }
 
-    static PyObject* __repr__(PyLinkedList* self) {
-        try {
-            std::ostringstream stream;
-            std::visit(
-                [&stream](auto& list) {
-                    stream << list;
-                },
-                self->variant
-            );
-            auto str = stream.str();
-            return PyUnicode_FromStringAndSize(str.c_str(), str.size());
 
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
-    }
 
 private:
 
@@ -1642,7 +1628,7 @@ in some cases.
             .tp_basicsize = sizeof(PyLinkedList),
             .tp_itemsize = 0,
             .tp_dealloc = (destructor) Base::__dealloc__,
-            .tp_repr = (reprfunc) __repr__,
+            .tp_repr = (reprfunc) Base::__repr__,
             .tp_as_sequence = &sequence,
             .tp_as_mapping = &mapping,
             .tp_hash = (hashfunc) PyObject_HashNotImplemented,

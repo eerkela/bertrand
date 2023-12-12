@@ -3,6 +3,7 @@
 
 #include <cstddef>  // size_t
 #include <optional>  // std::optional
+#include <sstream>  // std::ostringstream
 #include <stack>  // std::stack
 #include <type_traits>  // std::conditional_t<>
 #include <Python.h>  // CPython API
@@ -479,7 +480,12 @@ public:
     ///////////////////////////////
 
     /* Get the node at the head of the list. */
-    inline Node* head() const noexcept {
+    inline Node* head() noexcept {
+        return allocator.head;
+    }
+
+    /* Get the node at the head of a const list. */
+    inline const Node* head() const noexcept {
         return allocator.head;
     }
 
@@ -489,7 +495,12 @@ public:
     }
 
     /* Get the node at the tail of the list. */
-    inline Node* tail() const noexcept {
+    inline Node* tail() noexcept {
+        return allocator.tail;
+    }
+
+    /* Get the node at the tail of a const list. */
+    inline const Node* tail() const noexcept {
         return allocator.tail;
     }
 
@@ -734,16 +745,16 @@ public:
 
         // if list is doubly-linked, we can use prev to get neighbors
         if constexpr (NodeTraits<Node>::has_prev) {
-            Node* prev = tail()->prev();
+            const Node* prev = tail()->prev();
             return ConstIterator<Direction::BACKWARD, yield>(
                 *self, prev, tail(), nullptr
             );
 
         // Otherwise, build a temporary stack of prev pointers
         } else {
-            std::stack<Node*> prev;
+            std::stack<const Node*> prev;
             prev.push(nullptr);  // stack always has at least one element (nullptr)
-            Node* temp = head();
+            const Node* temp = head();
             while (temp != tail()) {
                 prev.push(temp);
                 temp = temp->next();
@@ -838,26 +849,13 @@ public:
         bool reverse
     ) : Base(capacity, spec)
     {
-        if constexpr (Derived::dictlike) {
-            PyDict dict(iterable);
-            if (reverse) {
-                for (const auto& item : iter(dict)) {
-                    node<Allocator::EXIST_OK | Allocator::INSERT_HEAD>(item);
-                }
-            } else {
-                for (const auto& item : iter(dict)) {
-                    node<Allocator::EXIST_OK | Allocator::INSERT_TAIL>(item);
-                }
+        if (reverse) {
+            for (const auto& item : iter(iterable)) {
+                node<Allocator::EXIST_OK | Allocator::INSERT_HEAD>(item);
             }
         } else {
-            if (reverse) {
-                for (const auto& item : iter(iterable)) {
-                    node<Allocator::EXIST_OK | Allocator::INSERT_HEAD>(item);
-                }
-            } else {
-                for (const auto& item : iter(iterable)) {
-                    node<Allocator::EXIST_OK | Allocator::INSERT_TAIL>(item);
-                }
+            for (const auto& item : iter(iterable)) {
+                node<Allocator::EXIST_OK | Allocator::INSERT_TAIL>(item);
             }
         }
     }
@@ -993,14 +991,91 @@ class DictView : public HashView<
     >;
 
 public:
+    using Allocator = typename Base::Allocator;
     using MappedValue = typename Base::Node::MappedValue;
     static constexpr bool dictlike = true;
+
+    template <unsigned int NewFlags>
+    using Reconfigure = DictView<NodeType, NewFlags>;
 
     using Base::Base;
     using Base::operator=;
 
-    template <unsigned int NewFlags>
-    using Reconfigure = DictView<NodeType, NewFlags>;
+    /* Construct a DictView from an input container. */
+    template <typename Container>
+    DictView(
+        Container&& iterable,
+        std::optional<size_t> capacity,
+        PyObject* spec,
+        bool reverse
+    ) : Base(capacity, spec)
+    {
+        static constexpr unsigned int flags = (
+            Allocator::EXIST_OK | Allocator::REPLACE_MAPPED
+        );
+
+        if constexpr (is_pyobject<Container>) {
+            if (PyDict_Check(iterable)) {
+                if (reverse) {
+                    for (const auto& item : PyDict(iterable)) {
+                        Base::template node<flags | Allocator::INSERT_HEAD>(item);
+                    }
+                } else {
+                    for (const auto& item : PyDict(iterable)) {
+                        Base::template node<flags | Allocator::INSERT_TAIL>(item);
+                    }
+                }
+            } else {
+                if (reverse) {
+                    for (const auto& item : iter(iterable)) {
+                        Base::template node<flags | Allocator::INSERT_HEAD>(item);
+                    }
+                } else {
+                    for (const auto& item : iter(iterable)) {
+                        Base::template node<flags | Allocator::INSERT_TAIL>(item);
+                    }
+                }
+            }
+
+        } else {
+            if (reverse) {
+                for (const auto& item : iter(iterable)) {
+                    Base::template node<flags | Allocator::INSERT_HEAD>(item);
+                }
+            } else {
+                for (const auto& item : iter(iterable)) {
+                    Base::template node<flags | Allocator::INSERT_TAIL>(item);
+                }
+            }
+        }
+    }
+
+    /* Construct a DictView from an iterator range. */
+    template <typename Iterator>
+    DictView(
+        Iterator&& begin,
+        Iterator&& end,
+        std::optional<size_t> capacity,
+        PyObject* spec,
+        bool reverse
+    ) : Base(capacity, spec)
+    {
+        static constexpr unsigned int flags = (
+            Allocator::EXIST_OK | Allocator::REPLACE_MAPPED
+        );
+
+        if (reverse) {
+            while (begin != end) {
+                Base::template node<flags | Allocator::INSERT_HEAD>(*begin);
+                ++begin;
+            }
+        } else {
+            while (begin != end) {
+                Base::template node<flags | Allocator::INSERT_TAIL>(*begin);
+                ++begin;
+            }
+        }
+    }
 
 };
 
