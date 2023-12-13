@@ -938,7 +938,6 @@ class ListView : public BaseView<
 
 public:
     static constexpr bool listlike = true;
-
     using Base::Base;
     using Base::operator=;
 
@@ -965,7 +964,6 @@ class SetView : public HashView<
 
 public:
     static constexpr bool setlike = true;
-
     using Base::Base;
     using Base::operator=;
 
@@ -990,14 +988,16 @@ class DictView : public HashView<
         DictView<NodeType, Flags>, HashAllocator<Hashed<NodeType>, Flags>
     >;
 
-public:
-    using Allocator = typename Base::Allocator;
-    using MappedValue = typename Base::Node::MappedValue;
-    static constexpr bool dictlike = true;
+    template <typename View>
+    friend class ViewTraits;
 
     template <unsigned int NewFlags>
     using Reconfigure = DictView<NodeType, NewFlags>;
 
+public:
+    static constexpr bool dictlike = true;
+    using MappedValue = typename Base::Node::MappedValue;
+    using Allocator = typename Base::Allocator;
     using Base::Base;
     using Base::operator=;
 
@@ -1089,6 +1089,7 @@ public:
 dispatching non-member methods accordingly. */
 template <typename ViewType>
 struct ViewTraits {
+
     // dispatch hooks for non-member algorithms
     static constexpr bool linked = std::is_base_of_v<ViewTag, ViewType>;
     static constexpr bool listlike = linked && ViewType::listlike;
@@ -1107,8 +1108,76 @@ struct ViewTraits {
     static constexpr bool STRICTLY_TYPED = ViewType::STRICTLY_TYPED;
 
     // reconfigure with different flags
-    struct As {
-        using SINGLY_LINKED = typename ViewType::template Reconfigure<
+    class As {
+        using Node = typename ViewType::Node;
+
+        template <Yield yield, bool as_pytuple, bool dictlike = false>
+        struct AsList {
+            using Value = typename ViewType::Value;
+            using RootNode = typename NodeTraits<Node>::Root;
+            using type = ListView<RootNode, FLAGS>;
+        };
+
+        template <Yield yield, bool as_pytuple>
+        struct AsList<yield, as_pytuple, true> {
+            using Key = typename ViewType::Value;
+            using Value = typename ViewType::MappedValue;
+            using NewValue = std::conditional_t<
+                yield == Yield::KEY,
+                Key,
+                std::conditional_t<
+                    yield == Yield::VALUE,
+                    Value,
+                    std::conditional_t<
+                        as_pytuple,
+                        PyObject*,
+                        std::pair<Key, Value>
+                    >
+                >
+            >;
+            using RootNode = typename NodeTraits<Node>::Root;
+            using ListNode = typename NodeTraits<RootNode>::template Reconfigure<NewValue>;
+            using type = ListView<ListNode, FLAGS>;
+        };
+
+        template <Yield yield, bool as_pytuple, bool dictlike = false>
+        struct AsSet {
+            using Value = typename ViewType::Value;
+            using RootNode = typename NodeTraits<Node>::Root;
+            using type = SetView<RootNode, FLAGS>;
+        };
+
+        template <Yield yield, bool as_pytuple>
+        struct AsSet<yield, as_pytuple, dictlike> {
+            using Key = typename ViewType::Value;
+            using Value = typename ViewType::MappedValue;
+            using NewValue = std::conditional_t<
+                yield == Yield::KEY,
+                Key,
+                std::conditional_t<
+                    yield == Yield::VALUE,
+                    Value,
+                    std::conditional_t<
+                        as_pytuple,
+                        PyObject*,
+                        std::pair<Key, Value>
+                    >
+                >
+            >;
+            using RootNode = typename NodeTraits<Node>::Root;
+            using SetNode = typename NodeTraits<RootNode>::template Reconfigure<NewValue>;
+            using type = SetView<SetNode, FLAGS>;
+        };
+
+    public:
+
+        template <Yield yield = Yield::KEY, bool as_pytuple = false>
+        using List = typename AsList<yield, as_pytuple, dictlike>::type;
+
+        template <Yield yield = Yield::KEY, bool as_pytuple = false>
+        using Set = typename AsSet<yield, as_pytuple, dictlike>::type;
+
+        using SINGLY_LINKED = typename ViewTraits::template Reconfigure<
             (FLAGS & ~(Config::DOUBLY_LINKED | Config::XOR)) | Config::SINGLY_LINKED
         >;
         using DOUBLY_LINKED = typename ViewType::template Reconfigure<
@@ -1135,6 +1204,42 @@ struct ViewTraits {
         using LOOSELY_TYPED = typename ViewType::template Reconfigure<
             FLAGS & ~Config::STRICTLY_TYPED
         >;
+
+    };
+
+    template <unsigned int Config>
+    using Reconfigure = typename ViewType::template Reconfigure<Config>;
+
+    // assertion helpers
+    class Assert {
+
+        template <bool dictlike = false, typename Dummy = void>
+        struct _Assert {
+
+            template <bool value, Yield yield>
+            static constexpr bool as_pytuple = !value;
+
+        };
+
+        template <typename Dummy>
+        struct _Assert<true, Dummy> {
+
+            template <bool value, Yield yield>
+            static constexpr bool as_pytuple = !value || (
+                yield == Yield::ITEM &&
+                std::is_same_v<typename ViewType::Value, PyObject*> &&
+                std::is_same_v<typename ViewType::MappedValue, PyObject*>
+            );
+
+        };
+
+    public:
+
+        template <bool value, Yield yield>
+        static constexpr bool as_pytuple = (
+            _Assert<dictlike>::template as_pytuple<value, yield>
+        );
+
     };
 
 };

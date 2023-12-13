@@ -149,12 +149,21 @@ protected:
 /* A singly-linked list node around an arbitrary value. */
 template <typename ValueType>
 class SingleNode : public BaseNode<ValueType> {
+protected:
     using Base = BaseNode<ValueType>;
     SingleNode* _next;
 
+    template <typename NodeType>
+    friend class NodeTraits;
+
+    using Root = SingleNode;
+    using Unwrap = SingleNode;
+
+    template <typename... Args>
+    using Reconfigure = SingleNode<Args...>;
+
 public:
     using Value = ValueType;
-    static constexpr bool doubly_linked = false;
 
     /* Initialize a singly-linked node with a given value. */
     SingleNode(const Value& value) noexcept : Base(value), _next(nullptr) {}
@@ -248,12 +257,21 @@ public:
 /* A doubly-linked list node around an arbitrary value. */
 template <typename ValueType>
 class DoubleNode : public SingleNode<ValueType> {
+protected:
     using Base = SingleNode<ValueType>;
     DoubleNode* _prev;
 
+    template <typename NodeType>
+    friend class NodeTraits;
+
+    using Root = DoubleNode;
+    using Unwrap = DoubleNode;
+
+    template <typename... Args>
+    using Reconfigure = DoubleNode<Args...>;
+
 public:
     using Value = ValueType;
-    static constexpr bool doubly_linked = true;
 
     /* Initialize a doubly-linked node with a given value. */
     DoubleNode(const Value& value) noexcept : Base(value), _prev(nullptr) {}
@@ -367,30 +385,40 @@ public:
 };
 
 
+///////////////////////////////
+////    NODE DECORATORS    ////
+//////////////////////////////
+
+
 /* A node decorator that computes a key function on a node's underlying value
 for use in sorting algorithms.
 
 NOTE: this is a special case of node used in the `sort()` method to apply a key
 function to each value in a list.  It is not meant to be used in any other context. */
-template <
-    typename Wrapped,
-    typename Func,
-    typename DecoratedValue = typename bertrand::util::FuncTraits<
+template <typename Wrapped, typename Func>
+class Keyed : public SingleNode<
+    typename bertrand::util::FuncTraits<
         Func,
         typename Wrapped::Value
     >::ReturnType
->
-class Keyed : public SingleNode<DecoratedValue> {
-private:
-    using Base = SingleNode<DecoratedValue>;
+> {
+protected:
+    using Base = SingleNode<
+        typename bertrand::util::FuncTraits<
+            Func,
+            typename Wrapped::Value
+        >::ReturnType
+    >;
     using ArgValue = typename Wrapped::Value;
-    Wrapped* _node;  // reference to decorated node
+    using DecoratedValue = typename Base::Value;
+
+    Wrapped* _node;
 
     /* Invoke the key function on the specified value and return the computed result. */
     static DecoratedValue invoke(Func func, const ArgValue& arg) {
         if constexpr (is_pyobject<Func>) {
             static_assert(
-                is_pyobject<typename Base::Value>,
+                is_pyobject<DecoratedValue>,
                 "Python functions can only be applied to PyObject* nodes"
             );
             PyObject* val = PyObject_CallFunctionObjArgs(func, arg, nullptr);
@@ -403,9 +431,15 @@ private:
         }
     }
 
+    template <typename NodeType>
+    friend class NodeTraits;
+
+    using Unwrapped = Base;
+
+    template <typename... Args>
+    using Reconfigure = Keyed<Args...>;
+
 public:
-    using Value = DecoratedValue;
-    static constexpr bool doubly_linked = false;
 
     /* Initialize a keyed node by applying a Python callable to an existing node. */
     Keyed(Wrapped* node, Func func) :
@@ -476,15 +510,11 @@ public:
 };
 
 
-///////////////////////////////
-////    NODE DECORATORS    ////
-//////////////////////////////
-
-
 /* A node decorator that computes the hash of the underlying PyObject* and
 caches it alongside the node's original fields. */
 template <typename Wrapped>
 class Hashed : public Wrapped {
+protected:
     size_t _hash;
 
     /* Compute the hash of the underlying node value. */
@@ -498,6 +528,14 @@ class Hashed : public Wrapped {
             throw;
         }
     }
+
+    template <typename NodeType>
+    friend class NodeTraits;
+
+    using Unwrapped = Wrapped;
+
+    template <typename... Args>
+    using Reconfigure = Hashed<Args...>;
 
 public:
 
@@ -587,6 +625,7 @@ public:
 as a dictionary. */
 template <typename Wrapped, typename MappedType>
 class Mapped : public Wrapped {
+protected:
     MappedType _mapped;
 
     /* Unpack a python tuple containing a key and value. */
@@ -612,6 +651,14 @@ class Mapped : public Wrapped {
 
         return std::make_pair(key, value);
     }
+
+    template <typename NodeType>
+    friend class NodeTraits;
+
+    using Unwrapped = Wrapped;
+
+    template <typename... Args>
+    using Reconfigure = Mapped<Args...>;
 
 public:
     using Value = typename Wrapped::Value;
@@ -799,14 +846,31 @@ public:
 //////////////////////
 
 
+// TODO: Unwrap does not work as expected when converting DictViews into ListViews in
+// concatenate() and repeat().  This should unwrap to either Key, Value,
+// std::pair<Key, Value>, or PyTuple* if as_pytuple is true.
+
+// -> in the case of items(), do
+// NodeTraits<NodeTraits<Node>::Root>::Reconfigure<as_pytuple ? PyObject* : std::pair<Key, Value>>
+
+
 /* A collection of SFINAE traits for inspecting node types at compile time. */
 template <typename NodeType>
 class NodeTraits {
-    // sanity check
     static_assert(
         std::is_base_of_v<NodeTag, NodeType>,
         "Templated type does not inherit from BaseNode"
     );
+
+    /* Extracts mapped type if applicable, otherwise defaults to void. */
+    template <bool dictlike, typename Dummy = void>
+    struct _MappedValue {
+        using type = void;
+    };
+    template <typename Dummy>
+    struct _MappedValue<true, Dummy> {
+        using type = typename NodeType::MappedValue;
+    };
 
     /* Detects whether the templated type has a prev() method. */
     struct _has_prev {
@@ -846,11 +910,23 @@ class NodeTraits {
 
 public:
     using Value = decltype(std::declval<NodeType>().value());
+    using MappedValue = typename _MappedValue<_has_mapped::value>::type;
 
+    // SFINAE checks
     static constexpr bool has_prev = _has_prev::value;
     static constexpr bool has_node = _has_node::value;
     static constexpr bool has_hash = _has_hash::value;
     static constexpr bool has_mapped = _has_mapped::value;
+
+    // decorator traversal
+    using Root = typename NodeType::Root;
+    using Unwrap = typename NodeType::Unwrap;
+    static constexpr bool is_root = std::is_same_v<NodeType, Root>;
+
+    // template reconfiguration
+    template <typename... Args>
+    using Reconfigure = typename NodeType::template Reconfigure<Args...>;
+
 };
 
 

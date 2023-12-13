@@ -93,8 +93,13 @@ namespace linked {
 
         const Node* node;
         if constexpr (yield == Yield::ITEM) {
-            node = view.search(item.first);
-            if (node == nullptr || !eq(node->mapped(), item.second)) {
+            static_assert(
+                is_pairlike<Item>,
+                "item must be pair-like (e.g. std::pair or std::tuple of size 2)"
+            );
+
+            node = view.search(std::get<0>(item));
+            if (node == nullptr || !eq(node->mapped(), std::get<1>(item))) {
                 return 0;
             }
         } else {

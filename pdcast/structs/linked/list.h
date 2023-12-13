@@ -329,7 +329,7 @@ inline auto operator<<(std::ostream& stream, const LinkedList<T, Flags, Ts...>& 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator+(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs)
-    -> LinkedList<T, Flags, Ts...>
+    -> LinkedList<T, Flags & ~Config::FIXED_SIZE | Config::DYNAMIC, Ts...>
 {
     return linked::concatenate(lhs.view, rhs);
 }

@@ -5,6 +5,7 @@
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
 #include <type_traits>  // std::enable_if_t<>
+#include "../../util/base.h"  // is_pairlike<>
 #include "../../util/ops.h"  // eq(), repr()
 #include "../core/view.h"  // ViewTraits
 #include "slice.h"  // normalize_slice()
@@ -91,7 +92,7 @@ namespace linked {
 
         auto not_found = [](const Item& item) {
             if constexpr (yield == Yield::ITEM) {
-                return KeyError(repr(item.first));
+                return KeyError(repr(std::get<0>(item)));
             } else {
                 return KeyError(repr(item));
             }
@@ -112,13 +113,18 @@ namespace linked {
 
         const Node* node;
         if constexpr (yield == Yield::ITEM) {
-            node = view.search(item.first);
+            static_assert(
+                is_pairlike<Item>,
+                "item must be pair-like (e.g. std::pair or std::tuple of size 2)"
+            );
+
+            node = view.search(std::get<0>(item));
             if (node == nullptr) {
                 throw not_found(item);
-            } else if (!eq(node->mapped(), item.second)) {
+            } else if (!eq(node->mapped(), std::get<1>(item))) {
                 std::ostringstream msg;
-                msg << "value mismatch for key " << repr(item.first) << " (";
-                msg << repr(node->mapped()) << " != " << repr(item.second);
+                msg << "value mismatch for key " << repr(std::get<0>(item)) << " (";
+                msg << repr(node->mapped()) << " != " << repr(std::get<1>(item));
                 msg << ")";
                 throw KeyError(msg.str());
             }

@@ -134,10 +134,6 @@ public:
     using Base::Base;
     using Base::operator=;
 
-    //////////////////////////////
-    ////    DICT INTERFACE    ////
-    //////////////////////////////
-
     /* Create a new dictionary from a sequence of keys and a default value. */
     template <typename Container>
     inline static LinkedDict fromkeys(
@@ -156,6 +152,10 @@ public:
         }
         return LinkedDict(std::move(view));
     }
+
+    //////////////////////////////
+    ////    DICT INTERFACE    ////
+    //////////////////////////////
 
     /* Add a key-value pair to the end of the dictionary if it is not already
     present. */
@@ -1055,13 +1055,6 @@ class ValuesProxy : public DictProxy<
 
     ValuesProxy(const Dict& dict) : Base(dict) {}
 
-public:
-
-    /* Convert the values proxy into an equivalent list. */
-    inline List to_list() const {
-        return List(*this, this->dict.size(), this->dict.specialization());
-    }
-
 };
 
 
@@ -1087,14 +1080,30 @@ inline std::ostream& operator<<(std::ostream& stream, const ValuesProxy<Dict>& v
 
 
 template <typename Container, typename Dict>
-inline auto operator+(const ValuesProxy<Dict>& proxy, const Container& other) {
-    return proxy.to_list() + other;
+inline auto operator+(const ValuesProxy<Dict>& proxy, const Container& other)
+    -> LinkedList<
+        typename Dict::Value,
+        (Dict::FLAGS & ~Config::FIXED_SIZE) | Config::DYNAMIC,
+        typename Dict::Lock
+    >
+{
+    return linked::concatenate<Yield::VALUE>(
+        proxy.mapping().view, other
+    );
 }
 
 
 template <typename Dict, typename T>
-inline auto operator*(const ValuesProxy<Dict>& proxy, T&& other) {
-    return proxy.to_list() * std::forward<T>(other);
+inline auto operator*(const ValuesProxy<Dict>& proxy, T&& other)
+    -> LinkedList<
+        typename Dict::Value,
+        (Dict::FLAGS & ~Config::FIXED_SIZE) | Config::DYNAMIC,
+        typename Dict::Lock
+    >
+{
+    return linked::repeat<Yield::VALUE>(
+        proxy.mapping().view, std::forward<T>(other)
+    );
 }
 
 
@@ -1204,12 +1213,6 @@ class ItemsProxy : public DictProxy<
     ItemsProxy(const Dict& dict) : Base(dict) {}
 
 public:
-
-    /* Convert the items proxy in an equivalent list. */
-    inline List to_list() const {
-        // TODO: account for as_pytuple
-        return List(*this, this->dict.size(), this->dict.specialization());
-    }
 
     /* Get the index of a key within the dictionary. */
     inline size_t index(
@@ -1361,6 +1364,46 @@ inline auto operator<<(std::ostream& stream, const ItemsProxy<Dict, as_pytuple>&
     );
     return stream;
 }
+
+
+template <typename Container, typename Dict, bool as_pytuple>
+inline auto operator+(const ItemsProxy<Dict, as_pytuple>& proxy, const Container& other)
+    -> LinkedList<
+        std::conditional_t<
+            as_pytuple,
+            PyObject*,
+            std::pair<typename Dict::Key, typename Dict::Value>
+        >,
+        (Dict::FLAGS & ~Config::FIXED_SIZE) | Config::DYNAMIC,
+        typename Dict::Lock
+    >
+{
+    return linked::concatenate<Yield::ITEM, as_pytuple>(
+        proxy.mapping().view, other
+    );
+}
+
+
+template <typename Dict, typename T, bool as_pytuple>
+inline auto operator*(const ItemsProxy<Dict, as_pytuple>& proxy, T&& other)
+    -> LinkedList<
+        std::conditional_t<
+            as_pytuple,
+            PyObject*,
+            std::pair<typename Dict::Key, typename Dict::Value>
+        >,
+        (Dict::FLAGS & ~Config::FIXED_SIZE) | Config::DYNAMIC,
+        typename Dict::Lock
+    >
+{
+    return linked::repeat<Yield::ITEM, as_pytuple>(
+        proxy.mapping().view, std::forward<T>(other)
+    );
+}
+
+
+// TODO: lexicographic comparisons are complicated when dealing with tuples/pairs
+
 
 
 template <typename Container, typename Dict, bool as_pytuple>
@@ -2661,7 +2704,7 @@ These proxies support the following operations:
         static PyTypeObject build_type() {
             PyTypeObject slots = {
                 .ob_base = PyObject_HEAD_INIT(NULL)
-                .tp_name = PyName<PyKeysProxy>.data(),
+                .tp_name = "LinkedDict_keys",
                 .tp_basicsize = sizeof(PyKeysProxy),
                 .tp_itemsize = 0,
                 .tp_dealloc = (destructor) Base::__dealloc__,
@@ -2807,7 +2850,7 @@ These proxies support the following operations:
         static PyTypeObject build_type() {
             PyTypeObject slots = {
                 .ob_base = PyObject_HEAD_INIT(NULL)
-                .tp_name = PyName<PyValuesProxy>.data(),
+                .tp_name = "LinkedDict_values",
                 .tp_basicsize = sizeof(PyValuesProxy),
                 .tp_itemsize = 0,
                 .tp_dealloc = (destructor) Base::__dealloc__,
@@ -2887,6 +2930,27 @@ These proxies support the following operations:
             }
         }
 
+        inline static PyObject* __iter__(PyItemsProxy* self) noexcept {
+            try {
+                return iter(self->proxy, pair_as_pytuple).cpython();
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
+        inline static PyObject* __reversed__(
+            PyItemsProxy* self,
+            PyObject* = nullptr
+        ) noexcept {
+            try {
+                return iter(self->proxy, pair_as_pytuple).crpython();
+            } catch (...) {
+                throw_python();
+                return nullptr;
+            }
+        }
+
         static PyObject* __str__(PyItemsProxy* self) {
             std::ostringstream stream;
 
@@ -2913,27 +2977,6 @@ These proxies support the following operations:
                 auto str = stream.str();
                 return PyUnicode_FromStringAndSize(str.c_str(), str.size());
 
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
-        }
-
-        inline static PyObject* __iter__(PyItemsProxy* self) noexcept {
-            try {
-                return iter(self->proxy, pair_as_pytuple).cpython();
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
-        }
-
-        inline static PyObject* __reversed__(
-            PyItemsProxy* self,
-            PyObject* = nullptr
-        ) noexcept {
-            try {
-                return iter(self->proxy, pair_as_pytuple).crpython();
             } catch (...) {
                 throw_python();
                 return nullptr;
@@ -2996,8 +3039,8 @@ These proxies support the following operations:
         inline static PySequenceMethods sequence = [] {
             PySequenceMethods slots;
             slots.sq_length = (lenfunc) Base::__len__;
-            // slots.sq_concat = (binaryfunc) __add__;  // TODO
-            // slots.sq_repeat = (ssizeargfunc) __mul__;  // TODO
+            slots.sq_concat = (binaryfunc) __add__;
+            slots.sq_repeat = (ssizeargfunc) __mul__;
             slots.sq_item = (ssizeargfunc) __getitem_scalar__;
             slots.sq_contains = (objobjproc) Base::__contains__;
             return slots;
@@ -3023,7 +3066,7 @@ These proxies support the following operations:
         static PyTypeObject build_type() {
             PyTypeObject slots = {
                 .ob_base = PyObject_HEAD_INIT(NULL)
-                .tp_name = PyName<PyItemsProxy>.data(),
+                .tp_name = "LinkedDict_items",
                 .tp_basicsize = sizeof(PyItemsProxy),
                 .tp_itemsize = 0,
                 .tp_dealloc = (destructor) Base::__dealloc__,

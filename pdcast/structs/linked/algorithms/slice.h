@@ -146,9 +146,9 @@ namespace linked {
     template <typename View, typename Result, Yield yield, bool as_pytuple = false>
     class SliceProxy {
         static_assert(
-            !(ViewTraits<View>::dictlike && yield != Yield::ITEM && as_pytuple),
-            "as_pytuple is only valid if view is dictlike and yield is set to "
-            "Yield::ITEM"
+            ViewTraits<View>::Assert::template as_pytuple<as_pytuple, yield>,
+            "as_pytuple is only valid if view is dictlike, yield is set to "
+            "Yield::ITEM, and the dictionary contains pure PyObject* keys and values"
         );
 
         using Node = std::conditional_t<
@@ -158,7 +158,7 @@ namespace linked {
         >;
 
         template <Direction dir>
-        using Iter = linked::Iterator<View, dir, yield>;
+        using ViewIter = linked::Iterator<View, dir, yield>;
 
         View& view;
         const SliceIndices<View> indices;
@@ -258,11 +258,11 @@ namespace linked {
             // if doubly-linked, then we can potentially use a reverse iterator
             if constexpr (NodeTraits<Node>::has_prev) {
                 if (indices.backward) {
-                    auto iter = [&]() -> Iter<Direction::BACKWARD> {
+                    auto iter = [&]() -> ViewIter<Direction::BACKWARD> {
                         Node* next = origin();
                         Node* curr = (next == nullptr) ? view.tail() : next->prev();
                         Node* prev = (curr == nullptr) ? nullptr : curr->prev();
-                        return Iter<Direction::BACKWARD>(view, prev, curr, next);
+                        return ViewIter<Direction::BACKWARD>(view, prev, curr, next);
                     };
 
                     // remove current occupants
@@ -332,11 +332,11 @@ namespace linked {
             }
 
             // otherwise we do the same thing, but with a forward iterator
-            auto iter = [&]() -> Iter<Direction::FORWARD> {
+            auto iter = [&]() -> ViewIter<Direction::FORWARD> {
                 Node* prev = origin();
                 Node* curr = (prev == nullptr) ? view.head() : prev->next();
                 Node* next = (curr == nullptr) ? nullptr : curr->next();
-                return Iter<Direction::FORWARD>(view, prev, curr, next);
+                return ViewIter<Direction::FORWARD>(view, prev, curr, next);
             };
 
             // remove current occupants
@@ -440,8 +440,8 @@ namespace linked {
              */
 
             union {
-                Iter<Direction::FORWARD> fwd;
-                Iter<Direction::BACKWARD> bwd;
+                ViewIter<Direction::FORWARD> fwd;
+                ViewIter<Direction::BACKWARD> bwd;
             };
 
             std::stack<Node*> stack;
@@ -459,7 +459,7 @@ namespace linked {
                     Node* prev = origin;
                     Node* curr = (prev == nullptr) ? view.head() : prev->next();
                     Node* next = (curr == nullptr) ? nullptr : curr->next();
-                    new (&fwd) Iter<Direction::FORWARD>(view, prev, curr, next);
+                    new (&fwd) ViewIter<Direction::FORWARD>(view, prev, curr, next);
 
                     // use stack to cancel out inverted traversal
                     if (indices.inverted ^ (dir == Direction::BACKWARD)) {
@@ -478,7 +478,7 @@ namespace linked {
                         Node* next = origin;
                         Node* curr = (next == nullptr) ? view.tail() : next->prev();
                         Node* prev = (curr == nullptr) ? nullptr : curr->prev();
-                        new (&bwd) Iter<Direction::BACKWARD>(view, prev, curr, next);
+                        new (&bwd) ViewIter<Direction::BACKWARD>(view, prev, curr, next);
 
                         // use stack to cancel out inverted traversal
                         if (indices.inverted ^ (dir == Direction::BACKWARD)) {
@@ -520,9 +520,9 @@ namespace linked {
                 idx(other.idx)
             {
                 if (indices.backward) {
-                    new (&bwd) Iter<Direction::BACKWARD>(other.bwd);
+                    new (&bwd) ViewIter<Direction::BACKWARD>(other.bwd);
                 } else {
-                    new (&fwd) Iter<Direction::FORWARD>(other.fwd);
+                    new (&fwd) ViewIter<Direction::FORWARD>(other.fwd);
                 }
             }
 
@@ -532,18 +532,18 @@ namespace linked {
                 indices(other.indices), idx(other.idx)
             {
                 if (indices.backward) {
-                    new (&bwd) Iter<Direction::BACKWARD>(std::move(other.bwd));
+                    new (&bwd) ViewIter<Direction::BACKWARD>(std::move(other.bwd));
                 } else {
-                    new (&fwd) Iter<Direction::FORWARD>(std::move(other.fwd));
+                    new (&fwd) ViewIter<Direction::FORWARD>(std::move(other.fwd));
                 }
             }
 
             /* Clean up union iterator on destruction. */
             ~Iterator() {
                 if (indices.backward) {
-                    bwd.~Iter<Direction::BACKWARD>();
+                    bwd.~ViewIter<Direction::BACKWARD>();
                 } else {
-                    fwd.~Iter<Direction::FORWARD>();
+                    fwd.~ViewIter<Direction::FORWARD>();
                 }
             }
 
@@ -644,8 +644,13 @@ namespace linked {
                     if constexpr (as_pytuple) {
                         std::pair<PyObject*, PyObject*> item = *it;
                         PyObject* tup = PyTuple_Pack(2, item.first, item.second);
-                        typename Result::Node* parsed = result.view.node(tup);
-                        Py_DECREF(tup);
+                        try {
+                            typename Result::Node* parsed = result.view.node(tup);
+                            Py_DECREF(tup);
+                        } catch (...) {
+                            Py_DECREF(tup);
+                            throw;
+                        }
                         return parsed;
                     } else {
                         return result.view.node(*it);
@@ -660,7 +665,7 @@ namespace linked {
                     Node* next = origin();
                     Node* curr = (next == nullptr) ? view.tail() : next->prev();
                     Node* prev = (curr == nullptr) ? nullptr : curr->prev();
-                    Iter<Direction::BACKWARD> it(view, prev, curr, next);
+                    ViewIter<Direction::BACKWARD> it(view, prev, curr, next);
                     if (indices.inverted) {
                         while (true) {
                             result.view.link(nullptr, parse(it), result.view.head());
@@ -687,7 +692,7 @@ namespace linked {
             Node* prev = origin();
             Node* curr = (prev == nullptr) ? view.head() : prev->next();
             Node* next = (curr == nullptr) ? nullptr : curr->next();
-            Iter<Direction::FORWARD> it(view, prev, curr, next);
+            ViewIter<Direction::FORWARD> it(view, prev, curr, next);
             if (indices.inverted) {
                 while (true) {
                     result.view.link(nullptr, parse(it), result.view.head());
@@ -735,7 +740,7 @@ namespace linked {
                         Node* next = origin();
                         Node* curr = (next == nullptr) ? view.tail() : next->prev();
                         Node* prev = (curr == nullptr) ? nullptr : curr->prev();
-                        Iter<Direction::BACKWARD> it(view, prev, curr, next);
+                        ViewIter<Direction::BACKWARD> it(view, prev, curr, next);
                         while (true) {
                             view.recycle(it.drop());
                             if (++idx == indices.length) {
@@ -752,7 +757,7 @@ namespace linked {
                 Node* prev = origin();
                 Node* curr = (prev == nullptr) ? view.head() : prev->next();
                 Node* next = (curr == nullptr) ? nullptr : curr->next();
-                Iter<Direction::FORWARD> it(view, prev, curr, next);
+                ViewIter<Direction::FORWARD> it(view, prev, curr, next);
                 while (true) {
                     view.recycle(it.drop());
                     if (++idx == indices.length) {

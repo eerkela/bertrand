@@ -2,6 +2,7 @@
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_CONTAINS_H
 
 #include <type_traits>  // std::enable_if_t<>
+#include "../../util/base.h"  // is_pairlike<>
 #include "../../util/ops.h"  // eq()
 #include "../core/view.h"  // ViewTraits
 
@@ -34,9 +35,14 @@ namespace linked {
         if constexpr (yield == Yield::KEY) {
             return view.search(item) != nullptr;
         } else {
+            static_assert(
+                is_pairlike<Item>,
+                "item must be pair-like (e.g. std::pair or std::tuple of size 2)"
+            );
+
             using Node = typename View::Node;
-            const Node* node = view.search(item.first);
-            return node != nullptr && eq(node->mapped(), item.second);
+            const Node* node = view.search(std::get<0>(item));
+            return node != nullptr && eq(node->mapped(), std::get<1>(item));
         }
     }
 
