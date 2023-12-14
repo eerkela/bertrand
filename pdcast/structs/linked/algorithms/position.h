@@ -63,11 +63,11 @@ namespace linked {
 
     /* A proxy for an element at a particular index of a linked data structure, as
     returned by the [] operator. */
-    template <typename View, Yield yield>
+    template <typename View, Yield yield, bool as_pytuple = false>
     class ElementProxy {
 
         template <Direction dir>
-        using Iter = linked::Iterator<View, dir, yield>;
+        using Iter = linked::Iterator<View, dir, yield, as_pytuple>;
 
         /* Infer result type based on `yield` parameter. */
         template <Yield Y = Yield::KEY, typename Dummy = void>
@@ -80,7 +80,11 @@ namespace linked {
         };
         template <typename Dummy>
         struct DerefType<Yield::ITEM, Dummy> {
-            using type = std::pair<typename View::Value, typename View::MappedValue>;
+            using type = std::conditional_t<
+                as_pytuple,
+                python::Tuple<python::Ref::STEAL>,
+                std::pair<typename View::Value, typename View::MappedValue>
+            >;
         };
 
         using Deref = std::conditional_t<
@@ -96,14 +100,14 @@ namespace linked {
         bool is_fwd;
         View& view;
 
-        template <Yield _yield, typename _View>
+        template <Yield _yield, bool _as_pytuple, typename _View>
         friend auto position(_View& view, long long index)
             -> std::enable_if_t<
                 ViewTraits<_View>::linked,
                 std::conditional_t<
                     std::is_const_v<_View>,
-                    const ElementProxy<_View, _yield>,
-                    ElementProxy<_View, _yield>
+                    const ElementProxy<_View, _yield, _as_pytuple>,
+                    ElementProxy<_View, _yield, _as_pytuple>
                 >
             >;
 
@@ -169,14 +173,14 @@ namespace linked {
 
 
     /* Get a proxy for a value at a particular index of the list. */
-    template <Yield yield = Yield::KEY, typename View>
+    template <Yield yield = Yield::KEY, bool as_pytuple = false, typename View>
     inline auto position(View& view, long long index)
         -> std::enable_if_t<
             ViewTraits<View>::linked,
             std::conditional_t<
                 std::is_const_v<View>,
-                const ElementProxy<View, yield>,
-                ElementProxy<View, yield>
+                const ElementProxy<View, yield, as_pytuple>,
+                ElementProxy<View, yield, as_pytuple>
             >
         >
     {
@@ -184,15 +188,15 @@ namespace linked {
 
         if constexpr (NodeTraits<typename View::Node>::has_prev) {
             if (view.closer_to_tail(norm_index)) {
-                auto it = view.template rbegin<yield>();
+                auto it = view.template rbegin<yield, as_pytuple>();
                 for (size_t i = view.size() - 1; i > norm_index; --i, ++it);
-                return ElementProxy<View, yield>(view, std::move(it));
+                return ElementProxy<View, yield, as_pytuple>(view, std::move(it));
             }
         }
 
-        auto it = view.template begin<yield>();
+        auto it = view.template begin<yield, as_pytuple>();
         for (size_t i = 0; i < norm_index; ++i, ++it);
-        return ElementProxy<View, yield>(view, std::move(it));
+        return ElementProxy<View, yield, as_pytuple>(view, std::move(it));
     }
 
 

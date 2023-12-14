@@ -1326,6 +1326,39 @@ public:
         return linked::contains<Yield::ITEM>(this->dict.view, pair);
     }
 
+    /////////////////////////
+    ////    ITERATORS    ////
+    /////////////////////////
+
+    inline auto begin() const {
+        return this->dict.view.template begin<Yield::ITEM, as_pytuple>();
+    }
+    inline auto end() const {
+        return this->dict.view.template end<Yield::ITEM, as_pytuple>();
+    }
+    inline auto cbegin() const {
+        return this->dict.view.template cbegin<Yield::ITEM, as_pytuple>();
+    }
+    inline auto cend() const {
+        return this->dict.view.template cend<Yield::ITEM, as_pytuple>();
+    }
+    inline auto rbegin() const {
+        return this->dict.view.template rbegin<Yield::ITEM, as_pytuple>();
+    }
+    inline auto rend() const {
+        return this->dict.view.template rend<Yield::ITEM, as_pytuple>();
+    }
+    inline auto crbegin() const {
+        return this->dict.view.template crbegin<Yield::ITEM, as_pytuple>();
+    }
+    inline auto crend() const {
+        return this->dict.view.template crend<Yield::ITEM, as_pytuple>();
+    }
+
+    ////////////////////////
+    ////    INDEXING    ////
+    ////////////////////////
+
     /* Get a read-only proxy for a slice of the referenced dictionary. */
     template <typename... Args>
     inline auto slice(Args&&... args) const
@@ -1334,6 +1367,20 @@ public:
         return linked::slice<List, Yield::ITEM, as_pytuple>(
             this->dict.view, std::forward<Args>(args)...
         );
+    }
+
+    /* Get a read-only proxy for an element at a certain index of the referenced
+    dictionary. */
+    inline auto position(long long index) const
+        -> const linked::ElementProxy<const View, Yield::ITEM, as_pytuple>
+    {
+        return linked::position<Yield::ITEM, as_pytuple>(this->dict.view, index);
+    }
+
+    inline auto operator[](long long index) const
+        -> const linked::ElementProxy<const View, Yield::ITEM, as_pytuple>
+    {
+        return position(index);
     }
 
 };
@@ -2919,11 +2966,13 @@ These proxies support the following operations:
         }
 
         static PyObject* __getitem__(PyItemsProxy* self, PyObject* key) {
-            using bertrand::util::parse_int;
             try {
                 if (PyIndex_Check(key)) {
-                    std::pair<PyObject*, PyObject*> item = self->proxy[parse_int(key)];
-                    return PyTuple_Pack(2, item.first, item.second);
+                    using PyTuple = python::Tuple<python::Ref::STEAL>;
+                    PyTuple item = self->proxy[bertrand::util::parse_int(key)];
+                    PyObject* obj = item.obj;
+                    item.obj = nullptr;
+                    return obj;
                 }
 
                 if (PySlice_Check(key)) {
@@ -2944,8 +2993,13 @@ These proxies support the following operations:
         }
 
         inline static PyObject* __iter__(PyItemsProxy* self) noexcept {
+            using PyTuple = python::Tuple<python::Ref::STEAL>;
+            auto unpack = [](const PyTuple& item) {
+                return Py_NewRef(item.obj);
+            };
+
             try {
-                return iter(self->proxy, pair_as_pytuple).cpython();
+                return iter(self->proxy, unpack).cpython();
             } catch (...) {
                 throw_python();
                 return nullptr;
@@ -2956,8 +3010,13 @@ These proxies support the following operations:
             PyItemsProxy* self,
             PyObject* = nullptr
         ) noexcept {
+            using PyTuple = python::Tuple<python::Ref::STEAL>;
+            auto unpack = [](const PyTuple& item) {
+                return Py_NewRef(item.obj);
+            };
+
             try {
-                return iter(self->proxy, pair_as_pytuple).crpython();
+                return iter(self->proxy, unpack).crpython();
             } catch (...) {
                 throw_python();
                 return nullptr;
@@ -2965,11 +3024,12 @@ These proxies support the following operations:
         }
 
         static PyObject* __str__(PyItemsProxy* self) {
+            using PyTuple = python::Tuple<python::Ref::STEAL>;
             std::ostringstream stream;
 
-            auto token = [&stream](std::pair<PyObject*, PyObject*> item) {
-                stream << "(" << repr(item.first) << ", ";
-                stream << repr(item.second) << ")";
+            auto token = [&stream](const PyTuple& item) {
+                stream << "(" << item[0].get().repr() << ", " << item[1].get().repr();
+                stream << ")";
             };
 
             try {
@@ -3002,14 +3062,14 @@ These proxies support the following operations:
         using IList = PyListInterface<Derived>;
         using ISet = PySetInterface<Derived>;
 
-        inline static PyObject* pair_as_pytuple(std::pair<PyObject*, PyObject*> item) {
-            return PyTuple_Pack(2, item.first, item.second);
-        }
-
         /* Implement `PySequence_GetItem()` in CPython API. */
         static PyObject* __getitem_scalar__(PyItemsProxy* self, Py_ssize_t index) {
             try {
-                return pair_as_pytuple(self->proxy[index].get());
+                using PyTuple = python::Tuple<python::Ref::STEAL>;
+                PyTuple item = self->proxy[index];
+                PyObject* obj = item.obj;
+                item.obj = nullptr;
+                return obj;
             } catch (...) {
                 throw_python();
                 return nullptr;
@@ -3052,8 +3112,8 @@ These proxies support the following operations:
         inline static PySequenceMethods sequence = [] {
             PySequenceMethods slots;
             slots.sq_length = (lenfunc) Base::__len__;
-            // slots.sq_concat = (binaryfunc) __add__;
-            // slots.sq_repeat = (ssizeargfunc) __mul__;
+            slots.sq_concat = (binaryfunc) __add__;
+            slots.sq_repeat = (ssizeargfunc) __mul__;
             slots.sq_item = (ssizeargfunc) __getitem_scalar__;
             slots.sq_contains = (objobjproc) Base::__contains__;
             return slots;

@@ -14,7 +14,6 @@
 #include "base.h"  // is_pyobject<>
 #include "except.h"  // catch_python(), TypeError, KeyError, IndexError
 #include "iter.h"  // iter()
-#include "ops.h"  // repr()
 
 
 namespace bertrand {
@@ -157,12 +156,12 @@ struct Object {
             throw catch_python();
         }
         Py_ssize_t size;
-        std::string result {
-            PyUnicode_AsUTF8AndSize(string, &size),
-            static_cast<size_t>(size)
-        };
+        const char* result = PyUnicode_AsUTF8AndSize(string, &size);
         Py_DECREF(string);
-        return result;
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return {result, static_cast<size_t>(size)};
     }
 
     /* Get the hash of the object. */
@@ -1378,10 +1377,7 @@ public:
     /////////////////////////////////
 
     /* Construct a new Python tuple containing the given objects. */
-    template <
-        typename... Args,
-        typename std::enable_if_t<std::conjunction_v<std::is_convertible<Args, PyObject*>...>>
-    >
+    template <typename... Args>
     inline static Tuple pack(Args&&... args) {
         static_assert(
             ref == Ref::STEAL,
@@ -1471,11 +1467,11 @@ public:
     };
 
     inline Element operator[](size_t index) {
-        return {this->obj, index};
+        return {this->obj, static_cast<Py_ssize_t>(index)};
     }
 
     inline const Element operator[](size_t index) const {
-        return {this->obj, index};
+        return {this->obj, static_cast<Py_ssize_t>(index)};
     }
 
     /* Directly access an item within the tuple, without bounds checking or
@@ -1678,11 +1674,11 @@ public:
     };
 
     inline Element operator[](size_t index) {
-        return {this->obj, index};
+        return {this->obj, static_cast<Py_ssize_t>(index)};
     }
 
     inline const Element operator[](size_t index) const {
-        return {this->obj, index};
+        return {this->obj, static_cast<Py_ssize_t>(index)};
     }
 
     /* Directly access an item within the list, without bounds checking or
@@ -1816,7 +1812,18 @@ public:
             throw catch_python();
         }
         if (result == 0) {
-            throw KeyError(repr(key));
+            PyObject* py_repr = PyObject_Repr(key);
+            if (py_repr == nullptr) {
+                throw catch_python();
+            }
+            Py_ssize_t size;
+            const char* c_repr = PyUnicode_AsUTF8AndSize(py_repr, &size);
+            Py_DECREF(py_repr);
+            if (c_repr == nullptr) {
+                throw catch_python();
+            }
+            std::string result(c_repr, size);
+            throw KeyError(result);
         }
     }
 
@@ -2007,7 +2014,18 @@ public:
                 value = PyDict_GetItem(dict, key);
             }
             if (value == nullptr) {
-                throw KeyError(repr(key));
+                PyObject* py_repr = PyObject_Repr(key);
+                if (py_repr == nullptr) {
+                    throw catch_python();
+                }
+                Py_ssize_t size;
+                const char* c_repr = PyUnicode_AsUTF8AndSize(py_repr, &size);
+                Py_DECREF(py_repr);
+                if (c_repr == nullptr) {
+                    throw catch_python();
+                }
+                std::string result(c_repr, size);
+                throw KeyError(result);
             }
             return Object<Ref::STEAL>(value);
         }
@@ -2203,19 +2221,6 @@ public:
     inline size_t size() const {
         return static_cast<size_t>(PySequence_Fast_GET_SIZE(this->obj));
     }
-
-    // TODO: iterator should directly index the sequence, not use a proxy.
-
-
-    /* Iterate over the sequence. */
-    // inline auto begin() const { return iter(obj).begin(); }
-    // inline auto cbegin() const { return iter(obj).cbegin(); }
-    // inline auto end() const { return iter(obj).end(); }
-    // inline auto cend() const { return iter(obj).cend(); }
-    // inline auto rbegin() const { return iter(obj).rbegin(); }
-    // inline auto crbegin() const { return iter(obj).crbegin(); }
-    // inline auto rend() const { return iter(obj).rend(); }
-    // inline auto crend() const { return iter(obj).crend(); }
 
     /* Get underlying PyObject* array. */
     inline PyObject** data() const {
@@ -2570,11 +2575,11 @@ public:
     };
 
     inline Element operator[](Py_ssize_t index) {
-        return {this->obj, index};
+        return {this->obj, static_cast<Py_ssize_t>(index)};
     }
 
     inline const Element operator[](Py_ssize_t index) const {
-        return {this->obj, index};
+        return {this->obj, static_cast<Py_ssize_t>(index)};
     }
 
     /* Directly access a character within the string, without bounds checking or

@@ -145,12 +145,6 @@ namespace linked {
     /* A proxy for a slice within a list, as returned by the slice() factory method. */
     template <typename View, typename Result, Yield yield, bool as_pytuple = false>
     class SliceProxy {
-        static_assert(
-            ViewTraits<View>::Assert::template as_pytuple<as_pytuple, yield>,
-            "as_pytuple is only valid if view is dictlike, yield is set to "
-            "Yield::ITEM, and the dictionary contains pure PyObject* keys and values"
-        );
-
         using Node = std::conditional_t<
             std::is_const_v<View>,
             const typename View::Node,
@@ -158,7 +152,7 @@ namespace linked {
         >;
 
         template <Direction dir>
-        using ViewIter = linked::Iterator<View, dir, yield>;
+        using ViewIter = linked::Iterator<View, dir, yield, as_pytuple>;
 
         View& view;
         const SliceIndices<View> indices;
@@ -418,8 +412,31 @@ namespace linked {
         items in the same order as the step size (reversed if called from rbegin). */
         template <Direction dir>
         class Iterator {
-            using Node = typename View::Node;
             using Value = typename View::Value;
+
+            /* Infer dereference type based on `yield` parameter. */
+            template <Yield Y = Yield::KEY, typename Dummy = void>
+            struct DerefType {
+                using type = typename Node::Value;
+            };
+            template <typename Dummy>
+            struct DerefType<Yield::VALUE, Dummy> {
+                using type = typename Node::MappedValue;
+            };
+            template <typename Dummy>
+            struct DerefType<Yield::ITEM, Dummy> {
+                using type = std::conditional_t<
+                    as_pytuple,
+                    python::Tuple<python::Ref::STEAL>,
+                    std::pair<typename Node::Value, typename Node::MappedValue>
+                >;
+            };
+
+            using Deref = std::conditional_t<
+                std::is_const_v<View>,
+                const typename DerefType<yield>::type,
+                typename DerefType<yield>::type
+            >;
 
             /* NOTE: this iterator is tricky.  It is essentially a wrapper around a
              * standard view iterator, but it must also handle inverted traversal and
@@ -510,9 +527,9 @@ namespace linked {
         public:
             using iterator_tag          = std::forward_iterator_tag;
             using difference_type       = std::ptrdiff_t;
-            using value_type            = Value;
-            using pointer               = Value*;
-            using reference             = Value&;
+            using value_type            = std::remove_reference_t<Deref>;
+            using pointer               = value_type*;
+            using reference             = value_type&;
 
             /* Copy constructor. */
             Iterator(const Iterator& other) noexcept :
@@ -548,7 +565,7 @@ namespace linked {
             }
 
             /* Dereference the iterator to get the value at the current index. */
-            inline Value operator*() const {
+            inline Deref operator*() const {
                 if (!stack.empty()) {
                     Node* node = stack.top();
                     if constexpr (yield == Yield::KEY) {
@@ -556,7 +573,12 @@ namespace linked {
                     } else if constexpr (yield == Yield::VALUE) {
                         return node->mapped();
                     } else {
-                        return std::make_pair(node->value(), node->mapped());
+                        if constexpr (as_pytuple) {
+                            using PyTuple = python::Tuple<python::Ref::STEAL>;
+                            return PyTuple::pack(node->value(), node->mapped());
+                        } else {
+                            return std::make_pair(node->value(), node->mapped());
+                        }
                     }
                 } else {
                     return indices.backward ? *bwd : *fwd;
@@ -641,20 +663,7 @@ namespace linked {
                 >) {
                     return result.view.node(*(it.curr()));
                 } else {
-                    if constexpr (as_pytuple) {
-                        std::pair<PyObject*, PyObject*> item = *it;
-                        PyObject* tup = PyTuple_Pack(2, item.first, item.second);
-                        try {
-                            typename Result::Node* parsed = result.view.node(tup);
-                            Py_DECREF(tup);
-                            return parsed;
-                        } catch (...) {
-                            Py_DECREF(tup);
-                            throw;
-                        }
-                    } else {
-                        return result.view.node(*it);
-                    }
+                    return result.view.node(*it);
                 }
             };
 

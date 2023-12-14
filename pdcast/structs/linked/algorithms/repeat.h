@@ -78,11 +78,6 @@ namespace linked {
             yield != Yield::KEY,
             "cannot repeat dictionary keys: use setlike operators instead"
         );
-        static_assert(
-            ViewTraits<View>::Assert::template as_pytuple<as_pytuple, yield>,
-            "as_pytuple is only valid if view is dictlike, yield is set to "
-            "Yield::ITEM, and the dictionary contains pure PyObject* keys and values"
-        );
         using DynamicView = typename ViewTraits<View>::As::DYNAMIC;
         using List = typename ViewTraits<DynamicView>::As::template List<>;
 
@@ -94,22 +89,10 @@ namespace linked {
         List list(view.size() * reps, view.specialization());
 
         for (size_t i = 0; i < reps; ++i) {
-            auto it = view.template begin<yield>();
-            auto end = view.template end<yield>();
+            auto it = view.template begin<yield, as_pytuple>();
+            auto end = view.template end<yield, as_pytuple>();
             for (; it != end; ++it) {
-                if constexpr (as_pytuple) {
-                    const std::pair<PyObject*, PyObject*> pair = *it;
-                    PyObject* tuple = PyTuple_Pack(2, pair.first, pair.second);
-                    try {
-                        list.link(list.tail(), list.node(tuple), nullptr);
-                        Py_DECREF(tuple);
-                    } catch (...) {
-                        Py_DECREF(tuple);
-                        throw;
-                    }
-                } else {
-                    list.link(list.tail(), list.node(*it), nullptr);
-                }
+                list.link(list.tail(), list.node(*it), nullptr);
             }
         }
         return list;

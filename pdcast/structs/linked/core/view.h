@@ -92,7 +92,7 @@ in a simple and efficient manner.
 If the iterator is templated on a const view, then it is suitable for the const
 overloads of `begin()` and `end()`, as well as the corresponding `cbegin()` and
 `cend()` factory methods. */
-template <typename View, Direction dir, Yield yield, bool as_pytuple = false>
+template <typename View, Direction dir, Yield yield, bool as_pytuple>
 class Iterator :
     public BaseIterator<
         std::conditional_t<
@@ -177,14 +177,13 @@ public:
 
     /* Dereference the iterator to get the value at the current position. */
     inline Deref operator*() const noexcept {
-        using PyTuple = python::Tuple<python::Ref::STEAL>;
-
         if constexpr (YIELD == Yield::KEY) {
             return _curr->value();
         } else if constexpr (YIELD == Yield::VALUE) {
             return _curr->mapped();
         } else {
             if constexpr (as_pytuple) {
+                using PyTuple = python::Tuple<python::Ref::STEAL>;
                 return PyTuple::pack(_curr->value(), _curr->mapped());
             } else {
                 return std::make_pair(_curr->value(), _curr->mapped());
@@ -220,8 +219,8 @@ public:
     }
 
     /* Inequality comparison to terminate the sequence. */
-    template <Direction T, Yield Y>
-    inline bool operator!=(const Iterator<View, T, Y>& other) const noexcept {
+    template <Direction T, Yield Y, bool PT>
+    inline bool operator!=(const Iterator<View, T, Y, PT>& other) const noexcept {
         return _curr != other.curr();
     }
 
@@ -769,7 +768,7 @@ public:
     template <Yield yield = Yield::KEY, bool as_pytuple = false>
     ConstIterator<Direction::BACKWARD, yield, as_pytuple> crbegin() const {
         if (tail() == nullptr) {
-            return crend<yield>();
+            return crend<yield, as_pytuple>();
         }
 
         // if list is doubly-linked, we can use prev to get neighbors
@@ -1245,39 +1244,39 @@ struct ViewTraits {
 
 
 
-    // TODO: delete assertion helpers.  Roll them into main iterator class instead.
+    // // TODO: delete assertion helpers.  Roll them into main iterator class instead.
 
-    // assertion helpers
-    class Assert {
+    // // assertion helpers
+    // class Assert {
 
-        template <bool dictlike = false, typename Dummy = void>
-        struct _Assert {
+    //     template <bool dictlike = false, typename Dummy = void>
+    //     struct _Assert {
 
-            template <bool value, Yield yield>
-            static constexpr bool as_pytuple = !value;
+    //         template <bool value, Yield yield>
+    //         static constexpr bool as_pytuple = !value;
 
-        };
+    //     };
 
-        template <typename Dummy>
-        struct _Assert<true, Dummy> {
+    //     template <typename Dummy>
+    //     struct _Assert<true, Dummy> {
 
-            template <bool value, Yield yield>
-            static constexpr bool as_pytuple = !value || (
-                yield == Yield::ITEM &&
-                std::is_same_v<typename ViewType::Value, PyObject*> &&
-                std::is_same_v<typename ViewType::MappedValue, PyObject*>
-            );
+    //         template <bool value, Yield yield>
+    //         static constexpr bool as_pytuple = !value || (
+    //             yield == Yield::ITEM &&
+    //             std::is_same_v<typename ViewType::Value, PyObject*> &&
+    //             std::is_same_v<typename ViewType::MappedValue, PyObject*>
+    //         );
 
-        };
+    //     };
 
-    public:
+    // public:
 
-        template <bool value, Yield yield>
-        static constexpr bool as_pytuple = (
-            _Assert<dictlike>::template as_pytuple<value, yield>
-        );
+    //     template <bool value, Yield yield>
+    //     static constexpr bool as_pytuple = (
+    //         _Assert<dictlike>::template as_pytuple<value, yield>
+    //     );
 
-    };
+    // };
 
 };
 

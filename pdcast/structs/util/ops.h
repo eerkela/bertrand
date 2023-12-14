@@ -11,6 +11,7 @@
 #include <type_traits>  // std::is_convertible_v<>, std::remove_cv_t<>, etc.
 #include <Python.h>  // CPython API
 #include "base.h"  // is_pyobject<>
+#include "container.h"  // Object<>
 #include "except.h"  // catch_python, TypeError
 #include "iter.h"  // iter(), PyIterator
 
@@ -322,12 +323,13 @@ std::string repr(const T& obj) {
     if (py_repr == nullptr) {
         throw catch_python();
     }
-    const char* c_repr = PyUnicode_AsUTF8(py_repr);
+    Py_ssize_t size;
+    const char* c_repr = PyUnicode_AsUTF8AndSize(py_repr, &size);
+    Py_DECREF(py_repr);
     if (c_repr == nullptr) {
         throw catch_python();
     }
-    Py_DECREF(py_repr);
-    return std::string(c_repr);
+    return std::string(c_repr, static_cast<size_t>(size));
 }
 
 
