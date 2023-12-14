@@ -4,7 +4,7 @@
 #include <cstddef>  // size_t
 #include <type_traits>  // std::enable_if_t<>
 #include <unordered_set>  // std::unordered_set<>
-#include "../../util/container.h"  // PyDict
+#include "../../util/container.h"  // python::Dict
 #include "../../util/iter.h"  // iter()
 #include "../core/node.h"  // NodeTraits
 #include "../core/view.h"  // ViewTraits
@@ -177,6 +177,7 @@ namespace linked {
     {
         if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
             if (PyDict_Check(items)) {
+                using PyDict = python::Dict<python::Ref::BORROW>;
                 PyDict dict(items);
                 update_impl<View, PyDict, false>(view, dict);
                 return;
@@ -193,6 +194,7 @@ namespace linked {
     {
         if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
             if (PyDict_Check(items)) {
+                using PyDict = python::Dict<python::Ref::BORROW>;
                 PyDict dict(items);
                 update_impl<View, PyDict, true>(view, dict);
                 return;
@@ -210,6 +212,7 @@ namespace linked {
     {
         if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
             if (PyDict_Check(items)) {
+                using PyDict = python::Dict<python::Ref::BORROW>;
                 PyDict dict(items);
                 lru_update_impl(view, dict);
                 return;
@@ -310,6 +313,7 @@ namespace linked {
     {
         if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
             if (PyDict_Check(items)) {
+                using PyDict = python::Dict<python::Ref::BORROW>;
                 PyDict dict(items);
                 symmetric_difference_update_impl<View, PyDict, false>(view, dict);
                 return;
@@ -328,6 +332,7 @@ namespace linked {
     {
         if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
             if (PyDict_Check(items)) {
+                using PyDict = python::Dict<python::Ref::BORROW>;
                 PyDict dict(items);
                 symmetric_difference_update_impl<View, PyDict, true>(view, dict);
                 return;

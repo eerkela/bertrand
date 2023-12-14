@@ -6,7 +6,7 @@
 #include <sstream>  // std::ostringstream
 #include <stack>  // std::stack
 #include <Python.h>  // CPython API
-#include "../../util/container.h"  // PySlice, PySequence
+#include "../../util/container.h"  // python::Dict, python::Slice
 #include "../../util/except.h"  // TypeError()
 #include "../../util/iter.h"  // iter()
 #include "../../util/math.h"  // py_modulo()
@@ -124,7 +124,7 @@ namespace linked {
     inline SliceIndices<View> normalize_slice(View& view, PyObject* slice) {
         using Indices = std::tuple<long long, long long, long long, size_t>;
 
-        PySlice py_slice(slice);
+        python::Slice<python::Ref::BORROW> py_slice(slice);
         Indices indices(py_slice.normalize(view.size()));
 
         return SliceIndices<View>(
@@ -647,11 +647,11 @@ namespace linked {
                         try {
                             typename Result::Node* parsed = result.view.node(tup);
                             Py_DECREF(tup);
+                            return parsed;
                         } catch (...) {
                             Py_DECREF(tup);
                             throw;
                         }
-                        return parsed;
                     } else {
                         return result.view.node(*it);
                     }
@@ -718,7 +718,7 @@ namespace linked {
         inline void set(const Container& items) {
             if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
                 if (PyDict_Check(items)) {
-                    PyDict dict(items);
+                    python::Dict<python::Ref::BORROW> dict(items);
                     _set_impl(dict);
                 } else {
                     _set_impl(items);

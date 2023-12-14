@@ -18,967 +18,1182 @@
 
 
 namespace bertrand {
-namespace util {
+namespace python {
 
 
-////////////////////////////////
-////    BASIC CONTAINERS    ////
-////////////////////////////////
+////////////////////
+////    BASE    ////
+////////////////////
 
 
-/* These are wrappers around the basic data structures exposed by the CPython API.
- * They offer a much simpler/more intuitive interface as well as automatic reference
- * counting.
+/* Reference count protocols for wrapping CPython Object pointers.  The options are as
+follows:
+    #.  NEW: increment the reference count of the object on construction and decrement
+        it on destruction.
+    #.  STEAL: do not modify the reference count of the object on construction, but
+        decrement it on destruction.  This assumes ownership over the object.
+    #.  BORROW: do not modify the reference count of the object on construction or
+        destruction.  The object is assumed to outlive the wrapper.
  */
-
-
-/* An object-oriented wrapper around the CPython tuple API. */
-class PyTuple {
-    friend class Element;
-
-    /* Adopt an existing Python tuple. */
-    inline static PyObject* adopt(PyObject* tuple) {
-        if (!PyTuple_Check(tuple)) {
-            throw TypeError("expected a tuple");
-        }
-        return Py_NewRef(tuple);
-    }
-
-public:
-    PyObject* obj;
-    Py_ssize_t length;
-
-    /* Construct a PyTuple by packing the specified values. */
-    template <
-        typename... Args,
-        typename std::enable_if_t<std::conjunction_v<std::is_same<Args, PyObject*>...>>
-    >
-    PyTuple(Args&&... args) : obj(nullptr), length(sizeof...(Args)) {
-        obj = PyTuple_Pack(length, std::forward<Args>(args)...);
-        if (obj == nullptr) {
-            throw catch_python();
-        }
-    }
-
-    /* Construct an empty Python tuple of the specified size. */
-    PyTuple(Py_ssize_t size) : obj(PyTuple_New(size)), length(size) {
-        if (obj == nullptr) {
-            throw catch_python();
-        }
-    }
-
-    /* Construct a PyTuple around an existing CPython tuple. */
-    PyTuple(PyObject* tuple) : obj(adopt(tuple)), length(PyTuple_GET_SIZE(tuple)) {}
-
-    /* Copy constructor. */
-    PyTuple(const PyTuple& other) : obj(PyTuple_New(other.length)), length(other.length) {
-        if (obj == nullptr) {
-            throw catch_python();
-        }
-        for (Py_ssize_t i = 0; i < length; ++i) {
-            SET_ITEM(i, Py_NewRef(other.GET_ITEM(i)));
-        }
-    }
-
-    /* Move constructor. */
-    PyTuple(PyTuple&& other) : obj(other.obj), length(other.length) {
-        other.obj = nullptr;
-        other.length = 0;
-    }
-
-    /* Copy assignment. */
-    PyTuple& operator=(const PyTuple& other) {
-        if (this == &other) {
-            return *this;
-        }
-
-        PyObject* new_tuple = PyTuple_New(other.length);
-        if (new_tuple == nullptr) {
-            throw catch_python();
-        }
-        for (Py_ssize_t i = 0; i < other.length; ++i) {
-            PyTuple_SET_ITEM(new_tuple, i, Py_NewRef(other.GET_ITEM(i)));
-        }
-
-        Py_XDECREF(obj);
-        obj = new_tuple;
-        length = other.length;
-        return *this;
-    }
-
-    /* Move assignment. */
-    PyTuple& operator=(PyTuple&& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Py_XDECREF(obj);
-        obj = other.obj;
-        length = other.length;
-        other.obj = nullptr;
-        other.length = 0;
-        return *this;
-    }
-
-    /* Release the Python tuple on destruction. */
-    ~PyTuple() {
-        Py_XDECREF(obj);
-    }
-
-    /* Get the size of the tuple. */
-    inline size_t size() const {
-        return static_cast<size_t>(length);
-    }
-
-    /* Get the underlying PyObject* array. */
-    inline PyObject** data() const {
-        return PySequence_Fast_ITEMS(obj);
-    }
-
-    /* Iterate over the tuple. */
-    inline auto begin() { return iter(obj).begin(); }
-    inline auto begin() const { return iter(obj).begin(); }
-    inline auto cbegin() const { return iter(obj).cbegin(); }
-    inline auto end() { return iter(obj).end(); }
-    inline auto end() const { return iter(obj).end(); }
-    inline auto cend() const { return iter(obj).cend(); }
-    inline auto rbegin() { return iter(obj).rbegin(); }
-    inline auto rbegin() const { return iter(obj).rbegin(); }
-    inline auto crbegin() const { return iter(obj).crbegin(); }
-    inline auto rend() { return iter(obj).rend(); }
-    inline auto rend() const { return iter(obj).rend(); }
-    inline auto crend() const { return iter(obj).crend(); }
-
-    /* An assignable proxy for a particular index of the tuple. */
-    template <typename T>
-    class Element {
-        T& tuple;
-        Py_ssize_t index;
-
-        friend PyTuple;
-
-        /* Construct an Element proxy for the specified index. */
-        Element(T& tuple, size_t index) :
-            tuple(tuple), index(static_cast<Py_ssize_t>(index))
-        {}
-
-    public:
-        Element(const Element&) = delete;
-        Element(Element&&) = delete;
-        Element& operator=(const Element&) = delete;
-        Element& operator=(Element&&) = delete;
-
-        /* Get the item at this index. */
-        inline PyObject* get() const {
-            if (index >= tuple.length) {
-                throw IndexError("index out of range");
-            }
-            return tuple.GET_ITEM(index);  // borrowed reference
-        }
-
-        /* Implicitly convert the proxy to its value during assignment/parameter
-        passing. */
-        inline operator PyObject*() const {
-            return get();
-        }
-
-        // TODO: figure out reference counting here
-
-        /* Set the item at this index.  Steals a reference to `value`. */
-        inline void set(PyObject* value) {
-            if (index >= tuple.length) {
-                throw IndexError("index out of range");
-            }
-            Py_XDECREF(tuple.GET_ITEM(index));
-            Py_INCREF(value);  // new reference
-            tuple.SET_ITEM(index, value);
-        }
-
-        /* Assign to the proxy to overwrite its value. */
-        inline Element& operator=(PyObject* value) {
-            set(value);
-            return *this;
-        }
-
-    };
-
-    /* Index into a mutable Python tuple. */
-    inline Element<PyTuple> operator[](size_t index) {
-        return {*this, index};
-    }
-
-    /* Index into a const Python tuple. */
-    inline const Element<const PyTuple> operator[](size_t index) const {
-        return {*this, index};
-    }
-
-    /* Directly get an item within the tuple without boundschecking or proxying.
-    Returns a borrowed reference. */
-    inline PyObject* GET_ITEM(Py_ssize_t index) const {
-        return PyTuple_GET_ITEM(obj, index);
-    }
-
-    /* Directly set an item within the tuple without boundschecking or proxying.  Steals
-    a reference to `value` and does not clear the previous item if one is present. */
-    inline void SET_ITEM(Py_ssize_t index, PyObject* value) {
-        PyTuple_SET_ITEM(obj, index, value);
-    }
-
-    /* Get a new PyTuple representing a slice within this tuple. */
-    inline PyTuple get_slice(size_t start, size_t stop) const {
-        if (start > size()) {
-            throw IndexError("start index out of range");
-        }
-        if (stop > size()) {
-            throw IndexError("stop index out of range");
-        }
-        if (start > stop) {
-            throw IndexError("start index greater than stop index");
-        }
-        return PyTuple(PyTuple_GetSlice(obj, start, stop));
-    }
-
+enum class Ref {
+    NEW,
+    STEAL,
+    BORROW
 };
 
 
-/* An object-oriented wrapper around the CPython list API. */
-class PyList {
-    friend class Element;
-
-    /* adopt an existing Python list. */
-    inline static PyObject* adopt(PyObject* list) {
-        if (!PyList_Check(list)) {
-            throw TypeError("expected a list");
-        }
-        Py_INCREF(list);
-        return list;
-    }
-
-public:
+/* Base class for all C++ wrappers around CPython object pointers. */
+template <Ref ref>
+struct Object {
     PyObject* obj;
-    Py_ssize_t length;
 
-    /* Construct an empty Python list of the specified size. */
-    PyList(Py_ssize_t size) : obj(PyList_New(size)), length(size) {
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct a python::Object around a PyObject* pointer, applying the templated
+    adoption rule. */
+    Object(PyObject* obj) : obj(obj) {
         if (obj == nullptr) {
-            throw catch_python();
+            throw TypeError("Object initializer must not be null");
+        }
+        if constexpr (ref == Ref::NEW) {
+            Py_INCREF(obj);
         }
     }
-
-    /* Construct a PyList around an existing CPython list. */
-    PyList(PyObject* list) : obj(adopt(list)), length(PyList_GET_SIZE(list)) {}
 
     /* Copy constructor. */
-    PyList(const PyList& other) : obj(PyList_New(other.length)), length(other.length) {
-        if (obj == nullptr) {
-            throw catch_python();
-        }
-        for (Py_ssize_t i = 0; i < length; ++i) {
-            SET_ITEM(i, Py_NewRef(other.GET_ITEM(i)));
+    Object(const Object& other) : obj(other.obj) {
+        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
+            Py_XINCREF(obj);
         }
     }
 
     /* Move constructor. */
-    PyList(PyList&& other) : obj(other.obj), length(other.length) {
+    Object(Object&& other) : obj(other.obj) {
         other.obj = nullptr;
-        other.length = 0;
     }
 
     /* Copy assignment. */
-    PyList& operator=(const PyList& other) {
+    Object& operator=(const Object& other) {
         if (this == &other) {
             return *this;
         }
-
-        PyObject* new_list = PyList_New(other.length);
-        if (new_list == nullptr) {
-            throw catch_python();
+        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
+            Py_XDECREF(obj);
         }
-        for (Py_ssize_t i = 0; i < other.length; ++i) {
-            PyList_SET_ITEM(new_list, i, Py_NewRef(other.GET_ITEM(i)));
+        obj = other.obj;
+        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
+            Py_XINCREF(obj);
         }
-
-        Py_XDECREF(obj);
-        obj = new_list;
-        length = other.length;
         return *this;
     }
 
     /* Move assignment. */
-    PyList& operator=(PyList&& other) {
+    Object& operator=(Object&& other) {
         if (this == &other) {
             return *this;
         }
-        Py_XDECREF(obj);
+        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
+            Py_XDECREF(obj);
+        }
         obj = other.obj;
-        length = other.length;
         other.obj = nullptr;
-        other.length = 0;
         return *this;
     }
 
-    /* Release the Python list on destruction. */
-    ~PyList() {
-        Py_XDECREF(obj);
-    }
-
-    /* Get the size of the list. */
-    inline size_t size() const {
-        return static_cast<size_t>(length);
-    }
-
-    /* Get the underlying PyObject* array. */
-    inline PyObject** data() const {
-        return PySequence_Fast_ITEMS(obj);
-    }
-
-    /* Iterate over the list. */
-    inline auto begin() { return iter(obj).begin(); }
-    inline auto begin() const { return iter(obj).begin(); }
-    inline auto cbegin() const { return iter(obj).cbegin(); }
-    inline auto end() { return iter(obj).end(); }
-    inline auto end() const { return iter(obj).end(); }
-    inline auto cend() const { return iter(obj).cend(); }
-    inline auto rbegin() { return iter(obj).rbegin(); }
-    inline auto rbegin() const { return iter(obj).rbegin(); }
-    inline auto crbegin() const { return iter(obj).crbegin(); }
-    inline auto rend() { return iter(obj).rend(); }
-    inline auto rend() const { return iter(obj).rend(); }
-    inline auto crend() const { return iter(obj).crend(); }
-
-    /* Append an element to a mutable list. */
-    inline void append(PyObject* value) {
-        if (PyList_Append(obj, value)) {
-            throw catch_python();
+    /* Release the Python object on destruction. */
+    ~Object() {
+        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
+            Py_XDECREF(obj);
         }
     }
 
-    /* Insert an element into a mutable list. */
-    inline void insert(size_t index, PyObject* value) {
-        if (PyList_Insert(obj, index, value)) {
-            throw catch_python();
-        }
+    //////////////////////////////////
+    ////    PyObject_* METHODS    ////
+    //////////////////////////////////
+
+    /* Get a borrowed reference to the object's type struct. */
+    inline PyTypeObject* type() const noexcept {
+        return Py_TYPE(obj);
     }
 
-    /* Sort a mutable list. */
-    inline void sort() {
-        if (PyList_Sort(obj)) {
-            throw catch_python();
-        }
+    /* Check whether this object is an instance of the given type. */
+    inline bool isinstance(PyObject* type) const noexcept {
+        return PyObject_IsInstance(obj, type);
     }
 
-    /* Reverse a mutable list. */
-    inline void reverse() {
-        if (PyList_Reverse(obj)) {
-            throw catch_python();
-        }
+    /* Get the current reference count of the object. */
+    inline Py_ssize_t refcount() const noexcept {
+        return Py_REFCNT(obj);
     }
 
-    /* Convert the list into an equivalent tuple. */
-    inline PyTuple as_tuple() const {
-        return PyTuple(PySequence_Tuple(obj));
-    }
-
-    /* An assignable proxy for a particular index of the list. */
-    template <typename T>
-    class Element {
-        T& list;
-        Py_ssize_t index;
-
-        friend PyList;
-
-        /* Construct an Element proxy for the specified index. */
-        Element(T& list, size_t index) :
-            list(list), index(static_cast<Py_ssize_t>(index))
-        {}
-
-    public:
-        Element(const Element&) = delete;
-        Element(Element&&) = delete;
-        Element& operator=(const Element&) = delete;
-        Element& operator=(Element&&) = delete;
-
-        /* Get the item at this index. */
-        inline PyObject* get() const {
-            if (index >= list.length) {
-                throw IndexError("index out of range");
+    /* Return a (possibly empty) list of strings representing named attributes of the
+    object. */
+    std::vector<std::string> dir() const {
+        PyObject* contents = PyObject_Dir(obj);
+        if (contents == nullptr) {
+            if (PyErr_Occurred()) {
+                throw catch_python();
+            } else {
+                return {};
             }
-            return list.GET_ITEM(index);  // borrowed reference
         }
 
-        /* Implicitly convert the proxy to its value during assignment/parameter
-        passing. */
-        inline operator PyObject*() const {
-            return get();
+        std::vector<std::string> result;
+        for (PyObject* attribute : iter(contents)) {
+            Py_ssize_t size;
+            const char* string = PyUnicode_AsUTF8AndSize(attribute, &size);
+            result.emplace_back(string, static_cast<size_t>(size));
         }
-
-        // TODO: figure out reference counting here
-
-        /* Set the item at this index. */
-        inline void set(PyObject* value) {
-            if (index >= list.length) {
-                throw IndexError("index out of range");
-            }
-            Py_XDECREF(list.GET_ITEM(index));
-            list.SET_ITEM(index, Py_NewRef(value));
-        }
-
-        /* Assign to the proxy to overwrite its value. */
-        inline Element& operator=(PyObject* value) {
-            set(value);
-            return *this;
-        }
-
-    };
-
-    /* Index into a mutable Python list. */
-    inline Element<PyList> operator[](size_t index) {
-        return {*this, index};
-    }
-
-    /* Index into a const Python list. */
-    inline const Element<const PyList> operator[](size_t index) const {
-        return {*this, index};
-    }
-
-    /* Directly get an item within the list without boundschecking or proxying.
-    Returns a borrowed reference. */
-    inline PyObject* GET_ITEM(Py_ssize_t index) const {
-        return PyList_GET_ITEM(obj, index);
-    }
-
-    /* Directly set an item within the list without boundschecking or proxying.  Steals
-    a reference to `value` and does not clear the previous item if one is present. */
-    inline void SET_ITEM(Py_ssize_t index, PyObject* value) {
-        PyList_SET_ITEM(obj, index, value);
-    }
-
-    /* Get a new PyList representing a slice within this list. */
-    inline PyList get_slice(size_t start, size_t stop) const {
-        if (start > size()) {
-            throw IndexError("start index out of range");
-        }
-        if (stop > size()) {
-            throw IndexError("stop index out of range");
-        }
-        if (start > stop) {
-            throw IndexError("start index greater than stop index");
-        }
-        return PyList(PyList_GetSlice(obj, start, stop));
-    }
-
-    /* Set a slice within a mutable list. */
-    inline void set_slice(size_t start, size_t stop, PyObject* value) {
-        if (start > size()) {
-            throw IndexError("start index out of range");
-        }
-        if (stop > size()) {
-            throw IndexError("stop index out of range");
-        }
-        if (start > stop) {
-            throw IndexError("start index greater than stop index");
-        }
-        if (PyList_SetSlice(obj, start, stop, value)) {
-            throw catch_python();
-        }
-    }
-
-};
-
-
-/* An object-oriented wrapper around the CPython set/frozenset API. */
-class PySet {
-
-    /* adopt an existing Python set. */
-    inline static PyObject* adopt(PyObject* set) {
-        if (!PyAnySet_Check(set)) {
-            throw TypeError("expected a set");
-        }
-        Py_INCREF(set);
-        return set;
-    }
-
-public:
-    PyObject* obj;
-    Py_ssize_t length;
-
-    /* Construct an empty Python set. */
-    PySet() : obj(PySet_New(nullptr)), length(0) {
-        if (obj == nullptr) {
-            throw catch_python();
-        }
-    }
-
-    /* Construct a PySet around an existing CPython set. */
-    PySet(PyObject* set) : obj(adopt(set)), length(PySet_GET_SIZE(set)) {}
-
-    /* Copy constructor. */
-    PySet(const PySet& other) : obj(PySet_New(other.obj)), length(other.length) {
-        if (obj == nullptr) {
-            throw catch_python();
-        }
-    }
-
-    /* Move constructor. */
-    PySet(PySet&& other) : obj(other.obj), length(other.length) {
-        other.obj = nullptr;
-        other.length = 0;
-    }
-
-    /* Copy assignment. */
-    PySet& operator=(const PySet& other) {
-        if (this == &other) {
-            return *this;
-        }
-
-        PyObject* new_set = PySet_New(other.obj);
-        if (new_set == nullptr) {
-            throw catch_python();
-        }
-
-        Py_XDECREF(obj);
-        obj = new_set;
-        length = other.length;
-        return *this;
-    }
-
-    /* Move assignment. */
-    PySet& operator=(PySet&& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Py_XDECREF(obj);
-        obj = other.obj;
-        length = other.length;
-        other.obj = nullptr;
-        other.length = 0;
-        return *this;
-    }
-
-    /* Release the Python set on destruction. */
-    ~PySet() {
-        Py_XDECREF(obj);
-    }
-
-    /* Get the size of the set. */
-    inline size_t size() const {
-        return static_cast<size_t>(length);
-    }
-
-    /* Iterate over the set. */
-    inline auto begin() { return iter(obj).begin(); }
-    inline auto begin() const { return iter(obj).begin(); }
-    inline auto cbegin() const { return iter(obj).cbegin(); }
-    inline auto end() { return iter(obj).end(); }
-    inline auto end() const { return iter(obj).end(); }
-    inline auto cend() const { return iter(obj).cend(); }
-    inline auto rbegin() { return iter(obj).rbegin(); }
-    inline auto rbegin() const { return iter(obj).rbegin(); }
-    inline auto crbegin() const { return iter(obj).crbegin(); }
-    inline auto rend() { return iter(obj).rend(); }
-    inline auto rend() const { return iter(obj).rend(); }
-    inline auto crend() const { return iter(obj).crend(); }
-
-    /* Check if the set contains a particular key. */
-    inline bool contains(PyObject* key) const {
-        int result = PySet_Contains(obj, key);
-        if (result == -1) {
-            throw catch_python();
-        }
+        Py_DECREF(dir);
         return result;
     }
 
-    /* Add an element to a mutable set. */
-    inline void add(PyObject* value) {
-        if (PySet_Add(obj, value)) throw catch_python();
+    /* Get a string representation of the object using Python repr(). */
+    inline std::string repr() const {
+        PyObject* string = PyObject_Repr(obj);
+        if (string == nullptr) {
+            throw catch_python();
+        }
+        Py_ssize_t size;
+        std::string result {
+            PyUnicode_AsUTF8AndSize(string, &size),
+            static_cast<size_t>(size)
+        };
+        Py_DECREF(string);
+        return result;
     }
 
-    /* Remove an element from a mutable set. */
-    inline void remove(PyObject* value) {
-        int result = PySet_Discard(obj, value);
+    /* Get the hash of the object. */
+    inline size_t hash() const noexcept {
+        Py_ssize_t result = PyObject_Hash(obj);
+        if (result == -1 && PyErr_Occurred()) {
+            throw catch_python();
+        }
+        return static_cast<size_t>(result);
+    }
+
+    /* Get the length of the object. */
+    inline size_t size() const {
+        Py_ssize_t result = PyObject_Length(obj);
         if (result == -1) {
             throw catch_python();
         }
-        if (result == 0) {
-            std::ostringstream msg;
-            msg << repr(value);
-            throw KeyError(msg.str());
-        }
+        return static_cast<size_t>(result);
     }
 
-    /* Discard an element from a mutable set. */
-    inline void discard(PyObject* value) {
-        if (PySet_Discard(obj, value) == -1) {
-            throw catch_python();
-        }
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
+
+    /* Implicitly convert a python::Object into a PyObject* pointer. */
+    inline operator PyObject*() const noexcept {
+        return obj;
     }
 
-    /* Pop an item from a mutable set. */
-    inline PyObject* pop() {
-        PyObject* value = PySet_Pop(obj);
-        if (value == nullptr) {
+    /* Implicitly convert a python::Object into a C integer.  Equivalent to Python
+    int(). */
+    inline operator long long() const {
+        long long value = PyLong_AsLongLong(obj);
+        if (value == -1 && PyErr_Occurred()) {
             throw catch_python();
         }
         return value;
     }
 
-    /* Clear a mutable set. */
-    inline void clear() {
-        if (!PySet_Clear(obj)) {
+    /* Implicitly convert a python::Object into a C float.  Equivalent to Python
+    float(). */
+    inline operator double() const {
+        double value = PyFloat_AsDouble(obj);
+        if (value == -1.0 && PyErr_Occurred()) {
             throw catch_python();
         }
+        return value;
     }
 
-};
-
-
-/* An object-oriented wrapper around the CPython dict API. */
-class PyDict {
-
-    /* adopt an existing Python dictionary. */
-    inline static PyObject* adopt(PyObject* dict) {
-        if (!PyDict_Check(dict)) {
-            throw TypeError("expected a dict");
-        }
-        Py_INCREF(dict);
-        return dict;
-    }
-
-public:
-    PyObject* obj;
-    Py_ssize_t length;
-
-    /* Construct an empty Python dictionary. */
-    PyDict() : obj(PyDict_New()), length(0) {
-        if (obj == nullptr) {
-            throw catch_python();
-        }
-    }
-
-    /* Construct a PyDict around an existing CPython dictionary. */
-    PyDict(PyObject* dict) : obj(adopt(dict)), length(PyDict_Size(dict)) {
-    }
-
-    /* Copy constructor. */
-    PyDict(const PyDict& other) : obj(PyDict_New()), length(other.length) {
-        if (obj == nullptr) {
-            throw catch_python();
-        }
-        update(other.obj);
-    }
-
-    /* Move constructor. */
-    PyDict(PyDict&& other) : obj(other.obj), length(other.length) {
-        other.obj = nullptr;
-        other.length = 0;
-    }
-
-    /* Copy assignment. */
-    PyDict& operator=(const PyDict& other) {
-        if (this == &other) {
-            return *this;
-        }
-
-        PyObject* new_dict = PyDict_New();
-        if (new_dict == nullptr) {
-            throw catch_python();
-        }
-        update(other.obj);
-
-        Py_XDECREF(obj);
-        obj = new_dict;
-        length = other.length;
-        return *this;
-    }
-
-    /* Move assignment. */
-    PyDict& operator=(PyDict&& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Py_XDECREF(obj);
-        obj = other.obj;
-        length = other.length;
-        other.obj = nullptr;
-        other.length = 0;
-        return *this;
-    }
-
-    /* Release the Python dict on destruction. */
-    ~PyDict() {
-        Py_XDECREF(obj);
-    }
-
-    /* Get the size of the dict. */
-    inline size_t size() const {
-        return static_cast<size_t>(length);
-    }
-
-    /* A custom iterator over a Python dictionary that yields key-value pairs just
-    like std::unordered_map. */
-    template <typename T>
-    class Iterator {
-        T* dict;
-        Py_ssize_t pos;  // required by PyDict_Next
-        std::pair<PyObject*, PyObject*> curr;
-
-        friend PyDict;
-
-        /* Construct an Iterator over the specified dictionary. */
-        Iterator(T* dict) : dict(dict), pos(0) {
-            if (!PyDict_Next(dict->obj, &pos, &curr.first, &curr.second)) {
-                curr.first = nullptr;
-                curr.second = nullptr;
-            }
-        }
-
-        /* Construct an empty Iterator over the dictionary. */
-        Iterator() : dict(nullptr), pos(0) {
-            curr.first = nullptr;
-            curr.second = nullptr;
-        }
-
-    public:
-        using iterator_category     = std::forward_iterator_tag;
-        using difference_type       = std::ptrdiff_t;
-        using value_type            = std::pair<PyObject*, PyObject*>;
-        using pointer               = value_type*;
-        using reference             = value_type&;
-
-        /* Copy constructor. */
-        Iterator(const Iterator& other) :
-            dict(other.dict), pos(other.pos), curr(other.curr)
-        {}
-
-        /* Move constructor. */
-        Iterator(Iterator&& other) :
-            dict(other.dict), pos(other.pos), curr(other.curr)
-        {
-            other.curr.first = nullptr;
-            other.curr.second = nullptr;
-        }
-
-        /* Get the current key-value pair. */
-        inline std::pair<PyObject*, PyObject*>& operator*() {
-            return curr;
-        }
-
-        /* Get the current key-value pair for a const dictionary. */
-        inline const std::pair<PyObject*, PyObject*>& operator*() const {
-            return curr;
-        }
-
-        /* Advance to the next item within the dictionary. */
-        inline Iterator& operator++() {
-            if (!PyDict_Next(dict->obj, &pos, &curr.first, &curr.second)) {
-                curr.first = nullptr;
-                curr.second = nullptr;
-            }
-            return *this;
-        }
-
-        /* Terminate the loop. */
-        inline bool operator!=(const Iterator& other) const {
-            return curr.first != other.curr.first && curr.second != other.curr.second;
-        }
-
-    };
-
-    /* Iterate over the dictionary. */
-    inline auto begin() { return Iterator<PyDict>(this); }
-    inline auto begin() const { return Iterator<const PyDict>(this); }
-    inline auto cbegin() const { return Iterator<const PyDict>(this); }
-    inline auto end() { return Iterator<PyDict>(); }
-    inline auto end() const { return Iterator<const PyDict>(); }
-    inline auto cend() const { return Iterator<const PyDict>(); }
-
-    /* Check if the dictionary contains a particular key. */
-    inline bool contains(PyObject* key) const {
-        int result = PyDict_Contains(obj, key);
+    /* Implicitly Convert the object to a C++ boolean.  Equivalent to Python bool(). */
+    inline operator bool() const {
+        int result = PyObject_IsTrue(obj);
         if (result == -1) {
             throw catch_python();
         }
         return result;
     }
 
-    /* Return a new PyDict containing a copy of this dictionary. */
-    inline PyDict copy() const {
-        return PyDict(PyDict_Copy(obj));
+    /* Implicitly Convert the object to a C++ string.  Equivalent to Python str(). */
+    inline operator std::string() const {
+        PyObject* string = PyObject_Str(obj);
+        if (string == nullptr) {
+            throw catch_python();
+        }
+        Py_ssize_t size;
+        std::string result {
+            PyUnicode_AsUTF8AndSize(string, &size),
+            static_cast<size_t>(size)
+        };
+        Py_DECREF(string);
+        return result;
     }
 
-    /* Clear the dictionary. */
-    inline void clear() {
-        PyDict_Clear(obj);
-        length = 0;
+    /////////////////////////
+    ////    ITERATION    ////
+    /////////////////////////
+
+    inline auto begin() { return iter(obj).begin(); }
+    inline auto begin() const { return iter(obj).begin(); }
+    inline auto cbegin() const { return iter(obj).cbegin(); }
+    inline auto end() { return iter(obj).end(); }
+    inline auto end() const { return iter(obj).end(); }
+    inline auto cend() const { return iter(obj).cend(); }
+    inline auto rbegin() { return iter(obj).rbegin(); }
+    inline auto rbegin() const { return iter(obj).rbegin(); }
+    inline auto crbegin() const { return iter(obj).crbegin(); }
+    inline auto rend() { return iter(obj).rend(); }
+    inline auto rend() const { return iter(obj).rend(); }
+    inline auto crend() const { return iter(obj).crend(); }
+
+    ////////////////////////////////
+    ////    ATTRIBUTE ACCESS    ////
+    ////////////////////////////////
+
+    inline bool has_attr(PyObject* attr) const noexcept {
+        return PyObject_HasAttr(obj, attr);
     }
 
-    /* Get the value associated with a key or set it to the default value if it is not
-    already present. */
-    inline PyObject* setdefault(PyObject* key, PyObject* default_value) {
-        return PyDict_SetDefault(obj, key, default_value);
+    inline bool has_attr(const char* attr) const noexcept {
+        return PyObject_HasAttrString(obj, attr);
     }
 
-    /* Update this dictionary with another Python mapping, overriding the current
-    values on collision. */
-    inline void update(PyObject* other) {
-        if (PyDict_Merge(obj, other, 1)) {
+    inline Object<Ref::STEAL> get_attr(PyObject* attr) const {
+        PyObject* value = PyObject_GetAttr(obj, attr);
+        if (value == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(value);
+    }
+
+    inline Object<Ref::STEAL> get_attr(const char* attr) const {
+        PyObject* value = PyObject_GetAttrString(obj, attr);
+        if (value == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(value);
+    }
+
+    inline void set_attr(PyObject* attr, PyObject* value) const {
+        if (PyObject_SetAttr(obj, attr, value)) {
             throw catch_python();
         }
     }
 
-    /* Update this dictionary with another Python container that is known to contain
-    key-value pairs of length 2, overriding the current values on collision. */
-    inline void update_pairs(PyObject* other) {
-        if (PyDict_MergeFromSeq2(obj, other, 1)) {
+    inline void set_attr(const char* attr, PyObject* value) const {
+        if (PyObject_SetAttrString(obj, attr, value)) {
             throw catch_python();
         }
     }
 
-    /* Update this dictionary with another Python mapping, keeping the current values
-    on collision. */
-    inline void merge(PyObject* other) {
-        if (PyDict_Merge(obj, other, 0)) {
+    inline void del_attr(PyObject* attr) const {
+        if (PyObject_DelAttr(obj, attr)) {
             throw catch_python();
         }
     }
 
-    /* Update this dictionary with another Python container that is known to contain
-    key-value pairs of length 2, keeping the current values on collision. */
-    inline void merge_pairs(PyObject* other) {
-        if (PyDict_MergeFromSeq2(obj, other, 0)) {
+    inline void del_attr(const char* attr) const {
+        if (PyObject_DelAttrString(obj, attr)) {
             throw catch_python();
         }
     }
 
-    /* An assignable proxy for a particular key within the dictionary. */
-    template <typename T, typename U>
+    /////////////////////////
+    ////    CALLABLES    ////
+    /////////////////////////
+
+    /* Check if the object can be called like a function. */
+    inline bool is_callable() const noexcept {
+        return PyCallable_Check(obj);
+    }
+
+    /* Call the object using C-style positional arguments.  Returns a new reference. */
+    template <
+        typename... Args,
+        typename std::enable_if_t<
+            std::conjunction_v<std::is_convertible<Args, PyObject*>...>
+        >
+    >
+    inline Object<Ref::STEAL> operator()(Args&&... args) const {
+        // fastest: no arguments
+        if constexpr (sizeof...(Args) == 0) {
+            PyObject* result = PyObject_CallNoArgs(obj);
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return Object<Ref::STEAL>(result);
+
+        // faster: exactly one argument
+        } else if constexpr (sizeof...(Args) == 1) {
+            PyObject* result = PyObject_CallOneArg(obj, std::forward<Args>(args)...);
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return Object<Ref::STEAL>(result);
+
+        // fast: multiple arguments
+        } else {
+            PyObject* result = PyObject_CallFunctionObjArgs(
+                obj, std::forward<Args>(args)...
+            );
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return Object<Ref::STEAL>(result);
+        }
+    }
+
+    /* Call the object using Python-style positional arguments.  Returns a new
+    reference. */
+    inline Object<Ref::STEAL> call(PyObject* args) const {
+        PyObject* result = PyObject_CallObject(obj, args);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    /* Call the object using Python-style positional and keyword arguments.  Returns a
+    new reference. */
+    inline Object<Ref::STEAL> call(PyObject* args, PyObject* kwargs) const {
+        PyObject* result = PyObject_Call(obj, args, kwargs);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    /* Call the object using Python's vectorcall protocol.  Returns a new reference. */
+    inline Object<Ref::STEAL> call(
+        PyObject* const* args,
+        size_t npositional,
+        PyObject* kwnames
+    ) const {
+        PyObject* result = PyObject_Vectorcall(obj, args, npositional, kwnames);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    ///////////////////////////
+    ////    COMPARISONS    ////
+    ///////////////////////////
+
+    /* Apply a Python-level `is` (identity) comparison to the object. */
+    inline bool is(PyObject* other) const noexcept {
+        return obj == other;
+    }
+
+    inline bool operator<(PyObject* other) const {
+        int result = PyObject_RichCompareBool(obj, other, Py_LT);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    inline bool operator<=(PyObject* other) const {
+        int result = PyObject_RichCompareBool(obj, other, Py_LE);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    inline bool operator==(PyObject* other) const {
+        int result = PyObject_RichCompareBool(obj, other, Py_EQ);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    inline bool operator!=(PyObject* other) const {
+        int result = PyObject_RichCompareBool(obj, other, Py_NE);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    inline bool operator>=(PyObject* other) const {
+        int result = PyObject_RichCompareBool(obj, other, Py_GE);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    inline bool operator>(PyObject* other) const {
+        int result = PyObject_RichCompareBool(obj, other, Py_GT);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    //////////////////////////
+    ////    ARITHMETIC    ////
+    //////////////////////////
+
+    inline Object<Ref::STEAL> operator+() const {
+        PyObject* result = PyNumber_Positive(obj);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object<Ref::STEAL> operator+(PyObject* other) const {
+        PyObject* result = PyNumber_Add(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object& operator+=(PyObject* other) {
+        PyObject* result = PyNumber_InPlaceAdd(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        Py_DECREF(result);
+        return *this;
+    }
+
+    inline Object<Ref::STEAL> operator-() const {
+        PyObject* result = PyNumber_Negative(obj);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object<Ref::STEAL> operator-(PyObject* other) const {
+        PyObject* result = PyNumber_Subtract(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object& operator-=(PyObject* other) {
+        PyObject* result = PyNumber_InPlaceSubtract(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        Py_DECREF(result);
+        return *this;
+    }
+
+    inline Object<Ref::STEAL> operator*(PyObject* other) const {
+        PyObject* result = PyNumber_Multiply(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object& operator*=(PyObject* other) {
+        PyObject* result = PyNumber_InPlaceMultiply(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        Py_DECREF(result);
+        return *this;
+    }
+
+    inline Object<Ref::STEAL> matrix_multiply(PyObject* other) const {
+        PyObject* result = PyNumber_MatrixMultiply(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object& inplace_matrix_multiply(PyObject* other) {
+        PyObject* result = PyNumber_InPlaceMatrixMultiply(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        Py_DECREF(result);
+        return *this;
+    }
+
+    inline Object<Ref::STEAL> operator/(PyObject* other) const {
+        PyObject* result = PyNumber_TrueDivide(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object& operator/=(PyObject* other) {
+        PyObject* result = PyNumber_InPlaceTrueDivide(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        Py_DECREF(result);
+        return *this;
+    }
+
+    inline Object<Ref::STEAL> floor_divide(PyObject* other) const {
+        PyObject* result = PyNumber_FloorDivide(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object& inplace_floor_divide(PyObject* other) {
+        PyObject* result = PyNumber_InPlaceFloorDivide(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        Py_DECREF(result);
+        return *this;
+    }
+
+    inline Object<Ref::STEAL> operator%(PyObject* other) const {
+        PyObject* result = PyNumber_Remainder(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object& operator%=(PyObject* other) {
+        PyObject* result = PyNumber_InPlaceRemainder(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        Py_DECREF(result);
+        return *this;
+    }
+
+    inline Object<Ref::STEAL> divmod(PyObject* other) const {
+        PyObject* result = PyNumber_Divmod(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object<Ref::STEAL> power(PyObject* other) const {
+        PyObject* result = PyNumber_Power(obj, other, Py_None);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object& inplace_power(PyObject* other) {
+        PyObject* result = PyNumber_InPlacePower(obj, other, Py_None);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        Py_DECREF(result);
+        return *this;
+    }
+
+    inline Object<Ref::STEAL> operator~() const {
+        PyObject* result = PyNumber_Invert(obj);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object<Ref::STEAL> abs() const {
+        PyObject* result = PyNumber_Absolute(obj);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object<Ref::STEAL> operator<<(PyObject* other) const {
+        PyObject* result = PyNumber_Lshift(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object& operator<<=(PyObject* other) {
+        PyObject* result = PyNumber_InPlaceLshift(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        Py_DECREF(result);
+        return *this;
+    }
+
+    inline Object<Ref::STEAL> operator>>(PyObject* other) const {
+        PyObject* result = PyNumber_Rshift(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object& operator>>=(PyObject* other) {
+        PyObject* result = PyNumber_InPlaceRshift(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        Py_DECREF(result);
+        return *this;
+    }
+
+    inline Object<Ref::STEAL> operator|(PyObject* other) const {
+        PyObject* result = PyNumber_Or(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object& operator|=(PyObject* other) {
+        PyObject* result = PyNumber_InPlaceOr(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        Py_DECREF(result);
+        return *this;
+    }
+
+    inline Object<Ref::STEAL> operator&(PyObject* other) const {
+        PyObject* result = PyNumber_And(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object& operator&=(PyObject* other) {
+        PyObject* result = PyNumber_InPlaceAnd(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        Py_DECREF(result);
+        return *this;
+    }
+
+    inline Object<Ref::STEAL> operator^(PyObject* other) const {
+        PyObject* result = PyNumber_Xor(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    inline Object& operator^=(PyObject* other) {
+        PyObject* result = PyNumber_InPlaceXor(obj, other);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        Py_DECREF(result);
+        return *this;
+    }
+
+    ////////////////////////
+    ////    INDEXING    ////
+    ////////////////////////
+
+    /* A proxy for a key used to index the object. */
     class Element {
-        T& dict;
-        U key;
+        PyObject* obj;
+        PyObject* key;
 
-        friend PyDict;
+        friend Object;
 
-        /* Construct an Element proxy for the specified key. */
-        Element(T& dict, U& key) : dict(dict), key(key) {}
+        /* Construct an Element proxy for the specified key.  Borrows a reference to
+        the key. */
+        Element(PyObject* obj, PyObject* key) : obj(obj), key(key) {}
 
     public:
-        Element(const Element&) = delete;
-        Element(Element&&) = delete;
-        Element& operator=(const Element&) = delete;
-        Element& operator=(Element&&) = delete;
 
-        /* Get the value associated with the given key.  Returns nullptr if the key is
-        not in the dictionary. */
-        inline PyObject* get() const {
-            PyObject* value;
-            if constexpr (std::is_same_v<U, const char *>) {
-                value = PyDict_GetItemString(dict.obj, key);
-            } else {
-                value = PyDict_GetItem(dict.obj, key);
+        /* Get the item with the specified key.  Returns a new reference. */
+        inline Object<Ref::STEAL> get() const {
+            PyObject* result = PyObject_GetItem(obj, key);
+            if (result == nullptr) {
+                throw catch_python();
             }
-            return value;
+            return Object<Ref::STEAL>(result);
         }
 
-        /* Implicitly convert the proxy to its value during assignment/parameter
-        passing. */
-        inline operator PyObject*() const {
-            return get();
-        }
-
-        // TODO: figure out reference counting here
-
-        /* Set the value associated with the given key.  Steals a reference to `value`
-        and does not clear the previous value if one is present. */
+        /* Set the item with the specified key.  Borrows a reference to the new value
+        and releases a reference to a previous one if a conflict occurs. */
         inline void set(PyObject* value) {
-            if constexpr (std::is_same_v<U, const char *>) {
-                if (PyDict_SetItemString(dict.obj, key, value)) {
-                    throw catch_python();
-                }
-            } else {
-                if (PyDict_SetItem(dict.obj, key, value)) {
-                    throw catch_python();
-                }
+            if (PyObject_SetItem(obj, key, value)) {
+                throw catch_python();
             }
         }
 
-        /* Assign to the proxy to overwrite its value. */
-        inline Element& operator=(PyObject* value) {
-            set(value);
-            return *this;
-        }
-
-        /* Delete the key from the dictionary. */
+        /* Delete the item with the specified key.  Releases a reference to the
+        value. */
         inline void del() {
-            if constexpr (std::is_same_v<U, const char *>) {
-                if (PyDict_DelItemString(dict.obj, key)) {
-                    throw catch_python();
-                }
-            } else {
-                if (PyDict_DelItem(dict.obj, key)) {
-                    throw catch_python();
-                }
+            if (PyObject_DelItem(obj, key)) {
+                throw catch_python();
             }
         }
 
     };
 
-    /* Get a proxy for a PyObject* key within the dictionary*. */
-    inline Element<PyDict, PyObject*> operator[](PyObject* key) {
-        return {*this, key};
+    inline Element operator[](PyObject* key) {
+        return {obj, key};
     }
 
-    /* Get a const proxy for a PyObject* key within a const dictionary. */
-    inline auto operator[](const PyObject* key) const
-        -> const Element<const PyDict, const PyObject*>
-    {
-        return {*this, key};
-    }
-
-    /* Get a proxy for a const char* key within the dictionary*. */
-    inline Element<PyDict, const char*> operator[](const char* key) {
-        return {*this, key};
-    }
-
-    /* Get a const proxy for a const char* key within a const dictionary. */
-    inline const Element<const PyDict, const char*> operator[](const char* key) const {
-        return {*this, key};
+    inline const Element operator[](PyObject* key) const {
+        return {obj, key};
     }
 
 };
 
 
-/* An object-oriented wrapper around the CPython slice API. */
-class PySlice {
+///////////////////////
+////    NUMBERS    ////
+///////////////////////
 
-    /* Adopt an existing Python slice. */
-    inline static PyObject* adopt(PyObject* slice) {
-        if (!PySlice_Check(slice)) {
-            throw TypeError("expected a slice");
+
+/* An extension of python::Object that represents a Python boolean. */
+template <Ref ref>
+class Bool : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct a Python boolean from an existing CPython boolean. */
+    Bool(PyObject* obj) : Base(obj) {
+        if (!PyBool_Check(obj)) {
+            throw TypeError("expected a boolean");
         }
-        Py_INCREF(slice);
-        return slice;
     }
+
+    /* Construct a Python boolean from a C++ boolean. */
+    Bool(long value) : Base(PyBool_FromLong(value)) {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing a Bool from a long int requires the use of Ref::STEAL to "
+            "avoid memory leaks"
+        );
+    }
+
+    /* Copy constructor. */
+    Bool(const Bool& other) : Base(other) {}
+
+    /* Move constructor. */
+    Bool(Bool&& other) : Base(std::move(other)) {}
+
+    /* Copy assignment. */
+    Bool& operator=(const Bool& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(other);
+        return *this;
+    }
+
+    /* Move assignment. */
+    Bool& operator=(Bool&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+};
+
+
+/* An extension of python::Object that represents a Python integer. */
+template <Ref ref>
+class Int : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct a Python integer from an existing CPython integer. */
+    Int(PyObject* obj) : Base(obj) {
+        if (!PyLong_Check(obj)) {
+            throw TypeError("expected an integer");
+        }
+    }
+
+    /* Construct a Python integer from a C long. */
+    Int(long value) : Base(PyLong_FromLong(value)) {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing an Int from a long requires the use of Ref::STEAL to avoid "
+            "memory leaks"
+        );
+    }
+
+    /* Construct a Python integer from a C long long. */
+    Int(long long value) : Base(PyLong_FromLongLong(value)) {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing an Int from a long long requires the use of Ref::STEAL to "
+            "avoid memory leaks"
+        );
+    }
+
+    /* Construct a Python integer from a C unsigned long. */
+    Int(unsigned long value) : Base(PyLong_FromUnsignedLong(value)) {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing an Int from an unsigned long requires the use of Ref::STEAL "
+            "to avoid memory leaks"
+        );
+    }
+
+    /* Construct a Python integer from a C unsigned long long. */
+    Int(unsigned long long value) : Base(PyLong_FromUnsignedLongLong(value)) {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing an Int from an unsigned long long requires the use of "
+            "Ref::STEAL to avoid memory leaks"
+        );
+    }
+
+    /* Construct a Python integer from a C double. */
+    Int(double value) : Base(PyLong_FromDouble(value)) {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing an Int from a double requires the use of Ref::STEAL to "
+            "avoid memory leaks"
+        );
+    }
+
+    /* Construct a Python integer from a C++ string. */
+    Int(const std::string& value, int base) :
+        Base(PyLong_FromString(value.c_str(), nullptr, base))
+    {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing an Int from a string requires the use of Ref::STEAL to "
+            "avoid memory leaks"
+        );
+    }
+
+    /* Construct a Python integer from a C++ string view. */
+    Int(const std::string_view& value, int base) :
+        Base(PyLong_FromString(value.data(), nullptr, base))
+    {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing an Int from a string view requires the use of Ref::STEAL to "
+            "avoid memory leaks"
+        );
+    }
+
+    /* Construct a Python integer from a PyUnicode string. */
+    Int(PyObject* value, int base) : Base(PyLong_FromUnicodeObject(value, base)) {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing an Int from a PyUnicode object requires the use of "
+            "Ref::STEAL to avoid memory leaks"
+        );
+    }
+
+    /* Copy constructor. */
+    Int(const Int& other) : Base(other) {}
+
+    /* Move constructor. */
+    Int(Int&& other) : Base(std::move(other)) {}
+
+    /* Copy assignment. */
+    Int& operator=(const Int& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(other);
+        return *this;
+    }
+
+    /* Move assignment. */
+    Int& operator=(Int&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
+
+    /* Implicitly convert a python::Int into a C long. */
+    inline operator long() const {
+        long value = PyLong_AsLong(this->obj);
+        if (value == -1 && PyErr_Occurred()) {
+            throw catch_python();
+        }
+        return value;
+    }
+
+    /* Implicitly convert a python::Int into a C long long. */
+    inline operator long long() const {
+        long long value = PyLong_AsLongLong(this->obj);
+        if (value == -1 && PyErr_Occurred()) {
+            throw catch_python();
+        }
+        return value;
+    }
+
+    /* Implicitly convert a python::Int into a C unsigned long. */
+    inline operator unsigned long() const {
+        unsigned long value = PyLong_AsUnsignedLong(this->obj);
+        if (value == -1 && PyErr_Occurred()) {
+            throw catch_python();
+        }
+        return value;
+    }
+
+    /* Implicitly convert a python::Int into a C unsigned long long. */
+    inline operator unsigned long long() const {
+        unsigned long long value = PyLong_AsUnsignedLongLong(this->obj);
+        if (value == -1 && PyErr_Occurred()) {
+            throw catch_python();
+        }
+        return value;
+    }
+
+    /* Implicitly convert a python::Int into a C double. */
+    inline operator double() const {
+        double value = PyLong_AsDouble(this->obj);
+        if (value == -1.0 && PyErr_Occurred()) {
+            throw catch_python();
+        }
+        return value;
+    }
+
+};
+
+
+/* An extension of python::Object that represents a Python float. */
+template <Ref ref>
+class Float : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct a Python float from an existing CPython float. */
+    Float(PyObject* obj) : Base(obj) {
+        if (!PyFloat_Check(obj)) {
+            throw TypeError("expected a float");
+        }
+    }
+
+    /* Construct a Python float from a C double. */
+    Float(double value) : Base(PyFloat_FromDouble(value)) {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing a Float from a double requires the use of Ref::STEAL to "
+            "avoid memory leaks"
+        );
+    }
+
+    /* Construct a Python float from a C++ string. */
+    Float(const std::string& value) : Base([&value] {
+        PyObject* string = PyUnicode_FromStringAndSize(value.c_str(), value.size());
+        if (string == nullptr) {
+            throw catch_python();
+        }
+        PyObject* result = PyFloat_FromString(string);
+        Py_DECREF(string);
+        return result;
+    }()) {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing a Float from a string requires the use of Ref::STEAL to "
+            "avoid memory leaks"
+        );
+    }
+
+    /* Construct a Python float from a C++ string view. */
+    Float(const std::string_view& value) : Base([&value] {
+        PyObject* string = PyUnicode_FromStringAndSize(value.data(), value.size());
+        if (string == nullptr) {
+            throw catch_python();
+        }
+        PyObject* result = PyFloat_FromString(string);
+        Py_DECREF(string);
+        return result;
+    }()) {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing a Float from a string view requires the use of Ref::STEAL "
+            "to avoid memory leaks"
+        );
+    }
+
+    /* Copy constructor. */
+    Float(const Float& other) : Base(other) {}
+
+    /* Move constructor. */
+    Float(Float&& other) : Base(std::move(other)) {}
+
+    /* Copy assignment. */
+    Float& operator=(const Float& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(other);
+        return *this;
+    }
+
+    /* Move assignment. */
+    Float& operator=(Float&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
+
+    /* Implicitly convert a python::Float into a C double. */
+    inline operator double() const {
+        return PyFloat_AS_DOUBLE(this->obj);
+    }
+
+};
+
+
+/* An extension of python::Object that represents a complex number in Python. */
+template <Ref ref>
+class Complex : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct a Python complex number from an existing CPython complex number. */
+    Complex(PyObject* obj) : Base(obj) {
+        if (!PyComplex_Check(obj)) {
+            throw TypeError("expected a complex number");
+        }
+    }
+
+    /* Construct a Python complex number from separate real/imaginary components as
+    doubles. */
+    Complex(double real, double imag) : Base(PyComplex_FromDoubles(real, imag)) {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing a Complex from a double requires the use of Ref::STEAL to "
+            "avoid memory leaks"
+        );
+    }
+
+    /* Copy constructor. */
+    Complex(const Complex& other) : Base(other) {}
+
+    /* Move constructor. */
+    Complex(Complex&& other) : Base(std::move(other)) {}
+
+    /* Copy assignment. */
+    Complex& operator=(const Complex& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(other);
+        return *this;
+    }
+
+    /* Move assignment. */
+    Complex& operator=(Complex&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
+
+    /* Get the real component of the complex number as a C double. */
+    inline double real() const {
+        return PyComplex_RealAsDouble(this->obj);
+    }
+
+    /* Get the imaginary component of the complex number as a C double. */
+    inline double imag() const {
+        return PyComplex_ImagAsDouble(this->obj);
+    }
+
+    /* Implicitly convert a python::Complex into a C double representing the real
+    component. */
+    inline operator double() const {
+        return real();
+    }
+
+};
+
+
+/* An extension of python::Object that represents a Python slice. */
+template <Ref ref>
+class Slice : public Object<ref> {
+    using Base = Object<ref>;
 
     PyObject* _start;
     PyObject* _stop;
     PyObject* _step;
 
 public:
-    PyObject* obj;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
 
     /* Construct an empty Python slice. */
-    PySlice() :
-        _start(Py_None), _stop(Py_None), _step(Py_None),
-        obj(PySlice_New(nullptr, nullptr, nullptr))
+    Slice() :
+        Base(PySlice_New(nullptr, nullptr, nullptr)), _start(Py_None), _stop(Py_None),
+        _step(Py_None)
     {
-        if (obj == nullptr) {
-            throw catch_python();
-        }
+        static_assert(
+            ref == Ref::NEW,
+            "Constructing an empty Slice requires the use of Ref::NEW to avoid "
+            "memory leaks"
+        );
     }
 
-    /* Construct a PySlice around an existing CPython slice. */
-    PySlice(PyObject* obj) :
-        _start(nullptr), _stop(nullptr), _step(nullptr), obj(adopt(obj))
-    {
+    /* Construct a python::Slice around an existing CPython slice. */
+    Slice(PyObject* obj) : Base(obj) {
+        if (!PySlice_Check(obj)) {
+            throw TypeError("expected a slice");
+        }
+
         _start = PyObject_GetAttrString(obj, "start");
         if (_start == nullptr) {
             throw catch_python();
@@ -997,191 +1212,1020 @@ public:
     }
 
     /* Copy constructor. */
-    PySlice(const PySlice& other) : 
-        _start(Py_NewRef(other._start)), _stop(Py_NewRef(other._stop)),
-        _step(Py_NewRef(other._step)), obj(Py_NewRef(other.obj))
-    {}
+    Slice(const Slice& other) :
+        Base(other), _start(other._start), _stop(other._stop), _step(other._step)
+    {
+        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
+            Py_XINCREF(other._start);
+            Py_XINCREF(other._stop);
+            Py_XINCREF(other._step);
+        }
+    }
 
     /* Move constructor. */
-    PySlice(PySlice&& other) :
-        _start(other._start), _stop(other._stop), _step(other._step), obj(other.obj)
-    {
+    Slice(Slice&& other) :
+        Base(std::move(other)), _start(other._start), _stop(other._stop),
+        _step(other._step)
+     {
         other._start = nullptr;
         other._stop = nullptr;
         other._step = nullptr;
-        other.obj = nullptr;
     }
 
     /* Copy assignment. */
-    PySlice& operator=(const PySlice& other) {
+    Slice& operator=(const Slice& other) {
         if (this == &other) {
             return *this;
         }
-        Py_XDECREF(_start);
-        Py_XDECREF(_stop);
-        Py_XDECREF(_step);
-        Py_XDECREF(obj);
-        _start = Py_NewRef(other._start);
-        _stop = Py_NewRef(other._stop);
-        _step = Py_NewRef(other._step);
-        obj = Py_NewRef(other.obj);
+        Base::operator=(other);
+        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
+            Py_XDECREF(_start);
+            Py_XDECREF(_stop);
+            Py_XDECREF(_step);
+        }
+        _start = other._start;
+        _stop = other._stop;
+        _step = other._step;
+        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
+            Py_XINCREF(_start);
+            Py_XINCREF(_stop);
+            Py_XINCREF(_step);
+        }
         return *this;
     }
 
     /* Move assignment. */
-    PySlice& operator=(PySlice&& other) {
+    Slice& operator=(Slice&& other) {
         if (this == &other) {
             return *this;
         }
-        Py_XDECREF(_start);
-        Py_XDECREF(_stop);
-        Py_XDECREF(_step);
-        Py_XDECREF(obj);
+        Base::operator=(std::move(other));
+        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
+            Py_XDECREF(_start);
+            Py_XDECREF(_stop);
+            Py_XDECREF(_step);
+        }
         _start = other._start;
         _stop = other._stop;
         _step = other._step;
-        obj = other.obj;
         other._start = nullptr;
         other._stop = nullptr;
         other._step = nullptr;
-        other.obj = nullptr;
         return *this;
     }
 
     /* Release the Python slice on destruction. */
-    ~PySlice() {
-        Py_XDECREF(_start);
-        Py_XDECREF(_stop);
-        Py_XDECREF(_step);
-        Py_XDECREF(obj);
+    ~Slice() {
+        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
+            Py_XDECREF(_start);
+            Py_XDECREF(_stop);
+            Py_XDECREF(_step);
+        }
     }
 
+    /////////////////////////////////
+    ////    PySlice_* METHODS    ////
+    /////////////////////////////////
+
     /* Get the start index of the slice. */
-    inline PyObject* start() const {
-        return _start;
+    inline Object<Ref::BORROW> start() const {
+        return Object<Ref::BORROW>(_start);
     }
 
     /* Get the stop index of the slice. */
-    inline PyObject* stop() const {
-        return _stop;
+    inline Object<Ref::BORROW> stop() const {
+        return Object<Ref::BORROW>(_stop);
     }
 
     /* Get the step index of the slice. */
-    inline PyObject* step() const {
-        return _step;
+    inline Object<Ref::BORROW> step() const {
+        return Object<Ref::BORROW>(_step);
     }
 
-    /* Normalize the slice for a given sequence length, returning a 4-tuple of
-    start, stop, step, and the number of elements included in the slice. */
+    /* Normalize the slice for a given sequence length, returning a 4-tuple containing
+    the start, stop, step, and number of elements included in the slice. */
     inline auto normalize(Py_ssize_t length) const
-        -> std::tuple<long long, long long, long long, size_t>
+        -> std::tuple<Py_ssize_t, Py_ssize_t, Py_ssize_t, size_t>
     {
         Py_ssize_t nstart, nstop, nstep, nlength;
-        if (PySlice_GetIndicesEx(obj, length, &nstart, &nstop, &nstep, &nlength)) {
+        if (PySlice_GetIndicesEx(this->obj, length, &nstart, &nstop, &nstep, &nlength)) {
             throw catch_python();
         }
-        return {nstart, nstop, nstep, nlength};
+        return std::make_tuple(nstart, nstop, nstep, nlength);
     }
 
 };
 
 
-/////////////////////////////
-////    FAST SEQUENCE    ////
-/////////////////////////////
+//////////////////////////
+////    CONTAINERS    ////
+//////////////////////////
 
 
-/* Sometimes we need to unpack an iterable into a fast sequence so that it has a
- * definite size and supports random access.  The sequence() helper does that for both
- * Python iterables (using PySequence_Fast) and C++ iterables (using std::vector).
- */
-
-
-/* A wrapper around a fast Python sequence (list or tuple) that manages reference
-counts and simplifies access. */
-class PyFastSequence {
-
-    /* Unpack a Python iterable into a fast sequence. */
-    inline PyObject* unpack(PyObject* iterable) {
-        if (PyTuple_Check(iterable) || PyList_Check(iterable)) {
-            return Py_NewRef(iterable);
-        }
-
-        PyObject* seq = PySequence_Fast(iterable, "could not unpack Python iterable");
-        if (seq == nullptr) {
-            throw catch_python();
-        }
-        return seq;
-    }
+/* An extension of python::Object that represents a Python tuple. */
+template <Ref ref>
+class Tuple : public Object<ref> {
+    using Base = Object<ref>;
 
 public:
-    PyObject* obj;
-    Py_ssize_t length;
 
-    /* Construct a PySequence from an iterable or other sequence. */
-    PyFastSequence(PyObject* items) :
-        obj(unpack(items)), length(PySequence_Fast_GET_SIZE(obj))
-    {}
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
 
-    /* Copy constructor. */
-    PyFastSequence(const PyFastSequence& other) :
-        obj(unpack(other.obj)), length(PySequence_Fast_GET_SIZE(obj))
-    {}
-
-    /* Move constructor. */
-    PyFastSequence(PyFastSequence&& other) : obj(other.obj), length(other.length) {
-        other.obj = nullptr;
-        other.length = 0;
+    /* Construct an empty Python tuple with the specified size. */
+    Tuple(Py_ssize_t size) : Base(PyTuple_New(size)) {
+        static_assert(
+            ref == Ref::NEW,
+            "Constructing an empty Tuple requires the use of Ref::NEW to avoid "
+            "memory leaks"
+        );
     }
 
+    /* Construct a python::Tuple around an existing CPython tuple. */
+    Tuple(PyObject* obj) : Base(obj) {
+        if (!PyTuple_Check(obj)) {
+            throw TypeError("expected a tuple");
+        }
+    }
+
+    /* Copy constructor. */
+    Tuple(const Tuple& other) : Base(other) {}
+
+    /* Move constructor. */
+    Tuple(Tuple&& other) : Base(std::move(other)) {}
+
     /* Copy assignment. */
-    PyFastSequence& operator=(const PyFastSequence& other) {
+    Tuple& operator=(const Tuple& other) {
         if (this == &other) {
             return *this;
         }
-        PyObject* seq = unpack(other.obj);
-        Py_XDECREF(obj);
-        obj = seq;
-        length = PySequence_Fast_GET_SIZE(obj);
+        Base::operator=(other);
         return *this;
     }
 
     /* Move assignment. */
-    PyFastSequence& operator=(PyFastSequence&& other) {
+    Tuple& operator=(Tuple&& other) {
         if (this == &other) {
             return *this;
         }
-        Py_XDECREF(obj);
-        obj = other.obj;
-        length = other.length;
-        other.obj = nullptr;
-        other.length = 0;
+        Base::operator=(std::move(other));
         return *this;
     }
 
-    /* Release the Python sequence on destruction. */
-    ~PyFastSequence() {
-        Py_XDECREF(obj);
+    /////////////////////////////////
+    ////    PyTuple_* METHODS    ////
+    /////////////////////////////////
+
+    /* Construct a new Python tuple containing the given objects. */
+    template <
+        typename... Args,
+        typename std::enable_if_t<std::conjunction_v<std::is_convertible<Args, PyObject*>...>>
+    >
+    inline static Tuple pack(Args&&... args) {
+        static_assert(
+            ref == Ref::STEAL,
+            "pack() must use Ref::STEAL to avoid memory leaks"
+        );
+
+        PyObject* tuple = PyTuple_Pack(sizeof...(Args), std::forward<Args>(args)...);
+        if (tuple == nullptr) {
+            throw catch_python();
+        }
+        return Tuple<Ref::STEAL>(tuple);
     }
+
+    /* Get the size of the tuple. */
+    inline size_t size() const noexcept {
+        return static_cast<size_t>(PyTuple_GET_SIZE(this->obj));
+    }
+
+    /* Get the underlying PyObject* array. */
+    inline PyObject** data() const noexcept {
+        return PySequence_Fast_ITEMS(this->obj);
+    }
+
+    ////////////////////////////////////
+    ////    PySequence_* METHODS    ////
+    ////////////////////////////////////
+
+    /* Check if the tuple contains a specific item. */
+    inline bool contains(PyObject* value) const noexcept {
+        int result = PySequence_Contains(this->obj, value);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Get the index of the first occurrence of the specified item. */
+    inline size_t index(PyObject* value) const {
+        Py_ssize_t result = PySequence_Index(this->obj, value);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return static_cast<size_t>(result);
+    }
+
+    /* Count the number of occurrences of the specified item. */
+    inline size_t count(PyObject* value) const {
+        Py_ssize_t result = PySequence_Count(this->obj, value);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return static_cast<size_t>(result);
+    }
+
+    ////////////////////////
+    ////    INDEXING    ////
+    ////////////////////////
+
+    /* A proxy for a key used to index the tuple. */
+    class Element {
+        PyObject* tuple;
+        Py_ssize_t index;
+
+        friend Tuple;
+
+        Element(PyObject* tuple, Py_ssize_t index) : tuple(tuple), index(index) {}
+
+    public:
+
+        /* Get the item at this index.  Returns a new reference. */
+        inline Object<Ref::STEAL> get() const {
+            PyObject* result = PyTuple_GetItem(tuple, index);
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return Object<Ref::STEAL>(result);
+        }
+
+        /* Set the item at this index.  Borrows a reference to the new value and
+        releases a previous one if a conflict occurs. */
+        inline void set(PyObject* value) {
+            if (PyTuple_SetItem(tuple, index, Py_XNewRef(value))) {
+                throw catch_python();
+            };
+        }
+
+    };
+
+    inline Element operator[](size_t index) {
+        return {this->obj, index};
+    }
+
+    inline const Element operator[](size_t index) const {
+        return {this->obj, index};
+    }
+
+    /* Directly access an item within the tuple, without bounds checking or
+    constructing a proxy. */
+    inline Object<Ref::BORROW> GET_ITEM(Py_ssize_t index) const {
+        return Object<Ref::BORROW>(PyTuple_GET_ITEM(this->obj, index));
+    }
+
+    /* Directly set an item within the tuple, without bounds checking or constructing a
+    proxy.  Steals a reference to `value` and does not clear the previous item if one is
+    present. */
+    inline void SET_ITEM(Py_ssize_t index, PyObject* value) {
+        PyTuple_SET_ITEM(this->obj, index, value);
+    }
+
+    /* Get a new Tuple representing a slice from this Tuple. */
+    inline Tuple<Ref::STEAL> get_slice(size_t start, size_t stop) const {
+        if (start > size()) {
+            throw IndexError("start index out of range");
+        }
+        if (stop > size()) {
+            throw IndexError("stop index out of range");
+        }
+        if (start > stop) {
+            throw IndexError("start index greater than stop index");
+        }
+        return Tuple<Ref::STEAL>(PyTuple_GetSlice(this->obj, start, stop));
+    }
+
+};
+
+
+/* An extension of python::Object that represents a Python list. */
+template <Ref ref>
+class List : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct an empty Python list of the specified size. */
+    List(Py_ssize_t size) : Base(PyList_New(size)) {
+        static_assert(
+            ref == Ref::NEW,
+            "Constructing an empty List requires the use of Ref::NEW to avoid "
+            "memory leaks"
+        );
+    }
+
+    /* Construct a python::List around an existing CPython list. */
+    List(PyObject* obj) : Base(obj) {
+        if (!PyList_Check(obj)) {
+            throw TypeError("expected a list");
+        }
+    }
+
+    /* Copy constructor. */
+    List(const List& other) : Base(other) {}
+
+    /* Move constructor. */
+    List(List&& other) : Base(std::move(other)) {}
+
+    /* Copy assignment. */
+    List& operator=(const List& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(other);
+        return *this;
+    }
+
+    /* Move assignment. */
+    List& operator=(List&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    ////////////////////////////////
+    ////    PyList_* METHODS    ////
+    ////////////////////////////////
+
+    /* Get the size of the list. */
+    inline size_t size() const noexcept {
+        return static_cast<size_t>(PyList_GET_SIZE(this->obj));
+    }
+
+    /* Get the underlying PyObject* array. */
+    inline PyObject** data() const noexcept {
+        return PySequence_Fast_ITEMS(this->obj);
+    }
+
+    /* Append an element to a mutable list.  Borrows a reference to the value. */
+    inline void append(PyObject* value) {
+        if (PyList_Append(this->obj, value)) {
+            throw catch_python();
+        }
+    }
+
+    /* Insert an element into a mutable list at the specified index.  Borrows a
+    reference to the value. */
+    inline void insert(Py_ssize_t index, PyObject* value) {
+        if (PyList_Insert(this->obj, index, value)) {
+            throw catch_python();
+        }
+    }
+
+    /* Sort a mutable list. */
+    inline void sort() {
+        if (PyList_Sort(this->obj)) {
+            throw catch_python();
+        }
+    }
+
+    /* Reverse a mutable list. */
+    inline void reverse() {
+        if (PyList_Reverse(this->obj)) {
+            throw catch_python();
+        }
+    }
+
+    /* Return a shallow copy of the list. */
+    inline List<Ref::STEAL> copy() const {
+        return List<Ref::STEAL>(PyList_GetSlice(this->obj, 0, size()));
+    }
+
+    /* Convert the list into an equivalent tuple. */
+    inline Tuple<Ref::STEAL> as_tuple() const {
+        return Tuple<Ref::STEAL>(PyList_AsTuple(this->obj));
+    }
+
+    ////////////////////////////////////
+    ////    PySequence_* METHODS    ////
+    ////////////////////////////////////
+
+    /* Check if the tuple contains a specific item. */
+    inline bool contains(PyObject* value) const noexcept {
+        int result = PySequence_Contains(this->obj, value);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Get the index of the first occurrence of the specified item. */
+    inline size_t index(PyObject* value) const {
+        Py_ssize_t result = PySequence_Index(this->obj, value);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return static_cast<size_t>(result);
+    }
+
+    /* Count the number of occurrences of the specified item. */
+    inline size_t count(PyObject* value) const {
+        Py_ssize_t result = PySequence_Count(this->obj, value);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return static_cast<size_t>(result);
+    }
+
+    ////////////////////////
+    ////    INDEXING    ////
+    ////////////////////////
+
+    /* An assignable proxy for a particular index of the list. */
+    class Element {
+        PyObject* list;
+        Py_ssize_t index;
+
+        friend List;
+
+        Element(PyObject* list, Py_ssize_t index) : list(list), index(index) {}
+
+    public:
+
+        /* Get the item at this index.  Returns a new reference. */
+        inline Object<Ref::STEAL> get() const {
+            PyObject* result = PyList_GetItem(list, index);
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return Object<Ref::STEAL>(result);
+        }
+
+        /* Set the item at this index.  Borrows a reference to the new value and
+        releases a reference to the previous one if a conflict occurs. */
+        inline void set(PyObject* value) {
+            if (PyList_SetItem(list, index, Py_XNewRef(value))) {
+                throw catch_python();
+            };
+        }
+
+    };
+
+    inline Element operator[](size_t index) {
+        return {this->obj, index};
+    }
+
+    inline const Element operator[](size_t index) const {
+        return {this->obj, index};
+    }
+
+    /* Directly access an item within the list, without bounds checking or
+    constructing a proxy.  Borrows a reference to the current value. */
+    inline Object<Ref::BORROW> GET_ITEM(Py_ssize_t index) const {
+        return Object<Ref::BORROW>(PyList_GET_ITEM(this->obj, index));
+    }
+
+    /* Directly set an item within the list, without bounds checking or constructing a
+    proxy.  Steals a reference to the new value and does not release the previous one
+    if a conflict occurs.  This is dangerous, and should only be used when constructing
+    a new list, where the current values are known to be empty. */
+    inline void SET_ITEM(Py_ssize_t index, PyObject* value) {
+        PyList_SET_ITEM(this->obj, index, value);
+    }
+
+    /* Get a new list representing a slice within this list. */
+    inline List<Ref::STEAL> get_slice(size_t start, size_t stop) const {
+        if (start > size()) {
+            throw IndexError("start index out of range");
+        }
+        if (stop > size()) {
+            throw IndexError("stop index out of range");
+        }
+        if (start > stop) {
+            throw IndexError("start index greater than stop index");
+        }
+        return List<Ref::STEAL>(PyList_GetSlice(this->obj, start, stop));
+    }
+
+    /* Set a slice within a mutable list.  Releases references to the current values
+    and then borrows new references to the new ones. */
+    inline void set_slice(size_t start, size_t stop, PyObject* value) {
+        if (start > size()) {
+            throw IndexError("start index out of range");
+        }
+        if (stop > size()) {
+            throw IndexError("stop index out of range");
+        }
+        if (start > stop) {
+            throw IndexError("start index greater than stop index");
+        }
+        if (PyList_SetSlice(this->obj, start, stop, value)) {
+            throw catch_python();
+        }
+    }
+
+};
+
+
+/* An extension of python::Object that represents a Python set. */
+template <Ref ref>
+class Set : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct an empty Python set. */
+    Set() : Base(PySet_New(nullptr)) {
+        static_assert(
+            ref == Ref::NEW,
+            "Constructing an empty Set requires the use of Ref::NEW to avoid "
+            "memory leaks"
+        );
+    }
+
+    /* Construct a python::Set around an existing CPython set. */
+    Set(PyObject* obj) : Base(obj) {
+        if (!PyAnySet_Check(obj)) {
+            throw TypeError("expected a set");
+        }
+    }
+
+    /* Copy constructor. */
+    Set(const Set& other) : Base(other) {}
+
+    /* Move constructor. */
+    Set(Set&& other) : Base(std::move(other)) {}
+
+    /* Copy assignment. */
+    Set& operator=(const Set& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(other);
+        return *this;
+    }
+
+    /* Move assignment. */
+    Set& operator=(Set&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    /////////////////////////////
+    ////   PySet_* METHODS   ////
+    /////////////////////////////
+
+    /* Get the size of the set. */
+    inline size_t size() const noexcept {
+        return static_cast<size_t>(PySet_GET_SIZE(this->obj));
+    }
+
+    /* Check if the set contains a particular key. */
+    inline bool contains(PyObject* key) const {
+        int result = PySet_Contains(this->obj, key);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Add an element to a mutable set.  Borrows a reference to the key. */
+    inline void add(PyObject* key) {
+        if (PySet_Add(this->obj, key)) {
+            throw catch_python();
+        }
+    }
+
+    /* Remove an element from a mutable set.  Releases a reference to the key */
+    inline void remove(PyObject* key) {
+        int result = PySet_Discard(this->obj, key);
+        if (result == -1) {
+            throw catch_python();
+        }
+        if (result == 0) {
+            throw KeyError(repr(key));
+        }
+    }
+
+    /* Remove an element from a mutable set if it is present.  Releases a reference to
+    the key if found. */
+    inline void discard(PyObject* key) {
+        if (PySet_Discard(this->obj, key) == -1) {
+            throw catch_python();
+        }
+    }
+
+    /* Remove and return an arbitrary element from a mutable set.  Transfers a
+    reference to the caller. */
+    inline Object<Ref::STEAL> pop() {
+        PyObject* result = PySet_Pop(this->obj);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    /* Return a shallow copy of the set. */
+    inline Set<Ref::STEAL> copy() const {
+        return Set<Ref::STEAL>(PySet_New(this->obj));
+    }
+
+    /* Remove all elements from a mutable set. */
+    inline void clear() {
+        if (PySet_Clear(this->obj)) {
+            throw catch_python();
+        }
+    }
+
+};
+
+
+/* An extension of python::Object that represents a Python dict. */
+template <Ref ref>
+class Dict : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct an empty Python dict. */
+    Dict() : Base(PyDict_New()) {
+        static_assert(
+            ref == Ref::NEW,
+            "Constructing an empty Dict requires the use of Ref::NEW to avoid "
+            "memory leaks"
+        );
+    }
+
+    /* Construct a python::Dict around an existing CPython dict. */
+    Dict(PyObject* obj) : Base(obj) {
+        if (!PyDict_Check(obj)) {
+            throw TypeError("expected a dict");
+        }
+    }
+
+    /* Copy constructor. */
+    Dict(const Dict& other) : Base(other) {}
+
+    /* Move constructor. */
+    Dict(Dict&& other) : Base(std::move(other)) {}
+
+    /* Copy assignment. */
+    Dict& operator=(const Dict& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(other);
+        return *this;
+    }
+
+    /* Move assignment. */
+    Dict& operator=(Dict&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    ////////////////////////////////
+    ////    PyDict_* METHODS    ////
+    ////////////////////////////////
+
+    /* Get the size of the dict. */
+    inline size_t size() const noexcept {
+        return static_cast<size_t>(PyDict_Size(this->obj));
+    }
+
+    /* Check if the dict contains a particular key. */
+    inline bool contains(PyObject* key) const {
+        int result = PyDict_Contains(this->obj, key);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Return a shallow copy of the dictionary. */
+    inline Dict<Ref::STEAL> copy() const {
+        return Dict<Ref::STEAL>(PyDict_Copy(this->obj));
+    }
+
+    /* Remove all elements from a mutable dict. */
+    inline void clear() {
+        if (PyDict_Clear(this->obj)) {
+            throw catch_python();
+        }
+    }
+
+    /* Get the value associated with a key or set it to the default value if it is not
+    already present.  Returns a new reference. */
+    inline Object<Ref::STEAL> set_default(PyObject* key, PyObject* default_value) {
+        PyObject* result = PyDict_SetDefault(this->obj, key, default_value);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    /* Update this dictionary with another Python mapping, overriding the current
+    values on collision.  Borrows a reference to any keys/values that weren't in the
+    original dictionary or conflict with those that are already present.  Releases a
+    reference to any values that were overwritten. */
+    inline void update(PyObject* other) {
+        if (PyDict_Merge(this->obj, other, 1)) {
+            throw catch_python();
+        }
+    }
+
+    /* Equivalent to update(), except that the other container is assumed to contain
+    key-value pairs of length 2. */
+    inline void update_pairs(PyObject* other) {
+        if (PyDict_MergeFromSeq2(this->obj, other, 1)) {
+            throw catch_python();
+        }
+    }
+
+    /* Update this dictionary with another Python mapping, keeping the current values
+    on collision.  Borrows a reference to any keys/values that weren't in the original
+    dictionary. */
+    inline void merge(PyObject* other) {
+        if (PyDict_Merge(this->obj, other, 0)) {
+            throw catch_python();
+        }
+    }
+
+    /* Equivalent to merge(), except that the other container is assumed to contain
+    key-value pairs of length 2. */
+    inline void merge_pairs(PyObject* other) {
+        if (PyDict_MergeFromSeq2(this->obj, other, 0)) {
+            throw catch_python();
+        }
+    }
+
+    ////////////////////////
+    ////    INDEXING    ////
+    ////////////////////////
+
+    /* A proxy for a key used to index the dict. */
+    template <typename Key>
+    class Element {
+        PyObject* dict;
+        Key& key;
+
+        friend Dict;
+
+        /* Construct an Element proxy for the specified key.  Borrows a reference to
+        the key. */
+        Element(PyObject* dict, Key& key) : dict(dict), key(key) {}
+    
+    public:
+
+        /* Get the item with the specified key or throw an error if it is not found.
+        Returns a new reference. */
+        inline Object<Ref::STEAL> get() const {
+            PyObject* value;
+            if constexpr (std::is_same_v<Key, const char*>) {
+                value = PyDict_GetItemString(dict, key);
+            } else {
+                value = PyDict_GetItem(dict, key);
+            }
+            if (value == nullptr) {
+                throw KeyError(repr(key));
+            }
+            return Object<Ref::STEAL>(value);
+        }
+
+        /* Set the item with the specified key.  Borrows a reference to the new value
+        and releases a reference to the previous one if a conflict occurs. */
+        inline void set(PyObject* value) {
+            if constexpr (std::is_same_v<Key, const char*>) {
+                if (PyDict_SetItemString(dict, key, value)) {
+                    throw catch_python();
+                }
+            } else {
+                if (PyDict_SetItem(dict, key, value)) {
+                    throw catch_python();
+                }
+            }
+        }
+
+        /* Delete the item with the specified key.  Releases a reference to both the
+        key and value. */
+        inline void del() {
+            if constexpr (std::is_same_v<Key, const char*>) {
+                if (PyDict_DelItemString(dict, key)) {
+                    throw catch_python();
+                }
+            } else {
+                if (PyDict_DelItem(dict, key)) {
+                    throw catch_python();
+                }
+            }
+        }
+
+    };
+
+    inline Element<PyObject*> operator[](PyObject* key) {
+        return {this->obj, key};
+    }
+
+    inline const Element<PyObject*> operator[](PyObject* key) const {
+        return {this->obj, key};
+    }
+
+    inline Element<const char*> operator[](const char* key) {
+        return {this->obj, key};
+    }
+
+    inline const Element<const char*> operator[](const char* key) const {
+        return {this->obj, key};
+    }
+
+    /////////////////////////
+    ////    ITERATION    ////
+    /////////////////////////
+
+    /* An iterator that yield key-value pairs rather than just keys. */
+    class Iterator {
+        PyObject* dict;
+        Py_ssize_t pos;  // required by PyDict_Next
+        std::pair<PyObject*, PyObject*> curr;
+
+        friend Dict;
+
+        /* Construct a key-value iterator over the dictionary. */
+        Iterator(PyObject* dict) : dict(dict), pos(0) {
+            if (!PyDict_Next(dict, &pos, &curr.first, &curr.second)) {
+                curr.first = nullptr;
+                curr.second = nullptr;
+            }
+        }
+
+        /* Construct an empty iterator to terminate the loop. */
+        Iterator() : dict(nullptr), pos(0), curr(nullptr, nullptr) {}
+
+    public:
+        using iterator_category     = std::forward_iterator_tag;
+        using difference_type       = std::ptrdiff_t;
+        using value_type            = std::pair<PyObject*, PyObject*>;
+        using pointer               = value_type*;
+        using reference             = value_type&;
+
+        /* Copy constructor. */
+        Iterator(const Iterator& other) :
+            dict(other.dict), pos(other.pos), curr(other.curr)
+        {}
+
+        /* Move constructor. */
+        Iterator(Iterator&& other) :
+            dict(other.dict), pos(other.pos), curr(std::move(other.curr))
+        {
+            other.curr.first = nullptr;
+            other.curr.second = nullptr;
+        }
+
+        /* Get the current key-value pair. */
+        inline std::pair<PyObject*, PyObject*> operator*() {
+            return curr;
+        }
+
+        /* Get the current key-value pair for a const dictionary. */
+        inline const std::pair<PyObject*, PyObject*>& operator*() const {
+            return curr;
+        }
+
+        /* Advance to the next key-value pair. */
+        inline Iterator& operator++() {
+            if (!PyDict_Next(dict, &pos, &curr.first, &curr.second)) {
+                curr.first = nullptr;
+                curr.second = nullptr;
+            }
+            return *this;
+        }
+
+        /* Compare to terminate the loop. */
+        inline bool operator!=(const Iterator& other) const {
+            return curr.first != other.curr.first && curr.second != other.curr.second;
+        }
+
+    };
+
+    inline auto begin() { return Iterator(this->obj); }
+    inline auto begin() const { return Iterator(this->obj); }
+    inline auto cbegin() const { return Iterator(this->obj); }
+    inline auto end() { return Iterator(); }
+    inline auto end() const { return Iterator(); }
+    inline auto cend() const { return Iterator(); }
+
+    /* Return a python::List containing all the keys in this dictionary. */
+    inline List<Ref::STEAL> keys() const {
+        return List<Ref::STEAL>(PyDict_Keys(this->obj));
+    }
+
+    /* Return a python::List containing all the values in this dictionary. */
+    inline List<Ref::STEAL> values() const {
+        return List<Ref::STEAL>(PyDict_Values(this->obj));
+    }
+
+    /* Return a python::List containing all the key-value pairs in this dictionary. */
+    inline List<Ref::STEAL> items() const {
+        return List<Ref::STEAL>(PyDict_Items(this->obj));
+    }
+
+};
+
+
+/* A wrapper around a fast Python sequence (list or tuple) that manages reference
+counts and simplifies access. */
+template <Ref ref>
+class FastSequence : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct a PySequence from an iterable or other sequence. */
+    FastSequence(PyObject* obj) : Base(obj) {
+        if (!PyTuple_Check(obj) && !PyList_Check(obj)) {
+            throw TypeError("expected a tuple or list");
+        }
+    }
+
+    /* Copy constructor. */
+    FastSequence(const FastSequence& other) : Base(other) {}
+
+    /* Move constructor. */
+    FastSequence(FastSequence&& other) : Base(std::move(other)) {}
+
+    /* Copy assignment. */
+    FastSequence& operator=(const FastSequence& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(other);
+        return *this;
+    }
+
+    /* Move assignment. */
+    FastSequence& operator=(FastSequence&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    /////////////////////////////////////////
+    ////    PySequence_Fast_* METHODS    ////
+    /////////////////////////////////////////
 
     /* Get the size of the sequence. */
     inline size_t size() const {
-        return static_cast<size_t>(length);
+        return static_cast<size_t>(PySequence_Fast_GET_SIZE(this->obj));
     }
 
+    // TODO: iterator should directly index the sequence, not use a proxy.
+
+
     /* Iterate over the sequence. */
-    inline auto begin() const { return iter(obj).begin(); }
-    inline auto cbegin() const { return iter(obj).cbegin(); }
-    inline auto end() const { return iter(obj).end(); }
-    inline auto cend() const { return iter(obj).cend(); }
-    inline auto rbegin() const { return iter(obj).rbegin(); }
-    inline auto crbegin() const { return iter(obj).crbegin(); }
-    inline auto rend() const { return iter(obj).rend(); }
-    inline auto crend() const { return iter(obj).crend(); }
+    // inline auto begin() const { return iter(obj).begin(); }
+    // inline auto cbegin() const { return iter(obj).cbegin(); }
+    // inline auto end() const { return iter(obj).end(); }
+    // inline auto cend() const { return iter(obj).cend(); }
+    // inline auto rbegin() const { return iter(obj).rbegin(); }
+    // inline auto crbegin() const { return iter(obj).crbegin(); }
+    // inline auto rend() const { return iter(obj).rend(); }
+    // inline auto crend() const { return iter(obj).crend(); }
 
     /* Get underlying PyObject* array. */
     inline PyObject** data() const {
-        return PySequence_Fast_ITEMS(obj);
+        return PySequence_Fast_ITEMS(this->obj);
+    }
+
+    /* Directly get an item within the sequence without boundschecking.  Returns a
+    borrowed reference. */
+    inline PyObject* GET_ITEM(Py_ssize_t index) const {
+        return PySequence_Fast_GET_ITEM(this->obj, index);
     }
 
     /* Get the value at a particular index of the sequence.  Returns a borrowed
@@ -1193,14 +2237,458 @@ public:
         return GET_ITEM(index);
     }
 
-    /* Directly get an item within the sequence without boundschecking.  Returns a
-    borrowed reference. */
-    inline PyObject* GET_ITEM(Py_ssize_t index) const {
-        return PySequence_Fast_GET_ITEM(obj, index);
+};
+
+
+/* An extension of python::Object that represents a Python unicode string. */
+template <Ref ref>
+class String : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct a Python unicode string from an existing CPython unicode string. */
+    String(PyObject* obj) : Base(obj) {
+        if (!PyUnicode_Check(obj)) {
+            throw TypeError("expected a unicode string");
+        }
+    }
+
+    /* Construct a Python unicode string from a C-style character array. */
+    String(const char* value) : Base(PyUnicode_FromString(value)) {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing a String from a C-style string requires the use of "
+            "Ref::STEAL to avoid memory leaks"
+        );
+    }
+
+    /* Construct a Python unicode string from a C++ string. */
+    String(const std::string& value) : Base(PyUnicode_FromStringAndSize(
+        value.c_str(), value.size()
+    )) {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing a String from a string requires the use of Ref::STEAL to "
+            "avoid memory leaks"
+        );
+    }
+
+    /* Construct a Python unicode string from a C++ string view. */
+    String(const std::string_view& value) : Base(PyUnicode_FromStringAndSize(
+        value.data(), value.size()
+    )) {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing a String from a string view requires the use of Ref::STEAL "
+            "to avoid memory leaks"
+        );
+    }
+
+    /* Construct a Python unicode string from a printf-style format string.  See the
+    Python docs for PyUnicode_FromFormat() for more details. */
+    template <typename... Args>
+    String(const char* format, Args&&... args) : Base(PyUnicode_FromFormat(
+        format, std::forward<Args>(args)...
+    )) {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing a String from a format string requires the use of Ref::STEAL "
+            "to avoid memory leaks"
+        );
+    }
+
+    /* Copy constructor. */
+    String(const String& other) : Base(other) {}
+
+    /* Move constructor. */
+    String(String&& other) : Base(std::move(other)) {}
+
+    /* Copy assignment. */
+    String& operator=(const String& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(other);
+        return *this;
+    }
+
+    /* Move assignment. */
+    String& operator=(String&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    ///////////////////////////////////
+    ////    PyUnicode_* METHODS    ////
+    ///////////////////////////////////
+
+    /* Get the underlying unicode buffer. */
+    inline void* data() const noexcept {
+        return PyUnicode_DATA(this->obj);
+    }
+
+    /* Get the kind of the string, indicating the size of the unicode points. */
+    inline int kind() const noexcept {
+        return PyUnicode_KIND(this->obj);
+    }
+
+    /* Get the maximum code point that is suitable for creating another string based
+    on this string. */
+    inline Py_UCS4 max_char() const noexcept {
+        return PyUnicode_MAX_CHAR_VALUE(this->obj);
+    }
+
+    /* Get the length of the string. */
+    inline size_t size() const noexcept {
+        return static_cast<size_t>(PyUnicode_GET_LENGTH(this->obj));
+    }
+
+    /* Fill this string with the given unicode character. */
+    inline void fill(Py_UCS4 ch) {
+        if (PyUnicode_FillChar(this->obj, ch)) {
+            throw catch_python();
+        }
+    }
+
+    /* Return a shallow copy of the string. */
+    inline String<Ref::STEAL> copy() const {
+        PyObject* result = PyUnicode_New(size(), max_char());
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        if (PyUnicode_CopyCharacters(result, 0, this->obj, 0, size())) {
+            Py_DECREF(result);
+            throw catch_python();
+        }
+        return String<Ref::STEAL>(result);
+    }
+
+    /* Check if the string contains a given substring. */
+    inline bool contains(PyObject* substr) const {
+        int result = PyUnicode_Contains(this->obj, substr);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Return a substring from this string. */
+    inline String<Ref::STEAL> substring(Py_ssize_t start, Py_ssize_t end) const {
+        return String<Ref::STEAL>(PyUnicode_Substring(this->obj, start, end));
+    }
+
+    /* Concatenate this string with another. */
+    inline String<Ref::STEAL> concat(PyObject* other) const {
+        return String<Ref::STEAL>(PyUnicode_Concat(this->obj, other));
+    }
+
+    /* Split this string on the given separator, returning the components in a
+    python::List. */
+    inline List<Ref::STEAL> split(PyObject* separator, Py_ssize_t maxsplit) const {
+        return List<Ref::STEAL>(PyUnicode_Split(this->obj, separator, maxsplit));
+    }
+
+    /* Split this string at line breaks, returning the components in a python::List. */
+    inline List<Ref::STEAL> splitlines(bool keepends) const {
+        return List<Ref::STEAL>(PyUnicode_Splitlines(this->obj, keepends));
+    }
+
+    /* Join a sequence of strings with this string as a separator. */
+    inline String<Ref::STEAL> join(PyObject* iterable) const {
+        return String<Ref::STEAL>(PyUnicode_Join(this->obj, iterable));
+    }
+
+    /* Check whether the string starts with the given substring. */
+    inline bool startswith(PyObject* prefix, Py_ssize_t start = 0) const {
+        int result = PyUnicode_Tailmatch(this->obj, prefix, start, size(), -1);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Check whether the string starts with the given substring. */
+    inline bool startswith(PyObject* prefix, Py_ssize_t start, Py_ssize_t stop) const {
+        int result = PyUnicode_Tailmatch(this->obj, prefix, start, stop, -1);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Check whether the string ends with the given substring. */
+    inline bool endswith(PyObject* suffix, Py_ssize_t start = 0) const {
+        int result = PyUnicode_Tailmatch(this->obj, suffix, start, size(), 1);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Check whether the string ends with the given substring. */
+    inline bool endswith(PyObject* suffix, Py_ssize_t start, Py_ssize_t stop) const {
+        int result = PyUnicode_Tailmatch(this->obj, suffix, start, stop, 1);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Find the first occurrence of a substring within the string. */
+    inline Py_ssize_t find(PyObject* sub, Py_ssize_t start = 0) const {
+        Py_ssize_t result = PyUnicode_Find(this->obj, sub, start, size(), 1);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Find the first occurrence of a substring within the string. */
+    inline Py_ssize_t find(PyObject* sub, Py_ssize_t start, Py_ssize_t stop) const {
+        Py_ssize_t result = PyUnicode_Find(this->obj, sub, start, stop, 1);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Find the first occurrence of a character within the string. */
+    inline Py_ssize_t find(Py_UCS4 ch, Py_ssize_t start = 0) const {
+        Py_ssize_t result = PyUnicode_FindChar(this->obj, ch, start, size(), 1);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Find the first occurrence of a character within the string. */
+    inline Py_ssize_t find(Py_UCS4 ch, Py_ssize_t start, Py_ssize_t stop) const {
+        Py_ssize_t result = PyUnicode_FindChar(this->obj, ch, start, stop, 1);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Find the last occurrence of a substring within the string. */
+    inline Py_ssize_t rfind(PyObject* sub, Py_ssize_t start = 0) const {
+        Py_ssize_t result = PyUnicode_Find(this->obj, sub, start, size(), -1);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Find the last occurrence of a substring within the string. */
+    inline Py_ssize_t rfind(PyObject* sub, Py_ssize_t start, Py_ssize_t stop) const {
+        Py_ssize_t result = PyUnicode_Find(this->obj, sub, start, stop, -1);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Find the last occurrence of a character within the string. */
+    inline Py_ssize_t rfind(Py_UCS4 ch, Py_ssize_t start = 0) const {
+        Py_ssize_t result = PyUnicode_FindChar(this->obj, ch, start, size(), -1);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Find the last occurrence of a character within the string. */
+    inline Py_ssize_t rfind(Py_UCS4 ch, Py_ssize_t start, Py_ssize_t stop) const {
+        Py_ssize_t result = PyUnicode_FindChar(this->obj, ch, start, stop, -1);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Count the number of occurrences of a substring within the string. */
+    inline Py_ssize_t count(PyObject* sub, Py_ssize_t start = 0) const {
+        Py_ssize_t result = PyUnicode_Count(this->obj, sub, start, size());
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Count the number of occurrences of a substring within the string. */
+    inline Py_ssize_t count(PyObject* sub, Py_ssize_t start, Py_ssize_t stop) const {
+        Py_ssize_t result = PyUnicode_Count(this->obj, sub, start, stop);
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Return a new string with at most maxcount occurrences of a substring replaced
+    with another substring. */
+    inline String<Ref::STEAL> replace(
+        PyObject* substr, PyObject* replstr, Py_ssize_t maxcount = -1
+    ) const {
+        return String<Ref::STEAL>(
+            PyUnicode_Replace(this->obj, substr, replstr, maxcount)
+        );
+    }
+
+    ////////////////////////
+    ////    INDEXING    ////
+    ////////////////////////
+
+    /* A proxy for a key used to index the string. */
+    class Element {
+        PyObject* string;
+        Py_ssize_t index;
+
+        friend String;
+
+        Element(PyObject* string, Py_ssize_t index) : string(string), index(index) {}
+
+    public:
+            
+        /* Get the character at this index. */
+        inline Py_UCS4 get() const {
+            return PyUnicode_ReadChar(string, index);
+        }
+
+        /* Set the character at this index. */
+        inline void set(Py_UCS4 ch) {
+            PyUnicode_WriteChar(string, index, ch);
+        }
+
+    };
+
+    inline Element operator[](Py_ssize_t index) {
+        return {this->obj, index};
+    }
+
+    inline const Element operator[](Py_ssize_t index) const {
+        return {this->obj, index};
+    }
+
+    /* Directly access a character within the string, without bounds checking or
+    constructing a proxy. */
+    inline Py_UCS4 READ_CHAR(Py_ssize_t index) const {
+        return PyUnicode_READ_CHAR(this->obj, index);
+    }
+
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
+
+    /* Implicitly convert a python::String into a C-style character array. */
+    inline operator const char*() const {
+        const char* result = PyUnicode_AsUTF8(this->obj);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Implicitly convert a python::String into a C++ string. */
+    inline operator std::string() const {
+        Py_ssize_t length;
+        const char* data = PyUnicode_AsUTF8AndSize(this->obj, &length);
+        if (data == nullptr) {
+            throw catch_python();
+        }
+        return std::string(data, static_cast<size_t>(length));
+    }
+
+    /* Implicitly convert a python::String into a C++ string view. */
+    inline operator std::string_view() const {
+        Py_ssize_t length;
+        const char* data = PyUnicode_AsUTF8AndSize(this->obj, &length);
+        if (data == nullptr) {
+            throw catch_python();
+        }
+        return std::string_view(data, static_cast<size_t>(length));
+    }
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    /* Concatenate this string with another. */
+    inline String<Ref::STEAL> operator+(PyObject* other) const {
+        return concat(other);
+    }
+
+    /* Check if this string is less than another string. */
+    inline bool operator<(PyObject* other) const {
+        if (PyUnicode_Check(other)) {
+            int result = PyUnicode_Compare(this->obj, other);
+            if (result == -1 && PyErr_Occurred()) {
+                throw catch_python();
+            }
+            return result < 0;
+        }
+        return Base::operator<(other);
+    }
+
+    /* Check if this string is less than or equal to another string. */
+    inline bool operator<=(PyObject* other) const {
+        if (PyUnicode_Check(other)) {
+            int result = PyUnicode_Compare(this->obj, other);
+            if (result == -1 && PyErr_Occurred()) {
+                throw catch_python();
+            }
+            return result <= 0;
+        }
+        return Base::operator<=(other);
+    }
+
+    /* Check if this string is greater than another string. */
+    inline bool operator>(PyObject* other) const {
+        if (PyUnicode_Check(other)) {
+            int result = PyUnicode_Compare(this->obj, other);
+            if (result == -1 && PyErr_Occurred()) {
+                throw catch_python();
+            }
+            return result > 0;
+        }
+        return Base::operator>(other);
+    }
+
+    /* Check if this string is greater than or equal to another string. */
+    inline bool operator>=(PyObject* other) const {
+        if (PyUnicode_Check(other)) {
+            int result = PyUnicode_Compare(this->obj, other);
+            if (result == -1 && PyErr_Occurred()) {
+                throw catch_python();
+            }
+            return result >= 0;
+        }
+        return Base::operator>=(other);
+    }
+
+    /* Check if this string is equal to another string. */
+    inline bool operator==(PyObject* other) const {
+        if (PyUnicode_Check(other)) {
+            int result = PyUnicode_Compare(this->obj, other);
+            if (result == -1 && PyErr_Occurred()) {
+                throw catch_python();
+            }
+            return result == 0;
+        }
+        return Base::operator==(other);
     }
 
 };
 
+
+}  // namespace python
 
 
 /* A trait that controls which C++ types are passed through the sequence() helper
@@ -1248,8 +2736,13 @@ struct SequenceFilter<std::valarray<T>> : std::true_type {};
 random access.  If the input already supports these, then it is returned directly. */
 template <typename Iterable>
 inline auto sequence(Iterable&& iterable) {
+
     if constexpr (is_pyobject<Iterable>) {
-        return PyFastSequence(std::forward<Iterable>(iterable));
+        PyObject* seq = PySequence_Fast(iterable, "expected a sequence");
+        python::FastSequence<python::Ref::BORROW> result(seq);
+        Py_DECREF(seq);
+        return result;
+
     } else {
         using Traits = ContainerTraits<Iterable>;
         static_assert(Traits::forward_iterable, "container must be forward iterable");
@@ -1272,18 +2765,6 @@ inline auto sequence(Iterable&& iterable) {
         }
     }
 }
-
-
-}  // namespace util
-
-
-/* Export to base namespace. */
-using util::PyTuple;
-using util::PyList;
-using util::PyDict;
-using util::PySlice;
-using util::PyFastSequence;
-using util::sequence;
 
 
 }  // namespace bertrand

@@ -5,7 +5,7 @@
 #include <stack>  // std::stack
 #include <string>  // std::string
 #include <type_traits>  // std::enable_if_t<>
-#include "../../util/container.h"  // PySlice
+#include "../../util/container.h"  // python::Slice
 #include "../../util/ops.h"  // bertrand::repr()
 #include "../core/node.h"  // NodeTraits
 #include "../core/view.h"  // ViewTraits, Yield
@@ -38,7 +38,7 @@ namespace linked {
             stream << "[";
             if constexpr (ViewTraits<View>::dictlike) {
                 if (PySlice_Check(spec)) {
-                    PySlice slice = PySlice(spec);
+                    python::Slice<python::Ref::BORROW> slice(spec);
                     if constexpr (yield == Yield::KEY) {
                         stream << repr(slice.start());
                     } else if constexpr (yield == Yield::VALUE) {

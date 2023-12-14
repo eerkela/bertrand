@@ -7,6 +7,7 @@
 #include <string_view>  // std::string_view
 #include <variant>  // std::visit
 #include "core/view.h"  // Views, Direction
+#include "../util/container.h"  // python::Slice
 #include "../util/iter.h"  // iter(), IterProxy
 #include "../util/ops.h"  // PyIterator
 #include "../util/string.h"  // string concatenation
@@ -534,7 +535,7 @@ public:
                         msg << "'" << type->tp_name << "' is already specialized to ";
                         if constexpr (NodeTraits<typename List::Node>::has_mapped) {
                             if (PySlice_Check(spec)) {
-                                PySlice slice = PySlice(spec);
+                                python::Slice<python::Ref::BORROW> slice(spec);
                                 msg << "(" << bertrand::repr(slice.start());
                                 msg << " : " << bertrand::repr(slice.stop()) << ")";
                             } else {

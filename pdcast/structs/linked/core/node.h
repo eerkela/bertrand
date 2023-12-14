@@ -5,7 +5,7 @@
 #include <type_traits>  // std::enable_if_t<>, etc.
 #include <Python.h>  // CPython API
 #include "../../util/base.h"  // is_pyobject<>
-#include "../../util/container.h"  // PySlice
+#include "../../util/container.h"  // python::Slice
 #include "../../util/except.h"  // catch_python(), TypeError()
 #include "../../util/func.h"  // FuncTraits
 #include "../../util/ops.h"  // hash(), repr()
@@ -812,8 +812,8 @@ public:
 
         // account for slice specialization
         if (PySlice_Check(specialization)) {
-            PySlice slice = PySlice(specialization);
-            if (slice.start() != Py_None) {
+            python::Slice<python::Ref::BORROW> slice(specialization);
+            if (!slice.start().is(Py_None)) {
                 int comp = PyObject_IsInstance(this->value(), slice.start());
                 if (comp == -1) {
                     throw catch_python();
@@ -822,7 +822,7 @@ public:
                     return false;
                 }
             }
-            if (slice.stop() != Py_None) {
+            if (!slice.stop().is(Py_None)) {
                 int comp = PyObject_IsInstance(_mapped, slice.stop());
                 if (comp == -1) {
                     throw catch_python();

@@ -2,7 +2,7 @@
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_UNION_H
 
 #include <type_traits>  // std::enable_if_t<>
-#include "../../util/container.h"  // PyDict
+#include "../../util/container.h"  // python::Dict
 #include "../../util/iter.h"  // iter()
 #include "../../util/ops.h"  // len()
 #include "../core/node.h"  // NodeTraits
@@ -119,6 +119,7 @@ namespace linked {
     {
         if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
             if (PyDict_Check(items)) {
+                using PyDict = python::Dict<python::Ref::BORROW>;
                 PyDict dict(items);
                 return union_impl<View, PyDict, false>(view, dict);
             }
@@ -136,6 +137,7 @@ namespace linked {
     {
         if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
             if (PyDict_Check(items)) {
+                using PyDict = python::Dict<python::Ref::BORROW>;
                 PyDict dict(items);
                 return union_impl<View, PyDict, true>(view, dict);
             }
@@ -210,6 +212,7 @@ namespace linked {
     {
         if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
             if (PyDict_Check(items)) {
+                using PyDict = python::Dict<python::Ref::BORROW>;
                 PyDict dict(items);
                 return symmetric_difference_impl<View, PyDict, false>(view, dict);
             }
@@ -227,6 +230,7 @@ namespace linked {
     {
         if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
             if (PyDict_Check(items)) {
+                using PyDict = python::Dict<python::Ref::BORROW>;
                 PyDict dict(items);
                 return symmetric_difference_impl<View, PyDict, true>(view, dict);
             }

@@ -4,6 +4,7 @@
 #include <type_traits>  // std::enable_if_t<>
 #include <unordered_set>  // std::unordered_set
 #include "../../util/base.h"  // is_pairlike<>
+#include "../../util/container.h"  // python::Dict
 #include "../../util/iter.h"  // iter()
 #include "../core/view.h"  // ViewTraits, Yield
 
@@ -82,6 +83,7 @@ namespace linked {
     {
         if constexpr (is_pyobject<Container>) {
             if (PyDict_Check(items)) {
+                using PyDict = python::Dict<python::Ref::BORROW>;
                 PyDict dict(items);
                 return dict_equal_impl<View, PyDict, false>(view, dict);
             }
@@ -99,6 +101,7 @@ namespace linked {
     {
         if constexpr (is_pyobject<Container>) {
             if (PyDict_Check(items)) {
+                using PyDict = python::Dict<python::Ref::BORROW>;
                 PyDict dict(items);
                 return dict_equal_impl<View, PyDict, true>(view, dict);
             }

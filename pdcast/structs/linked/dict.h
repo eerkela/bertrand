@@ -1403,7 +1403,8 @@ inline auto operator*(const ItemsProxy<Dict, as_pytuple>& proxy, T&& other)
 
 
 // TODO: lexicographic comparisons are complicated when dealing with tuples/pairs
-
+// TODO: equality comparison should account for order.  For some reason, it disagrees
+// with dict equality.  No idea why.
 
 
 template <typename Container, typename Dict, bool as_pytuple>
@@ -1413,7 +1414,19 @@ inline bool operator==(const ItemsProxy<Dict, as_pytuple>& proxy, const Containe
 
 
 template <typename Container, typename Dict, bool as_pytuple>
+inline bool operator==(const Container& other, const ItemsProxy<Dict, as_pytuple>& proxy) {
+    return proxy.mapping() == other;
+}
+
+
+template <typename Container, typename Dict, bool as_pytuple>
 inline bool operator!=(const ItemsProxy<Dict, as_pytuple>& proxy, const Container& other) {
+    return proxy.mapping() != other;
+}
+
+
+template <typename Container, typename Dict, bool as_pytuple>
+inline bool operator!=(const Container& other, const ItemsProxy<Dict, as_pytuple>& proxy) {
     return proxy.mapping() != other;
 }
 
@@ -3039,8 +3052,8 @@ These proxies support the following operations:
         inline static PySequenceMethods sequence = [] {
             PySequenceMethods slots;
             slots.sq_length = (lenfunc) Base::__len__;
-            slots.sq_concat = (binaryfunc) __add__;
-            slots.sq_repeat = (ssizeargfunc) __mul__;
+            // slots.sq_concat = (binaryfunc) __add__;
+            // slots.sq_repeat = (ssizeargfunc) __mul__;
             slots.sq_item = (ssizeargfunc) __getitem_scalar__;
             slots.sq_contains = (objobjproc) Base::__contains__;
             return slots;

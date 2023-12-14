@@ -7,7 +7,7 @@
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
-#include "../../util/container.h"  // PySlice
+#include "../../util/container.h"  // python::Slice
 #include "../../util/except.h"  // catch_python(), TypeError(), KeyError()
 #include "../../util/math.h"  // next_power_of_two()
 #include "../../util/ops.h"  // hash(), eq(), len(), repr()
@@ -150,7 +150,7 @@ protected:
                 std::ostringstream msg;
                 if constexpr (NodeTraits<Node>::has_mapped) {
                     if (PySlice_Check(specialization)) {
-                        PySlice slice = PySlice(specialization);
+                        python::Slice<python::Ref::BORROW> slice(specialization);
                         msg << "(" << repr(node->value()) << ", ";
                         msg << repr(node->mapped()) << ") is not of type (";
                         msg << repr(slice.start()) << " : ";
@@ -403,7 +403,7 @@ public:
                 std::ostringstream msg;
                 if constexpr (NodeTraits<Node>::has_mapped) {
                     if (PySlice_Check(spec)) {
-                        PySlice slice = PySlice(spec);
+                        python::Slice<python::Ref::BORROW> slice(specialization);
                         msg << "(" << repr(curr->value()) << ", ";
                         msg << repr(curr->mapped()) << ") is not of type (";
                         msg << repr(slice.start()) << " : ";

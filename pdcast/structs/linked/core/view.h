@@ -9,12 +9,16 @@
 #include <Python.h>  // CPython API
 #include "node.h"  // Hashed<>, Mapped<>
 #include "allocate.h"  // allocators
-#include "../../util/container.h"  // PyDict
+#include "../../util/container.h"  // python::Dict, python::Tuple
 #include "../../util/ops.h"  // len()
 
 
 namespace bertrand {
 namespace linked {
+
+
+template <typename View>
+class ViewTraits;
 
 
 /////////////////////////
@@ -88,7 +92,7 @@ in a simple and efficient manner.
 If the iterator is templated on a const view, then it is suitable for the const
 overloads of `begin()` and `end()`, as well as the corresponding `cbegin()` and
 `cend()` factory methods. */
-template <typename View, Direction dir, Yield yield>
+template <typename View, Direction dir, Yield yield, bool as_pytuple = false>
 class Iterator :
     public BaseIterator<
         std::conditional_t<
@@ -99,6 +103,29 @@ class Iterator :
         dir == Direction::BACKWARD && !NodeTraits<typename View::Node>::has_prev
     >
 {
+    static_assert(
+        yield == Yield::KEY || NodeTraits<typename View::Node>::has_mapped,
+        "Yield::VALUE and Yield::ITEM can only be used on dictlike views."
+    );
+
+    template <bool _dictlike = false, typename Dummy = void>
+    struct AssertAsPytuple {
+        static constexpr bool value = !as_pytuple;
+    };
+    template <typename Dummy>
+    struct AssertAsPytuple<true, Dummy> {
+        static constexpr bool value = !as_pytuple || (
+            yield == Yield::ITEM &&
+            std::is_same_v<typename View::Value, PyObject*> &&
+            std::is_same_v<typename View::MappedValue, PyObject*>
+        );
+    };
+    static_assert(
+        AssertAsPytuple<ViewTraits<View>::dictlike>::value,
+        "as_pytuple is only valid if view is dictlike, yield is set to "
+        "Yield::ITEM, and the dictionary contains pure PyObject* keys and values"
+    );
+
     using Node = std::conditional_t<
         std::is_const_v<View>,
         const typename View::Node,
@@ -107,11 +134,6 @@ class Iterator :
     using Base = BaseIterator<
         Node, dir == Direction::BACKWARD && !NodeTraits<Node>::has_prev
     >;
-
-    static_assert(
-        yield == Yield::KEY || NodeTraits<Node>::has_mapped,
-        "Yield::VALUE and Yield::ITEM can only be used on dictlike views."
-    );
 
     /* Infer dereference type based on `yield` parameter. */
     template <Yield Y = Yield::KEY, typename Dummy = void>
@@ -124,7 +146,11 @@ class Iterator :
     };
     template <typename Dummy>
     struct DerefType<Yield::ITEM, Dummy> {
-        using type = std::pair<typename Node::Value, typename Node::MappedValue>;
+        using type = std::conditional_t<
+            as_pytuple,
+            python::Tuple<python::Ref::STEAL>,
+            std::pair<typename Node::Value, typename Node::MappedValue>
+        >;
     };
 
 public:
@@ -151,12 +177,18 @@ public:
 
     /* Dereference the iterator to get the value at the current position. */
     inline Deref operator*() const noexcept {
+        using PyTuple = python::Tuple<python::Ref::STEAL>;
+
         if constexpr (YIELD == Yield::KEY) {
             return _curr->value();
         } else if constexpr (YIELD == Yield::VALUE) {
             return _curr->mapped();
         } else {
-            return std::make_pair(_curr->value(), _curr->mapped());
+            if constexpr (as_pytuple) {
+                return PyTuple::pack(_curr->value(), _curr->mapped());
+            } else {
+                return std::make_pair(_curr->value(), _curr->mapped());
+            }
         }
     }
 
@@ -382,10 +414,10 @@ public:
     using Value = typename Node::Value;
     using MemGuard = typename Allocator::MemGuard;
 
-    template <Direction dir, Yield yield = Yield::KEY>
-    using Iterator = linked::Iterator<Derived, dir, yield>;
-    template <Direction dir, Yield yield = Yield::KEY>
-    using ConstIterator = linked::Iterator<const Derived, dir, yield>;
+    template <Direction dir, Yield yield = Yield::KEY, bool as_pytuple = false>
+    using Iterator = linked::Iterator<Derived, dir, yield, as_pytuple>;
+    template <Direction dir, Yield yield = Yield::KEY, bool as_pytuple = false>
+    using ConstIterator = linked::Iterator<const Derived, dir, yield, as_pytuple>;
 
     static constexpr unsigned int FLAGS = Allocator::FLAGS;
     static constexpr bool SINGLY_LINKED = Allocator::SINGLY_LINKED;
@@ -658,61 +690,60 @@ public:
      * details.
      */
 
-    template <Yield yield = Yield::KEY>
-    Iterator<Direction::FORWARD, yield> begin() {
+    template <Yield yield = Yield::KEY, bool as_pytuple = false>
+    Iterator<Direction::FORWARD, yield, as_pytuple> begin() {
         if (head() == nullptr) {
-            return end<yield>();
+            return end<yield, as_pytuple>();
         }
-        Node* next = head()->next();
-        Derived* self = static_cast<Derived*>(this);
-        return Iterator<Direction::FORWARD, yield>(*self, nullptr, head(), next);
+        return Iterator<Direction::FORWARD, yield, as_pytuple>(
+            *static_cast<Derived*>(this), nullptr, head(), head()->next()
+        );
     }
 
-    template <Yield yield = Yield::KEY>
-    ConstIterator<Direction::FORWARD, yield> begin() const {
-        return cbegin<yield>();
+    template <Yield yield = Yield::KEY, bool as_pytuple = false>
+    ConstIterator<Direction::FORWARD, yield, as_pytuple> begin() const {
+        return cbegin<yield, as_pytuple>();
     }
 
-    template <Yield yield = Yield::KEY>
-    ConstIterator<Direction::FORWARD, yield> cbegin() const {
+    template <Yield yield = Yield::KEY, bool as_pytuple = false>
+    ConstIterator<Direction::FORWARD, yield, as_pytuple> cbegin() const {
         if (head() == nullptr) {
-            return cend<yield>();
+            return cend<yield, as_pytuple>();
         }
-        Node* next = head()->next();
-        const Derived* self = static_cast<const Derived*>(this);
-        return ConstIterator<Direction::FORWARD, yield>(*self, nullptr, head(), next);
+        return ConstIterator<Direction::FORWARD, yield, as_pytuple>(
+            *static_cast<const Derived*>(this), nullptr, head(), head()->next()
+        );
     }
 
-    template <Yield yield = Yield::KEY>
-    Iterator<Direction::FORWARD, yield> end() {
-        Derived* self = static_cast<Derived*>(this);
-        return Iterator<Direction::FORWARD, yield>(*self);
+    template <Yield yield = Yield::KEY, bool as_pytuple = false>
+    Iterator<Direction::FORWARD, yield, as_pytuple> end() {
+        return Iterator<Direction::FORWARD, yield, as_pytuple>(
+            *static_cast<Derived*>(this)
+        );
     }
 
-    template <Yield yield = Yield::KEY>
-    ConstIterator<Direction::FORWARD, yield> end() const {
-        return cend<yield>();
+    template <Yield yield = Yield::KEY, bool as_pytuple = false>
+    ConstIterator<Direction::FORWARD, yield, as_pytuple> end() const {
+        return cend<yield, as_pytuple>();
     }
 
-    template <Yield yield = Yield::KEY>
-    ConstIterator<Direction::FORWARD, yield> cend() const {
-        const Derived* self = static_cast<const Derived*>(this);
-        return ConstIterator<Direction::FORWARD, yield>(*self);
+    template <Yield yield = Yield::KEY, bool as_pytuple = false>
+    ConstIterator<Direction::FORWARD, yield, as_pytuple> cend() const {
+        return ConstIterator<Direction::FORWARD, yield, as_pytuple>(
+            *static_cast<const Derived*>(this)
+        );
     }
 
-    template <Yield yield = Yield::KEY>
-    Iterator<Direction::BACKWARD, yield> rbegin() {
+    template <Yield yield = Yield::KEY, bool as_pytuple = false>
+    Iterator<Direction::BACKWARD, yield, as_pytuple> rbegin() {
         if (tail() == nullptr) {
-            return rend<yield>();
+            return rend<yield, as_pytuple>();
         }
-
-        Derived* self = static_cast<Derived*>(this);
 
         // if list is doubly-linked, we can use prev to get neighbors
         if constexpr (NodeTraits<Node>::has_prev) {
-            Node* prev = tail()->prev();
-            return Iterator<Direction::BACKWARD, yield>(
-                *self, prev, tail(), nullptr
+            return Iterator<Direction::BACKWARD, yield, as_pytuple>(
+                *static_cast<Derived*>(this), tail()->prev(), tail(), nullptr
             );
 
         // Otherwise, build a temporary stack of prev pointers
@@ -724,30 +755,27 @@ public:
                 prev.push(temp);
                 temp = temp->next();
             }
-            return Iterator<Direction::BACKWARD, yield>(
-                *self, std::move(prev), tail(), nullptr
+            return Iterator<Direction::BACKWARD, yield, as_pytuple>(
+                *static_cast<Derived*>(this), std::move(prev), tail(), nullptr
             );
         }
     }
 
-    template <Yield yield = Yield::KEY>
-    ConstIterator<Direction::BACKWARD, yield> rbegin() const {
-        return crbegin<yield>();
+    template <Yield yield = Yield::KEY, bool as_pytuple = false>
+    ConstIterator<Direction::BACKWARD, yield, as_pytuple> rbegin() const {
+        return crbegin<yield, as_pytuple>();
     }
 
-    template <Yield yield = Yield::KEY>
-    ConstIterator<Direction::BACKWARD, yield> crbegin() const {
+    template <Yield yield = Yield::KEY, bool as_pytuple = false>
+    ConstIterator<Direction::BACKWARD, yield, as_pytuple> crbegin() const {
         if (tail() == nullptr) {
             return crend<yield>();
         }
 
-        const Derived* self = static_cast<const Derived*>(this);
-
         // if list is doubly-linked, we can use prev to get neighbors
         if constexpr (NodeTraits<Node>::has_prev) {
-            const Node* prev = tail()->prev();
-            return ConstIterator<Direction::BACKWARD, yield>(
-                *self, prev, tail(), nullptr
+            return ConstIterator<Direction::BACKWARD, yield, as_pytuple>(
+                *static_cast<const Derived*>(this), tail()->prev(), tail(), nullptr
             );
 
         // Otherwise, build a temporary stack of prev pointers
@@ -759,27 +787,29 @@ public:
                 prev.push(temp);
                 temp = temp->next();
             }
-            return ConstIterator<Direction::BACKWARD, yield>(
-                *self, std::move(prev), tail(), nullptr
+            return ConstIterator<Direction::BACKWARD, yield, as_pytuple>(
+                *static_cast<const Derived*>(this), std::move(prev), tail(), nullptr
             );
         }
     }
 
-    template <Yield yield = Yield::KEY>
-    Iterator<Direction::BACKWARD, yield> rend() {
-        Derived* self = static_cast<Derived*>(this);
-        return Iterator<Direction::BACKWARD, yield>(*self);
+    template <Yield yield = Yield::KEY, bool as_pytuple = false>
+    Iterator<Direction::BACKWARD, yield, as_pytuple> rend() {
+        return Iterator<Direction::BACKWARD, yield, as_pytuple>(
+            *static_cast<Derived*>(this)
+        );
     }
 
-    template <Yield yield = Yield::KEY>
-    ConstIterator<Direction::BACKWARD, yield> rend() const {
-        return crend<yield>();
+    template <Yield yield = Yield::KEY, bool as_pytuple = false>
+    ConstIterator<Direction::BACKWARD, yield, as_pytuple> rend() const {
+        return crend<yield, as_pytuple>();
     }
 
-    template <Yield yield = Yield::KEY>
-    ConstIterator<Direction::BACKWARD, yield> crend() const {
-        const Derived* self = static_cast<const Derived*>(this);
-        return ConstIterator<Direction::BACKWARD, yield>(*self);
+    template <Yield yield = Yield::KEY, bool as_pytuple = false>
+    ConstIterator<Direction::BACKWARD, yield, as_pytuple> crend() const {
+        return ConstIterator<Direction::BACKWARD, yield, as_pytuple>(
+            *static_cast<const Derived*>(this)
+        );
     }
 
     ////////////////////////
@@ -1010,6 +1040,7 @@ public:
         bool reverse
     ) : Base(capacity, spec)
     {
+        using PyDict = python::Dict<python::Ref::BORROW>;
         static constexpr unsigned int flags = (
             Allocator::EXIST_OK | Allocator::REPLACE_MAPPED
         );
@@ -1209,6 +1240,12 @@ struct ViewTraits {
 
     template <unsigned int Config>
     using Reconfigure = typename ViewType::template Reconfigure<Config>;
+
+
+
+
+
+    // TODO: delete assertion helpers.  Roll them into main iterator class instead.
 
     // assertion helpers
     class Assert {
