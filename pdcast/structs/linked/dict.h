@@ -49,11 +49,11 @@
 
 
 // TODO: implement dictview proxies
-// TODO: implement operator overloads
+// -> remove keys().to_set() and implement lexicographic comparisons for items()
 
 
 // TODO: union, update, __init__, comparisons, concatenate/repeat, etc. should accept
-// other LinkedDicts, and use .items() to iterate over them
+// other LinkedDicts and use .items() to iterate over them
 
 
 namespace bertrand {
@@ -819,6 +819,9 @@ public:
 //////////////////////
 ////    keys()    ////
 //////////////////////
+
+
+// TODO: remove to_set()
 
 
 /* A read-only proxy for a dictionary's keys, in the same style as Python's
@@ -2970,9 +2973,7 @@ These proxies support the following operations:
                 if (PyIndex_Check(key)) {
                     using PyTuple = python::Tuple<python::Ref::STEAL>;
                     PyTuple item = self->proxy[bertrand::util::parse_int(key)];
-                    PyObject* obj = item.obj;
-                    item.obj = nullptr;
-                    return obj;
+                    return item.unwrap();
                 }
 
                 if (PySlice_Check(key)) {
@@ -2993,13 +2994,12 @@ These proxies support the following operations:
         }
 
         inline static PyObject* __iter__(PyItemsProxy* self) noexcept {
-            using PyTuple = python::Tuple<python::Ref::STEAL>;
-            auto unpack = [](const PyTuple& item) {
-                return Py_NewRef(item.obj);
+            auto unwrap = [](python::Tuple<python::Ref::STEAL> item) {
+                return item.unwrap();  // relinquish ownership to Python interpreter
             };
 
             try {
-                return iter(self->proxy, unpack).cpython();
+                return iter(self->proxy, unwrap).cpython();
             } catch (...) {
                 throw_python();
                 return nullptr;
@@ -3010,13 +3010,12 @@ These proxies support the following operations:
             PyItemsProxy* self,
             PyObject* = nullptr
         ) noexcept {
-            using PyTuple = python::Tuple<python::Ref::STEAL>;
-            auto unpack = [](const PyTuple& item) {
-                return Py_NewRef(item.obj);
+            auto unwrap = [](python::Tuple<python::Ref::STEAL> item) {
+                return item.unwrap();  // relinquish ownership to Python interpreter
             };
 
             try {
-                return iter(self->proxy, unpack).crpython();
+                return iter(self->proxy, unwrap).crpython();
             } catch (...) {
                 throw_python();
                 return nullptr;
@@ -3024,10 +3023,9 @@ These proxies support the following operations:
         }
 
         static PyObject* __str__(PyItemsProxy* self) {
-            using PyTuple = python::Tuple<python::Ref::STEAL>;
             std::ostringstream stream;
 
-            auto token = [&stream](const PyTuple& item) {
+            auto token = [&stream](const python::Tuple<python::Ref::STEAL>& item) {
                 stream << "(" << item[0].get().repr() << ", " << item[1].get().repr();
                 stream << ")";
             };
@@ -3067,9 +3065,7 @@ These proxies support the following operations:
             try {
                 using PyTuple = python::Tuple<python::Ref::STEAL>;
                 PyTuple item = self->proxy[index];
-                PyObject* obj = item.obj;
-                item.obj = nullptr;
-                return obj;
+                return item.unwrap();
             } catch (...) {
                 throw_python();
                 return nullptr;

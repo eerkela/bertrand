@@ -1240,44 +1240,6 @@ struct ViewTraits {
     template <unsigned int Config>
     using Reconfigure = typename ViewType::template Reconfigure<Config>;
 
-
-
-
-
-    // // TODO: delete assertion helpers.  Roll them into main iterator class instead.
-
-    // // assertion helpers
-    // class Assert {
-
-    //     template <bool dictlike = false, typename Dummy = void>
-    //     struct _Assert {
-
-    //         template <bool value, Yield yield>
-    //         static constexpr bool as_pytuple = !value;
-
-    //     };
-
-    //     template <typename Dummy>
-    //     struct _Assert<true, Dummy> {
-
-    //         template <bool value, Yield yield>
-    //         static constexpr bool as_pytuple = !value || (
-    //             yield == Yield::ITEM &&
-    //             std::is_same_v<typename ViewType::Value, PyObject*> &&
-    //             std::is_same_v<typename ViewType::MappedValue, PyObject*>
-    //         );
-
-    //     };
-
-    // public:
-
-    //     template <bool value, Yield yield>
-    //     static constexpr bool as_pytuple = (
-    //         _Assert<dictlike>::template as_pytuple<value, yield>
-    //     );
-
-    // };
-
 };
 
 

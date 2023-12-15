@@ -46,6 +46,13 @@ template <Ref ref>
 struct Object {
     PyObject* obj;
 
+    /* Retrieve the wrapped object and relinquish ownership over it. */
+    inline PyObject* unwrap() {
+        PyObject* result = obj;
+        obj = nullptr;
+        return result;
+    }
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
@@ -108,9 +115,9 @@ struct Object {
         }
     }
 
-    //////////////////////////////////
-    ////    PyObject_* METHODS    ////
-    //////////////////////////////////
+    ///////////////////////////////
+    ////    OBJECT PROTOCOL    ////
+    ///////////////////////////////
 
     /* Get a borrowed reference to the object's type struct. */
     inline PyTypeObject* type() const noexcept {
@@ -149,6 +156,21 @@ struct Object {
         return result;
     }
 
+    /* Get a string representation of the object using Python str(). */
+    inline std::string str() const {
+        PyObject* string = PyObject_Str(obj);
+        if (string == nullptr) {
+            throw catch_python();
+        }
+        Py_ssize_t size;
+        const char* result = PyUnicode_AsUTF8AndSize(string, &size);
+        Py_DECREF(string);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return {result, static_cast<size_t>(size)};
+    }
+
     /* Get a string representation of the object using Python repr(). */
     inline std::string repr() const {
         PyObject* string = PyObject_Repr(obj);
@@ -182,75 +204,14 @@ struct Object {
         return static_cast<size_t>(result);
     }
 
-    ///////////////////////////
-    ////    CONVERSIONS    ////
-    ///////////////////////////
-
-    /* Implicitly convert a python::Object into a PyObject* pointer. */
-    inline operator PyObject*() const noexcept {
-        return obj;
-    }
-
-    /* Implicitly convert a python::Object into a C integer.  Equivalent to Python
-    int(). */
-    inline operator long long() const {
-        long long value = PyLong_AsLongLong(obj);
-        if (value == -1 && PyErr_Occurred()) {
-            throw catch_python();
-        }
-        return value;
-    }
-
-    /* Implicitly convert a python::Object into a C float.  Equivalent to Python
-    float(). */
-    inline operator double() const {
-        double value = PyFloat_AsDouble(obj);
-        if (value == -1.0 && PyErr_Occurred()) {
-            throw catch_python();
-        }
-        return value;
-    }
-
-    /* Implicitly Convert the object to a C++ boolean.  Equivalent to Python bool(). */
-    inline operator bool() const {
+    /* Check if the object is considered truthy during boolean comparisons. */
+    inline bool truthy() const {
         int result = PyObject_IsTrue(obj);
         if (result == -1) {
             throw catch_python();
         }
         return result;
     }
-
-    /* Implicitly Convert the object to a C++ string.  Equivalent to Python str(). */
-    inline operator std::string() const {
-        PyObject* string = PyObject_Str(obj);
-        if (string == nullptr) {
-            throw catch_python();
-        }
-        Py_ssize_t size;
-        std::string result {
-            PyUnicode_AsUTF8AndSize(string, &size),
-            static_cast<size_t>(size)
-        };
-        Py_DECREF(string);
-        return result;
-    }
-
-    /////////////////////////
-    ////    ITERATION    ////
-    /////////////////////////
-
-    inline auto begin() { return iter(obj).begin(); }
-    inline auto begin() const { return iter(obj).begin(); }
-    inline auto cbegin() const { return iter(obj).cbegin(); }
-    inline auto end() { return iter(obj).end(); }
-    inline auto end() const { return iter(obj).end(); }
-    inline auto cend() const { return iter(obj).cend(); }
-    inline auto rbegin() { return iter(obj).rbegin(); }
-    inline auto rbegin() const { return iter(obj).rbegin(); }
-    inline auto crbegin() const { return iter(obj).crbegin(); }
-    inline auto rend() { return iter(obj).rend(); }
-    inline auto rend() const { return iter(obj).rend(); }
-    inline auto crend() const { return iter(obj).crend(); }
 
     ////////////////////////////////
     ////    ATTRIBUTE ACCESS    ////
@@ -302,84 +263,6 @@ struct Object {
         if (PyObject_DelAttrString(obj, attr)) {
             throw catch_python();
         }
-    }
-
-    /////////////////////////
-    ////    CALLABLES    ////
-    /////////////////////////
-
-    /* Check if the object can be called like a function. */
-    inline bool is_callable() const noexcept {
-        return PyCallable_Check(obj);
-    }
-
-    /* Call the object using C-style positional arguments.  Returns a new reference. */
-    template <
-        typename... Args,
-        typename std::enable_if_t<
-            std::conjunction_v<std::is_convertible<Args, PyObject*>...>
-        >
-    >
-    inline Object<Ref::STEAL> operator()(Args&&... args) const {
-        // fastest: no arguments
-        if constexpr (sizeof...(Args) == 0) {
-            PyObject* result = PyObject_CallNoArgs(obj);
-            if (result == nullptr) {
-                throw catch_python();
-            }
-            return Object<Ref::STEAL>(result);
-
-        // faster: exactly one argument
-        } else if constexpr (sizeof...(Args) == 1) {
-            PyObject* result = PyObject_CallOneArg(obj, std::forward<Args>(args)...);
-            if (result == nullptr) {
-                throw catch_python();
-            }
-            return Object<Ref::STEAL>(result);
-
-        // fast: multiple arguments
-        } else {
-            PyObject* result = PyObject_CallFunctionObjArgs(
-                obj, std::forward<Args>(args)...
-            );
-            if (result == nullptr) {
-                throw catch_python();
-            }
-            return Object<Ref::STEAL>(result);
-        }
-    }
-
-    /* Call the object using Python-style positional arguments.  Returns a new
-    reference. */
-    inline Object<Ref::STEAL> call(PyObject* args) const {
-        PyObject* result = PyObject_CallObject(obj, args);
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return Object<Ref::STEAL>(result);
-    }
-
-    /* Call the object using Python-style positional and keyword arguments.  Returns a
-    new reference. */
-    inline Object<Ref::STEAL> call(PyObject* args, PyObject* kwargs) const {
-        PyObject* result = PyObject_Call(obj, args, kwargs);
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return Object<Ref::STEAL>(result);
-    }
-
-    /* Call the object using Python's vectorcall protocol.  Returns a new reference. */
-    inline Object<Ref::STEAL> call(
-        PyObject* const* args,
-        size_t npositional,
-        PyObject* kwnames
-    ) const {
-        PyObject* result = PyObject_Vectorcall(obj, args, npositional, kwnames);
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return Object<Ref::STEAL>(result);
     }
 
     ///////////////////////////
@@ -439,9 +322,118 @@ struct Object {
         return result;
     }
 
-    //////////////////////////
-    ////    ARITHMETIC    ////
-    //////////////////////////
+    /////////////////////////////
+    ////    CALL PROTOCOL    ////
+    /////////////////////////////
+
+    /* Check if the object can be called like a function. */
+    inline bool is_callable() const noexcept {
+        return PyCallable_Check(obj);
+    }
+
+    /* Call the object using C-style positional arguments.  Returns a new reference. */
+    template <typename... Args>
+    inline Object<Ref::STEAL> operator()(Args&&... args) const {
+        if constexpr (sizeof...(Args) == 0) {
+            PyObject* result = PyObject_CallNoArgs(obj);
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return Object<Ref::STEAL>(result);
+
+        } else if constexpr (sizeof...(Args) == 1) {
+            PyObject* result = PyObject_CallOneArg(obj, std::forward<Args>(args)...);
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return Object<Ref::STEAL>(result);
+
+        } else {
+            PyObject* result = PyObject_CallFunctionObjArgs(
+                obj, std::forward<Args>(args)..., nullptr
+            );
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return Object<Ref::STEAL>(result);
+        }
+    }
+
+    /* Call the object using Python-style positional arguments.  Returns a new
+    reference. */
+    inline Object<Ref::STEAL> call(PyObject* args) const {
+        PyObject* result = PyObject_CallObject(obj, args);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    /* Call the object using Python-style positional and keyword arguments.  Returns a
+    new reference. */
+    inline Object<Ref::STEAL> call(PyObject* args, PyObject* kwargs) const {
+        PyObject* result = PyObject_Call(obj, args, kwargs);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    /* Call the object using Python's vectorcall protocol.  Returns a new reference. */
+    inline Object<Ref::STEAL> call(
+        PyObject* const* args,
+        size_t npositional,
+        PyObject* kwnames
+    ) const {
+        PyObject* result = PyObject_Vectorcall(obj, args, npositional, kwnames);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return Object<Ref::STEAL>(result);
+    }
+
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
+
+    /* Implicitly convert a python::Object into a PyObject* pointer. */
+    inline operator PyObject*() const noexcept {
+        return obj;
+    }
+
+    /* Implicitly convert a python::Object into a C integer.  Equivalent to Python
+    int(). */
+    inline operator long long() const {
+        long long value = PyLong_AsLongLong(obj);
+        if (value == -1 && PyErr_Occurred()) {
+            throw catch_python();
+        }
+        return value;
+    }
+
+    /* Implicitly convert a python::Object into a C float.  Equivalent to Python
+    float(). */
+    inline operator double() const {
+        double value = PyFloat_AsDouble(obj);
+        if (value == -1.0 && PyErr_Occurred()) {
+            throw catch_python();
+        }
+        return value;
+    }
+
+    /* Implicitly Convert the object to a C++ boolean.  Equivalent to Python bool(). */
+    inline operator bool() const {
+        return truthy();
+    }
+
+    /* Implicitly Convert the object to a C++ string.  Equivalent to Python str(). */
+    inline operator std::string() const {
+        return str();
+    }
+
+    ///////////////////////////////
+    ////    NUMBER PROTOCOL    ////
+    ///////////////////////////////
 
     inline Object<Ref::STEAL> operator+() const {
         PyObject* result = PyNumber_Positive(obj);
@@ -703,6 +695,23 @@ struct Object {
         Py_DECREF(result);
         return *this;
     }
+
+    /////////////////////////
+    ////    ITERATION    ////
+    /////////////////////////
+
+    inline auto begin() { return iter(obj).begin(); }
+    inline auto begin() const { return iter(obj).begin(); }
+    inline auto cbegin() const { return iter(obj).cbegin(); }
+    inline auto end() { return iter(obj).end(); }
+    inline auto end() const { return iter(obj).end(); }
+    inline auto cend() const { return iter(obj).cend(); }
+    inline auto rbegin() { return iter(obj).rbegin(); }
+    inline auto rbegin() const { return iter(obj).rbegin(); }
+    inline auto crbegin() const { return iter(obj).crbegin(); }
+    inline auto rend() { return iter(obj).rend(); }
+    inline auto rend() const { return iter(obj).rend(); }
+    inline auto crend() const { return iter(obj).crend(); }
 
     ////////////////////////
     ////    INDEXING    ////
@@ -2688,6 +2697,708 @@ public:
             return result == 0;
         }
         return Base::operator==(other);
+    }
+
+};
+
+
+
+///////////////////////////////////
+////    FUNCTIONS & METHODS    ////
+///////////////////////////////////
+
+
+/* An extension of python::Object that represents a Python code object. */
+template <Ref ref>
+class Code : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct a Python code object from an existing CPython code object. */
+    Code(PyObject* obj) : Base(obj) {
+        if (!PyCode_Check(obj)) {
+            throw TypeError("expected a code object");
+        }
+    }
+
+    /* Copy constructor. */
+    Code(const Code& other) : Base(other) {}
+
+    /* Move constructor. */
+    Code(Code&& other) : Base(std::move(other)) {}
+
+    /* Copy assignment. */
+    Code& operator=(const Code& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(other);
+        return *this;
+    }
+
+    /* Move assignment. */
+    Code& operator=(Code&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    ////////////////////////////////
+    ////    PyCode_* METHODS    ////
+    ////////////////////////////////
+
+    /* Get the function's base name. */
+    inline std::string name() const {
+        String<Ref::BORROW> name(
+            reinterpret_cast<PyCodeObject*>(this->obj)->co_name
+        );
+        return name.str();
+    }
+
+    /* Get the function's qualified name. */
+    inline std::string qualname() const {
+        String<Ref::BORROW> qualname(
+            reinterpret_cast<PyCodeObject*>(this->obj)->co_qualname
+        );
+        return qualname.str();
+    }
+
+    /* Get the total number of positional arguments for the function, including
+    positional-only arguments and those with default values (but not keyword-only). */
+    inline size_t n_args() const noexcept {
+        return static_cast<size_t>(
+            reinterpret_cast<PyCodeObject*>(this->obj)->co_argcount
+        );
+    }
+
+    /* Get the number of positional-only arguments for the function, including those
+    with default values.  Does not include variable positional or keyword arguments. */
+    inline size_t positional_only() const noexcept {
+        return static_cast<size_t>(
+            reinterpret_cast<PyCodeObject*>(this->obj)->co_posonlyargcount
+        );
+    }
+
+    /* Get the number of keyword-only arguments for the function, including those with
+    default values.  Does not include positional-only or variable positional/keyword
+    arguments. */
+    inline size_t keyword_only() const noexcept {
+        return static_cast<size_t>(
+            reinterpret_cast<PyCodeObject*>(this->obj)->co_kwonlyargcount
+        );
+    }
+
+    /* Get the number of local variables used by the function (including all
+    parameters). */
+    inline size_t n_locals() const noexcept {
+        return static_cast<size_t>(
+            reinterpret_cast<PyCodeObject*>(this->obj)->co_nlocals
+        );
+    }
+
+    // TODO: these slots seem to have inconsistent naming in the CPython API depending
+    // on version.
+
+    // /* Get a tuple containing the names of the local variables in the function,
+    // starting with the parameter names. */
+    // inline Tuple<Ref::BORROW> local_names() const {
+    //     return Tuple<Ref::BORROW>(
+    //         reinterpret_cast<PyCodeObject*>(this->obj)->co_varnames
+    //     );
+    // }
+
+    // /* Get a tuple containing the names of local variables that are referenced by
+    // nested functions within this function. */
+    // inline Tuple<Ref::BORROW> nested_names() const {
+    //     return Tuple<Ref::BORROW>(reinterpret_cast<
+    //         PyCodeObject*>(this->obj)->co_cellvars
+    //     );
+    // }
+
+    // /* Get a tuple containing the names of free (unbound) variables in the function. */
+    // inline Tuple<Ref::BORROW> free_names() const {
+    //     return Tuple<Ref::BORROW>(
+    //         reinterpret_cast<PyCodeObject*>(this->obj)->co_freevars
+    //     );
+    // }
+
+    /* Get the name of the file from which the code was compiled. */
+    inline std::string file_name() const {
+        Object<Ref::BORROW> filename(
+            reinterpret_cast<PyCodeObject*>(this->obj)->co_filename
+        );
+        Py_ssize_t size;
+        const char* result = PyUnicode_AsUTF8AndSize(filename, &size);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return {result, static_cast<size_t>(size)};
+    }
+
+    /* Get the first line number of the function. */
+    inline size_t line_number() const noexcept {
+        return static_cast<size_t>(
+            reinterpret_cast<PyCodeObject*>(this->obj)->co_firstlineno
+        );
+    }
+
+    /* Get the required stack space for the code object. */
+    inline size_t stack_size() const noexcept {
+        return static_cast<size_t>(
+            reinterpret_cast<PyCodeObject*>(this->obj)->co_stacksize
+        );
+    }
+
+};
+
+
+/* An extension of python::Object that represents a Python function. */
+template <Ref ref>
+class Function : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct a Python function from an existing CPython function. */
+    Function(PyObject* obj) : Base(obj) {
+        if (!PyFunction_Check(obj)) {
+            throw TypeError("expected a function");
+        }
+    }
+
+    /* Copy constructor. */
+    Function(const Function& other) : Base(other) {}
+
+    /* Move constructor. */
+    Function(Function&& other) : Base(std::move(other)) {}
+
+    /* Copy assignment. */
+    Function& operator=(const Function& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(other);
+        return *this;
+    }
+
+    /* Move assignment. */
+    Function& operator=(Function&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    ////////////////////////////////////
+    ////    PyFunction_* METHODS    ////
+    ////////////////////////////////////
+
+    /* Get the function's code object. */
+    inline Code<Ref::BORROW> code() const noexcept {
+        return Code<Ref::BORROW>(PyFunction_GetCode(this->obj));
+    }
+
+    /* Get the function's base name. */
+    inline std::string name() const {
+        return code().name();
+    }
+
+    /* Get the function's qualified name. */
+    inline std::string qualname() const {
+        return code().qualname();
+    }
+
+    /* Get the total number of positional arguments for the function, including
+    positional-only arguments and those with default values (but not keyword-only). */
+    inline size_t n_args() const noexcept {
+        return code().n_args();
+    }
+
+    /* Get the number of positional-only arguments for the function, including those
+    with default values.  Does not include variable positional or keyword arguments. */
+    inline size_t positional_only() const noexcept {
+        return code().positional_only();
+    }
+
+    /* Get the number of keyword-only arguments for the function, including those with
+    default values.  Does not include positional-only or variable positional/keyword
+    arguments. */
+    inline size_t keyword_only() const noexcept {
+        return code().keyword_only();
+    }
+
+    /* Get the number of local variables used by the function (including all
+    parameters). */
+    inline size_t n_locals() const noexcept {
+        return code().n_locals();
+    }
+
+    // TODO: see note in Code::
+
+    // /* Get a tuple containing the names of the local variables in the function,
+    // starting with the parameter names. */
+    // inline Tuple<Ref::BORROW> local_names() const {
+    //     return code().local_names();
+    // }
+
+    // /* Get a tuple containing the names of local variables that are referenced by
+    // nested functions within this function. */
+    // inline Tuple<Ref::BORROW> nested_names() const {
+    //     return code().nested_names();
+    // }
+
+    // /* Get a tuple containing the names of free variables in the function. */
+    // inline Tuple<Ref::BORROW> free_names() const {
+    //     return code().free_names();
+    // }
+
+    /* Get the name of the file from which the code was compiled. */
+    inline std::string file_name() const {
+        return code().file_name();
+    }
+
+    /* Get the first line number of the function. */
+    inline size_t line_number() const noexcept {
+        return code().line_number();
+    }
+
+    /* Get the required stack space for the code object. */
+    inline size_t stack_size() const noexcept {
+        return code().stack_size();
+    }
+
+    /* Get the globals dictionary associated with the function object. */
+    inline Dict<Ref::BORROW> globals() const noexcept {
+        return Dict<Ref::BORROW>(PyFunction_GetGlobals(this->obj));
+    }
+
+    /* Get the module that the function is defined in. */
+    inline std::optional<Object<Ref::BORROW>> module() const noexcept {
+        PyObject* module = PyFunction_GetModule(this->obj);
+        if (module == nullptr) {
+            return std::nullopt;
+        } else {
+            return std::make_optional(Object<Ref::BORROW>(module));
+        }
+    }
+
+    /* Get the default values for the function's arguments. */
+    inline std::optional<Tuple<Ref::BORROW>> defaults() const noexcept {
+        PyObject* defaults = PyFunction_GetDefaults(this->obj);
+        if (defaults == nullptr) {
+            return std::nullopt;
+        } else {
+            return std::make_optional(Tuple<Ref::BORROW>(defaults));
+        }
+    }
+
+    /* Set the default values for the function's arguments.  Input must be Py_None or
+    a tuple. */
+    inline void defaults(PyObject* defaults) {
+        if (PyFunction_SetDefaults(this->obj, defaults)) {
+            throw catch_python();
+        }
+    }
+
+    /* Get the closure associated with the function.  This is a tuple of cell objects
+    containing data captured by the function. */
+    inline std::optional<Tuple<Ref::BORROW>> closure() const noexcept {
+        PyObject* closure = PyFunction_GetClosure(this->obj);
+        if (closure == nullptr) {
+            return std::nullopt;
+        } else {
+            return std::make_optional(Tuple<Ref::BORROW>(closure));
+        }
+    }
+
+    /* Set the closure associated with the function.  Input must be Py_None or a
+    tuple. */
+    inline void closure(PyObject* closure) {
+        if (PyFunction_SetClosure(this->obj, closure)) {
+            throw catch_python();
+        }
+    }
+
+    /* Get the annotations for the function object.  This is a mutable dictionary or
+    nullopt if no annotations are present. */
+    inline std::optional<Dict<Ref::BORROW>> annotations() const noexcept {
+        PyObject* annotations = PyFunction_GetAnnotations(this->obj);
+        if (annotations == nullptr) {
+            return std::nullopt;
+        } else {
+            return std::make_optional(Dict<Ref::BORROW>(annotations));
+        }
+    }
+
+    /* Set the annotations for the function object.  Input must be Py_None or a
+    dictionary. */
+    inline void annotations(PyObject* annotations) {
+        if (PyFunction_SetAnnotations(this->obj, annotations)) {
+            throw catch_python();
+        }
+    }
+
+};
+
+
+/* An extension of python::Object that represents a Python class method. */
+template <Ref ref>
+class ClassMethod : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct a Python class method from an existing CPython class method. */
+    ClassMethod(PyObject* obj) : Base(obj) {
+        if (!PyInstanceMethod_Check(obj)) {
+            throw TypeError("expected a class method");
+        }
+    }
+
+    /* Copy constructor. */
+    ClassMethod(const ClassMethod& other) : Base(other) {}
+
+    /* Move constructor. */
+    ClassMethod(ClassMethod&& other) : Base(std::move(other)) {}
+
+    /* Copy assignment. */
+    ClassMethod& operator=(const ClassMethod& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(other);
+        return *this;
+    }
+
+    /* Move assignment. */
+    ClassMethod& operator=(ClassMethod&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    //////////////////////////////////////////
+    ////    PyInstanceMethod_* METHODS    ////
+    //////////////////////////////////////////
+
+    /* Get the function object associated with the class method. */
+    inline Function<Ref::BORROW> function() const noexcept {
+        return Function<Ref::BORROW>(PyInstanceMethod_GET_FUNCTION(this->obj));
+    }
+
+    /* Get the code object wrapped by this class method. */
+    inline Code<Ref::BORROW> code() const noexcept {
+        return function().code();
+    }
+
+    /* Get the class method's base name. */
+    inline std::string name() const {
+        return function().name();
+    }
+
+    /* Get the class method's qualified name. */
+    inline std::string qualname() const {
+        return function().qualname();
+    }
+
+    /* Get the total number of positional arguments for the class method, including
+    positional-only arguments and those with default values (but not keyword-only). */
+    inline size_t n_args() const noexcept {
+        return function().n_args();
+    }
+
+    /* Get the number of positional-only arguments for the class method, including
+    those with default values.  Does not include variable positional or keyword
+    arguments. */
+    inline size_t positional_only() const noexcept {
+        return function().positional_only();
+    }
+
+    /* Get the number of keyword-only arguments for the class method, including those
+    with default values.  Does not include positional-only or variable positional/keyword
+    arguments. */
+    inline size_t keyword_only() const noexcept {
+        return function().keyword_only();
+    }
+
+    /* Get the number of local variables used by the class method (including all
+    parameters). */
+    inline size_t n_locals() const noexcept {
+        return function().n_locals();
+    }
+
+    // TODO: see note in Code::
+
+    // /* Get a tuple containing the names of the local variables in the class method,
+    // starting with the parameter names. */
+    // inline Tuple<Ref::BORROW> local_names() const {
+    //     return function().local_names();
+    // }
+
+    // /* Get a tuple containing the names of local variables that are referenced by
+    // nested functions within this class method. */
+    // inline Tuple<Ref::BORROW> nested_names() const {
+    //     return function().nested_names();
+    // }
+
+    // /* Get a tuple containing the names of free variables in the class method. */
+    // inline Tuple<Ref::BORROW> free_names() const {
+    //     return function().free_names();
+    // }
+
+    /* Get the name of the file from which the code was compiled. */
+    inline std::string file_name() const {
+        return function().file_name();
+    }
+
+    /* Get the first line number of the class method. */
+    inline size_t line_number() const noexcept {
+        return function().line_number();
+    }
+
+    /* Get the required stack space for the code object. */
+    inline size_t stack_size() const noexcept {
+        return function().stack_size();
+    }
+
+    /* Get the globals dictionary associated with the class method object. */
+    inline Dict<Ref::BORROW> globals() const noexcept {
+        return function().globals();
+    }
+
+    /* Get the module that the class method is defined in. */
+    inline std::optional<Object<Ref::BORROW>> module() const noexcept {
+        return function().module();
+    }
+
+    /* Get the default values for the class method's arguments. */
+    inline std::optional<Tuple<Ref::BORROW>> defaults() const noexcept {
+        return function().defaults();
+    }
+
+    /* Set the default values for the class method's arguments.  Input must be Py_None
+    or a tuple. */
+    inline void defaults(PyObject* defaults) {
+        function().defaults(defaults);
+    }
+
+    /* Get the closure associated with the class method.  This is a tuple of cell
+    objects containing data captured by the class method. */
+    inline std::optional<Tuple<Ref::BORROW>> closure() const noexcept {
+        return function().closure();
+    }
+
+    /* Set the closure associated with the class method.  Input must be Py_None or a
+    tuple. */
+    inline void closure(PyObject* closure) {
+        function().closure(closure);
+    }
+
+    /* Get the annotations for the class method object.  This is a mutable dictionary
+    or nullopt if no annotations are present. */
+    inline std::optional<Dict<Ref::BORROW>> annotations() const noexcept {
+        return function().annotations();
+    }
+
+    /* Set the annotations for the class method object.  Input must be Py_None or a
+    dictionary. */
+    inline void annotations(PyObject* annotations) {
+        function().annotations(annotations);
+    }
+
+};
+
+
+/* An extension of python::Object that represents a bound Python method. */
+template <Ref ref>
+class Method : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct a Python method from an existing CPython method. */
+    Method(PyObject* obj) : Base(obj) {
+        if (!PyMethod_Check(obj)) {
+            throw TypeError("expected a method");
+        }
+    }
+
+    /* Copy constructor. */
+    Method(const Method& other) : Base(other) {}
+
+    /* Move constructor. */
+    Method(Method&& other) : Base(std::move(other)) {}
+
+    /* Copy assignment. */
+    Method& operator=(const Method& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(other);
+        return *this;
+    }
+
+    /* Move assignment. */
+    Method& operator=(Method&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    //////////////////////////////////
+    ////    PyMethod_* METHODS    ////
+    //////////////////////////////////
+
+    /* Get the instance to which the method is bound. */
+    inline Object<Ref::BORROW> self() const noexcept {
+        return Object<Ref::BORROW>(PyMethod_GET_SELF(this->obj));
+    }
+
+    /* Get the function object associated with the method. */
+    inline Function<Ref::BORROW> function() const noexcept {
+        return Function<Ref::BORROW>(PyMethod_GET_FUNCTION(this->obj));
+    }
+
+    /* Get the code object wrapped by this method. */
+    inline Code<Ref::BORROW> code() const noexcept {
+        return function().code();
+    }
+
+    /* Get the method's base name. */
+    inline std::string name() const {
+        return function().name();
+    }
+
+    /* Get the method's qualified name. */
+    inline std::string qualname() const {
+        return function().qualname();
+    }
+
+    /* Get the total number of positional arguments for the method, including
+    positional-only arguments and those with default values (but not keyword-only). */
+    inline size_t n_args() const noexcept {
+        return function().n_args();
+    }
+
+    /* Get the number of positional-only arguments for the method, including those
+    with default values.  Does not include variable positional or keyword arguments. */
+    inline size_t positional_only() const noexcept {
+        return function().positional_only();
+    }
+
+    /* Get the number of keyword-only arguments for the method, including those with
+    default values.  Does not include positional-only or variable positional/keyword
+    arguments. */
+    inline size_t keyword_only() const noexcept {
+        return function().keyword_only();
+    }
+
+    /* Get the number of local variables used by the method (including all
+    parameters). */
+    inline size_t n_locals() const noexcept {
+        return function().n_locals();
+    }
+
+    // TODO: see note in Code::
+
+    // /* Get a tuple containing the names of the local variables in the method,
+    // starting with the parameter names. */
+    // inline Tuple<Ref::BORROW> local_names() const {
+    //     return function().local_names();
+    // }
+
+    // /* Get a tuple containing the names of local variables that are referenced by
+    // nested functions within this method. */
+    // inline Tuple<Ref::BORROW> nested_names() const {
+    //     return function().nested_names();
+    // }
+
+    // /* Get a tuple containing the names of free variables in the method. */
+    // inline Tuple<Ref::BORROW> free_names() const {
+    //     return function().free_names();
+    // }
+
+    /* Get the name of the file from which the code was compiled. */
+    inline std::string file_name() const {
+        return function().file_name();
+    }
+
+    /* Get the first line number of the method. */
+    inline size_t line_number() const noexcept {
+        return function().line_number();
+    }
+
+    /* Get the required stack space for the code object. */
+    inline size_t stack_size() const noexcept {
+        return function().stack_size();
+    }
+
+    /* Get the globals dictionary associated with the method object. */
+    inline Dict<Ref::BORROW> globals() const noexcept {
+        return function().globals();
+    }
+
+    /* Get the module that the method is defined in. */
+    inline std::optional<Object<Ref::BORROW>> module() const noexcept {
+        return function().module();
+    }
+
+    /* Get the default values for the method's arguments. */
+    inline std::optional<Tuple<Ref::BORROW>> defaults() const noexcept {
+        return function().defaults();
+    }
+
+    /* Set the default values for the method's arguments.  Input must be Py_None or a
+    tuple. */
+    inline void defaults(PyObject* defaults) {
+        function().defaults(defaults);
+    }
+
+    /* Get the closure associated with the method.  This is a tuple of cell objects
+    containing data captured by the method. */
+    inline std::optional<Tuple<Ref::BORROW>> closure() const noexcept {
+        return function().closure();
+    }
+
+    /* Set the closure associated with the method.  Input must be Py_None or a tuple. */
+    inline void closure(PyObject* closure) {
+        function().closure(closure);
+    }
+
+    /* Get the annotations for the method object.  This is a mutable dictionary or
+    nullopt if no annotations are present. */
+    inline std::optional<Dict<Ref::BORROW>> annotations() const noexcept {
+        return function().annotations();
+    }
+
+    /* Set the annotations for the method object.  Input must be Py_None or a
+    dictionary. */
+    inline void annotations(PyObject* annotations) {
+        function().annotations(annotations);
     }
 
 };

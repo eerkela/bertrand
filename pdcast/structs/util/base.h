@@ -11,13 +11,10 @@ namespace bertrand {
 
 /* Check if a type is convertible to PyObject*. */
 template <typename T>
-inline constexpr bool is_pyobject = (
-    std::is_pointer_v<std::remove_reference_t<T>> &&
-    std::is_convertible_v<
-        std::remove_cv_t<std::remove_pointer_t<std::remove_reference_t<T>>>,
-        PyObject
-    >
-);
+inline constexpr bool is_pyobject = std::is_convertible_v<
+    std::remove_cv_t<std::remove_reference_t<T>>,
+    PyObject*
+>;
 
 
 namespace util {

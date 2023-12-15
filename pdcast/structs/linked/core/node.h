@@ -5,7 +5,7 @@
 #include <type_traits>  // std::enable_if_t<>, etc.
 #include <Python.h>  // CPython API
 #include "../../util/base.h"  // is_pyobject<>
-#include "../../util/container.h"  // python::Slice
+#include "../../util/container.h"  // python::Slice, python::Function
 #include "../../util/except.h"  // catch_python(), TypeError()
 #include "../../util/func.h"  // FuncTraits
 #include "../../util/ops.h"  // hash(), repr()
@@ -13,6 +13,10 @@
 
 namespace bertrand {
 namespace linked {
+
+
+template <typename NodeType>
+class NodeTraits;
 
 
 ////////////////////
@@ -390,44 +394,81 @@ public:
 //////////////////////////////
 
 
-/* A node decorator that computes a key function on a node's underlying value
-for use in sorting algorithms.
+namespace util {
 
-NOTE: this is a special case of node used in the `sort()` method to apply a key
-function to each value in a list.  It is not meant to be used in any other context. */
+
+    /* Extracts the return type of a key function when applied to a basic node. */
+    template <typename Wrapped, typename Func, bool dictlike = false>
+    struct KeyFunc_Return {
+        using type = typename bertrand::util::FuncTraits<
+            Func, typename Wrapped::Value
+        >::ReturnType;
+    };
+
+
+    /* Extracts the return type of a key function when applied to a dictlike node. */
+    template <typename Wrapped, typename Func>
+    struct KeyFunc_Return<Wrapped, Func, true> {
+        using type = typename bertrand::util::FuncTraits<
+            Func, typename Wrapped::Value, typename Wrapped::MappedValue
+        >::ReturnType;
+    };
+
+    template <typename Wrapped, typename Func>
+    using KeyFunc_Return_t = typename KeyFunc_Return<
+        Wrapped, Func, NodeTraits<Wrapped>::has_mapped
+    >::type;
+
+
+}  // namespace util
+
+
+
+/* A node decorator that computes a key function on a node's underlying value
+for use in sorting algorithms.  NOTE: this is a special case of node used in the
+`sort()` method to apply a key function to each node in a list.  It is not meant to be
+used in any other context. */
 template <typename Wrapped, typename Func>
-class Keyed : public SingleNode<
-    typename bertrand::util::FuncTraits<
-        Func,
-        typename Wrapped::Value
-    >::ReturnType
-> {
+class Keyed : public SingleNode<util::KeyFunc_Return_t<Wrapped, Func>> {
 protected:
-    using Base = SingleNode<
-        typename bertrand::util::FuncTraits<
-            Func,
-            typename Wrapped::Value
-        >::ReturnType
-    >;
-    using ArgValue = typename Wrapped::Value;
-    using DecoratedValue = typename Base::Value;
+    using Base = SingleNode<util::KeyFunc_Return_t<Wrapped, Func>>;
 
     Wrapped* _node;
 
     /* Invoke the key function on the specified value and return the computed result. */
-    static DecoratedValue invoke(Func func, const ArgValue& arg) {
+    static typename Base::Value invoke(Func func, Wrapped* node) {
         if constexpr (is_pyobject<Func>) {
-            static_assert(
-                is_pyobject<DecoratedValue>,
-                "Python functions can only be applied to PyObject* nodes"
-            );
-            PyObject* val = PyObject_CallFunctionObjArgs(func, arg, nullptr);
-            if (val == nullptr) {
-                throw catch_python();
+            python::Function<python::Ref::BORROW> pyfunc(func);
+            if (pyfunc.n_args() < 1) {
+                throw TypeError("key function must accept at least one argument");
             }
-            return val;  // new reference
+
+            if constexpr (NodeTraits<Wrapped>::has_mapped) {
+                if (pyfunc.n_args() == 1) {
+                    return pyfunc(node->value()).unwrap();
+                } else if (pyfunc.n_args() == 2) {
+                    return pyfunc(node->value(), node->mapped()).unwrap();
+                } else {
+                    throw TypeError(
+                        "key function must accept at most two arguments "
+                        "(key, value)"
+                    );
+                }
+            } else {
+                if (pyfunc.n_args() == 1) {
+                    return pyfunc(node->value()).unwrap();
+                } else {
+                    throw TypeError(
+                        "key function must accept at most one argument"
+                    );
+                }
+            }
         } else {
-            return func(arg);
+            if constexpr (NodeTraits<Wrapped>::has_mapped) {
+                return func(node->value(), node->mapped());
+            } else {
+                return func(node->value());
+            }
         }
     }
 
@@ -442,9 +483,7 @@ protected:
 public:
 
     /* Initialize a keyed node by applying a Python callable to an existing node. */
-    Keyed(Wrapped* node, Func func) :
-        Base(invoke(func, node->value())), _node(node)
-    {}
+    Keyed(Wrapped* node, Func func) : Base(invoke(func, node)), _node(node) {}
 
     /* Copy constructor/assignment disabled due to presence of raw Node* pointer and as
     a safeguard against unnecessary copies in sort algorithms. */
@@ -844,14 +883,6 @@ public:
 //////////////////////
 ////    TRAITS    ////
 //////////////////////
-
-
-// TODO: Unwrap does not work as expected when converting DictViews into ListViews in
-// concatenate() and repeat().  This should unwrap to either Key, Value,
-// std::pair<Key, Value>, or PyTuple* if as_pytuple is true.
-
-// -> in the case of items(), do
-// NodeTraits<NodeTraits<Node>::Root>::Reconfigure<as_pytuple ? PyObject* : std::pair<Key, Value>>
 
 
 /* A collection of SFINAE traits for inspecting node types at compile time. */
