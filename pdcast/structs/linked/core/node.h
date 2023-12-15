@@ -391,11 +391,10 @@ public:
 
 ///////////////////////////////
 ////    NODE DECORATORS    ////
-//////////////////////////////
+///////////////////////////////
 
 
 namespace util {
-
 
     /* Extracts the return type of a key function when applied to a basic node. */
     template <typename Wrapped, typename Func, bool dictlike = false>
@@ -404,7 +403,6 @@ namespace util {
             Func, typename Wrapped::Value
         >::ReturnType;
     };
-
 
     /* Extracts the return type of a key function when applied to a dictlike node. */
     template <typename Wrapped, typename Func>
@@ -419,9 +417,7 @@ namespace util {
         Wrapped, Func, NodeTraits<Wrapped>::has_mapped
     >::type;
 
-
-}  // namespace util
-
+}
 
 
 /* A node decorator that computes a key function on a node's underlying value
@@ -482,8 +478,12 @@ protected:
 
 public:
 
-    /* Initialize a keyed node by applying a Python callable to an existing node. */
-    Keyed(Wrapped* node, Func func) : Base(invoke(func, node)), _node(node) {}
+    /* Initialize a keyed node by applying a callable to an existing node. */
+    Keyed(Wrapped* node, Func func) : Base(invoke(func, node)), _node(node) {
+        if constexpr (is_pyobject<typename Base::Value>) {
+            Py_DECREF(this->value());  // release extra reference from invoke()
+        }
+    }
 
     /* Copy constructor/assignment disabled due to presence of raw Node* pointer and as
     a safeguard against unnecessary copies in sort algorithms. */
@@ -720,7 +720,8 @@ public:
         Mapped(std::get<0>(tuple), std::get<1>(tuple))
     {}
 
-    /* Initialize a mapped node with a Python tuple holding a separate key and value. */
+    /* Initialize a mapped node with a Python tuple or list holding a separate key and
+    value. */
     Mapped(PyObject* item) : Mapped(unpack_python(item)) {}
 
     /* Copy constructor. */

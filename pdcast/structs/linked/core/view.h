@@ -1039,13 +1039,13 @@ public:
         bool reverse
     ) : Base(capacity, spec)
     {
-        using PyDict = python::Dict<python::Ref::BORROW>;
         static constexpr unsigned int flags = (
             Allocator::EXIST_OK | Allocator::REPLACE_MAPPED
         );
 
         if constexpr (is_pyobject<Container>) {
             if (PyDict_Check(iterable)) {
+                using PyDict = python::Dict<python::Ref::BORROW>;
                 if (reverse) {
                     for (const auto& item : PyDict(iterable)) {
                         Base::template node<flags | Allocator::INSERT_HEAD>(item);
@@ -1055,6 +1055,7 @@ public:
                         Base::template node<flags | Allocator::INSERT_TAIL>(item);
                     }
                 }
+
             } else {
                 if (reverse) {
                     for (const auto& item : iter(iterable)) {
@@ -1068,13 +1069,30 @@ public:
             }
 
         } else {
-            if (reverse) {
-                for (const auto& item : iter(iterable)) {
-                    Base::template node<flags | Allocator::INSERT_HEAD>(item);
+            if constexpr (ViewTraits<Container>::dictlike) {
+                auto it = iterable.template begin<Yield::ITEM>();
+                auto end = iterable.template end<Yield::ITEM>();
+                if (reverse) {
+                    while (it != end) {
+                        Base::template node<flags | Allocator::INSERT_HEAD>(*it);
+                        ++it;
+                    }
+                } else {
+                    while (it != end) {
+                        Base::template node<flags | Allocator::INSERT_TAIL>(*it);
+                        ++it;
+                    }
                 }
+
             } else {
-                for (const auto& item : iter(iterable)) {
-                    Base::template node<flags | Allocator::INSERT_TAIL>(item);
+                if (reverse) {
+                    for (const auto& item : iter(iterable)) {
+                        Base::template node<flags | Allocator::INSERT_HEAD>(item);
+                    }
+                } else {
+                    for (const auto& item : iter(iterable)) {
+                        Base::template node<flags | Allocator::INSERT_TAIL>(item);
+                    }
                 }
             }
         }

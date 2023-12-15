@@ -88,6 +88,106 @@ class LinkedSet : public LinkedBase<
         Lock
     >;
 
+    /* Recursive template to compute pairwise unions. */
+    template <typename First, typename Second, typename... Rest>
+    inline LinkedSet union_recursive(
+        First&& first,
+        Second&& second,
+        Rest&&... rest
+    ) const {
+        if constexpr (sizeof...(Rest) == 0) {
+            return LinkedSet(
+                linked::union_(
+                    std::forward<First>(first),
+                    std::forward<Second>(second)
+                )
+            );
+        } else {
+            return union_recursive(
+                linked::union_(
+                    std::forward<First>(first),
+                    std::forward<Second>(second)
+                ),
+                std::forward<Rest>(rest)...
+            );
+        }
+    }
+
+    /* Recursive template to compute pairwise unions. */
+    template <typename First, typename Second, typename... Rest>
+    inline LinkedSet union_left_recursive(
+        First&& first,
+        Second&& second,
+        Rest&&... rest
+    ) const {
+        if constexpr (sizeof...(Rest) == 0) {
+            return LinkedSet(
+                linked::union_left(
+                    std::forward<First>(first),
+                    std::forward<Second>(second)
+                )
+            );
+        } else {
+            return union_left_recursive(
+                linked::union_left(
+                    std::forward<First>(first),
+                    std::forward<Second>(second)
+                ),
+                std::forward<Rest>(rest)...
+            );
+        }
+    }
+
+    /* Recursive template to compute pairwise intersections. */
+    template <typename First, typename Second, typename... Rest>
+    inline LinkedSet intersection_recursive(
+        First&& first,
+        Second&& second,
+        Rest&&... rest
+    ) const {
+        if constexpr (sizeof...(Rest) == 0) {
+            return LinkedSet(
+                linked::intersection(
+                    std::forward<First>(first),
+                    std::forward<Second>(second)
+                )
+            );
+        } else {
+            return intersection_recursive(
+                linked::intersection(
+                    std::forward<First>(first),
+                    std::forward<Second>(second)
+                ),
+                std::forward<Rest>(rest)...
+            );
+        }
+    }
+
+    /* Recursive template to compute pairwise differences. */
+    template <typename First, typename Second, typename... Rest>
+    inline LinkedSet difference_recursive(
+        First&& first,
+        Second&& second,
+        Rest&&... rest
+    ) const {
+        if constexpr (sizeof...(Rest) == 0) {
+            return LinkedSet(
+                linked::difference(
+                    std::forward<First>(first),
+                    std::forward<Second>(second)
+                )
+            );
+        } else {
+            return difference_recursive(
+                linked::difference(
+                    std::forward<First>(first),
+                    std::forward<Second>(second)
+                ),
+                std::forward<Rest>(rest)...
+            );
+        }
+    }
+
 public:
     using View = typename Base::View;
     using Key = K;
@@ -240,18 +340,14 @@ public:
     /* Return a new set with elements from this set and all other containers. */
     template <typename... Containers>
     inline LinkedSet union_(Containers&&... items) const {
-        return LinkedSet(
-            (linked::union_(this->view, std::forward<Containers>(items)), ...)
-        );
+        return union_recursive(this->view, std::forward<Containers>(items)...);
     }
 
     /* Return a new set with elements from this set and all other containers.  Appends
     to the head of the set rather than the tail. */
     template <typename... Containers>
     inline LinkedSet union_left(Containers&&... items) const {
-        return LinkedSet(
-            (linked::union_left(this->view, std::forward<Containers>(items)), ...)
-        );
+        return union_left_recursive(this->view, std::forward<Containers>(items)...);
     }
 
     /* Extend a set by adding elements from one or more iterables that are not already
@@ -278,9 +374,7 @@ public:
     /* Return a new set with elements common to this set and all other containers. */
     template <typename... Containers>
     inline LinkedSet intersection(Containers&&... items) const {
-        return LinkedSet(
-            (linked::intersection(this->view, std::forward<Containers>(items)), ...)
-        );
+        return intersection_recursive(this->view, std::forward<Containers>(items)...);
     }
 
     /* Removal elements from a set that are not contained in one or more iterables. */
@@ -293,9 +387,7 @@ public:
     containers. */
     template <typename... Containers>
     inline LinkedSet difference(Containers&&... items) const {
-        return LinkedSet(
-            (linked::difference(this->view, std::forward<Containers>(items)), ...)
-        );
+        return difference_recursive(this->view, std::forward<Containers>(items)...);
     }
 
     /* Remove elements from a set that are contained in one or more iterables. */

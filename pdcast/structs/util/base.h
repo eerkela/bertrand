@@ -17,6 +17,14 @@ inline constexpr bool is_pyobject = std::is_convertible_v<
 >;
 
 
+/* Check if a type is identical to PyObject*. */
+template <typename T>
+inline constexpr bool is_pyobject_exact = std::is_same_v<
+    std::remove_cv_t<std::remove_reference_t<T>>,
+    PyObject*
+>;
+
+
 namespace util {
 
     template <typename T>

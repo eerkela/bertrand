@@ -25,7 +25,7 @@ namespace linked {
 
 
     /* Container-independent implementation for union_(). */
-    template <typename View, typename Container, bool left>
+    template <bool left, typename View, typename Container>
     View union_impl(const View& view, const Container& items) {
         using DynamicView = typename ViewTraits<View>::As::DYNAMIC;
         using FixedView = typename ViewTraits<View>::As::FIXED_SIZE;
@@ -111,20 +111,18 @@ namespace linked {
     //////////////////////
 
 
-    /* Get the union between a linked set or dictionary and an arbitrary Python
-    iterable. */
+    /* Get the union between a linked set or dictionary and an arbitrary container. */
     template <typename View, typename Container>
     inline auto union_(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, View>
     {
         if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
             if (PyDict_Check(items)) {
-                using PyDict = python::Dict<python::Ref::BORROW>;
-                PyDict dict(items);
-                return union_impl<View, PyDict, false>(view, dict);
+                python::Dict<python::Ref::BORROW> dict(items);
+                return union_impl<false>(view, dict);
             }
         }
-        return union_impl<View, Container, false>(view, items);
+        return union_impl<false>(view, items);
     }
 
 
@@ -137,12 +135,11 @@ namespace linked {
     {
         if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
             if (PyDict_Check(items)) {
-                using PyDict = python::Dict<python::Ref::BORROW>;
-                PyDict dict(items);
-                return union_impl<View, PyDict, true>(view, dict);
+                python::Dict<python::Ref::BORROW> dict(items);
+                return union_impl<true>(view, dict);
             }
         }
-        return union_impl<View, Container, true>(view, items);
+        return union_impl<true>(view, items);
     }
 
 

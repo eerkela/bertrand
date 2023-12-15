@@ -55,23 +55,21 @@ struct PyArgs<CallProtocol::ARGS> {
         name(name), args(args), n_args(PyTuple_GET_SIZE(args)), arg_idx(0)
     {}
 
-    #define PARSE_POSITIONAL \
-        if (arg_idx < n_args) { \
-            PyObject* val = PyTuple_GET_ITEM(args, arg_idx++); \
-            if constexpr (std::is_same_v<ReturnType, PyObject*>) { \
-                return val; \
-            } else { \
-                return convert(val); \
-            } \
-        } \
-
     /* Extract an argument from the pool using an optional conversion function. */
     template <
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
     inline ReturnType parse(const std::string_view& name, Func convert = nullptr) {
-        PARSE_POSITIONAL
+        if (arg_idx < n_args) {
+            PyObject* val = PyTuple_GET_ITEM(args, arg_idx++);
+            if constexpr (std::is_same_v<ReturnType, PyObject*>) {
+                return val;
+            } else {
+                return convert(val);
+            }
+        }
+
         std::ostringstream msg;
         msg << this->name << "() missing required positional argument: '" << name;
         msg << "'";
@@ -92,7 +90,16 @@ struct PyArgs<CallProtocol::ARGS> {
             std::is_same_v<ReturnType, Type>,
             "Conversion function must return same type as default value."
         );
-        PARSE_POSITIONAL
+
+        if (arg_idx < n_args) {
+            PyObject* val = PyTuple_GET_ITEM(args, arg_idx++);
+            if constexpr (std::is_same_v<ReturnType, PyObject*>) {
+                return val;
+            } else {
+                return convert(val);
+            }
+        }
+
         return default_value;
     }
 
@@ -107,8 +114,6 @@ struct PyArgs<CallProtocol::ARGS> {
             throw TypeError(msg.str());
         }
     }
-
-    #undef PARSE_POSITIONAL
 
 };
 
@@ -349,23 +354,21 @@ struct PyArgs<CallProtocol::FASTCALL> {
         name(name), args(args), n_args(nargs), arg_idx(0)
     {}
 
-    #define PARSE_POSITIONAL \
-        if (arg_idx < n_args) { \
-            PyObject* val = args[arg_idx++]; \
-            if constexpr (std::is_same_v<ReturnType, PyObject*>) { \
-                return val; \
-            } else { \
-                return convert(val); \
-            } \
-        } \
-
     /* Extract an argument from the pool using an optional conversion function. */
     template <
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
     inline ReturnType parse(const std::string_view& name, Func convert = nullptr) {
-        PARSE_POSITIONAL
+        if (arg_idx < n_args) {
+            PyObject* val = args[arg_idx++];
+            if constexpr (std::is_same_v<ReturnType, PyObject*>) {
+                return val;
+            } else {
+                return convert(val);
+            }
+        }
+
         std::ostringstream msg;
         msg << this->name << "() missing required positional argument: '" << name;
         msg << "'";
@@ -386,7 +389,16 @@ struct PyArgs<CallProtocol::FASTCALL> {
             std::is_same_v<ReturnType, Type>,
             "Conversion function must return same type as default value."
         );
-        PARSE_POSITIONAL
+
+        if (arg_idx < n_args) {
+            PyObject* val = args[arg_idx++];
+            if constexpr (std::is_same_v<ReturnType, PyObject*>) {
+                return val;
+            } else {
+                return convert(val);
+            }
+        }
+
         return default_value;
     }
 
@@ -402,23 +414,21 @@ struct PyArgs<CallProtocol::FASTCALL> {
         }
     }
 
-    #undef PARSE_POSITIONAL
-
 };
-
-
-
-// TODO: don't allocate any extra memory for the keyword argument names
-
 
 
 /* A parser for C methods implementing the METH_FASTCALL | METH_KEYWORDS protocol. */
 template <>
 struct PyArgs<CallProtocol::VECTORCALL> {
+
+    struct Keyword {
+        std::string_view name;
+        bool found;
+    };
+
     const std::string_view& name;
     PyObject* const* args;
-    std::string_view* kwnames;
-    bool* found;
+    Keyword* kwnames;
     const Py_ssize_t n_args;
     const Py_ssize_t n_kwargs;
     Py_ssize_t arg_idx;
@@ -430,25 +440,23 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         PyObject* const* args,
         Py_ssize_t nargs,
         PyObject* kwnames
-    ) : name(name), args(args), kwnames(nullptr), found(nullptr), n_args(nargs),
+    ) : name(name), args(args), kwnames(nullptr), n_args(nargs),
         n_kwargs(kwnames == nullptr ? 0 : PyTuple_GET_SIZE(kwnames)), arg_idx(0),
         kwarg_idx(0)
     {
         if (n_kwargs != 0) {
-            // unpack keyword arguments into array of string_views
-            this->kwnames = static_cast<std::string_view*>(
-                std::malloc(n_kwargs * sizeof(std::string_view))
+            this->kwnames = static_cast<Keyword*>(
+                std::malloc(n_kwargs * sizeof(Keyword))
             );
-            if (this->kwnames == nullptr) throw std::bad_alloc();
-            this->found = static_cast<bool*>(
-                std::malloc(n_kwargs * sizeof(bool))
-            );
-            if (this->found == nullptr) throw std::bad_alloc();
+            if (this->kwnames == nullptr) {
+                throw std::bad_alloc();
+            }
             for (Py_ssize_t i = 0; i < n_kwargs; ++i) {
-                this->found[i] = false;
-                PyObject* str = PyTuple_GET_ITEM(kwnames, i);
+                Keyword& keyword = this->kwnames[i];
+                keyword.found = false;
                 Py_ssize_t len;
-                new (this->kwnames + i) std::string_view{
+                PyObject* str = PyTuple_GET_ITEM(kwnames, i);
+                new (&keyword.name) std::string_view{
                     PyUnicode_AsUTF8AndSize(str, &len),
                     static_cast<size_t>(len)
                 };
@@ -459,8 +467,7 @@ struct PyArgs<CallProtocol::VECTORCALL> {
     /* Free the memory allocated for the keyword argument names. */
     ~PyArgs() noexcept {
         if (kwnames != nullptr) {
-            std::free(kwnames);  // no need to call destructors
-            std::free(found);
+            free(kwnames);
         }
     }
 
@@ -480,8 +487,9 @@ struct PyArgs<CallProtocol::VECTORCALL> {
 
     #define PARSE_KEYWORD \
         for (Py_ssize_t i = 0; i < n_kwargs; ++i) { \
-            if (kwnames[i] == name) { \
-                found[i] = true; \
+            Keyword& keyword = kwnames[i]; \
+            if (!keyword.found && keyword.name == name) { \
+                keyword.found = true; \
                 ++kwarg_idx; \
                 PyObject* val = args[n_args + i]; \
                 if constexpr (std::is_same_v<ReturnType, PyObject*>) { \
@@ -575,10 +583,11 @@ struct PyArgs<CallProtocol::VECTORCALL> {
     inline void finalize_keyword() {
         if (kwarg_idx < n_kwargs) {
             for (Py_ssize_t i = 0; i < n_kwargs; ++i) {
-                if (!found[i]) {
+                Keyword& keyword = kwnames[i];
+                if (!keyword.found) {
                     std::ostringstream msg;
                     msg << name << "() got an unexpected keyword argument: '";
-                    msg << kwnames[i] << "'";
+                    msg << keyword.name << "'";
                     throw TypeError(msg.str());
                 }
             }

@@ -5,7 +5,7 @@
 #include <type_traits>  // std::enable_if_t, std::is_same_v, std::void_t
 #include <Python.h>  // CPython API
 #include <utility>  // std::declval, std::move
-#include "base.h"  // is_pyobject<>
+#include "base.h"  // is_pyobject_exact<>
 #include "except.h"  // catch_python, TypeError
 #include "func.h"  // identity, FuncTraits<>
 #include "name.h"  // TypeName<>, PyName<>
@@ -724,10 +724,10 @@ class IterProxy {
 
     template <typename T>
     friend auto iter(T& container)
-        -> std::enable_if_t<!is_pyobject<T>, IterProxy<T, identity>>;
+        -> std::enable_if_t<!is_pyobject_exact<T>, IterProxy<T, identity>>;
     template <typename T, typename _Func>
     friend auto iter(T& container, _Func func)
-        -> std::enable_if_t<!is_pyobject<T>, IterProxy<T, _Func>>;
+        -> std::enable_if_t<!is_pyobject_exact<T>, IterProxy<T, _Func>>;
 
     /* Construct an iterator proxy around an existing container and optional conversion
     function. */
@@ -959,10 +959,10 @@ class PyIterProxy {
 
     template <typename T>
     friend auto iter(T container)
-        -> std::enable_if_t<is_pyobject<T>, PyIterProxy<T, identity>>;
+        -> std::enable_if_t<is_pyobject_exact<T>, PyIterProxy<T, identity>>;
     template <typename T, typename _Func>
     friend auto iter(T container, _Func convert)
-        -> std::enable_if_t<is_pyobject<T>, PyIterProxy<T, _Func>>;
+        -> std::enable_if_t<is_pyobject_exact<T>, PyIterProxy<T, _Func>>;
 
     /* Construct an iterator proxy around a python container. */
     PyIterProxy(Container c) : container(c) {}
@@ -1148,7 +1148,7 @@ public:
 /* Create a C++ to Python iterator proxy for a container. */
 template <typename Container>
 inline auto iter(Container& container)
-    -> std::enable_if_t<!is_pyobject<Container>, IterProxy<Container, identity>>
+    -> std::enable_if_t<!is_pyobject_exact<Container>, IterProxy<Container, identity>>
 {
     return IterProxy<Container, identity>(container);
 }
@@ -1158,7 +1158,7 @@ inline auto iter(Container& container)
 function at each dereference. */
 template <typename Container, typename Func>
 inline auto iter(Container& container, Func func)
-    -> std::enable_if_t<!is_pyobject<Container>, IterProxy<Container, Func>>
+    -> std::enable_if_t<!is_pyobject_exact<Container>, IterProxy<Container, Func>>
 {
     return IterProxy<Container, Func>(container, func);
 }
@@ -1167,7 +1167,7 @@ inline auto iter(Container& container, Func func)
 /* Create a Python to C++ iterator proxy for a mutable Python container. */
 template <typename Container>
 inline auto iter(Container container)
-    -> std::enable_if_t<is_pyobject<Container>, PyIterProxy<Container, identity>>
+    -> std::enable_if_t<is_pyobject_exact<Container>, PyIterProxy<Container, identity>>
 {
     return PyIterProxy<Container, identity>(container);
 }
@@ -1176,7 +1176,7 @@ inline auto iter(Container container)
 /* Create a Python to C++ iterator proxy for a mutable Python container. */
 template <typename Container, typename Func>
 inline auto iter(Container container, Func convert)
-    -> std::enable_if_t<is_pyobject<Container>, PyIterProxy<Container, Func>>
+    -> std::enable_if_t<is_pyobject_exact<Container>, PyIterProxy<Container, Func>>
 {
     return PyIterProxy<Container, Func>(container, convert);
 }

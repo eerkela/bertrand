@@ -54,6 +54,8 @@
 
 // TODO: union, update, __init__, comparisons, concatenate/repeat, etc. should accept
 // other LinkedDicts and use .items() to iterate over them
+// -> __init__ is done, but the rest are not
+// -> others are done at C++ level, but not Python.
 
 
 namespace bertrand {
@@ -116,6 +118,193 @@ class LinkedDict : public LinkedBase<
         Lock
     >;
 
+    template <typename T>
+    struct IsDict : std::false_type {};
+
+    template <typename _K, typename _V, unsigned int _Flags, typename _Lock>
+    struct IsDict<LinkedDict<_K, _V, _Flags, _Lock>> : std::true_type {};
+
+    template <typename T>
+    static constexpr bool IsDict_v = IsDict<
+        std::remove_cv_t<std::remove_reference_t<T>>
+    >::value;
+
+    /* Recursive template to compute pairwise unions. */
+    template <typename First, typename Second, typename... Rest>
+    inline LinkedDict union_recursive(
+        First&& first,
+        Second&& second,
+        Rest&&... rest
+    ) const {
+        if constexpr (sizeof...(Rest) == 0) {
+            if constexpr (IsDict_v<Second>) {
+                return LinkedDict(
+                    linked::union_(
+                        std::forward<First>(first),
+                        std::forward<Second>(second).view
+                    )
+                );
+            } else {
+                return LinkedDict(
+                    linked::union_(
+                        std::forward<First>(first),
+                        std::forward<Second>(second)
+                    )
+                );
+            }
+        } else {
+            if constexpr (IsDict_v<Second>) {
+                return union_recursive(
+                    linked::union_(
+                        std::forward<First>(first),
+                        std::forward<Second>(second).view
+                    ),
+                    std::forward<Rest>(rest)...
+                );
+            } else {
+                return union_recursive(
+                    linked::union_(
+                        std::forward<First>(first),
+                        std::forward<Second>(second)
+                    ),
+                    std::forward<Rest>(rest)...
+                );
+            }
+        }
+    }
+
+    /* Recursive template to compute pairwise unions. */
+    template <typename First, typename Second, typename... Rest>
+    inline LinkedDict union_left_recursive(
+        First&& first,
+        Second&& second,
+        Rest&&... rest
+    ) const {
+        if constexpr (sizeof...(Rest) == 0) {
+            if constexpr (IsDict_v<Second>) {
+                return LinkedDict(
+                    linked::union_left(
+                        std::forward<First>(first),
+                        std::forward<Second>(second).view
+                    )
+                );
+            } else {
+                return LinkedDict(
+                    linked::union_left(
+                        std::forward<First>(first),
+                        std::forward<Second>(second)
+                    )
+                );
+            }
+        } else {
+            if constexpr (IsDict_v<Second>) {
+                return union_left_recursive(
+                    linked::union_left(
+                        std::forward<First>(first),
+                        std::forward<Second>(second).view
+                    ),
+                    std::forward<Rest>(rest)...
+                );
+            } else {
+                return union_left_recursive(
+                    linked::union_left(
+                        std::forward<First>(first),
+                        std::forward<Second>(second)
+                    ),
+                    std::forward<Rest>(rest)...
+                );
+            }
+        }
+    }
+
+    /* Recursive template to compute pairwise intersections. */
+    template <typename First, typename Second, typename... Rest>
+    inline LinkedDict intersection_recursive(
+        First&& first,
+        Second&& second,
+        Rest&&... rest
+    ) const {
+        if constexpr (sizeof...(Rest) == 0) {
+            if constexpr (IsDict_v<Second>) {
+                return LinkedDict(
+                    linked::intersection(
+                        std::forward<First>(first),
+                        std::forward<Second>(second).view
+                    )
+                );
+            } else {
+                return LinkedDict(
+                    linked::intersection(
+                        std::forward<First>(first),
+                        std::forward<Second>(second)
+                    )
+                );
+            }
+        } else {
+            if constexpr (IsDict_v<Second>) {
+                return intersection_recursive(
+                    linked::intersection(
+                        std::forward<First>(first),
+                        std::forward<Second>(second).view
+                    ),
+                    std::forward<Rest>(rest)...
+                );
+            } else {
+                return intersection_recursive(
+                    linked::intersection(
+                        std::forward<First>(first),
+                        std::forward<Second>(second)
+                    ),
+                    std::forward<Rest>(rest)...
+                );
+            }
+        }
+    }
+
+    /* Recursive template to compute pairwise differences. */
+    template <typename First, typename Second, typename... Rest>
+    inline LinkedDict difference_recursive(
+        First&& first,
+        Second&& second,
+        Rest&&... rest
+    ) const {
+        if constexpr (sizeof...(Rest) == 0) {
+            if constexpr (IsDict_v<Second>) {
+                return LinkedDict(
+                    linked::difference(
+                        std::forward<First>(first),
+                        std::forward<Second>(second).view
+                    )
+                );
+            } else {
+                return LinkedDict(
+                    linked::difference(
+                        std::forward<First>(first),
+                        std::forward<Second>(second)
+                    )
+                );
+            }
+        } else {
+            if constexpr (IsDict_v<Second>) {
+                return difference_recursive(
+                    linked::difference(
+                        std::forward<First>(first),
+                        std::forward<Second>(second).view
+                    ),
+                    std::forward<Rest>(rest)...
+                );
+            } else {
+                return difference_recursive(
+                    linked::difference(
+                        std::forward<First>(first),
+                        std::forward<Second>(second)
+                    ),
+                    std::forward<Rest>(rest)...
+                );
+            }
+        }
+    }
+
 public:
     using View = typename Base::View;
     using Node = typename Base::Node;
@@ -133,6 +322,25 @@ public:
 
     using Base::Base;
     using Base::operator=;
+
+    /* Construct a list from an input iterable. */
+    template <typename Container>
+    LinkedDict(
+        Container&& iterable,
+        std::optional<size_t> max_size = std::nullopt,
+        PyObject* spec = nullptr,
+        bool reverse = false
+    ) : Base([&iterable] {
+            if constexpr (IsDict_v<Container>) {
+                return iterable.view;
+            } else {
+                return std::forward<Container>(iterable);
+            }
+        }(),
+        max_size,
+        spec,
+        reverse
+    ) {}
 
     /* Create a new dictionary from a sequence of keys and a default value. */
     template <typename Container>
@@ -318,69 +526,131 @@ public:
     containers. */
     template <typename... Containers>
     inline LinkedDict union_(Containers&&... items) const {
-        return LinkedDict(
-            linked::union_(this->view, std::forward<Containers>(items)...)
-        );
+        return union_recursive(this->view, std::forward<Containers>(items)...);
     }
 
     /* Return a new dictionary with elements from this dictionary and all other
     containers.  Appends to the head of the dictionary rather than the tail. */
     template <typename... Containers>
     inline LinkedDict union_left(Containers&&... items) const {
-        return LinkedDict(
-            linked::union_left(this->view, std::forward<Containers>(items)...)
-        );
+        return union_left_recursive(this->view, std::forward<Containers>(items)...);
     }
 
     /* Extend a dictionary by adding elements from one or more iterables that are not
     already present. */
     template <typename... Containers>
     inline void update(Containers&&... items) {
-        (linked::update(this->view, std::forward<Containers>(items)), ...);
+        auto unwrap = [](auto&& arg) {
+            using Arg = decltype(arg);
+            if constexpr (IsDict_v<Arg>) {
+                return arg.items();
+            } else {
+                return std::forward<Arg>(arg);
+            }
+        };
+        (
+            linked::update(
+                this->view,
+                unwrap(std::forward<Containers>(items))
+            ),
+            ...
+        );
     }
 
     /* Extend a dictionary by left-adding elements from one or more iterables that are
     not already present. */
     template <typename... Containers>
     inline void update_left(Containers&&... items) {
-        (linked::update_left(this->view, std::forward<Containers>(items)), ...);
+        auto unwrap = [](auto&& arg) {
+            using Arg = decltype(arg);
+            if constexpr (IsDict_v<Arg>) {
+                return arg.items();
+            } else {
+                return std::forward<Arg>(arg);
+            }
+        };
+        (
+            linked::update_left(
+                this->view,
+                unwrap(std::forward<Containers>(items))
+            ),
+            ...
+        );
     }
 
     /* Extend a dictionary by adding or moving items to the head of the dictionary and
     possibly evicting the tail to make room. */
     template <typename... Containers>
     inline void lru_update(Containers&&... items) {
-        (linked::lru_update(this->view, std::forward<Containers>(items)), ...);
+        auto unwrap = [](auto&& arg) {
+            using Arg = decltype(arg);
+            if constexpr (IsDict_v<Arg>) {
+                return arg.items();
+            } else {
+                return std::forward<Arg>(arg);
+            }
+        };
+        (
+            linked::lru_update(
+                this->view,
+                unwrap(std::forward<Containers>(items))
+            ),
+            ...
+        );
     }
 
     /* Return a new dictionary with elements common to this dictionary and all other
     containers. */
     template <typename... Containers>
     inline LinkedDict intersection(Containers&&... items) const {
-        return LinkedDict(
-            linked::intersection(this->view, std::forward<Containers>(items)...)
-        );
+        return intersection_recursive(this->view, std::forward<Containers>(items)...);
     }
 
     /* Remove elements from a dictionary that are contained in one or more iterables. */
     template <typename... Containers>
     inline void intersection_update(Containers&&... items) {
-        (linked::intersection_update(this->view, std::forward<Containers>(items)), ...);
+        auto unwrap = [](auto&& arg) {
+            using Arg = decltype(arg);
+            if constexpr (IsDict_v<Arg>) {
+                return arg.items();
+            } else {
+                return std::forward<Arg>(arg);
+            }
+        };
+        (
+            linked::intersection_update(
+                this->view,
+                unwrap(std::forward<Containers>(items))
+            ),
+            ...
+        );
     }
 
     /* Return a new dictionary with elements from this dictionary that are common to
     any other containers. */
     template <typename... Containers>
     inline LinkedDict difference(Containers&&... items) const {
-        return LinkedDict(
-            linked::difference(this->view, std::forward<Containers>(items)...)
-        );
+        return difference_recursive(this->view, std::forward<Containers>(items)...);
     }
 
     /* Remove elements from a dictionary that are contained in one or more iterables. */
     template <typename... Containers>
     inline void difference_update(Containers&&... items) {
-        (linked::difference_update(this->view, std::forward<Containers>(items)), ...);
+        auto unwrap = [](auto&& arg) {
+            using Arg = decltype(arg);
+            if constexpr (IsDict_v<Arg>) {
+                return arg.items();
+            } else {
+                return std::forward<Arg>(arg);
+            }
+        };
+        (
+            linked::difference_update(
+                this->view,
+                unwrap(std::forward<Containers>(items))
+            ),
+            ...
+        );
     }
 
     /* Return a new dictionary with elements in either this dictionary or another
@@ -1490,6 +1760,9 @@ inline bool operator!=(const Container& other, const ItemsProxy<Dict, as_pytuple
 template <typename Derived>
 class PyDictInterface {
 public:
+
+    /* TODO: overload union(), update() to apply explicit type check and then visit the
+    corresponding variant to do the operation at the C++ level. */
 
     static PyObject* add(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
@@ -3301,7 +3574,23 @@ class PyLinkedDict :
         if (iterable == nullptr) {
             build_variant(code, self, max_size, spec);
         } else {
-            build_variant(code, self, iterable, max_size, spec, reverse);
+            if (typecheck(iterable)) {
+                std::visit(
+                    [&](auto& dict) {
+                        build_variant(
+                            code,
+                            self,
+                            dict,
+                            max_size,
+                            spec,
+                            reverse
+                        );
+                    },
+                    reinterpret_cast<PyLinkedDict*>(iterable)->variant
+                );
+            } else {
+                build_variant(code, self, iterable, max_size, spec, reverse);
+            }
         }
     }
 
