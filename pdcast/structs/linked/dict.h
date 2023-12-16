@@ -55,7 +55,6 @@
 // TODO: union, update, __init__, comparisons, concatenate/repeat, etc. should accept
 // other LinkedDicts and use .items() to iterate over them
 // -> __init__ is done, but the rest are not
-// -> others are done at C++ level, but not Python.
 
 
 namespace bertrand {

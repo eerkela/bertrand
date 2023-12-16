@@ -6,11 +6,7 @@
 #include "../../util/ops.h"  // repr()
 #include "../core/node.h"  // NodeTraits
 #include "../core/view.h"  // ViewTraits, Direction
-
-
-// TODO: move_to_index() has same problem as insert() when it comes to handling the
-// last index in the list.  We should be truncating to one past the last index, not
-// the last index itself.
+#include "position.h"  // normalize_index()
 
 
 namespace bertrand {
@@ -43,13 +39,19 @@ namespace linked {
             if (steps > 0) {
                 using Iter = typename View::template Iterator<Direction::FORWARD>;
                 auto it = Iter(view, old_prev, node, old_next);
-                for (auto end = view.end(); steps > 0 && it != end; --steps, ++it);
+                while (steps > 0 && it.next() != nullptr) {
+                    --steps;
+                    ++it;
+                }
                 new_prev = it.curr();
                 new_next = it.next();
             } else {
                 using Iter = typename View::template Iterator<Direction::BACKWARD>;
                 auto it = Iter(view, old_prev, node, old_next);
-                for (auto end = view.begin(); steps < 0 && it != end; ++steps, ++it);
+                while (steps < 0 && it.prev() != nullptr) {
+                    ++steps;
+                    ++it;
+                }
                 new_prev = it.prev();
                 new_next = it.curr();
             }
@@ -61,7 +63,10 @@ namespace linked {
             if (steps > 0) {
                 for (; it.curr() != node; ++it);
                 old_prev = it.prev();
-                for (auto end = view.end(); steps > 0 && it != end; --steps, ++it);
+                while (steps > 0 && it.next() != nullptr) {
+                    --steps;
+                    ++it;
+                }
                 new_prev = it.curr();
                 new_next = it.next();
 
@@ -95,7 +100,7 @@ namespace linked {
     }
 
 
-    /* Move an item to a particular index of a linked set or dictionary. */
+    /* Move a key to a particular index of a linked set or dictionary. */
     template <typename View, typename Item>
     auto move_to_index(View& view, const Item& item, long long index)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
@@ -118,36 +123,48 @@ namespace linked {
             old_prev = node->prev();
             if (view.closer_to_tail(norm_index)) {
                 auto it = view.rbegin();
-                for (size_t i = view.size(); i > norm_index + 1; --i, ++it);
-                new_prev = it.prev();
-                new_next = it.curr();
+                for (size_t i = view.size() - 1; i > norm_index; ++it) {
+                    i -= (it.curr() != node);
+                }
+                if (it.curr() == node) {
+                    return;
+                }
+                new_prev = it.curr();
+                new_next = it.next();
             } else {
                 auto it = view.begin();
-                for (size_t i = 0; i < norm_index; ++i, ++it);
+                for (size_t i = 0; i < norm_index; ++it) {
+                    i += (it.curr() != node);
+                }
+                if (it.curr() == node) {
+                    return;
+                }
                 new_prev = it.prev();
                 new_next = it.curr();
             }
 
         } else {  // otherwise, O(n)
-            old_prev = nullptr;
+            bool found = false;
             auto it = view.begin();
-            for (size_t i = 0; i < norm_index; ++i, ++it) {
+            for (size_t i = 0; i < norm_index; ++it) {
                 if (it.curr() == node) {
-                    old_prev = it.prev();  // remember prev if we pass it
-                    break;
+                    found = true;
+                    old_prev = it.prev();  // remember prev if we pass over it
+                } else {
+                    ++i;
                 }
+            }
+            if (it.curr() == node) {
+                return;
             }
             new_prev = it.prev();
             new_next = it.curr();
-            if (old_prev == nullptr) {  // continue until we find prev
+            if (!found) {  // continue until we find prev
                 for (; it.curr() != node; ++it);
                 old_prev = it.prev();
             }
         }
 
-        if (new_prev == node || new_next == node) {
-            return;
-        }
         view.unlink(old_prev, node, old_next);
         view.link(new_prev, node, new_next);
     }

@@ -824,7 +824,7 @@ public:
     /* Check whether a given index is closer to the tail of the list than it is to the
     head. */
     inline bool closer_to_tail(size_t index) const noexcept {
-        return index > (size() + 1) / 2;
+        return index >= (size() + 1) / 2;
     }
 
 protected:

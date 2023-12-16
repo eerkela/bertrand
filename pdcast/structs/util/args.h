@@ -13,11 +13,6 @@
 #include "iter.h"  // iter()
 
 
-// TODO: These argument handlers can have a significant impact on performance.  It may
-// be worth it to handle arguments in the Python methods themselves, rather than
-// offering a nice interface here.
-
-
 namespace bertrand {
 namespace util {
 

@@ -626,15 +626,15 @@ public:
     }
 
     /* Get the previous node in the list. */
-    template <typename T = Wrapped, std::enable_if_t<T::doubly_linked, int> = 0>
-    inline Hashed* prev() const noexcept {
-        return static_cast<Hashed*>(T::prev());
+    template <bool cond = NodeTraits<Wrapped>::has_prev>
+    inline std::enable_if_t<cond, Hashed*> prev() const noexcept {
+        return static_cast<Hashed*>(Wrapped::prev());
     }
 
     /* Set the previous node in the list. */
-    template <typename T = Wrapped, std::enable_if_t<T::doubly_linked, int> = 0>
-    inline void prev(Hashed* prev) noexcept {
-        T::prev(prev);
+    template <bool cond = NodeTraits<Wrapped>::has_prev>
+    inline std::enable_if_t<cond, void> prev(Hashed* prev) noexcept {
+        Wrapped::prev(prev);
     }
 
     /* Link the node to its neighbors to form a doubly-linked list. */
@@ -812,15 +812,15 @@ public:
     }
 
     /* Get the previous node in the list. */
-    template <typename T = Wrapped, std::enable_if_t<T::doubly_linked, int> = 0>
-    inline Mapped* prev() const noexcept {
-        return static_cast<Mapped*>(T::prev());
+    template <bool cond = NodeTraits<Wrapped>::has_prev>
+    inline std::enable_if_t<cond, Mapped*> prev() const noexcept {
+        return static_cast<Mapped*>(Wrapped::prev());
     }
 
     /* Set the previous node in the list. */
-    template <typename T = Wrapped, std::enable_if_t<T::doubly_linked, int> = 0>
-    inline void prev(Mapped* prev) noexcept {
-        T::prev(prev);
+    template <bool cond = NodeTraits<Wrapped>::has_prev>
+    inline std::enable_if_t<cond, void> prev(Mapped* prev) noexcept {
+        Wrapped::prev(prev);
     }
 
     /* Link the node to its neighbors to form a doubly-linked list. */

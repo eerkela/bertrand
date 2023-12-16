@@ -25,10 +25,6 @@ namespace linked {
 // lists, for example.
 
 
-// TODO: implement a fastpath for HashAllocator.search() that uses a linear probe for
-// small sets (<= MIN_CAPACITY).
-
-
 /////////////////////////
 ////    CONSTANTS    ////
 /////////////////////////
