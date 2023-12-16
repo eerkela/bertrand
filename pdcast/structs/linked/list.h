@@ -44,9 +44,6 @@ namespace list_config {
         if (!(result & (Config::DOUBLY_LINKED | Config::SINGLY_LINKED | Config::XOR))) {
             result |= Config::DOUBLY_LINKED;
         }
-        if (!(result & (Config::DYNAMIC | Config::FIXED_SIZE))) {
-            result |= Config::DYNAMIC;
-        }
         return result;
     }
 
@@ -329,7 +326,7 @@ inline auto operator<<(std::ostream& stream, const LinkedList<T, Flags, Ts...>& 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator+(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs)
-    -> LinkedList<T, Flags & ~Config::FIXED_SIZE | Config::DYNAMIC, Ts...>
+    -> LinkedList<T, Flags & ~Config::FIXED_SIZE, Ts...>
 {
     return linked::concatenate(lhs.view, rhs);
 }
@@ -346,7 +343,7 @@ inline auto operator+=(LinkedList<T, Flags, Ts...>& lhs, const Container& rhs)
 
 template <typename T, unsigned int Flags, typename... Ts>
 inline auto operator*(const LinkedList<T, Flags, Ts...>& list, const long long rhs)
-    -> LinkedList<T, Flags, Ts...>
+    -> LinkedList<T, Flags & ~Config::FIXED_SIZE, Ts...>
 {
     return linked::repeat(list.view, rhs);
 }
@@ -354,7 +351,7 @@ inline auto operator*(const LinkedList<T, Flags, Ts...>& list, const long long r
 
 template <typename T, unsigned int Flags, typename... Ts>
 inline auto operator*(const long long lhs, const LinkedList<T, Flags, Ts...>& list)
-    -> LinkedList<T, Flags, Ts...>
+    -> LinkedList<T, Flags & ~Config::FIXED_SIZE, Ts...>
 {
     return linked::repeat(list.view, lhs);
 }
@@ -1269,18 +1266,18 @@ class PyLinkedList :
     template <unsigned int Flags>
     using ListConfig = linked::LinkedList<PyObject*, Flags, BasicLock>;
     using Variant = std::variant<
-        ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>,
-        ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
-        ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
-        ListConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        ListConfig<Config::DOUBLY_LINKED>,
+        ListConfig<Config::DOUBLY_LINKED | Config::PACKED>,
+        ListConfig<Config::DOUBLY_LINKED | Config::STRICTLY_TYPED>,
+        ListConfig<Config::DOUBLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED>,
         ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
         ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
         ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
         ListConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
-        ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
-        ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
-        ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
-        ListConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        ListConfig<Config::SINGLY_LINKED>,
+        ListConfig<Config::SINGLY_LINKED | Config::PACKED>,
+        ListConfig<Config::SINGLY_LINKED | Config::STRICTLY_TYPED>,
+        ListConfig<Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED>,
         ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
         ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
         ListConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
@@ -1561,7 +1558,7 @@ in some cases.
         BASE_PROPERTY(SINGLY_LINKED),
         BASE_PROPERTY(DOUBLY_LINKED),
         // BASE_PROPERTY(XOR),  // not yet implemented
-        BASE_PROPERTY(DYNAMIC),
+        BASE_PROPERTY(FIXED_SIZE),
         BASE_PROPERTY(PACKED),
         BASE_PROPERTY(STRICTLY_TYPED),
         BASE_PROPERTY(lock),

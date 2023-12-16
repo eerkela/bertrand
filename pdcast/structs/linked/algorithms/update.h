@@ -98,7 +98,7 @@ namespace linked {
     template <typename View, typename Container, bool left>
     void symmetric_difference_update_impl(View& view, const Container& items) {
         using TempView = typename ViewTraits<View>::template Reconfigure<
-            Config::SINGLY_LINKED | Config::DYNAMIC
+            Config::SINGLY_LINKED
         >;
         using Node = typename View::Node;
         using MemGuard = typename View::MemGuard;

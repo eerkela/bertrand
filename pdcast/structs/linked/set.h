@@ -50,9 +50,6 @@ namespace set_config {
         if (!(result & (Config::DOUBLY_LINKED | Config::SINGLY_LINKED | Config::XOR))) {
             result |= Config::DOUBLY_LINKED;
         }
-        if (!(result & (Config::DYNAMIC | Config::FIXED_SIZE))) {
-            result |= Config::DYNAMIC;
-        }
         return result;
     }
 
@@ -87,24 +84,25 @@ class LinkedSet : public LinkedBase<
         >,
         Lock
     >;
+    using DynamicSet = LinkedSet<K, Flags & ~Config::FIXED_SIZE, Lock>;
 
     /* Recursive template to compute pairwise unions. */
     template <typename First, typename Second, typename... Rest>
-    inline LinkedSet union_recursive(
+    inline DynamicSet recursive_union(
         First&& first,
         Second&& second,
         Rest&&... rest
     ) const {
         if constexpr (sizeof...(Rest) == 0) {
-            return LinkedSet(
-                linked::union_(
+            return DynamicSet(
+                linked::union_<false>(
                     std::forward<First>(first),
                     std::forward<Second>(second)
                 )
             );
         } else {
-            return union_recursive(
-                linked::union_(
+            return recursive_union(
+                linked::union_<false>(
                     std::forward<First>(first),
                     std::forward<Second>(second)
                 ),
@@ -115,21 +113,21 @@ class LinkedSet : public LinkedBase<
 
     /* Recursive template to compute pairwise unions. */
     template <typename First, typename Second, typename... Rest>
-    inline LinkedSet union_left_recursive(
+    inline DynamicSet recursive_union_left(
         First&& first,
         Second&& second,
         Rest&&... rest
     ) const {
         if constexpr (sizeof...(Rest) == 0) {
-            return LinkedSet(
-                linked::union_left(
+            return DynamicSet(
+                linked::union_<true>(
                     std::forward<First>(first),
                     std::forward<Second>(second)
                 )
             );
         } else {
-            return union_left_recursive(
-                linked::union_left(
+            return recursive_union_left(
+                linked::union_<true>(
                     std::forward<First>(first),
                     std::forward<Second>(second)
                 ),
@@ -140,20 +138,20 @@ class LinkedSet : public LinkedBase<
 
     /* Recursive template to compute pairwise intersections. */
     template <typename First, typename Second, typename... Rest>
-    inline LinkedSet intersection_recursive(
+    inline DynamicSet recursive_intersection(
         First&& first,
         Second&& second,
         Rest&&... rest
     ) const {
         if constexpr (sizeof...(Rest) == 0) {
-            return LinkedSet(
+            return DynamicSet(
                 linked::intersection(
                     std::forward<First>(first),
                     std::forward<Second>(second)
                 )
             );
         } else {
-            return intersection_recursive(
+            return recursive_intersection(
                 linked::intersection(
                     std::forward<First>(first),
                     std::forward<Second>(second)
@@ -165,20 +163,20 @@ class LinkedSet : public LinkedBase<
 
     /* Recursive template to compute pairwise differences. */
     template <typename First, typename Second, typename... Rest>
-    inline LinkedSet difference_recursive(
+    inline DynamicSet recursive_difference(
         First&& first,
         Second&& second,
         Rest&&... rest
     ) const {
         if constexpr (sizeof...(Rest) == 0) {
-            return LinkedSet(
+            return DynamicSet(
                 linked::difference(
                     std::forward<First>(first),
                     std::forward<Second>(second)
                 )
             );
         } else {
-            return difference_recursive(
+            return recursive_difference(
                 linked::difference(
                     std::forward<First>(first),
                     std::forward<Second>(second)
@@ -339,15 +337,31 @@ public:
 
     /* Return a new set with elements from this set and all other containers. */
     template <typename... Containers>
-    inline LinkedSet union_(Containers&&... items) const {
-        return union_recursive(this->view, std::forward<Containers>(items)...);
+    inline DynamicSet union_(Containers&&... items) const {
+        if constexpr (sizeof...(Containers) == 0) {
+            DynamicSet result(this->size(), this->specialization());
+            for (auto it = this->begin(), end = this->end(); it != end; ++it) {
+                result.view.template node<Base::Allocator::INSERT_TAIL>(*(it.curr()));
+            }
+            return result;
+        } else {
+            return recursive_union(this->view, std::forward<Containers>(items)...);
+        }
     }
 
     /* Return a new set with elements from this set and all other containers.  Appends
     to the head of the set rather than the tail. */
     template <typename... Containers>
-    inline LinkedSet union_left(Containers&&... items) const {
-        return union_left_recursive(this->view, std::forward<Containers>(items)...);
+    inline DynamicSet union_left(Containers&&... items) const {
+        if constexpr (sizeof...(Containers) == 0) {
+            DynamicSet result(this->size(), this->specialization());
+            for (auto it = this->begin(), end = this->end(); it != end; ++it) {
+                result.view.template node<Base::Allocator::INSERT_TAIL>(*(it.curr()));
+            }
+            return result;
+        } else {
+            return recursive_union_left(this->view, std::forward<Containers>(items)...);
+        }
     }
 
     /* Extend a set by adding elements from one or more iterables that are not already
@@ -373,8 +387,16 @@ public:
 
     /* Return a new set with elements common to this set and all other containers. */
     template <typename... Containers>
-    inline LinkedSet intersection(Containers&&... items) const {
-        return intersection_recursive(this->view, std::forward<Containers>(items)...);
+    inline DynamicSet intersection(Containers&&... items) const {
+        if constexpr (sizeof...(Containers) == 0) {
+            DynamicSet result(this->size(), this->specialization());
+            for (auto it = this->begin(), end = this->end(); it != end; ++it) {
+                result.view.template node<Base::Allocator::INSERT_TAIL>(*(it.curr()));
+            }
+            return result;
+        } else {
+            return recursive_intersection(this->view, std::forward<Containers>(items)...);
+        }
     }
 
     /* Removal elements from a set that are not contained in one or more iterables. */
@@ -386,8 +408,16 @@ public:
     /* Return a new set with elements from this set that are not common to any other
     containers. */
     template <typename... Containers>
-    inline LinkedSet difference(Containers&&... items) const {
-        return difference_recursive(this->view, std::forward<Containers>(items)...);
+    inline DynamicSet difference(Containers&&... items) const {
+        if constexpr (sizeof...(Containers) == 0) {
+            DynamicSet result(this->size(), this->specialization());
+            for (auto it = this->begin(), end = this->end(); it != end; ++it) {
+                result.view.template node<Base::Allocator::INSERT_TAIL>(*(it.curr()));
+            }
+            return result;
+        } else {
+            return recursive_difference(this->view, std::forward<Containers>(items)...);
+        }
     }
 
     /* Remove elements from a set that are contained in one or more iterables. */
@@ -399,9 +429,9 @@ public:
     /* Return a new set with elements in either this set or another container, but not
     both. */
     template <typename Container>
-    inline LinkedSet symmetric_difference(Container&& items) const {
-        return LinkedSet(
-            linked::symmetric_difference(
+    inline DynamicSet symmetric_difference(Container&& items) const {
+        return DynamicSet(
+            linked::symmetric_difference<false>(
                 this->view, std::forward<Container>(items)
             )
         );
@@ -410,9 +440,9 @@ public:
     /* Return a new set with elements in either this set or another container, but not
     both.  Appends to the head of the set rather than the tail. */
     template <typename Container>
-    inline LinkedSet symmetric_difference_left(Container&& items) const {
-        return LinkedSet(
-            linked::symmetric_difference_left(
+    inline DynamicSet symmetric_difference_left(Container&& items) const {
+        return DynamicSet(
+            linked::symmetric_difference<true>(
                 this->view, std::forward<Container>(items)
             )
         );
@@ -581,7 +611,7 @@ inline auto operator<<(std::ostream& stream, const LinkedSet<T, Flags, Ts...>& s
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator|(const LinkedSet<T, Flags, Ts...>& set, const Container& other)
-    -> LinkedSet<T, Flags, Ts...>
+    -> LinkedSet<T, Flags & ~Config::FIXED_SIZE, Ts...>
 {
     return set.union_(other);
 }
@@ -598,7 +628,7 @@ inline auto operator|=(LinkedSet<T, Flags, Ts...>& set, const Container& other)
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator-(const LinkedSet<T, Flags, Ts...>& set, const Container& other)
-    -> LinkedSet<T, Flags, Ts...>
+    -> LinkedSet<T, Flags & ~Config::FIXED_SIZE, Ts...>
 {
     return set.difference(other);
 }
@@ -615,7 +645,7 @@ inline auto operator-=(LinkedSet<T, Flags, Ts...>& set, const Container& other)
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator&(const LinkedSet<T, Flags, Ts...>& set, const Container& other)
-    -> LinkedSet<T, Flags, Ts...>
+    -> LinkedSet<T, Flags & ~Config::FIXED_SIZE, Ts...>
 {
     return set.intersection(other);
 }
@@ -632,7 +662,7 @@ inline auto operator&=(LinkedSet<T, Flags, Ts...>& set, const Container& other)
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator^(const LinkedSet<T, Flags, Ts...>& set, const Container& other)
-    -> LinkedSet<T, Flags, Ts...>
+    -> LinkedSet<T, Flags & ~Config::FIXED_SIZE, Ts...>
 {
     return set.symmetric_difference(other);
 }
@@ -822,14 +852,21 @@ public:
         try {
             return std::visit(
                 [&args, &nargs](auto& set) {
-                    if (nargs == 0) {
-                        return Derived::construct(set.copy());
+                    auto result = set.union_();
+                    for (Py_ssize_t i = 0; i < nargs; ++i) {
+                        PyObject* const arg = args[i];
+                        if (Derived::typecheck(arg)) {
+                            std::visit(
+                                [&result](auto& other) {
+                                    result.update(other);
+                                },
+                                reinterpret_cast<Derived*>(arg)->variant
+                            );
+                        } else {
+                            result.update(arg);
+                        }
                     }
-                    auto copy = set.union_(args[0]);
-                    for (Py_ssize_t i = 1; i < nargs; ++i) {
-                        copy.update(args[i]);
-                    }
-                    return Derived::construct(std::move(copy));
+                    return Derived::construct(std::move(result));
                 },
                 self->variant
             );
@@ -843,15 +880,21 @@ public:
         try {
             return std::visit(
                 [&args, &nargs](auto& set) {
-                    if (nargs == 0) {
-                        return Derived::construct(set.copy());
+                    auto result = set.union_left();
+                    for (Py_ssize_t i = 0; i < nargs; ++i) {
+                        PyObject* const arg = args[i];
+                        if (Derived::typecheck(arg)) {
+                            std::visit(
+                                [&result](auto& other) {
+                                    result.update_left(other);
+                                },
+                                reinterpret_cast<Derived*>(arg)->variant
+                            );
+                        } else {
+                            result.update_left(arg);
+                        }
                     }
-
-                    auto copy = set.union_left(args[0]);
-                    for (Py_ssize_t i = 1; i < nargs; ++i) {
-                        copy.update_left(args[i]);
-                    }
-                    return Derived::construct(std::move(copy));
+                    return Derived::construct(std::move(result));
                 },
                 self->variant
             );
@@ -866,7 +909,17 @@ public:
             std::visit(
                 [&args, &nargs](auto& set) {
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        set.update(args[i]);
+                        PyObject* const arg = args[i];
+                        if (Derived::typecheck(arg)) {
+                            std::visit(
+                                [&set](auto& other) {
+                                    set.update(other);
+                                },
+                                reinterpret_cast<Derived*>(arg)->variant
+                            );
+                        } else {
+                            set.update(arg);
+                        }
                     }
                 },
                 self->variant
@@ -883,7 +936,17 @@ public:
             std::visit(
                 [&args, &nargs](auto& set) {
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        set.update_left(args[i]);
+                        PyObject* const arg = args[i];
+                        if (Derived::typecheck(arg)) {
+                            std::visit(
+                                [&set](auto& other) {
+                                    set.update_left(other);
+                                },
+                                reinterpret_cast<Derived*>(arg)->variant
+                            );
+                        } else {
+                            set.update_left(arg);
+                        }
                     }
                 },
                 self->variant
@@ -900,7 +963,17 @@ public:
             std::visit(
                 [&args, &nargs](auto& set) {
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        set.lru_update(args[i]);
+                        PyObject* const arg = args[i];
+                        if (Derived::typecheck(arg)) {
+                            std::visit(
+                                [&set](auto& other) {
+                                    set.lru_update(other);
+                                },
+                                reinterpret_cast<Derived*>(arg)->variant
+                            );
+                        } else {
+                            set.lru_update(arg);
+                        }
                     }
                 },
                 self->variant
@@ -916,15 +989,21 @@ public:
         try {
             return std::visit(
                 [&args, &nargs](auto& set) {
-                    if (nargs == 0) {
-                        return Derived::construct(set.copy());
+                    auto result = set.difference();
+                    for (Py_ssize_t i = 0; i < nargs; ++i) {
+                        PyObject* const arg = args[i];
+                        if (Derived::typecheck(arg)) {
+                            std::visit(
+                                [&result](auto& other) {
+                                    result.difference_update(other);
+                                },
+                                reinterpret_cast<Derived*>(arg)->variant
+                            );
+                        } else {
+                            result.difference_update(arg);
+                        }
                     }
-
-                    auto copy = set.difference(args[0]);
-                    for (Py_ssize_t i = 1; i < nargs; ++i) {
-                        copy.difference_update(args[i]);
-                    }
-                    return Derived::construct(std::move(copy));
+                    return Derived::construct(std::move(result));
                 },
                 self->variant
             );
@@ -943,7 +1022,17 @@ public:
             std::visit(
                 [&args, &nargs](auto& set) {
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        set.difference_update(args[i]);
+                        PyObject* const arg = args[i];
+                        if (Derived::typecheck(arg)) {
+                            std::visit(
+                                [&set](auto& other) {
+                                    set.difference_update(other);
+                                },
+                                reinterpret_cast<Derived*>(arg)->variant
+                            );
+                        } else {
+                            set.difference_update(arg);
+                        }
                     }
                 },
                 self->variant
@@ -963,15 +1052,21 @@ public:
         try {
             return std::visit(
                 [&args, &nargs](auto& set) {
-                    if (nargs == 0) {
-                        return Derived::construct(set.copy());
+                    auto result = set.intersection();
+                    for (Py_ssize_t i = 0; i < nargs; ++i) {
+                        PyObject* const arg = args[i];
+                        if (Derived::typecheck(arg)) {
+                            std::visit(
+                                [&result](auto& other) {
+                                    result.intersection_update(other);
+                                },
+                                reinterpret_cast<Derived*>(arg)->variant
+                            );
+                        } else {
+                            result.intersection_update(arg);
+                        }
                     }
-
-                    auto copy = set.intersection(args[0]);
-                    for (Py_ssize_t i = 1; i < nargs; ++i) {
-                        copy.intersection_update(args[i]);
-                    }
-                    return Derived::construct(std::move(copy));
+                    return Derived::construct(std::move(result));
                 },
                 self->variant
             );
@@ -990,7 +1085,17 @@ public:
             std::visit(
                 [&args, &nargs](auto& set) {
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        set.intersection_update(args[i]);
+                        PyObject* const arg = args[i];
+                        if (Derived::typecheck(arg)) {
+                            std::visit(
+                                [&set](auto& other) {
+                                    set.intersection_update(other);
+                                },
+                                reinterpret_cast<Derived*>(arg)->variant
+                            );
+                        } else {
+                            set.intersection_update(arg);
+                        }
                     }
                 },
                 self->variant
@@ -1006,7 +1111,16 @@ public:
         try {
             return std::visit(
                 [&items](auto& set) {
-                    return Derived::construct(set.symmetric_difference(items));
+                    if (Derived::typecheck(items)) {
+                        return Derived::construct(std::visit(
+                            [&set](auto& other) {
+                                return set.symmetric_difference(other);
+                            },
+                            reinterpret_cast<Derived*>(items)->variant
+                        ));
+                    } else {
+                        return Derived::construct(set.symmetric_difference(items));
+                    }
                 },
                 self->variant
             );
@@ -1020,7 +1134,16 @@ public:
         try {
             return std::visit(
                 [&items](auto& set) {
-                    return Derived::construct(set.symmetric_difference_left(items));
+                    if (Derived::typecheck(items)) {
+                        return Derived::construct(std::visit(
+                            [&set](auto& other) {
+                                return set.symmetric_difference_left(other);
+                            },
+                            reinterpret_cast<Derived*>(items)->variant
+                        ));
+                    } else {
+                        return Derived::construct(set.symmetric_difference_left(items));
+                    }
                 },
                 self->variant
             );
@@ -1034,7 +1157,16 @@ public:
         try {
             std::visit(
                 [&items](auto& set) {
-                    set.symmetric_difference_update(items);
+                    if (Derived::typecheck(items)) {
+                        std::visit(
+                            [&set](auto& other) {
+                                set.symmetric_difference_update(other);
+                            },
+                            reinterpret_cast<Derived*>(items)->variant
+                        );
+                    } else {
+                        set.symmetric_difference_update(items);
+                    }
                 },
                 self->variant
             );
@@ -1049,7 +1181,16 @@ public:
         try {
             std::visit(
                 [&items](auto& set) {
-                    set.symmetric_difference_update_left(items);
+                    if (Derived::typecheck(items)) {
+                        std::visit(
+                            [&set](auto& other) {
+                                set.symmetric_difference_update_left(other);
+                            },
+                            reinterpret_cast<Derived*>(items)->variant
+                        );
+                    } else {
+                        set.symmetric_difference_update_left(items);
+                    }
                 },
                 self->variant
             );
@@ -1864,18 +2005,18 @@ class PyLinkedSet :
     template <unsigned int Flags>
     using SetConfig = linked::LinkedSet<PyObject*, Flags, BasicLock>;
     using Variant = std::variant<
-        SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>,
-        SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
-        SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
-        SetConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        SetConfig<Config::DOUBLY_LINKED>,
+        SetConfig<Config::DOUBLY_LINKED | Config::PACKED>,
+        SetConfig<Config::DOUBLY_LINKED | Config::STRICTLY_TYPED>,
+        SetConfig<Config::DOUBLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED>,
         SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
         SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
         SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
         SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
-        SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
-        SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
-        SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
-        SetConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        SetConfig<Config::SINGLY_LINKED>,
+        SetConfig<Config::SINGLY_LINKED | Config::PACKED>,
+        SetConfig<Config::SINGLY_LINKED | Config::STRICTLY_TYPED>,
+        SetConfig<Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED>,
         SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
         SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
         SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
@@ -2159,7 +2300,7 @@ in some cases.
         BASE_PROPERTY(SINGLY_LINKED),
         BASE_PROPERTY(DOUBLY_LINKED),
         // BASE_PROPERTY(XOR),  // not yet implemented
-        BASE_PROPERTY(DYNAMIC),
+        BASE_PROPERTY(FIXED_SIZE),
         BASE_PROPERTY(PACKED),
         BASE_PROPERTY(STRICTLY_TYPED),
         BASE_PROPERTY(lock),

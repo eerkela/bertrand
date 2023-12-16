@@ -422,7 +422,6 @@ public:
     static constexpr bool SINGLY_LINKED = Allocator::SINGLY_LINKED;
     static constexpr bool DOUBLY_LINKED = Allocator::DOUBLY_LINKED;
     static constexpr bool XOR = Allocator::XOR;
-    static constexpr bool DYNAMIC = Allocator::DYNAMIC;
     static constexpr bool FIXED_SIZE = Allocator::FIXED_SIZE;
     static constexpr bool PACKED = Allocator::PACKED;
     static constexpr bool STRICTLY_TYPED = Allocator::STRICTLY_TYPED;
@@ -836,7 +835,7 @@ protected:
         Container&& container,
         std::optional<size_t> capacity
     ) {
-        if constexpr (DYNAMIC) {
+        if constexpr (!FIXED_SIZE) {
             std::optional<size_t> size = len(container);
 
             // use max of container size and specified capacity
@@ -1150,7 +1149,6 @@ struct ViewTraits {
     static constexpr bool SINGLY_LINKED = ViewType::SINGLY_LINKED;
     static constexpr bool DOUBLY_LINKED = ViewType::DOUBLY_LINKED;
     static constexpr bool XOR = ViewType::XOR;
-    static constexpr bool DYNAMIC = ViewType::DYNAMIC;
     static constexpr bool FIXED_SIZE = ViewType::FIXED_SIZE;
     static constexpr bool PACKED = ViewType::PACKED;
     static constexpr bool STRICTLY_TYPED = ViewType::STRICTLY_TYPED;
@@ -1235,10 +1233,10 @@ struct ViewTraits {
             (FLAGS & ~(Config::SINGLY_LINKED | Config::DOUBLY_LINKED)) | Config::XOR
         >;
         using DYNAMIC = typename ViewType::template Reconfigure<
-            (FLAGS & ~Config::FIXED_SIZE) | Config::DYNAMIC
+            FLAGS & ~Config::FIXED_SIZE
         >;
         using FIXED_SIZE = typename ViewType::template Reconfigure<
-            (FLAGS & ~Config::DYNAMIC) | Config::FIXED_SIZE
+            FLAGS | Config::FIXED_SIZE
         >;
         using PACKED = typename ViewType::template Reconfigure<
             FLAGS | Config::PACKED

@@ -209,7 +209,11 @@ public:
     }
 
     /* Get the next node in the list. */
-    SingleNode* next() const noexcept {
+    SingleNode* next() noexcept {
+        return _next;
+    }
+
+    const SingleNode* next() const noexcept {
         return _next;
     }
 
@@ -317,8 +321,13 @@ public:
     }
 
     /* Get the next node in the list. */
-    inline DoubleNode* next() const noexcept {
+    inline DoubleNode* next() noexcept {
         return static_cast<DoubleNode*>(Base::next());
+    }
+
+    /* Get the next node in the list. */
+    inline const DoubleNode* next() const noexcept {
+        return static_cast<const DoubleNode*>(Base::next());
     }
 
     /* Set the next node in the list. */
@@ -327,7 +336,12 @@ public:
     }
 
     /* Get the previous node in the list. */
-    inline DoubleNode* prev() const noexcept {
+    inline DoubleNode* prev() noexcept {
+        return _prev;
+    }
+
+    /* Get the previous node in the list. */
+    inline const DoubleNode* prev() const noexcept {
         return _prev;
     }
 
@@ -517,8 +531,13 @@ public:
     }
 
     /* Get the next node in the list. */
-    inline Keyed* next() const noexcept {
+    inline Keyed* next() noexcept {
         return static_cast<Keyed*>(Base::next());
+    }
+
+    /* Get the next node in the list. */
+    inline const Keyed* next() const noexcept {
+        return static_cast<const Keyed*>(Base::next());
     }
 
     /* Set the next node in the list. */
@@ -616,8 +635,13 @@ public:
     }
 
     /* Get the next node in the list. */
-    inline Hashed* next() const noexcept {
+    inline Hashed* next() noexcept {
         return static_cast<Hashed*>(Wrapped::next());
+    }
+
+    /* Get the next node in the list. */
+    inline const Hashed* next() const noexcept {
+        return static_cast<const Hashed*>(Wrapped::next());
     }
 
     /* Set the next node in the list. */
@@ -627,8 +651,14 @@ public:
 
     /* Get the previous node in the list. */
     template <bool cond = NodeTraits<Wrapped>::has_prev>
-    inline std::enable_if_t<cond, Hashed*> prev() const noexcept {
+    inline std::enable_if_t<cond, Hashed*> prev() noexcept {
         return static_cast<Hashed*>(Wrapped::prev());
+    }
+
+    /* Get the previous node in the list. */
+    template <bool cond = NodeTraits<Wrapped>::has_prev>
+    inline std::enable_if_t<cond, const Hashed*> prev() const noexcept {
+        return static_cast<const Hashed*>(Wrapped::prev());
     }
 
     /* Set the previous node in the list. */
@@ -802,8 +832,13 @@ public:
     }
 
     /* Get the next node in the list. */
-    inline Mapped* next() const noexcept {
+    inline Mapped* next() noexcept {
         return static_cast<Mapped*>(Wrapped::next());
+    }
+
+    /* Get the next node in the list. */
+    inline const Mapped* next() const noexcept {
+        return static_cast<const Mapped*>(Wrapped::next());
     }
 
     /* Set the next node in the list. */
@@ -813,8 +848,14 @@ public:
 
     /* Get the previous node in the list. */
     template <bool cond = NodeTraits<Wrapped>::has_prev>
-    inline std::enable_if_t<cond, Mapped*> prev() const noexcept {
+    inline std::enable_if_t<cond, Mapped*> prev() noexcept {
         return static_cast<Mapped*>(Wrapped::prev());
+    }
+
+    /* Get the previous node in the list. */
+    template <bool cond = NodeTraits<Wrapped>::has_prev>
+    inline std::enable_if_t<cond, const Mapped*> prev() const noexcept {
+        return static_cast<const Mapped*>(Wrapped::prev());
     }
 
     /* Set the previous node in the list. */

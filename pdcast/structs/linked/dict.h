@@ -69,9 +69,6 @@ namespace dict_config {
         if (!(result & (Config::DOUBLY_LINKED | Config::SINGLY_LINKED | Config::XOR))) {
             result |= Config::DOUBLY_LINKED;  // default to doubly-linked
         }
-        if (!(result & (Config::DYNAMIC | Config::FIXED_SIZE))) {
-            result |= Config::DYNAMIC;  // default to dynamic allocator
-        }
         return result;
     }
 
@@ -138,14 +135,14 @@ class LinkedDict : public LinkedBase<
         if constexpr (sizeof...(Rest) == 0) {
             if constexpr (IsDict_v<Second>) {
                 return LinkedDict(
-                    linked::union_(
+                    linked::union_<false>(
                         std::forward<First>(first),
                         std::forward<Second>(second).view
                     )
                 );
             } else {
                 return LinkedDict(
-                    linked::union_(
+                    linked::union_<false>(
                         std::forward<First>(first),
                         std::forward<Second>(second)
                     )
@@ -154,7 +151,7 @@ class LinkedDict : public LinkedBase<
         } else {
             if constexpr (IsDict_v<Second>) {
                 return union_recursive(
-                    linked::union_(
+                    linked::union_<false>(
                         std::forward<First>(first),
                         std::forward<Second>(second).view
                     ),
@@ -162,7 +159,7 @@ class LinkedDict : public LinkedBase<
                 );
             } else {
                 return union_recursive(
-                    linked::union_(
+                    linked::union_<false>(
                         std::forward<First>(first),
                         std::forward<Second>(second)
                     ),
@@ -182,14 +179,14 @@ class LinkedDict : public LinkedBase<
         if constexpr (sizeof...(Rest) == 0) {
             if constexpr (IsDict_v<Second>) {
                 return LinkedDict(
-                    linked::union_left(
+                    linked::union_<true>(
                         std::forward<First>(first),
                         std::forward<Second>(second).view
                     )
                 );
             } else {
                 return LinkedDict(
-                    linked::union_left(
+                    linked::union_<true>(
                         std::forward<First>(first),
                         std::forward<Second>(second)
                     )
@@ -198,7 +195,7 @@ class LinkedDict : public LinkedBase<
         } else {
             if constexpr (IsDict_v<Second>) {
                 return union_left_recursive(
-                    linked::union_left(
+                    linked::union_<true>(
                         std::forward<First>(first),
                         std::forward<Second>(second).view
                     ),
@@ -206,7 +203,7 @@ class LinkedDict : public LinkedBase<
                 );
             } else {
                 return union_left_recursive(
-                    linked::union_left(
+                    linked::union_<true>(
                         std::forward<First>(first),
                         std::forward<Second>(second)
                     ),
@@ -635,6 +632,8 @@ public:
     /* Remove elements from a dictionary that are contained in one or more iterables. */
     template <typename... Containers>
     inline void difference_update(Containers&&... items) {
+        // TODO: do we even need to unpack other dicts here?  differences should only
+        // be computed for keys, not values.
         auto unwrap = [](auto&& arg) {
             using Arg = decltype(arg);
             if constexpr (IsDict_v<Arg>) {
@@ -657,7 +656,7 @@ public:
     template <typename Container>
     inline LinkedDict symmetric_difference(Container&& items) const {
         return LinkedDict(
-            linked::symmetric_difference(
+            linked::symmetric_difference<false>(
                 this->view, std::forward<Container>(items)
             )
         );
@@ -669,7 +668,7 @@ public:
     template <typename Container>
     inline LinkedDict symmetric_difference_left(Container&& items) const {
         return LinkedDict(
-            linked::symmetric_difference_left(
+            linked::symmetric_difference<true>(
                 this->view, std::forward<Container>(items)
             )
         );
@@ -1354,9 +1353,7 @@ inline std::ostream& operator<<(std::ostream& stream, const ValuesProxy<Dict>& v
 template <typename Container, typename Dict>
 inline auto operator+(const ValuesProxy<Dict>& proxy, const Container& other)
     -> LinkedList<
-        typename Dict::Value,
-        (Dict::FLAGS & ~Config::FIXED_SIZE) | Config::DYNAMIC,
-        typename Dict::Lock
+        typename Dict::Value, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock
     >
 {
     return linked::concatenate<Yield::VALUE>(
@@ -1368,9 +1365,7 @@ inline auto operator+(const ValuesProxy<Dict>& proxy, const Container& other)
 template <typename Dict, typename T>
 inline auto operator*(const ValuesProxy<Dict>& proxy, T&& other)
     -> LinkedList<
-        typename Dict::Value,
-        (Dict::FLAGS & ~Config::FIXED_SIZE) | Config::DYNAMIC,
-        typename Dict::Lock
+        typename Dict::Value, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock
     >
 {
     return linked::repeat<Yield::VALUE>(
@@ -1693,7 +1688,7 @@ inline auto operator+(const ItemsProxy<Dict, as_pytuple>& proxy, const Container
             PyObject*,
             std::pair<typename Dict::Key, typename Dict::Value>
         >,
-        (Dict::FLAGS & ~Config::FIXED_SIZE) | Config::DYNAMIC,
+        Dict::FLAGS & ~Config::FIXED_SIZE,
         typename Dict::Lock
     >
 {
@@ -1711,7 +1706,7 @@ inline auto operator*(const ItemsProxy<Dict, as_pytuple>& proxy, T&& other)
             PyObject*,
             std::pair<typename Dict::Key, typename Dict::Value>
         >,
-        (Dict::FLAGS & ~Config::FIXED_SIZE) | Config::DYNAMIC,
+        Dict::FLAGS & ~Config::FIXED_SIZE,
         typename Dict::Lock
     >
 {
@@ -3461,18 +3456,18 @@ class PyLinkedDict :
     template <unsigned int Flags>
     using DictConfig = linked::LinkedDict<PyObject*, PyObject*, Flags, BasicLock>;
     using Variant = std::variant<
-        DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC>
-        // DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED>,
-        // DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
-        // DictConfig<Config::DOUBLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        DictConfig<Config::DOUBLY_LINKED>
+        // DictConfig<Config::DOUBLY_LINKED | Config::PACKED>,
+        // DictConfig<Config::DOUBLY_LINKED | Config::STRICTLY_TYPED>,
+        // DictConfig<Config::DOUBLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED>,
         // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
         // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
         // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
         // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
-        // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC>,
-        // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED>,
-        // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::STRICTLY_TYPED>,
-        // DictConfig<Config::SINGLY_LINKED | Config::DYNAMIC | Config::PACKED | Config::STRICTLY_TYPED>,
+        // DictConfig<Config::SINGLY_LINKED>,
+        // DictConfig<Config::SINGLY_LINKED | Config::PACKED>,
+        // DictConfig<Config::SINGLY_LINKED | Config::STRICTLY_TYPED>,
+        // DictConfig<Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED>,
         // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
         // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
         // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
@@ -3951,7 +3946,7 @@ constructor itself.
         BASE_PROPERTY(SINGLY_LINKED),
         BASE_PROPERTY(DOUBLY_LINKED),
         // BASE_PROPERTY(XOR),  // not yet implemented
-        BASE_PROPERTY(DYNAMIC),
+        BASE_PROPERTY(FIXED_SIZE),
         BASE_PROPERTY(PACKED),
         BASE_PROPERTY(STRICTLY_TYPED),
         BASE_PROPERTY(lock),

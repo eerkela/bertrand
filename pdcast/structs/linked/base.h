@@ -50,7 +50,6 @@ public:
     static constexpr bool SINGLY_LINKED = View::SINGLY_LINKED;
     static constexpr bool DOUBLY_LINKED = View::DOUBLY_LINKED;
     static constexpr bool XOR = View::XOR;
-    static constexpr bool DYNAMIC = View::DYNAMIC;
     static constexpr bool FIXED_SIZE = View::FIXED_SIZE;
     static constexpr bool PACKED = View::PACKED;
     static constexpr bool STRICTLY_TYPED = View::STRICTLY_TYPED;
@@ -374,10 +373,10 @@ public:
         );
     }
 
-    inline static PyObject* DYNAMIC(Derived* self, PyObject* = nullptr) noexcept {
+    inline static PyObject* FIXED_SIZE(Derived* self, PyObject* = nullptr) noexcept {
         return std::visit(
             [](auto& list) {
-                return PyBool_FromLong(std::decay_t<decltype(list)>::DYNAMIC);
+                return PyBool_FromLong(std::decay_t<decltype(list)>::FIXED_SIZE);
             },
             self->variant
         );
@@ -817,14 +816,14 @@ XOR-linked node type.  For instance:
 )doc"
         };
 
-        static constexpr std::string_view DYNAMIC {R"doc(
+        static constexpr std::string_view FIXED_SIZE {R"doc(
 Check whether the allocator supports dynamic resizing.
 
 Returns
 -------
 bool
-    True if the list can dynamically grow and shrink, or False if it has a
-    fixed size.
+    True if the list has a fixed maximum size, or False if it can grow and
+    shrink dynamically.
 
 Examples
 --------
@@ -834,10 +833,10 @@ For instance:
 .. doctest::
 
     >>> from bertrand.structs import LinkedList
-    >>> LinkedList("abcdef").DYNAMIC
-    True
-    >>> LinkedList("abcdef", 10).DYNAMIC
+    >>> LinkedList("abcdef").FIXED_SIZE
     False
+    >>> LinkedList("abcdef", 10).FIXED_SIZE
+    True
 )doc"
         };
 

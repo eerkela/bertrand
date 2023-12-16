@@ -24,8 +24,6 @@ namespace linked {
         std::optional<long long> stop
     ) -> std::enable_if_t<ViewTraits<View>::listlike || yield == Yield::VALUE, size_t>
     {
-        using Node = typename View::Node;
-
         auto not_found = [](const Item& item) {
             return KeyError(repr(item));
         };
@@ -45,7 +43,7 @@ namespace linked {
 
         // NOTE: if list is doubly-linked and stop is closer to tail than start is to
         // head, then we iterate backward from the tail
-        if constexpr (NodeTraits<Node>::has_prev) {
+        if constexpr (NodeTraits<typename View::Node>::has_prev) {
             if (indices.backward) {
                 size_t idx = view.size() - 1;
                 auto it = view.template rbegin<yield>();

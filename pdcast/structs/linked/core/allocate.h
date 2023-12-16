@@ -57,9 +57,6 @@ Their meanings are as follows:
     same memory footprint as a singly-linked list, but, thanks to some clever math,
     can still traverse the list in both directions.  This is an experimental feature
     that is not yet implemented.
--   DYNAMIC: explicitly force the use of a dynamic allocator that can grow and shrink
-    as needed.  This is usually the default, and provides the most flexibility for
-    interacting with the list.
 -   FIXED_SIZE: use a fixed-size allocator that cannot grow or shrink.  This is useful
     for implementing LRU caches and other data structures that are guaranteed to never
     exceed a certain size.  By setting this flag, the data structure will immediately
@@ -80,10 +77,9 @@ namespace Config {
         SINGLY_LINKED = 1 << 0,
         DOUBLY_LINKED = 1 << 1,
         XOR = 1 << 2,
-        DYNAMIC = 1 << 3,
-        FIXED_SIZE = 1 << 4,
-        PACKED = 1 << 5,
-        STRICTLY_TYPED = 1 << 6,
+        FIXED_SIZE = 1 << 3,
+        PACKED = 1 << 4,
+        STRICTLY_TYPED = 1 << 5,
     };
 }
 
@@ -103,10 +99,6 @@ class BaseAllocator : public AllocatorTag {
         !!(Flags & Config::XOR) <= 1,
         "only one of SINGLY_LINKED, DOUBLY_LINKED, or XOR may be specified at a time"
     );
-    static_assert(
-        !!(Flags & Config::DYNAMIC) + !!(Flags & Config::FIXED_SIZE) <= 1,
-        "only one of DYNAMIC or FIXED_SIZE may be specified at a time"
-    );
 
 public:
     using Node = NodeType;
@@ -116,7 +108,6 @@ public:
     static constexpr bool SINGLY_LINKED = Flags & Config::SINGLY_LINKED;
     static constexpr bool DOUBLY_LINKED = Flags & Config::DOUBLY_LINKED;
     static constexpr bool XOR = Flags & Config::XOR;
-    static constexpr bool DYNAMIC = Flags & Config::DYNAMIC;
     static constexpr bool FIXED_SIZE = Flags & Config::FIXED_SIZE;
     static constexpr bool PACKED = Flags & Config::PACKED;
     static constexpr bool STRICTLY_TYPED = Flags & Config::STRICTLY_TYPED;
@@ -440,10 +431,10 @@ public:
     /* Get the maximum number of elements that this allocator can support if it does
     not support dynamic sizing. */
     inline std::optional<size_t> max_size() const noexcept {
-        if constexpr (DYNAMIC) {
-            return std::nullopt;
-        } else {
+        if constexpr (FIXED_SIZE) {
             return std::make_optional(capacity);
+        } else {
+            return std::nullopt;
         }
     }
 
@@ -740,17 +731,16 @@ private:
 
     /* Adjust the starting capacity of a dynamic list to a power of two. */
     inline static size_t init_capacity(std::optional<size_t> capacity) {
-        using bertrand::util::next_power_of_two;
-
         if (!capacity.has_value()) {
             return MIN_CAPACITY;
         }
 
-        if constexpr (Base::DYNAMIC) {
+        if constexpr (Base::FIXED_SIZE) {
+            return capacity.value();
+        } else {
+            using bertrand::util::next_power_of_two;
             size_t result = capacity.value();
             return result < MIN_CAPACITY ? MIN_CAPACITY : next_power_of_two(result);
-        } else {
-            return capacity.value();
         }
     }
 
@@ -919,14 +909,14 @@ public:
 
         // check if we need to grow the array
         if (this->occupied == this->capacity) {
-            if constexpr (Base::DYNAMIC) {
+            if constexpr (Base::FIXED_SIZE) {
+                throw Base::cannot_grow();
+            } else {
                 if (!this->frozen()) {
                     resize(this->capacity * 2);
                 } else {
                     throw Base::cannot_grow();
                 }
-            } else {
-                throw Base::cannot_grow();
             }
         }
 
@@ -960,7 +950,7 @@ public:
         // reset free list and shrink to default capacity
         free_list.first = nullptr;
         free_list.second = nullptr;
-        if constexpr (Base::DYNAMIC) {
+        if constexpr (!Base::FIXED_SIZE) {
             if (!this->frozen() && this->capacity > MIN_CAPACITY) {
                 this->capacity = MIN_CAPACITY;
                 free(array);
@@ -983,19 +973,19 @@ public:
         using bertrand::util::next_power_of_two;
 
         // if frozen or not dynamic, check against current capacity
-        if constexpr (Base::DYNAMIC) {
+        if constexpr (Base::FIXED_SIZE) {
+            if (new_size > this->capacity) {
+                throw Base::cannot_grow();
+            } else {
+                return MemGuard();
+            }
+        } else {
             if (this->frozen()) {
                 if (new_size > this->capacity) {
                     throw Base::cannot_grow();
                 } else {
                     return MemGuard();
                 }
-            }
-        } else {
-            if (new_size > this->capacity) {
-                throw Base::cannot_grow();
-            } else {
-                return MemGuard();
             }
         }
 
@@ -1020,7 +1010,7 @@ public:
     inline bool shrink() {
         using bertrand::util::next_power_of_two;
 
-        if constexpr (Base::DYNAMIC) {
+        if constexpr (!Base::FIXED_SIZE) {
             if (!this->frozen() &&
                 this->capacity > MIN_CAPACITY &&
                 this->occupied <= this->capacity / 4
@@ -1248,10 +1238,10 @@ private:
 
     /* Adjust the maximum occupants of a set based on its dynamic status. */
     inline static size_t init_max_occupants(std::optional<size_t> capacity) {
-        if constexpr (Base::DYNAMIC) {
-            return std::numeric_limits<size_t>::max();
-        } else {
+        if constexpr (Base::FIXED_SIZE) {
             return capacity.value();
+        } else {
+            return std::numeric_limits<size_t>::max();
         }
     }
 
@@ -1338,15 +1328,15 @@ private:
             this->tail = tail;
         } catch (...) {  // exceeded maximum probe length
             delete[] new_table;
-            if constexpr (Base::DYNAMIC) {
+            if constexpr (Base::FIXED_SIZE) {
+                throw;
+            } else {
                 if (!this->frozen()) {
                     resize(new_capacity * 2);  // retry with larger table
                     return;
                 } else {
                     throw;
                 }
-            } else {
-                throw;
             }
         }
 
@@ -1941,14 +1931,7 @@ public:
         // as well as careful updates to the hop information for the collision chain.
 
         // if array is dynamic, check if we need to grow 
-        if constexpr (Base::DYNAMIC) {
-            if (this->occupied >= this->capacity - (this->capacity / 4)) {
-                if (this->frozen()) throw Base::cannot_grow();
-                resize(this->capacity * 2);
-                origin_idx = node->hash() & modulo;
-                origin = table + origin_idx;
-            }
-        } else {
+        if constexpr (Base::FIXED_SIZE) {
             if (this->occupied == this->max_occupants) {
                 if constexpr (flags & EVICT_HEAD) {
                     evict_head();
@@ -1957,6 +1940,13 @@ public:
                 } else {
                     throw Base::cannot_grow();
                 }
+            }
+        } else {
+            if (this->occupied >= this->capacity - (this->capacity / 4)) {
+                if (this->frozen()) throw Base::cannot_grow();
+                resize(this->capacity * 2);
+                origin_idx = node->hash() & modulo;
+                origin = table + origin_idx;
             }
         }
 
@@ -1973,13 +1963,13 @@ public:
                 next += bucket->next;
             }
             if (++distance == MAX_PROBE_LENGTH) {
-                if constexpr (Base::DYNAMIC) {
-                    if (!this->frozen()) {
-                        resize(this->capacity * 2);
-                        return create(std::move(*node));
-                    }
+                if constexpr (Base::FIXED_SIZE) {
+                    throw RuntimeError("exceeded maximum probe length");   
                 }
-                throw RuntimeError("exceeded maximum probe length");
+                if (!this->frozen()) {
+                    resize(this->capacity * 2);
+                    return create(std::move(*node));
+                }
             }
             bucket = table + ((origin_idx + distance) & modulo);
         }
@@ -2030,7 +2020,7 @@ public:
         Base::clear();
 
         // shrink to default capacity
-        if constexpr (Base::DYNAMIC) {
+        if constexpr (!Base::FIXED_SIZE) {
             if (!this->frozen() && this->capacity > MIN_CAPACITY) {
                 this->capacity = MIN_CAPACITY;
                 free(table);
@@ -2054,19 +2044,19 @@ public:
         using bertrand::util::next_power_of_two;
 
         // if frozen or not dynamic, check against current capacity
-        if constexpr (Base::DYNAMIC) {
+        if constexpr (Base::FIXED_SIZE) {
+            if (new_size > this->capacity) {
+                throw Base::cannot_grow();
+            } else {
+                return MemGuard();
+            }
+        } else {
             if (this->frozen()) {
                 if (new_size > this->capacity) {
                     throw Base::cannot_grow();
                 } else {
                     return MemGuard();
                 }
-            }
-        } else {
-            if (new_size > this->capacity) {
-                throw Base::cannot_grow();
-            } else {
-                return MemGuard();
             }
         }
 
@@ -2091,7 +2081,7 @@ public:
     inline bool shrink() {
         using bertrand::util::next_power_of_two;
 
-        if constexpr (Base::DYNAMIC) {
+        if constexpr (!Base::FIXED_SIZE) {
             if (!this->frozen() &&
                 this->capacity > MIN_CAPACITY &&
                 this->occupied <= this->capacity / 4
@@ -2113,10 +2103,10 @@ public:
     /* Get the maximum number of elements that this allocator can support if it does
     not support dynamic sizing. */
     inline std::optional<size_t> max_size() const noexcept {
-        if constexpr (Base::DYNAMIC) {
-            return std::nullopt;
-        } else {
+        if constexpr (Base::FIXED_SIZE) {
             return std::make_optional(max_occupants);
+        } else {
+            return std::nullopt;
         }
     }
 
