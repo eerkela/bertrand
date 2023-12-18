@@ -1,7 +1,7 @@
 #ifndef BERTRAND_STRUCTS_LINKED_ALGORITHMS_CONCATENATE_H
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_CONCATENATE_H
 
-#include <cstddef>
+#include <cstddef>  // size_t
 #include <optional>  // std::optional
 #include <type_traits>  // std::enable_if_t<>
 #include "../../util/iter.h"  // iter()

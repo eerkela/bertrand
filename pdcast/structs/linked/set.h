@@ -459,18 +459,18 @@ public:
 
     template <typename... Args>
     inline auto slice(Args&&... args)
-        -> linked::SliceProxy<View, LinkedSet, Yield::KEY>
+        -> linked::SliceProxy<View, DynamicSet, Yield::KEY>
     {
-        return linked::slice<LinkedSet, Yield::KEY>(
+        return linked::slice<DynamicSet, Yield::KEY>(
             this->view, std::forward<Args>(args)...
         );
     }
 
     template <typename... Args>
     inline auto slice(Args&&... args) const
-        -> const linked::SliceProxy<const View, const LinkedSet, Yield::KEY>
+        -> const linked::SliceProxy<const View, DynamicSet, Yield::KEY>
     {
-        return linked::slice<const LinkedSet, Yield::KEY>(
+        return linked::slice<DynamicSet, Yield::KEY>(
             this->view, std::forward<Args>(args)...
         );
     }
@@ -626,24 +626,44 @@ inline bool operator<=(const Container& other, const LinkedSet<T, Flags, Ts...>&
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator==(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
+    if constexpr (std::is_same_v<decltype(set), decltype(other)>) {
+        if (&set == &other) {
+            return true;
+        }
+    }
     return linked::set_equal(set.view, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator==(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
+    if constexpr (std::is_same_v<decltype(set), decltype(other)>) {
+        if (&set == &other) {
+            return true;
+        }
+    }
     return linked::set_equal(set.view, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator!=(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
+    if constexpr (std::is_same_v<decltype(set), decltype(other)>) {
+        if (&set == &other) {
+            return false;
+        }
+    }
     return linked::set_not_equal(set.view, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator!=(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
+    if constexpr (std::is_same_v<decltype(set), decltype(other)>) {
+        if (&set == &other) {
+            return false;
+        }
+    }
     return linked::set_not_equal(set.view, other);
 }
 
@@ -680,6 +700,24 @@ inline bool operator>(const Container& other, const LinkedSet<T, Flags, Ts...>& 
 /* CRTP mixin class containing the Python set interface for a linked data structure. */
 template <typename Derived>
 class PySetInterface {
+
+    /* Demote Python wrappers to their equivalent C++ objects before invoking a
+    function. */
+    template <typename Func>
+    inline static auto invoke_cpp(Func func, PyObject* arg) {
+        if (Derived::typecheck(arg)) {
+            Derived* self = reinterpret_cast<Derived*>(arg);
+            return std::visit(
+                [&func](auto& other) {
+                    return func(other);
+                },
+                self->variant
+            );
+        }
+
+        return func(arg);
+    }
+
 public:
 
     static PyObject* add(Derived* self, PyObject* key) {
@@ -776,18 +814,11 @@ public:
             return std::visit(
                 [&args, &nargs](auto& set) {
                     auto result = set.union_();
+                    auto execute = [&result](auto& other) {
+                        result.update(other);
+                    };
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        PyObject* const arg = args[i];
-                        if (Derived::typecheck(arg)) {
-                            std::visit(
-                                [&result](auto& other) {
-                                    result.update(other);
-                                },
-                                reinterpret_cast<Derived*>(arg)->variant
-                            );
-                        } else {
-                            result.update(arg);
-                        }
+                        invoke_cpp(execute, args[i]);
                     }
                     return Derived::construct(std::move(result));
                 },
@@ -804,18 +835,11 @@ public:
             return std::visit(
                 [&args, &nargs](auto& set) {
                     auto result = set.union_left();
+                    auto execute = [&result](auto& other) {
+                        result.update_left(other);
+                    };
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        PyObject* const arg = args[i];
-                        if (Derived::typecheck(arg)) {
-                            std::visit(
-                                [&result](auto& other) {
-                                    result.update_left(other);
-                                },
-                                reinterpret_cast<Derived*>(arg)->variant
-                            );
-                        } else {
-                            result.update_left(arg);
-                        }
+                        invoke_cpp(execute, args[i]);
                     }
                     return Derived::construct(std::move(result));
                 },
@@ -831,18 +855,11 @@ public:
         try {
             std::visit(
                 [&args, &nargs](auto& set) {
+                    auto execute = [&set](auto& other) {
+                        set.update(other);
+                    };
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        PyObject* const arg = args[i];
-                        if (Derived::typecheck(arg)) {
-                            std::visit(
-                                [&set](auto& other) {
-                                    set.update(other);
-                                },
-                                reinterpret_cast<Derived*>(arg)->variant
-                            );
-                        } else {
-                            set.update(arg);
-                        }
+                        invoke_cpp(execute, args[i]);
                     }
                 },
                 self->variant
@@ -858,18 +875,11 @@ public:
         try {
             std::visit(
                 [&args, &nargs](auto& set) {
+                    auto execute = [&set](auto& other) {
+                        set.update_left(other);
+                    };
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        PyObject* const arg = args[i];
-                        if (Derived::typecheck(arg)) {
-                            std::visit(
-                                [&set](auto& other) {
-                                    set.update_left(other);
-                                },
-                                reinterpret_cast<Derived*>(arg)->variant
-                            );
-                        } else {
-                            set.update_left(arg);
-                        }
+                        invoke_cpp(execute, args[i]);
                     }
                 },
                 self->variant
@@ -885,18 +895,11 @@ public:
         try {
             std::visit(
                 [&args, &nargs](auto& set) {
+                    auto execute = [&set](auto& other) {
+                        set.lru_update(other);
+                    };
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        PyObject* const arg = args[i];
-                        if (Derived::typecheck(arg)) {
-                            std::visit(
-                                [&set](auto& other) {
-                                    set.lru_update(other);
-                                },
-                                reinterpret_cast<Derived*>(arg)->variant
-                            );
-                        } else {
-                            set.lru_update(arg);
-                        }
+                        invoke_cpp(execute, args[i]);
                     }
                 },
                 self->variant
@@ -913,18 +916,11 @@ public:
             return std::visit(
                 [&args, &nargs](auto& set) {
                     auto result = set.difference();
+                    auto execute = [&result](auto& other) {
+                        result.difference_update(other);
+                    };
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        PyObject* const arg = args[i];
-                        if (Derived::typecheck(arg)) {
-                            std::visit(
-                                [&result](auto& other) {
-                                    result.difference_update(other);
-                                },
-                                reinterpret_cast<Derived*>(arg)->variant
-                            );
-                        } else {
-                            result.difference_update(arg);
-                        }
+                        invoke_cpp(execute, args[i]);
                     }
                     return Derived::construct(std::move(result));
                 },
@@ -944,18 +940,11 @@ public:
         try {
             std::visit(
                 [&args, &nargs](auto& set) {
+                    auto execute = [&set](auto& other) {
+                        set.difference_update(other);
+                    };
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        PyObject* const arg = args[i];
-                        if (Derived::typecheck(arg)) {
-                            std::visit(
-                                [&set](auto& other) {
-                                    set.difference_update(other);
-                                },
-                                reinterpret_cast<Derived*>(arg)->variant
-                            );
-                        } else {
-                            set.difference_update(arg);
-                        }
+                        invoke_cpp(execute, args[i]);
                     }
                 },
                 self->variant
@@ -976,18 +965,11 @@ public:
             return std::visit(
                 [&args, &nargs](auto& set) {
                     auto result = set.intersection();
+                    auto execute = [&result](auto& other) {
+                        result.intersection_update(other);
+                    };
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        PyObject* const arg = args[i];
-                        if (Derived::typecheck(arg)) {
-                            std::visit(
-                                [&result](auto& other) {
-                                    result.intersection_update(other);
-                                },
-                                reinterpret_cast<Derived*>(arg)->variant
-                            );
-                        } else {
-                            result.intersection_update(arg);
-                        }
+                        invoke_cpp(execute, args[i]);
                     }
                     return Derived::construct(std::move(result));
                 },
@@ -1007,18 +989,11 @@ public:
         try {
             std::visit(
                 [&args, &nargs](auto& set) {
+                    auto execute = [&set](auto& other) {
+                        set.intersection_update(other);
+                    };
                     for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        PyObject* const arg = args[i];
-                        if (Derived::typecheck(arg)) {
-                            std::visit(
-                                [&set](auto& other) {
-                                    set.intersection_update(other);
-                                },
-                                reinterpret_cast<Derived*>(arg)->variant
-                            );
-                        } else {
-                            set.intersection_update(arg);
-                        }
+                        invoke_cpp(execute, args[i]);
                     }
                 },
                 self->variant
@@ -1034,16 +1009,10 @@ public:
         try {
             return std::visit(
                 [&items](auto& set) {
-                    if (Derived::typecheck(items)) {
-                        return Derived::construct(std::visit(
-                            [&set](auto& other) {
-                                return set.symmetric_difference(other);
-                            },
-                            reinterpret_cast<Derived*>(items)->variant
-                        ));
-                    } else {
-                        return Derived::construct(set.symmetric_difference(items));
-                    }
+                    auto execute = [&set](auto& other) {
+                        return Derived::construct(set.symmetric_difference(other));
+                    };
+                    return invoke_cpp(execute, items);
                 },
                 self->variant
             );
@@ -1057,16 +1026,10 @@ public:
         try {
             return std::visit(
                 [&items](auto& set) {
-                    if (Derived::typecheck(items)) {
-                        return Derived::construct(std::visit(
-                            [&set](auto& other) {
-                                return set.symmetric_difference_left(other);
-                            },
-                            reinterpret_cast<Derived*>(items)->variant
-                        ));
-                    } else {
-                        return Derived::construct(set.symmetric_difference_left(items));
-                    }
+                    auto execute = [&set](auto& other) {
+                        return Derived::construct(set.symmetric_difference_left(other));
+                    };
+                    return invoke_cpp(execute, items);
                 },
                 self->variant
             );
@@ -1080,16 +1043,10 @@ public:
         try {
             std::visit(
                 [&items](auto& set) {
-                    if (Derived::typecheck(items)) {
-                        std::visit(
-                            [&set](auto& other) {
-                                set.symmetric_difference_update(other);
-                            },
-                            reinterpret_cast<Derived*>(items)->variant
-                        );
-                    } else {
-                        set.symmetric_difference_update(items);
-                    }
+                    auto execute = [&set](auto& other) {
+                        set.symmetric_difference_update(other);
+                    };
+                    invoke_cpp(execute, items);
                 },
                 self->variant
             );
@@ -1104,16 +1061,10 @@ public:
         try {
             std::visit(
                 [&items](auto& set) {
-                    if (Derived::typecheck(items)) {
-                        std::visit(
-                            [&set](auto& other) {
-                                set.symmetric_difference_update_left(other);
-                            },
-                            reinterpret_cast<Derived*>(items)->variant
-                        );
-                    } else {
-                        set.symmetric_difference_update_left(items);
-                    }
+                    auto execute = [&set](auto& other) {
+                        set.symmetric_difference_update_left(other);
+                    };
+                    invoke_cpp(execute, items);
                 },
                 self->variant
             );
@@ -1123,9 +1074,6 @@ public:
             return nullptr;
         }
     }
-
-    // TODO: these probably also need to check their arguments for Derived-ness and
-    // forward the operation to C++ if possible.
 
     static PyObject* isdisjoint(Derived* self, PyObject* other) {
         try {
@@ -1276,16 +1224,10 @@ public:
         try {
             return std::visit(
                 [&other](auto& set) {
-                    if (Derived::typecheck(other)) {
-                        return std::visit(
-                            [&set](auto& other) {
-                                return Derived::construct(set | other);
-                            },
-                            reinterpret_cast<Derived*>(other)->variant
-                        );
-                    } else {
+                    auto execute = [&set](auto& other) {
                         return Derived::construct(set | other);
-                    }
+                    };
+                    return invoke_cpp(execute, other);
                 },
                 self->variant
             );
@@ -1299,16 +1241,10 @@ public:
         try {
             std::visit(
                 [&other](auto& set) {
-                    if (Derived::typecheck(other)) {
-                        std::visit(
-                            [&set](auto& other) {
-                                set |= other;
-                            },
-                            reinterpret_cast<Derived*>(other)->variant
-                        );
-                    } else {
+                    auto execute = [&set](auto& other) {
                         set |= other;
-                    }
+                    };
+                    invoke_cpp(execute, other);
                 },
                 self->variant
             );
@@ -1323,16 +1259,10 @@ public:
         try {
             return std::visit(
                 [&other](auto& set) {
-                    if (Derived::typecheck(other)) {
-                        return std::visit(
-                            [&set](auto& other) {
-                                return Derived::construct(set - other);
-                            },
-                            reinterpret_cast<Derived*>(other)->variant
-                        );
-                    } else {
+                    auto execute = [&set](auto& other) {
                         return Derived::construct(set - other);
-                    }
+                    };
+                    return invoke_cpp(execute, other);
                 },
                 self->variant
             );
@@ -1346,16 +1276,10 @@ public:
         try {
             std::visit(
                 [&other](auto& set) {
-                    if (Derived::typecheck(other)) {
-                        std::visit(
-                            [&set](auto& other) {
-                                set -= other;
-                            },
-                            reinterpret_cast<Derived*>(other)->variant
-                        );
-                    } else {
+                    auto execute = [&set](auto& other) {
                         set -= other;
-                    }
+                    };
+                    invoke_cpp(execute, other);
                 },
                 self->variant
             );
@@ -1370,16 +1294,10 @@ public:
         try {
             return std::visit(
                 [&other](auto& set) {
-                    if (Derived::typecheck(other)) {
-                        return std::visit(
-                            [&set](auto& other) {
-                                return Derived::construct(set & other);
-                            },
-                            reinterpret_cast<Derived*>(other)->variant
-                        );
-                    } else {
+                    auto execute = [&set](auto& other) {
                         return Derived::construct(set & other);
-                    }
+                    };
+                    return invoke_cpp(execute, other);
                 },
                 self->variant
             );
@@ -1393,16 +1311,10 @@ public:
         try {
             std::visit(
                 [&other](auto& set) {
-                    if (Derived::typecheck(other)) {
-                        std::visit(
-                            [&set](auto& other) {
-                                set &= other;
-                            },
-                            reinterpret_cast<Derived*>(other)->variant
-                        );
-                    } else {
+                    auto execute = [&set](auto& other) {
                         set &= other;
-                    }
+                    };
+                    invoke_cpp(execute, other);
                 },
                 self->variant
             );
@@ -1417,16 +1329,10 @@ public:
         try {
             return std::visit(
                 [&other](auto& set) {
-                    if (Derived::typecheck(other)) {
-                        return std::visit(
-                            [&set](auto& other) {
-                                return Derived::construct(set ^ other);
-                            },
-                            reinterpret_cast<Derived*>(other)->variant
-                        );
-                    } else {
+                    auto execute = [&set](auto& other) {
                         return Derived::construct(set ^ other);
-                    }
+                    };
+                    return invoke_cpp(execute, other);
                 },
                 self->variant
             );
@@ -1440,16 +1346,10 @@ public:
         try {
             std::visit(
                 [&other](auto& set) {
-                    if (Derived::typecheck(other)) {
-                        std::visit(
-                            [&set](auto& other) {
-                                set ^= other;
-                            },
-                            reinterpret_cast<Derived*>(other)->variant
-                        );
-                    } else {
+                    auto execute = [&set](auto& other) {
                         set ^= other;
-                    }
+                    };
+                    invoke_cpp(execute, other);
                 },
                 self->variant
             );

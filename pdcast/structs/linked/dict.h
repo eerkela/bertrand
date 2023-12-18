@@ -711,18 +711,18 @@ public:
 
     template <typename... Args>
     inline auto slice(Args&&... args)
-        -> linked::SliceProxy<View, LinkedDict, Yield::KEY>
+        -> linked::SliceProxy<View, DynamicDict, Yield::KEY>
     {
-        return linked::slice<LinkedDict, Yield::KEY>(
+        return linked::slice<DynamicDict, Yield::KEY>(
             this->view, std::forward<Args>(args)...
         );
     }
 
     template <typename... Args>
     inline auto slice(Args&&... args) const
-        -> const linked::SliceProxy<const View, const LinkedDict, Yield::KEY>
+        -> const linked::SliceProxy<const View, DynamicDict, Yield::KEY>
     {
-        return linked::slice<const LinkedDict, Yield::KEY>(
+        return linked::slice<DynamicDict, Yield::KEY>(
             this->view, std::forward<Args>(args)...
         );
     }
@@ -888,24 +888,44 @@ inline auto operator^=(LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator==(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other) {
+    if constexpr (std::is_same_v<decltype(dict), decltype(other)>) {
+        if (&dict == &other) {
+            return true;
+        }
+    }
     return linked::dict_equal(dict.view, other);
 }
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator==(const Map& other, const LinkedDict<K, V, Flags, Ts...>& dict) {
+    if constexpr (std::is_same_v<decltype(dict), decltype(other)>) {
+        if (&dict == &other) {
+            return true;
+        }
+    }
     return linked::dict_equal(dict.view, other);
 }
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator!=(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other) {
+    if constexpr (std::is_same_v<decltype(dict), decltype(other)>) {
+        if (&dict == &other) {
+            return false;
+        }
+    }
     return linked::dict_not_equal(dict.view, other);
 }
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline bool operator!=(const Map& other, const LinkedDict<K, V, Flags, Ts...>& dict) {
+    if constexpr (std::is_same_v<decltype(dict), decltype(other)>) {
+        if (&dict == &other) {
+            return false;
+        }
+    }
     return linked::dict_not_equal(dict.view, other);
 }
 
@@ -1234,24 +1254,44 @@ inline bool operator<=(const Container& other, const KeysProxy<Dict>& proxy) {
 
 template <typename Container, typename Dict>
 inline bool operator==(const KeysProxy<Dict>& proxy, const Container& other) {
+    if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
+        if (&proxy == &other) {
+            return true;
+        }
+    }
     return linked::set_equal(proxy.mapping().view, other);
 }
 
 
 template <typename Container, typename Dict>
 inline bool operator==(const Container& other, const KeysProxy<Dict>& proxy) {
+    if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
+        if (&proxy == &other) {
+            return true;
+        }
+    }
     return linked::set_equal(proxy.mapping().view, other);
 }
 
 
 template <typename Container, typename Dict>
 inline bool operator!=(const KeysProxy<Dict>& proxy, const Container& other) {
+    if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
+        if (&proxy == &other) {
+            return false;
+        }
+    }
     return linked::set_not_equal(proxy.mapping().view, other);
 }
 
 
 template <typename Container, typename Dict>
 inline bool operator!=(const Container& other, const KeysProxy<Dict>& proxy) {
+    if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
+        if (&proxy == &other) {
+            return false;
+        }
+    }
     return linked::set_not_equal(proxy.mapping().view, other);
 }
 
@@ -1375,24 +1415,44 @@ inline bool operator<=(const Container& other, const ValuesProxy<Dict>& proxy) {
 
 template <typename Container, typename Dict>
 inline bool operator==(const ValuesProxy<Dict>& proxy, const Container& other) {
+    if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
+        if (&proxy == &other) {
+            return true;
+        }
+    }
     return lexical_eq(proxy, other);
 }
 
 
 template <typename Container, typename Dict>
 inline bool operator==(const Container& other, const ValuesProxy<Dict>& proxy) {
+    if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
+        if (&proxy == &other) {
+            return true;
+        }
+    }
     return lexical_eq(other, proxy);
 }
 
 
 template <typename Container, typename Dict>
 inline bool operator!=(const ValuesProxy<Dict>& proxy, const Container& other) {
+    if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
+        if (&proxy == &other) {
+            return false;
+        }
+    }
     return !lexical_eq(proxy, other);
 }
 
 
 template <typename Container, typename Dict>
 inline bool operator!=(const Container& other, const ValuesProxy<Dict>& proxy) {
+    if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
+        if (&proxy == &other) {
+            return false;
+        }
+    }
     return !lexical_eq(other, proxy);
 }
 
@@ -1698,24 +1758,44 @@ inline auto operator*(const ItemsProxy<Dict, as_pytuple>& proxy, T&& other)
 
 template <typename Container, typename Dict, bool as_pytuple>
 inline bool operator==(const ItemsProxy<Dict, as_pytuple>& proxy, const Container& other) {
+    if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
+        if (&proxy == &other) {
+            return true;
+        }
+    }
     return proxy.mapping() == other;
 }
 
 
 template <typename Container, typename Dict, bool as_pytuple>
 inline bool operator==(const Container& other, const ItemsProxy<Dict, as_pytuple>& proxy) {
+    if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
+        if (&proxy == &other) {
+            return true;
+        }
+    }
     return proxy.mapping() == other;
 }
 
 
 template <typename Container, typename Dict, bool as_pytuple>
 inline bool operator!=(const ItemsProxy<Dict, as_pytuple>& proxy, const Container& other) {
+    if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
+        if (&proxy == &other) {
+            return false;
+        }
+    }
     return proxy.mapping() != other;
 }
 
 
 template <typename Container, typename Dict, bool as_pytuple>
 inline bool operator!=(const Container& other, const ItemsProxy<Dict, as_pytuple>& proxy) {
+    if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
+        if (&proxy == &other) {
+            return false;
+        }
+    }
     return proxy.mapping() != other;
 }
 

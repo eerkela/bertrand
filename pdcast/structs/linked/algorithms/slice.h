@@ -145,6 +145,12 @@ namespace linked {
     /* A proxy for a slice within a list, as returned by the slice() factory method. */
     template <typename View, typename Result, Yield yield, bool as_pytuple = false>
     class SliceProxy {
+        static_assert(
+            !(Result::FLAGS & Config::FIXED_SIZE),
+            "slice().get() must return a dynamically-sized container for consistency "
+            "with other algorithms that produce a new data structure"
+        );
+
         using Node = std::conditional_t<
             std::is_const_v<View>,
             const typename View::Node,

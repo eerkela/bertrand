@@ -77,6 +77,7 @@ class LinkedList : public LinkedBase<
         >,
         Lock
     >;
+    using DynamicList = LinkedList<T, Flags & ~Config::FIXED_SIZE, Lock>;
 
 public:
     using View = typename Base::View;
@@ -254,18 +255,18 @@ public:
 
     template <typename... Args>
     inline auto slice(Args&&... args)
-        -> linked::SliceProxy<View, LinkedList, Yield::KEY>
+        -> linked::SliceProxy<View, DynamicList, Yield::KEY>
     {
-        return linked::slice<LinkedList, Yield::KEY>(
+        return linked::slice<DynamicList, Yield::KEY>(
             this->view, std::forward<Args>(args)...
         );
     }
 
     template <typename... Args>
     inline auto slice(Args&&... args) const
-        -> const linked::SliceProxy<const View, const LinkedList, Yield::KEY>
+        -> const linked::SliceProxy<const View, DynamicList, Yield::KEY>
     {
-        return linked::slice<LinkedList, Yield::KEY>(
+        return linked::slice<DynamicList, Yield::KEY>(
             this->view, std::forward<Args>(args)...
         );
     }
@@ -325,116 +326,136 @@ inline auto operator<<(std::ostream& stream, const LinkedList<T, Flags, Ts...>& 
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator+(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs)
+inline auto operator+(const LinkedList<T, Flags, Ts...>& list, const Container& other)
     -> LinkedList<T, Flags & ~Config::FIXED_SIZE, Ts...>
 {
-    return linked::concatenate(lhs.view, rhs);
+    return linked::concatenate(list.view, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator+=(LinkedList<T, Flags, Ts...>& lhs, const Container& rhs)
+inline auto operator+=(LinkedList<T, Flags, Ts...>& list, const Container& other)
     -> LinkedList<T, Flags, Ts...>&
 {
-    linked::extend(lhs.view, rhs);
-    return lhs;
+    linked::extend(list.view, other);
+    return list;
 }
 
 
 template <typename T, unsigned int Flags, typename... Ts>
-inline auto operator*(const LinkedList<T, Flags, Ts...>& list, const long long rhs)
+inline auto operator*(const LinkedList<T, Flags, Ts...>& list, const long long other)
     -> LinkedList<T, Flags & ~Config::FIXED_SIZE, Ts...>
 {
-    return linked::repeat(list.view, rhs);
+    return linked::repeat(list.view, other);
 }
 
 
 template <typename T, unsigned int Flags, typename... Ts>
-inline auto operator*(const long long lhs, const LinkedList<T, Flags, Ts...>& list)
+inline auto operator*(const long long other, const LinkedList<T, Flags, Ts...>& list)
     -> LinkedList<T, Flags & ~Config::FIXED_SIZE, Ts...>
 {
-    return linked::repeat(list.view, lhs);
+    return linked::repeat(list.view, other);
 }
 
 
 template <typename T, unsigned int Flags, typename... Ts>
-inline auto operator*=(LinkedList<T, Flags, Ts...>& list, const long long rhs)
+inline auto operator*=(LinkedList<T, Flags, Ts...>& list, const long long other)
     -> LinkedList<T, Flags, Ts...>&
 {
-    linked::repeat_inplace(list.view, rhs);
+    linked::repeat_inplace(list.view, other);
     return list;
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator<(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
-    return lexical_lt(lhs, rhs);
+inline bool operator<(const LinkedList<T, Flags, Ts...>& list, const Container& other) {
+    return lexical_lt(list, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator<(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
-    return lexical_lt(lhs, rhs);
+inline bool operator<(const Container& other, const LinkedList<T, Flags, Ts...>& list) {
+    return lexical_lt(other, list);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator<=(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
-    return lexical_le(lhs, rhs);
+inline bool operator<=(const LinkedList<T, Flags, Ts...>& list, const Container& other) {
+    return lexical_le(list, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator<=(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
-    return lexical_lt(lhs, rhs);
+inline bool operator<=(const Container& other, const LinkedList<T, Flags, Ts...>& list) {
+    return lexical_lt(other, list);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator==(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
-    return lexical_eq(lhs, rhs);
+inline bool operator==(const LinkedList<T, Flags, Ts...>& list, const Container& other) {
+    if constexpr (std::is_same_v<decltype(list), decltype(other)>) {
+        if (&list == &other) {
+            return true;
+        }
+    }
+    return lexical_eq(list, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator==(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
-    return lexical_eq(lhs, rhs);
+inline bool operator==(const Container& other, const LinkedList<T, Flags, Ts...>& list) {
+    if constexpr (std::is_same_v<decltype(list), decltype(other)>) {
+        if (&list == &other) {
+            return true;
+        }
+    }
+    return lexical_eq(other, list);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator!=(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
-    return !lexical_eq(lhs, rhs);
+inline bool operator!=(const LinkedList<T, Flags, Ts...>& list, const Container& other) {
+    if constexpr (std::is_same_v<decltype(list), decltype(other)>) {
+        if (&list == &other) {
+            return false;
+        }
+    }
+    return !lexical_eq(list, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator!=(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
-    return !lexical_eq(lhs, rhs);
+inline bool operator!=(const Container& other, const LinkedList<T, Flags, Ts...>& list) {
+    if constexpr (std::is_same_v<decltype(list), decltype(other)>) {
+        if (&list == &other) {
+            return false;
+        }
+    }
+    return !lexical_eq(other, list);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator>=(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
-    return lexical_ge(lhs, rhs);
+inline bool operator>=(const LinkedList<T, Flags, Ts...>& list, const Container& other) {
+    return lexical_ge(list, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator>=(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
-    return lexical_ge(lhs, rhs);
+inline bool operator>=(const Container& other, const LinkedList<T, Flags, Ts...>& list) {
+    return lexical_ge(other, list);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator>(const LinkedList<T, Flags, Ts...>& lhs, const Container& rhs) {
-    return lexical_gt(lhs, rhs);
+inline bool operator>(const LinkedList<T, Flags, Ts...>& list, const Container& other) {
+    return lexical_gt(list, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator>(const Container& lhs, const LinkedList<T, Flags, Ts...>& rhs) {
-    return lexical_gt(lhs, rhs);
+inline bool operator>(const Container& other, const LinkedList<T, Flags, Ts...>& list) {
+    return lexical_gt(other, list);
 }
 
 
