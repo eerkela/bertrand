@@ -2,6 +2,8 @@
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_UNION_H
 
 #include <type_traits>  // std::enable_if_t<>
+#include <unordered_map>  // std::unordered_map
+#include <unordered_set>  // std::unordered_set
 #include "../../util/container.h"  // python::Dict
 #include "../../util/iter.h"  // iter()
 #include "../../util/ops.h"  // len()
@@ -57,7 +59,7 @@ namespace linked {
                 yield == Yield::KEY,
                 typename ViewTraits<
                     typename ViewTraits<View>::As::DYNAMIC
-                >::As::template Set<yield>,
+                >::As::template Set<Yield::KEY>,
                 typename ViewTraits<View>::As::DYNAMIC
             >
         >
@@ -75,13 +77,14 @@ namespace linked {
         );
 
         if constexpr (yield == Yield::KEY) {
-            using Set = typename ViewTraits<DynamicView>::As::template Set<yield>;
+            using Set = typename ViewTraits<DynamicView>::As::template Set<Yield::KEY>;
 
             Set result(view.size(), view.specialization());
             auto it = view.template begin<Yield::KEY>();
             auto end = view.template end<Yield::KEY>();
-            for (; it != end; ++it) {
+            while (it != end) {
                 result.template node<Allocator::INSERT_TAIL>(*it);
+                ++it;
             }
 
             for (const auto& item : iter(items)) {
@@ -93,8 +96,9 @@ namespace linked {
             DynamicView result(view.size(), view.specialization());
             auto it = view.template begin();
             auto end = view.template end();
-            for (; it != end; ++it) {
+            while (it != end) {
                 result.template node<Allocator::INSERT_TAIL>(*(it.curr()));
+                ++it;
             }
 
             if constexpr (is_pyobject<Container>) {
@@ -155,7 +159,7 @@ namespace linked {
                 yield == Yield::KEY,
                 typename ViewTraits<
                     typename ViewTraits<View>::As::DYNAMIC
-                >::As::template Set<yield>,
+                >::As::template Set<Yield::KEY>,
                 typename ViewTraits<View>::As::DYNAMIC
             >
         >
@@ -169,7 +173,7 @@ namespace linked {
         using Node = typename View::Node;
 
         if constexpr (yield == Yield::KEY) {
-            using Set = typename ViewTraits<DynamicView>::As::template Set<yield>;
+            using Set = typename ViewTraits<DynamicView>::As::template Set<Yield::KEY>;
 
             std::unordered_set<const Node*> found;
             for (const auto& item : iter(items)) {
@@ -182,10 +186,11 @@ namespace linked {
             Set result(view.size() - found.size(), view.specialization());
             auto it = view.template begin<Yield::KEY>();
             auto end = view.template end<Yield::KEY>();
-            for (; it != end; ++it) {
+            while (it != end) {
                 if (found.find(it.curr()) == found.end()) {
                     result.template node<View::Allocator::INSERT_TAIL>(*it);
                 }
+                ++it;
             }
             return result;
 
@@ -246,7 +251,7 @@ namespace linked {
     }
 
 
-    /* Get the intersection keys or key-value pairs held in a linked dictionary
+    /* Get the intersection of keys or key-value pairs held in a linked dictionary
     compared to those of an arbitrary container. */
     template <Yield yield = Yield::KEY, typename View, typename Container>
     auto intersection(const View& view, const Container& items)
@@ -256,7 +261,7 @@ namespace linked {
                 yield == Yield::KEY,
                 typename ViewTraits<
                     typename ViewTraits<View>::As::DYNAMIC
-                >::As::template Set<yield>,
+                >::As::template Set<Yield::KEY>,
                 typename ViewTraits<View>::As::DYNAMIC
             >
         >
@@ -270,7 +275,7 @@ namespace linked {
         using Node = typename View::Node;
 
         if constexpr (yield == Yield::KEY) {
-            using Set = typename ViewTraits<DynamicView>::As::template Set<yield>;
+            using Set = typename ViewTraits<DynamicView>::As::template Set<Yield::KEY>;
 
             std::unordered_set<const Node*> found;
             for (const auto& item : iter(items)) {
@@ -283,25 +288,45 @@ namespace linked {
             Set result(found.size(), view.specialization());
             auto it = view.template begin<Yield::KEY>();
             auto end = view.template end<Yield::KEY>();
-            for (; it != end; ++it) {
+            while (it != end) {
                 if (found.find(it.curr()) != found.end()) {
                     result.template node<View::Allocator::INSERT_TAIL>(*it);
                 }
+                ++it;
             }
             return result;
 
         } else {
             std::unordered_map<const Node*, typename View::MappedValue> found;
-            for (const auto& item : iter(items)) {
-                if constexpr (is_pairlike<std::decay_t<decltype(item)>>) {
-                    const Node* node = view.search(std::get<0>(item));
-                    if (node != nullptr) {
-                        found.insert({node, std::get<1>(item)});
+            if constexpr (is_pyobject<Container>) {
+                if (PyDict_Check(items)) {
+                    python::Dict<python::Ref::BORROW> dict(items);
+                    for (const auto& item : iter(dict)) {
+                        const Node* node = view.search(std::get<0>(item));
+                        if (node != nullptr) {
+                            found.insert({node, std::get<1>(item)});
+                        }
                     }
                 } else {
-                    const Node* node = view.search(item);
-                    if (node != nullptr) {
-                        found.insert({node, node->mapped()});
+                    for (const auto& item : iter(items)) {
+                        const Node* node = view.search(item);
+                        if (node != nullptr) {
+                            found.insert({node, node->mapped()});
+                        }
+                    }
+                }
+            } else {
+                for (const auto& item : iter(items)) {
+                    if constexpr (is_pairlike<std::decay_t<decltype(item)>>) {
+                        const Node* node = view.search(std::get<0>(item));
+                        if (node != nullptr) {
+                            found.insert({node, std::get<1>(item)});
+                        }
+                    } else {
+                        const Node* node = view.search(item);
+                        if (node != nullptr) {
+                            found.insert({node, node->mapped()});
+                        }
                     }
                 }
             }
@@ -309,25 +334,26 @@ namespace linked {
             DynamicView result(found.size(), view.specialization());
             auto it = view.template begin<Yield::KEY>();
             auto end = view.template end<Yield::KEY>();
-            for (; it != end; ++it) {
+            while (it != end) {
                 auto found_it = found.find(it.curr());
                 if (found_it != found.end()) {
                     result.template node<View::Allocator::INSERT_TAIL>(
                         *it, found_it->second
                     );
                 }
+                ++it;
             }
             return result;
         }
     }
 
 
-    /* Get the symmetric difference between a linked set or dictionary and an arbitrary
-    Python iterable. */
-    template <bool left, typename View, typename Container>
-    inline auto symmetric_difference(const View& view, const Container& items)
+    /* Get the symmetric difference of keys held in a linked set compared to those of
+    an arbitrary container. */
+    template <bool left = false, typename View, typename Container>
+    auto symmetric_difference(const View& view, const Container& items)
         -> std::enable_if_t<
-            ViewTraits<View>::hashed,
+            ViewTraits<View>::setlike,
             typename ViewTraits<View>::As::DYNAMIC
         >
     {
@@ -366,6 +392,93 @@ namespace linked {
         }
 
         return result;
+    }
+
+
+    /* Get the symmetric difference of keys or key-value pairs held in a linked dictionary
+    compared to those of an arbitrary container. */
+    template <Yield yield = Yield::KEY, bool left = false, typename View, typename Container>
+    auto symmetric_difference(const View& view, const Container& items)
+        -> std::enable_if_t<
+            ViewTraits<View>::dictlike,
+            std::conditional_t<
+                yield == Yield::KEY,
+                typename ViewTraits<
+                    typename ViewTraits<View>::As::DYNAMIC
+                >::As::template Set<Yield::KEY>,
+                typename ViewTraits<View>::As::DYNAMIC
+            >
+        >
+    {
+        static_assert(
+            yield != Yield::VALUE,
+            "cannot perform set comparisons on dictionary values: use listlike "
+            "operators instead"
+        );
+        using DynamicView = typename ViewTraits<View>::As::DYNAMIC;
+        using Allocator = typename View::Allocator;
+
+        if constexpr (yield == Yield::KEY) {
+            using Set = typename ViewTraits<DynamicView>::As::template Set<Yield::KEY>;
+            using Temp = typename ViewTraits<Set>::template Reconfigure<
+                Config::SINGLY_LINKED
+            >;
+
+            Temp other(items, std::nullopt, nullptr, false);
+            Set result(std::nullopt, view.specialization());
+
+            for (auto it = view.begin(), end = view.end(); it != end; ++it) {
+                if (other.search(it.curr()) == nullptr) {
+                    result.template node<Allocator::INSERT_TAIL>(*(it.curr()));
+                }
+            }
+
+            for (auto it = other.begin(), end = other.end(); it != end; ++it) {
+                if (view.search(it.curr()) == nullptr) {
+                    if constexpr (left) {
+                        result.template node<Allocator::INSERT_HEAD>(
+                            std::move(*(it.curr()))
+                        );
+                    } else {
+                        result.template node<Allocator::INSERT_TAIL>(
+                            std::move(*(it.curr()))
+                        );
+                    }
+                }
+            }
+
+            return result;
+
+        } else {
+            using Temp = typename ViewTraits<DynamicView>::template Reconfigure<
+                Config::SINGLY_LINKED
+            >;
+
+            Temp other(items, std::nullopt, nullptr, false);
+            DynamicView result(std::nullopt, view.specialization());
+
+            for (auto it = view.begin(), end = view.end(); it != end; ++it) {
+                if (other.search(it.curr()) == nullptr) {
+                    result.template node<Allocator::INSERT_TAIL>(*(it.curr()));
+                }
+            }
+
+            for (auto it = other.begin(), end = other.end(); it != end; ++it) {
+                if (view.search(it.curr()) == nullptr) {
+                    if constexpr (left) {
+                        result.template node<Allocator::INSERT_HEAD>(
+                            std::move(*(it.curr()))
+                        );
+                    } else {
+                        result.template node<Allocator::INSERT_TAIL>(
+                            std::move(*(it.curr()))
+                        );
+                    }
+                }
+            }
+
+            return result;
+        }
     }
 
 

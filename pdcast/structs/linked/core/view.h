@@ -219,8 +219,8 @@ public:
     }
 
     /* Inequality comparison to terminate the sequence. */
-    template <Direction T, Yield Y, bool PT>
-    inline bool operator!=(const Iterator<View, T, Y, PT>& other) const noexcept {
+    template <Direction D, Yield Y, bool PT>
+    inline bool operator!=(const Iterator<View, D, Y, PT>& other) const noexcept {
         return _curr != other.curr();
     }
 
@@ -964,13 +964,16 @@ class ListView : public BaseView<
 > {
     using Base = BaseView<ListView<NodeType, Flags>, ListAllocator<NodeType, Flags>>;
 
+    template <typename View>
+    friend class ViewTraits;
+
+    template <unsigned int NewFlags>
+    using Reconfigure = ListView<NodeType, NewFlags>;
+
 public:
     static constexpr bool listlike = true;
     using Base::Base;
     using Base::operator=;
-
-    template <unsigned int NewFlags>
-    using Reconfigure = ListView<NodeType, NewFlags>;
 
 };
 
@@ -990,13 +993,16 @@ class SetView : public HashView<
         SetView<NodeType, Flags>, HashAllocator<Hashed<NodeType>, Flags>
     >;
 
+    template <typename View>
+    friend class ViewTraits;
+
+    template <unsigned int NewFlags>
+    using Reconfigure = SetView<NodeType, NewFlags>;
+
 public:
     static constexpr bool setlike = true;
     using Base::Base;
     using Base::operator=;
-
-    template <unsigned int NewFlags>
-    using Reconfigure = SetView<NodeType, NewFlags>;
 
 };
 
@@ -1135,39 +1141,62 @@ public:
 /* A collection of SFINAE traits for inspecting view types at compile time and
 dispatching non-member methods accordingly. */
 template <typename ViewType>
-struct ViewTraits {
+class ViewTraits {
+    using View = std::remove_cv_t<std::remove_reference_t<ViewType>>;
+
+    template <typename View, bool linked = false>
+    struct Kind {
+        static constexpr bool listlike = false;
+        static constexpr bool setlike = false;
+        static constexpr bool dictlike = false;
+
+        template <unsigned int Config>
+        using Reconfigure = void;
+    };
+
+    template <typename View>
+    struct Kind<View, true> {
+        static constexpr bool listlike = View::listlike;
+        static constexpr bool setlike = View::setlike;
+        static constexpr bool dictlike = View::dictlike;
+
+        template <unsigned int Config>
+        using Reconfigure = typename View::template Reconfigure<Config>;
+    };
+
+public:
 
     // dispatch hooks for non-member algorithms
-    static constexpr bool linked = std::is_base_of_v<ViewTag, ViewType>;
-    static constexpr bool listlike = linked && ViewType::listlike;
-    static constexpr bool setlike = linked && ViewType::setlike;
-    static constexpr bool dictlike = linked && ViewType::dictlike;
+    static constexpr bool linked = std::is_base_of_v<ViewTag, View>;
+    static constexpr bool listlike = Kind<View, linked>::listlike;
+    static constexpr bool setlike = Kind<View, linked>::setlike;
+    static constexpr bool dictlike = Kind<View, linked>::dictlike;
     static constexpr bool hashed = setlike || dictlike;
 
     // template introspection
-    static constexpr unsigned int FLAGS = ViewType::FLAGS;
-    static constexpr bool SINGLY_LINKED = ViewType::SINGLY_LINKED;
-    static constexpr bool DOUBLY_LINKED = ViewType::DOUBLY_LINKED;
-    static constexpr bool XOR = ViewType::XOR;
-    static constexpr bool FIXED_SIZE = ViewType::FIXED_SIZE;
-    static constexpr bool PACKED = ViewType::PACKED;
-    static constexpr bool STRICTLY_TYPED = ViewType::STRICTLY_TYPED;
+    static constexpr unsigned int FLAGS = View::FLAGS;
+    static constexpr bool SINGLY_LINKED = View::SINGLY_LINKED;
+    static constexpr bool DOUBLY_LINKED = View::DOUBLY_LINKED;
+    static constexpr bool XOR = View::XOR;
+    static constexpr bool FIXED_SIZE = View::FIXED_SIZE;
+    static constexpr bool PACKED = View::PACKED;
+    static constexpr bool STRICTLY_TYPED = View::STRICTLY_TYPED;
 
     // reconfigure with different flags
     class As {
-        using Node = typename ViewType::Node;
+        using Node = typename View::Node;
 
         template <Yield yield, bool as_pytuple, bool dictlike = false>
         struct AsList {
-            using Value = typename ViewType::Value;
+            using Value = typename View::Value;
             using RootNode = typename NodeTraits<Node>::Root;
             using type = ListView<RootNode, FLAGS>;
         };
 
         template <Yield yield, bool as_pytuple>
         struct AsList<yield, as_pytuple, true> {
-            using Key = typename ViewType::Value;
-            using Value = typename ViewType::MappedValue;
+            using Key = typename View::Value;
+            using Value = typename View::MappedValue;
             using NewValue = std::conditional_t<
                 yield == Yield::KEY,
                 Key,
@@ -1182,21 +1211,23 @@ struct ViewTraits {
                 >
             >;
             using RootNode = typename NodeTraits<Node>::Root;
-            using ListNode = typename NodeTraits<RootNode>::template Reconfigure<NewValue>;
+            using ListNode = typename NodeTraits<RootNode>::template Reconfigure<
+                NewValue
+            >;
             using type = ListView<ListNode, FLAGS>;
         };
 
         template <Yield yield, bool as_pytuple, bool dictlike = false>
         struct AsSet {
-            using Value = typename ViewType::Value;
+            using Value = typename View::Value;
             using RootNode = typename NodeTraits<Node>::Root;
             using type = SetView<RootNode, FLAGS>;
         };
 
         template <Yield yield, bool as_pytuple>
         struct AsSet<yield, as_pytuple, true> {
-            using Key = typename ViewType::Value;
-            using Value = typename ViewType::MappedValue;
+            using Key = typename View::Value;
+            using Value = typename View::MappedValue;
             using NewValue = std::conditional_t<
                 yield == Yield::KEY,
                 Key,
@@ -1211,7 +1242,9 @@ struct ViewTraits {
                 >
             >;
             using RootNode = typename NodeTraits<Node>::Root;
-            using SetNode = typename NodeTraits<RootNode>::template Reconfigure<NewValue>;
+            using SetNode = typename NodeTraits<RootNode>::template Reconfigure<
+                NewValue
+            >;
             using type = SetView<SetNode, FLAGS>;
         };
 
@@ -1226,35 +1259,35 @@ struct ViewTraits {
         using SINGLY_LINKED = typename ViewTraits::template Reconfigure<
             (FLAGS & ~(Config::DOUBLY_LINKED | Config::XOR)) | Config::SINGLY_LINKED
         >;
-        using DOUBLY_LINKED = typename ViewType::template Reconfigure<
+        using DOUBLY_LINKED = typename View::template Reconfigure<
             (FLAGS & ~(Config::SINGLY_LINKED | Config::XOR)) | Config::DOUBLY_LINKED
         >;
-        using XOR = typename ViewType::template Reconfigure<
+        using XOR = typename View::template Reconfigure<
             (FLAGS & ~(Config::SINGLY_LINKED | Config::DOUBLY_LINKED)) | Config::XOR
         >;
-        using DYNAMIC = typename ViewType::template Reconfigure<
+        using DYNAMIC = typename View::template Reconfigure<
             FLAGS & ~Config::FIXED_SIZE
         >;
-        using FIXED_SIZE = typename ViewType::template Reconfigure<
+        using FIXED_SIZE = typename View::template Reconfigure<
             FLAGS | Config::FIXED_SIZE
         >;
-        using PACKED = typename ViewType::template Reconfigure<
+        using PACKED = typename View::template Reconfigure<
             FLAGS | Config::PACKED
         >;
-        using UNPACKED = typename ViewType::template Reconfigure<
+        using UNPACKED = typename View::template Reconfigure<
             FLAGS & ~Config::PACKED
         >;
-        using STRICTLY_TYPED = typename ViewType::template Reconfigure<
+        using STRICTLY_TYPED = typename View::template Reconfigure<
             FLAGS | Config::STRICTLY_TYPED
         >;
-        using LOOSELY_TYPED = typename ViewType::template Reconfigure<
+        using LOOSELY_TYPED = typename View::template Reconfigure<
             FLAGS & ~Config::STRICTLY_TYPED
         >;
 
     };
 
     template <unsigned int Config>
-    using Reconfigure = typename ViewType::template Reconfigure<Config>;
+    using Reconfigure = typename Kind<View, linked>::template Reconfigure<Config>;
 
 };
 

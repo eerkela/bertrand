@@ -1124,6 +1124,9 @@ public:
         }
     }
 
+    // TODO: these probably also need to check their arguments for Derived-ness and
+    // forward the operation to C++ if possible.
+
     static PyObject* isdisjoint(Derived* self, PyObject* other) {
         try {
             return std::visit(
@@ -1273,7 +1276,16 @@ public:
         try {
             return std::visit(
                 [&other](auto& set) {
-                    return Derived::construct(set | other);
+                    if (Derived::typecheck(other)) {
+                        return std::visit(
+                            [&set](auto& other) {
+                                return Derived::construct(set | other);
+                            },
+                            reinterpret_cast<Derived*>(other)->variant
+                        );
+                    } else {
+                        return Derived::construct(set | other);
+                    }
                 },
                 self->variant
             );
@@ -1287,7 +1299,16 @@ public:
         try {
             std::visit(
                 [&other](auto& set) {
-                    set |= other;
+                    if (Derived::typecheck(other)) {
+                        std::visit(
+                            [&set](auto& other) {
+                                set |= other;
+                            },
+                            reinterpret_cast<Derived*>(other)->variant
+                        );
+                    } else {
+                        set |= other;
+                    }
                 },
                 self->variant
             );
@@ -1302,7 +1323,16 @@ public:
         try {
             return std::visit(
                 [&other](auto& set) {
-                    return Derived::construct(set - other);
+                    if (Derived::typecheck(other)) {
+                        return std::visit(
+                            [&set](auto& other) {
+                                return Derived::construct(set - other);
+                            },
+                            reinterpret_cast<Derived*>(other)->variant
+                        );
+                    } else {
+                        return Derived::construct(set - other);
+                    }
                 },
                 self->variant
             );
@@ -1316,7 +1346,16 @@ public:
         try {
             std::visit(
                 [&other](auto& set) {
-                    set -= other;
+                    if (Derived::typecheck(other)) {
+                        std::visit(
+                            [&set](auto& other) {
+                                set -= other;
+                            },
+                            reinterpret_cast<Derived*>(other)->variant
+                        );
+                    } else {
+                        set -= other;
+                    }
                 },
                 self->variant
             );
@@ -1331,7 +1370,16 @@ public:
         try {
             return std::visit(
                 [&other](auto& set) {
-                    return Derived::construct(set & other);
+                    if (Derived::typecheck(other)) {
+                        return std::visit(
+                            [&set](auto& other) {
+                                return Derived::construct(set & other);
+                            },
+                            reinterpret_cast<Derived*>(other)->variant
+                        );
+                    } else {
+                        return Derived::construct(set & other);
+                    }
                 },
                 self->variant
             );
@@ -1345,7 +1393,16 @@ public:
         try {
             std::visit(
                 [&other](auto& set) {
-                    set &= other;
+                    if (Derived::typecheck(other)) {
+                        std::visit(
+                            [&set](auto& other) {
+                                set &= other;
+                            },
+                            reinterpret_cast<Derived*>(other)->variant
+                        );
+                    } else {
+                        set &= other;
+                    }
                 },
                 self->variant
             );
@@ -1360,7 +1417,16 @@ public:
         try {
             return std::visit(
                 [&other](auto& set) {
-                    return Derived::construct(set ^ other);
+                    if (Derived::typecheck(other)) {
+                        return std::visit(
+                            [&set](auto& other) {
+                                return Derived::construct(set ^ other);
+                            },
+                            reinterpret_cast<Derived*>(other)->variant
+                        );
+                    } else {
+                        return Derived::construct(set ^ other);
+                    }
                 },
                 self->variant
             );
@@ -1374,7 +1440,16 @@ public:
         try {
             std::visit(
                 [&other](auto& set) {
-                    set ^= other;
+                    if (Derived::typecheck(other)) {
+                        std::visit(
+                            [&set](auto& other) {
+                                set ^= other;
+                            },
+                            reinterpret_cast<Derived*>(other)->variant
+                        );
+                    } else {
+                        set ^= other;
+                    }
                 },
                 self->variant
             );

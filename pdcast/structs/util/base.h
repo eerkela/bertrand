@@ -41,7 +41,9 @@ namespace util {
 
 /* Check if a C++ type is pair-like (i.e. a std::pair or std::tuple of size 2). */
 template <typename T>
-inline constexpr bool is_pairlike = util::is_pairlike<T>::value;
+inline constexpr bool is_pairlike = util::is_pairlike<
+    std::remove_cv_t<std::remove_reference_t<T>>
+>::value;
 
 
 

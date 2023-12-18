@@ -545,8 +545,6 @@ public:
     /* Remove elements from a dictionary that are contained in one or more iterables. */
     template <typename... Containers>
     inline void difference_update(Containers&&... items) {
-        // TODO: do we even need to unpack other dicts here?  differences should only
-        // be computed for keys, not values.
         auto unwrap = [](auto&& arg) {
             using Arg = decltype(arg);
             if constexpr (IsDict_v<Arg>) {
@@ -568,11 +566,19 @@ public:
     container, but not both. */
     template <typename Container>
     inline DynamicDict symmetric_difference(Container&& items) const {
-        return DynamicDict(
-            linked::symmetric_difference<false>(
-                this->view, std::forward<Container>(items)
-            )
-        );
+        if constexpr (IsDict_v<Container>) {
+            return DynamicDict(
+                linked::symmetric_difference<Yield::ITEM, false>(
+                    this->view, items.items()
+                )
+            );
+        } else {
+            return DynamicDict(
+                linked::symmetric_difference<Yield::ITEM, false>(
+                    this->view, std::forward<Container>(items)
+                )
+            );
+        }
     }
 
     /* Return a new dictionary with elements in either this dictionary or another
@@ -580,18 +586,26 @@ public:
     tail. */
     template <typename Container>
     inline DynamicDict symmetric_difference_left(Container&& items) const {
-        return DynamicDict(
-            linked::symmetric_difference<true>(
-                this->view, std::forward<Container>(items)
-            )
-        );
+        if constexpr (IsDict_v<Container>) {
+            return DynamicDict(
+                linked::symmetric_difference<Yield::ITEM, true>(
+                    this->view, items.items()
+                )
+            );
+        } else {
+            return DynamicDict(
+                linked::symmetric_difference<Yield::ITEM, true>(
+                    this->view, std::forward<Container>(items)
+                )
+            );
+        }
     }
 
     /* Update a dictionary, keeping only elements found in either the dictionary or the
     given container, but not both. */
     template <typename Container>
     inline void symmetric_difference_update(Container&& items) {
-        linked::symmetric_difference_update(
+        linked::symmetric_difference_update<false>(
             this->view, std::forward<Container>(items)
         );
     }
@@ -601,7 +615,7 @@ public:
     the tail. */
     template <typename Container>
     inline void symmetric_difference_update_left(Container&& items) {
-        linked::symmetric_difference_update_left(
+        linked::symmetric_difference_update<true>(
             this->view, std::forward<Container>(items)
         );
     }
@@ -1132,7 +1146,7 @@ public:
     template <typename Container>
     inline Set symmetric_difference(Container&& items) const {
         return linked::symmetric_difference<Yield::KEY, false>(
-            std::forward<Container>(items)
+            this->dict.view, std::forward<Container>(items)
         );
     }
 
@@ -1141,7 +1155,7 @@ public:
     template <typename Container>
     inline Set symmetric_difference_left(Container&& items) const {
         return linked::symmetric_difference<Yield::KEY, true>(
-            std::forward<Container>(items)
+            this->dict.view, std::forward<Container>(items)
         );
     }
 

@@ -939,8 +939,9 @@ public:
 /* A collection of SFINAE traits for inspecting node types at compile time. */
 template <typename NodeType>
 class NodeTraits {
+    using Node = std::remove_cv_t<std::remove_reference_t<NodeType>>;
     static_assert(
-        std::is_base_of_v<NodeTag, NodeType>,
+        std::is_base_of_v<NodeTag, Node>,
         "Templated type does not inherit from BaseNode"
     );
 
@@ -951,7 +952,7 @@ class NodeTraits {
     };
     template <typename Dummy>
     struct _MappedValue<true, Dummy> {
-        using type = typename NodeType::MappedValue;
+        using type = typename Node::MappedValue;
     };
 
     /* Detects whether the templated type has a prev() method. */
@@ -960,7 +961,7 @@ class NodeTraits {
         static constexpr auto test(T* t) -> decltype(t->prev(), std::true_type());
         template <typename T>
         static constexpr auto test(...) -> std::false_type;
-        static constexpr bool value = decltype(test<NodeType>(nullptr))::value;
+        static constexpr bool value = decltype(test<Node>(nullptr))::value;
     };
 
     /* Detects whether the templated type has a node() method. */
@@ -969,7 +970,7 @@ class NodeTraits {
         static constexpr auto test(T* t) -> decltype(t->node(), std::true_type());
         template <typename T>
         static constexpr auto test(...) -> std::false_type;
-        static constexpr bool value = decltype(test<NodeType>(nullptr))::value;
+        static constexpr bool value = decltype(test<Node>(nullptr))::value;
     };
 
     /* Detects whether the templated type has a hash() method. */
@@ -978,7 +979,7 @@ class NodeTraits {
         static constexpr auto test(T* t) -> decltype(t->hash(), std::true_type());
         template <typename T>
         static constexpr auto test(...) -> std::false_type;
-        static constexpr bool value = decltype(test<NodeType>(nullptr))::value;
+        static constexpr bool value = decltype(test<Node>(nullptr))::value;
     };
 
     /* Detects whether the templated type has a mapped() accessor. */
@@ -987,11 +988,11 @@ class NodeTraits {
         static constexpr auto test(T* t) -> decltype(t->mapped(), std::true_type());
         template <typename T>
         static constexpr auto test(...) -> std::false_type;
-        static constexpr bool value = decltype(test<NodeType>(nullptr))::value;
+        static constexpr bool value = decltype(test<Node>(nullptr))::value;
     };
 
 public:
-    using Value = decltype(std::declval<NodeType>().value());
+    using Value = decltype(std::declval<Node>().value());
     using MappedValue = typename _MappedValue<_has_mapped::value>::type;
 
     // SFINAE checks
@@ -1001,13 +1002,13 @@ public:
     static constexpr bool has_mapped = _has_mapped::value;
 
     // decorator traversal
-    using Root = typename NodeType::Root;
-    using Unwrap = typename NodeType::Unwrap;
-    static constexpr bool is_root = std::is_same_v<NodeType, Root>;
+    using Root = typename Node::Root;
+    using Unwrap = typename Node::Unwrap;
+    static constexpr bool is_root = std::is_same_v<Node, Root>;
 
     // template reconfiguration
     template <typename... Args>
-    using Reconfigure = typename NodeType::template Reconfigure<Args...>;
+    using Reconfigure = typename Node::template Reconfigure<Args...>;
 
 };
 
