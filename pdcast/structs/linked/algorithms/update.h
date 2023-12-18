@@ -17,14 +17,12 @@ namespace bertrand {
 namespace linked {
 
 
-    ///////////////////////
-    ////    PRIVATE    ////
-    ///////////////////////
-
-
-    /* Container-independent implementation for update(). */
-    template <typename View, typename Container, bool left>
-    void update_impl(View& view, const Container& items) {
+    /* Update a linked set to hold the union of its current keys as well as those of an
+    arbitrary container. */
+    template <bool left = false, typename View, typename Container>
+    auto update(View& view, const Container& items)
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
+    {
         using Allocator = typename View::Allocator;
         using MemGuard = typename View::MemGuard;
         static constexpr unsigned int flags = (
@@ -34,6 +32,16 @@ namespace linked {
 
         size_t size = view.size();
         try {
+            if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
+                if (PyDict_Check(items)) {
+                    python::Dict<python::Ref::BORROW> dict(items);
+                    for (const auto& item : iter(dict)) {
+                        view.template node<flags>(item);
+                    }
+                    return;
+                }
+            }
+
             for (const auto& item : iter(items)) {
                 view.template node<flags>(item);
             }
@@ -77,9 +85,12 @@ namespace linked {
     }
 
 
-    /* Container-independent implementation for lru_update(). */
+    /* Update a set or dictionary, adding or moving items to the head and evicting from
+    the tail to make room. */
     template <typename View, typename Container>
-    inline void lru_update_impl(View& view, const Container& items) {
+    inline auto lru_update(View& view, const Container& items)
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
+    {
         using Allocator = typename View::Allocator;
         static constexpr unsigned int flags = (
             Allocator::EXIST_OK | Allocator::REPLACE_MAPPED | Allocator::INSERT_HEAD |
@@ -88,15 +99,114 @@ namespace linked {
 
         // NOTE: This method is inherently destructive, so no attempt is made to return
         // the view to its original state if an error occurs.
+
+        if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
+            if (PyDict_Check(items)) {
+                python::Dict<python::Ref::BORROW> dict(items);
+                for (const auto& item : iter(dict)) {
+                    view.template node<flags>(item);
+                }
+                return;
+            }
+        }
+
         for (const auto& item : iter(items)) {
             view.template node<flags>(item);
         }
     }
 
 
-    /* Container-independent implementation for symmetric_difference_update(). */
-    template <typename View, typename Container, bool left>
-    void symmetric_difference_update_impl(View& view, const Container& items) {
+    /* Update a linked set or dictionary in-place, removing elements from a second
+    set or dictionary. */
+    template <typename View, typename Container>
+    auto difference_update(View& view, const Container& items)
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
+    {
+        using Node = typename View::Node;
+        using MemGuard = typename View::MemGuard;
+
+        // hold allocator at current size
+        MemGuard hold = view.reserve();
+
+        // if set is doubly-linked, we can remove nodes while searching them to avoid
+        // an extra loop
+        if constexpr (NodeTraits<Node>::has_prev) {
+            for (const auto& item : iter(items)) {
+                Node* node = view.search(item);
+                if (node != nullptr) {
+                    view.unlink(node->prev(), node, node->next());
+                    view.recycle(node);
+                }
+            }
+            return;
+
+        // otherwise, we iterate through the container and mark all nodes to remove
+        } else {
+            std::unordered_set<Node*> to_remove;
+            for (const auto& item : iter(items)) {
+                Node* node = view.search(item);
+                if (node != nullptr) to_remove.insert(node);
+            }
+
+            // trivial case: no nodes to remove
+            if (to_remove.empty()) return;
+
+            // iterate through the view and remove the marked nodes
+            for (auto it = view.begin(), end = view.end(); it != end;) {
+                if (to_remove.find(it.curr()) != to_remove.end()) {
+                    view.recycle(it.drop());  // implicitly advances iterator
+                } else {
+                    ++it;
+                }
+            }
+        }
+    }
+
+    // TODO: intersection should overwrite values for dictlike views.
+
+
+    /* Update a linked set or dictionary in-place, keeping only elements found in
+    both sets or dictionaries. */
+    template <typename View, typename Container>
+    auto intersection_update(View& view, const Container& items)
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
+    {
+        using Node = typename View::Node;
+        using MemGuard = typename View::MemGuard;
+
+        // hold allocator at current size
+        MemGuard hold = view.reserve();
+
+        // iterate through the container and mark all nodes to keep
+        std::unordered_set<Node*> keep;
+        for (const auto& item : iter(items)) {
+            Node* node = view.search(item);
+            if (node != nullptr) keep.insert(node);
+        }
+
+        // trivial case: no nodes to keep
+        if (keep.empty()) {
+            view.clear();
+            return;
+        }
+
+        // iterate through view and remove any unmarked nodes
+        for (auto it = view.begin(), end = view.end(); it != end;) {
+            if (keep.find(it.curr()) == keep.end()) {
+                view.recycle(it.drop());  // implicitly advances iterator
+            } else {
+                ++it;
+            }
+        }
+    }
+
+
+    /* Update a linked set or dictionary in-place, keeping only elements found in
+    either the set or a given container, but not both. */
+    template <bool left = false, typename View, typename Container>
+    inline auto symmetric_difference_update(View& view, const Container& items)
+        -> std::enable_if_t<ViewTraits<View>::hashed, void>
+    {
         using TempView = typename ViewTraits<View>::template Reconfigure<
             Config::SINGLY_LINKED
         >;
@@ -165,183 +275,6 @@ namespace linked {
                 }
             }
         }
-    }
-
-
-    //////////////////////
-    ////    PUBLIC    ////
-    //////////////////////
-
-
-    /* Update a set or dictionary, appending items that are not already present. */
-    template <typename View, typename Container>
-    inline auto update(View& view, const Container& items)
-        -> std::enable_if_t<ViewTraits<View>::hashed, void>
-    {
-        if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
-            if (PyDict_Check(items)) {
-                using PyDict = python::Dict<python::Ref::BORROW>;
-                PyDict dict(items);
-                update_impl<View, PyDict, false>(view, dict);
-                return;
-            }
-        }
-        update_impl<View, Container, false>(view, items);
-    }
-
-
-    /* Update a set or dictionary, appending items that are not already present. */
-    template <typename View, typename Container>
-    inline auto update_left(View& view, const Container& items)
-        -> std::enable_if_t<ViewTraits<View>::hashed, void>
-    {
-        if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
-            if (PyDict_Check(items)) {
-                using PyDict = python::Dict<python::Ref::BORROW>;
-                PyDict dict(items);
-                update_impl<View, PyDict, true>(view, dict);
-                return;
-            }
-        }
-        update_impl<View, Container, true>(view, items);
-    }
-
-
-    /* Update a set or dictionary, adding or moving items to the head and evicting from
-    the tail to make room. */
-    template <typename View, typename Container>
-    inline auto lru_update(View& view, const Container& items)
-        -> std::enable_if_t<ViewTraits<View>::hashed, void>
-    {
-        if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
-            if (PyDict_Check(items)) {
-                using PyDict = python::Dict<python::Ref::BORROW>;
-                PyDict dict(items);
-                lru_update_impl(view, dict);
-                return;
-            }
-        }
-        lru_update_impl(view, items);
-    }
-
-
-    /* Update a linked set or dictionary in-place, removing elements from a second
-    set or dictionary. */
-    template <typename View, typename Container>
-    auto difference_update(View& view, const Container& items)
-        -> std::enable_if_t<ViewTraits<View>::hashed, void>
-    {
-        using Node = typename View::Node;
-        using MemGuard = typename View::MemGuard;
-
-        // hold allocator at current size
-        MemGuard hold = view.reserve();
-
-        // if set is doubly-linked, we can remove nodes while searching them to avoid
-        // an extra loop
-        if constexpr (NodeTraits<Node>::has_prev) {
-            for (const auto& item : iter(items)) {
-                Node* node = view.search(item);
-                if (node != nullptr) {
-                    view.unlink(node->prev(), node, node->next());
-                    view.recycle(node);
-                }
-            }
-            return;
-
-        // otherwise, we iterate through the container and mark all nodes to remove
-        } else {
-            std::unordered_set<Node*> to_remove;
-            for (const auto& item : iter(items)) {
-                Node* node = view.search(item);
-                if (node != nullptr) to_remove.insert(node);
-            }
-
-            // trivial case: no nodes to remove
-            if (to_remove.empty()) return;
-
-            // iterate through the view and remove the marked nodes
-            for (auto it = view.begin(), end = view.end(); it != end;) {
-                if (to_remove.find(it.curr()) != to_remove.end()) {
-                    view.recycle(it.drop());  // implicitly advances iterator
-                } else {
-                    ++it;
-                }
-            }
-        }
-    }
-
-
-    /* Update a linked set or dictionary in-place, keeping only elements found in
-    both sets or dictionaries. */
-    template <typename View, typename Container>
-    auto intersection_update(View& view, const Container& items)
-        -> std::enable_if_t<ViewTraits<View>::hashed, void>
-    {
-        using Node = typename View::Node;
-        using MemGuard = typename View::MemGuard;
-
-        // hold allocator at current size
-        MemGuard hold = view.reserve();
-
-        // iterate through the container and mark all nodes to keep
-        std::unordered_set<Node*> keep;
-        for (const auto& item : iter(items)) {
-            Node* node = view.search(item);
-            if (node != nullptr) keep.insert(node);
-        }
-
-        // trivial case: no nodes to keep
-        if (keep.empty()) {
-            view.clear();
-            return;
-        }
-
-        // iterate through view and remove any unmarked nodes
-        for (auto it = view.begin(), end = view.end(); it != end;) {
-            if (keep.find(it.curr()) == keep.end()) {
-                view.recycle(it.drop());  // implicitly advances iterator
-            } else {
-                ++it;
-            }
-        }
-    }
-
-
-    /* Update a linked set or dictionary in-place, keeping only elements found in
-    either the set or a given container, but not both. */
-    template <typename View, typename Container>
-    inline auto symmetric_difference_update(View& view, const Container& items)
-        -> std::enable_if_t<ViewTraits<View>::hashed, void>
-    {
-        if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
-            if (PyDict_Check(items)) {
-                using PyDict = python::Dict<python::Ref::BORROW>;
-                PyDict dict(items);
-                symmetric_difference_update_impl<View, PyDict, false>(view, dict);
-                return;
-            }
-        }
-        symmetric_difference_update_impl<View, Container, false>(view, items);
-    }
-
-
-    /* Update a linked set or dictionary in-place, keeping only elements found in
-    either the set or a given container, but not both.  This method appends elements to
-    the head of the set rather than the tail. */
-    template <typename View, typename Container>
-    inline auto symmetric_difference_update_left(View& view, const Container& items)
-        -> std::enable_if_t<ViewTraits<View>::hashed, void>
-    {
-        if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
-            if (PyDict_Check(items)) {
-                using PyDict = python::Dict<python::Ref::BORROW>;
-                PyDict dict(items);
-                symmetric_difference_update_impl<View, PyDict, true>(view, dict);
-                return;
-            }
-        }
-        symmetric_difference_update_impl<View, Container, true>(view, items);
     }
 
 

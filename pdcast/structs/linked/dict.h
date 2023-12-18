@@ -49,7 +49,7 @@
 
 
 // TODO: implement dictview proxies
-// -> remove keys().to_set() and implement lexicographic comparisons for items()
+// -> implement lexicographic comparisons for items()
 
 
 // TODO: union, update, __init__, comparisons, concatenate/repeat, etc. should accept
@@ -113,6 +113,15 @@ class LinkedDict : public LinkedBase<
         >,
         Lock
     >;
+    using DynamicDict = LinkedDict<K, V, Flags & ~Config::FIXED_SIZE, Lock>;
+
+    inline DynamicDict as_dynamic() const {
+        DynamicDict result(this->size(), this->specialization());
+        for (auto it = this->begin(), end = this->end(); it != end; ++it) {
+            result.view.template node<Base::Allocator::INSERT_TAIL>(*(it.curr()));
+        }
+        return result;
+    }
 
     template <typename T>
     struct IsDict : std::false_type {};
@@ -124,182 +133,6 @@ class LinkedDict : public LinkedBase<
     static constexpr bool IsDict_v = IsDict<
         std::remove_cv_t<std::remove_reference_t<T>>
     >::value;
-
-    /* Recursive template to compute pairwise unions. */
-    template <typename First, typename Second, typename... Rest>
-    inline LinkedDict union_recursive(
-        First&& first,
-        Second&& second,
-        Rest&&... rest
-    ) const {
-        if constexpr (sizeof...(Rest) == 0) {
-            if constexpr (IsDict_v<Second>) {
-                return LinkedDict(
-                    linked::union_<false>(
-                        std::forward<First>(first),
-                        std::forward<Second>(second).view
-                    )
-                );
-            } else {
-                return LinkedDict(
-                    linked::union_<false>(
-                        std::forward<First>(first),
-                        std::forward<Second>(second)
-                    )
-                );
-            }
-        } else {
-            if constexpr (IsDict_v<Second>) {
-                return union_recursive(
-                    linked::union_<false>(
-                        std::forward<First>(first),
-                        std::forward<Second>(second).view
-                    ),
-                    std::forward<Rest>(rest)...
-                );
-            } else {
-                return union_recursive(
-                    linked::union_<false>(
-                        std::forward<First>(first),
-                        std::forward<Second>(second)
-                    ),
-                    std::forward<Rest>(rest)...
-                );
-            }
-        }
-    }
-
-    /* Recursive template to compute pairwise unions. */
-    template <typename First, typename Second, typename... Rest>
-    inline LinkedDict union_left_recursive(
-        First&& first,
-        Second&& second,
-        Rest&&... rest
-    ) const {
-        if constexpr (sizeof...(Rest) == 0) {
-            if constexpr (IsDict_v<Second>) {
-                return LinkedDict(
-                    linked::union_<true>(
-                        std::forward<First>(first),
-                        std::forward<Second>(second).view
-                    )
-                );
-            } else {
-                return LinkedDict(
-                    linked::union_<true>(
-                        std::forward<First>(first),
-                        std::forward<Second>(second)
-                    )
-                );
-            }
-        } else {
-            if constexpr (IsDict_v<Second>) {
-                return union_left_recursive(
-                    linked::union_<true>(
-                        std::forward<First>(first),
-                        std::forward<Second>(second).view
-                    ),
-                    std::forward<Rest>(rest)...
-                );
-            } else {
-                return union_left_recursive(
-                    linked::union_<true>(
-                        std::forward<First>(first),
-                        std::forward<Second>(second)
-                    ),
-                    std::forward<Rest>(rest)...
-                );
-            }
-        }
-    }
-
-    /* Recursive template to compute pairwise intersections. */
-    template <typename First, typename Second, typename... Rest>
-    inline LinkedDict intersection_recursive(
-        First&& first,
-        Second&& second,
-        Rest&&... rest
-    ) const {
-        if constexpr (sizeof...(Rest) == 0) {
-            if constexpr (IsDict_v<Second>) {
-                return LinkedDict(
-                    linked::intersection(
-                        std::forward<First>(first),
-                        std::forward<Second>(second).view
-                    )
-                );
-            } else {
-                return LinkedDict(
-                    linked::intersection(
-                        std::forward<First>(first),
-                        std::forward<Second>(second)
-                    )
-                );
-            }
-        } else {
-            if constexpr (IsDict_v<Second>) {
-                return intersection_recursive(
-                    linked::intersection(
-                        std::forward<First>(first),
-                        std::forward<Second>(second).view
-                    ),
-                    std::forward<Rest>(rest)...
-                );
-            } else {
-                return intersection_recursive(
-                    linked::intersection(
-                        std::forward<First>(first),
-                        std::forward<Second>(second)
-                    ),
-                    std::forward<Rest>(rest)...
-                );
-            }
-        }
-    }
-
-    /* Recursive template to compute pairwise differences. */
-    template <typename First, typename Second, typename... Rest>
-    inline LinkedDict difference_recursive(
-        First&& first,
-        Second&& second,
-        Rest&&... rest
-    ) const {
-        if constexpr (sizeof...(Rest) == 0) {
-            if constexpr (IsDict_v<Second>) {
-                return LinkedDict(
-                    linked::difference(
-                        std::forward<First>(first),
-                        std::forward<Second>(second).view
-                    )
-                );
-            } else {
-                return LinkedDict(
-                    linked::difference(
-                        std::forward<First>(first),
-                        std::forward<Second>(second)
-                    )
-                );
-            }
-        } else {
-            if constexpr (IsDict_v<Second>) {
-                return difference_recursive(
-                    linked::difference(
-                        std::forward<First>(first),
-                        std::forward<Second>(second).view
-                    ),
-                    std::forward<Rest>(rest)...
-                );
-            } else {
-                return difference_recursive(
-                    linked::difference(
-                        std::forward<First>(first),
-                        std::forward<Second>(second)
-                    ),
-                    std::forward<Rest>(rest)...
-                );
-            }
-        }
-    }
 
 public:
     using View = typename Base::View;
@@ -520,16 +353,56 @@ public:
 
     /* Return a new dictionary with elements from this dictionary and all other
     containers. */
-    template <typename... Containers>
-    inline LinkedDict union_(Containers&&... items) const {
-        return union_recursive(this->view, std::forward<Containers>(items)...);
+    inline DynamicDict union_() const {
+        return as_dynamic();
+    }
+
+    /* Return a new dictionary with elements from this dictionary and all other
+    containers. */
+    template <typename First, typename... Rest>
+    inline DynamicDict union_(First&& first, Rest&&... rest) const {
+        auto execute = [&](auto&& arg) {
+            DynamicDict result = linked::union_<Yield::ITEM, false>(
+                this->view, std::forward<decltype(arg)>(arg)
+            );
+            if constexpr (sizeof...(Rest) > 0) {
+                result.update(std::forward<Rest>(rest)...);
+            }
+            return result;
+        };
+
+        if constexpr (IsDict_v<First>) {
+            return execute(first.items());
+        } else {
+            return execute(std::forward<First>(first));
+        }
     }
 
     /* Return a new dictionary with elements from this dictionary and all other
     containers.  Appends to the head of the dictionary rather than the tail. */
-    template <typename... Containers>
-    inline LinkedDict union_left(Containers&&... items) const {
-        return union_left_recursive(this->view, std::forward<Containers>(items)...);
+    inline DynamicDict union_left() const {
+        return as_dynamic();
+    }
+
+    /* Return a new dictionary with elements from this dictionary and all other
+    containers.  Appends to the head of the dictionary rather than the tail. */
+    template <typename First, typename... Rest>
+    inline DynamicDict union_left(First&& first, Rest&&... rest) const {
+        auto execute = [&](auto&& arg) {
+            DynamicDict result = linked::union_<Yield::ITEM, true>(
+                this->view, std::forward<decltype(arg)>(arg)
+            );
+            if constexpr (sizeof...(Rest) > 0) {
+                result.update_left(std::forward<Rest>(rest)...);
+            }
+            return result;
+        };
+
+        if constexpr (IsDict_v<First>) {
+            return execute(first.items());
+        } else {
+            return execute(std::forward<First>(first));
+        }
     }
 
     /* Extend a dictionary by adding elements from one or more iterables that are not
@@ -545,7 +418,7 @@ public:
             }
         };
         (
-            linked::update(
+            linked::update<false>(
                 this->view,
                 unwrap(std::forward<Containers>(items))
             ),
@@ -566,7 +439,7 @@ public:
             }
         };
         (
-            linked::update_left(
+            linked::update<true>(
                 this->view,
                 unwrap(std::forward<Containers>(items))
             ),
@@ -597,9 +470,29 @@ public:
 
     /* Return a new dictionary with elements common to this dictionary and all other
     containers. */
-    template <typename... Containers>
-    inline LinkedDict intersection(Containers&&... items) const {
-        return intersection_recursive(this->view, std::forward<Containers>(items)...);
+    inline DynamicDict intersection() const {
+        return as_dynamic();
+    }
+
+    /* Return a new dictionary with elements common to this dictionary and all other
+    containers. */
+    template <typename First, typename... Rest>
+    inline DynamicDict intersection(First&& first, Rest&&... rest) const {
+        auto execute = [&](auto&& arg) {
+            DynamicDict result = linked::intersection<Yield::ITEM>(
+                this->view, std::forward<decltype(arg)>(arg)
+            );
+            if constexpr (sizeof...(Rest) > 0) {
+                result.intersection_update(std::forward<Rest>(rest)...);
+            }
+            return result;
+        };
+
+        if constexpr (IsDict_v<First>) {
+            return execute(first.items());
+        } else {
+            return execute(std::forward<First>(first));
+        }
     }
 
     /* Remove elements from a dictionary that are contained in one or more iterables. */
@@ -624,9 +517,29 @@ public:
 
     /* Return a new dictionary with elements from this dictionary that are common to
     any other containers. */
-    template <typename... Containers>
-    inline LinkedDict difference(Containers&&... items) const {
-        return difference_recursive(this->view, std::forward<Containers>(items)...);
+    inline DynamicDict difference() const {
+        return as_dynamic();
+    }
+
+    /* Return a new dictionary with elements from this dictionary that are common to
+    any other containers. */
+    template <typename First, typename... Rest>
+    inline DynamicDict difference(First&& first, Rest&&... rest) const {
+        auto execute = [&](auto&& arg) {
+            DynamicDict result = linked::difference<Yield::ITEM>(
+                this->view, std::forward<decltype(arg)>(arg)
+            );
+            if constexpr (sizeof...(Rest) > 0) {
+                result.difference_update(std::forward<Rest>(rest)...);
+            }
+            return result;
+        };
+
+        if constexpr (IsDict_v<First>) {
+            return execute(first.items());
+        } else {
+            return execute(std::forward<First>(first));
+        }
     }
 
     /* Remove elements from a dictionary that are contained in one or more iterables. */
@@ -654,8 +567,8 @@ public:
     /* Return a new dictionary with elements in either this dictionary or another
     container, but not both. */
     template <typename Container>
-    inline LinkedDict symmetric_difference(Container&& items) const {
-        return LinkedDict(
+    inline DynamicDict symmetric_difference(Container&& items) const {
+        return DynamicDict(
             linked::symmetric_difference<false>(
                 this->view, std::forward<Container>(items)
             )
@@ -666,8 +579,8 @@ public:
     container, but not both.  Appends to the head of the dictionary rather than the
     tail. */
     template <typename Container>
-    inline LinkedDict symmetric_difference_left(Container&& items) const {
-        return LinkedDict(
+    inline DynamicDict symmetric_difference_left(Container&& items) const {
+        return DynamicDict(
             linked::symmetric_difference<true>(
                 this->view, std::forward<Container>(items)
             )
@@ -1089,9 +1002,6 @@ public:
 //////////////////////
 
 
-// TODO: remove to_set()
-
-
 /* A read-only proxy for a dictionary's keys, in the same style as Python's
 `dict.keys()` accessor. */
 template <typename Dict>
@@ -1101,19 +1011,18 @@ class KeysProxy : public DictProxy<
     Yield::KEY
 > {
     using Key = typename Dict::Key;
-    using Set = LinkedSet<Key, Dict::FLAGS, typename Dict::Lock>;
+    using Set = LinkedSet<Key, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock>;
     using Base = DictProxy<Dict, Set, Yield::KEY>;
 
     friend Dict;
 
     KeysProxy(const Dict& dict) : Base(dict) {}
 
-public:
-
-    /* Convert the keys proxy into an equivalent set. */
-    inline Set to_set() const {
+    inline Set as_set() const {
         return Set(*this, this->dict.size(), this->dict.specialization());
     }
+
+public:
 
     /* Check whether the referenced dictionary has no keys in common with another
     container. */
@@ -1144,44 +1053,96 @@ public:
 
     /* Generate a LinkedSet containing the union of the referenced dictionary's keys
     and those of another container. */
-    template <typename... Containers>
-    inline Set union_(Containers&&... items) const {
-        return to_set().union_(std::forward<Containers>(items)...);
+    inline Set union_() const {
+        return as_set();
+    }
+
+    /* Generate a LinkedSet containing the union of the referenced dictionary's keys
+    and those of another container. */
+    template <typename First, typename... Rest>
+    inline Set union_(First&& first, Rest&&... rest) const {
+        Set result = linked::union_<Yield::KEY, false>(
+            this->dict.view, std::forward<First>(first)
+        );
+        if constexpr (sizeof...(Rest) > 0) {
+            result.update(std::forward<Rest>(rest)...);
+        }
+        return result;
     }
 
     /* Generate a LinkedSet containing the left-appended union of the referenced
     dictionary's keys and those of another container. */
-    template <typename... Containers>
-    inline Set union_left(Containers&&... items) const {
-        return to_set().union_left(std::forward<Containers>(items)...);
+    inline Set union_left() const {
+        return as_set();
+    }
+
+    /* Generate a LinkedSet containing the left-appended union of the referenced
+    dictionary's keys and those of another container. */
+    template <typename First, typename... Rest>
+    inline Set union_left(First&& first, Rest&&... rest) const {
+        Set result = linked::union_<Yield::KEY, true>(
+            this->dict.view, std::forward<First>(first)
+        );
+        if constexpr (sizeof...(Rest) > 0) {
+            result.update_left(std::forward<Rest>(rest)...);
+        }
+        return result;
     }
 
     /* Generate a LinkedSet containing the difference between the referenced
     dictionary's keys and those of another container. */
-    template <typename... Containers>
-    inline Set difference(Containers&&... items) const {
-        return to_set().difference(std::forward<Containers>(items)...);
+    inline Set difference() const {
+        return as_set();
+    }
+
+    /* Generate a LinkedSet containing the difference between the referenced
+    dictionary's keys and those of another container. */
+    template <typename First, typename... Rest>
+    inline Set difference(First&& first, Rest&&... rest) const {
+        Set result = linked::difference<Yield::KEY>(
+            this->dict.view, std::forward<First>(first)
+        );
+        if constexpr (sizeof...(Rest) > 0) {
+            result.difference_update(std::forward<Rest>(rest)...);
+        }
+        return result;
     }
 
     /* Generate a LinkedSet containing the intersection of the referenced dictionary's
     keys and those of another container. */
-    template <typename... Containers>
-    inline Set intersection(Containers&&... items) const {
-        return to_set().intersection(std::forward<Containers>(items)...);
+    inline Set intersection() const {
+        return as_set();
+    }
+
+    /* Generate a LinkedSet containing the intersection of the referenced dictionary's
+    keys and those of another container. */
+    template <typename First, typename... Rest>
+    inline Set intersection(First&& first, Rest&&... rest) const {
+        Set result = linked::intersection<Yield::KEY>(
+            this->dict.view, std::forward<First>(first)
+        );
+        if constexpr (sizeof...(Rest) > 0) {
+            result.intersection_update(std::forward<Rest>(rest)...);
+        }
+        return result;
     }
 
     /* Generate a LinkedSet containing the symmetric difference between the referenced
     dictionary's keys and those of another container. */
-    template <typename... Containers>
-    inline Set symmetric_difference(Containers&&... items) const {
-        return to_set().symmetric_difference(std::forward<Containers>(items)...);
+    template <typename Container>
+    inline Set symmetric_difference(Container&& items) const {
+        return linked::symmetric_difference<Yield::KEY, false>(
+            std::forward<Container>(items)
+        );
     }
 
     /* Generate a LinkedSet containing the left-appended symmetric difference between
     the referenced dictionary's keys and those of another container. */
-    template <typename... Containers>
-    inline Set symmetric_difference_left(Containers&&... items) const {
-        return to_set().symmetric_difference_left(std::forward<Containers>(items)...);
+    template <typename Container>
+    inline Set symmetric_difference_left(Container&& items) const {
+        return linked::symmetric_difference<Yield::KEY, true>(
+            std::forward<Container>(items)
+        );
     }
 
 };
@@ -1754,9 +1715,6 @@ inline bool operator!=(const Container& other, const ItemsProxy<Dict, as_pytuple
 template <typename Derived>
 class PyDictInterface {
 public:
-
-    /* TODO: overload union(), update() to apply explicit type check and then visit the
-    corresponding variant to do the operation at the C++ level. */
 
     static PyObject* add(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         using bertrand::util::PyArgs;
@@ -2736,15 +2694,11 @@ than one.
             Py_ssize_t nargs
         ) {
             try {
-                if (nargs == 0) {
-                    return PyLinkedSet::construct(self->proxy.to_set());
+                auto result = self->proxy.union_();
+                for (Py_ssize_t i = 0; i < nargs; ++i) {
+                    result.update(args[i]);
                 }
-
-                auto copy = self->proxy.union_(args[0]);
-                for (Py_ssize_t i = 1; i < nargs; ++i) {
-                    copy.update(args[i]);
-                }
-                return PyLinkedSet::construct(std::move(copy));
+                return PyLinkedSet::construct(std::move(result));
 
             } catch (...) {
                 throw_python();
@@ -2758,15 +2712,11 @@ than one.
             Py_ssize_t nargs
         ) {
             try {
-                if (nargs == 0) {
-                    return PyLinkedSet::construct(self->proxy.to_set());
+                auto result = self->proxy.union_left();
+                for (Py_ssize_t i = 0; i < nargs; ++i) {
+                    result.update_left(args[i]);
                 }
-
-                auto copy = self->proxy.union_left(args[0]);
-                for (Py_ssize_t i = 1; i < nargs; ++i) {
-                    copy.update_left(args[i]);
-                }
-                return PyLinkedSet::construct(std::move(copy));
+                return PyLinkedSet::construct(std::move(result));
 
             } catch (...) {
                 throw_python();
@@ -2780,15 +2730,11 @@ than one.
             Py_ssize_t nargs
         ) {
             try {
-                if (nargs == 0) {
-                    return PyLinkedSet::construct(self->proxy.to_set());
-                }
-
-                auto copy = self->proxy.difference(args[0]);
+                auto result = self->proxy.difference(args[0]);
                 for (Py_ssize_t i = 1; i < nargs; ++i) {
-                    copy.difference_update(args[i]);
+                    result.difference_update(args[i]);
                 }
-                return PyLinkedSet::construct(std::move(copy));
+                return PyLinkedSet::construct(std::move(result));
 
             } catch (...) {
                 throw_python();
@@ -2802,15 +2748,11 @@ than one.
             Py_ssize_t nargs
         ) {
             try {
-                if (nargs == 0) {
-                    return PyLinkedSet::construct(self->proxy.to_set());
-                }
-
-                auto copy = self->proxy.intersection(args[0]);
+                auto result = self->proxy.intersection(args[0]);
                 for (Py_ssize_t i = 1; i < nargs; ++i) {
-                    copy.intersection_update(args[i]);
+                    result.intersection_update(args[i]);
                 }
-                return PyLinkedSet::construct(std::move(copy));
+                return PyLinkedSet::construct(std::move(result));
 
             } catch (...) {
                 throw_python();
@@ -2818,44 +2760,22 @@ than one.
             }
         }
 
-        static PyObject* symmetric_difference(
-            PyKeysProxy* self,
-            PyObject* const* args,
-            Py_ssize_t nargs
-        ) {
+        static PyObject* symmetric_difference(PyKeysProxy* self, PyObject* other) {
             try {
-                if (nargs == 0) {
-                    return PyLinkedSet::construct(self->proxy.to_set());
-                }
-
-                auto copy = self->proxy.symmetric_difference(args[0]);
-                for (Py_ssize_t i = 1; i < nargs; ++i) {
-                    copy.symmetric_difference_update(args[i]);
-                }
-                return PyLinkedSet::construct(std::move(copy));
-
+                return PyLinkedSet::construct(
+                    self->proxy.symmetric_difference(other)
+                );
             } catch (...) {
                 throw_python();
                 return nullptr;
             }
         }
 
-        static PyObject* symmetric_difference_left(
-            PyKeysProxy* self,
-            PyObject* const* args,
-            Py_ssize_t nargs
-        ) {
+        static PyObject* symmetric_difference_left(PyKeysProxy* self, PyObject* other) {
             try {
-                if (nargs == 0) {
-                    return PyLinkedSet::construct(self->proxy.to_set());
-                }
-
-                auto copy = self->proxy.symmetric_difference_left(args[0]);
-                for (Py_ssize_t i = 1; i < nargs; ++i) {
-                    copy.symmetric_difference_update_left(args[i]);
-                }
-                return PyLinkedSet::construct(std::move(copy));
-
+                return PyLinkedSet::construct(
+                    self->proxy.symmetric_difference_left(other)
+                );
             } catch (...) {
                 throw_python();
                 return nullptr;

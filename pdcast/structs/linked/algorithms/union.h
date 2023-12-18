@@ -19,39 +19,25 @@ namespace bertrand {
 namespace linked {
 
 
-    //////////////////////
-    ////    PUBLIC    ////
-    //////////////////////
-
-
-    /* Get the union between a linked set or dictionary and an arbitrary container. */
-    template <bool left, typename View, typename Container>
-    inline auto union_(const View& view, const Container& items)
+    /* Get the union of keys held a linked set compared to those of an arbitrary
+    container. */
+    template <bool left = false, typename View, typename Container>
+    auto union_(const View& view, const Container& items)
         -> std::enable_if_t<
-            ViewTraits<View>::hashed,
+            ViewTraits<View>::setlike,
             typename ViewTraits<View>::As::DYNAMIC
         >
     {
         using DynamicView = typename ViewTraits<View>::As::DYNAMIC;
         using Allocator = typename View::Allocator;
         static constexpr unsigned int flags = (
-            Allocator::EXIST_OK | Allocator::REPLACE_MAPPED | 
+            Allocator::EXIST_OK | 
             (left ? Allocator::INSERT_HEAD : Allocator::INSERT_TAIL)
         );
 
         DynamicView result(view.size(), view.specialization());
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             result.template node<Allocator::INSERT_TAIL>(*(it.curr()));
-        }
-
-        if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
-            if (PyDict_Check(items)) {
-                python::Dict<python::Ref::BORROW> dict(items);
-                for (const auto& item : iter(dict)) {
-                    result.template node<flags>(item);
-                }
-                return result;
-            }
         }
 
         for (const auto& item : iter(items)) {
@@ -61,22 +47,89 @@ namespace linked {
     }
 
 
-    /* Get the difference between a linked set or dictionary and an arbitrary Python
-    iterable. */
+    /* Get the union of keys or key-value pairs held in a linked dictionary compared to
+    those of an arbitrary container. */
+    template <Yield yield = Yield::KEY, bool left = false, typename View, typename Container>
+    auto union_(const View& view, const Container& items)
+        -> std::enable_if_t<
+            ViewTraits<View>::dictlike,
+            std::conditional_t<
+                yield == Yield::KEY,
+                typename ViewTraits<
+                    typename ViewTraits<View>::As::DYNAMIC
+                >::As::template Set<yield>,
+                typename ViewTraits<View>::As::DYNAMIC
+            >
+        >
+    {
+        static_assert(
+            yield != Yield::VALUE,
+            "cannot perform set comparisons on dictionary values: use listlike "
+            "operators instead"
+        );
+        using DynamicView = typename ViewTraits<View>::As::DYNAMIC;
+        using Allocator = typename View::Allocator;
+        static constexpr unsigned int flags = (
+            Allocator::EXIST_OK | Allocator::REPLACE_MAPPED | 
+            (left ? Allocator::INSERT_HEAD : Allocator::INSERT_TAIL)
+        );
+
+        if constexpr (yield == Yield::KEY) {
+            using Set = typename ViewTraits<DynamicView>::As::template Set<yield>;
+
+            Set result(view.size(), view.specialization());
+            auto it = view.template begin<Yield::KEY>();
+            auto end = view.template end<Yield::KEY>();
+            for (; it != end; ++it) {
+                result.template node<Allocator::INSERT_TAIL>(*it);
+            }
+
+            for (const auto& item : iter(items)) {
+                result.template node<flags>(item);
+            }
+            return result;
+
+        } else {
+            DynamicView result(view.size(), view.specialization());
+            auto it = view.template begin();
+            auto end = view.template end();
+            for (; it != end; ++it) {
+                result.template node<Allocator::INSERT_TAIL>(*(it.curr()));
+            }
+
+            if constexpr (is_pyobject<Container>) {
+                if (PyDict_Check(items)) {
+                    python::Dict<python::Ref::BORROW> dict(items);
+                    for (const auto& item : iter(dict)) {
+                        result.template node<flags>(item);
+                    }
+                    return result;
+                }
+            }
+
+            for (const auto& item : iter(items)) {
+                result.template node<flags>(item);
+            }
+            return result;
+        }
+    }
+
+
+    /* Get the difference of keys held in a linked set compared to those of an arbitrary
+    container. */
     template <typename View, typename Container>
     auto difference(const View& view, const Container& items)
         -> std::enable_if_t<
-            ViewTraits<View>::hashed,
+            ViewTraits<View>::setlike,
             typename ViewTraits<View>::As::DYNAMIC
         >
     {
         using DynamicView = typename ViewTraits<View>::As::DYNAMIC;
-        using Allocator = typename View::Allocator;
         using Node = typename View::Node;
 
         std::unordered_set<const Node*> found;
         for (const auto& item : iter(items)) {
-            const Node* node = view.search(item);  // TODO: this fails if item is a key-value pair.
+            const Node* node = view.search(item);
             if (node != nullptr) {
                 found.insert(node);
             }
@@ -85,28 +138,94 @@ namespace linked {
         DynamicView result(view.size() - found.size(), view.specialization());
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             if (found.find(it.curr()) == found.end()) {
-                result.template node<Allocator::INSERT_TAIL>(*(it.curr()));
+                result.template node<View::Allocator::INSERT_TAIL>(*(it.curr()));
             }
         }
         return result;
     }
 
 
-    // TODO: if yield = Yield::ITEM, then the result should use values from the
-    // other container if it is dictlike.
+    /* Get the difference of keys held in a linked set compared to those of an arbitrary
+    container. */
+    template <Yield yield = Yield::KEY, typename View, typename Container>
+    auto difference(const View& view, const Container& items)
+        -> std::enable_if_t<
+            ViewTraits<View>::dictlike,
+            std::conditional_t<
+                yield == Yield::KEY,
+                typename ViewTraits<
+                    typename ViewTraits<View>::As::DYNAMIC
+                >::As::template Set<yield>,
+                typename ViewTraits<View>::As::DYNAMIC
+            >
+        >
+    {
+        static_assert(
+            yield != Yield::VALUE,
+            "cannot perform set comparisons on dictionary values: use listlike "
+            "operators instead"
+        );
+        using DynamicView = typename ViewTraits<View>::As::DYNAMIC;
+        using Node = typename View::Node;
+
+        if constexpr (yield == Yield::KEY) {
+            using Set = typename ViewTraits<DynamicView>::As::template Set<yield>;
+
+            std::unordered_set<const Node*> found;
+            for (const auto& item : iter(items)) {
+                const Node* node = view.search(item);
+                if (node != nullptr) {
+                    found.insert(node);
+                }
+            }
+
+            Set result(view.size() - found.size(), view.specialization());
+            auto it = view.template begin<Yield::KEY>();
+            auto end = view.template end<Yield::KEY>();
+            for (; it != end; ++it) {
+                if (found.find(it.curr()) == found.end()) {
+                    result.template node<View::Allocator::INSERT_TAIL>(*it);
+                }
+            }
+            return result;
+
+        } else {
+            std::unordered_set<const Node*> found;
+            for (const auto& item : iter(items)) {
+                if constexpr (is_pairlike<std::decay_t<decltype(item)>>) {
+                    const Node* node = view.search(std::get<0>(item));
+                    if (node != nullptr) {
+                        found.insert(node);
+                    }
+                } else {
+                    const Node* node = view.search(item);
+                    if (node != nullptr) {
+                        found.insert(node);
+                    }
+                }
+            }
+
+            DynamicView result(view.size() - found.size(), view.specialization());
+            for (auto it = view.begin(), end = view.end(); it != end; ++it) {
+                if (found.find(it.curr()) == found.end()) {
+                    result.template node<View::Allocator::INSERT_TAIL>(*(it.curr()));
+                }
+            }
+            return result;
+        }
+    }
 
 
-    /* Get the intersection between a linked set or dictionary and an arbitrary Python
-    iterable. */
+    /* Get the intersection of keys held in a linked set compared to those of an
+    arbitrary container. */
     template <typename View, typename Container>
     auto intersection(const View& view, const Container& items)
         -> std::enable_if_t<
-            ViewTraits<View>::hashed,
+            ViewTraits<View>::setlike,
             typename ViewTraits<View>::As::DYNAMIC
         >
     {
         using DynamicView = typename ViewTraits<View>::As::DYNAMIC;
-        using Allocator = typename View::Allocator;
         using Node = typename View::Node;
 
         std::unordered_set<const Node*> found;
@@ -120,10 +239,86 @@ namespace linked {
         DynamicView result(found.size(), view.specialization());
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
             if (found.find(it.curr()) != found.end()) {
-                result.template node<Allocator::INSERT_TAIL>(*(it.curr()));
+                result.template node<View::Allocator::INSERT_TAIL>(*(it.curr()));
             }
         }
         return result;
+    }
+
+
+    /* Get the intersection keys or key-value pairs held in a linked dictionary
+    compared to those of an arbitrary container. */
+    template <Yield yield = Yield::KEY, typename View, typename Container>
+    auto intersection(const View& view, const Container& items)
+        -> std::enable_if_t<
+            ViewTraits<View>::dictlike,
+            std::conditional_t<
+                yield == Yield::KEY,
+                typename ViewTraits<
+                    typename ViewTraits<View>::As::DYNAMIC
+                >::As::template Set<yield>,
+                typename ViewTraits<View>::As::DYNAMIC
+            >
+        >
+    {
+        static_assert(
+            yield != Yield::VALUE,
+            "cannot perform set comparisons on dictionary values: use listlike "
+            "operators instead"
+        );
+        using DynamicView = typename ViewTraits<View>::As::DYNAMIC;
+        using Node = typename View::Node;
+
+        if constexpr (yield == Yield::KEY) {
+            using Set = typename ViewTraits<DynamicView>::As::template Set<yield>;
+
+            std::unordered_set<const Node*> found;
+            for (const auto& item : iter(items)) {
+                const Node* node = view.search(item);
+                if (node != nullptr) {
+                    found.insert(node);
+                }
+            }
+
+            Set result(found.size(), view.specialization());
+            auto it = view.template begin<Yield::KEY>();
+            auto end = view.template end<Yield::KEY>();
+            for (; it != end; ++it) {
+                if (found.find(it.curr()) != found.end()) {
+                    result.template node<View::Allocator::INSERT_TAIL>(*it);
+                }
+            }
+            return result;
+
+        } else {
+            std::unordered_map<const Node*, typename View::MappedValue> found;
+            for (const auto& item : iter(items)) {
+                if constexpr (is_pairlike<std::decay_t<decltype(item)>>) {
+                    const Node* node = view.search(std::get<0>(item));
+                    if (node != nullptr) {
+                        found.insert({node, std::get<1>(item)});
+                    }
+                } else {
+                    const Node* node = view.search(item);
+                    if (node != nullptr) {
+                        found.insert({node, node->mapped()});
+                    }
+                }
+            }
+
+            DynamicView result(found.size(), view.specialization());
+            auto it = view.template begin<Yield::KEY>();
+            auto end = view.template end<Yield::KEY>();
+            for (; it != end; ++it) {
+                auto found_it = found.find(it.curr());
+                if (found_it != found.end()) {
+                    result.template node<View::Allocator::INSERT_TAIL>(
+                        *it, found_it->second
+                    );
+                }
+            }
+            return result;
+        }
     }
 
 

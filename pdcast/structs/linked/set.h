@@ -86,104 +86,12 @@ class LinkedSet : public LinkedBase<
     >;
     using DynamicSet = LinkedSet<K, Flags & ~Config::FIXED_SIZE, Lock>;
 
-    /* Recursive template to compute pairwise unions. */
-    template <typename First, typename Second, typename... Rest>
-    inline DynamicSet recursive_union(
-        First&& first,
-        Second&& second,
-        Rest&&... rest
-    ) const {
-        if constexpr (sizeof...(Rest) == 0) {
-            return DynamicSet(
-                linked::union_<false>(
-                    std::forward<First>(first),
-                    std::forward<Second>(second)
-                )
-            );
-        } else {
-            return recursive_union(
-                linked::union_<false>(
-                    std::forward<First>(first),
-                    std::forward<Second>(second)
-                ),
-                std::forward<Rest>(rest)...
-            );
+    inline DynamicSet as_dynamic() const {
+        DynamicSet result(this->size(), this->specialization());
+        for (auto it = this->begin(), end = this->end(); it != end; ++it) {
+            result.view.template node<Base::Allocator::INSERT_TAIL>(*(it.curr()));
         }
-    }
-
-    /* Recursive template to compute pairwise unions. */
-    template <typename First, typename Second, typename... Rest>
-    inline DynamicSet recursive_union_left(
-        First&& first,
-        Second&& second,
-        Rest&&... rest
-    ) const {
-        if constexpr (sizeof...(Rest) == 0) {
-            return DynamicSet(
-                linked::union_<true>(
-                    std::forward<First>(first),
-                    std::forward<Second>(second)
-                )
-            );
-        } else {
-            return recursive_union_left(
-                linked::union_<true>(
-                    std::forward<First>(first),
-                    std::forward<Second>(second)
-                ),
-                std::forward<Rest>(rest)...
-            );
-        }
-    }
-
-    /* Recursive template to compute pairwise intersections. */
-    template <typename First, typename Second, typename... Rest>
-    inline DynamicSet recursive_intersection(
-        First&& first,
-        Second&& second,
-        Rest&&... rest
-    ) const {
-        if constexpr (sizeof...(Rest) == 0) {
-            return DynamicSet(
-                linked::intersection(
-                    std::forward<First>(first),
-                    std::forward<Second>(second)
-                )
-            );
-        } else {
-            return recursive_intersection(
-                linked::intersection(
-                    std::forward<First>(first),
-                    std::forward<Second>(second)
-                ),
-                std::forward<Rest>(rest)...
-            );
-        }
-    }
-
-    /* Recursive template to compute pairwise differences. */
-    template <typename First, typename Second, typename... Rest>
-    inline DynamicSet recursive_difference(
-        First&& first,
-        Second&& second,
-        Rest&&... rest
-    ) const {
-        if constexpr (sizeof...(Rest) == 0) {
-            return DynamicSet(
-                linked::difference(
-                    std::forward<First>(first),
-                    std::forward<Second>(second)
-                )
-            );
-        } else {
-            return recursive_difference(
-                linked::difference(
-                    std::forward<First>(first),
-                    std::forward<Second>(second)
-                ),
-                std::forward<Rest>(rest)...
-            );
-        }
+        return result;
     }
 
 public:
@@ -336,46 +244,53 @@ public:
     }
 
     /* Return a new set with elements from this set and all other containers. */
-    template <typename... Containers>
-    inline DynamicSet union_(Containers&&... items) const {
-        if constexpr (sizeof...(Containers) == 0) {
-            DynamicSet result(this->size(), this->specialization());
-            for (auto it = this->begin(), end = this->end(); it != end; ++it) {
-                result.view.template node<Base::Allocator::INSERT_TAIL>(*(it.curr()));
-            }
-            return result;
-        } else {
-            return recursive_union(this->view, std::forward<Containers>(items)...);
+    inline DynamicSet union_() const {
+        return as_dynamic();
+    }
+
+    /* Return a new set with elements from this set and all other containers. */
+    template <typename First, typename... Rest>
+    inline DynamicSet union_(First&& first, Rest&&... rest) const {
+        DynamicSet result = linked::union_<false>(
+            this->view, std::forward<First>(first)
+        );
+        if constexpr (sizeof...(Rest) > 0) {
+            result.update(std::forward<Rest>(rest)...);
         }
+        return result;
     }
 
     /* Return a new set with elements from this set and all other containers.  Appends
     to the head of the set rather than the tail. */
-    template <typename... Containers>
-    inline DynamicSet union_left(Containers&&... items) const {
-        if constexpr (sizeof...(Containers) == 0) {
-            DynamicSet result(this->size(), this->specialization());
-            for (auto it = this->begin(), end = this->end(); it != end; ++it) {
-                result.view.template node<Base::Allocator::INSERT_TAIL>(*(it.curr()));
-            }
-            return result;
-        } else {
-            return recursive_union_left(this->view, std::forward<Containers>(items)...);
+    inline DynamicSet union_left() const {
+        return as_dynamic();
+    }
+
+    /* Return a new set with elements from this set and all other containers.  Appends
+    to the head of the set rather than the tail. */
+    template <typename First, typename... Rest>
+    inline DynamicSet union_left(First&& first, Rest&&... rest) const {
+        DynamicSet result = linked::union_<true>(
+            this->view, std::forward<First>(first)
+        );
+        if constexpr (sizeof...(Rest) > 0) {
+            result.update_left(std::forward<Rest>(rest)...);
         }
+        return result;
     }
 
     /* Extend a set by adding elements from one or more iterables that are not already
     present. */
     template <typename... Containers>
     inline void update(Containers&&... items) {
-        (linked::update(this->view, std::forward<Containers>(items)), ...);
+        (linked::update<false>(this->view, std::forward<Containers>(items)), ...);
     }
 
     /* Extend a set by left-adding elements from one or more iterables that are not
     already present. */
     template <typename... Containers>
     inline void update_left(Containers&&... items) {
-        (linked::update_left(this->view, std::forward<Containers>(items)), ...);
+        (linked::update<true>(this->view, std::forward<Containers>(items)), ...);
     }
 
     /* Extend a set by adding or moving items to the head of the set and possibly
@@ -386,17 +301,20 @@ public:
     }
 
     /* Return a new set with elements common to this set and all other containers. */
-    template <typename... Containers>
-    inline DynamicSet intersection(Containers&&... items) const {
-        if constexpr (sizeof...(Containers) == 0) {
-            DynamicSet result(this->size(), this->specialization());
-            for (auto it = this->begin(), end = this->end(); it != end; ++it) {
-                result.view.template node<Base::Allocator::INSERT_TAIL>(*(it.curr()));
-            }
-            return result;
-        } else {
-            return recursive_intersection(this->view, std::forward<Containers>(items)...);
+    inline DynamicSet intersection() const {
+        return as_dynamic();
+    }
+
+    /* Return a new set with elements common to this set and all other containers. */
+    template <typename First, typename... Rest>
+    inline DynamicSet intersection(First&& first, Rest&&... rest) const {
+        DynamicSet result = linked::intersection(
+            this->view, std::forward<First>(first)
+        );
+        if constexpr (sizeof...(Rest) > 0) {
+            result.intersection_update(std::forward<Rest>(rest)...);
         }
+        return result;
     }
 
     /* Removal elements from a set that are not contained in one or more iterables. */
@@ -405,19 +323,24 @@ public:
         (linked::intersection_update(this->view, std::forward<Containers>(items)), ...);
     }
 
+
     /* Return a new set with elements from this set that are not common to any other
     containers. */
-    template <typename... Containers>
-    inline DynamicSet difference(Containers&&... items) const {
-        if constexpr (sizeof...(Containers) == 0) {
-            DynamicSet result(this->size(), this->specialization());
-            for (auto it = this->begin(), end = this->end(); it != end; ++it) {
-                result.view.template node<Base::Allocator::INSERT_TAIL>(*(it.curr()));
-            }
-            return result;
-        } else {
-            return recursive_difference(this->view, std::forward<Containers>(items)...);
+    inline DynamicSet difference() const {
+        return as_dynamic();
+    }
+
+    /* Return a new set with elements from this set that are not common to any other
+    containers. */
+    template <typename First, typename... Rest>
+    inline DynamicSet difference(First&& first, Rest&&... rest) const {
+        DynamicSet result = linked::difference(
+            this->view, std::forward<First>(first)
+        );
+        if constexpr (sizeof...(Rest) > 0) {
+            result.difference_update(std::forward<Rest>(rest)...);
         }
+        return result;
     }
 
     /* Remove elements from a set that are contained in one or more iterables. */
@@ -452,7 +375,7 @@ public:
     container, but not both. */
     template <typename Container>
     inline void symmetric_difference_update(Container&& items) {
-        linked::symmetric_difference_update(
+        linked::symmetric_difference_update<false>(
             this->view, std::forward<Container>(items)
         );
     }
@@ -461,7 +384,7 @@ public:
     container, but not both.  Appends to the head of the set rather than the tail. */
     template <typename Container>
     inline void symmetric_difference_update_left(Container&& items) {
-        linked::symmetric_difference_update_left(
+        linked::symmetric_difference_update<true>(
             this->view, std::forward<Container>(items)
         );
     }

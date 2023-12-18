@@ -1194,7 +1194,7 @@ struct ViewTraits {
         };
 
         template <Yield yield, bool as_pytuple>
-        struct AsSet<yield, as_pytuple, dictlike> {
+        struct AsSet<yield, as_pytuple, true> {
             using Key = typename ViewType::Value;
             using Value = typename ViewType::MappedValue;
             using NewValue = std::conditional_t<

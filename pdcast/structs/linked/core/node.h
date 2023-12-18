@@ -690,6 +690,15 @@ public:
 };
 
 
+
+// TODO: should apply typecheck to value whenever we overwrite it.  This is only
+// applicable when the specialization is a slice.  Actually is this necessary?  We
+// already check whenever a new node is created.  This check would only be necessary
+// if the value is overwritten without creating a new node.  This would only ever
+// happen in update() calls and similar, but probably not even there.  Still worth
+// being aware of.
+
+
 /* A node decorator that attaches a second value to each node, allowing the list to act
 as a dictionary. */
 template <typename Wrapped, typename MappedType>
