@@ -393,44 +393,24 @@ inline bool operator<=(const Container& other, const LinkedList<T, Flags, Ts...>
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator==(const LinkedList<T, Flags, Ts...>& list, const Container& other) {
-    if constexpr (std::is_same_v<decltype(list), decltype(other)>) {
-        if (&list == &other) {
-            return true;
-        }
-    }
     return lexical_eq(list, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator==(const Container& other, const LinkedList<T, Flags, Ts...>& list) {
-    if constexpr (std::is_same_v<decltype(list), decltype(other)>) {
-        if (&list == &other) {
-            return true;
-        }
-    }
     return lexical_eq(other, list);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator!=(const LinkedList<T, Flags, Ts...>& list, const Container& other) {
-    if constexpr (std::is_same_v<decltype(list), decltype(other)>) {
-        if (&list == &other) {
-            return false;
-        }
-    }
     return !lexical_eq(list, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator!=(const Container& other, const LinkedList<T, Flags, Ts...>& list) {
-    if constexpr (std::is_same_v<decltype(list), decltype(other)>) {
-        if (&list == &other) {
-            return false;
-        }
-    }
     return !lexical_eq(other, list);
 }
 
@@ -468,214 +448,121 @@ inline bool operator>(const Container& other, const LinkedList<T, Flags, Ts...>&
 structure. */
 template <typename Derived>
 class PyListInterface {
+    using CallProtocol = bertrand::util::CallProtocol;
+
+    template <CallProtocol call>
+    using PyArgs = bertrand::util::PyArgs<call>;
+
+    template <typename Func>
+    inline static PyObject* visit(Derived* self, Func func) {
+        try {
+            return std::visit(func, self->variant);
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
 public:
 
     static PyObject* append(Derived* self, PyObject* item) {
-        try {
-            std::visit(
-                [&item](auto& list) {
-                    list.append(item);
-                },
-                self->variant
-            );
+        return visit(self, [&item](auto& list) {
+            list.append(item);
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* append_left(Derived* self, PyObject* item) {
-        try {
-            std::visit(
-                [&item](auto& list) {
-                    list.append_left(item);
-                },
-                self->variant
-            );
+        return visit(self, [&item](auto& list) {
+            list.append_left(item);
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* insert(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using bertrand::util::PyArgs;
-        using bertrand::util::CallProtocol;
-        using bertrand::util::parse_int;
         static constexpr std::string_view meth_name{"insert"};
-        try {
+        using bertrand::util::parse_int;
+        return visit(self, [&args, &nargs](auto& list) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             long long index = pyargs.parse("index", parse_int);
             PyObject* item = pyargs.parse("item");
             pyargs.finalize();
-
-            std::visit(
-                [&index, &item](auto& list) {
-                    list.insert(index, item);
-                },
-                self->variant
-            );
+            list.insert(index, item);
             Py_RETURN_NONE;
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* extend(Derived* self, PyObject* items) {
-        try {
-            std::visit(
-                [&items](auto& list) {
-                    list.extend(items);
-                },
-                self->variant
-            );
+        return visit(self, [&items](auto& list) {
+            list.extend(items);
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* extend_left(Derived* self, PyObject* items) {
-        try {
-            std::visit(
-                [&items](auto& list) {
-                    list.extend_left(items);
-                },
-                self->variant
-            );
+        return visit(self, [&items](auto& list) {
+            list.extend_left(items);
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* index(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using bertrand::util::PyArgs;
-        using bertrand::util::CallProtocol;
+        static constexpr std::string_view meth_name{"index"};
         using bertrand::util::parse_opt_int;
         using Index = std::optional<long long>;
-        static constexpr std::string_view meth_name{"index"};
-        try {
+        return visit(self, [&args, &nargs](auto& list) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* item = pyargs.parse("item");
             Index start = pyargs.parse("start", parse_opt_int, Index());
             Index stop = pyargs.parse("stop", parse_opt_int, Index());
             pyargs.finalize();
-
-            size_t result = std::visit(
-                [&item, &start, &stop](auto& list) {
-                    return list.index(item, start, stop);
-                },
-                self->variant
-            );
-
-            return PyLong_FromSize_t(result);
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+            return PyLong_FromSize_t(list.index(item, start, stop));
+        });
     }
 
     static PyObject* count(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using bertrand::util::PyArgs;
-        using bertrand::util::CallProtocol;
+        static constexpr std::string_view meth_name{"count"};
         using bertrand::util::parse_opt_int;
         using Index = std::optional<long long>;
-        static constexpr std::string_view meth_name{"count"};
-        try {
+        return visit(self, [&args, &nargs](auto& list) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* item = pyargs.parse("item");
             Index start = pyargs.parse("start", parse_opt_int, Index());
             Index stop = pyargs.parse("stop", parse_opt_int, Index());
             pyargs.finalize();
-
-            size_t result = std::visit(
-                [&item, &start, &stop](auto& list) {
-                    return list.count(item, start, stop);
-                },
-                self->variant
-            );
-
-            return PyLong_FromSize_t(result);
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+            return PyLong_FromSize_t(list.count(item, start, stop));
+        });
     }
 
     static PyObject* remove(Derived* self, PyObject* item) {
-        try {
-            std::visit(
-                [&item](auto& list) {
-                    list.remove(item);
-                },
-                self->variant
-            );
+        return visit(self, [&item](auto& list) {
+            list.remove(item);
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* pop(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using bertrand::util::PyArgs;
-        using bertrand::util::CallProtocol;
-        using bertrand::util::parse_int;
         static constexpr std::string_view meth_name{"pop"};
-        try {
+        using bertrand::util::parse_int;
+        return visit(self, [&args, &nargs](auto& list) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             long long index = pyargs.parse("index", parse_int, (long long)-1);
             pyargs.finalize();
-
-            return std::visit(
-                [&index](auto& list) {
-                    return list.pop(index);  // new reference
-                },
-                self->variant
-            );
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+            return list.pop(index);  // returns new reference
+        });
     }
 
     static PyObject* clear(Derived* self, PyObject* = nullptr) {
-        try {
-            std::visit(
-                [](auto& list) {
-                    list.clear();
-                },
-                self->variant
-            );
+        return visit(self, [](auto& list) {
+            list.clear();
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* copy(Derived* self, PyObject* = nullptr) {
-        try {
-            return std::visit(
-                [](auto& list) {
-                    return Derived::construct(list.copy());
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [](auto& list) {
+            return Derived::construct(list.copy());
+        });
     }
 
     static PyObject* sort(
@@ -684,68 +571,36 @@ public:
         Py_ssize_t nargs,
         PyObject* kwnames
     ) {
-        using bertrand::util::PyArgs;
-        using bertrand::util::CallProtocol;
+        static constexpr std::string_view meth_name{"sort"};
         using bertrand::util::none_to_null;
         using bertrand::util::is_truthy;
-        static constexpr std::string_view meth_name{"sort"};
-        try {
+        return visit(self, [&args, &nargs, &kwnames](auto& list) {
             PyArgs<CallProtocol::VECTORCALL> pyargs(meth_name, args, nargs, kwnames);
             PyObject* key = pyargs.keyword("key", none_to_null, (PyObject*)nullptr);
             bool reverse = pyargs.keyword("reverse", is_truthy, false);
             pyargs.finalize();
-
-            std::visit(
-                [&key, &reverse](auto& list) {
-                    list.sort(key, reverse);
-                },
-                self->variant
-            );
+            list.sort(key, reverse);
             Py_RETURN_NONE;
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* reverse(Derived* self, PyObject* = nullptr) {
-        try {
-            std::visit(
-                [](auto& list) {
-                    list.reverse();
-                },
-                self->variant
-            );
+        return visit(self, [](auto& list) {
+            list.reverse();
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* rotate(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using bertrand::util::PyArgs;
-        using bertrand::util::CallProtocol;
-        using bertrand::util::parse_int;
         static constexpr std::string_view meth_name{"rotate"};
-        try {
+        using bertrand::util::parse_int;
+        return visit(self, [&args, &nargs](auto& list) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             long long steps = pyargs.parse("steps", parse_int, (long long)1);
             pyargs.finalize();
-
-            std::visit(
-                [&steps](auto& list) {
-                    list.rotate(steps);
-                },
-                self->variant
-            );
+            list.rotate(steps);
             Py_RETURN_NONE;
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static int __contains__(Derived* self, PyObject* item) {
@@ -763,24 +618,14 @@ public:
     }
 
     static PyObject* __getitem__(Derived* self, PyObject* key) {
-        try {
+        return visit(self, [&key](auto& list) {
             if (PyIndex_Check(key)) {
                 long long index = bertrand::util::parse_int(key);
-                return std::visit(
-                    [&index](auto& list) -> PyObject* {
-                        return Py_XNewRef(list[index].get());
-                    },
-                    self->variant
-                );
+                return Py_XNewRef(list.position(index).get());
             }
 
             if (PySlice_Check(key)) {
-                return std::visit(
-                    [&key](auto& list) {
-                        return Derived::construct(list.slice(key).get());
-                    },
-                    self->variant
-                );
+                return Derived::construct(list.slice(key).get());
             }
 
             PyErr_Format(
@@ -788,20 +633,16 @@ public:
                 "indices must be integers or slices, not %s",
                 Py_TYPE(key)->tp_name
             );
-            return nullptr;
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+            return static_cast<PyObject*>(nullptr);
+        });
     }
 
     static int __setitem__(Derived* self, PyObject* key, PyObject* items) {
         try {
             if (PyIndex_Check(key)) {
-                long long index = bertrand::util::parse_int(key);
                 std::visit(
-                    [&index, &items](auto& list) {
+                    [&key, &items](auto& list) {
+                        long long index = bertrand::util::parse_int(key);
                         if (items == nullptr) {
                             list[index].del();
                         } else {
@@ -841,109 +682,60 @@ public:
     }
 
     static PyObject* __add__(Derived* self, PyObject* other) {
-        try {
-            return std::visit(
-                [&other](auto& list) {
-                    return Derived::construct(list + other);
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&other](auto& list) {
+            return Derived::construct(list + other);
+        });
     }
 
     static PyObject* __iadd__(Derived* self, PyObject* other) {
-        try {
-            std::visit(
-                [&other](auto& list) {
-                    list += other;
-                },
-                self->variant
-            );
+        return visit(self, [&self, &other](auto& list) {
+            list += other;
             return Py_NewRef(reinterpret_cast<PyObject*>(self));
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* __mul__(Derived* self, Py_ssize_t count) {
-        try {
-            return std::visit(
-                [&count](auto& list) {
-                    return Derived::construct(list * count);
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&count](auto& list) {
+            return Derived::construct(list * count);
+        });
     }
 
     static PyObject* __imul__(Derived* self, Py_ssize_t count) {
-        try {
-            std::visit(
-                [&count](auto& list) {
-                    list *= count;
-                },
-                self->variant
-            );
+        return visit(self, [&self, &count](auto& list) {
+            list *= count;
             return Py_NewRef(reinterpret_cast<PyObject*>(self));
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* __richcompare__(Derived* self, PyObject* other, int cmp) {
-        try {
-            bool result = std::visit(
-                [&other, &cmp](auto& list) {
-                    switch (cmp) {
-                        case Py_LT:
-                            return list < other;
-                        case Py_LE:
-                            return list <= other;
-                        case Py_EQ:
-                            return list == other;
-                        case Py_NE:
-                            return list != other;
-                        case Py_GE:
-                            return list >= other;
-                        case Py_GT:
-                            return list > other;
-                        default:
-                            throw TypeError("invalid comparison");
-                    }
-                },
-                self->variant
-            );
-            return Py_NewRef(result ? Py_True : Py_False);
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&other, &cmp](auto& list) {
+            switch (cmp) {
+                case Py_LT:
+                    return Py_NewRef(list < other ? Py_True : Py_False);
+                case Py_LE:
+                    return Py_NewRef(list <= other ? Py_True : Py_False);
+                case Py_EQ:
+                    return Py_NewRef(list == other ? Py_True : Py_False);
+                case Py_NE:
+                    return Py_NewRef(list != other ? Py_True : Py_False);
+                case Py_GE:
+                    return Py_NewRef(list >= other ? Py_True : Py_False);
+                case Py_GT:
+                    return Py_NewRef(list > other ? Py_True : Py_False);
+                default:  // should never occur
+                    PyErr_SetString(PyExc_TypeError, "invalid comparison");
+                    return static_cast<PyObject*>(nullptr);
+            }
+        });
     }
 
 protected:
 
     /* Implement `PySequence_GetItem()` in CPython API. */
     static PyObject* __getitem_scalar__(Derived* self, Py_ssize_t index) {
-        try {
-            return std::visit(
-                [&index](auto& list) {
-                    return Py_XNewRef(list.position(index).get());
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&index](auto& list) {
+            return Py_XNewRef(list.position(index).get());
+        });
     }
 
     /* Implement `PySequence_SetItem()` in CPython API. */
@@ -1403,12 +1195,12 @@ class PyLinkedList :
 public:
 
     static int __init__(PyLinkedList* self, PyObject* args, PyObject* kwargs) {
+        static constexpr std::string_view meth_name{"__init__"};
         using bertrand::util::PyArgs;
         using bertrand::util::CallProtocol;
         using bertrand::util::none_to_null;
         using bertrand::util::is_truthy;
         using bertrand::util::parse_int;
-        static constexpr std::string_view meth_name{"__init__"};
         try {
             PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
             PyObject* iterable = pyargs.parse(
@@ -1447,35 +1239,24 @@ public:
     }
 
     static PyObject* __str__(PyLinkedList* self) {
-        try {
+        return Base::visit(self, [](auto& list) {
             std::ostringstream stream;
             stream << "[";
-            std::visit(
-                [&stream](auto& list) {
-                    auto it = list.begin();
-                    auto end = list.end();
-                    if (it != end) {
-                        stream << repr(*it);
-                        ++it;
-                    }
-                    while (it != list.end()) {
-                        stream << ", " << repr(*it);
-                        ++it;
-                    }
-                },
-                self->variant
-            );
+            auto it = list.begin();
+            auto end = list.end();
+            if (it != end) {
+                stream << repr(*it);
+                ++it;
+            }
+            while (it != list.end()) {
+                stream << ", " << repr(*it);
+                ++it;
+            }
             stream << "]";
             auto str = stream.str();
             return PyUnicode_FromStringAndSize(str.c_str(), str.size());
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
-
-
 
 private:
 
@@ -1561,10 +1342,6 @@ in some cases.
         };
 
     };
-
-    ////////////////////////////////
-    ////    PYTHON INTERNALS    ////
-    ////////////////////////////////
 
     #define BASE_PROPERTY(NAME) \
         { #NAME, (getter) Base::NAME, NULL, PyDoc_STR(Base::docs::NAME.data()) } \

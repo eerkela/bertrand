@@ -28,7 +28,7 @@ namespace linked {
 
     /* Check whether the elements of a linked set or dictionary are equal to those of
     a given container. */
-    template <typename View, typename Container>
+    template <bool equal, typename View, typename Container>
     auto set_equal(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, bool>
     {
@@ -38,40 +38,23 @@ namespace linked {
         for (const auto& item : iter(items)) {
             const Node* node = view.search(item);
             if (node == nullptr) {
-                return false;
+                return !equal;
             }
             found.insert(node);
         }
 
-        return found.size() == view.size();
-    }
-
-
-    /* Check whether the elements of a linked set or dictionary are not equal to those
-    of a given container. */
-    template <typename View, typename Container>
-    auto set_not_equal(const View& view, const Container& items)
-        -> std::enable_if_t<ViewTraits<View>::hashed, bool>
-    {
-        using Node = typename View::Node;
-
-        std::unordered_set<const Node*> found;
-        for (const auto& item : iter(items)) {
-            const Node* node = view.search(item);
-            if (node != nullptr) {
-                return false;
-            }
-            found.insert(node);
+        if constexpr (equal) {
+            return found.size() == view.size();
+        } else {
+            return found.size() != view.size();
         }
-
-        return found.size() != view.size();
     }
 
 
     /* Check whether the elements of a linked set or dictionary represent a subset of a
     given container. */
-    template <typename View, typename Container>
-    auto issubset(const View& view, const Container& items, bool strict)
+    template <bool strict, typename View, typename Container>
+    auto issubset(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, bool>
     {
         using Node = typename View::Node;
@@ -87,14 +70,18 @@ namespace linked {
             }
         }
 
-        return found.size() == view.size() && (larger || !strict);
+        if constexpr (strict) {
+            return found.size() == view.size() && larger;
+        } else {
+            return found.size() == view.size();
+        }
     }
 
 
     /* Check whether the elements of a linked set or dictionary represent a superset of
     a given container. */
-    template <typename View, typename Container>
-    auto issuperset(const View& view, const Container& items, bool strict)
+    template <bool strict, typename View, typename Container>
+    auto issuperset(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, bool>
     {
         using Node = typename View::Node;
@@ -108,7 +95,11 @@ namespace linked {
             found.insert(node);
         }
 
-        return found.size() < view.size() || !strict;
+        if constexpr (strict) {
+            return found.size() < view.size();
+        } else {
+            return found.size() <= view.size();
+        }
     }
 
 

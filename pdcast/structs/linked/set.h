@@ -283,21 +283,36 @@ public:
     present. */
     template <typename... Containers>
     inline void update(Containers&&... items) {
-        (linked::update<false>(this->view, std::forward<Containers>(items)), ...);
+        (
+            linked::update<false>(
+                this->view, std::forward<Containers>(items)
+            ),
+            ...
+        );
     }
 
     /* Extend a set by left-adding elements from one or more iterables that are not
     already present. */
     template <typename... Containers>
     inline void update_left(Containers&&... items) {
-        (linked::update<true>(this->view, std::forward<Containers>(items)), ...);
+        (
+            linked::update<true>(
+                this->view, std::forward<Containers>(items)
+            ),
+            ...
+        );
     }
 
     /* Extend a set by adding or moving items to the head of the set and possibly
     evicting the tail to make room. */
     template <typename... Containers>
     inline void lru_update(Containers&&... items) {
-        (linked::lru_update(this->view, std::forward<Containers>(items)), ...);
+        (
+            linked::lru_update(
+                this->view, std::forward<Containers>(items)
+            ),
+            ...
+        );
     }
 
     /* Return a new set with elements common to this set and all other containers. */
@@ -320,9 +335,13 @@ public:
     /* Removal elements from a set that are not contained in one or more iterables. */
     template <typename... Containers>
     inline void intersection_update(Containers&&... items) {
-        (linked::intersection_update(this->view, std::forward<Containers>(items)), ...);
+        (
+            linked::intersection_update(
+                this->view, std::forward<Containers>(items)
+            ),
+            ...
+        );
     }
-
 
     /* Return a new set with elements from this set that are not common to any other
     containers. */
@@ -346,7 +365,12 @@ public:
     /* Remove elements from a set that are contained in one or more iterables. */
     template <typename... Containers>
     inline void difference_update(Containers&&... items) {
-        (linked::difference_update(this->view, std::forward<Containers>(items)), ...);
+        (
+            linked::difference_update(
+                this->view, std::forward<Containers>(items)
+            ),
+            ...
+        );
     }
 
     /* Return a new set with elements in either this set or another container, but not
@@ -392,22 +416,24 @@ public:
     /* Check whether the set has no elements in common with another container. */
     template <typename Container>
     inline bool isdisjoint(Container&& items) const {
-        return linked::isdisjoint(this->view, std::forward<Container>(items));
+        return linked::isdisjoint(
+            this->view, std::forward<Container>(items)
+        );
     }
 
     /* Check whether all items within the set are also present in another container. */
     template <typename Container>
     inline bool issubset(Container&& items) const {
-        return linked::issubset(
-            this->view, std::forward<Container>(items), false
+        return linked::issubset<false>(
+            this->view, std::forward<Container>(items)
         );
     }
 
     /* Check whether the set contains all items within another container. */
     template <typename Container>
     inline bool issuperset(Container&& items) const {
-        return linked::issuperset(
-            this->view, std::forward<Container>(items), false
+        return linked::issuperset<false>(
+            this->view, std::forward<Container>(items)
         );
     }
 
@@ -602,25 +628,25 @@ inline auto operator^=(LinkedSet<T, Flags, Ts...>& set, const Container& other)
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
-    return linked::issubset(set.view, other, true);
+    return linked::issubset<true>(set.view, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
-    return linked::issuperset(set.view, other, true);
+    return linked::issuperset<true>(set.view, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<=(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
-    return linked::issubset(set.view, other, false);
+    return linked::issubset<false>(set.view, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator<=(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
-    return linked::issuperset(set.view, other, false);
+    return linked::issuperset<false>(set.view, other);
 }
 
 
@@ -631,7 +657,7 @@ inline bool operator==(const LinkedSet<T, Flags, Ts...>& set, const Container& o
             return true;
         }
     }
-    return linked::set_equal(set.view, other);
+    return linked::set_equal<true>(set.view, other);
 }
 
 
@@ -642,7 +668,7 @@ inline bool operator==(const Container& other, const LinkedSet<T, Flags, Ts...>&
             return true;
         }
     }
-    return linked::set_equal(set.view, other);
+    return linked::set_equal<true>(set.view, other);
 }
 
 
@@ -653,7 +679,7 @@ inline bool operator!=(const LinkedSet<T, Flags, Ts...>& set, const Container& o
             return false;
         }
     }
-    return linked::set_not_equal(set.view, other);
+    return linked::set_equal<false>(set.view, other);
 }
 
 
@@ -664,31 +690,31 @@ inline bool operator!=(const Container& other, const LinkedSet<T, Flags, Ts...>&
             return false;
         }
     }
-    return linked::set_not_equal(set.view, other);
+    return linked::set_equal<false>(set.view, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>=(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
-    return linked::issuperset(set.view, other, false);
+    return linked::issuperset<false>(set.view, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>=(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
-    return linked::issubset(set.view, other, false);
+    return linked::issubset<false>(set.view, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
-    return linked::issuperset(set.view, other, true);
+    return linked::issuperset<true>(set.view, other);
 }
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline bool operator>(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
-    return linked::issubset(set.view, other, true);
+    return linked::issubset<true>(set.view, other);
 }
 
 
@@ -700,236 +726,150 @@ inline bool operator>(const Container& other, const LinkedSet<T, Flags, Ts...>& 
 /* CRTP mixin class containing the Python set interface for a linked data structure. */
 template <typename Derived>
 class PySetInterface {
+    using CallProtocol = bertrand::util::CallProtocol;
 
-    /* Demote Python wrappers to their equivalent C++ objects before invoking a
-    function. */
+    template <CallProtocol call>
+    using PyArgs = bertrand::util::PyArgs<call>;
+
     template <typename Func>
-    inline static auto invoke_cpp(Func func, PyObject* arg) {
+    inline static PyObject* visit(Derived* self, Func func) {
+        try {
+            return std::visit(func, self->variant);
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
+    template <typename Func>
+    inline static auto unwrap_variant(PyObject* arg, Func func) {
         if (Derived::typecheck(arg)) {
-            Derived* self = reinterpret_cast<Derived*>(arg);
             return std::visit(
                 [&func](auto& other) {
                     return func(other);
                 },
-                self->variant
+                reinterpret_cast<Derived*>(arg)->variant
             );
         }
-
         return func(arg);
     }
 
 public:
 
     static PyObject* add(Derived* self, PyObject* key) {
-        try {
-            std::visit(
-                [&key](auto& set) {
-                    set.add(key);
-                },
-                self->variant
-            );
+        return visit(self, [&key](auto& set) {
+            set.add(key);
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* add_left(Derived* self, PyObject* key) {
-        try {
-            std::visit(
-                [&key](auto& set) {
-                    set.add_left(key);
-                },
-                self->variant
-            );
+        return visit(self, [&key](auto& set) {
+            set.add_left(key);
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* lru_add(Derived* self, PyObject* key) {
-        try {
-            std::visit(
-                [&key](auto& set) {
-                    set.lru_add(key);
-                },
-                self->variant
-            );
+        return visit(self, [&key](auto& set) {
+            set.lru_add(key);
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* remove(Derived* self, PyObject* key) {
-        try {
-            std::visit(
-                [&key](auto& set) {
-                    set.remove(key);
-                },
-                self->variant
-            );
+        return visit(self, [&key](auto& set) {
+            set.remove(key);
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* discard(Derived* self, PyObject* key) {
-        try {
-            std::visit(
-                [&key](auto& set) {
-                    set.discard(key);
-                },
-                self->variant
-            );
+        return visit(self, [&key](auto& set) {
+            set.discard(key);
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* lru_contains(Derived* self, PyObject* key) {
-        try {
-            return std::visit(
-                [&key](auto& set) {
-                    return PyBool_FromLong(set.lru_contains(key));
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&key](auto& set) {
+            return Py_NewRef(set.lru_contains(key) ? Py_True : Py_False);
+        });
     }
 
     static PyObject* union_(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        try {
-            return std::visit(
-                [&args, &nargs](auto& set) {
-                    auto result = set.union_();
-                    auto execute = [&result](auto& other) {
-                        result.update(other);
-                    };
-                    for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        invoke_cpp(execute, args[i]);
-                    }
-                    return Derived::construct(std::move(result));
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&args, &nargs](auto& set) {
+            auto result = set.union_();
+            auto execute = [&result](auto& other) {
+                result.update(other);
+            };
+            for (Py_ssize_t i = 0; i < nargs; ++i) {
+                unwrap_variant(args[i], execute);
+            }
+            return Derived::construct(std::move(result));
+        });
     }
 
     static PyObject* union_left(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        try {
-            return std::visit(
-                [&args, &nargs](auto& set) {
-                    auto result = set.union_left();
-                    auto execute = [&result](auto& other) {
-                        result.update_left(other);
-                    };
-                    for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        invoke_cpp(execute, args[i]);
-                    }
-                    return Derived::construct(std::move(result));
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&args, &nargs](auto& set) {
+            auto result = set.union_left();
+            auto execute = [&result](auto& other) {
+                result.update_left(other);
+            };
+            for (Py_ssize_t i = 0; i < nargs; ++i) {
+                unwrap_variant(args[i], execute);
+            }
+            return Derived::construct(std::move(result));
+        });
     }
 
     static PyObject* update(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        try {
-            std::visit(
-                [&args, &nargs](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        set.update(other);
-                    };
-                    for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        invoke_cpp(execute, args[i]);
-                    }
-                },
-                self->variant
-            );
+        return visit(self, [&args, &nargs](auto& set) {
+            auto execute = [&set](auto& other) {
+                set.update(other);
+            };
+            for (Py_ssize_t i = 0; i < nargs; ++i) {
+                unwrap_variant(args[i], execute);
+            }
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* update_left(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        try {
-            std::visit(
-                [&args, &nargs](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        set.update_left(other);
-                    };
-                    for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        invoke_cpp(execute, args[i]);
-                    }
-                },
-                self->variant
-            );
+        return visit(self, [&args, &nargs](auto& set) {
+            auto execute = [&set](auto& other) {
+                set.update_left(other);
+            };
+            for (Py_ssize_t i = 0; i < nargs; ++i) {
+                unwrap_variant(args[i], execute);
+            }
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* lru_update(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        try {
-            std::visit(
-                [&args, &nargs](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        set.lru_update(other);
-                    };
-                    for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        invoke_cpp(execute, args[i]);
-                    }
-                },
-                self->variant
-            );
+        return visit(self, [&args, &nargs](auto& set) {
+            auto execute = [&set](auto& other) {
+                set.lru_update(other);
+            };
+            for (Py_ssize_t i = 0; i < nargs; ++i) {
+                unwrap_variant(args[i], execute);
+            }
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* difference(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        try {
-            return std::visit(
-                [&args, &nargs](auto& set) {
-                    auto result = set.difference();
-                    auto execute = [&result](auto& other) {
-                        result.difference_update(other);
-                    };
-                    for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        invoke_cpp(execute, args[i]);
-                    }
-                    return Derived::construct(std::move(result));
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&args, &nargs](auto& set) {
+            auto result = set.difference();
+            auto execute = [&result](auto& other) {
+                result.difference_update(other);
+            };
+            for (Py_ssize_t i = 0; i < nargs; ++i) {
+                unwrap_variant(args[i], execute);
+            }
+            return Derived::construct(std::move(result));
+        });
     }
 
     static PyObject* difference_update(
@@ -937,23 +877,15 @@ public:
         PyObject* const* args,
         Py_ssize_t nargs
     ) {
-        try {
-            std::visit(
-                [&args, &nargs](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        set.difference_update(other);
-                    };
-                    for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        invoke_cpp(execute, args[i]);
-                    }
-                },
-                self->variant
-            );
+        return visit(self, [&args, &nargs](auto& set) {
+            auto execute = [&set](auto& other) {
+                set.difference_update(other);
+            };
+            for (Py_ssize_t i = 0; i < nargs; ++i) {
+                unwrap_variant(args[i], execute);
+            }
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* intersection(
@@ -961,24 +893,16 @@ public:
         PyObject* const* args,
         Py_ssize_t nargs
     ) {
-        try {
-            return std::visit(
-                [&args, &nargs](auto& set) {
-                    auto result = set.intersection();
-                    auto execute = [&result](auto& other) {
-                        result.intersection_update(other);
-                    };
-                    for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        invoke_cpp(execute, args[i]);
-                    }
-                    return Derived::construct(std::move(result));
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&args, &nargs](auto& set) {
+            auto result = set.intersection();
+            auto execute = [&result](auto& other) {
+                result.intersection_update(other);
+            };
+            for (Py_ssize_t i = 0; i < nargs; ++i) {
+                unwrap_variant(args[i], execute);
+            }
+            return Derived::construct(std::move(result));
+        });
     }
 
     static PyObject* intersection_update(
@@ -986,209 +910,103 @@ public:
         PyObject* const* args,
         Py_ssize_t nargs
     ) {
-        try {
-            std::visit(
-                [&args, &nargs](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        set.intersection_update(other);
-                    };
-                    for (Py_ssize_t i = 0; i < nargs; ++i) {
-                        invoke_cpp(execute, args[i]);
-                    }
-                },
-                self->variant
-            );
+        return visit(self, [&args, &nargs](auto& set) {
+            auto execute = [&set](auto& other) {
+                set.intersection_update(other);
+            };
+            for (Py_ssize_t i = 0; i < nargs; ++i) {
+                unwrap_variant(args[i], execute);
+            }
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* symmetric_difference(Derived* self, PyObject* items) {
-        try {
-            return std::visit(
-                [&items](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        return Derived::construct(set.symmetric_difference(other));
-                    };
-                    return invoke_cpp(execute, items);
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&items](auto& set) {
+            return unwrap_variant(items, [&set](auto& other) {
+                return Derived::construct(set.symmetric_difference_left(other));
+            });
+        });
     }
 
     static PyObject* symmetric_difference_left(Derived* self, PyObject* items) {
-        try {
-            return std::visit(
-                [&items](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        return Derived::construct(set.symmetric_difference_left(other));
-                    };
-                    return invoke_cpp(execute, items);
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&items](auto& set) {
+            return unwrap_variant(items, [&set](auto& other) {
+                return Derived::construct(set.symmetric_difference_left(other));
+            });
+        });
     }
 
     static PyObject* symmetric_difference_update(Derived* self, PyObject* items) {
-        try {
-            std::visit(
-                [&items](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        set.symmetric_difference_update(other);
-                    };
-                    invoke_cpp(execute, items);
-                },
-                self->variant
-            );
+        return visit(self, [&items](auto& set) {
+            unwrap_variant(items, [&set](auto& other) {
+                set.symmetric_difference_update(other);
+            });
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* symmetric_difference_update_left(Derived* self, PyObject* items) {
-        try {
-            std::visit(
-                [&items](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        set.symmetric_difference_update_left(other);
-                    };
-                    invoke_cpp(execute, items);
-                },
-                self->variant
-            );
+        return visit(self, [&items](auto& set) {
+            unwrap_variant(items, [&set](auto& other) {
+                set.symmetric_difference_update_left(other);
+            });
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* isdisjoint(Derived* self, PyObject* other) {
-        try {
-            return std::visit(
-                [&other](auto& set) {
-                    return PyBool_FromLong(set.isdisjoint(other));
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&other](auto& set) {
+            return Py_NewRef(set.isdisjoint(other) ? Py_True : Py_False);
+        });
     }
 
     static PyObject* issubset(Derived* self, PyObject* other) {
-        try {
-            return std::visit(
-                [&other](auto& set) {
-                    return PyBool_FromLong(set.issubset(other));
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&other](auto& set) {
+            return Py_NewRef(set.issubset(other) ? Py_True : Py_False);
+        });
     }
 
     static PyObject* issuperset(Derived* self, PyObject* other) {
-        try {
-            return std::visit(
-                [&other](auto& set) {
-                    return PyBool_FromLong(set.issuperset(other));
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&other](auto& set) {
+            return Py_NewRef(set.issuperset(other) ? Py_True : Py_False);
+        });
     }
 
     static PyObject* distance(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using bertrand::util::PyArgs;
-        using bertrand::util::CallProtocol;
         static constexpr std::string_view meth_name{"distance"};
-        try {
+        return visit(self, [&args, &nargs](auto& set) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key1 = pyargs.parse("key1");
             PyObject* key2 = pyargs.parse("key2");
             pyargs.finalize();
-
-            return std::visit(
-                [&key1, &key2](auto& set) {
-                    return PyLong_FromLongLong(set.distance(key1, key2));
-                },
-                self->variant
-            );
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+            return PyLong_FromLongLong(set.distance(key1, key2));
+        });
     }
 
     static PyObject* swap(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using bertrand::util::PyArgs;
-        using bertrand::util::CallProtocol;
         static constexpr std::string_view meth_name{"swap"};
-        try {
+        return visit(self, [&args, &nargs](auto& set) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key1 = pyargs.parse("key1");
             PyObject* key2 = pyargs.parse("key2");
             pyargs.finalize();
-
-            std::visit(
-                [&key1, &key2](auto& set) {
-                    set.swap(key1, key2);
-                },
-                self->variant
-            );
+            set.swap(key1, key2);
             Py_RETURN_NONE;
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
-
+        });
     }
 
     static PyObject* move(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using bertrand::util::PyArgs;
-        using bertrand::util::CallProtocol;
-        using bertrand::util::parse_int;
         static constexpr std::string_view meth_name{"move"};
-        try {
+        using bertrand::util::parse_int;
+        return visit(self, [&args, &nargs](auto& set) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
             long long steps = pyargs.parse("steps", parse_int);
             pyargs.finalize();
-
-            std::visit(
-                [&key, &steps](auto& set) {
-                    set.move(key, steps);
-                },
-                self->variant
-            );
+            set.move(key, steps);
             Py_RETURN_NONE;
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
-
+        });
     }
 
     static PyObject* move_to_index(
@@ -1196,168 +1014,84 @@ public:
         PyObject* const* args,
         Py_ssize_t nargs
     ) {
-        using bertrand::util::PyArgs;
-        using bertrand::util::CallProtocol;
-        using bertrand::util::parse_int;
         static constexpr std::string_view meth_name{"move_to_index"};
-        try {
+        using bertrand::util::parse_int;
+        return visit(self, [&args, &nargs](auto& set) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
             long long index = pyargs.parse("index", parse_int);
             pyargs.finalize();
-
-            std::visit(
-                [&key, &index](auto& set) {
-                    set.move_to_index(key, index);
-                },
-                self->variant
-            );
+            set.move_to_index(key, index);
             Py_RETURN_NONE;
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* __or__(Derived* self, PyObject* other) {
-        try {
-            return std::visit(
-                [&other](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        return Derived::construct(set | other);
-                    };
-                    return invoke_cpp(execute, other);
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&other](auto& set) {
+            return unwrap_variant(other, [&set](auto& other) {
+                return Derived::construct(set | other);
+            });
+        });
     }
 
     static PyObject* __ior__(Derived* self, PyObject* other) {
-        try {
-            std::visit(
-                [&other](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        set |= other;
-                    };
-                    invoke_cpp(execute, other);
-                },
-                self->variant
-            );
+        return visit(self, [&self, &other](auto& set) {
+            unwrap_variant(other, [&set](auto& other) {
+                set |= other;
+            });
             return Py_NewRef(reinterpret_cast<PyObject*>(self));
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* __sub__(Derived* self, PyObject* other) {
-        try {
-            return std::visit(
-                [&other](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        return Derived::construct(set - other);
-                    };
-                    return invoke_cpp(execute, other);
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&other](auto& set) {
+            return unwrap_variant(other, [&set](auto& other) {
+                return Derived::construct(set - other);
+            });
+        });
     }
 
     static PyObject* __isub__(Derived* self, PyObject* other) {
-        try {
-            std::visit(
-                [&other](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        set -= other;
-                    };
-                    invoke_cpp(execute, other);
-                },
-                self->variant
-            );
+        return visit(self, [&self, &other](auto& set) {
+            unwrap_variant(other, [&set](auto& other) {
+                set -= other;
+            });
             return Py_NewRef(reinterpret_cast<PyObject*>(self));
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* __and__(Derived* self, PyObject* other) {
-        try {
-            return std::visit(
-                [&other](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        return Derived::construct(set & other);
-                    };
-                    return invoke_cpp(execute, other);
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&other](auto& set) {
+            return unwrap_variant(other, [&set](auto& other) {
+                return Derived::construct(set & other);
+            });
+        });
     }
 
     static PyObject* __iand__(Derived* self, PyObject* other) {
-        try {
-            std::visit(
-                [&other](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        set &= other;
-                    };
-                    invoke_cpp(execute, other);
-                },
-                self->variant
-            );
+        return visit(self, [&self, &other](auto& set) {
+            unwrap_variant(other, [&set](auto& other) {
+                set &= other;
+            });
             return Py_NewRef(reinterpret_cast<PyObject*>(self));
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* __xor__(Derived* self, PyObject* other) {
-        try {
-            return std::visit(
-                [&other](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        return Derived::construct(set ^ other);
-                    };
-                    return invoke_cpp(execute, other);
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        return visit(self, [&other](auto& set) {
+            return unwrap_variant(other, [&set](auto& other) {
+                return Derived::construct(set ^ other);
+            });
+        });
     }
 
     static PyObject* __ixor__(Derived* self, PyObject* other) {
-        try {
-            std::visit(
-                [&other](auto& set) {
-                    auto execute = [&set](auto& other) {
-                        set ^= other;
-                    };
-                    invoke_cpp(execute, other);
-                },
-                self->variant
-            );
+        return visit(self, [&self, &other](auto& set) {
+            unwrap_variant(other, [&set](auto& other) {
+                set ^= other;
+            });
             return Py_NewRef(reinterpret_cast<PyObject*>(self));
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
 protected:
@@ -2019,12 +1753,12 @@ class PyLinkedSet :
 public:
 
     static int __init__(PyLinkedSet* self, PyObject* args, PyObject* kwargs) {
-        using bertrand::util::PyArgs;
+        static constexpr std::string_view meth_name{"__init__"};
         using bertrand::util::CallProtocol;
+        using bertrand::util::PyArgs;
         using bertrand::util::none_to_null;
         using bertrand::util::parse_int;
         using bertrand::util::is_truthy;
-        static constexpr std::string_view meth_name{"__init__"};
         try {
             PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
             PyObject* keys = pyargs.parse(
@@ -2063,32 +1797,23 @@ public:
     }
 
     static PyObject* __str__(PyLinkedSet* self) {
-        try {
+        return Base::visit(self, [](auto& set) {
             std::ostringstream stream;
             stream << "{";
-            std::visit(
-                [&stream](auto& set) {
-                    auto it = set.begin();
-                    auto end = set.end();
-                    if (it != end) {
-                        stream << repr(*it);
-                        ++it;
-                    }
-                    while (it != end) {
-                        stream << ", " << repr(*it);
-                        ++it;
-                    }
-                },
-                self->variant
-            );
+            auto it = set.begin();
+            auto end = set.end();
+            if (it != end) {
+                stream << repr(*it);
+                ++it;
+            }
+            while (it != set.end()) {
+                stream << ", " << repr(*it);
+                ++it;
+            }
             stream << "}";
             auto str = stream.str();
             return PyUnicode_FromStringAndSize(str.c_str(), str.size());
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
 private:

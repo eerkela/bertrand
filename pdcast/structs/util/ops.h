@@ -587,6 +587,12 @@ elements of the left operand are stricly equal to their counterparts from the ri
 operand, and that the left operand is the same length as the right. */
 template <typename LHS, typename RHS>
 bool lexical_eq(const LHS& lhs, const RHS& rhs) {
+    if constexpr (std::is_same_v<decltype(lhs), decltype(rhs)>) {
+        if (&lhs == &rhs) {
+            return true;
+        }
+    }
+
     auto it_lhs = iter(lhs).forward();
     auto it_rhs = iter(rhs).forward();
 

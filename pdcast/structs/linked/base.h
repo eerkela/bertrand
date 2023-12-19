@@ -268,203 +268,116 @@ public:
 
 
 //////////////////////////////
-////    CYTHON HELPERS    ////
-//////////////////////////////
-
-
-namespace cython {
-
-
-/* A functor that generates C++ weak references for a type-erased Cython variant. */
-template <typename T>
-class SelfRef {
-public:
-
-    /* A weak reference to the associated object. */
-    class WeakRef {
-    public:
-
-        /* Check whether the referenced object still exists. */
-        bool exists() const {
-            return !ref.expired();
-        }
-
-        /* Follow the weak reference, yielding a pointer to the referenced object if it
-        still exists.  Otherwise, sets a Python error and return nullptr.  */
-        T* get() const {
-            if (ref.expired()) {
-                throw RuntimeError("referenced object no longer exists");
-            }
-            return ref.lock().get();
-        }
-
-    private:
-        friend SelfRef;
-        std::weak_ptr<T> ref;
-
-        template <typename... Args>
-        WeakRef(Args... args) : ref(std::forward<Args>(args)...) {}
-    };
-
-    /* Get a weak reference to the associated object. */
-    WeakRef operator()() const {
-        return WeakRef(_self);
-    }
-
-private:
-    friend T;
-    const std::shared_ptr<T> _self;
-
-    // NOTE: custom deleter prevents the shared_ptr from trying to delete the object
-    // when it goes out of scope, which can cause a double free.
-
-    SelfRef(T& self) : _self(&self, [](auto&) {}) {}
-};
-
-
-}  // namespace cython
-
-
-//////////////////////////////
 ////    PYTHON WRAPPER    ////
 //////////////////////////////
-
-
-// TODO: SelfRef is only needed for RelativeProxies, which are not yet implemented.
 
 
 /* A CRTP-enabled base class that exposes properties inherited from LinkedBase to
 Python. */
 template <typename Derived>
 class PyLinkedBase {
+protected:
+
+    template <typename Func>
+    inline static PyObject* visit(Derived* self, Func func) {
+        try {
+            return std::visit(func, self->variant);
+        } catch (...) {
+            throw_python();
+            return nullptr;
+        }
+    }
+
 public:
+    PyObject_HEAD
+
     PyLinkedBase() = delete;
     PyLinkedBase(const PyLinkedBase&) = delete;
     PyLinkedBase(PyLinkedBase&&) = delete;
     PyLinkedBase& operator=(const PyLinkedBase&) = delete;
     PyLinkedBase& operator=(PyLinkedBase&&) = delete;
 
-    PyObject_HEAD
-
     inline static PyObject* SINGLY_LINKED(Derived* self, PyObject* = nullptr) noexcept {
-        return std::visit(
-            [](auto& list) {
-                return PyBool_FromLong(std::decay_t<decltype(list)>::SINGLY_LINKED);
-            },
-            self->variant
-        );
+        return visit(self, [](auto& list) {
+            return PyBool_FromLong(std::decay_t<decltype(list)>::SINGLY_LINKED);
+        });
     }
 
     inline static PyObject* DOUBLY_LINKED(Derived* self, PyObject* = nullptr) noexcept {
-        return std::visit(
-            [](auto& list) {
-                return PyBool_FromLong(std::decay_t<decltype(list)>::DOUBLY_LINKED);
-            },
-            self->variant
-        );
+        return visit(self, [](auto& list) {
+            return PyBool_FromLong(std::decay_t<decltype(list)>::DOUBLY_LINKED);
+        });
     }
 
     inline static PyObject* XOR(Derived* self, PyObject* = nullptr) noexcept {
-        return std::visit(
-            [](auto& list) {
-                return PyBool_FromLong(std::decay_t<decltype(list)>::XOR);
-            },
-            self->variant
-        );
+        return visit(self, [](auto& list) {
+            return PyBool_FromLong(std::decay_t<decltype(list)>::XOR);
+        });
     }
 
     inline static PyObject* FIXED_SIZE(Derived* self, PyObject* = nullptr) noexcept {
-        return std::visit(
-            [](auto& list) {
-                return PyBool_FromLong(std::decay_t<decltype(list)>::FIXED_SIZE);
-            },
-            self->variant
-        );
+        return visit(self, [](auto& list) {
+            return PyBool_FromLong(std::decay_t<decltype(list)>::FIXED_SIZE);
+        });
     }
 
     inline static PyObject* PACKED(Derived* self, PyObject* = nullptr) noexcept {
-        return std::visit(
-            [](auto& list) {
-                return PyBool_FromLong(std::decay_t<decltype(list)>::PACKED);
-            },
-            self->variant
-        );
+        return visit(self, [](auto& list) {
+            return PyBool_FromLong(std::decay_t<decltype(list)>::PACKED);
+        });
     }
 
     inline static PyObject* STRICTLY_TYPED(Derived* self, PyObject* = nullptr) noexcept {
-        return std::visit(
-            [](auto& list) {
-                return PyBool_FromLong(std::decay_t<decltype(list)>::STRICTLY_TYPED);
-            },
-            self->variant
-        );
+        return visit(self, [](auto& list) {
+            return PyBool_FromLong(std::decay_t<decltype(list)>::STRICTLY_TYPED);
+        });
     }
 
     inline static PyObject* lock(Derived* self, PyObject* = nullptr) noexcept {
-        return std::visit(
-            [](auto& list) {
-                using Lock = typename std::decay_t<decltype(list)>::Lock;
-                return bertrand::util::PyLock<Lock>::construct(list.lock);
-            },
-            self->variant
-        );
+        return visit(self, [](auto& list) {
+            using Lock = typename std::decay_t<decltype(list)>::Lock;
+            return bertrand::util::PyLock<Lock>::construct(list.lock);
+        });
     }
 
     inline static PyObject* capacity(Derived* self, PyObject* = nullptr) noexcept {
-        size_t result = std::visit(
-            [](auto& list) {
-                return list.capacity();
-            },
-            self->variant
-        );
-        return PyLong_FromSize_t(result);
+        return visit(self, [](auto& list) {
+            return PyLong_FromSize_t(list.capacity());
+        });
     }
 
     inline static PyObject* max_size(Derived* self, PyObject* = nullptr) noexcept {
-        std::optional<size_t> result = std::visit(
-            [](auto& list) {
-                return list.max_size();
-            },
-            self->variant
-        );
-        if (result.has_value()) {
-            return PyLong_FromSize_t(result.value());
-        } else {
-            Py_RETURN_NONE;
-        }
+        return visit(self, [](auto& list) {
+            std::optional<size_t> result = list.max_size();
+            if (result.has_value()) {
+                return PyLong_FromSize_t(result.value());
+            } else {
+                Py_RETURN_NONE;
+            }
+        });
     }
 
     inline static PyObject* frozen(Derived* self, PyObject* = nullptr) noexcept {
-        bool result = std::visit(
-            [](auto& list) {
-                return list.frozen();
-            },
-            self->variant
-        );
-        return PyBool_FromLong(result);
+        return visit(self, [](auto& list) {
+            return PyBool_FromLong(list.frozen());
+        });
     }
 
     inline static PyObject* specialization(Derived* self, PyObject* = nullptr) noexcept {
-        PyObject* result = std::visit(
-            [](auto& list) {
-                return list.specialization();
-            },
-            self->variant
-        );
-        if (result == nullptr) {
-            Py_RETURN_NONE;
-        }
-        return Py_NewRef(result);
+        return visit(self, [](auto& list) {
+            PyObject* result = list.specialization();
+            if (result == nullptr) {
+                Py_RETURN_NONE;
+            } else {
+                return Py_NewRef(result);
+            }
+        });
     }
 
     inline static PyObject* nbytes(Derived* self, PyObject* = nullptr) noexcept {
-        size_t result = std::visit(
-            [](auto& list) {
-                return list.nbytes();
-            },
-            self->variant
-        );
-        return PyLong_FromSize_t(result);
+        return visit(self, [](auto& list) {
+            return PyLong_FromSize_t(list.nbytes());
+        });
     }
 
     static PyObject* reserve(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
@@ -484,17 +397,14 @@ public:
                 return nullptr;
             }
 
-            return std::visit(
-                [&capacity](auto& list) {
-                    using List = typename std::decay_t<decltype(list)>;
-                    using Allocator = typename List::Allocator;
-                    using PyMemGuard = typename Allocator::PyMemGuard;
+            return visit(self, [&capacity](auto& list) {
+                using List = typename std::decay_t<decltype(list)>;
+                using Allocator = typename List::Allocator;
+                using PyMemGuard = typename Allocator::PyMemGuard;
 
-                    size_t size = capacity.value_or(list.size());
-                    return PyMemGuard::construct(&list.view.allocator, size);
-                },
-                self->variant
-            );
+                size_t size = capacity.value_or(list.size());
+                return PyMemGuard::construct(&list.view.allocator, size);
+            });
 
         } catch (...) {
             throw_python();
@@ -503,62 +413,46 @@ public:
     }
 
     static PyObject* defragment(Derived* self, PyObject* = nullptr) {
-        try {
-            std::visit(
-                [](auto& list) {
-                    list.defragment();
-                },
-                self->variant
-            );
+        return visit(self, [](auto& list) {
+            list.defragment();
             Py_RETURN_NONE;
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
     static PyObject* specialize(Derived* self, PyObject* spec) {
-        try {
-            std::visit(
-                [&self, &spec](auto& list) {
-                    using List = std::decay_t<decltype(list)>;
+        return visit(self, [&spec](auto& list) {
+            using List = std::decay_t<decltype(list)>;
 
-                    if constexpr (List::STRICTLY_TYPED) {
-                        PyTypeObject* type = Py_TYPE(self);
-                        PyObject* spec = PyObject_GetAttrString(
-                            reinterpret_cast<PyObject*>(type),
-                            "_specialization"  // injected by __class_getitem__()
-                        );
+            if constexpr (List::STRICTLY_TYPED) {
+                PyTypeObject* type = &Derived::Type;
+                PyObject* spec = PyObject_GetAttrString(
+                    reinterpret_cast<PyObject*>(type),
+                    "_specialization"  // injected by __class_getitem__()
+                );
 
-                        std::ostringstream msg;
-                        msg << "'" << type->tp_name << "' is already specialized to ";
-                        if constexpr (NodeTraits<typename List::Node>::has_mapped) {
-                            if (PySlice_Check(spec)) {
-                                python::Slice<python::Ref::BORROW> slice(spec);
-                                msg << "(" << bertrand::repr(slice.start());
-                                msg << " : " << bertrand::repr(slice.stop()) << ")";
-                            } else {
-                                msg << bertrand::repr(spec);
-                            }
-                        } else {
-                            msg << bertrand::repr(spec);
-                        }
-
-                        Py_DECREF(spec);
-                        throw TypeError(msg.str());
-
+                std::ostringstream msg;
+                msg << "'" << type->tp_name << "' is already specialized to ";
+                if constexpr (NodeTraits<typename List::Node>::has_mapped) {
+                    if (PySlice_Check(spec)) {
+                        python::Slice<python::Ref::BORROW> slice(spec);
+                        msg << "(" << bertrand::repr(slice.start());
+                        msg << " : " << bertrand::repr(slice.stop()) << ")";
                     } else {
-                        list.specialize(bertrand::util::none_to_null(spec));
+                        msg << bertrand::repr(spec);
                     }
-                },
-                self->variant
-            );
-            Py_RETURN_NONE;
+                } else {
+                    msg << bertrand::repr(spec);
+                }
 
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+                Py_DECREF(spec);
+                throw TypeError(msg.str());
+
+            } else {
+                list.specialize(bertrand::util::none_to_null(spec));
+            }
+
+            Py_RETURN_NONE;
+        });
     }
 
     static PyObject* __class_getitem__(PyObject* type, PyObject* spec) {
@@ -584,39 +478,24 @@ public:
     }
 
     inline static PyObject* __iter__(Derived* self) noexcept {
-        return std::visit(
-            [](auto& list) {
-                return iter(list).python();
-            },
-            self->variant
-        );
+        return visit(self, [](auto& list) {
+            return iter(list).python();
+        });
     }
 
     inline static PyObject* __reversed__(Derived* self, PyObject* = nullptr) noexcept {
-        return std::visit(
-            [](auto& list) {
-                return iter(list).rpython();
-            },
-            self->variant
-        );
+        return visit(self, [](auto& list) {
+            return iter(list).rpython();
+        });
     }
 
     static PyObject* __repr__(Derived* self) {
-        try {
+        return visit(self, [](auto& list) {
             std::ostringstream stream;
-            std::visit(
-                [&stream](auto& container) {
-                    stream << container;
-                },
-                self->variant
-            );
+            stream << list;
             auto str = stream.str();
             return PyUnicode_FromStringAndSize(str.c_str(), str.size());
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+        });
     }
 
 protected:
@@ -1365,6 +1244,62 @@ than one.
     };
 
 };
+
+
+
+
+// TODO: SelfRef is only needed for RelativeProxies, which are not yet implemented.
+namespace cython {
+
+
+/* A functor that generates C++ weak references for a type-erased Cython variant. */
+template <typename T>
+class SelfRef {
+public:
+
+    /* A weak reference to the associated object. */
+    class WeakRef {
+    public:
+
+        /* Check whether the referenced object still exists. */
+        bool exists() const {
+            return !ref.expired();
+        }
+
+        /* Follow the weak reference, yielding a pointer to the referenced object if it
+        still exists.  Otherwise, sets a Python error and return nullptr.  */
+        T* get() const {
+            if (ref.expired()) {
+                throw RuntimeError("referenced object no longer exists");
+            }
+            return ref.lock().get();
+        }
+
+    private:
+        friend SelfRef;
+        std::weak_ptr<T> ref;
+
+        template <typename... Args>
+        WeakRef(Args... args) : ref(std::forward<Args>(args)...) {}
+    };
+
+    /* Get a weak reference to the associated object. */
+    WeakRef operator()() const {
+        return WeakRef(_self);
+    }
+
+private:
+    friend T;
+    const std::shared_ptr<T> _self;
+
+    // NOTE: custom deleter prevents the shared_ptr from trying to delete the object
+    // when it goes out of scope, which can cause a double free.
+
+    SelfRef(T& self) : _self(&self, [](auto&) {}) {}
+};
+
+
+}  // namespace cython
 
 
 }  // namespace linked
