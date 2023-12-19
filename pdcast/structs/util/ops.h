@@ -11,14 +11,13 @@
 #include <type_traits>  // std::is_convertible_v<>, std::remove_cv_t<>, etc.
 #include <Python.h>  // CPython API
 #include "base.h"  // is_pyobject<>
-#include "container.h"  // Object<>
 #include "except.h"  // catch_python, TypeError
 #include "iter.h"  // iter(), PyIterator
 
 
 /* NOTE: This file contains a collection of helper functions for applying basic
- * operators to both C++ and Python objects.  This is useful for writing generic
- * algorithms that can accept either C++ or Python objects as arguments.
+ * operators polymorphically to both C++ and Python objects.  These operators can
+ * even do trivial conversions from primitive C++ types to Python objects if necessary.
  */
 
 
@@ -112,11 +111,7 @@ namespace util {
     /* A trait that determines which specialization of repr() is appropriate for a
     given type. */
     template <typename T>
-    class ReprTraits {
-        using True = std::true_type;
-        using False = std::false_type;
-        using Stream = std::ostringstream;
-
+    class Repr {
         enum class Use {
             python,
             to_string,
@@ -125,43 +120,26 @@ namespace util {
             type_id
         };
 
-        /* Check if the templated type is a Python object. */
         template<typename U>
-        static auto _python(U u) -> decltype(
-            PyObject_Repr(std::forward<U>(u)), True{}
+        static auto to_string(U&& u) -> decltype(
+            std::to_string(std::forward<U>(u)), std::true_type{}
         );
-        static auto _python(...) -> False;
+        static auto to_string(...) -> std::false_type;
 
-        /* Check if the templated type is a valid input to std::to_string. */
         template<typename U>
-        static auto _to_string(U u) -> decltype(
-            std::to_string(std::forward<U>(u)), True{}
+        static auto stream(U&& u) -> decltype(
+            std::declval<std::ostringstream&>() << std::forward<U>(u), std::true_type{}
         );
-        static auto _to_string(...) -> False;
+        static auto stream(...) -> std::false_type;
 
-        /* Check if the templated type supports std::ostringstream insertion. */
-        template<typename U>
-        static auto _streamable(U u) -> decltype(
-            std::declval<Stream&>() << std::forward<U>(u), True{}
-        );
-        static auto _streamable(...) -> False;
-
-        /* Check if the templated type is iterable. */
-        template<typename U>
-        static auto _iterable(U u) -> decltype(
-            std::begin(std::forward<U>(u)), std::end(std::forward<U>(u)), True{}
-        );
-        static auto _iterable(...) -> False;
-
-        /* Determine the Repr() overload to use for objects of the templated type. */
         static constexpr Use category = [] {
-            if constexpr (decltype(_python(std::declval<T>()))::value) {
+            if constexpr (is_pyobject<T>) {
                 return Use::python;
-            } else if constexpr (decltype(_to_string(std::declval<T>()))::value) {
+            } else if constexpr (decltype(to_string(std::declval<T>()))::value) {
                 return Use::to_string;
-            } else if constexpr (decltype(_streamable(std::declval<T>()))::value) {
+            } else if constexpr (decltype(stream(std::declval<T>()))::value) {
                 return Use::stream;
-            } else if constexpr (decltype(_iterable(std::declval<T>()))::value) {
+            } else if constexpr (ContainerTraits<T>::forward_iterable) {
                 return Use::iterable;
             } else {
                 return Use::type_id;
@@ -169,11 +147,22 @@ namespace util {
         }();
 
     public:
-        static constexpr bool python = (category == Use::python);
-        static constexpr bool streamable = (category == Use::stream);
-        static constexpr bool to_string = (category == Use::to_string);
-        static constexpr bool iterable = (category == Use::iterable);
-        static constexpr bool type_id = (category == Use::type_id);
+
+        template <typename Result>
+        using Python = std::enable_if_t<category == Use::python, Result>;
+
+        template <typename Result>
+        using Streamable = std::enable_if_t<category == Use::stream, Result>;
+
+        template <typename Result>
+        using ToString = std::enable_if_t<category == Use::to_string, Result>;
+
+        template <typename Result>
+        using Iterable = std::enable_if_t<category == Use::iterable, Result>;
+
+        template <typename Result>
+        using TypeId = std::enable_if_t<category == Use::type_id, Result>;
+
     };
 
 }
@@ -314,12 +303,12 @@ inline std::optional<size_t> len(const T& x) {
 
 
 /* Get a string representation of a Python object using PyObject_Repr(). */
-template <typename T, std::enable_if_t<util::ReprTraits<T>::python, int> = 0>
-std::string repr(const T& obj) {
-    if (obj == nullptr) {
+template <typename T>
+auto repr(const T& obj) -> typename util::Repr<T>::template Python<std::string> {
+    if (static_cast<PyObject*>(obj) == nullptr) {
         return std::string("NULL");
     }
-    PyObject* py_repr = PyObject_Repr(obj);
+    PyObject* py_repr = PyObject_Repr(static_cast<PyObject*>(obj));
     if (py_repr == nullptr) {
         throw catch_python();
     }
@@ -334,16 +323,16 @@ std::string repr(const T& obj) {
 
 
 /* Get a string representation of a C++ object using `std::to_string()`. */
-template <typename T, std::enable_if_t<util::ReprTraits<T>::to_string, int> = 0>
-std::string repr(const T& obj) {
+template <typename T>
+auto repr(const T& obj) -> typename util::Repr<T>::template ToString<std::string> {
     return std::to_string(obj);
 }
 
 
 /* Get a string representation of a C++ object by streaming it into a
 `std::ostringstream`. */
-template <typename T, std::enable_if_t<util::ReprTraits<T>::streamable, int> = 0>
-std::string repr(const T& obj) {
+template <typename T>
+auto repr(const T& obj) -> typename util::Repr<T>::template Streamable<std::string> {
     std::ostringstream stream;
     stream << obj;
     return stream.str();
@@ -352,15 +341,19 @@ std::string repr(const T& obj) {
 
 /* Get a string representation of an iterable C++ object by recursively unpacking
 it. */
-template <typename T, std::enable_if_t<util::ReprTraits<T>::iterable, int> = 0>
-std::string repr(const T& obj) {
+template <typename T>
+auto repr(const T& obj) -> typename util::Repr<T>::template Iterable<std::string> {
     std::ostringstream stream;
     stream << '[';
-    for (auto iter = std::begin(obj); iter != std::end(obj);) {
-        stream << repr(*iter);
-        if (++iter != std::end(obj)) {
-            stream << ", ";
-        }
+    auto it = iter(obj).begin();
+    auto end = iter(obj).end();
+    if (it != end) {
+        stream << repr(*it);
+        ++it;
+    }
+    while (it != end) {
+        stream << ", " << repr(*it);
+        ++it;
     }
     stream << ']';
     return stream.str();
@@ -369,16 +362,10 @@ std::string repr(const T& obj) {
 
 /* Get a string representation of an arbitrary C++ object by getting its mangled type
 name.  NOTE: this is the default implementation if no specialization can be found. */
-template <typename T, std::enable_if_t<util::ReprTraits<T>::type_id, int> = 0>
-std::string repr(const T& obj) {
+template <typename T>
+auto repr(const T& obj) -> typename util::Repr<T>::template TypeId<std::string> {
     return std::string(typeid(obj).name());
 }
-
-
-/* NOTE: A generic iter() function, which will iterate over both Python and C++
- * containers, is provided in the iter.h header alongside this file.  It is
- * omitted here for brevity.
- */
 
 
 ////////////////////////////////
@@ -479,6 +466,11 @@ template <typename LHS, typename RHS>
 inline bool ne(const LHS& lhs, const RHS& rhs) {
     auto execute = [](auto a, auto b) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
+            // fast path: check pointer inequality
+            if (a == b) {
+                return false;
+            }
+
             int result = PyObject_RichCompareBool(a, b, Py_NE);
             if (result == -1 && PyErr_Occurred()) {
                 throw catch_python();

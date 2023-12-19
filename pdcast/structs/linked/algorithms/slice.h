@@ -6,10 +6,10 @@
 #include <sstream>  // std::ostringstream
 #include <stack>  // std::stack
 #include <Python.h>  // CPython API
-#include "../../util/container.h"  // python::Dict, python::Slice
 #include "../../util/except.h"  // TypeError()
 #include "../../util/iter.h"  // iter()
 #include "../../util/math.h"  // py_modulo()
+#include "../../util/python.h"  // python::Dict, python::Slice
 #include "../core/view.h"  // ViewTraits, Direction
 
 

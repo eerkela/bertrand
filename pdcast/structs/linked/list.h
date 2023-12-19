@@ -69,7 +69,10 @@ namespace list_config {
         std::remove_cv_t<std::remove_reference_t<T>>
     >::value;
 
-}
+    template <typename Container, typename T>
+    using EnableIfNotList = std::enable_if_t<!is_list<Container>, T>;
+
+}  // list_config
 
 
 /* A modular linked list class that mimics the Python list interface in C++. */
@@ -322,8 +325,6 @@ public:
 //////////////////////////////
 
 
-/* Print the abbreviated contents of a list to an output stream (equivalent to Python
-repr()). */
 template <typename T, unsigned int Flags, typename... Ts>
 inline auto operator<<(std::ostream& stream, const LinkedList<T, Flags, Ts...>& list)
     -> std::ostream&
@@ -340,10 +341,10 @@ inline auto operator<<(std::ostream& stream, const LinkedList<T, Flags, Ts...>& 
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator+(const LinkedList<T, Flags, Ts...>& list, const Container& other)
-    -> LinkedList<T, Flags & ~Config::FIXED_SIZE, Ts...>
-{
-    return linked::concatenate(list.view, other);
+inline auto operator+(const LinkedList<T, Flags, Ts...>& list, const Container& other) {
+    return LinkedList<T, Flags & ~Config::FIXED_SIZE, Ts...>(
+        linked::concatenate(list.view, other)
+    );
 }
 
 
@@ -357,18 +358,18 @@ inline auto operator+=(LinkedList<T, Flags, Ts...>& list, const Container& other
 
 
 template <typename T, unsigned int Flags, typename... Ts>
-inline auto operator*(const LinkedList<T, Flags, Ts...>& list, const long long other)
-    -> LinkedList<T, Flags & ~Config::FIXED_SIZE, Ts...>
-{
-    return linked::repeat(list.view, other);
+inline auto operator*(const LinkedList<T, Flags, Ts...>& list, const long long other) {
+    return LinkedList<T, Flags & ~Config::FIXED_SIZE, Ts...>(
+        linked::repeat(list.view, other)
+    );
 }
 
 
 template <typename T, unsigned int Flags, typename... Ts>
-inline auto operator*(const long long other, const LinkedList<T, Flags, Ts...>& list)
-    -> LinkedList<T, Flags & ~Config::FIXED_SIZE, Ts...>
-{
-    return linked::repeat(list.view, other);
+inline auto operator*(const long long other, const LinkedList<T, Flags, Ts...>& list) {
+    return LinkedList<T, Flags & ~Config::FIXED_SIZE, Ts...>(
+        linked::repeat(list.view, other)
+    );
 }
 
 
@@ -387,15 +388,9 @@ inline bool operator<(const LinkedList<T, Flags, Ts...>& list, const Container& 
 }
 
 
-template <
-    typename Container,
-    typename T,
-    unsigned int Flags,
-    typename... Ts,
-    bool Enable = !list_config::is_list<Container>
->
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator<(const Container& other, const LinkedList<T, Flags, Ts...>& list)
-    -> std::enable_if_t<Enable, bool>
+    -> list_config::EnableIfNotList<Container, bool>
 {
     return lexical_lt(other, list);
 }
@@ -407,15 +402,9 @@ inline bool operator<=(const LinkedList<T, Flags, Ts...>& list, const Container&
 }
 
 
-template <
-    typename Container,
-    typename T,
-    unsigned int Flags,
-    typename... Ts,
-    bool Enable = !list_config::is_list<Container>
->
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator<=(const Container& other, const LinkedList<T, Flags, Ts...>& list)
-    -> std::enable_if_t<Enable, bool>
+    -> list_config::EnableIfNotList<Container, bool>
 {
     return lexical_lt(other, list);
 }
@@ -427,15 +416,9 @@ inline bool operator==(const LinkedList<T, Flags, Ts...>& list, const Container&
 }
 
 
-template <
-    typename Container,
-    typename T,
-    unsigned int Flags,
-    typename... Ts,
-    bool Enable = !list_config::is_list<Container>
->
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator==(const Container& other, const LinkedList<T, Flags, Ts...>& list)
-    -> std::enable_if_t<Enable, bool>
+    -> list_config::EnableIfNotList<Container, bool>
 {
     return lexical_eq(other, list);
 }
@@ -447,15 +430,9 @@ inline bool operator!=(const LinkedList<T, Flags, Ts...>& list, const Container&
 }
 
 
-template <
-    typename Container,
-    typename T,
-    unsigned int Flags,
-    typename... Ts,
-    bool Enable = !list_config::is_list<Container>
->
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator!=(const Container& other, const LinkedList<T, Flags, Ts...>& list)
-    -> std::enable_if_t<Enable, bool>
+    -> list_config::EnableIfNotList<Container, bool>
 {
     return !lexical_eq(other, list);
 }
@@ -467,15 +444,9 @@ inline bool operator>=(const LinkedList<T, Flags, Ts...>& list, const Container&
 }
 
 
-template <
-    typename Container,
-    typename T,
-    unsigned int Flags,
-    typename... Ts,
-    bool Enable = !list_config::is_list<Container>
->
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator>=(const Container& other, const LinkedList<T, Flags, Ts...>& list)
-    -> std::enable_if_t<Enable, bool>
+    -> list_config::EnableIfNotList<Container, bool>
 {
     return lexical_ge(other, list);
 }
@@ -487,15 +458,9 @@ inline bool operator>(const LinkedList<T, Flags, Ts...>& list, const Container& 
 }
 
 
-template <
-    typename Container,
-    typename T,
-    unsigned int Flags,
-    typename... Ts,
-    bool Enable = !list_config::is_list<Container>
->
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator>(const Container& other, const LinkedList<T, Flags, Ts...>& list)
-    -> std::enable_if_t<Enable, bool>
+    -> list_config::EnableIfNotList<Container, bool>
 {
     return lexical_gt(other, list);
 }

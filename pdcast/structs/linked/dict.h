@@ -56,7 +56,6 @@ namespace bertrand {
 namespace linked {
 
 
-/* Forward declarations for dict proxies. */
 template <typename K, typename V, unsigned int Flags, typename Lock>
 class LinkedDict;
 template <typename Dict>
@@ -125,6 +124,18 @@ namespace dict_config {
     static constexpr bool is_items_proxy = IsItemsProxy<
         std::remove_cv_t<std::remove_reference_t<T>>
     >::value;
+
+    template <typename Container, typename T>
+    using EnableIfNotLinkedDict = std::enable_if_t<!is_dict<Container>, T>;
+
+    template <typename Container, typename T>
+    using EnableIfNotKeysProxy = std::enable_if_t<!is_keys_proxy<Container>, T>;
+
+    template <typename Container, typename T>
+    using EnableIfNotValuesProxy = std::enable_if_t<!is_values_proxy<Container>, T>;
+
+    template <typename Container, typename T>
+    using EnableIfNotItemsProxy = std::enable_if_t<!is_items_proxy<Container>, T>;
 
 }
 
@@ -843,9 +854,7 @@ inline auto operator<<(std::ostream& stream, const LinkedDict<K, V, Flags, Ts...
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline auto operator|(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
-    -> LinkedDict<K, V, Flags, Ts...>
-{
+inline auto operator|(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other) {
     return dict.union_(other);
 }
 
@@ -860,9 +869,7 @@ inline auto operator|=(LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline auto operator-(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
-    -> LinkedDict<K, V, Flags, Ts...>
-{
+inline auto operator-(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other) {
     return dict.difference(other);
 }
 
@@ -877,9 +884,7 @@ inline auto operator-=(LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline auto operator&(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
-    -> LinkedDict<K, V, Flags, Ts...>
-{
+inline auto operator&(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other) {
     return dict.intersection(other);
 }
 
@@ -894,9 +899,7 @@ inline auto operator&=(LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
 
 
 template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
-inline auto operator^(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other)
-    -> LinkedDict<K, V, Flags, Ts...>
-{
+inline auto operator^(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& other) {
     return dict.symmetric_difference(other);
 }
 
@@ -926,16 +929,9 @@ inline bool operator==(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& ot
 }
 
 
-template <
-    typename Map,
-    typename K,
-    typename V,
-    unsigned int Flags,
-    typename... Ts,
-    bool Enable = !dict_config::is_dict<Map>
->
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline auto operator==(const Map& other, const LinkedDict<K, V, Flags, Ts...>& dict)
-    -> std::enable_if_t<Enable, bool>
+    -> dict_config::EnableIfNotLinkedDict<Map, bool>
 {
     if constexpr (dict_config::is_dict<Map>) {
         return linked::dict_equal<true>(dict.view, other.items());
@@ -961,16 +957,9 @@ inline bool operator!=(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& ot
 }
 
 
-template <
-    typename Map,
-    typename K,
-    typename V,
-    unsigned int Flags,
-    typename... Ts,
-    bool Enable = !dict_config::is_dict<Map>
->
+template <typename Map, typename K, typename V, unsigned int Flags, typename... Ts>
 inline auto operator!=(const Map& other, const LinkedDict<K, V, Flags, Ts...>& dict)
-    -> std::enable_if_t<Enable, bool>
+    -> dict_config::EnableIfNotLinkedDict<Map, bool>
 {
     if constexpr (dict_config::is_dict<Map>) {
         return linked::dict_equal<false>(dict.view, other.items());
@@ -1091,7 +1080,7 @@ public:
 template <typename Dict>
 class KeysProxy : public DictProxy<
     Dict,
-    LinkedSet<typename Dict::Key, Dict::FLAGS, typename Dict::Lock>,
+    LinkedSet<typename Dict::Key, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock>,
     Yield::KEY
 > {
     using Key = typename Dict::Key;
@@ -1282,13 +1271,9 @@ inline bool operator<(const KeysProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <
-    typename Container,
-    typename Dict,
-    bool Enable = !dict_config::is_keys_proxy<Container>
->
+template <typename Container, typename Dict>
 inline auto operator<(const Container& other, const KeysProxy<Dict>& proxy)
-    -> std::enable_if_t<Enable, bool>
+    -> dict_config::EnableIfNotKeysProxy<Container, bool>
 {
     return linked::issuperset<true>(proxy.mapping().view, other);
 }
@@ -1300,13 +1285,9 @@ inline bool operator<=(const KeysProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <
-    typename Container,
-    typename Dict,
-    bool Enable = !dict_config::is_keys_proxy<Container>
->
+template <typename Container, typename Dict>
 inline auto operator<=(const Container& other, const KeysProxy<Dict>& proxy)
-    -> std::enable_if_t<Enable, bool>
+    -> dict_config::EnableIfNotKeysProxy<Container, bool>
 {
     return linked::issuperset<false>(proxy.mapping().view, other);
 }
@@ -1323,13 +1304,9 @@ inline bool operator==(const KeysProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <
-    typename Container,
-    typename Dict,
-    bool Enable = !dict_config::is_keys_proxy<Container>
->
+template <typename Container, typename Dict>
 inline auto operator==(const Container& other, const KeysProxy<Dict>& proxy)
-    -> std::enable_if_t<Enable, bool>
+    -> dict_config::EnableIfNotKeysProxy<Container, bool>
 {
     if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
         if (&proxy == &other) {
@@ -1351,13 +1328,9 @@ inline bool operator!=(const KeysProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <
-    typename Container,
-    typename Dict,
-    bool Enable = !dict_config::is_keys_proxy<Container>
->
+template <typename Container, typename Dict>
 inline auto operator!=(const Container& other, const KeysProxy<Dict>& proxy)
-    -> std::enable_if_t<Enable, bool>
+    -> dict_config::EnableIfNotKeysProxy<Container, bool>
 {
     if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
         if (&proxy == &other) {
@@ -1374,13 +1347,9 @@ inline bool operator>=(const KeysProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <
-    typename Container,
-    typename Dict,
-    bool Enable = !dict_config::is_keys_proxy<Container>
->
+template <typename Container, typename Dict>
 inline auto operator>=(const Container& other, const KeysProxy<Dict>& proxy)
-    -> std::enable_if_t<Enable, bool>
+    -> dict_config::EnableIfNotKeysProxy<Container, bool>
 {
     return linked::issubset<false>(proxy.mapping().view, other);
 }
@@ -1392,13 +1361,9 @@ inline bool operator>(const KeysProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <
-    typename Container,
-    typename Dict,
-    bool Enable = !dict_config::is_keys_proxy<Container>
->
+template <typename Container, typename Dict>
 inline auto operator>(const Container& other, const KeysProxy<Dict>& proxy)
-    -> std::enable_if_t<Enable, bool>
+    -> dict_config::EnableIfNotKeysProxy<Container, bool>
 {
     return linked::issubset<true>(proxy.mapping().view, other);
 }
@@ -1414,11 +1379,11 @@ inline auto operator>(const Container& other, const KeysProxy<Dict>& proxy)
 template <typename Dict>
 class ValuesProxy : public DictProxy<
     Dict,
-    LinkedList<typename Dict::Value, Dict::FLAGS, typename Dict::Lock>,
+    LinkedList<typename Dict::Value, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock>,
     Yield::VALUE
 > {
     using Value = typename Dict::Value;
-    using List = LinkedList<Value, Dict::FLAGS, typename Dict::Lock>;
+    using List = LinkedList<Value, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock>;
     using Base = DictProxy<Dict, List, Yield::VALUE>;
 
     friend Dict;
@@ -1448,25 +1413,27 @@ inline std::ostream& operator<<(std::ostream& stream, const ValuesProxy<Dict>& v
 
 
 template <typename Container, typename Dict>
-inline auto operator+(const ValuesProxy<Dict>& proxy, const Container& other)
-    -> LinkedList<
-        typename Dict::Value, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock
-    >
-{
-    return linked::concatenate<Yield::VALUE>(
-        proxy.mapping().view, other
+inline auto operator+(const ValuesProxy<Dict>& proxy, const Container& other) {
+    using Value = typename Dict::Value;
+    using Lock = typename Dict::Lock;
+    return LinkedList<Value, Dict::FLAGS & ~Config::FIXED_SIZE, Lock>(
+        linked::concatenate<Yield::VALUE>(
+            proxy.mapping().view,
+            other
+        )
     );
 }
 
 
 template <typename Dict, typename T>
-inline auto operator*(const ValuesProxy<Dict>& proxy, T&& other)
-    -> LinkedList<
-        typename Dict::Value, Dict::FLAGS & ~Config::FIXED_SIZE, typename Dict::Lock
-    >
-{
-    return linked::repeat<Yield::VALUE>(
-        proxy.mapping().view, std::forward<T>(other)
+inline auto operator*(const ValuesProxy<Dict>& proxy, T&& other) {
+    using Value = typename Dict::Value;
+    using Lock = typename Dict::Lock;
+    return LinkedList<Value, Dict::FLAGS & ~Config::FIXED_SIZE, Lock>(
+        linked::repeat<Yield::VALUE>(
+            proxy.mapping().view, 
+            std::forward<T>(other)
+        )
     );
 }
 
@@ -1477,13 +1444,9 @@ inline bool operator<(const ValuesProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <
-    typename Container,
-    typename Dict,
-    bool Enable = !dict_config::is_values_proxy<Container>
->
+template <typename Container, typename Dict>
 inline auto operator<(const Container& other, const ValuesProxy<Dict>& proxy)
-    -> std::enable_if_t<Enable, bool>
+    -> dict_config::EnableIfNotValuesProxy<Container, bool>
 {
     return lexical_lt(other, proxy);
 }
@@ -1495,13 +1458,9 @@ inline bool operator<=(const ValuesProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <
-    typename Container,
-    typename Dict,
-    bool Enable = !dict_config::is_values_proxy<Container>
->
+template <typename Container, typename Dict>
 inline auto operator<=(const Container& other, const ValuesProxy<Dict>& proxy)
-    -> std::enable_if_t<Enable, bool>
+    -> dict_config::EnableIfNotValuesProxy<Container, bool>
 {
     return lexical_le(other, proxy);
 }
@@ -1513,13 +1472,9 @@ inline bool operator==(const ValuesProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <
-    typename Container,
-    typename Dict,
-    bool Enable = !dict_config::is_values_proxy<Container>
->
+template <typename Container, typename Dict>
 inline auto operator==(const Container& other, const ValuesProxy<Dict>& proxy)
-    -> std::enable_if_t<Enable, bool>
+    -> dict_config::EnableIfNotValuesProxy<Container, bool>
 {
     return lexical_eq(other, proxy);
 }
@@ -1531,13 +1486,9 @@ inline bool operator!=(const ValuesProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <
-    typename Container,
-    typename Dict,
-    bool Enable = !dict_config::is_values_proxy<Container>
->
+template <typename Container, typename Dict>
 inline auto operator!=(const Container& other, const ValuesProxy<Dict>& proxy)
-    -> std::enable_if_t<Enable, bool>
+    -> dict_config::EnableIfNotValuesProxy<Container, bool>
 {
     return !lexical_eq(other, proxy);
 }
@@ -1549,13 +1500,9 @@ inline bool operator>=(const ValuesProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <
-    typename Container,
-    typename Dict,
-    bool Enable = !dict_config::is_values_proxy<Container>
->
+template <typename Container, typename Dict>
 inline auto operator>=(const Container& other, const ValuesProxy<Dict>& proxy)
-    -> std::enable_if_t<Enable, bool>
+    -> dict_config::EnableIfNotValuesProxy<Container, bool>
 {
     return lexical_ge(other, proxy);
 }
@@ -1567,13 +1514,9 @@ inline bool operator>(const ValuesProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <
-    typename Container,
-    typename Dict,
-    bool Enable = !dict_config::is_values_proxy<Container>
->
+template <typename Container, typename Dict>
 inline auto operator>(const Container& other, const ValuesProxy<Dict>& proxy)
-    -> std::enable_if_t<Enable, bool>
+    -> dict_config::EnableIfNotValuesProxy<Container, bool>
 {
     return lexical_gt(other, proxy);
 }
@@ -1593,7 +1536,7 @@ class ItemsProxy : public DictProxy<
         std::conditional_t<
             as_pytuple, PyObject*, std::pair<typename Dict::Key, typename Dict::Value>
         >,
-        Dict::FLAGS,
+        Dict::FLAGS & ~Config::FIXED_SIZE,
         typename Dict::Lock
     >,
     Yield::ITEM
@@ -1603,7 +1546,7 @@ class ItemsProxy : public DictProxy<
     using Value = typename Dict::Value;
     using List = LinkedList<
         std::conditional_t<as_pytuple, PyObject*, std::pair<Key, Value>>,
-        Dict::FLAGS,
+        Dict::FLAGS & ~Config::FIXED_SIZE,
         typename Dict::Lock
     >;
     using Base = DictProxy<Dict, List, Yield::ITEM>;
@@ -1812,43 +1755,42 @@ inline auto operator<<(std::ostream& stream, const ItemsProxy<Dict, as_pytuple>&
 
 
 template <typename Container, typename Dict, bool as_pytuple>
-inline auto operator+(const ItemsProxy<Dict, as_pytuple>& proxy, const Container& other)
-    -> LinkedList<
-        std::conditional_t<
-            as_pytuple,
-            PyObject*,
-            std::pair<typename Dict::Key, typename Dict::Value>
-        >,
-        Dict::FLAGS & ~Config::FIXED_SIZE,
-        typename Dict::Lock
-    >
-{
+inline auto operator+(const ItemsProxy<Dict, as_pytuple>& proxy, const Container& other) {
+    using Key = typename Dict::Key;
+    using Value = typename Dict::Value;
+    using Lock = typename Dict::Lock;
+    using Result = std::conditional_t<as_pytuple, PyObject*, std::pair<Key, Value>>;
+    using List = LinkedList<Result, Dict::FLAGS & ~Config::FIXED_SIZE, Lock>;
+
     if constexpr (dict_config::is_dict<Container>) {
-        return linked::concatenate<Yield::ITEM, as_pytuple>(
-            proxy.mapping().view, other.items()
+        return List(
+            linked::concatenate<Yield::ITEM, as_pytuple>(
+                proxy.mapping().view,
+                other.items()
+            )
         );
     } else {
-        return linked::concatenate<Yield::ITEM, as_pytuple>(
-            proxy.mapping().view, other
+        return List(
+            linked::concatenate<Yield::ITEM, as_pytuple>(
+                proxy.mapping().view,
+                other
+            )
         );
     }
 }
 
 
 template <typename Dict, typename T, bool as_pytuple>
-inline auto operator*(const ItemsProxy<Dict, as_pytuple>& proxy, T&& other)
-    -> LinkedList<
-        std::conditional_t<
-            as_pytuple,
-            PyObject*,
-            std::pair<typename Dict::Key, typename Dict::Value>
-        >,
-        Dict::FLAGS & ~Config::FIXED_SIZE,
-        typename Dict::Lock
-    >
-{
-    return linked::repeat<Yield::ITEM, as_pytuple>(
-        proxy.mapping().view, std::forward<T>(other)
+inline auto operator*(const ItemsProxy<Dict, as_pytuple>& proxy, T&& other) {
+    using Key = typename Dict::Key;
+    using Value = typename Dict::Value;
+    using Lock = typename Dict::Lock;
+    using Result = std::conditional_t<as_pytuple, PyObject*, std::pair<Key, Value>>;
+
+    return LinkedList<Result, Dict::FLAGS & ~Config::FIXED_SIZE, Lock>(
+        linked::repeat<Yield::ITEM, as_pytuple>(
+            proxy.mapping().view, std::forward<T>(other)
+        )
     );
 }
 
@@ -1875,14 +1817,9 @@ inline bool operator==(const ItemsProxy<Dict, as_pytuple>& proxy, const Containe
 }
 
 
-template <
-    typename Container,
-    typename Dict,
-    bool as_pytuple,
-    bool Enable = !dict_config::is_items_proxy<Container>
->
+template <typename Container, typename Dict, bool as_pytuple>
 inline auto operator==(const Container& other, const ItemsProxy<Dict, as_pytuple>& proxy)
-    -> std::enable_if_t<Enable, bool>
+    -> dict_config::EnableIfNotItemsProxy<Container, bool>
 {
     if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
         if (&proxy == &other) {
@@ -1904,14 +1841,9 @@ inline bool operator!=(const ItemsProxy<Dict, as_pytuple>& proxy, const Containe
 }
 
 
-template <
-    typename Container,
-    typename Dict,
-    bool as_pytuple,
-    bool Enable = !dict_config::is_items_proxy<Container>
->
+template <typename Container, typename Dict, bool as_pytuple>
 inline auto operator!=(const Container& other, const ItemsProxy<Dict, as_pytuple>& proxy)
-    -> std::enable_if_t<Enable, bool>
+    -> dict_config::EnableIfNotItemsProxy<Container, bool>
 {
     if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
         if (&proxy == &other) {

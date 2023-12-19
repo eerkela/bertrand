@@ -7,9 +7,9 @@
 #include <string_view>  // std::string_view
 #include <variant>  // std::visit
 #include "core/view.h"  // Views, Direction
-#include "../util/container.h"  // python::Slice
 #include "../util/iter.h"  // iter(), IterProxy
 #include "../util/ops.h"  // PyIterator
+#include "../util/python.h"  // python::Slice
 #include "../util/string.h"  // string concatenation
 #include "../util/thread.h"  // PyLock
 
@@ -277,14 +277,18 @@ Python. */
 template <typename Derived>
 class PyLinkedBase {
 protected:
+    using CallProtocol = bertrand::util::CallProtocol;
 
-    template <typename Func>
-    inline static PyObject* visit(Derived* self, Func func) {
+    template <CallProtocol call>
+    using PyArgs = bertrand::util::PyArgs<call>;
+
+    template <typename Func, typename Result = PyObject*>
+    inline static Result visit(Derived* self, Func func, Result err_code = nullptr) {
         try {
             return std::visit(func, self->variant);
         } catch (...) {
             throw_python();
-            return nullptr;
+            return err_code;
         }
     }
 
@@ -299,37 +303,43 @@ public:
 
     inline static PyObject* SINGLY_LINKED(Derived* self, PyObject* = nullptr) noexcept {
         return visit(self, [](auto& list) {
-            return PyBool_FromLong(std::decay_t<decltype(list)>::SINGLY_LINKED);
+            using List = typename std::decay_t<decltype(list)>;
+            return Py_NewRef(List::SINGLY_LINKED ? Py_True : Py_False);
         });
     }
 
     inline static PyObject* DOUBLY_LINKED(Derived* self, PyObject* = nullptr) noexcept {
         return visit(self, [](auto& list) {
-            return PyBool_FromLong(std::decay_t<decltype(list)>::DOUBLY_LINKED);
+            using List = typename std::decay_t<decltype(list)>;
+            return Py_NewRef(List::DOUBLY_LINKED ? Py_True : Py_False);
         });
     }
 
     inline static PyObject* XOR(Derived* self, PyObject* = nullptr) noexcept {
         return visit(self, [](auto& list) {
-            return PyBool_FromLong(std::decay_t<decltype(list)>::XOR);
+            using List = typename std::decay_t<decltype(list)>;
+            return Py_NewRef(List::XOR ? Py_True : Py_False);
         });
     }
 
     inline static PyObject* FIXED_SIZE(Derived* self, PyObject* = nullptr) noexcept {
         return visit(self, [](auto& list) {
-            return PyBool_FromLong(std::decay_t<decltype(list)>::FIXED_SIZE);
+            using List = typename std::decay_t<decltype(list)>;
+            return Py_NewRef(List::FIXED_SIZE ? Py_True : Py_False);
         });
     }
 
     inline static PyObject* PACKED(Derived* self, PyObject* = nullptr) noexcept {
         return visit(self, [](auto& list) {
-            return PyBool_FromLong(std::decay_t<decltype(list)>::PACKED);
+            using List = typename std::decay_t<decltype(list)>;
+            return Py_NewRef(List::PACKED ? Py_True : Py_False);
         });
     }
 
     inline static PyObject* STRICTLY_TYPED(Derived* self, PyObject* = nullptr) noexcept {
         return visit(self, [](auto& list) {
-            return PyBool_FromLong(std::decay_t<decltype(list)>::STRICTLY_TYPED);
+            using List = typename std::decay_t<decltype(list)>;
+            return Py_NewRef(List::STRICTLY_TYPED ? Py_True : Py_False);
         });
     }
 
@@ -359,7 +369,7 @@ public:
 
     inline static PyObject* frozen(Derived* self, PyObject* = nullptr) noexcept {
         return visit(self, [](auto& list) {
-            return PyBool_FromLong(list.frozen());
+            return Py_NewRef(list.frozen() ? Py_True : Py_False);
         });
     }
 
@@ -381,11 +391,13 @@ public:
     }
 
     static PyObject* reserve(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
-        using bertrand::util::PyArgs;
-        using bertrand::util::CallProtocol;
-        using bertrand::util::parse_opt_int;
         static constexpr std::string_view meth_name{"reserve"};
-        try {
+        using bertrand::util::parse_opt_int;
+        return visit(self, [&args, &nargs](auto& list) {
+            using List = typename std::decay_t<decltype(list)>;
+            using Allocator = typename List::Allocator;
+            using PyMemGuard = typename Allocator::PyMemGuard;
+
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             std::optional<long long> capacity = pyargs.parse(
                 "capacity", parse_opt_int, std::optional<long long>()
@@ -394,22 +406,12 @@ public:
 
             if (capacity.value_or(0) < 0) {
                 PyErr_SetString(PyExc_ValueError, "capacity cannot be negative");
-                return nullptr;
+                return static_cast<PyObject*>(nullptr);
             }
 
-            return visit(self, [&capacity](auto& list) {
-                using List = typename std::decay_t<decltype(list)>;
-                using Allocator = typename List::Allocator;
-                using PyMemGuard = typename Allocator::PyMemGuard;
-
-                size_t size = capacity.value_or(list.size());
-                return PyMemGuard::construct(&list.view.allocator, size);
-            });
-
-        } catch (...) {
-            throw_python();
-            return nullptr;
-        }
+            size_t size = capacity.value_or(list.size());
+            return PyMemGuard::construct(&list.view.allocator, size);
+        });
     }
 
     static PyObject* defragment(Derived* self, PyObject* = nullptr) {
@@ -538,8 +540,6 @@ protected:
     public:
 
         static int __init__(Derived* self, PyObject* args, PyObject* kwargs) {
-            using bertrand::util::PyArgs;
-            using bertrand::util::CallProtocol;
             using bertrand::util::none_to_null;
             using bertrand::util::parse_int;
             using bertrand::util::is_truthy;

@@ -75,6 +75,10 @@ namespace set_config {
         std::remove_cv_t<std::remove_reference_t<T>>
     >::value;
 
+
+    template <typename Container, typename T>
+    using EnableIfNotSet = std::enable_if_t<!is_set<Container>, T>;
+
 }
 
 
@@ -571,9 +575,7 @@ inline auto operator<<(std::ostream& stream, const LinkedSet<T, Flags, Ts...>& s
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator|(const LinkedSet<T, Flags, Ts...>& set, const Container& other)
-    -> LinkedSet<T, Flags & ~Config::FIXED_SIZE, Ts...>
-{
+inline auto operator|(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return set.union_(other);
 }
 
@@ -588,9 +590,7 @@ inline auto operator|=(LinkedSet<T, Flags, Ts...>& set, const Container& other)
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator-(const LinkedSet<T, Flags, Ts...>& set, const Container& other)
-    -> LinkedSet<T, Flags & ~Config::FIXED_SIZE, Ts...>
-{
+inline auto operator-(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return set.difference(other);
 }
 
@@ -605,9 +605,7 @@ inline auto operator-=(LinkedSet<T, Flags, Ts...>& set, const Container& other)
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator&(const LinkedSet<T, Flags, Ts...>& set, const Container& other)
-    -> LinkedSet<T, Flags & ~Config::FIXED_SIZE, Ts...>
-{
+inline auto operator&(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return set.intersection(other);
 }
 
@@ -622,9 +620,7 @@ inline auto operator&=(LinkedSet<T, Flags, Ts...>& set, const Container& other)
 
 
 template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator^(const LinkedSet<T, Flags, Ts...>& set, const Container& other)
-    -> LinkedSet<T, Flags & ~Config::FIXED_SIZE, Ts...>
-{
+inline auto operator^(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
     return set.symmetric_difference(other);
 }
 
@@ -644,15 +640,9 @@ inline bool operator<(const LinkedSet<T, Flags, Ts...>& set, const Container& ot
 }
 
 
-template <
-    typename Container,
-    typename T,
-    unsigned int Flags,
-    typename... Ts,
-    bool Enable = !set_config::is_set<Container>
->
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator<(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
-    -> std::enable_if_t<Enable, bool>
+    -> set_config::EnableIfNotSet<Container, bool>
 {
     return linked::issuperset<true>(set.view, other);
 }
@@ -664,15 +654,9 @@ inline bool operator<=(const LinkedSet<T, Flags, Ts...>& set, const Container& o
 }
 
 
-template <
-    typename Container,
-    typename T,
-    unsigned int Flags,
-    typename... Ts,
-    bool Enable = !set_config::is_set<Container>
->
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator<=(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
-    -> std::enable_if_t<Enable, bool>
+    -> set_config::EnableIfNotSet<Container, bool>
 {
     return linked::issuperset<false>(set.view, other);
 }
@@ -689,15 +673,9 @@ inline bool operator==(const LinkedSet<T, Flags, Ts...>& set, const Container& o
 }
 
 
-template <
-    typename Container,
-    typename T,
-    unsigned int Flags,
-    typename... Ts,
-    bool Enable = !set_config::is_set<Container>
->
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator==(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
-    -> std::enable_if_t<Enable, bool>
+    -> set_config::EnableIfNotSet<Container, bool>
 {
     if constexpr (std::is_same_v<decltype(set), decltype(other)>) {
         if (&set == &other) {
@@ -719,15 +697,9 @@ inline bool operator!=(const LinkedSet<T, Flags, Ts...>& set, const Container& o
 }
 
 
-template <
-    typename Container,
-    typename T,
-    unsigned int Flags,
-    typename... Ts,
-    bool Enable = !set_config::is_set<Container>
->
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator!=(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
-    -> std::enable_if_t<Enable, bool>
+    -> set_config::EnableIfNotSet<Container, bool>
 {
     if constexpr (std::is_same_v<decltype(set), decltype(other)>) {
         if (&set == &other) {
@@ -744,15 +716,9 @@ inline bool operator>=(const LinkedSet<T, Flags, Ts...>& set, const Container& o
 }
 
 
-template <
-    typename Container,
-    typename T,
-    unsigned int Flags,
-    typename... Ts,
-    bool Enable = !set_config::is_set<Container>
->
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator>=(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
-    -> std::enable_if_t<Enable, bool>
+    -> set_config::EnableIfNotSet<Container, bool>
 {
     return linked::issubset<false>(set.view, other);
 }
@@ -764,15 +730,9 @@ inline bool operator>(const LinkedSet<T, Flags, Ts...>& set, const Container& ot
 }
 
 
-template <
-    typename Container,
-    typename T,
-    unsigned int Flags,
-    typename... Ts,
-    bool Enable = !set_config::is_set<Container>
->
+template <typename Container, typename T, unsigned int Flags, typename... Ts>
 inline auto operator>(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
-    -> std::enable_if_t<Enable, bool>
+    -> set_config::EnableIfNotSet<Container, bool>
 {
     return linked::issubset<true>(set.view, other);
 }

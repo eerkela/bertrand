@@ -5,8 +5,8 @@
 #include <stack>  // std::stack
 #include <string>  // std::string
 #include <type_traits>  // std::enable_if_t<>
-#include "../../util/container.h"  // python::Slice
 #include "../../util/ops.h"  // bertrand::repr()
+#include "../../util/python.h"  // python::Slice
 #include "../core/node.h"  // NodeTraits
 #include "../core/view.h"  // ViewTraits, Yield
 

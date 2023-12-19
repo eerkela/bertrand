@@ -16,6 +16,11 @@
 #include "iter.h"  // iter()
 
 
+// TODO: this can import ops.h and then delegate all operators over there.  This
+// would synchronize implementations and allow automatic conversion of C++ types
+// to equivalent Python.
+
+
 namespace bertrand {
 namespace python {
 
@@ -1186,8 +1191,8 @@ public:
 
     /* Construct an empty Python slice. */
     Slice() :
-        Base(PySlice_New(nullptr, nullptr, nullptr)), _start(Py_None), _stop(Py_None),
-        _step(Py_None)
+        Base(PySlice_New(nullptr, nullptr, nullptr)), _start(Py_NewRef(Py_None)),
+        _stop(Py_NewRef(Py_None)), _step(Py_NewRef(Py_None))
     {
         static_assert(
             ref == Ref::NEW,

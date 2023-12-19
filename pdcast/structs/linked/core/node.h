@@ -5,10 +5,10 @@
 #include <type_traits>  // std::enable_if_t<>, etc.
 #include <Python.h>  // CPython API
 #include "../../util/base.h"  // is_pyobject<>
-#include "../../util/container.h"  // python::Slice, python::Function
 #include "../../util/except.h"  // catch_python(), TypeError()
 #include "../../util/func.h"  // FuncTraits
 #include "../../util/ops.h"  // hash(), repr()
+#include "../../util/python.h"  // python::Slice, python::Function
 
 
 namespace bertrand {

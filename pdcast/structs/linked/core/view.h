@@ -9,8 +9,8 @@
 #include <Python.h>  // CPython API
 #include "node.h"  // Hashed<>, Mapped<>
 #include "allocate.h"  // allocators
-#include "../../util/container.h"  // python::Dict, python::Tuple
 #include "../../util/ops.h"  // len()
+#include "../../util/python.h"  // python::Dict, python::Tuple
 
 
 namespace bertrand {

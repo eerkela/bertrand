@@ -4,8 +4,8 @@
 #include <cstddef>  // size_t
 #include <type_traits>  // std::enable_if_t<>
 #include <unordered_set>  // std::unordered_set<>
-#include "../../util/container.h"  // python::Dict
 #include "../../util/iter.h"  // iter()
+#include "../../util/python.h"  // python::Dict
 #include "../core/node.h"  // NodeTraits
 #include "../core/view.h"  // ViewTraits
 

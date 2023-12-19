@@ -7,11 +7,11 @@
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
-#include "../../util/container.h"  // python::Slice
 #include "../../util/except.h"  // catch_python(), TypeError(), KeyError()
 #include "../../util/math.h"  // next_power_of_two()
+#include "../../util/name.h"  // PyName<>
 #include "../../util/ops.h"  // hash(), eq(), len(), repr()
-#include "../../util/name.h"  // PyName
+#include "../../util/python.h"  // python::Slice
 #include "node.h"  // NodeTraits
 
 
