@@ -42,6 +42,10 @@ namespace bertrand {
 namespace linked {
 
 
+template <typename K, unsigned int Flags, typename Lock>
+class LinkedSet;
+
+
 namespace set_config {
 
     /* Apply default config flags for C++ LinkedLists. */
@@ -60,6 +64,16 @@ namespace set_config {
         DoubleNode<T>,
         SingleNode<T>
     >;
+
+    template <typename T>
+    struct IsSet : std::false_type {};
+    template <typename T, unsigned int Flags, typename Lock>
+    struct IsSet<LinkedSet<T, Flags, Lock>> : std::true_type {};
+
+    template <typename T>
+    static constexpr bool is_set = IsSet<
+        std::remove_cv_t<std::remove_reference_t<T>>
+    >::value;
 
 }
 
@@ -541,8 +555,6 @@ public:
 /////////////////////////////
 
 
-/* Print the abbreviated contents of a set to an output stream (equivalent to Python
-repr()). */
 template <typename T, unsigned int Flags, typename... Ts>
 inline auto operator<<(std::ostream& stream, const LinkedSet<T, Flags, Ts...>& set)
     -> std::ostream&
@@ -632,8 +644,16 @@ inline bool operator<(const LinkedSet<T, Flags, Ts...>& set, const Container& ot
 }
 
 
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator<(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
+template <
+    typename Container,
+    typename T,
+    unsigned int Flags,
+    typename... Ts,
+    bool Enable = !set_config::is_set<Container>
+>
+inline auto operator<(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
+    -> std::enable_if_t<Enable, bool>
+{
     return linked::issuperset<true>(set.view, other);
 }
 
@@ -644,8 +664,16 @@ inline bool operator<=(const LinkedSet<T, Flags, Ts...>& set, const Container& o
 }
 
 
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator<=(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
+template <
+    typename Container,
+    typename T,
+    unsigned int Flags,
+    typename... Ts,
+    bool Enable = !set_config::is_set<Container>
+>
+inline auto operator<=(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
+    -> std::enable_if_t<Enable, bool>
+{
     return linked::issuperset<false>(set.view, other);
 }
 
@@ -661,8 +689,16 @@ inline bool operator==(const LinkedSet<T, Flags, Ts...>& set, const Container& o
 }
 
 
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator==(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
+template <
+    typename Container,
+    typename T,
+    unsigned int Flags,
+    typename... Ts,
+    bool Enable = !set_config::is_set<Container>
+>
+inline auto operator==(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
+    -> std::enable_if_t<Enable, bool>
+{
     if constexpr (std::is_same_v<decltype(set), decltype(other)>) {
         if (&set == &other) {
             return true;
@@ -683,8 +719,16 @@ inline bool operator!=(const LinkedSet<T, Flags, Ts...>& set, const Container& o
 }
 
 
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator!=(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
+template <
+    typename Container,
+    typename T,
+    unsigned int Flags,
+    typename... Ts,
+    bool Enable = !set_config::is_set<Container>
+>
+inline auto operator!=(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
+    -> std::enable_if_t<Enable, bool>
+{
     if constexpr (std::is_same_v<decltype(set), decltype(other)>) {
         if (&set == &other) {
             return false;
@@ -700,8 +744,16 @@ inline bool operator>=(const LinkedSet<T, Flags, Ts...>& set, const Container& o
 }
 
 
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator>=(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
+template <
+    typename Container,
+    typename T,
+    unsigned int Flags,
+    typename... Ts,
+    bool Enable = !set_config::is_set<Container>
+>
+inline auto operator>=(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
+    -> std::enable_if_t<Enable, bool>
+{
     return linked::issubset<false>(set.view, other);
 }
 
@@ -712,8 +764,16 @@ inline bool operator>(const LinkedSet<T, Flags, Ts...>& set, const Container& ot
 }
 
 
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator>(const Container& other, const LinkedSet<T, Flags, Ts...>& set) {
+template <
+    typename Container,
+    typename T,
+    unsigned int Flags,
+    typename... Ts,
+    bool Enable = !set_config::is_set<Container>
+>
+inline auto operator>(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
+    -> std::enable_if_t<Enable, bool>
+{
     return linked::issubset<true>(set.view, other);
 }
 
@@ -731,25 +791,21 @@ class PySetInterface {
     template <CallProtocol call>
     using PyArgs = bertrand::util::PyArgs<call>;
 
-    template <typename Func>
-    inline static PyObject* visit(Derived* self, Func func) {
+    template <typename Func, typename Result = PyObject*>
+    inline static Result visit(Derived* self, Func func, Result err_code = nullptr) {
         try {
             return std::visit(func, self->variant);
         } catch (...) {
             throw_python();
-            return nullptr;
+            return err_code;
         }
     }
 
     template <typename Func>
     inline static auto unwrap_variant(PyObject* arg, Func func) {
         if (Derived::typecheck(arg)) {
-            return std::visit(
-                [&func](auto& other) {
-                    return func(other);
-                },
-                reinterpret_cast<Derived*>(arg)->variant
-            );
+            Derived* other = reinterpret_cast<Derived*>(arg);
+            return std::visit(func, other->variant);
         }
         return func(arg);
     }
@@ -957,19 +1013,25 @@ public:
 
     static PyObject* isdisjoint(Derived* self, PyObject* other) {
         return visit(self, [&other](auto& set) {
-            return Py_NewRef(set.isdisjoint(other) ? Py_True : Py_False);
+            return unwrap_variant(other, [&set](auto& other) {
+                return Py_NewRef(set.isdisjoint(other) ? Py_True : Py_False);
+            });
         });
     }
 
     static PyObject* issubset(Derived* self, PyObject* other) {
         return visit(self, [&other](auto& set) {
-            return Py_NewRef(set.issubset(other) ? Py_True : Py_False);
+            return unwrap_variant(other, [&set](auto& other) {
+                return Py_NewRef(set.issubset(other) ? Py_True : Py_False);
+            });
         });
     }
 
     static PyObject* issuperset(Derived* self, PyObject* other) {
         return visit(self, [&other](auto& set) {
-            return Py_NewRef(set.issuperset(other) ? Py_True : Py_False);
+            return unwrap_variant(other, [&set](auto& other) {
+                return Py_NewRef(set.issuperset(other) ? Py_True : Py_False);
+            });
         });
     }
 

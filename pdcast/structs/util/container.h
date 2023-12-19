@@ -2802,32 +2802,6 @@ public:
         );
     }
 
-    // TODO: these slots seem to have inconsistent naming in the CPython API depending
-    // on version.
-
-    // /* Get a tuple containing the names of the local variables in the function,
-    // starting with the parameter names. */
-    // inline Tuple<Ref::BORROW> local_names() const {
-    //     return Tuple<Ref::BORROW>(
-    //         reinterpret_cast<PyCodeObject*>(this->obj)->co_varnames
-    //     );
-    // }
-
-    // /* Get a tuple containing the names of local variables that are referenced by
-    // nested functions within this function. */
-    // inline Tuple<Ref::BORROW> nested_names() const {
-    //     return Tuple<Ref::BORROW>(reinterpret_cast<
-    //         PyCodeObject*>(this->obj)->co_cellvars
-    //     );
-    // }
-
-    // /* Get a tuple containing the names of free (unbound) variables in the function. */
-    // inline Tuple<Ref::BORROW> free_names() const {
-    //     return Tuple<Ref::BORROW>(
-    //         reinterpret_cast<PyCodeObject*>(this->obj)->co_freevars
-    //     );
-    // }
-
     /* Get the name of the file from which the code was compiled. */
     inline std::string file_name() const {
         Object<Ref::BORROW> filename(
@@ -2943,25 +2917,6 @@ public:
     inline size_t n_locals() const noexcept {
         return code().n_locals();
     }
-
-    // TODO: see note in Code::
-
-    // /* Get a tuple containing the names of the local variables in the function,
-    // starting with the parameter names. */
-    // inline Tuple<Ref::BORROW> local_names() const {
-    //     return code().local_names();
-    // }
-
-    // /* Get a tuple containing the names of local variables that are referenced by
-    // nested functions within this function. */
-    // inline Tuple<Ref::BORROW> nested_names() const {
-    //     return code().nested_names();
-    // }
-
-    // /* Get a tuple containing the names of free variables in the function. */
-    // inline Tuple<Ref::BORROW> free_names() const {
-    //     return code().free_names();
-    // }
 
     /* Get the name of the file from which the code was compiled. */
     inline std::string file_name() const {
@@ -3144,25 +3099,6 @@ public:
         return function().n_locals();
     }
 
-    // TODO: see note in Code::
-
-    // /* Get a tuple containing the names of the local variables in the class method,
-    // starting with the parameter names. */
-    // inline Tuple<Ref::BORROW> local_names() const {
-    //     return function().local_names();
-    // }
-
-    // /* Get a tuple containing the names of local variables that are referenced by
-    // nested functions within this class method. */
-    // inline Tuple<Ref::BORROW> nested_names() const {
-    //     return function().nested_names();
-    // }
-
-    // /* Get a tuple containing the names of free variables in the class method. */
-    // inline Tuple<Ref::BORROW> free_names() const {
-    //     return function().free_names();
-    // }
-
     /* Get the name of the file from which the code was compiled. */
     inline std::string file_name() const {
         return function().file_name();
@@ -3322,25 +3258,6 @@ public:
         return function().n_locals();
     }
 
-    // TODO: see note in Code::
-
-    // /* Get a tuple containing the names of the local variables in the method,
-    // starting with the parameter names. */
-    // inline Tuple<Ref::BORROW> local_names() const {
-    //     return function().local_names();
-    // }
-
-    // /* Get a tuple containing the names of local variables that are referenced by
-    // nested functions within this method. */
-    // inline Tuple<Ref::BORROW> nested_names() const {
-    //     return function().nested_names();
-    // }
-
-    // /* Get a tuple containing the names of free variables in the method. */
-    // inline Tuple<Ref::BORROW> free_names() const {
-    //     return function().free_names();
-    // }
-
     /* Get the name of the file from which the code was compiled. */
     inline std::string file_name() const {
         return function().file_name();
@@ -3454,9 +3371,7 @@ inline auto sequence(Iterable&& iterable) {
 
     if constexpr (is_pyobject<Iterable>) {
         PyObject* seq = PySequence_Fast(iterable, "expected a sequence");
-        python::FastSequence<python::Ref::BORROW> result(seq);
-        Py_DECREF(seq);
-        return result;
+        return python::FastSequence<python::Ref::STEAL>(seq);
 
     } else {
         using Traits = ContainerTraits<Iterable>;

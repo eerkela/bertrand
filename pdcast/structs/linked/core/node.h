@@ -88,13 +88,9 @@ protected:
         if (this == &other) {
             return *this;
         }
-
-        // clear current node
         if constexpr (is_pyobject<Value>) {
             Py_XDECREF(_value);
         }
-
-        // copy other node
         _value = other._value;
         if constexpr (is_pyobject<Value>) {
             Py_XINCREF(_value);
@@ -107,13 +103,9 @@ protected:
         if (this == &other) {
             return *this;
         }
-
-        // clear current node
         if constexpr (is_pyobject<Value>) {
             Py_XDECREF(_value);
         }
-
-        // move other node
         _value = std::move(other._value);
         if constexpr (std::is_pointer_v<Value>) {
             other._value = nullptr;

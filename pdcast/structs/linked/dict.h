@@ -52,11 +52,6 @@
 // -> implement lexicographic comparisons for items()
 
 
-// TODO: union, update, __init__, comparisons/concatenate/repeat (for ItemsProxy), etc.
-// should accept other LinkedDicts and use .items() to iterate over them
-// -> 
-
-
 namespace bertrand {
 namespace linked {
 
@@ -93,12 +88,41 @@ namespace dict_config {
 
     template <typename T>
     struct IsDict : std::false_type {};
-
     template <typename _K, typename _V, unsigned int _Flags, typename _Lock>
     struct IsDict<LinkedDict<_K, _V, _Flags, _Lock>> : std::true_type {};
 
     template <typename T>
-    static constexpr bool is_dict_v = IsDict<
+    struct IsKeysProxy : std::false_type {};
+    template <typename Dict>
+    struct IsKeysProxy<KeysProxy<Dict>> : std::true_type {};
+
+    template <typename T>
+    struct IsValuesProxy : std::false_type {};
+    template <typename Dict>
+    struct IsValuesProxy<ValuesProxy<Dict>> : std::true_type {};
+
+    template <typename T>
+    struct IsItemsProxy : std::false_type {};
+    template <typename Dict, bool as_pytuple>
+    struct IsItemsProxy<ItemsProxy<Dict, as_pytuple>> : std::true_type {};
+
+    template <typename T>
+    static constexpr bool is_dict = IsDict<
+        std::remove_cv_t<std::remove_reference_t<T>>
+    >::value;
+
+    template <typename T>
+    static constexpr bool is_keys_proxy = IsKeysProxy<
+        std::remove_cv_t<std::remove_reference_t<T>>
+    >::value;
+
+    template <typename T>
+    static constexpr bool is_values_proxy = IsValuesProxy<
+        std::remove_cv_t<std::remove_reference_t<T>>
+    >::value;
+
+    template <typename T>
+    static constexpr bool is_items_proxy = IsItemsProxy<
         std::remove_cv_t<std::remove_reference_t<T>>
     >::value;
 
@@ -162,7 +186,7 @@ public:
         PyObject* spec = nullptr,
         bool reverse = false
     ) : Base([&iterable] {
-            if constexpr (dict_config::is_dict_v<Container>) {
+            if constexpr (dict_config::is_dict<Container>) {
                 return iterable.view;
             } else {
                 return std::forward<Container>(iterable);
@@ -373,7 +397,7 @@ public:
             return result;
         };
 
-        if constexpr (dict_config::is_dict_v<First>) {
+        if constexpr (dict_config::is_dict<First>) {
             return execute(first.items());
         } else {
             return execute(std::forward<First>(first));
@@ -400,7 +424,7 @@ public:
             return result;
         };
 
-        if constexpr (dict_config::is_dict_v<First>) {
+        if constexpr (dict_config::is_dict<First>) {
             return execute(first.items());
         } else {
             return execute(std::forward<First>(first));
@@ -413,7 +437,7 @@ public:
     inline void update(Containers&&... items) {
         auto unwrap = [](auto&& arg) {
             using Arg = decltype(arg);
-            if constexpr (dict_config::is_dict_v<Arg>) {
+            if constexpr (dict_config::is_dict<Arg>) {
                 return arg.items();
             } else {
                 return std::forward<Arg>(arg);
@@ -434,7 +458,7 @@ public:
     inline void update_left(Containers&&... items) {
         auto unwrap = [](auto&& arg) {
             using Arg = decltype(arg);
-            if constexpr (dict_config::is_dict_v<Arg>) {
+            if constexpr (dict_config::is_dict<Arg>) {
                 return arg.items();
             } else {
                 return std::forward<Arg>(arg);
@@ -455,7 +479,7 @@ public:
     inline void lru_update(Containers&&... items) {
         auto unwrap = [](auto&& arg) {
             using Arg = decltype(arg);
-            if constexpr (dict_config::is_dict_v<Arg>) {
+            if constexpr (dict_config::is_dict<Arg>) {
                 return arg.items();
             } else {
                 return std::forward<Arg>(arg);
@@ -490,7 +514,7 @@ public:
             return result;
         };
 
-        if constexpr (dict_config::is_dict_v<First>) {
+        if constexpr (dict_config::is_dict<First>) {
             return execute(first.items());
         } else {
             return execute(std::forward<First>(first));
@@ -502,7 +526,7 @@ public:
     inline void intersection_update(Containers&&... items) {
         auto unwrap = [](auto&& arg) {
             using Arg = decltype(arg);
-            if constexpr (dict_config::is_dict_v<Arg>) {
+            if constexpr (dict_config::is_dict<Arg>) {
                 return arg.items();
             } else {
                 return std::forward<Arg>(arg);
@@ -537,7 +561,7 @@ public:
             return result;
         };
 
-        if constexpr (dict_config::is_dict_v<First>) {
+        if constexpr (dict_config::is_dict<First>) {
             return execute(first.items());
         } else {
             return execute(std::forward<First>(first));
@@ -549,7 +573,7 @@ public:
     inline void difference_update(Containers&&... items) {
         auto unwrap = [](auto&& arg) {
             using Arg = decltype(arg);
-            if constexpr (dict_config::is_dict_v<Arg>) {
+            if constexpr (dict_config::is_dict<Arg>) {
                 return arg.items();
             } else {
                 return std::forward<Arg>(arg);
@@ -568,7 +592,7 @@ public:
     container, but not both. */
     template <typename Container>
     inline DynamicDict symmetric_difference(Container&& items) const {
-        if constexpr (dict_config::is_dict_v<Container>) {
+        if constexpr (dict_config::is_dict<Container>) {
             return DynamicDict(
                 linked::symmetric_difference<Yield::ITEM, false>(
                     this->view, items.items()
@@ -588,7 +612,7 @@ public:
     tail. */
     template <typename Container>
     inline DynamicDict symmetric_difference_left(Container&& items) const {
-        if constexpr (dict_config::is_dict_v<Container>) {
+        if constexpr (dict_config::is_dict<Container>) {
             return DynamicDict(
                 linked::symmetric_difference<Yield::ITEM, true>(
                     this->view, items.items()
@@ -713,18 +737,18 @@ public:
 
     template <typename... Args>
     inline auto slice(Args&&... args)
-        -> linked::SliceProxy<View, DynamicDict, Yield::KEY>
+        -> linked::SliceProxy<View, DynamicDict, Yield::ITEM>
     {
-        return linked::slice<DynamicDict, Yield::KEY>(
+        return linked::slice<DynamicDict, Yield::ITEM>(
             this->view, std::forward<Args>(args)...
         );
     }
 
     template <typename... Args>
     inline auto slice(Args&&... args) const
-        -> const linked::SliceProxy<const View, DynamicDict, Yield::KEY>
+        -> const linked::SliceProxy<const View, DynamicDict, Yield::ITEM>
     {
-        return linked::slice<DynamicDict, Yield::KEY>(
+        return linked::slice<DynamicDict, Yield::ITEM>(
             this->view, std::forward<Args>(args)...
         );
     }
@@ -796,8 +820,6 @@ public:
 //////////////////////////////
 
 
-/* Print the abbreviated contents of a dictionary to an output stream (equivalent to
-Python repr()). */
 template <typename K, typename V, unsigned int Flags, typename... Ts>
 inline auto operator<<(std::ostream& stream, const LinkedDict<K, V, Flags, Ts...>& dict)
     -> std::ostream&
@@ -896,7 +918,7 @@ inline bool operator==(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& ot
         }
     }
 
-    if constexpr (dict_config::is_dict_v<Map>) {
+    if constexpr (dict_config::is_dict<Map>) {
         return linked::dict_equal<true>(dict.view, other.items());
     } else {
         return linked::dict_equal<true>(dict.view, other);
@@ -910,12 +932,12 @@ template <
     typename V,
     unsigned int Flags,
     typename... Ts,
-    bool Enable = !std::is_same_v<const Map&, const LinkedDict<K, V, Flags, Ts...>&>
+    bool Enable = !dict_config::is_dict<Map>
 >
 inline auto operator==(const Map& other, const LinkedDict<K, V, Flags, Ts...>& dict)
     -> std::enable_if_t<Enable, bool>
 {
-    if constexpr (dict_config::is_dict_v<Map>) {
+    if constexpr (dict_config::is_dict<Map>) {
         return linked::dict_equal<true>(dict.view, other.items());
     } else {
         return linked::dict_equal<true>(dict.view, other);
@@ -931,7 +953,7 @@ inline bool operator!=(const LinkedDict<K, V, Flags, Ts...>& dict, const Map& ot
         }
     }
 
-    if constexpr (dict_config::is_dict_v<Map>) {
+    if constexpr (dict_config::is_dict<Map>) {
         return linked::dict_equal<false>(dict.view, other.items());
     } else {
         return linked::dict_equal<false>(dict.view, other);
@@ -945,18 +967,12 @@ template <
     typename V,
     unsigned int Flags,
     typename... Ts,
-    bool Enable = !std::is_same_v<const Map&, const LinkedDict<K, V, Flags, Ts...>&>
+    bool Enable = !dict_config::is_dict<Map>
 >
 inline auto operator!=(const Map& other, const LinkedDict<K, V, Flags, Ts...>& dict)
     -> std::enable_if_t<Enable, bool>
 {
-    if constexpr (std::is_same_v<decltype(dict), decltype(other)>) {
-        if (&dict == &other) {
-            return false;
-        }
-    }
-
-    if constexpr (dict_config::is_dict_v<Map>) {
+    if constexpr (dict_config::is_dict<Map>) {
         return linked::dict_equal<false>(dict.view, other.items());
     } else {
         return linked::dict_equal<false>(dict.view, other);
@@ -1223,8 +1239,6 @@ public:
  */
 
 
-/* Print the abbreviated contents of a KeysProxy to an output stream (equivalent to
-Python repr()). */
 template <typename Dict>
 inline std::ostream& operator<<(std::ostream& stream, const KeysProxy<Dict>& keys) {
     stream << linked::build_repr<Yield::KEY>(
@@ -1268,8 +1282,14 @@ inline bool operator<(const KeysProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <typename Container, typename Dict>
-inline bool operator<(const Container& other, const KeysProxy<Dict>& proxy) {
+template <
+    typename Container,
+    typename Dict,
+    bool Enable = !dict_config::is_keys_proxy<Container>
+>
+inline auto operator<(const Container& other, const KeysProxy<Dict>& proxy)
+    -> std::enable_if_t<Enable, bool>
+{
     return linked::issuperset<true>(proxy.mapping().view, other);
 }
 
@@ -1280,8 +1300,14 @@ inline bool operator<=(const KeysProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <typename Container, typename Dict>
-inline bool operator<=(const Container& other, const KeysProxy<Dict>& proxy) {
+template <
+    typename Container,
+    typename Dict,
+    bool Enable = !dict_config::is_keys_proxy<Container>
+>
+inline auto operator<=(const Container& other, const KeysProxy<Dict>& proxy)
+    -> std::enable_if_t<Enable, bool>
+{
     return linked::issuperset<false>(proxy.mapping().view, other);
 }
 
@@ -1297,8 +1323,14 @@ inline bool operator==(const KeysProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <typename Container, typename Dict>
-inline bool operator==(const Container& other, const KeysProxy<Dict>& proxy) {
+template <
+    typename Container,
+    typename Dict,
+    bool Enable = !dict_config::is_keys_proxy<Container>
+>
+inline auto operator==(const Container& other, const KeysProxy<Dict>& proxy)
+    -> std::enable_if_t<Enable, bool>
+{
     if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
         if (&proxy == &other) {
             return true;
@@ -1319,8 +1351,14 @@ inline bool operator!=(const KeysProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <typename Container, typename Dict>
-inline bool operator!=(const Container& other, const KeysProxy<Dict>& proxy) {
+template <
+    typename Container,
+    typename Dict,
+    bool Enable = !dict_config::is_keys_proxy<Container>
+>
+inline auto operator!=(const Container& other, const KeysProxy<Dict>& proxy)
+    -> std::enable_if_t<Enable, bool>
+{
     if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
         if (&proxy == &other) {
             return false;
@@ -1336,8 +1374,14 @@ inline bool operator>=(const KeysProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <typename Container, typename Dict>
-inline bool operator>=(const Container& other, const KeysProxy<Dict>& proxy) {
+template <
+    typename Container,
+    typename Dict,
+    bool Enable = !dict_config::is_keys_proxy<Container>
+>
+inline auto operator>=(const Container& other, const KeysProxy<Dict>& proxy)
+    -> std::enable_if_t<Enable, bool>
+{
     return linked::issubset<false>(proxy.mapping().view, other);
 }
 
@@ -1348,8 +1392,14 @@ inline bool operator>(const KeysProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <typename Container, typename Dict>
-inline bool operator>(const Container& other, const KeysProxy<Dict>& proxy) {
+template <
+    typename Container,
+    typename Dict,
+    bool Enable = !dict_config::is_keys_proxy<Container>
+>
+inline auto operator>(const Container& other, const KeysProxy<Dict>& proxy)
+    -> std::enable_if_t<Enable, bool>
+{
     return linked::issubset<true>(proxy.mapping().view, other);
 }
 
@@ -1384,8 +1434,6 @@ class ValuesProxy : public DictProxy<
  */
 
 
-/* Print the abbreviated contents of a KeysProxy to an output stream (equivalent to
-Python repr()). */
 template <typename Dict>
 inline std::ostream& operator<<(std::ostream& stream, const ValuesProxy<Dict>& values) {
     stream << linked::build_repr<Yield::VALUE>(
@@ -1429,8 +1477,14 @@ inline bool operator<(const ValuesProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <typename Container, typename Dict>
-inline bool operator<(const Container& other, const ValuesProxy<Dict>& proxy) {
+template <
+    typename Container,
+    typename Dict,
+    bool Enable = !dict_config::is_values_proxy<Container>
+>
+inline auto operator<(const Container& other, const ValuesProxy<Dict>& proxy)
+    -> std::enable_if_t<Enable, bool>
+{
     return lexical_lt(other, proxy);
 }
 
@@ -1441,8 +1495,14 @@ inline bool operator<=(const ValuesProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <typename Container, typename Dict>
-inline bool operator<=(const Container& other, const ValuesProxy<Dict>& proxy) {
+template <
+    typename Container,
+    typename Dict,
+    bool Enable = !dict_config::is_values_proxy<Container>
+>
+inline auto operator<=(const Container& other, const ValuesProxy<Dict>& proxy)
+    -> std::enable_if_t<Enable, bool>
+{
     return lexical_le(other, proxy);
 }
 
@@ -1453,8 +1513,14 @@ inline bool operator==(const ValuesProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <typename Container, typename Dict>
-inline bool operator==(const Container& other, const ValuesProxy<Dict>& proxy) {
+template <
+    typename Container,
+    typename Dict,
+    bool Enable = !dict_config::is_values_proxy<Container>
+>
+inline auto operator==(const Container& other, const ValuesProxy<Dict>& proxy)
+    -> std::enable_if_t<Enable, bool>
+{
     return lexical_eq(other, proxy);
 }
 
@@ -1465,8 +1531,14 @@ inline bool operator!=(const ValuesProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <typename Container, typename Dict>
-inline bool operator!=(const Container& other, const ValuesProxy<Dict>& proxy) {
+template <
+    typename Container,
+    typename Dict,
+    bool Enable = !dict_config::is_values_proxy<Container>
+>
+inline auto operator!=(const Container& other, const ValuesProxy<Dict>& proxy)
+    -> std::enable_if_t<Enable, bool>
+{
     return !lexical_eq(other, proxy);
 }
 
@@ -1477,8 +1549,14 @@ inline bool operator>=(const ValuesProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <typename Container, typename Dict>
-inline bool operator>=(const Container& other, const ValuesProxy<Dict>& proxy) {
+template <
+    typename Container,
+    typename Dict,
+    bool Enable = !dict_config::is_values_proxy<Container>
+>
+inline auto operator>=(const Container& other, const ValuesProxy<Dict>& proxy)
+    -> std::enable_if_t<Enable, bool>
+{
     return lexical_ge(other, proxy);
 }
 
@@ -1489,8 +1567,14 @@ inline bool operator>(const ValuesProxy<Dict>& proxy, const Container& other) {
 }
 
 
-template <typename Container, typename Dict>
-inline bool operator>(const Container& other, const ValuesProxy<Dict>& proxy) {
+template <
+    typename Container,
+    typename Dict,
+    bool Enable = !dict_config::is_values_proxy<Container>
+>
+inline auto operator>(const Container& other, const ValuesProxy<Dict>& proxy)
+    -> std::enable_if_t<Enable, bool>
+{
     return lexical_gt(other, proxy);
 }
 
@@ -1709,8 +1793,6 @@ public:
  */
 
 
-/* Print the abbreviated contents of a ItemsProxy to an output stream (equivalent to
-Python repr()). */
 template <typename Dict, bool as_pytuple>
 inline auto operator<<(std::ostream& stream, const ItemsProxy<Dict, as_pytuple>& values)
     -> std::ostream&
@@ -1741,9 +1823,15 @@ inline auto operator+(const ItemsProxy<Dict, as_pytuple>& proxy, const Container
         typename Dict::Lock
     >
 {
-    return linked::concatenate<Yield::ITEM, as_pytuple>(
-        proxy.mapping().view, other
-    );
+    if constexpr (dict_config::is_dict<Container>) {
+        return linked::concatenate<Yield::ITEM, as_pytuple>(
+            proxy.mapping().view, other.items()
+        );
+    } else {
+        return linked::concatenate<Yield::ITEM, as_pytuple>(
+            proxy.mapping().view, other
+        );
+    }
 }
 
 
@@ -1770,6 +1858,11 @@ inline auto operator*(const ItemsProxy<Dict, as_pytuple>& proxy, T&& other)
 // with dict equality.  No idea why.
 
 
+// TODO: when implementing comparisons, we can unpack LinkedDicts into items().  We
+// then pass it off to the items_eq() helper, which checks for python dictionaries as
+// well.
+
+
 template <typename Container, typename Dict, bool as_pytuple>
 inline bool operator==(const ItemsProxy<Dict, as_pytuple>& proxy, const Container& other) {
     if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
@@ -1777,12 +1870,20 @@ inline bool operator==(const ItemsProxy<Dict, as_pytuple>& proxy, const Containe
             return true;
         }
     }
+
     return proxy.mapping() == other;
 }
 
 
-template <typename Container, typename Dict, bool as_pytuple>
-inline bool operator==(const Container& other, const ItemsProxy<Dict, as_pytuple>& proxy) {
+template <
+    typename Container,
+    typename Dict,
+    bool as_pytuple,
+    bool Enable = !dict_config::is_items_proxy<Container>
+>
+inline auto operator==(const Container& other, const ItemsProxy<Dict, as_pytuple>& proxy)
+    -> std::enable_if_t<Enable, bool>
+{
     if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
         if (&proxy == &other) {
             return true;
@@ -1803,8 +1904,15 @@ inline bool operator!=(const ItemsProxy<Dict, as_pytuple>& proxy, const Containe
 }
 
 
-template <typename Container, typename Dict, bool as_pytuple>
-inline bool operator!=(const Container& other, const ItemsProxy<Dict, as_pytuple>& proxy) {
+template <
+    typename Container,
+    typename Dict,
+    bool as_pytuple,
+    bool Enable = !dict_config::is_items_proxy<Container>
+>
+inline auto operator!=(const Container& other, const ItemsProxy<Dict, as_pytuple>& proxy)
+    -> std::enable_if_t<Enable, bool>
+{
     if constexpr (std::is_same_v<decltype(proxy), decltype(other)>) {
         if (&proxy == &other) {
             return false;
@@ -1827,25 +1935,20 @@ class PyDictInterface {
     template <CallProtocol call>
     using PyArgs = bertrand::util::PyArgs<call>;
 
-    template <typename Func>
-    inline static PyObject* visit(Derived* self, Func func) {
+    template <typename Func, typename Result = PyObject*>
+    inline static Result visit(Derived* self, Func func, Result err_code = nullptr) {
         try {
             return std::visit(func, self->variant);
         } catch (...) {
             throw_python();
-            return nullptr;
+            return err_code;
         }
     }
 
     template <typename Func>
     inline static auto unwrap_variant(PyObject* arg, Func func) {
         if (Derived::typecheck(arg)) {
-            return std::visit(
-                [&func](auto& other) {
-                    return func(other);
-                },
-                reinterpret_cast<Derived*>(arg)->variant
-            );
+            return std::visit(func, reinterpret_cast<Derived*>(arg)->variant);
         }
         return func(arg);
     }
@@ -2020,31 +2123,15 @@ public:
     }
 
     static int __setitem__(Derived* self, PyObject* key, PyObject* value) {
-        try {
-            std::visit(
-                [&key, &value](auto& dict) {
-                    if (value == nullptr) {
-                        dict[key].del();
-                    } else {
-                        dict[key] = value;
-                    }
-                },
-                self->variant
-            );
+        return visit(self, [&key, &value](auto& dict) {
+            if (value == nullptr) {
+                dict[key].del();
+            } else {
+                dict[key] = value;
+            }
             return 0;
-
-        } catch (...) {
-            throw_python();
-            return -1;
-        }
+        }, -1);
     }
-
-    // TODO: this gives ambiguous overloads.  Need to selectively disable the reversed
-    // comparisons if types are identical.
-
-    // TODO: also, we should probably build this into the remaining list/set operations
-    // that can potentially accept another list/set as an argument.  It should be
-    // universally faster to do these at the C++ level rather than Python.
 
     static PyObject* __richcompare__(Derived* self, PyObject* other, int cmp) {
         return visit(self, [&other, &cmp](auto& dict) {
@@ -2390,17 +2477,37 @@ only if the dictionary's values are also hashable.
 
     /* Base class for keys(), values(), and items() proxies. */
     template <typename PyProxy, typename CppProxy>
-    class DictProxy {
+    class PyDictProxy {
         PyObject_HEAD
         CppProxy proxy;
         PyObject* _mapping;
 
+    protected:
+
+        template <typename Func, typename Result = PyObject*>
+        inline static Result visit(PyProxy* self, Func func, Result err_code = nullptr) {
+            try {
+                return func(self->proxy);
+            } catch (...) {
+                throw_python();
+                return err_code;
+            }
+        }
+
+        template <typename Func>
+        inline static auto unwrap_proxy(PyObject* arg, Func func) {
+            if (PyProxy::typecheck(arg)) {
+                return func(reinterpret_cast<PyProxy*>(arg)->proxy);
+            }
+            return func(arg);
+        }
+
     public:
-        DictProxy() = delete;
-        DictProxy(const DictProxy&) = delete;
-        DictProxy(DictProxy&&) = delete;
-        DictProxy& operator=(const DictProxy&) = delete;
-        DictProxy& operator=(DictProxy&&) = delete;
+        PyDictProxy() = delete;
+        PyDictProxy(const PyDictProxy&) = delete;
+        PyDictProxy(PyDictProxy&&) = delete;
+        PyDictProxy& operator=(const PyDictProxy&) = delete;
+        PyDictProxy& operator=(PyDictProxy&&) = delete;
 
         inline static PyObject* mapping(PyProxy* self, PyObject* = nullptr) noexcept {
             return Py_NewRef(self->_mapping);
@@ -2410,38 +2517,28 @@ only if the dictionary's values are also hashable.
             static constexpr std::string_view meth_name{"index"};
             using bertrand::util::parse_opt_int;
             using Index = std::optional<long long>;
-            try {
+            return visit(self, [&args, &nargs](auto& proxy) {
                 PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
                 PyObject* element = pyargs.parse("element");
                 Index start = pyargs.parse("start", parse_opt_int, Index());
                 Index stop = pyargs.parse("stop", parse_opt_int, Index());
                 pyargs.finalize();
-
-                return PyLong_FromSize_t(self->proxy.index(element, start, stop));
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+                return PyLong_FromSize_t(proxy.index(element, start, stop));
+            });
         }
 
         static PyObject* count(PyProxy* self, PyObject* const* args, Py_ssize_t nargs) {
             static constexpr std::string_view meth_name{"count"};
             using bertrand::util::parse_opt_int;
             using Index = std::optional<long long>;
-            try {
+            return visit(self, [&args, &nargs](auto& proxy) {
                 PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
                 PyObject* element = pyargs.parse("element");
                 Index start = pyargs.parse("start", parse_opt_int, Index());
                 Index stop = pyargs.parse("stop", parse_opt_int, Index());
                 pyargs.finalize();
-
-                return PyLong_FromSize_t(self->proxy.count(element, start, stop));
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+                return PyLong_FromSize_t(proxy.count(element, start, stop));
+            });
         }
 
         inline static Py_ssize_t __len__(PyProxy* self) noexcept {
@@ -2449,41 +2546,33 @@ only if the dictionary's values are also hashable.
         }
 
         inline static int __contains__(PyProxy* self, PyObject* item) {
-            try {
-                return self->proxy.contains(item);
-            } catch (...) {
-                throw_python();
-                return -1;
-            }
+            return visit(self, [&item](auto& proxy) {
+                return proxy.contains(item);
+            }, -1);
         }
 
         inline static PyObject* __iter__(PyProxy* self) noexcept {
-            try {
-                return iter(self->proxy).cpython();
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return visit(self, [](auto& proxy) {
+                return iter(proxy).cpython();
+            });
         }
 
         inline static PyObject* __reversed__(PyProxy* self, PyObject* = nullptr) noexcept {
-            try {
-                return iter(self->proxy).crpython();
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return visit(self, [](auto& proxy) {
+                return iter(proxy).crpython();
+            });
         }
 
         template <typename Result>
         static PyObject* __getitem__(PyProxy* self, PyObject* key) {
-            try {
+            using bertrand::util::parse_int;
+            return visit(self, [&key](auto& proxy) {
                 if (PyIndex_Check(key)) {
-                    return Py_XNewRef(self->proxy[bertrand::util::parse_int(key)].get());
+                    return Py_XNewRef(proxy[parse_int(key)].get());
                 }
 
                 if (PySlice_Check(key)) {
-                    return Result::construct(self->proxy.slice(key).get());
+                    return Result::construct(proxy.slice(key).get());
                 }
 
                 PyErr_Format(
@@ -2491,49 +2580,41 @@ only if the dictionary's values are also hashable.
                     "indices must be integers or slices, not %s",
                     Py_TYPE(key)->tp_name
                 );
-                return nullptr;
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+                return static_cast<PyObject*>(nullptr);
+            });
         }
 
         static PyObject* __richcompare__(PyProxy* self, PyObject* other, int cmp) {
-            try {
-                switch (cmp) {
-                    case Py_LT:
-                        return Py_NewRef(self->proxy < other ? Py_True : Py_False);
-                    case Py_LE:
-                        return Py_NewRef(self->proxy <= other ? Py_True : Py_False);
-                    case Py_EQ:
-                        return Py_NewRef(self->proxy == other ? Py_True : Py_False);
-                    case Py_NE:
-                        return Py_NewRef(self->proxy != other ? Py_True : Py_False);
-                    case Py_GE:
-                        return Py_NewRef(self->proxy >= other ? Py_True : Py_False);
-                    case Py_GT:
-                        return Py_NewRef(self->proxy > other ? Py_True : Py_False);
-                    default:
-                        throw TypeError("invalid comparison");
-                }
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return visit(self, [&other, &cmp](auto& proxy) {
+                return unwrap_proxy(other, [&cmp, &proxy](auto& other) {
+                    switch (cmp) {
+                        case Py_LT:
+                            return Py_NewRef(proxy < other ? Py_True : Py_False);
+                        case Py_LE:
+                            return Py_NewRef(proxy <= other ? Py_True : Py_False);
+                        case Py_EQ:
+                            return Py_NewRef(proxy == other ? Py_True : Py_False);
+                        case Py_NE:
+                            return Py_NewRef(proxy != other ? Py_True : Py_False);
+                        case Py_GE:
+                            return Py_NewRef(proxy >= other ? Py_True : Py_False);
+                        case Py_GT:
+                            return Py_NewRef(proxy > other ? Py_True : Py_False);
+                        default:  // should never occur
+                            PyErr_SetString(PyExc_TypeError, "invalid comparison");
+                            return static_cast<PyObject*>(nullptr);
+                    }
+                });
+            });
         }
 
         static PyObject* __repr__(PyProxy* self) {
-            try {
+            return visit(self, [](auto& proxy) {
                 std::ostringstream stream;
-                stream << self->proxy;
+                stream << proxy;
                 auto str = stream.str();
                 return PyUnicode_FromStringAndSize(str.c_str(), str.size());
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            });
         }
 
     protected:
@@ -2566,12 +2647,9 @@ only if the dictionary's values are also hashable.
 
         /* Implement `PySequence_GetItem()` in CPython API. */
         static PyObject* __getitem_scalar__(PyProxy* self, Py_ssize_t index) {
-            try {
-                return Py_XNewRef(self->proxy.position(index).get());
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return visit(self, [&index](auto& proxy) {
+                return Py_XNewRef(proxy.position(index).get());
+            });
         }
 
         struct docs {
@@ -2614,33 +2692,36 @@ than one.
 
     /* Python wrapper for LinkedDict.keys(). */
     template <typename Proxy>
-    struct PyKeysProxy : public DictProxy<PyKeysProxy<Proxy>, Proxy> {
+    class PyKeysProxy : public PyDictProxy<PyKeysProxy<Proxy>, Proxy> {
+        friend PyDictInterface;
+        using Base = PyDictProxy<PyKeysProxy, Proxy>;
+        using IList = PyListInterface<Derived>;
+        using ISet = PySetInterface<Derived>;
+
+    public: 
 
         static PyObject* isdisjoint(PyKeysProxy* self, PyObject* other) {
-            try {
-                return Py_NewRef(self->proxy.isdisjoint(other) ? Py_True : Py_False);
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return Base::visit(self, [&other](auto& proxy) {
+                return Base::unwrap_proxy(other, [&proxy](auto& other) {
+                    return Py_NewRef(proxy.isdisjoint(other) ? Py_True : Py_False);
+                });
+            });
         }
 
         static PyObject* issubset(PyKeysProxy* self, PyObject* other) {
-            try {
-                return Py_NewRef(self->proxy.issubset(other) ? Py_True : Py_False);
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return Base::visit(self, [&other](auto& proxy) {
+                return Base::unwrap_proxy(other, [&proxy](auto& other) {
+                    return Py_NewRef(proxy.issubset(other) ? Py_True : Py_False);
+                });
+            });
         }
 
         static PyObject* issuperset(PyKeysProxy* self, PyObject* other) {
-            try {
-                return Py_NewRef(self->proxy.issuperset(other) ? Py_True : Py_False);
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return Base::visit(self, [&other](auto& proxy) {
+                return Base::unwrap_proxy(other, [&proxy](auto& other) {
+                    return Py_NewRef(proxy.issuperset(other) ? Py_True : Py_False);
+                });
+            });
         }
 
         static PyObject* union_(
@@ -2648,17 +2729,16 @@ than one.
             PyObject* const* args,
             Py_ssize_t nargs
         ) {
-            try {
-                auto result = self->proxy.union_();
+            return Base::visit(self, [&args, &nargs](auto& proxy) {
+                auto result = proxy.union_();
+                auto execute = [&result](auto& other) {
+                    result.update(other);
+                };
                 for (Py_ssize_t i = 0; i < nargs; ++i) {
-                    result.update(args[i]);
+                    Base::unwrap_proxy(args[i], execute);
                 }
                 return PyLinkedSet::construct(std::move(result));
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            });
         }
 
         static PyObject* union_left(
@@ -2666,17 +2746,16 @@ than one.
             PyObject* const* args,
             Py_ssize_t nargs
         ) {
-            try {
-                auto result = self->proxy.union_left();
+            return Base::visit(self, [&args, &nargs](auto& proxy) {
+                auto result = proxy.union_left();
+                auto execute = [&result](auto& other) {
+                    result.update_left(other);
+                };
                 for (Py_ssize_t i = 0; i < nargs; ++i) {
-                    result.update_left(args[i]);
+                    Base::unwrap_proxy(args[i], execute);
                 }
                 return PyLinkedSet::construct(std::move(result));
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            });
         }
 
         static PyObject* difference(
@@ -2684,17 +2763,16 @@ than one.
             PyObject* const* args,
             Py_ssize_t nargs
         ) {
-            try {
-                auto result = self->proxy.difference(args[0]);
+            return Base::visit(self, [&args, &nargs](auto& proxy) {
+                auto result = proxy.difference(args[0]);
+                auto execute = [&result](auto& other) {
+                    result.difference_update(other);
+                };
                 for (Py_ssize_t i = 1; i < nargs; ++i) {
-                    result.difference_update(args[i]);
+                    Base::unwrap_proxy(args[i], execute);
                 }
                 return PyLinkedSet::construct(std::move(result));
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            });
         }
 
         static PyObject* intersection(
@@ -2702,83 +2780,72 @@ than one.
             PyObject* const* args,
             Py_ssize_t nargs
         ) {
-            try {
-                auto result = self->proxy.intersection(args[0]);
+            return Base::visit(self, [&args, &nargs](auto& proxy) {
+                auto result = proxy.intersection(args[0]);
+                auto execute = [&result](auto& other) {
+                    result.intersection_update(other);
+                };
                 for (Py_ssize_t i = 1; i < nargs; ++i) {
-                    result.intersection_update(args[i]);
+                    Base::unwrap_proxy(args[i], execute);
                 }
                 return PyLinkedSet::construct(std::move(result));
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            });
         }
 
         static PyObject* symmetric_difference(PyKeysProxy* self, PyObject* other) {
-            try {
-                return PyLinkedSet::construct(
-                    self->proxy.symmetric_difference(other)
-                );
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return Base::visit(self, [&other](auto& proxy) {
+                return Base::unwrap_proxy(other, [&proxy](auto& other) {
+                    return PyLinkedSet::construct(proxy.symmetric_difference(other));
+                });
+            });
         }
 
         static PyObject* symmetric_difference_left(PyKeysProxy* self, PyObject* other) {
-            try {
-                return PyLinkedSet::construct(
-                    self->proxy.symmetric_difference_left(other)
-                );
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return Base::visit(self, [&other](auto& proxy) {
+                return Base::unwrap_proxy(other, [&proxy](auto& other) {
+                    return PyLinkedSet::construct(proxy.symmetric_difference_left(other));
+                });
+            });
         }
 
         static PyObject* __or__(PyKeysProxy* self, PyObject* other) {
-            try {
-                return PyLinkedSet::construct(self->proxy | other);
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return Base::visit(self, [&other](auto& proxy) {
+                return Base::unwrap_proxy(other, [&proxy](auto& other) {
+                    return PyLinkedSet::construct(proxy | other);
+                });
+            });
         }
 
         static PyObject* __sub__(PyKeysProxy* self, PyObject* other) {
-            try {
-                return PyLinkedSet::construct(self->proxy - other);
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return Base::visit(self, [&other](auto& proxy) {
+                return Base::unwrap_proxy(other, [&proxy](auto& other) {
+                    return PyLinkedSet::construct(proxy - other);
+                });
+            });
         }
 
         static PyObject* __and__(PyKeysProxy* self, PyObject* other) {
-            try {
-                return PyLinkedSet::construct(self->proxy & other);
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return Base::visit(self, [&other](auto& proxy) {
+                return Base::unwrap_proxy(other, [&proxy](auto& other) {
+                    return PyLinkedSet::construct(proxy & other);
+                });
+            });
         }
 
         static PyObject* __xor__(PyKeysProxy* self, PyObject* other) {
-            try {
-                return PyLinkedSet::construct(self->proxy ^ other);
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return Base::visit(self, [&other](auto& proxy) {
+                return Base::unwrap_proxy(other, [&proxy](auto& other) {
+                    return PyLinkedSet::construct(proxy ^ other);
+                });
+            });
         }
 
         static PyObject* __str__(PyKeysProxy* self) {
-            try {
+            return Base::visit(self, [](auto& proxy) {
                 std::ostringstream stream;
                 stream << "{";
-                auto it = self->proxy.begin();
-                auto end = self->proxy.end();
+                auto it = proxy.begin();
+                auto end = proxy.end();
                 if (it != end) {
                     stream << repr(*it);
                     ++it;
@@ -2790,18 +2857,10 @@ than one.
                 stream << "}";
                 auto str = stream.str();
                 return PyUnicode_FromStringAndSize(str.c_str(), str.size());
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            });
         }
 
     private:
-        friend PyDictInterface;
-        using Base = DictProxy<PyKeysProxy, Proxy>;
-        using IList = PyListInterface<Derived>;
-        using ISet = PySetInterface<Derived>;
 
         struct docs {
 
@@ -2941,36 +3000,47 @@ These proxies support the following operations:
 
         inline static PyTypeObject Type = build_type();
 
+        /* Check whether another PyObject* is of this type. */
+        inline static bool typecheck(PyObject* obj) {
+            int result = PyObject_IsInstance(obj, (PyObject*) &Type);
+            if (result == -1) {
+                throw catch_python();
+            }
+            return static_cast<bool>(result);
+        }
+
     };
 
     /* Python wrapper for LinkedDict.values(). */
     template <typename Proxy>
-    struct PyValuesProxy : public DictProxy<PyValuesProxy<Proxy>, Proxy> {
+    class PyValuesProxy : public PyDictProxy<PyValuesProxy<Proxy>, Proxy> {
+        friend PyDictInterface;
+        using Base = PyDictProxy<PyValuesProxy, Proxy>;
+        using IList = PyListInterface<Derived>;
+        using ISet = PySetInterface<Derived>;
+
+    public:
 
         static PyObject* __add__(PyValuesProxy* self, PyObject* other) {
-            try {
-                return PyLinkedList::construct(self->proxy + other);
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return Base::visit(self, [&other](auto& proxy) {
+                return Base::unwrap_proxy(other, [&proxy](auto& other) {
+                    return PyLinkedList::construct(proxy + other);
+                });
+            });
         }
 
         static PyObject* __mul__(PyValuesProxy* self, Py_ssize_t count) {
-            try {
-                return PyLinkedList::construct(self->proxy * count);
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return Base::visit(self, [&count](auto& proxy) {
+                return PyLinkedList::construct(proxy * count);
+            });
         }
 
         static PyObject* __str__(PyValuesProxy* self) {
-            try {
+            return Base::visit(self, [](auto& proxy) {
                 std::ostringstream stream;
                 stream << "[";
-                auto it = self->proxy.begin();
-                auto end = self->proxy.end();
+                auto it = proxy.begin();
+                auto end = proxy.end();
                 if (it != end) {
                     stream << repr(*it);
                     ++it;
@@ -2982,18 +3052,10 @@ These proxies support the following operations:
                 stream << "]";
                 auto str = stream.str();
                 return PyUnicode_FromStringAndSize(str.c_str(), str.size());
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            });
         }
 
     private:
-        friend PyDictInterface;
-        using Base = DictProxy<PyValuesProxy, Proxy>;
-        using IList = PyListInterface<Derived>;
-        using ISet = PySetInterface<Derived>;
 
         struct docs {
 
@@ -3086,40 +3148,63 @@ These proxies support the following operations:
 
         inline static PyTypeObject Type = build_type();
 
+        /* Check whether another PyObject* is of this type. */
+        inline static bool typecheck(PyObject* obj) {
+            int result = PyObject_IsInstance(obj, (PyObject*) &Type);
+            if (result == -1) {
+                throw catch_python();
+            }
+            return static_cast<bool>(result);
+        }
+
     };
 
     /* Python wrapper for LinkedDict.items(). */
     template <typename Proxy>
-    struct PyItemsProxy : public DictProxy<PyItemsProxy<Proxy>, Proxy> {
+    class PyItemsProxy : public PyDictProxy<PyItemsProxy<Proxy>, Proxy> {
+        friend PyDictInterface;
+        using Base = PyDictProxy<PyItemsProxy, Proxy>;
+        using IList = PyListInterface<Derived>;
+        using ISet = PySetInterface<Derived>;
+
+    public:
 
         static PyObject* __add__(PyItemsProxy* self, PyObject* other) {
-            try {
-                return PyLinkedList::construct(self->proxy + other);
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return Base::visit(self, [&other](auto& proxy) {
+                if (typecheck(other)) {
+                    PyItemsProxy* obj = reinterpret_cast<PyItemsProxy*>(other);
+                    return PyLinkedList::construct(proxy + obj->proxy);
+
+                } else if (Derived::typecheck(other)) {
+                    Derived* obj = reinterpret_cast<Derived*>(other);
+                    return std::visit(
+                        [&proxy](auto& other) {
+                            return PyLinkedList::construct(proxy + other);
+                        },
+                        obj->variant
+                    );
+                }
+
+                return PyLinkedList::construct(proxy + other);
+            });
         }
 
         static PyObject* __mul__(PyItemsProxy* self, Py_ssize_t count) {
-            try {
-                return PyLinkedList::construct(self->proxy * count);
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return Base::visit(self, [&count](auto& proxy) {
+                return PyLinkedList::construct(proxy * count);
+            });
         }
 
         static PyObject* __getitem__(PyItemsProxy* self, PyObject* key) {
-            try {
+            using bertrand::util::parse_int;
+            return Base::visit(self, [&key](auto& proxy) {
                 if (PyIndex_Check(key)) {
-                    using PyTuple = python::Tuple<python::Ref::STEAL>;
-                    PyTuple item = self->proxy[bertrand::util::parse_int(key)];
+                    python::Tuple<python::Ref::STEAL> item = proxy[parse_int(key)];
                     return item.unwrap();
                 }
 
                 if (PySlice_Check(key)) {
-                    return PyLinkedList::construct(self->proxy.slice(key).get());
+                    return PyLinkedList::construct(proxy.slice(key).get());
                 }
 
                 PyErr_Format(
@@ -3127,56 +3212,42 @@ These proxies support the following operations:
                     "indices must be integers or slices, not %s",
                     Py_TYPE(key)->tp_name
                 );
-                return nullptr;
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+                return static_cast<PyObject*>(nullptr);
+            });
         }
 
         inline static PyObject* __iter__(PyItemsProxy* self) noexcept {
-            auto unwrap = [](python::Tuple<python::Ref::STEAL> item) {
-                return item.unwrap();  // relinquish ownership to Python interpreter
-            };
-
-            try {
-                return iter(self->proxy, unwrap).cpython();
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return Base::visit(self, [](auto& proxy) {
+                auto unwrap = [](python::Tuple<python::Ref::STEAL> item) {
+                    return item.unwrap();  // relinquish ownership to Python
+                };
+                return iter(proxy, unwrap).cpython();
+            });
         }
 
         inline static PyObject* __reversed__(
             PyItemsProxy* self,
             PyObject* = nullptr
         ) noexcept {
-            auto unwrap = [](python::Tuple<python::Ref::STEAL> item) {
-                return item.unwrap();  // relinquish ownership to Python interpreter
-            };
-
-            try {
-                return iter(self->proxy, unwrap).crpython();
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            return Base::visit(self, [](auto& proxy) {
+                auto unwrap = [](python::Tuple<python::Ref::STEAL> item) {
+                    return item.unwrap();  // relinquish ownership to Python
+                };
+                return iter(proxy, unwrap).crpython();
+            });
         }
 
         static PyObject* __str__(PyItemsProxy* self) {
-            std::ostringstream stream;
+            return Base::visit(self, [](auto& proxy) {
+                std::ostringstream stream;
+                auto token = [&stream](const python::Tuple<python::Ref::STEAL>& item) {
+                    stream << "(" << item[0].get().repr() << ", ";
+                    stream << item[1].get().repr() << ")";
+                };
 
-            auto token = [&stream](const python::Tuple<python::Ref::STEAL>& item) {
-                stream << "(" << item[0].get().repr() << ", " << item[1].get().repr();
-                stream << ")";
-            };
-
-            try {
-                
                 stream << "[";
-                auto it = self->proxy.begin();
-                auto end = self->proxy.end();
+                auto it = proxy.begin();
+                auto end = proxy.end();
                 if (it != end) {
                     token(*it);
                     ++it;
@@ -3189,29 +3260,17 @@ These proxies support the following operations:
                 stream << "]";
                 auto str = stream.str();
                 return PyUnicode_FromStringAndSize(str.c_str(), str.size());
-
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            });
         }
 
     private:
-        friend PyDictInterface;
-        using Base = DictProxy<PyItemsProxy, Proxy>;
-        using IList = PyListInterface<Derived>;
-        using ISet = PySetInterface<Derived>;
 
         /* Implement `PySequence_GetItem()` in CPython API. */
         static PyObject* __getitem_scalar__(PyItemsProxy* self, Py_ssize_t index) {
-            try {
-                using PyTuple = python::Tuple<python::Ref::STEAL>;
-                PyTuple item = self->proxy[index];
+            return Base::visit(self, [&index](auto& proxy) {
+                python::Tuple<python::Ref::STEAL> item = proxy[index];
                 return item.unwrap();
-            } catch (...) {
-                throw_python();
-                return nullptr;
-            }
+            });
         }
 
         struct docs {
@@ -3308,6 +3367,15 @@ These proxies support the following operations:
 
         inline static PyTypeObject Type = build_type();
 
+        /* Check whether another PyObject* is of this type. */
+        inline static bool typecheck(PyObject* obj) {
+            int result = PyObject_IsInstance(obj, (PyObject*) &Type);
+            if (result == -1) {
+                throw catch_python();
+            }
+            return static_cast<bool>(result);
+        }
+
     };
 
 };
@@ -3326,27 +3394,32 @@ class PyLinkedDict :
     using ISet = PySetInterface<PyLinkedDict>;
     using IDict = PyDictInterface<PyLinkedDict>;
 
+    using CallProtocol = bertrand::util::CallProtocol;
+
+    template <CallProtocol call>
+    using PyArgs = bertrand::util::PyArgs<call>;
+
     /* A std::variant representing all of the LinkedDict implementations that are
     constructable from Python. */
     template <unsigned int Flags>
     using DictConfig = linked::LinkedDict<PyObject*, PyObject*, Flags, BasicLock>;
     using Variant = std::variant<
-        DictConfig<Config::DOUBLY_LINKED>
-        // DictConfig<Config::DOUBLY_LINKED | Config::PACKED>,
-        // DictConfig<Config::DOUBLY_LINKED | Config::STRICTLY_TYPED>,
-        // DictConfig<Config::DOUBLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED>,
-        // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
-        // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
-        // DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
-        // DictConfig<Config::SINGLY_LINKED>,
-        // DictConfig<Config::SINGLY_LINKED | Config::PACKED>,
-        // DictConfig<Config::SINGLY_LINKED | Config::STRICTLY_TYPED>,
-        // DictConfig<Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED>,
-        // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
-        // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
-        // DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
+        DictConfig<Config::DOUBLY_LINKED>,
+        DictConfig<Config::DOUBLY_LINKED | Config::PACKED>,
+        DictConfig<Config::DOUBLY_LINKED | Config::STRICTLY_TYPED>,
+        DictConfig<Config::DOUBLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED>,
+        DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
+        DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
+        DictConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
+        DictConfig<Config::SINGLY_LINKED>,
+        DictConfig<Config::SINGLY_LINKED | Config::PACKED>,
+        DictConfig<Config::SINGLY_LINKED | Config::STRICTLY_TYPED>,
+        DictConfig<Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED>,
+        DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
+        DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
+        DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
+        DictConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
     >;
     template <size_t I>
     using Alt = typename std::variant_alternative_t<I, Variant>;
@@ -3371,51 +3444,51 @@ class PyLinkedDict :
             case (Config::DEFAULT):
                 self->from_cpp(Alt<0>(std::forward<Args>(args)...));
                 break;
-            // case (Config::PACKED):
-            //     self->from_cpp(Alt<1>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::STRICTLY_TYPED):
-            //     self->from_cpp(Alt<2>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::PACKED | Config::STRICTLY_TYPED):
-            //     self->from_cpp(Alt<3>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::FIXED_SIZE):
-            //     self->from_cpp(Alt<4>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::FIXED_SIZE | Config::PACKED):
-            //     self->from_cpp(Alt<5>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-            //     self->from_cpp(Alt<6>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     self->from_cpp(Alt<7>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::SINGLY_LINKED):
-            //     self->from_cpp(Alt<8>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::PACKED):
-            //     self->from_cpp(Alt<9>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
-            //     self->from_cpp(Alt<10>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
-            //     self->from_cpp(Alt<11>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
-            //     self->from_cpp(Alt<12>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
-            //     self->from_cpp(Alt<13>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-            //     self->from_cpp(Alt<14>(std::forward<Args>(args)...));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     self->from_cpp(Alt<15>(std::forward<Args>(args)...));
-            //     break;
+            case (Config::PACKED):
+                self->from_cpp(Alt<1>(std::forward<Args>(args)...));
+                break;
+            case (Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<2>(std::forward<Args>(args)...));
+                break;
+            case (Config::PACKED | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<3>(std::forward<Args>(args)...));
+                break;
+            case (Config::FIXED_SIZE):
+                self->from_cpp(Alt<4>(std::forward<Args>(args)...));
+                break;
+            case (Config::FIXED_SIZE | Config::PACKED):
+                self->from_cpp(Alt<5>(std::forward<Args>(args)...));
+                break;
+            case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<6>(std::forward<Args>(args)...));
+                break;
+            case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<7>(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED):
+                self->from_cpp(Alt<8>(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::PACKED):
+                self->from_cpp(Alt<9>(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<10>(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<11>(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
+                self->from_cpp(Alt<12>(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
+                self->from_cpp(Alt<13>(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<14>(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<15>(std::forward<Args>(args)...));
+                break;
             default:
                 throw ValueError("invalid argument configuration");
         }
@@ -3487,51 +3560,51 @@ class PyLinkedDict :
             case (Config::DEFAULT):
                 self->from_cpp(Alt<0>::fromkeys(keys, value, max_size, spec));
                 break;
-            // case (Config::PACKED):
-            //     self->from_cpp(Alt<1>::fromkeys(keys, value, max_size, spec));
-            //     break;
-            // case (Config::STRICTLY_TYPED):
-            //     self->from_cpp(Alt<2>::fromkeys(keys, value, max_size, spec));
-            //     break;
-            // case (Config::PACKED | Config::STRICTLY_TYPED):
-            //     self->from_cpp(Alt<3>::fromkeys(keys, value, max_size, spec));
-            //     break;
-            // case (Config::FIXED_SIZE):
-            //     self->from_cpp(Alt<4>::fromkeys(keys, value, max_size, spec));
-            //     break;
-            // case (Config::FIXED_SIZE | Config::PACKED):
-            //     self->from_cpp(Alt<5>::fromkeys(keys, value, max_size, spec));
-            //     break;
-            // case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-            //     self->from_cpp(Alt<6>::fromkeys(keys, value, max_size, spec));
-            //     break;
-            // case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     self->from_cpp(Alt<7>::fromkeys(keys, value, max_size, spec));
-            //     break;
-            // case (Config::SINGLY_LINKED):
-            //     self->from_cpp(Alt<8>::fromkeys(keys, value, max_size, spec));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::PACKED):
-            //     self->from_cpp(Alt<9>::fromkeys(keys, value, max_size, spec));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
-            //     self->from_cpp(Alt<10>::fromkeys(keys, value, max_size, spec));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
-            //     self->from_cpp(Alt<11>::fromkeys(keys, value, max_size, spec));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
-            //     self->from_cpp(Alt<12>::fromkeys(keys, value, max_size, spec));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
-            //     self->from_cpp(Alt<13>::fromkeys(keys, value, max_size, spec));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-            //     self->from_cpp(Alt<14>::fromkeys(keys, value, max_size, spec));
-            //     break;
-            // case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-            //     self->from_cpp(Alt<15>::fromkeys(keys, value, max_size, spec));
-            //     break;
+            case (Config::PACKED):
+                self->from_cpp(Alt<1>::fromkeys(keys, value, max_size, spec));
+                break;
+            case (Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<2>::fromkeys(keys, value, max_size, spec));
+                break;
+            case (Config::PACKED | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<3>::fromkeys(keys, value, max_size, spec));
+                break;
+            case (Config::FIXED_SIZE):
+                self->from_cpp(Alt<4>::fromkeys(keys, value, max_size, spec));
+                break;
+            case (Config::FIXED_SIZE | Config::PACKED):
+                self->from_cpp(Alt<5>::fromkeys(keys, value, max_size, spec));
+                break;
+            case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<6>::fromkeys(keys, value, max_size, spec));
+                break;
+            case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<7>::fromkeys(keys, value, max_size, spec));
+                break;
+            case (Config::SINGLY_LINKED):
+                self->from_cpp(Alt<8>::fromkeys(keys, value, max_size, spec));
+                break;
+            case (Config::SINGLY_LINKED | Config::PACKED):
+                self->from_cpp(Alt<9>::fromkeys(keys, value, max_size, spec));
+                break;
+            case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<10>::fromkeys(keys, value, max_size, spec));
+                break;
+            case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<11>::fromkeys(keys, value, max_size, spec));
+                break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
+                self->from_cpp(Alt<12>::fromkeys(keys, value, max_size, spec));
+                break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
+                self->from_cpp(Alt<13>::fromkeys(keys, value, max_size, spec));
+                break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<14>::fromkeys(keys, value, max_size, spec));
+                break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<15>::fromkeys(keys, value, max_size, spec));
+                break;
             default:
                 throw ValueError("invalid argument configuration");
         }
@@ -3541,8 +3614,6 @@ public:
 
     static int __init__(PyLinkedDict* self, PyObject* args, PyObject* kwargs) {
         static constexpr std::string_view meth_name{"__init__"};
-        using bertrand::util::PyArgs;
-        using bertrand::util::CallProtocol;
         using bertrand::util::parse_int;
         using bertrand::util::none_to_null;
         using bertrand::util::is_truthy;
@@ -3590,8 +3661,6 @@ public:
         }
 
         static constexpr std::string_view meth_name{"fromkeys"};
-        using bertrand::util::PyArgs;
-        using bertrand::util::CallProtocol;
         using bertrand::util::parse_int;
         using bertrand::util::none_to_null;
         using bertrand::util::is_truthy;
@@ -4002,8 +4071,6 @@ private:
             }
 
             static constexpr std::string_view meth_name{"fromkeys"};
-            using bertrand::util::PyArgs;
-            using bertrand::util::CallProtocol;
             using bertrand::util::parse_int;
             using bertrand::util::none_to_null;
             using bertrand::util::is_truthy;

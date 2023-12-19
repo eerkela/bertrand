@@ -36,6 +36,10 @@ namespace bertrand {
 namespace linked {
 
 
+template <typename T, unsigned int Flags, typename Lock>
+class LinkedList;
+
+
 namespace list_config {
 
     /* Apply default config flags for C++ LinkedLists. */
@@ -54,6 +58,16 @@ namespace list_config {
         DoubleNode<T>,
         SingleNode<T>
     >;
+
+    template <typename T>
+    struct IsList : std::false_type {};
+    template <typename T, unsigned int Flags, typename Lock>
+    struct IsList<LinkedList<T, Flags, Lock>> : std::true_type {};
+
+    template <typename T>
+    static constexpr bool is_list = IsList<
+        std::remove_cv_t<std::remove_reference_t<T>>
+    >::value;
 
 }
 
@@ -373,8 +387,16 @@ inline bool operator<(const LinkedList<T, Flags, Ts...>& list, const Container& 
 }
 
 
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator<(const Container& other, const LinkedList<T, Flags, Ts...>& list) {
+template <
+    typename Container,
+    typename T,
+    unsigned int Flags,
+    typename... Ts,
+    bool Enable = !list_config::is_list<Container>
+>
+inline auto operator<(const Container& other, const LinkedList<T, Flags, Ts...>& list)
+    -> std::enable_if_t<Enable, bool>
+{
     return lexical_lt(other, list);
 }
 
@@ -385,8 +407,16 @@ inline bool operator<=(const LinkedList<T, Flags, Ts...>& list, const Container&
 }
 
 
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator<=(const Container& other, const LinkedList<T, Flags, Ts...>& list) {
+template <
+    typename Container,
+    typename T,
+    unsigned int Flags,
+    typename... Ts,
+    bool Enable = !list_config::is_list<Container>
+>
+inline auto operator<=(const Container& other, const LinkedList<T, Flags, Ts...>& list)
+    -> std::enable_if_t<Enable, bool>
+{
     return lexical_lt(other, list);
 }
 
@@ -397,8 +427,16 @@ inline bool operator==(const LinkedList<T, Flags, Ts...>& list, const Container&
 }
 
 
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator==(const Container& other, const LinkedList<T, Flags, Ts...>& list) {
+template <
+    typename Container,
+    typename T,
+    unsigned int Flags,
+    typename... Ts,
+    bool Enable = !list_config::is_list<Container>
+>
+inline auto operator==(const Container& other, const LinkedList<T, Flags, Ts...>& list)
+    -> std::enable_if_t<Enable, bool>
+{
     return lexical_eq(other, list);
 }
 
@@ -409,8 +447,16 @@ inline bool operator!=(const LinkedList<T, Flags, Ts...>& list, const Container&
 }
 
 
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator!=(const Container& other, const LinkedList<T, Flags, Ts...>& list) {
+template <
+    typename Container,
+    typename T,
+    unsigned int Flags,
+    typename... Ts,
+    bool Enable = !list_config::is_list<Container>
+>
+inline auto operator!=(const Container& other, const LinkedList<T, Flags, Ts...>& list)
+    -> std::enable_if_t<Enable, bool>
+{
     return !lexical_eq(other, list);
 }
 
@@ -421,8 +467,16 @@ inline bool operator>=(const LinkedList<T, Flags, Ts...>& list, const Container&
 }
 
 
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator>=(const Container& other, const LinkedList<T, Flags, Ts...>& list) {
+template <
+    typename Container,
+    typename T,
+    unsigned int Flags,
+    typename... Ts,
+    bool Enable = !list_config::is_list<Container>
+>
+inline auto operator>=(const Container& other, const LinkedList<T, Flags, Ts...>& list)
+    -> std::enable_if_t<Enable, bool>
+{
     return lexical_ge(other, list);
 }
 
@@ -433,8 +487,16 @@ inline bool operator>(const LinkedList<T, Flags, Ts...>& list, const Container& 
 }
 
 
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator>(const Container& other, const LinkedList<T, Flags, Ts...>& list) {
+template <
+    typename Container,
+    typename T,
+    unsigned int Flags,
+    typename... Ts,
+    bool Enable = !list_config::is_list<Container>
+>
+inline auto operator>(const Container& other, const LinkedList<T, Flags, Ts...>& list)
+    -> std::enable_if_t<Enable, bool>
+{
     return lexical_gt(other, list);
 }
 
@@ -453,14 +515,23 @@ class PyListInterface {
     template <CallProtocol call>
     using PyArgs = bertrand::util::PyArgs<call>;
 
-    template <typename Func>
-    inline static PyObject* visit(Derived* self, Func func) {
+    template <typename Func, typename Result = PyObject*>
+    inline static Result visit(Derived* self, Func func, Result err_code = nullptr) {
         try {
             return std::visit(func, self->variant);
         } catch (...) {
             throw_python();
-            return nullptr;
+            return err_code;
         }
+    }
+
+    template <typename Func>
+    inline static auto unwrap_variant(PyObject* arg, Func func) {
+        if (Derived::typecheck(arg)) {
+            Derived* other = reinterpret_cast<Derived*>(arg);
+            return std::visit(func, other->variant);
+        }
+        return func(arg);
     }
 
 public:
@@ -494,15 +565,19 @@ public:
 
     static PyObject* extend(Derived* self, PyObject* items) {
         return visit(self, [&items](auto& list) {
-            list.extend(items);
-            Py_RETURN_NONE;
+            return unwrap_variant(items, [&list](auto& other) {
+                list.extend(other);
+                Py_RETURN_NONE;
+            });
         });
     }
 
     static PyObject* extend_left(Derived* self, PyObject* items) {
         return visit(self, [&items](auto& list) {
-            list.extend_left(items);
-            Py_RETURN_NONE;
+            return unwrap_variant(items, [&list](auto& other) {
+                list.extend_left(other);
+                Py_RETURN_NONE;
+            });
         });
     }
 
@@ -604,17 +679,9 @@ public:
     }
 
     static int __contains__(Derived* self, PyObject* item) {
-        try {
-            return std::visit(
-                [&item](auto& list) {
-                    return list.contains(item);
-                },
-                self->variant
-            );
-        } catch (...) {
-            throw_python();
-            return -1;
-        }
+        return visit(self, [&item](auto& list) {
+            return list.contains(item);
+        }, -1);
     }
 
     static PyObject* __getitem__(Derived* self, PyObject* key) {
@@ -638,33 +705,25 @@ public:
     }
 
     static int __setitem__(Derived* self, PyObject* key, PyObject* items) {
-        try {
+        return visit(self, [&key, &items](auto& list) {
             if (PyIndex_Check(key)) {
-                std::visit(
-                    [&key, &items](auto& list) {
-                        long long index = bertrand::util::parse_int(key);
-                        if (items == nullptr) {
-                            list[index].del();
-                        } else {
-                            list[index] = items;
-                        }
-                    },
-                    self->variant
-                );
+                long long index = bertrand::util::parse_int(key);
+                if (items == nullptr) {
+                    list[index].del();
+                } else {
+                    list[index] = items;
+                }
                 return 0;
             }
 
             if (PySlice_Check(key)) {
-                std::visit(
-                    [&key, &items](auto& list) {
-                        if (items == nullptr) {
-                            list.slice(key).del();
-                        } else {
-                            list.slice(key) = items;
-                        }
-                    },
-                    self->variant
-                );
+                if (items == nullptr) {
+                    list.slice(key).del();
+                } else {
+                    unwrap_variant(items, [&list, &key](auto& items) {
+                        list.slice(key) = items;
+                    });
+                }
                 return 0;
             }
 
@@ -674,22 +733,22 @@ public:
                 Py_TYPE(key)->tp_name
             );
             return -1;
-
-        } catch (...) {
-            throw_python();
-            return -1;
-        }
+        }, -1);
     }
 
     static PyObject* __add__(Derived* self, PyObject* other) {
         return visit(self, [&other](auto& list) {
-            return Derived::construct(list + other);
+            return unwrap_variant(other, [&list](auto& other) {
+                return Derived::construct(list + other);
+            });
         });
     }
 
     static PyObject* __iadd__(Derived* self, PyObject* other) {
         return visit(self, [&self, &other](auto& list) {
-            list += other;
+            unwrap_variant(other, [&list](auto& other) {
+                list += other;
+            });
             return Py_NewRef(reinterpret_cast<PyObject*>(self));
         });
     }
@@ -709,23 +768,25 @@ public:
 
     static PyObject* __richcompare__(Derived* self, PyObject* other, int cmp) {
         return visit(self, [&other, &cmp](auto& list) {
-            switch (cmp) {
-                case Py_LT:
-                    return Py_NewRef(list < other ? Py_True : Py_False);
-                case Py_LE:
-                    return Py_NewRef(list <= other ? Py_True : Py_False);
-                case Py_EQ:
-                    return Py_NewRef(list == other ? Py_True : Py_False);
-                case Py_NE:
-                    return Py_NewRef(list != other ? Py_True : Py_False);
-                case Py_GE:
-                    return Py_NewRef(list >= other ? Py_True : Py_False);
-                case Py_GT:
-                    return Py_NewRef(list > other ? Py_True : Py_False);
-                default:  // should never occur
-                    PyErr_SetString(PyExc_TypeError, "invalid comparison");
-                    return static_cast<PyObject*>(nullptr);
-            }
+            return unwrap_variant(other, [&list, &cmp](auto& other) {
+                switch (cmp) {
+                    case Py_LT:
+                        return Py_NewRef(list < other ? Py_True : Py_False);
+                    case Py_LE:
+                        return Py_NewRef(list <= other ? Py_True : Py_False);
+                    case Py_EQ:
+                        return Py_NewRef(list == other ? Py_True : Py_False);
+                    case Py_NE:
+                        return Py_NewRef(list != other ? Py_True : Py_False);
+                    case Py_GE:
+                        return Py_NewRef(list >= other ? Py_True : Py_False);
+                    case Py_GT:
+                        return Py_NewRef(list > other ? Py_True : Py_False);
+                    default:  // should never occur
+                        PyErr_SetString(PyExc_TypeError, "invalid comparison");
+                        return static_cast<PyObject*>(nullptr);
+                }
+            });
         });
     }
 
@@ -740,22 +801,14 @@ protected:
 
     /* Implement `PySequence_SetItem()` in CPython API. */
     static int __setitem_scalar__(Derived* self, Py_ssize_t index, PyObject* item) {
-        try {
-            std::visit(
-                [&index, &item](auto& list) {
-                    if (item == nullptr) {
-                        list.position(index).del();
-                    } else {
-                        list.position(index).set(item);
-                    }
-                },
-                self->variant
-            );
+        return visit(self, [&index, &item](auto& list) {
+            if (item == nullptr) {
+                list.position(index).del();
+            } else {
+                list.position(index).set(item);
+            }
             return 0;
-        } catch (...) {
-            throw_python();
-            return -1;
-        }
+        }, -1);
     }
 
     struct docs {

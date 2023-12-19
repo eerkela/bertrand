@@ -367,6 +367,7 @@ namespace linked {
                         }
                         for (size_t i = 0; i < indices.abs_step; ++i, ++loop2);
                     }
+
                 } catch (...) {
                     // remove nodes that have already been added
                     if (idx > 0) {
@@ -735,12 +736,10 @@ namespace linked {
                 if (PyDict_Check(items)) {
                     python::Dict<python::Ref::BORROW> dict(items);
                     _set_impl(dict);
-                } else {
-                    _set_impl(items);
+                    return;
                 }
-            } else {
-                _set_impl(items);
             }
+            _set_impl(items);
         }
 
         /* Delete a slice within a linked list. */
