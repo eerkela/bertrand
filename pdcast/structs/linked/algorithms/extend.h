@@ -4,20 +4,10 @@
 #include <Python.h>  // CPython API
 #include "../../util/iter.h" // iter()
 #include "../core/view.h"  // ViewTraits
-#include "append.h"  // append()
 
 
 namespace bertrand {
 namespace linked {
-
-
-    /* NOTE: handling memory is a bit tricky here.  First, we want to optimize to
-     * preallocate memory ahead of time if possible.  However, the container may not
-     * have a definite size, so we also need to allow dynamic growth as elements are
-     * added.  Secondly, if an error is encountered, we need to delay any resize until
-     * after the exception is handled.  This allows us to safely iterate over the list
-     * and remove any nodes that were previously added.
-     */
 
 
     template <typename View, typename Container>

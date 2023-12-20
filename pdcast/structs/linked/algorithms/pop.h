@@ -6,7 +6,7 @@
 #include <Python.h>  // CPython API
 #include "../../util/base.h"  // is_pyobject<>
 #include "../core/view.h"  // ViewTraits
-#include "position.h"  // position()
+#include "position.h"  // normalize_index
 
 
 namespace bertrand {

@@ -19,12 +19,6 @@ namespace bertrand {
 namespace linked {
 
 
-// TODO: we could maybe implement a converting move constructor for allocators that
-// allows them to be constructed from other allocators with different flags, as long as
-// the flags are compatible.  This would allow us to switch between dynamic/fixed-size
-// lists, for example.
-
-
 /////////////////////////
 ////    CONSTANTS    ////
 /////////////////////////
@@ -33,7 +27,7 @@ namespace linked {
 /* DEBUG=TRUE adds print statements for every memory allocation in order to help catch
 leaks.  This is a lot less elegant than using a formal logging library, but it gets the
 job done and is easier to use from a Python REPL. */
-inline constexpr bool DEBUG = true;
+inline constexpr bool DEBUG = false;
 
 
 ////////////////////
@@ -43,28 +37,18 @@ inline constexpr bool DEBUG = true;
 
 /* An enumerated, compile-time bitset describing customization options for all linked
 data structures.  Any number of these can be combined using bitwise OR during template
-instantiation.  Some are mutually contradictory, resulting in a compile-time error.
+instantiation.
 
 Their meanings are as follows:
--   DEFAULT: use the default configuration for this data structure.  This typically
-    means the use of a doubly-linked list with a dynamic allocator.
+-   DEFAULT: use a doubly-linked list with a dynamic allocator.
 -   SINGLY_LINKED: use a singly-linked list instead of a doubly-linked list.  This
     reduces the memory footprint of each node by one pointer at the cost of reduced
-    performance.  All methods will still work identically.
--   DOUBLY_LINKED: explicitly force the use of a doubly-linked list.  This is usually
-    the default, and provides the best performance for most use cases.
--   XOR (TODO): use an XOR-linked list instead of a doubly-linked list.  This has the
-    same memory footprint as a singly-linked list, but, thanks to some clever math,
-    can still traverse the list in both directions.  This is an experimental feature
-    that is not yet implemented.
+    performance for certain operations.  All methods will still work identically.
 -   FIXED_SIZE: use a fixed-size allocator that cannot grow or shrink.  This is useful
     for implementing LRU caches and other data structures that are guaranteed to never
     exceed a certain size.  By setting this flag, the data structure will immediately
     allocate enough memory to house the maximum number of elements, and will never
     reallocate its internal array unless explicitly instructed to do so.
--   PACKED: use a packed allocator that does not introduce any padding for its buckets.
-    This reduces the memory footprint of hash tables by 2-6 bytes per bucket, at the
-    cost of potentially reduced performance (system-dependent).
 -   STRICTLY_TYPED (PyObject* only): enforce strict typing for the whole lifecycle of
     the data structure.  This will restrict the data structure to only contain Python
     objects of a specific type, and will prevent that type from being changed after
@@ -75,11 +59,8 @@ namespace Config {
     enum : unsigned int {
         DEFAULT = 0,
         SINGLY_LINKED = 1 << 0,
-        DOUBLY_LINKED = 1 << 1,
-        XOR = 1 << 2,
-        FIXED_SIZE = 1 << 3,
-        PACKED = 1 << 4,
-        STRICTLY_TYPED = 1 << 5,
+        FIXED_SIZE = 1 << 1,
+        STRICTLY_TYPED = 1 << 2,
     };
 }
 
@@ -94,23 +75,17 @@ class AllocatorTag {};
 minimum necessary attributes for compatibility with higher-level views. */
 template <typename Derived, typename NodeType, unsigned int Flags = Config::DEFAULT>
 class BaseAllocator : public AllocatorTag {
-    static_assert(
-        !!(Flags & Config::SINGLY_LINKED) + !!(Flags & Config::DOUBLY_LINKED) +
-        !!(Flags & Config::XOR) <= 1,
-        "only one of SINGLY_LINKED, DOUBLY_LINKED, or XOR may be specified at a time"
-    );
-
 public:
     using Node = NodeType;
     class MemGuard;
     class PyMemGuard;
     static constexpr unsigned int FLAGS = Flags;
     static constexpr bool SINGLY_LINKED = Flags & Config::SINGLY_LINKED;
-    static constexpr bool DOUBLY_LINKED = Flags & Config::DOUBLY_LINKED;
-    static constexpr bool XOR = Flags & Config::XOR;
+    static constexpr bool DOUBLY_LINKED = !SINGLY_LINKED;
     static constexpr bool FIXED_SIZE = Flags & Config::FIXED_SIZE;
-    static constexpr bool PACKED = Flags & Config::PACKED;
+    static constexpr bool DYNAMIC = !FIXED_SIZE;
     static constexpr bool STRICTLY_TYPED = Flags & Config::STRICTLY_TYPED;
+    static constexpr bool LOOSELY_TYPED = !STRICTLY_TYPED;
 
 protected:
     alignas(Node) mutable unsigned char _temp[sizeof(Node)];  // for internal use
@@ -1150,75 +1125,31 @@ private:
      * for fixed-size sets, it is a fatal error.
      */
 
-    template <bool pack = false, typename Dummy = void>
-    struct BucketType {
-        struct Bucket {
-            unsigned char collisions = EMPTY;
-            unsigned char next = EMPTY;
-            alignas(Node) unsigned char data[sizeof(Node)];
+    struct Bucket {
+        unsigned char collisions = EMPTY;
+        unsigned char next = EMPTY;
+        alignas(Node) unsigned char data[sizeof(Node)];
 
-            /* Get a pointer to the node within the bucket. */
-            inline Node* node() noexcept {
-                return reinterpret_cast<Node*>(&data);
-            }
+        inline Node* node() noexcept {
+            return reinterpret_cast<Node*>(&data);
+        }
 
-            /* Construct the node within the bucket. */
-            template <typename... Args>
-            inline void construct(Args&&... args) {
-                new (reinterpret_cast<Node*>(&data)) Node(std::forward<Args>(args)...);
-                // don't forget to set collisions and/or next!
-            }
+        template <typename... Args>
+        inline void construct(Args&&... args) {
+            new (reinterpret_cast<Node*>(&data)) Node(std::forward<Args>(args)...);
+            // don't forget to set collisions and/or next!
+        }
 
-            /* Destroy the node within the bucket. */
-            inline void destroy() noexcept {
-                reinterpret_cast<Node&>(data).~Node();
-                next = EMPTY;
-            }
+        inline void destroy() noexcept {
+            reinterpret_cast<Node&>(data).~Node();
+            next = EMPTY;
+        }
 
-            /* Check if the bucket is empty. */
-            inline bool occupied() const noexcept {
-                return next != EMPTY;
-            }
+        inline bool occupied() const noexcept {
+            return next != EMPTY;
+        }
 
-        };
     };
-
-    template <typename Dummy>
-    struct BucketType<true, Dummy> {
-        #pragma pack(push, 1)
-        struct Bucket {
-            unsigned char collisions = EMPTY;
-            unsigned char next = EMPTY;
-            alignas(Node) unsigned char data[sizeof(Node)];
-
-            /* Get a pointer to the node within the bucket. */
-            inline Node* node() noexcept {
-                return reinterpret_cast<Node*>(&data);
-            }
-
-            /* Construct the node within the bucket. */
-            template <typename... Args>
-            inline void construct(Args&&... args) {
-                new (reinterpret_cast<Node*>(&data)) Node(std::forward<Args>(args)...);
-                // don't forget to set collisions and/or next!
-            }
-
-            /* Destroy the node within the bucket. */
-            inline void destroy() noexcept {
-                reinterpret_cast<Node&>(data).~Node();
-                next = EMPTY;
-            }
-
-            /* Check if the bucket is empty. */
-            inline bool occupied() const noexcept {
-                return next != EMPTY;
-            }
-
-        };
-        #pragma pack(pop)
-    };
-
-    using Bucket = typename BucketType<Base::PACKED>::Bucket;
 
     Bucket* table;  // dynamic array of buckets
     size_t modulo;  // bitmask for fast modulo arithmetic

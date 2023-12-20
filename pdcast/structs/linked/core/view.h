@@ -421,10 +421,10 @@ public:
     static constexpr unsigned int FLAGS = Allocator::FLAGS;
     static constexpr bool SINGLY_LINKED = Allocator::SINGLY_LINKED;
     static constexpr bool DOUBLY_LINKED = Allocator::DOUBLY_LINKED;
-    static constexpr bool XOR = Allocator::XOR;
     static constexpr bool FIXED_SIZE = Allocator::FIXED_SIZE;
-    static constexpr bool PACKED = Allocator::PACKED;
+    static constexpr bool DYNAMIC = Allocator::DYNAMIC;
     static constexpr bool STRICTLY_TYPED = Allocator::STRICTLY_TYPED;
+    static constexpr bool LOOSELY_TYPED = Allocator::LOOSELY_TYPED;
 
     // low-level node allocation/deallocation
     mutable Allocator allocator;  // use at your own risk!
@@ -1177,9 +1177,7 @@ public:
     static constexpr unsigned int FLAGS = View::FLAGS;
     static constexpr bool SINGLY_LINKED = View::SINGLY_LINKED;
     static constexpr bool DOUBLY_LINKED = View::DOUBLY_LINKED;
-    static constexpr bool XOR = View::XOR;
     static constexpr bool FIXED_SIZE = View::FIXED_SIZE;
-    static constexpr bool PACKED = View::PACKED;
     static constexpr bool STRICTLY_TYPED = View::STRICTLY_TYPED;
 
     // reconfigure with different flags
@@ -1257,25 +1255,16 @@ public:
         using Set = typename AsSet<yield, as_pytuple, dictlike>::type;
 
         using SINGLY_LINKED = typename ViewTraits::template Reconfigure<
-            (FLAGS & ~(Config::DOUBLY_LINKED | Config::XOR)) | Config::SINGLY_LINKED
+            FLAGS | Config::SINGLY_LINKED
         >;
         using DOUBLY_LINKED = typename View::template Reconfigure<
-            (FLAGS & ~(Config::SINGLY_LINKED | Config::XOR)) | Config::DOUBLY_LINKED
-        >;
-        using XOR = typename View::template Reconfigure<
-            (FLAGS & ~(Config::SINGLY_LINKED | Config::DOUBLY_LINKED)) | Config::XOR
-        >;
-        using DYNAMIC = typename View::template Reconfigure<
-            FLAGS & ~Config::FIXED_SIZE
+            FLAGS & ~Config::SINGLY_LINKED
         >;
         using FIXED_SIZE = typename View::template Reconfigure<
             FLAGS | Config::FIXED_SIZE
         >;
-        using PACKED = typename View::template Reconfigure<
-            FLAGS | Config::PACKED
-        >;
-        using UNPACKED = typename View::template Reconfigure<
-            FLAGS & ~Config::PACKED
+        using DYNAMIC = typename View::template Reconfigure<
+            FLAGS & ~Config::FIXED_SIZE
         >;
         using STRICTLY_TYPED = typename View::template Reconfigure<
             FLAGS | Config::STRICTLY_TYPED

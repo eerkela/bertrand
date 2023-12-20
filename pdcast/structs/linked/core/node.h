@@ -131,17 +131,6 @@ protected:
 //////////////////////////
 
 
-// NOTE: at some point in the future, we could try to implement an XOR linked list
-// using an XORNode with identical semantics to DoubleNode.  This would only use a
-// single pointer to store both the next and previous nodes, which it would XOR in
-// order to traverse the list.  This would require some care when accessing neighboring
-// nodes, since we would have to keep track of the previous node in order to compute
-// the next node's address and vice versa.  This would also complicate the
-// insertion/removal of nodes, since we would have to XOR the next/previous nodes in
-// order to update their pointers.  But, it would be a fun exercise in pointer
-// arithmetic with some interesting tradeoffs.  It would make for a neat benchmark too.
-
-
 /* A singly-linked list node around an arbitrary value. */
 template <typename ValueType>
 class SingleNode : public BaseNode<ValueType> {

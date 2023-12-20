@@ -6,9 +6,6 @@
 #include "../core/view.h"  // ViewTraits
 
 
-// TODO: somehow created a reference loop here.  This happens only rarely.
-
-
 namespace bertrand {
 namespace linked {
 

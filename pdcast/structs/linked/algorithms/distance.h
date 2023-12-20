@@ -7,16 +7,6 @@
 #include "../core/view.h"  // ViewTraits
 
 
-// TODO: distance() should be hidden behind the relative() proxy, such that we
-// write set.relative("c").distance("f") to get the distance from "c" to "f", and
-// set.relative("f").distance("c") to get the distance from "f" to "c".
-
-// We can do the same with move() vs move_to_index().  The move_to_index() function
-// would be available on the set itself via set.move("c", 3), which would move "c" to
-// index 3.  The relative moves are available from the proxy via
-// set.relative("c").move(3), which would move "c" three steps forward in the set.
-
-
 namespace bertrand {
 namespace linked {
 

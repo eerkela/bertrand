@@ -2,11 +2,9 @@
 #define BERTRAND_STRUCTS_LINKED_ALGORITHMS_INSERT_H
 
 #include <cstddef>  // size_t
-#include <type_traits>  // std::enable_if_t<>
 #include <utility>  // std::pair
 #include <Python.h>  // CPython API
-#include "../core/view.h"  // ViewTraits
-#include "position.h"  // position()
+#include "../core/view.h"  // DictView
 
 
 namespace bertrand {
@@ -14,9 +12,7 @@ namespace linked {
 
 
     template <typename View, typename Item>
-    auto insert(View& view, long long index, const Item& item)
-        -> std::enable_if_t<ViewTraits<View>::linked, void>
-    {
+    void insert(View& view, long long index, const Item& item) {
         using MemGuard = typename View::MemGuard;
 
         if (index < 0) {
@@ -48,10 +44,14 @@ namespace linked {
     }
 
 
-    template <typename View, typename Key, typename Value>
-    auto insert(View& view, long long index, const Key& key, const Value& value)
-        -> std::enable_if_t<ViewTraits<View>::dictlike, void>
-    {
+    template <typename Node, unsigned int Flags, typename Key, typename Value>
+    void insert(
+        DictView<Node, Flags>& view,
+        long long index,
+        const Key& key,
+        const Value& value
+    ) {
+        using View = DictView<Node, Flags>;
         using MemGuard = typename View::MemGuard;
 
         if (index < 0) {

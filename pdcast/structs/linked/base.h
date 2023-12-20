@@ -49,10 +49,10 @@ public:
     static constexpr unsigned int FLAGS = View::FLAGS;
     static constexpr bool SINGLY_LINKED = View::SINGLY_LINKED;
     static constexpr bool DOUBLY_LINKED = View::DOUBLY_LINKED;
-    static constexpr bool XOR = View::XOR;
     static constexpr bool FIXED_SIZE = View::FIXED_SIZE;
-    static constexpr bool PACKED = View::PACKED;
+    static constexpr bool DYNAMIC = View::DYNAMIC;
     static constexpr bool STRICTLY_TYPED = View::STRICTLY_TYPED;
+    static constexpr bool LOOSELY_TYPED = View::LOOSELY_TYPED;
 
     /* Every linked data structure encapsulates a view that represents the core of the
     data structure and holds the low-level nodes.  For safety, these are not exposed
@@ -315,13 +315,6 @@ public:
         });
     }
 
-    inline static PyObject* XOR(Derived* self, PyObject* = nullptr) noexcept {
-        return visit(self, [](auto& list) {
-            using List = typename std::decay_t<decltype(list)>;
-            return Py_NewRef(List::XOR ? Py_True : Py_False);
-        });
-    }
-
     inline static PyObject* FIXED_SIZE(Derived* self, PyObject* = nullptr) noexcept {
         return visit(self, [](auto& list) {
             using List = typename std::decay_t<decltype(list)>;
@@ -329,10 +322,10 @@ public:
         });
     }
 
-    inline static PyObject* PACKED(Derived* self, PyObject* = nullptr) noexcept {
+    inline static PyObject* DYNAMIC(Derived* self, PyObject* = nullptr) noexcept {
         return visit(self, [](auto& list) {
             using List = typename std::decay_t<decltype(list)>;
-            return Py_NewRef(List::PACKED ? Py_True : Py_False);
+            return Py_NewRef(List::DYNAMIC ? Py_True : Py_False);
         });
     }
 
@@ -340,6 +333,13 @@ public:
         return visit(self, [](auto& list) {
             using List = typename std::decay_t<decltype(list)>;
             return Py_NewRef(List::STRICTLY_TYPED ? Py_True : Py_False);
+        });
+    }
+
+    inline static PyObject* LOOSELY_TYPED(Derived* self, PyObject* = nullptr) noexcept {
+        return visit(self, [](auto& list) {
+            using List = typename std::decay_t<decltype(list)>;
+            return Py_NewRef(List::LOOSELY_TYPED ? Py_True : Py_False);
         });
     }
 
@@ -565,7 +565,6 @@ protected:
                 );
                 bool reverse = pyargs.parse("reverse", is_truthy, false);
                 bool singly_linked = pyargs.parse("singly_linked", is_truthy, false);
-                bool packed = pyargs.parse("packed", is_truthy, false);
                 pyargs.finalize();
 
                 PyObject* spec = PyObject_GetAttrString(
@@ -579,7 +578,6 @@ protected:
                     spec,
                     reverse,
                     singly_linked,
-                    packed,
                     true  // strictly typed
                 );
                 Py_DECREF(spec);
@@ -634,6 +632,10 @@ Returns
 bool
     True if the list is singly-linked.  False otherwise.
 
+Notes
+-----
+This is mutually exclusive with DOUBLY_LINKED.
+
 Examples
 --------
 This defaults to False unless the list is explicitly configured to use a
@@ -657,6 +659,10 @@ Returns
 bool
     True if the list is doubly-linked.  False otherwise.
 
+Notes
+-----
+This is mutually exclusive with SINGLY_LINKED.
+
 Examples
 --------
 This defaults to True unless the list is explicitly configured to use a
@@ -672,29 +678,6 @@ singly-linked node type.  For instance:
 )doc"
         };
 
-        static constexpr std::string_view XOR {R"doc(
-Check whether the list uses an XOR-linked node type.
-
-Returns
--------
-bool
-    True if the list is XOR-linked.  False otherwise.
-
-Examples
---------
-This defaults to False unless the list is explicitly configured to use an
-XOR-linked node type.  For instance:
-
-.. doctest::
-
-    >>> from bertrand.structs import LinkedList
-    >>> LinkedList("abcdef").XOR
-    False
-    >>> LinkedList("abcdef", xor=True).XOR
-    True
-)doc"
-        };
-
         static constexpr std::string_view FIXED_SIZE {R"doc(
 Check whether the allocator supports dynamic resizing.
 
@@ -703,6 +686,10 @@ Returns
 bool
     True if the list has a fixed maximum size, or False if it can grow and
     shrink dynamically.
+
+Notes
+-----
+This is mutually exclusive with DYNAMIC.
 
 Examples
 --------
@@ -719,37 +706,31 @@ For instance:
 )doc"
         };
 
-        static constexpr std::string_view PACKED {R"doc(
-Check whether the allocator's buckets are packed for memory efficiency.
+        static constexpr std::string_view DYNAMIC {R"doc(
+Check whether the allocator supports dynamic resizing.
 
 Returns
 -------
 bool
-    True if the allocator's buckets are packed, or False if they are padded to
-    the system's preferred alignment.
+    True if the list has a fixed maximum size, or False if it can grow and
+    shrink dynamically.
 
 Notes
 -----
-Packed buckets are more memory-efficient, but may incur a small performance
-penalty on some systems.
-
-This flag has no effect unless the allocator's buckets are not evenly divisible
-by the system's preferred alignment width.  This is only the case for hashed
-views that use additional control structures to maintain information about the
-hash table (e.g. ``LinkedSet``, ``LinkedDict``).
+This is mutually exclusive with FIXED_SIZE.
 
 Examples
 --------
-This defaults to False unless the ``packed`` argument is specified during
-construction.  For instance:
+This defaults to True unless a maximum size is specified during construction.
+For instance:
 
 .. doctest::
 
-    >>> from bertrand.structs import LinkedSet
-    >>> LinkedSet("abcdef").PACKED
-    False
-    >>> LinkedSet("abcdef", packed=True).PACKED
+    >>> from bertrand.structs import LinkedList
+    >>> LinkedList("abcdef").DYNAMIC
     True
+    >>> LinkedList("abcdef", 10).DYNAMIC
+    False
 )doc"
         };
 
@@ -761,6 +742,10 @@ Returns
 bool
     True if the allocator enforces strict type checking for its contents, or
     False if it allows arbitrary Python objects.
+
+Notes
+-----
+This is mutually exclusive with LOOSELY_TYPED.
 
 Examples
 --------
@@ -774,6 +759,34 @@ particular type using ``__class_getitem__()``.  For instance:
     False
     >>> LinkedList[str]("abcdef").STRICTLY_TYPED
     True
+)doc"
+        };
+
+        static constexpr std::string_view LOOSELY_TYPED {R"doc(
+Check whether the allocator enforces strict type checking.
+
+Returns
+-------
+bool
+    True if the allocator enforces strict type checking for its contents, or
+    False if it allows arbitrary Python objects.
+
+Notes
+-----
+This is mutually exclusive with STRICTLY_TYPED.
+
+Examples
+--------
+This defaults to False unless the data structure is subscripted with a
+particular type using ``__class_getitem__()``.  For instance:
+
+.. doctest::
+
+    >>> from bertrand.structs import LinkedList
+    >>> LinkedList("abcdef").LOOSELY_TYPED
+    True
+    >>> LinkedList[str]("abcdef").LOOSELY_TYPED
+    False
 )doc"
         };
 
@@ -1244,62 +1257,6 @@ than one.
     };
 
 };
-
-
-
-
-// TODO: SelfRef is only needed for RelativeProxies, which are not yet implemented.
-namespace cython {
-
-
-/* A functor that generates C++ weak references for a type-erased Cython variant. */
-template <typename T>
-class SelfRef {
-public:
-
-    /* A weak reference to the associated object. */
-    class WeakRef {
-    public:
-
-        /* Check whether the referenced object still exists. */
-        bool exists() const {
-            return !ref.expired();
-        }
-
-        /* Follow the weak reference, yielding a pointer to the referenced object if it
-        still exists.  Otherwise, sets a Python error and return nullptr.  */
-        T* get() const {
-            if (ref.expired()) {
-                throw RuntimeError("referenced object no longer exists");
-            }
-            return ref.lock().get();
-        }
-
-    private:
-        friend SelfRef;
-        std::weak_ptr<T> ref;
-
-        template <typename... Args>
-        WeakRef(Args... args) : ref(std::forward<Args>(args)...) {}
-    };
-
-    /* Get a weak reference to the associated object. */
-    WeakRef operator()() const {
-        return WeakRef(_self);
-    }
-
-private:
-    friend T;
-    const std::shared_ptr<T> _self;
-
-    // NOTE: custom deleter prevents the shared_ptr from trying to delete the object
-    // when it goes out of scope, which can cause a double free.
-
-    SelfRef(T& self) : _self(&self, [](auto&) {}) {}
-};
-
-
-}  // namespace cython
 
 
 }  // namespace linked

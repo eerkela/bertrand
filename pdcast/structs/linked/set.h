@@ -48,19 +48,11 @@ class LinkedSet;
 
 namespace set_config {
 
-    static constexpr unsigned int defaults(unsigned int flags) {
-        unsigned int result = flags;
-        if (!(result & (Config::DOUBLY_LINKED | Config::SINGLY_LINKED | Config::XOR))) {
-            result |= Config::DOUBLY_LINKED;
-        }
-        return result;
-    }
-
     template <typename T, unsigned int Flags>
     using NodeSelect = std::conditional_t<
-        !!(Flags & Config::DOUBLY_LINKED),
-        DoubleNode<T>,
-        SingleNode<T>
+        !!(Flags & Config::SINGLY_LINKED),
+        SingleNode<T>,
+        DoubleNode<T>
     >;
 
 }
@@ -78,17 +70,11 @@ template <
     typename Lock = BasicLock
 >
 class LinkedSet : public LinkedBase<
-    linked::SetView<
-        set_config::NodeSelect<K, set_config::defaults(Flags)>,
-        set_config::defaults(Flags)
-    >,
+    linked::SetView<set_config::NodeSelect<K, Flags>, Flags>,
     Lock
 > {
     using Base = LinkedBase<
-        linked::SetView<
-            set_config::NodeSelect<K, set_config::defaults(Flags)>,
-            set_config::defaults(Flags)
-        >,
+        linked::SetView<set_config::NodeSelect<K, Flags>, Flags>,
         Lock
     >;
     using DynamicSet = LinkedSet<K, Flags & ~Config::FIXED_SIZE, Lock>;
@@ -566,19 +552,16 @@ public:
         return intersection(other);
     }
 
-
     template <typename Container>
     inline LinkedSet& operator&=(const Container& other) {
         intersection_update(other);
         return *this;
     }
 
-
     template <typename Container>
     inline DynamicSet operator^(const Container& other) const {
         return symmetric_difference(other);
     }
-
 
     template <typename Container>
     inline LinkedSet& operator^=(const Container& other) {
@@ -586,18 +569,15 @@ public:
         return *this;
     }
 
-
     template <typename Container>
     inline bool operator<(const Container& other) const {
         return linked::issubset<true>(this->view, other);
     }
 
-
     template <typename Container>
     inline bool operator<=(const Container& other) const {
         return linked::issubset<false>(this->view, other);
     }
-
 
     template <typename Container>
     inline bool operator==(const Container& other) const {
@@ -610,7 +590,6 @@ public:
         return linked::set_equal<true>(this->view, other);
     }
 
-
     template <typename Container>
     inline bool operator!=(const Container& other) const {
         using C = std::remove_cv_t<std::remove_reference_t<Container>>;
@@ -622,12 +601,10 @@ public:
         return linked::set_equal<false>(this->view, other);
     }
 
-
     template <typename Container>
     inline bool operator>=(const Container& other) const {
         return linked::issuperset<false>(this->view, other);
     }
-
 
     template <typename Container>
     inline bool operator>(const Container& other) const {
@@ -1573,22 +1550,14 @@ class PyLinkedSet :
     template <unsigned int Flags>
     using SetConfig = linked::LinkedSet<PyObject*, Flags, BasicLock>;
     using Variant = std::variant<
-        SetConfig<Config::DOUBLY_LINKED>,
-        SetConfig<Config::DOUBLY_LINKED | Config::PACKED>,
-        SetConfig<Config::DOUBLY_LINKED | Config::STRICTLY_TYPED>,
-        SetConfig<Config::DOUBLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED>,
-        SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE>,
-        SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
-        SetConfig<Config::DOUBLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>,
+        SetConfig<Config::DEFAULT>,
+        SetConfig<Config::STRICTLY_TYPED>,
+        SetConfig<Config::FIXED_SIZE>,
+        SetConfig<Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
         SetConfig<Config::SINGLY_LINKED>,
-        SetConfig<Config::SINGLY_LINKED | Config::PACKED>,
         SetConfig<Config::SINGLY_LINKED | Config::STRICTLY_TYPED>,
-        SetConfig<Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED>,
         SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE>,
-        SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED>,
-        SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>,
-        SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED>
+        SetConfig<Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED>
     >;
     template <size_t I>
     using Alt = typename std::variant_alternative_t<I, Variant>;
@@ -1612,50 +1581,26 @@ class PyLinkedSet :
             case (Config::DEFAULT):
                 self->from_cpp(Alt<0>(std::forward<Args>(args)...));
                 break;
-            case (Config::PACKED):
+            case (Config::STRICTLY_TYPED):
                 self->from_cpp(Alt<1>(std::forward<Args>(args)...));
                 break;
-            case (Config::STRICTLY_TYPED):
+            case (Config::FIXED_SIZE):
                 self->from_cpp(Alt<2>(std::forward<Args>(args)...));
                 break;
-            case (Config::PACKED | Config::STRICTLY_TYPED):
+            case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
                 self->from_cpp(Alt<3>(std::forward<Args>(args)...));
                 break;
-            case (Config::FIXED_SIZE):
+            case (Config::SINGLY_LINKED):
                 self->from_cpp(Alt<4>(std::forward<Args>(args)...));
                 break;
-            case (Config::FIXED_SIZE | Config::PACKED):
+            case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
                 self->from_cpp(Alt<5>(std::forward<Args>(args)...));
                 break;
-            case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
                 self->from_cpp(Alt<6>(std::forward<Args>(args)...));
                 break;
-            case (Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-                self->from_cpp(Alt<7>(std::forward<Args>(args)...));
-                break;
-            case (Config::SINGLY_LINKED):
-                self->from_cpp(Alt<8>(std::forward<Args>(args)...));
-                break;
-            case (Config::SINGLY_LINKED | Config::PACKED):
-                self->from_cpp(Alt<9>(std::forward<Args>(args)...));
-                break;
-            case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
-                self->from_cpp(Alt<10>(std::forward<Args>(args)...));
-                break;
-            case (Config::SINGLY_LINKED | Config::PACKED | Config::STRICTLY_TYPED):
-                self->from_cpp(Alt<11>(std::forward<Args>(args)...));
-                break;
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
-                self->from_cpp(Alt<12>(std::forward<Args>(args)...));
-                break;
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED):
-                self->from_cpp(Alt<13>(std::forward<Args>(args)...));
-                break;
             case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                self->from_cpp(Alt<14>(std::forward<Args>(args)...));
-                break;
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::PACKED | Config::STRICTLY_TYPED):
-                self->from_cpp(Alt<15>(std::forward<Args>(args)...));
+                self->from_cpp(Alt<7>(std::forward<Args>(args)...));
                 break;
             default:
                 throw ValueError("invalid argument configuration");
@@ -1670,13 +1615,11 @@ class PyLinkedSet :
         PyObject* spec,
         bool reverse,
         bool singly_linked,
-        bool packed,
         bool strictly_typed
     ) {
         unsigned int code = (
             Config::SINGLY_LINKED * singly_linked |
             Config::FIXED_SIZE * max_size.has_value() |
-            Config::PACKED * packed |
             Config::STRICTLY_TYPED * strictly_typed
         );
         if (iterable == nullptr) {
@@ -1717,11 +1660,10 @@ public:
             PyObject* spec = pyargs.parse("spec", none_to_null, (PyObject*) nullptr);
             bool reverse = pyargs.parse("reverse", is_truthy, false);
             bool singly_linked = pyargs.parse("singly_linked", is_truthy, false);
-            bool packed = pyargs.parse("packed", is_truthy, false);
             pyargs.finalize();
 
             initialize(
-                self, keys, max_size, spec, reverse, singly_linked, packed, false
+                self, keys, max_size, spec, reverse, singly_linked, false
             );
 
             return 0;
@@ -1786,12 +1728,6 @@ singly_linked : bool, default False
     trades some performance in certain operations for increased memory
     efficiency.  Regardless of this setting, the set will still support all
     the same operations.
-packed : bool, default False
-    If True, use a packed allocator that does not pad its contents to the
-    system's preferred alignment.  This can free between 2 and 6 bytes per
-    node at the cost of slightly reduced performance (depending on the system).
-    Regardless of this setting, the set will still support all the same
-    operations.
 
 Notes
 -----
@@ -1858,10 +1794,10 @@ in some cases.
     inline static PyGetSetDef properties[] = {
         BASE_PROPERTY(SINGLY_LINKED),
         BASE_PROPERTY(DOUBLY_LINKED),
-        // BASE_PROPERTY(XOR),  // not yet implemented
         BASE_PROPERTY(FIXED_SIZE),
-        BASE_PROPERTY(PACKED),
+        BASE_PROPERTY(DYNAMIC),
         BASE_PROPERTY(STRICTLY_TYPED),
+        BASE_PROPERTY(LOOSELY_TYPED),
         BASE_PROPERTY(lock),
         BASE_PROPERTY(capacity),
         BASE_PROPERTY(max_size),
@@ -1991,7 +1927,6 @@ public:
 
     inline static PyTypeObject Type = build_type();
 
-    /* Allocate and construct a fully-formed PyLinkedSet from its C++ equivalent. */
     template <typename Set>
     static PyObject* construct(Set&& set) {
         PyLinkedSet* result = reinterpret_cast<PyLinkedSet*>(
@@ -2010,7 +1945,6 @@ public:
         }
     }
 
-    /* Check whether another PyObject* is of this type. */
     static bool typecheck(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &Type);
         if (result == -1) {
@@ -2020,40 +1954,6 @@ public:
     }
 
 };
-
-
-/* bertrand.structs.linked.set module definition. */
-static struct PyModuleDef module_set = {
-    .m_base = PyModuleDef_HEAD_INIT,
-    .m_name = "set",
-    .m_doc = (
-        "This module contains an optimized LinkedSet data structure for use "
-        "in Python.  The exact same data structure is also available in C++ "
-        "under the same header path (bertrand/structs/linked/set.h)."
-    ),
-    .m_size = -1,
-};
-
-
-/* Python import hook. */
-PyMODINIT_FUNC PyInit_set(void) {
-    if (PyType_Ready(&PyLinkedSet::Type) < 0) {
-        return nullptr;
-    }
-
-    PyObject* mod = PyModule_Create(&module_set);
-    if (mod == nullptr) {
-        return nullptr;
-    }
-
-    Py_INCREF(&PyLinkedSet::Type);
-    if (PyModule_AddObject(mod, "LinkedSet", (PyObject*) &PyLinkedSet::Type) < 0) {
-        Py_DECREF(&PyLinkedSet::Type);
-        Py_DECREF(mod);
-        return nullptr;
-    }
-    return mod;
-}
 
 
 }  // namespace linked
