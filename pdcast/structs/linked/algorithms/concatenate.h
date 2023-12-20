@@ -14,7 +14,6 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Concatenate a linked list with another iterable. */
     template <typename View, typename Container>
     auto concatenate(const View& view, const Container& container)
         -> std::enable_if_t<
@@ -42,8 +41,6 @@ namespace linked {
     }
 
 
-    /* Concatenate a linked dictionary's values with another iterable, returning the
-    result as a linked list. */
     template <
         Yield yield = Yield::KEY,
         bool as_pytuple = false,

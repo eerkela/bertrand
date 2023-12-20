@@ -13,7 +13,6 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Repeat the elements in a linked data structure a specified number of times. */
     template <typename View>
     auto repeat(const View& view, long long repetitions)
         -> std::enable_if_t<
@@ -39,7 +38,6 @@ namespace linked {
     }
 
 
-    /* Allow Python integers to be used as repetition counts. */
     template <typename View>
     auto repeat(const View& view, PyObject* repetitions)
         -> std::enable_if_t<
@@ -63,8 +61,6 @@ namespace linked {
     }
 
 
-    /* Repeat a linked dictionary's values a specified number of times, returning the
-    result as a linked list. */
     template <Yield yield = Yield::KEY, bool as_pytuple = false, typename View>
     auto repeat(const View& view, long long repetitions)
         -> std::enable_if_t<
@@ -99,7 +95,6 @@ namespace linked {
     }
 
 
-    /* Allow Python integers to be used as repetition counts. */
     template <Yield yield = Yield::KEY, bool as_pytuple = false, typename View>
     auto repeat(const View& view, PyObject* repetitions)
         -> std::enable_if_t<
@@ -125,8 +120,6 @@ namespace linked {
     }
 
 
-    /* Repeat the elements of a linked data structure in-place the specified number of
-    times. */
     template <typename View>
     auto repeat_inplace(View& view, long long repetitions)
         -> std::enable_if_t<ViewTraits<View>::listlike, void>
@@ -157,8 +150,6 @@ namespace linked {
     }
 
 
-    /* Repeat the elements of a linked data structure in-place the specified number of
-    times. */
     template <typename View>
     auto repeat_inplace(View& view, PyObject* repetitions)
         -> std::enable_if_t<ViewTraits<View>::listlike, void>

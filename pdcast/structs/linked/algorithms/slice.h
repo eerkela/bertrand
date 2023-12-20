@@ -17,12 +17,6 @@ namespace bertrand {
 namespace linked {
 
 
-    ///////////////////////////////////
-    ////    SLICE NORMALIZATION    ////
-    ///////////////////////////////////
-
-
-    /* Data class representing normalized indices needed to construct a SliceProxy. */
     template <typename View>
     class SliceIndices {
         template <typename _View>
@@ -36,7 +30,6 @@ namespace linked {
         template <typename _View>
         friend SliceIndices<_View> normalize_slice(_View& view, PyObject* slice);
 
-        /* Construct a SliceIndices object from normalized indices. */
         SliceIndices(
             long long start,
             long long stop,
@@ -77,8 +70,6 @@ namespace linked {
     };
 
 
-    /* Normalize slice indices, applying Python-style wraparound and bounds
-    checking. */
     template <typename View>
     SliceIndices<View> normalize_slice(
         View& view,
@@ -118,10 +109,8 @@ namespace linked {
     }
 
 
-    /* Normalize a Python slice object, applying Python-style wraparound and bounds
-    checking. */
     template <typename View>
-    inline SliceIndices<View> normalize_slice(View& view, PyObject* slice) {
+    SliceIndices<View> normalize_slice(View& view, PyObject* slice) {
         using Indices = std::tuple<long long, long long, long long, size_t>;
 
         python::Slice<python::Ref::BORROW> py_slice(slice);
@@ -137,12 +126,6 @@ namespace linked {
     }
 
 
-    /////////////////////
-    ////    PROXY    ////
-    /////////////////////
-
-
-    /* A proxy for a slice within a list, as returned by the slice() factory method. */
     template <typename View, typename Result, Yield yield, bool as_pytuple = false>
     class SliceProxy {
         static_assert(
@@ -414,14 +397,10 @@ namespace linked {
         ////    ITERATORS    ////
         /////////////////////////
 
-        /* A specialized iterator that directly traverses over a slice without any
-        copies.  This automatically corrects for inverted traversal and always yields
-        items in the same order as the step size (reversed if called from rbegin). */
         template <Direction dir>
         class Iterator {
             using Value = typename View::Value;
 
-            /* Infer dereference type based on `yield` parameter. */
             template <Yield Y = Yield::KEY, typename Dummy = void>
             struct DerefType {
                 using type = typename Node::Value;
@@ -475,7 +454,6 @@ namespace linked {
 
             friend SliceProxy;
 
-            /* Get an iterator to the start of a non-empty slice. */
             Iterator(View& view, const SliceIndices<View>& indices, Node* origin) :
                 view(view), indices(indices), idx(0)
             {
@@ -526,7 +504,6 @@ namespace linked {
                 }
             }
 
-            /* Get an empty iterator to terminate the slice. */
             Iterator(View& view, const SliceIndices<View>& indices) :
                 view(view), indices(indices), idx(indices.length)
             {}
@@ -538,7 +515,6 @@ namespace linked {
             using pointer               = value_type*;
             using reference             = value_type&;
 
-            /* Copy constructor. */
             Iterator(const Iterator& other) noexcept :
                 stack(other.stack), view(other.view), indices(other.indices),
                 idx(other.idx)
@@ -550,7 +526,6 @@ namespace linked {
                 }
             }
 
-            /* Move constructor. */
             Iterator(Iterator&& other) noexcept :
                 stack(std::move(other.stack)), view(other.view),
                 indices(other.indices), idx(other.idx)
@@ -562,7 +537,6 @@ namespace linked {
                 }
             }
 
-            /* Clean up union iterator on destruction. */
             ~Iterator() {
                 if (indices.backward) {
                     bwd.~ViewIter<Direction::BACKWARD>();
@@ -571,7 +545,6 @@ namespace linked {
                 }
             }
 
-            /* Dereference the iterator to get the value at the current index. */
             inline Deref operator*() const {
                 if (!stack.empty()) {
                     Node* node = stack.top();
@@ -579,20 +552,17 @@ namespace linked {
                         return node->value();
                     } else if constexpr (yield == Yield::VALUE) {
                         return node->mapped();
+                    } else if constexpr (as_pytuple) {
+                        using PyTuple = python::Tuple<python::Ref::STEAL>;
+                        return PyTuple::pack(node->value(), node->mapped());
                     } else {
-                        if constexpr (as_pytuple) {
-                            using PyTuple = python::Tuple<python::Ref::STEAL>;
-                            return PyTuple::pack(node->value(), node->mapped());
-                        } else {
-                            return std::make_pair(node->value(), node->mapped());
-                        }
+                        return std::make_pair(node->value(), node->mapped());
                     }
                 } else {
                     return indices.backward ? *bwd : *fwd;
                 }
             }
 
-            /* Advance the iterator to the next element in the slice. */
             inline Iterator& operator++() noexcept {
                 ++idx;
                 if (!stack.empty()) {
@@ -607,7 +577,6 @@ namespace linked {
                 return *this;
             }
 
-            /* Compare iterators to terminate the slice. */
             inline bool operator!=(const Iterator& other) const noexcept {
                 return idx != other.idx;
             }
@@ -656,7 +625,6 @@ namespace linked {
         ////    PUBLIC    ////
         //////////////////////
 
-        /* Extract a slice from a linked list. */
         Result get() const {
             Result result(indices.length, view.specialization());
             if (indices.length == 0) {
@@ -729,7 +697,6 @@ namespace linked {
             return result;
         }
 
-        /* Replace a slice within a linked list. */
         template <typename Container>
         inline void set(const Container& items) {
             if constexpr (ViewTraits<View>::dictlike && is_pyobject<Container>) {
@@ -742,7 +709,6 @@ namespace linked {
             _set_impl(items);
         }
 
-        /* Delete a slice within a linked list. */
         void del() {
             if (indices.length > 0) {
                 typename View::MemGuard guard = view.reserve();
@@ -782,16 +748,10 @@ namespace linked {
             }
         }
 
-        /* Implicitly convert the proxy into a result where applicable.  This is
-        syntactic sugar for get(), such that `LinkedList<T> list = list.slice(i, j, k)`
-        is equivalent to `LinkedList<T> list = list.slice(i, j, k).get()`. */
         inline operator Result() const {
             return get();
         }
 
-        /* Assign the slice in-place.  This is syntactic sugar for set(), such that
-        `list.slice(i, j, k) = items` is equivalent to
-        `list.slice(i, j, k).set(items)`. */
         template <typename Container>
         inline SliceProxy& operator=(const Container& items) {
             set(items);
@@ -801,7 +761,6 @@ namespace linked {
     };
 
 
-    /* Get a proxy for a slice within the list. */
     template <
         typename Result,
         Yield yield = Yield::KEY,

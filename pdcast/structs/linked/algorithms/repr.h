@@ -15,8 +15,6 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Get a comma-separated, possibly abbreviated string representing the contents
-    of the list, for use in repr()-style string formatting. */
     template <Yield yield = Yield::KEY, typename View>
     auto build_repr(
         const View& view,

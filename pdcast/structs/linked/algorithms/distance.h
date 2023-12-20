@@ -21,7 +21,6 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Get the linear distance between two values in a linked set or dictionary. */
     template <typename View, typename Item>
     auto distance(const View& view, const Item& item1, const Item& item2)
         -> std::enable_if_t<ViewTraits<View>::hashed, long long>

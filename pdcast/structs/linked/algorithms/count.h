@@ -14,9 +14,8 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Count the number of occurrences of an item within a linked list. */
     template <Yield yield = Yield::KEY, typename View, typename Item>
-    inline auto count(
+    auto count(
         const View& view,
         const Item& item,
         std::optional<long long> start,
@@ -67,7 +66,6 @@ namespace linked {
     }
 
 
-    /* Count the number of occurrences of an item within a linked set or dictionary. */
     template <Yield yield = Yield::KEY, typename View, typename Item>
     auto count(
         const View& view,

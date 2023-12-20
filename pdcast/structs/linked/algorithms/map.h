@@ -11,13 +11,10 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Forward declaration for proxy object. */
     template <typename View>
     class MapProxy;
 
 
-    /* Get a proxy for a value that may or may not be stored within a linked
-    dictionary. */
     template <typename View, typename Key>
     auto map(View& view, const Key& key)
         -> std::enable_if_t<ViewTraits<View>::dictlike, MapProxy<View>>
@@ -26,8 +23,6 @@ namespace linked {
     }
 
 
-    /* Get a proxy for a value that may or may not be stored within a linked
-    dictionary. */
     template <typename View, typename Key>
     auto map(const View& view, const Key& key)
         -> std::enable_if_t<ViewTraits<View>::dictlike, const MapProxy<const View>>
@@ -36,7 +31,6 @@ namespace linked {
     }
 
 
-    /* A proxy for an entry in the dictionary, as returned by the [] operator. */
     template <typename View>
     class MapProxy {
         using Node = typename View::Node;
@@ -65,7 +59,6 @@ namespace linked {
         MapProxy& operator=(const MapProxy&) = delete;
         MapProxy& operator=(MapProxy&&) = delete;
 
-        /* Get the value stored with this key or raise an error if it is not found. */
         inline const Value& get() const {
             Node* node = view.search(key);
             if (node == nullptr) {
@@ -74,8 +67,6 @@ namespace linked {
             return node->mapped();
         }
 
-        /* Set the value stored with this key.  Inserts the key with the specified
-        value if it is not already present. */
         inline void set(const Value& value) {
             using Allocator = typename View::Allocator;
             static constexpr unsigned int flags = (
@@ -85,21 +76,14 @@ namespace linked {
             view.template node<flags>(key, value);
         }
 
-        /* Delete the value stored with this key, or raise an error if it is not
-        found. */
         inline void del() {
             view.template recycle<View::Allocator::UNLINK>(key);
         }
 
-        /* Allow simple assignment to the value stored under this key.  This is
-        syntactic sugar for map(key).set(value). */
         inline void operator=(const Value& value) {
             set(value);
         }
 
-        /* Implicitly convert this proxy into its current value.  This is syntactic
-        sugar for map(key).get(), allowing the proxy to be passed in contexts where the
-        value type is expected. */
         inline operator const Value&() const {
             return get();
         }

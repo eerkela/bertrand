@@ -173,7 +173,7 @@ Exc catch_python() {
 
 /* Convert the most recent C++ exception into an equivalent Python error, preserving
 the error message.  Requires the GIL. */
-inline void throw_python() {
+void throw_python() {
     try {
         throw;
     }

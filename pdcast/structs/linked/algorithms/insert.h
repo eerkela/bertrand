@@ -13,9 +13,8 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Insert an item into a linked list, set, or dictionary at the given index. */
     template <typename View, typename Item>
-    inline auto insert(View& view, long long index, const Item& item)
+    auto insert(View& view, long long index, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::linked, void>
     {
         using MemGuard = typename View::MemGuard;
@@ -49,9 +48,8 @@ namespace linked {
     }
 
 
-    /* Insert an item into a linked dictionary at the given index. */
     template <typename View, typename Key, typename Value>
-    inline auto insert(View& view, long long index, const Key& key, const Value& value)
+    auto insert(View& view, long long index, const Key& key, const Value& value)
         -> std::enable_if_t<ViewTraits<View>::dictlike, void>
     {
         using MemGuard = typename View::MemGuard;

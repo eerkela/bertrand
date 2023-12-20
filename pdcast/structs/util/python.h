@@ -954,6 +954,11 @@ public:
     ////    CONVERSIONS    ////
     ///////////////////////////
 
+    /* Implicitly convert a python::List into a PyLongObject* pointer. */
+    inline operator PyLongObject*() const noexcept {
+        return reinterpret_cast<PyLongObject*>(this->obj);
+    }
+
     /* Implicitly convert a python::Int into a C long. */
     inline operator long() const {
         long value = PyLong_AsLong(this->obj);
@@ -1091,6 +1096,11 @@ public:
     ////    CONVERSIONS    ////
     ///////////////////////////
 
+    /* Implicitly convert a python::List into a PyFloatObject* pointer. */
+    inline operator PyFloatObject*() const noexcept {
+        return reinterpret_cast<PyFloatObject*>(this->obj);
+    }
+
     /* Implicitly convert a python::Float into a C double. */
     inline operator double() const {
         return PyFloat_AS_DOUBLE(this->obj);
@@ -1154,6 +1164,11 @@ public:
     ///////////////////////////
     ////    CONVERSIONS    ////
     ///////////////////////////
+
+    /* Implicitly convert a python::List into a PyComplexObject* pointer. */
+    inline operator PyComplexObject*() const noexcept {
+        return reinterpret_cast<PyComplexObject*>(this->obj);
+    }
 
     /* Get the real component of the complex number as a C double. */
     inline double real() const {
@@ -1390,6 +1405,11 @@ public:
     ////    PyTuple_* METHODS    ////
     /////////////////////////////////
 
+    /* Implicitly convert a python::List into a PyTupleObject* pointer. */
+    inline operator PyTupleObject*() const noexcept {
+        return reinterpret_cast<PyTupleObject*>(this->obj);
+    }
+
     /* Construct a new Python tuple containing the given objects. */
     template <typename... Args>
     inline static Tuple pack(Args&&... args) {
@@ -1572,6 +1592,11 @@ public:
     ////////////////////////////////
     ////    PyList_* METHODS    ////
     ////////////////////////////////
+
+    /* Implicitly convert a python::List into a PyListObject* pointer. */
+    inline operator PyListObject*() const noexcept {
+        return reinterpret_cast<PyListObject*>(this->obj);
+    }
 
     /* Get the size of the list. */
     inline size_t size() const noexcept {
@@ -1798,6 +1823,11 @@ public:
     ////   PySet_* METHODS   ////
     /////////////////////////////
 
+    /* Implicitly convert a python::List into a PySetObject* pointer. */
+    inline operator PySetObject*() const noexcept {
+        return reinterpret_cast<PySetObject*>(this->obj);
+    }
+
     /* Get the size of the set. */
     inline size_t size() const noexcept {
         return static_cast<size_t>(PySet_GET_SIZE(this->obj));
@@ -1928,6 +1958,11 @@ public:
     ////////////////////////////////
     ////    PyDict_* METHODS    ////
     ////////////////////////////////
+
+    /* Implicitly convert a python::List into a PyDictObject* pointer. */
+    inline operator PyDictObject*() const noexcept {
+        return reinterpret_cast<PyDictObject*>(this->obj);
+    }
 
     /* Get the size of the dict. */
     inline size_t size() const noexcept {
@@ -2349,6 +2384,11 @@ public:
     ////    PyUnicode_* METHODS    ////
     ///////////////////////////////////
 
+    /* Implicitly convert a python::List into a PyUnicodeObject* pointer. */
+    inline operator PyUnicodeObject*() const noexcept {
+        return reinterpret_cast<PyUnicodeObject*>(this->obj);
+    }
+
     /* Get the underlying unicode buffer. */
     inline void* data() const noexcept {
         return PyUnicode_DATA(this->obj);
@@ -2758,6 +2798,11 @@ public:
     ////    PyCode_* METHODS    ////
     ////////////////////////////////
 
+    /* Implicitly convert a python::List into a PyCodeObject* pointer. */
+    inline operator PyCodeObject*() const noexcept {
+        return reinterpret_cast<PyCodeObject*>(this->obj);
+    }
+
     /* Get the function's base name. */
     inline std::string name() const {
         String<Ref::BORROW> name(
@@ -2882,6 +2927,11 @@ public:
     ////////////////////////////////////
     ////    PyFunction_* METHODS    ////
     ////////////////////////////////////
+
+    /* Implicitly convert a python::List into a PyFunctionObject* pointer. */
+    inline operator PyFunctionObject*() const noexcept {
+        return reinterpret_cast<PyFunctionObject*>(this->obj);
+    }
 
     /* Get the function's code object. */
     inline Code<Ref::BORROW> code() const noexcept {
@@ -3372,7 +3422,7 @@ struct SequenceFilter<std::valarray<T>> : std::true_type {};
 /* Unpack an arbitrary Python iterable or C++ container into a sequence that supports
 random access.  If the input already supports these, then it is returned directly. */
 template <typename Iterable>
-inline auto sequence(Iterable&& iterable) {
+auto sequence(Iterable&& iterable) {
 
     if constexpr (is_pyobject<Iterable>) {
         PyObject* seq = PySequence_Fast(iterable, "expected a sequence");

@@ -15,9 +15,8 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Get the index of an item within a linked list. */
     template <Yield yield = Yield::KEY, typename View, typename Item>
-    inline auto index(
+    auto index(
         const View& view,
         const Item& item,
         std::optional<long long> start,
@@ -77,7 +76,6 @@ namespace linked {
     }
 
 
-    /* Get the index of a key within a linked set or dictionary. */
     template <Yield yield = Yield::KEY, typename View, typename Item>
     auto index(
         const View& view,

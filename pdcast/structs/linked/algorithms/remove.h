@@ -11,7 +11,6 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Remove the first occurrence of an item from a linked list. */
     template <typename View, typename Item>
     auto remove(View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::listlike, void>
@@ -26,7 +25,6 @@ namespace linked {
     }
 
 
-    /* Remove an item from a linked set or dictionary. */
     template <typename View, typename Item>
     auto remove(View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>

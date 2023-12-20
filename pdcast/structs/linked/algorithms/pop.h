@@ -13,14 +13,14 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Pop an item from a linked list, set, or dictionary at the given index. */
-    template <typename View, typename Value = typename View::Value>
-    inline auto pop(View& view, long long index)
+    template <typename View>
+    auto pop(View& view, long long index)
         -> std::enable_if_t<
-            ViewTraits<View>::listlike || ViewTraits<View>::setlike, Value
+            ViewTraits<View>::listlike || ViewTraits<View>::setlike, typename View::Value
         >
     {
         using Node = typename View::Node;
+        using Value = typename View::Value;
         if (view.size() == 0) {
             throw IndexError("pop from empty list");
         }
@@ -51,10 +51,9 @@ namespace linked {
     }
 
 
-    /* Pop a key from a linked dictionary and return its corresponding value. */
-    template <typename View, typename Key, typename Value = typename View::MappedValue>
+    template <typename View, typename Key>
     auto pop(View& view, const Key& key)
-        -> std::enable_if_t<ViewTraits<View>::dictlike, Value>
+        -> std::enable_if_t<ViewTraits<View>::dictlike, typename View::MappedValue>
     {
         using Allocator = typename View::Allocator;
         static constexpr unsigned int flags = (
@@ -68,7 +67,6 @@ namespace linked {
     }
 
 
-    /* Pop a key from a linked dictionary and return its corresponding value. */
     template <typename View, typename Key, typename Value>
     auto pop(View& view, const Key& key, Value& default_value)
         -> std::enable_if_t<ViewTraits<View>::dictlike, Value>
@@ -85,16 +83,16 @@ namespace linked {
     }
 
 
-    /* Pop an key-value pair from a linked dictionary at the given index. */
-    template <
-        typename View,
-        typename Key = typename View::Value,
-        typename Value = typename View::MappedValue
-    >
-    inline auto popitem(View& view, long long index)
-        -> std::enable_if_t<ViewTraits<View>::dictlike, std::pair<Key, Value>>
+    template <typename View>
+    auto popitem(View& view, long long index)
+        -> std::enable_if_t<
+            ViewTraits<View>::dictlike,
+            std::pair<typename View::Value, typename View::MappedValue>
+        >
     {
         using Node = typename View::Node;
+        using Key = typename View::Value;
+        using Value = typename View::MappedValue;
         if (view.size() == 0) {
             throw IndexError("pop from empty dictionary");
         }

@@ -127,7 +127,7 @@ protected:
 
     /* Initialize an uninitialized node for use in the list. */
     template <typename... Args>
-    inline void init_node(Node* node, Args&&... args) {
+    void init_node(Node* node, Args&&... args) {
         // variadic dispatch to node constructor
         new (node) Node(std::forward<Args>(args)...);
 
@@ -160,7 +160,7 @@ protected:
     }
 
     /* Destroy all nodes contained in the list. */
-    inline void destroy_list() noexcept {
+    void destroy_list() noexcept {
         Node* curr = head;
         while (curr != nullptr) {
             Node* next = curr->next();
@@ -529,7 +529,7 @@ public:
         PyMemGuard& operator=(PyMemGuard&&) = delete;
 
         /* Construct a Python MemGuard for a C++ allocator. */
-        inline static PyObject* construct(Derived* allocator, size_t capacity) {
+        static PyObject* construct(Derived* allocator, size_t capacity) {
             PyMemGuard* self = PyObject_New(PyMemGuard, &Type);
             if (self == nullptr) {
                 PyErr_SetString(PyExc_RuntimeError, "failed to allocate PyMemGuard");
@@ -730,7 +730,7 @@ private:
     std::pair<Node*, Node*> free_list;  // singly-linked list of open nodes
 
     /* Adjust the starting capacity of a dynamic list to a power of two. */
-    inline static size_t init_capacity(std::optional<size_t> capacity) {
+    static size_t init_capacity(std::optional<size_t> capacity) {
         if (!capacity.has_value()) {
             return MIN_CAPACITY;
         }
@@ -1007,10 +1007,10 @@ public:
     /* Shrink a dynamic allocator if it is under the minimum load factor.  This is
     called automatically by recycle() as well as when a MemGuard falls out of scope,
     guaranteeing the load factor is never less than 25% of the list's capacity. */
-    inline bool shrink() {
+    bool shrink() {
         using bertrand::util::next_power_of_two;
 
-        if constexpr (!Base::FIXED_SIZE) {
+        if constexpr (Base::FIXED_SIZE) {
             if (!this->frozen() &&
                 this->capacity > MIN_CAPACITY &&
                 this->occupied <= this->capacity / 4
@@ -1225,7 +1225,7 @@ private:
     size_t max_occupants;  // (for fixed-size sets) maximum number of occupants
 
     /* Adjust the starting capacity of a set to a power of two. */
-    inline static size_t init_capacity(std::optional<size_t> capacity) {
+    static size_t init_capacity(std::optional<size_t> capacity) {
         using bertrand::util::next_power_of_two;
 
         if (!capacity.has_value()) {
@@ -1351,7 +1351,7 @@ private:
     }
 
     /* Move a node to the head of the list once it's been found */
-    inline void move_to_head(Node* node) noexcept {
+    void move_to_head(Node* node) noexcept {
         if (node != this->head) {
             Node* prev;
             if constexpr (NodeTraits<Node>::has_prev) {
@@ -1374,7 +1374,7 @@ private:
     }
 
     /* Move a node to the tail of the list once it's been found */
-    inline void move_to_tail(Node* node) noexcept {
+    void move_to_tail(Node* node) noexcept {
         if (node != this->tail) {
             Node* prev;
             if constexpr (NodeTraits<Node>::has_prev) {
@@ -1397,7 +1397,7 @@ private:
     }
 
     /* Evict the head node of the list. */
-    inline void evict_head() {
+    void evict_head() {
         Node* evicted = this->head;
         this->head = evicted->next();
         if (this->head == nullptr) {
@@ -1408,7 +1408,7 @@ private:
     }
 
     /* Evict the tail node of the list. */
-    inline void evict_tail() {
+    void evict_tail() {
         Node* evicted = this->tail;
         Node* prev;
         if constexpr (NodeTraits<Node>::has_prev) {
@@ -1430,7 +1430,7 @@ private:
     }
 
     /* Insert a node at the head of the list. */
-    inline void insert_head(Node* node) noexcept {
+    void insert_head(Node* node) noexcept {
         Node::join(node, this->head);
         this->head = node;
         if (this->tail == nullptr) {
@@ -1439,7 +1439,7 @@ private:
     }
 
     /* Insert a node at the tail of the list. */
-    inline void insert_tail(Node* node) noexcept {
+    void insert_tail(Node* node) noexcept {
         Node::join(this->tail, node);
         this->tail = node;
         if (this->head == nullptr) {
@@ -1448,7 +1448,7 @@ private:
     }
 
     /* Unlink a node from its neighbors before recycling it. */
-    inline void unlink(Node* node) {
+    void unlink(Node* node) {
         Node* next = node->next();
         Node* prev;
         if constexpr (NodeTraits<Node>::has_prev) {
@@ -2078,7 +2078,7 @@ public:
     /* Shrink a dynamic allocator if it is under the minimum load factor.  This is
     called automatically by recycle() as well as when a MemGuard falls out of scope,
     guaranteeing the load factor is never less than 25% of the table's capacity. */
-    inline bool shrink() {
+    bool shrink() {
         using bertrand::util::next_power_of_two;
 
         if constexpr (!Base::FIXED_SIZE) {

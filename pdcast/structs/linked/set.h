@@ -48,7 +48,6 @@ class LinkedSet;
 
 namespace set_config {
 
-    /* Apply default config flags for C++ LinkedLists. */
     static constexpr unsigned int defaults(unsigned int flags) {
         unsigned int result = flags;
         if (!(result & (Config::DOUBLY_LINKED | Config::SINGLY_LINKED | Config::XOR))) {
@@ -57,7 +56,6 @@ namespace set_config {
         return result;
     }
 
-    /* Determine the corresponding node type for the given config flags. */
     template <typename T, unsigned int Flags>
     using NodeSelect = std::conditional_t<
         !!(Flags & Config::DOUBLY_LINKED),
@@ -65,21 +63,12 @@ namespace set_config {
         SingleNode<T>
     >;
 
-    template <typename T>
-    struct IsSet : std::false_type {};
-    template <typename T, unsigned int Flags, typename Lock>
-    struct IsSet<LinkedSet<T, Flags, Lock>> : std::true_type {};
-
-    template <typename T>
-    static constexpr bool is_set = IsSet<
-        std::remove_cv_t<std::remove_reference_t<T>>
-    >::value;
-
-
-    template <typename Container, typename T>
-    using EnableIfNotSet = std::enable_if_t<!is_set<Container>, T>;
-
 }
+
+
+/////////////////////////
+////    LINKEDSET    ////
+/////////////////////////
 
 
 /* An ordered set based on a combined linked list and hash table. */
@@ -104,7 +93,7 @@ class LinkedSet : public LinkedBase<
     >;
     using DynamicSet = LinkedSet<K, Flags & ~Config::FIXED_SIZE, Lock>;
 
-    inline DynamicSet as_dynamic() const {
+    DynamicSet as_dynamic() const {
         DynamicSet result(this->size(), this->specialization());
         for (auto it = this->begin(), end = this->end(); it != end; ++it) {
             result.view.template node<Base::Allocator::INSERT_TAIL>(*(it.curr()));
@@ -523,8 +512,7 @@ public:
     ////    OPERATOR OVERLOADS    ////
     //////////////////////////////////
 
-    /* NOTE: operators are implemented as non-member functions for commutativity.
-     * The supported operators are as follows:
+    /* NOTE: The supported operators are as follows:
      *      (|, |=)     union, union update
      *      (&, &=)     intersection, intersection update
      *      (-, -=)     difference, difference update
@@ -551,12 +539,102 @@ public:
         return position(index);
     }
 
+    template <typename Container>
+    inline DynamicSet operator|(const Container& other) const {
+        return union_(other);
+    }
+
+    template <typename Container>
+    inline LinkedSet& operator|=(const Container& other) {
+        update(other);
+        return *this;
+    }
+
+    template <typename Container>
+    inline DynamicSet operator-(const Container& other) const {
+        return difference(other);
+    }
+
+    template <typename Container>
+    inline LinkedSet& operator-=(const Container& other) {
+        difference_update(other);
+        return *this;
+    }
+
+    template <typename Container>
+    inline DynamicSet operator&(const Container& other) const {
+        return intersection(other);
+    }
+
+
+    template <typename Container>
+    inline LinkedSet& operator&=(const Container& other) {
+        intersection_update(other);
+        return *this;
+    }
+
+
+    template <typename Container>
+    inline DynamicSet operator^(const Container& other) const {
+        return symmetric_difference(other);
+    }
+
+
+    template <typename Container>
+    inline LinkedSet& operator^=(const Container& other) {
+        symmetric_difference_update(other);
+        return *this;
+    }
+
+
+    template <typename Container>
+    inline bool operator<(const Container& other) const {
+        return linked::issubset<true>(this->view, other);
+    }
+
+
+    template <typename Container>
+    inline bool operator<=(const Container& other) const {
+        return linked::issubset<false>(this->view, other);
+    }
+
+
+    template <typename Container>
+    inline bool operator==(const Container& other) const {
+        using C = std::remove_cv_t<std::remove_reference_t<Container>>;
+        if constexpr (std::is_same_v<C, LinkedSet>) {
+            if (this == &other) {
+                return true;
+            }
+        }
+        return linked::set_equal<true>(this->view, other);
+    }
+
+
+    template <typename Container>
+    inline bool operator!=(const Container& other) const {
+        using C = std::remove_cv_t<std::remove_reference_t<Container>>;
+        if constexpr (std::is_same_v<C, LinkedSet>) {
+            if (this == &other) {
+                return false;
+            }
+        }
+        return linked::set_equal<false>(this->view, other);
+    }
+
+
+    template <typename Container>
+    inline bool operator>=(const Container& other) const {
+        return linked::issuperset<false>(this->view, other);
+    }
+
+
+    template <typename Container>
+    inline bool operator>(const Container& other) const {
+        return linked::issuperset<true>(this->view, other);
+    }
+
 };
-
-
-/////////////////////////////
-////    SET OPERATORS    ////
-/////////////////////////////
 
 
 template <typename T, unsigned int Flags, typename... Ts>
@@ -574,176 +652,12 @@ inline auto operator<<(std::ostream& stream, const LinkedSet<T, Flags, Ts...>& s
 }
 
 
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator|(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
-    return set.union_(other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator|=(LinkedSet<T, Flags, Ts...>& set, const Container& other)
-    -> LinkedSet<T, Flags, Ts...>&
-{
-    set.update(other);
-    return set;
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator-(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
-    return set.difference(other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator-=(LinkedSet<T, Flags, Ts...>& set, const Container& other)
-    -> LinkedSet<T, Flags, Ts...>&
-{
-    set.difference_update(other);
-    return set;
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator&(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
-    return set.intersection(other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator&=(LinkedSet<T, Flags, Ts...>& set, const Container& other)
-    -> LinkedSet<T, Flags, Ts...>&
-{
-    set.intersection_update(other);
-    return set;
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator^(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
-    return set.symmetric_difference(other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator^=(LinkedSet<T, Flags, Ts...>& set, const Container& other)
-    -> LinkedSet<T, Flags, Ts...>&
-{
-    set.symmetric_difference_update(other);
-    return set;
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator<(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
-    return linked::issubset<true>(set.view, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator<(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
-    -> set_config::EnableIfNotSet<Container, bool>
-{
-    return linked::issuperset<true>(set.view, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator<=(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
-    return linked::issubset<false>(set.view, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator<=(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
-    -> set_config::EnableIfNotSet<Container, bool>
-{
-    return linked::issuperset<false>(set.view, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator==(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
-    if constexpr (std::is_same_v<decltype(set), decltype(other)>) {
-        if (&set == &other) {
-            return true;
-        }
-    }
-    return linked::set_equal<true>(set.view, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator==(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
-    -> set_config::EnableIfNotSet<Container, bool>
-{
-    if constexpr (std::is_same_v<decltype(set), decltype(other)>) {
-        if (&set == &other) {
-            return true;
-        }
-    }
-    return linked::set_equal<true>(set.view, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator!=(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
-    if constexpr (std::is_same_v<decltype(set), decltype(other)>) {
-        if (&set == &other) {
-            return false;
-        }
-    }
-    return linked::set_equal<false>(set.view, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator!=(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
-    -> set_config::EnableIfNotSet<Container, bool>
-{
-    if constexpr (std::is_same_v<decltype(set), decltype(other)>) {
-        if (&set == &other) {
-            return false;
-        }
-    }
-    return linked::set_equal<false>(set.view, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator>=(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
-    return linked::issuperset<false>(set.view, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator>=(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
-    -> set_config::EnableIfNotSet<Container, bool>
-{
-    return linked::issubset<false>(set.view, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator>(const LinkedSet<T, Flags, Ts...>& set, const Container& other) {
-    return linked::issuperset<true>(set.view, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator>(const Container& other, const LinkedSet<T, Flags, Ts...>& set)
-    -> set_config::EnableIfNotSet<Container, bool>
-{
-    return linked::issubset<true>(set.view, other);
-}
-
-
 //////////////////////////////
 ////    PYTHON WRAPPER    ////
 //////////////////////////////
 
 
-/* CRTP mixin class containing the Python set interface for a linked data structure. */
+/* CRTP mixin class containing the public set interface for a linked data structure. */
 template <typename Derived>
 class PySetInterface {
     using CallProtocol = bertrand::util::CallProtocol;
@@ -752,7 +666,7 @@ class PySetInterface {
     using PyArgs = bertrand::util::PyArgs<call>;
 
     template <typename Func, typename Result = PyObject*>
-    inline static Result visit(Derived* self, Func func, Result err_code = nullptr) {
+    static Result visit(Derived* self, Func func, Result err_code = nullptr) {
         try {
             return std::visit(func, self->variant);
         } catch (...) {
@@ -762,7 +676,7 @@ class PySetInterface {
     }
 
     template <typename Func>
-    inline static auto unwrap_variant(PyObject* arg, Func func) {
+    static auto unwrap_python(PyObject* arg, Func func) {
         if (Derived::typecheck(arg)) {
             Derived* other = reinterpret_cast<Derived*>(arg);
             return std::visit(func, other->variant);
@@ -820,7 +734,7 @@ public:
                 result.update(other);
             };
             for (Py_ssize_t i = 0; i < nargs; ++i) {
-                unwrap_variant(args[i], execute);
+                unwrap_python(args[i], execute);
             }
             return Derived::construct(std::move(result));
         });
@@ -833,7 +747,7 @@ public:
                 result.update_left(other);
             };
             for (Py_ssize_t i = 0; i < nargs; ++i) {
-                unwrap_variant(args[i], execute);
+                unwrap_python(args[i], execute);
             }
             return Derived::construct(std::move(result));
         });
@@ -845,7 +759,7 @@ public:
                 set.update(other);
             };
             for (Py_ssize_t i = 0; i < nargs; ++i) {
-                unwrap_variant(args[i], execute);
+                unwrap_python(args[i], execute);
             }
             Py_RETURN_NONE;
         });
@@ -857,7 +771,7 @@ public:
                 set.update_left(other);
             };
             for (Py_ssize_t i = 0; i < nargs; ++i) {
-                unwrap_variant(args[i], execute);
+                unwrap_python(args[i], execute);
             }
             Py_RETURN_NONE;
         });
@@ -869,7 +783,7 @@ public:
                 set.lru_update(other);
             };
             for (Py_ssize_t i = 0; i < nargs; ++i) {
-                unwrap_variant(args[i], execute);
+                unwrap_python(args[i], execute);
             }
             Py_RETURN_NONE;
         });
@@ -882,7 +796,7 @@ public:
                 result.difference_update(other);
             };
             for (Py_ssize_t i = 0; i < nargs; ++i) {
-                unwrap_variant(args[i], execute);
+                unwrap_python(args[i], execute);
             }
             return Derived::construct(std::move(result));
         });
@@ -898,7 +812,7 @@ public:
                 set.difference_update(other);
             };
             for (Py_ssize_t i = 0; i < nargs; ++i) {
-                unwrap_variant(args[i], execute);
+                unwrap_python(args[i], execute);
             }
             Py_RETURN_NONE;
         });
@@ -915,7 +829,7 @@ public:
                 result.intersection_update(other);
             };
             for (Py_ssize_t i = 0; i < nargs; ++i) {
-                unwrap_variant(args[i], execute);
+                unwrap_python(args[i], execute);
             }
             return Derived::construct(std::move(result));
         });
@@ -931,7 +845,7 @@ public:
                 set.intersection_update(other);
             };
             for (Py_ssize_t i = 0; i < nargs; ++i) {
-                unwrap_variant(args[i], execute);
+                unwrap_python(args[i], execute);
             }
             Py_RETURN_NONE;
         });
@@ -939,7 +853,7 @@ public:
 
     static PyObject* symmetric_difference(Derived* self, PyObject* items) {
         return visit(self, [&items](auto& set) {
-            return unwrap_variant(items, [&set](auto& other) {
+            return unwrap_python(items, [&set](auto& other) {
                 return Derived::construct(set.symmetric_difference_left(other));
             });
         });
@@ -947,7 +861,7 @@ public:
 
     static PyObject* symmetric_difference_left(Derived* self, PyObject* items) {
         return visit(self, [&items](auto& set) {
-            return unwrap_variant(items, [&set](auto& other) {
+            return unwrap_python(items, [&set](auto& other) {
                 return Derived::construct(set.symmetric_difference_left(other));
             });
         });
@@ -955,7 +869,7 @@ public:
 
     static PyObject* symmetric_difference_update(Derived* self, PyObject* items) {
         return visit(self, [&items](auto& set) {
-            unwrap_variant(items, [&set](auto& other) {
+            unwrap_python(items, [&set](auto& other) {
                 set.symmetric_difference_update(other);
             });
             Py_RETURN_NONE;
@@ -964,7 +878,7 @@ public:
 
     static PyObject* symmetric_difference_update_left(Derived* self, PyObject* items) {
         return visit(self, [&items](auto& set) {
-            unwrap_variant(items, [&set](auto& other) {
+            unwrap_python(items, [&set](auto& other) {
                 set.symmetric_difference_update_left(other);
             });
             Py_RETURN_NONE;
@@ -973,7 +887,7 @@ public:
 
     static PyObject* isdisjoint(Derived* self, PyObject* other) {
         return visit(self, [&other](auto& set) {
-            return unwrap_variant(other, [&set](auto& other) {
+            return unwrap_python(other, [&set](auto& other) {
                 return Py_NewRef(set.isdisjoint(other) ? Py_True : Py_False);
             });
         });
@@ -981,7 +895,7 @@ public:
 
     static PyObject* issubset(Derived* self, PyObject* other) {
         return visit(self, [&other](auto& set) {
-            return unwrap_variant(other, [&set](auto& other) {
+            return unwrap_python(other, [&set](auto& other) {
                 return Py_NewRef(set.issubset(other) ? Py_True : Py_False);
             });
         });
@@ -989,7 +903,7 @@ public:
 
     static PyObject* issuperset(Derived* self, PyObject* other) {
         return visit(self, [&other](auto& set) {
-            return unwrap_variant(other, [&set](auto& other) {
+            return unwrap_python(other, [&set](auto& other) {
                 return Py_NewRef(set.issuperset(other) ? Py_True : Py_False);
             });
         });
@@ -1050,7 +964,7 @@ public:
 
     static PyObject* __or__(Derived* self, PyObject* other) {
         return visit(self, [&other](auto& set) {
-            return unwrap_variant(other, [&set](auto& other) {
+            return unwrap_python(other, [&set](auto& other) {
                 return Derived::construct(set | other);
             });
         });
@@ -1058,7 +972,7 @@ public:
 
     static PyObject* __ior__(Derived* self, PyObject* other) {
         return visit(self, [&self, &other](auto& set) {
-            unwrap_variant(other, [&set](auto& other) {
+            unwrap_python(other, [&set](auto& other) {
                 set |= other;
             });
             return Py_NewRef(reinterpret_cast<PyObject*>(self));
@@ -1067,7 +981,7 @@ public:
 
     static PyObject* __sub__(Derived* self, PyObject* other) {
         return visit(self, [&other](auto& set) {
-            return unwrap_variant(other, [&set](auto& other) {
+            return unwrap_python(other, [&set](auto& other) {
                 return Derived::construct(set - other);
             });
         });
@@ -1075,7 +989,7 @@ public:
 
     static PyObject* __isub__(Derived* self, PyObject* other) {
         return visit(self, [&self, &other](auto& set) {
-            unwrap_variant(other, [&set](auto& other) {
+            unwrap_python(other, [&set](auto& other) {
                 set -= other;
             });
             return Py_NewRef(reinterpret_cast<PyObject*>(self));
@@ -1084,7 +998,7 @@ public:
 
     static PyObject* __and__(Derived* self, PyObject* other) {
         return visit(self, [&other](auto& set) {
-            return unwrap_variant(other, [&set](auto& other) {
+            return unwrap_python(other, [&set](auto& other) {
                 return Derived::construct(set & other);
             });
         });
@@ -1092,7 +1006,7 @@ public:
 
     static PyObject* __iand__(Derived* self, PyObject* other) {
         return visit(self, [&self, &other](auto& set) {
-            unwrap_variant(other, [&set](auto& other) {
+            unwrap_python(other, [&set](auto& other) {
                 set &= other;
             });
             return Py_NewRef(reinterpret_cast<PyObject*>(self));
@@ -1101,7 +1015,7 @@ public:
 
     static PyObject* __xor__(Derived* self, PyObject* other) {
         return visit(self, [&other](auto& set) {
-            return unwrap_variant(other, [&set](auto& other) {
+            return unwrap_python(other, [&set](auto& other) {
                 return Derived::construct(set ^ other);
             });
         });
@@ -1109,7 +1023,7 @@ public:
 
     static PyObject* __ixor__(Derived* self, PyObject* other) {
         return visit(self, [&self, &other](auto& set) {
-            unwrap_variant(other, [&set](auto& other) {
+            unwrap_python(other, [&set](auto& other) {
                 set ^= other;
             });
             return Py_NewRef(reinterpret_cast<PyObject*>(self));
@@ -1643,8 +1557,8 @@ the given index.  For doubly-linked sets, it is optimized to O(n/2).
 };
 
 
-/* A discriminated union of templated `LinkedSet` types that can be constructed from
-Python. */
+/* A Python type that exposes a discriminated union of C++ LinkedSets to the Python
+interpreter. */
 class PyLinkedSet :
     public PyLinkedBase<PyLinkedSet>,
     public PyListInterface<PyLinkedSet>,
@@ -2079,7 +1993,7 @@ public:
 
     /* Allocate and construct a fully-formed PyLinkedSet from its C++ equivalent. */
     template <typename Set>
-    inline static PyObject* construct(Set&& set) {
+    static PyObject* construct(Set&& set) {
         PyLinkedSet* result = reinterpret_cast<PyLinkedSet*>(
             Type.tp_new(&Type, nullptr, nullptr)
         );
@@ -2097,7 +2011,7 @@ public:
     }
 
     /* Check whether another PyObject* is of this type. */
-    inline static bool typecheck(PyObject* obj) {
+    static bool typecheck(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &Type);
         if (result == -1) {
             throw catch_python();
@@ -2108,9 +2022,9 @@ public:
 };
 
 
-/* Python module definition. */
+/* bertrand.structs.linked.set module definition. */
 static struct PyModuleDef module_set = {
-    PyModuleDef_HEAD_INIT,
+    .m_base = PyModuleDef_HEAD_INIT,
     .m_name = "set",
     .m_doc = (
         "This module contains an optimized LinkedSet data structure for use "
@@ -2145,7 +2059,6 @@ PyMODINIT_FUNC PyInit_set(void) {
 }  // namespace linked
 
 
-/* Export to base namespace */
 using linked::LinkedSet;
 using linked::PyLinkedSet;
 

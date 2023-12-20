@@ -269,7 +269,7 @@ public:
     /* Insert a node between the previous and current nodes, implicitly rewinding the
     iterator. */
     template <bool cond = !CONSTANT>
-    inline auto insert(Node* node) -> std::enable_if_t<cond, void> {
+    auto insert(Node* node) -> std::enable_if_t<cond, void> {
         if constexpr (DIRECTION == Direction::BACKWARD) {
             view.link(_curr, node, _next);
         } else {
@@ -290,7 +290,7 @@ public:
 
     /* Remove the node at the current position, implicitly advancing the iterator. */
     template <bool cond = !CONSTANT>
-    inline auto drop() -> std::enable_if_t<cond, Node*> {
+    auto drop() -> std::enable_if_t<cond, Node*> {
         Node* removed = _curr;
         view.unlink(_prev, _curr, _next);
 

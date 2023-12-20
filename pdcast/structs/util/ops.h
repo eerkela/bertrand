@@ -26,7 +26,6 @@ namespace bertrand {
 
 namespace util {
 
-
     // TODO: add string -> PyUnicode?
 
     /* Attempt to convert a C++ argument into an equivalent Python object. */
@@ -305,10 +304,11 @@ inline std::optional<size_t> len(const T& x) {
 /* Get a string representation of a Python object using PyObject_Repr(). */
 template <typename T>
 auto repr(const T& obj) -> typename util::Repr<T>::template Python<std::string> {
-    if (static_cast<PyObject*>(obj) == nullptr) {
+    PyObject* py_obj = static_cast<PyObject*>(obj);  // triggers implicit conversions
+    if (py_obj == nullptr) {
         return std::string("NULL");
     }
-    PyObject* py_repr = PyObject_Repr(static_cast<PyObject*>(obj));
+    PyObject* py_repr = PyObject_Repr(py_obj);
     if (py_repr == nullptr) {
         throw catch_python();
     }
@@ -730,7 +730,7 @@ inline auto power(const LHS& lhs, const RHS& rhs) {
 /* Apply a `/` operation between any combination of C++ or Python objects,
 with C++ semantics. */
 template <typename LHS, typename RHS>
-inline auto divide(const LHS& lhs, const RHS& rhs) {
+auto divide(const LHS& lhs, const RHS& rhs) {
     auto execute = [](auto a, auto b) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             // NOTE: C++ division operator truncates integers toward zero, whereas Python
@@ -814,7 +814,7 @@ inline auto divide(const LHS& lhs, const RHS& rhs) {
 /* Apply a `%` operation between any combination of C++ or Python objects,
 with C++ semantics. */
 template <typename LHS, typename RHS>
-inline auto modulo(const LHS& lhs, const RHS& rhs) {
+auto modulo(const LHS& lhs, const RHS& rhs) {
     auto execute = [](auto a, auto b) {
         if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
             // NOTE: C++ modulus operator always retains the sign of the numerator, whereas

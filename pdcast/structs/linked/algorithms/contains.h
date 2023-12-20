@@ -11,9 +11,8 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Check if an item is contained within a linked list. */
     template <Yield yield = Yield::KEY, typename View, typename Item>
-    inline auto contains(const View& view, const Item& item)
+    auto contains(const View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::listlike || yield == Yield::VALUE, bool>
     {
         auto it = view.template begin<yield>();
@@ -27,7 +26,6 @@ namespace linked {
     }
 
 
-    /* Check if an item is contained within a linked set or dictionary. */
     template <Yield yield = Yield::KEY, typename View, typename Item>
     inline auto contains(const View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::hashed && yield != Yield::VALUE, bool>
@@ -39,15 +37,12 @@ namespace linked {
                 is_pairlike<Item>,
                 "item must be pair-like (e.g. std::pair or std::tuple of size 2)"
             );
-
-            using Node = typename View::Node;
-            const Node* node = view.search(std::get<0>(item));
+            const typename View::Node* node = view.search(std::get<0>(item));
             return node != nullptr && eq(node->mapped(), std::get<1>(item));
         }
     }
 
-    /* Check if an item is contained within a linked set or dictionary and move it to
-    the front if so. */
+
     template <typename View, typename Item>
     inline auto lru_contains(View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::hashed, bool>

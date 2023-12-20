@@ -14,14 +14,7 @@ namespace bertrand {
 namespace linked {
 
 
-    ///////////////////////////////////
-    ////    INDEX NORMALIZATION    ////
-    ///////////////////////////////////
-
-
-    /* Normalize a numeric index, applying Python-style wraparound and bounds
-    checking. */
-    inline size_t normalize_index(long long index, size_t size, bool truncate) {
+    size_t normalize_index(long long index, size_t size, bool truncate) {
         // wraparound
         bool lt_zero = index < 0;
         if (lt_zero) {
@@ -41,8 +34,7 @@ namespace linked {
     }
 
 
-    /* Normalize a Python integer for use as an index to a list. */
-    inline size_t normalize_index(PyObject* index, size_t size, bool truncate) {
+    size_t normalize_index(PyObject* index, size_t size, bool truncate) {
         if (!PyLong_Check(index)) {
             throw TypeError("index must be a Python integer");
         }
@@ -56,13 +48,6 @@ namespace linked {
     }
 
 
-    /////////////////////
-    ////    PROXY    ////
-    /////////////////////
-
-
-    /* A proxy for an element at a particular index of a linked data structure, as
-    returned by the [] operator. */
     template <typename View, Yield yield, bool as_pytuple = false>
     class ElementProxy {
 
@@ -128,7 +113,6 @@ namespace linked {
         ElementProxy& operator=(const ElementProxy&) = delete;
         ElementProxy& operator=(ElementProxy&&) = delete;
 
-        /* Clean up the union iterator when the proxy is destroyed. */
         ~ElementProxy() {
             if (is_fwd) {
                 fwd.~Iter<Direction::FORWARD>();
@@ -137,33 +121,24 @@ namespace linked {
             }
         }
 
-        /* Get the value at the current index. */
         inline Deref get() const {
             return is_fwd ? *fwd : *bwd;
         }
 
-        /* Set the value at the current index. */
         template <typename... Args>
         inline void set(Args&&... args) {
             typename View::Node* node = view.node(std::forward<Args>(args)...);
             view.recycle(is_fwd ? fwd.replace(node) : bwd.replace(node));
         }
 
-        /* Delete the value at the current index. */
         inline void del() {
             view.recycle(is_fwd ? fwd.drop() : bwd.drop());
         }
 
-        /* Implicitly convert the proxy to the value where applicable.  This is
-        syntactic sugar for the get() method, such that `Value value = list[i]` is
-        equivalent to `Value value = list[i].get()`. */
         inline operator Deref() const {
             return get();
         }
 
-        /* Assign the value at the current index.  This is syntactic sugar for the
-        set() method, such that `list[i] = value` is equivalent to
-        `list[i].set(value)`. */
         inline ElementProxy& operator=(const Deref& value) {
             set(value);
             return *this;
@@ -172,9 +147,8 @@ namespace linked {
     };
 
 
-    /* Get a proxy for a value at a particular index of the list. */
     template <Yield yield = Yield::KEY, bool as_pytuple = false, typename View>
-    inline auto position(View& view, long long index)
+    auto position(View& view, long long index)
         -> std::enable_if_t<
             ViewTraits<View>::linked,
             std::conditional_t<

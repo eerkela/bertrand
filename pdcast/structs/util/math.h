@@ -32,7 +32,9 @@ inline T next_power_of_two(T n) {
 template <typename T, std::enable_if_t<std::is_unsigned_v<T>, int> = 0>
 inline unsigned char log2(T n) {
     unsigned char count = 0;
-    while (n >>= 1) ++count;
+    while (n >>= 1) {
+        ++count;
+    }
     return count;
 }
 

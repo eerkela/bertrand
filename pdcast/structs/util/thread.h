@@ -448,7 +448,7 @@ public:
     /* Acquire the lock in shared mode, allowing repeated locks within a single
     thread. */
     template <typename... Args>
-    inline SharedGuard shared(Args&&... args) const {
+    SharedGuard shared(Args&&... args) const {
         auto id = std::this_thread::get_id();
 
         // if the current thread already owns the lock, return an empty guard
@@ -487,7 +487,7 @@ public:
     /* Acquire the lock in exclusive mode, allowing repeated locks within a single
     thread. */
     template <typename... Args>
-    inline ExclusiveGuard operator()(Args&&... args) const {
+    ExclusiveGuard operator()(Args&&... args) const {
         auto id = std::this_thread::get_id();
 
         if (id == owner) {
@@ -576,7 +576,7 @@ public:
 
     /* Acquire an exclusive lock, spinning according to the template parameters. */
     template <typename... Args>
-    inline auto operator()(Args&&... args) const
+    auto operator()(Args&&... args) const
         -> decltype(LockType::operator()(std::forward<Args>(args)...))
     {
         using Guard = decltype(LockType::operator()(std::forward<Args>(args)...));
@@ -617,7 +617,7 @@ public:
 
     /* Acquire a shared lock, spinning according to the template parameters. */
     template <typename... Args>
-    inline auto shared(Args&&... args) const
+    auto shared(Args&&... args) const
         -> decltype(LockType::shared(std::forward<Args>(args)...))
     {
         using Guard = decltype(LockType::shared(std::forward<Args>(args)...));
@@ -674,7 +674,7 @@ public:
 
     /* Track the elapsed time to acquire a lock on the internal mutex. */
     template <typename... Args>
-    inline auto operator()(Args&&... args) const {
+    auto operator()(Args&&... args) const {
         auto start = Clock::now();
 
         auto result = LockType::operator()(std::forward<Args>(args)...);
@@ -687,7 +687,7 @@ public:
 
     /* Track the elapsed time to acquire a shared lock, if enabled. */
     template <typename... Args>
-    inline auto shared(Args&&... args) const
+    auto shared(Args&&... args) const
         -> decltype(LockType::shared(std::forward<Args>(args)...))
     {
         auto start = Clock::now();

@@ -20,13 +20,12 @@ namespace linked {
      */
 
 
-    /* Add multiple items to the end of a list, set, or dictionary. */
     template <typename View, typename Container>
     auto extend(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::listlike, void>
     {
         using MemGuard = typename View::MemGuard;
-        MemGuard guard = view.try_reserve(items);  // preallocate if size is known
+        MemGuard guard = view.try_reserve(items);
 
         size_t size = view.size();
         try {
@@ -59,13 +58,12 @@ namespace linked {
     }
 
 
-    /* Add multiple items to the end of a list, set, or dictionary. */
     template <typename View, typename Container>
     auto extend_left(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::listlike, void>
     {
         using MemGuard = typename View::MemGuard;
-        MemGuard guard = view.try_reserve(items);  // preallocate if size is known
+        MemGuard guard = view.try_reserve(items);
 
         size_t size = view.size();
         try {

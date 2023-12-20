@@ -9,7 +9,6 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Add an item to the end of a linked list, set, or dictionary. */
     template <typename View, typename Item>
     inline auto append(View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::linked, void>
@@ -18,7 +17,6 @@ namespace linked {
     }
 
 
-    /* Add an item at the start of a linked list, set, or dictionary. */
     template <typename View, typename Item>
     inline auto append_left(View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::linked, void>
@@ -27,7 +25,6 @@ namespace linked {
     }
 
 
-    /* Add a key-value pair to the end of a linked dictionary. */
     template <typename View, typename Key, typename Value>
     inline auto append(View& view, const Key& key, const Value& value)
         -> std::enable_if_t<ViewTraits<View>::dictlike, void>
@@ -36,7 +33,6 @@ namespace linked {
     }
 
 
-    /* Add a key-value pair at the start of a linked dictionary. */
     template <typename View, typename Key, typename Value>
     inline auto append_left(View& view, const Key& key, const Value& value)
         -> std::enable_if_t<ViewTraits<View>::dictlike, void>

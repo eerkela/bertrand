@@ -13,7 +13,6 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Move an item within a linked set or dictionary. */
     template <typename View, typename Item>
     auto move(View& view, const Item& item, long long steps)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
@@ -100,7 +99,6 @@ namespace linked {
     }
 
 
-    /* Move a key to a particular index of a linked set or dictionary. */
     template <typename View, typename Item>
     auto move_to_index(View& view, const Item& item, long long index)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>

@@ -12,23 +12,36 @@
 #include "update.h"  // update()
 
 
-// TODO: intersection should use value from other container if it is dictlike?
-
-// TODO: work in Yield::VALUE/ITEM for dictlike views.
-
-
 namespace bertrand {
 namespace linked {
 
 
-    /* Get the union of keys held a linked set compared to those of an arbitrary
-    container. */
-    template <bool left = false, typename View, typename Container>
-    auto union_(const View& view, const Container& items)
-        -> std::enable_if_t<
+    namespace union_config {
+
+        template <typename View>
+        using EnableIfSetlike = std::enable_if_t<
             ViewTraits<View>::setlike,
             typename ViewTraits<View>::As::DYNAMIC
-        >
+        >;
+
+        template <typename View, Yield yield>
+        using EnableIfDictlike = std::enable_if_t<
+            ViewTraits<View>::dictlike,
+            std::conditional_t<
+                yield == Yield::KEY,
+                typename ViewTraits<
+                    typename ViewTraits<View>::As::DYNAMIC
+                >::As::template Set<Yield::KEY>,
+                typename ViewTraits<View>::As::DYNAMIC
+            >
+        >;
+
+    }
+
+
+    template <bool left = false, typename View, typename Container>
+    auto union_(const View& view, const Container& items)
+        -> union_config::EnableIfSetlike<View>
     {
         using DynamicView = typename ViewTraits<View>::As::DYNAMIC;
         using Allocator = typename View::Allocator;
@@ -49,20 +62,9 @@ namespace linked {
     }
 
 
-    /* Get the union of keys or key-value pairs held in a linked dictionary compared to
-    those of an arbitrary container. */
     template <Yield yield = Yield::KEY, bool left = false, typename View, typename Container>
     auto union_(const View& view, const Container& items)
-        -> std::enable_if_t<
-            ViewTraits<View>::dictlike,
-            std::conditional_t<
-                yield == Yield::KEY,
-                typename ViewTraits<
-                    typename ViewTraits<View>::As::DYNAMIC
-                >::As::template Set<Yield::KEY>,
-                typename ViewTraits<View>::As::DYNAMIC
-            >
-        >
+        -> union_config::EnableIfDictlike<View, yield>
     {
         static_assert(
             yield != Yield::VALUE,
@@ -119,14 +121,9 @@ namespace linked {
     }
 
 
-    /* Get the difference of keys held in a linked set compared to those of an arbitrary
-    container. */
     template <typename View, typename Container>
     auto difference(const View& view, const Container& items)
-        -> std::enable_if_t<
-            ViewTraits<View>::setlike,
-            typename ViewTraits<View>::As::DYNAMIC
-        >
+        -> union_config::EnableIfSetlike<View>
     {
         using DynamicView = typename ViewTraits<View>::As::DYNAMIC;
         using Node = typename View::Node;
@@ -149,20 +146,9 @@ namespace linked {
     }
 
 
-    /* Get the difference of keys held in a linked set compared to those of an arbitrary
-    container. */
     template <Yield yield = Yield::KEY, typename View, typename Container>
     auto difference(const View& view, const Container& items)
-        -> std::enable_if_t<
-            ViewTraits<View>::dictlike,
-            std::conditional_t<
-                yield == Yield::KEY,
-                typename ViewTraits<
-                    typename ViewTraits<View>::As::DYNAMIC
-                >::As::template Set<Yield::KEY>,
-                typename ViewTraits<View>::As::DYNAMIC
-            >
-        >
+        -> union_config::EnableIfDictlike<View, yield>
     {
         static_assert(
             yield != Yield::VALUE,
@@ -221,14 +207,9 @@ namespace linked {
     }
 
 
-    /* Get the intersection of keys held in a linked set compared to those of an
-    arbitrary container. */
     template <typename View, typename Container>
     auto intersection(const View& view, const Container& items)
-        -> std::enable_if_t<
-            ViewTraits<View>::setlike,
-            typename ViewTraits<View>::As::DYNAMIC
-        >
+        -> union_config::EnableIfSetlike<View>
     {
         using DynamicView = typename ViewTraits<View>::As::DYNAMIC;
         using Node = typename View::Node;
@@ -251,20 +232,9 @@ namespace linked {
     }
 
 
-    /* Get the intersection of keys or key-value pairs held in a linked dictionary
-    compared to those of an arbitrary container. */
     template <Yield yield = Yield::KEY, typename View, typename Container>
     auto intersection(const View& view, const Container& items)
-        -> std::enable_if_t<
-            ViewTraits<View>::dictlike,
-            std::conditional_t<
-                yield == Yield::KEY,
-                typename ViewTraits<
-                    typename ViewTraits<View>::As::DYNAMIC
-                >::As::template Set<Yield::KEY>,
-                typename ViewTraits<View>::As::DYNAMIC
-            >
-        >
+        -> union_config::EnableIfDictlike<View, yield>
     {
         static_assert(
             yield != Yield::VALUE,
@@ -348,14 +318,9 @@ namespace linked {
     }
 
 
-    /* Get the symmetric difference of keys held in a linked set compared to those of
-    an arbitrary container. */
     template <bool left = false, typename View, typename Container>
     auto symmetric_difference(const View& view, const Container& items)
-        -> std::enable_if_t<
-            ViewTraits<View>::setlike,
-            typename ViewTraits<View>::As::DYNAMIC
-        >
+        -> union_config::EnableIfSetlike<View>
     {
         using TempView = typename ViewTraits<View>::template Reconfigure<
             Config::SINGLY_LINKED
@@ -395,20 +360,9 @@ namespace linked {
     }
 
 
-    /* Get the symmetric difference of keys or key-value pairs held in a linked dictionary
-    compared to those of an arbitrary container. */
     template <Yield yield = Yield::KEY, bool left = false, typename View, typename Container>
     auto symmetric_difference(const View& view, const Container& items)
-        -> std::enable_if_t<
-            ViewTraits<View>::dictlike,
-            std::conditional_t<
-                yield == Yield::KEY,
-                typename ViewTraits<
-                    typename ViewTraits<View>::As::DYNAMIC
-                >::As::template Set<Yield::KEY>,
-                typename ViewTraits<View>::As::DYNAMIC
-            >
-        >
+        -> union_config::EnableIfDictlike<View, yield>
     {
         static_assert(
             yield != Yield::VALUE,

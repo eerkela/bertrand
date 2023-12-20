@@ -55,7 +55,7 @@ struct PyArgs<CallProtocol::ARGS> {
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    inline ReturnType parse(const std::string_view& name, Func convert = nullptr) {
+    ReturnType parse(const std::string_view& name, Func convert = nullptr) {
         if (arg_idx < n_args) {
             PyObject* val = PyTuple_GET_ITEM(args, arg_idx++);
             if constexpr (std::is_same_v<ReturnType, PyObject*>) {
@@ -78,7 +78,7 @@ struct PyArgs<CallProtocol::ARGS> {
         typename Type = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    inline ReturnType parse(
+    ReturnType parse(
         const std::string_view& name, Func convert, Type default_value
     ) {
         static_assert(
@@ -100,7 +100,7 @@ struct PyArgs<CallProtocol::ARGS> {
 
     /* finalize the argument list, throwing an error if any unexpected positional
     arguments were supplied. */
-    inline void finalize() {
+    void finalize() {
         if (arg_idx < n_args) {
             std::ostringstream msg;
             msg << name << "() takes " << arg_idx << " positional ";
@@ -184,7 +184,7 @@ struct PyArgs<CallProtocol::KWARGS> {
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    inline ReturnType positional(const std::string_view& name, Func convert = nullptr) {
+    ReturnType positional(const std::string_view& name, Func convert = nullptr) {
         PARSE_POSITIONAL
         std::ostringstream msg;
         msg << this->name << "() missing required positional argument: '" << name;
@@ -199,7 +199,7 @@ struct PyArgs<CallProtocol::KWARGS> {
         typename Type = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    inline ReturnType positional(
+    ReturnType positional(
         const std::string_view& name, Func convert, Type default_value
     ) {
         static_assert(
@@ -211,7 +211,7 @@ struct PyArgs<CallProtocol::KWARGS> {
     }
 
     /* Finalize the positional arguments to the function. */
-    inline void finalize_positional() {
+    void finalize_positional() {
         if (arg_idx < n_args) {
             std::ostringstream msg;
             msg << name << "() takes " << arg_idx << " positional ";
@@ -231,7 +231,7 @@ struct PyArgs<CallProtocol::KWARGS> {
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    inline ReturnType keyword(const std::string_view& name, Func convert = nullptr) {
+    ReturnType keyword(const std::string_view& name, Func convert = nullptr) {
         PARSE_KEYWORD
         std::ostringstream msg;
         msg << this->name << "() missing required keyword-only argument: '" << name;
@@ -246,7 +246,7 @@ struct PyArgs<CallProtocol::KWARGS> {
         typename Type = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    inline ReturnType keyword(
+    ReturnType keyword(
         const std::string_view& name, Func convert, Type default_value
     ) {
         static_assert(
@@ -258,7 +258,7 @@ struct PyArgs<CallProtocol::KWARGS> {
     }
 
     /* Finalize the keyword arguments to the function. */
-    inline void finalize_keyword() {
+    void finalize_keyword() {
         Py_ssize_t observed = static_cast<Py_ssize_t>(found.size());
 
         if (observed < n_kwargs) {
@@ -296,7 +296,7 @@ struct PyArgs<CallProtocol::KWARGS> {
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    inline ReturnType parse(const std::string_view& name, Func convert = nullptr) {
+    ReturnType parse(const std::string_view& name, Func convert = nullptr) {
         PARSE_KEYWORD
         PARSE_POSITIONAL
         std::ostringstream msg;
@@ -311,7 +311,7 @@ struct PyArgs<CallProtocol::KWARGS> {
         typename Type = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    inline ReturnType parse(
+    ReturnType parse(
         const std::string_view& name, Func convert, Type default_value
     ) {
         static_assert(
@@ -325,7 +325,7 @@ struct PyArgs<CallProtocol::KWARGS> {
 
     /* Finalize the argument list, throwing an error if any unexpected arguments are
     present. */
-    inline void finalize() {
+    void finalize() {
         finalize_positional();
         finalize_keyword();
     }
@@ -354,7 +354,7 @@ struct PyArgs<CallProtocol::FASTCALL> {
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    inline ReturnType parse(const std::string_view& name, Func convert = nullptr) {
+    ReturnType parse(const std::string_view& name, Func convert = nullptr) {
         if (arg_idx < n_args) {
             PyObject* val = args[arg_idx++];
             if constexpr (std::is_same_v<ReturnType, PyObject*>) {
@@ -377,7 +377,7 @@ struct PyArgs<CallProtocol::FASTCALL> {
         typename Type = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    inline ReturnType parse(
+    ReturnType parse(
         const std::string_view& name, Func convert, Type default_value
     ) {
         static_assert(
@@ -399,7 +399,7 @@ struct PyArgs<CallProtocol::FASTCALL> {
 
     /* Finalize the argument list, throwing an error if any unexpected positional
     arguments are present. */
-    inline void finalize() {
+    void finalize() {
         if (arg_idx < n_args) {
             std::ostringstream msg;
             msg << name << "() takes " << arg_idx << " positional ";
@@ -501,7 +501,7 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    inline ReturnType positional(const std::string_view& name, Func convert = nullptr) {
+    ReturnType positional(const std::string_view& name, Func convert = nullptr) {
         PARSE_POSITIONAL
         std::ostringstream msg;
         msg << this->name << "() missing required positional argument: '" << name;
@@ -516,7 +516,7 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         typename Type = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    inline ReturnType positional(
+    ReturnType positional(
         const std::string_view& name, Func convert, Type default_value
     ) {
         static_assert(
@@ -528,7 +528,7 @@ struct PyArgs<CallProtocol::VECTORCALL> {
     }
 
     /* Finalize the positional arguments to the function. */
-    inline void finalize_positional() {
+    void finalize_positional() {
         if (arg_idx < n_args) {
             std::ostringstream msg;
             msg << name << "() takes " << arg_idx << " positional ";
@@ -548,7 +548,7 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    inline ReturnType keyword(const std::string_view& name, Func convert = nullptr) {
+    ReturnType keyword(const std::string_view& name, Func convert = nullptr) {
         PARSE_KEYWORD
         std::ostringstream msg;
         msg << this->name << "() missing required keyword argument: '" << name;
@@ -563,7 +563,7 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         typename Type = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    inline ReturnType keyword(
+    ReturnType keyword(
         const std::string_view& name, Func convert, Type default_value
     ) {
         static_assert(
@@ -575,7 +575,7 @@ struct PyArgs<CallProtocol::VECTORCALL> {
     }
 
     /* Finalize the keyword arguments to the function. */
-    inline void finalize_keyword() {
+    void finalize_keyword() {
         if (kwarg_idx < n_kwargs) {
             for (Py_ssize_t i = 0; i < n_kwargs; ++i) {
                 Keyword& keyword = kwnames[i];
@@ -598,7 +598,7 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         typename Func = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    inline ReturnType parse(const std::string_view& name, Func convert = nullptr) {
+    ReturnType parse(const std::string_view& name, Func convert = nullptr) {
         PARSE_KEYWORD
         PARSE_POSITIONAL
         std::ostringstream msg;
@@ -613,7 +613,7 @@ struct PyArgs<CallProtocol::VECTORCALL> {
         typename Type = PyObject*,
         typename ReturnType = typename FuncTraits<Func, PyObject*>::ReturnType
     >
-    inline ReturnType parse(
+    ReturnType parse(
         const std::string_view& name, Func convert, Type default_value
     ) {
         static_assert(
@@ -627,7 +627,7 @@ struct PyArgs<CallProtocol::VECTORCALL> {
 
     /* Finalize the argument list, throwing an error if any unexpected arguments are
     present. */
-    inline void finalize() {
+    void finalize() {
         finalize_positional();
         finalize_keyword();
     }

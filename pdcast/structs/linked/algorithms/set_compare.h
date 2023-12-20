@@ -11,8 +11,6 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Check whether a linked set or dictionary has any elements in common with
-    a given container. */
     template <typename View, typename Container>
     auto isdisjoint(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, bool>
@@ -26,8 +24,6 @@ namespace linked {
     }
 
 
-    /* Check whether the elements of a linked set or dictionary are equal to those of
-    a given container. */
     template <bool equal, typename View, typename Container>
     auto set_equal(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, bool>
@@ -51,8 +47,6 @@ namespace linked {
     }
 
 
-    /* Check whether the elements of a linked set or dictionary represent a subset of a
-    given container. */
     template <bool strict, typename View, typename Container>
     auto issubset(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, bool>
@@ -78,8 +72,6 @@ namespace linked {
     }
 
 
-    /* Check whether the elements of a linked set or dictionary represent a superset of
-    a given container. */
     template <bool strict, typename View, typename Container>
     auto issuperset(const View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, bool>

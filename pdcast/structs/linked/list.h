@@ -42,7 +42,6 @@ class LinkedList;
 
 namespace list_config {
 
-    /* Apply default config flags for C++ LinkedLists. */
     static constexpr unsigned int defaults(unsigned int flags) {
         unsigned int result = flags;
         if (!(result & (Config::DOUBLY_LINKED | Config::SINGLY_LINKED | Config::XOR))) {
@@ -51,7 +50,6 @@ namespace list_config {
         return result;
     }
 
-    /* Determine the corresponding node type for the given config flags. */
     template <typename T, unsigned int Flags>
     using NodeSelect = std::conditional_t<
         !!(Flags & Config::DOUBLY_LINKED),
@@ -59,20 +57,12 @@ namespace list_config {
         SingleNode<T>
     >;
 
-    template <typename T>
-    struct IsList : std::false_type {};
-    template <typename T, unsigned int Flags, typename Lock>
-    struct IsList<LinkedList<T, Flags, Lock>> : std::true_type {};
+}
 
-    template <typename T>
-    static constexpr bool is_list = IsList<
-        std::remove_cv_t<std::remove_reference_t<T>>
-    >::value;
 
-    template <typename Container, typename T>
-    using EnableIfNotList = std::enable_if_t<!is_list<Container>, T>;
-
-}  // list_config
+//////////////////////////
+////    LINKEDLIST    ////
+//////////////////////////
 
 
 /* A modular linked list class that mimics the Python list interface in C++. */
@@ -292,8 +282,7 @@ public:
     ////    OPERATOR OVERLOADS    ////
     //////////////////////////////////
 
-    /* NOTE: operators are implemented as non-member functions for commutativity.
-     * The supported operators are as follows:
+    /* NOTE: The supported operators are as follows:
      *      (+, +=)     concatenation, in-place concatenation
      *      (*, *=)     repetition, in-place repetition
      *      (<)         lexicographic less-than comparison
@@ -317,12 +306,57 @@ public:
         return position(index);
     }
 
+    template <typename Container>
+    inline DynamicList operator+(const Container& other) const {
+        return DynamicList(linked::concatenate(this->view, other));
+    }
+
+    template <typename Container>
+    inline LinkedList& operator+=(const Container& other) {
+        extend(other);
+        return *this;
+    }
+
+    inline DynamicList operator*(long long other) const {
+        return DynamicList(linked::repeat(this->view, other));
+    }
+
+    inline LinkedList& operator*=(long long other) {
+        linked::repeat_inplace(this->view, other);
+        return *this;
+    }
+
+    template <typename Container>
+    inline bool operator<(const Container& other) const {
+        return lexical_lt(*this, other);
+    }
+
+    template <typename Container>
+    inline bool operator<=(const Container& other) const {
+        return lexical_le(*this, other);
+    }
+
+    template <typename Container>
+    inline bool operator==(const Container& other) const {
+        return lexical_eq(*this, other);
+    }
+
+    template <typename Container>
+    inline bool operator!=(const Container& other) const {
+        return !lexical_eq(*this, other);
+    }
+
+    template <typename Container>
+    inline bool operator>=(const Container& other) const {
+        return lexical_ge(*this, other);
+    }
+
+    template <typename Container>
+    inline bool operator>(const Container& other) const {
+        return lexical_gt(*this, other);
+    }
+
 };
-
-
-//////////////////////////////
-////    LIST OPERATORS    ////
-//////////////////////////////
 
 
 template <typename T, unsigned int Flags, typename... Ts>
@@ -340,129 +374,9 @@ inline auto operator<<(std::ostream& stream, const LinkedList<T, Flags, Ts...>& 
 }
 
 
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator+(const LinkedList<T, Flags, Ts...>& list, const Container& other) {
-    return LinkedList<T, Flags & ~Config::FIXED_SIZE, Ts...>(
-        linked::concatenate(list.view, other)
-    );
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator+=(LinkedList<T, Flags, Ts...>& list, const Container& other)
-    -> LinkedList<T, Flags, Ts...>&
-{
-    linked::extend(list.view, other);
-    return list;
-}
-
-
-template <typename T, unsigned int Flags, typename... Ts>
-inline auto operator*(const LinkedList<T, Flags, Ts...>& list, const long long other) {
-    return LinkedList<T, Flags & ~Config::FIXED_SIZE, Ts...>(
-        linked::repeat(list.view, other)
-    );
-}
-
-
-template <typename T, unsigned int Flags, typename... Ts>
-inline auto operator*(const long long other, const LinkedList<T, Flags, Ts...>& list) {
-    return LinkedList<T, Flags & ~Config::FIXED_SIZE, Ts...>(
-        linked::repeat(list.view, other)
-    );
-}
-
-
-template <typename T, unsigned int Flags, typename... Ts>
-inline auto operator*=(LinkedList<T, Flags, Ts...>& list, const long long other)
-    -> LinkedList<T, Flags, Ts...>&
-{
-    linked::repeat_inplace(list.view, other);
-    return list;
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator<(const LinkedList<T, Flags, Ts...>& list, const Container& other) {
-    return lexical_lt(list, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator<(const Container& other, const LinkedList<T, Flags, Ts...>& list)
-    -> list_config::EnableIfNotList<Container, bool>
-{
-    return lexical_lt(other, list);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator<=(const LinkedList<T, Flags, Ts...>& list, const Container& other) {
-    return lexical_le(list, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator<=(const Container& other, const LinkedList<T, Flags, Ts...>& list)
-    -> list_config::EnableIfNotList<Container, bool>
-{
-    return lexical_lt(other, list);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator==(const LinkedList<T, Flags, Ts...>& list, const Container& other) {
-    return lexical_eq(list, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator==(const Container& other, const LinkedList<T, Flags, Ts...>& list)
-    -> list_config::EnableIfNotList<Container, bool>
-{
-    return lexical_eq(other, list);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator!=(const LinkedList<T, Flags, Ts...>& list, const Container& other) {
-    return !lexical_eq(list, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator!=(const Container& other, const LinkedList<T, Flags, Ts...>& list)
-    -> list_config::EnableIfNotList<Container, bool>
-{
-    return !lexical_eq(other, list);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator>=(const LinkedList<T, Flags, Ts...>& list, const Container& other) {
-    return lexical_ge(list, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator>=(const Container& other, const LinkedList<T, Flags, Ts...>& list)
-    -> list_config::EnableIfNotList<Container, bool>
-{
-    return lexical_ge(other, list);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline bool operator>(const LinkedList<T, Flags, Ts...>& list, const Container& other) {
-    return lexical_gt(list, other);
-}
-
-
-template <typename Container, typename T, unsigned int Flags, typename... Ts>
-inline auto operator>(const Container& other, const LinkedList<T, Flags, Ts...>& list)
-    -> list_config::EnableIfNotList<Container, bool>
-{
-    return lexical_gt(other, list);
+template <typename T, unsigned int Flags, typename... Ts> 
+inline auto operator*(long long other, const LinkedList<T, Flags, Ts...>& list) {
+    return list * other;
 }
 
 
@@ -471,8 +385,7 @@ inline auto operator>(const Container& other, const LinkedList<T, Flags, Ts...>&
 //////////////////////////////
 
 
-/* CRTP mixin class that contains the Python list interface for a linked data
-structure. */
+/* CRTP mixin class containing the public list interface for a linked data structure. */
 template <typename Derived>
 class PyListInterface {
     using CallProtocol = bertrand::util::CallProtocol;
@@ -481,7 +394,7 @@ class PyListInterface {
     using PyArgs = bertrand::util::PyArgs<call>;
 
     template <typename Func, typename Result = PyObject*>
-    inline static Result visit(Derived* self, Func func, Result err_code = nullptr) {
+    static Result visit(Derived* self, Func func, Result err_code = nullptr) {
         try {
             return std::visit(func, self->variant);
         } catch (...) {
@@ -491,7 +404,7 @@ class PyListInterface {
     }
 
     template <typename Func>
-    inline static auto unwrap_variant(PyObject* arg, Func func) {
+    static auto unwrap_python(PyObject* arg, Func func) {
         if (Derived::typecheck(arg)) {
             Derived* other = reinterpret_cast<Derived*>(arg);
             return std::visit(func, other->variant);
@@ -530,7 +443,7 @@ public:
 
     static PyObject* extend(Derived* self, PyObject* items) {
         return visit(self, [&items](auto& list) {
-            return unwrap_variant(items, [&list](auto& other) {
+            return unwrap_python(items, [&list](auto& other) {
                 list.extend(other);
                 Py_RETURN_NONE;
             });
@@ -539,7 +452,7 @@ public:
 
     static PyObject* extend_left(Derived* self, PyObject* items) {
         return visit(self, [&items](auto& list) {
-            return unwrap_variant(items, [&list](auto& other) {
+            return unwrap_python(items, [&list](auto& other) {
                 list.extend_left(other);
                 Py_RETURN_NONE;
             });
@@ -685,7 +598,7 @@ public:
                 if (items == nullptr) {
                     list.slice(key).del();
                 } else {
-                    unwrap_variant(items, [&list, &key](auto& items) {
+                    unwrap_python(items, [&list, &key](auto& items) {
                         list.slice(key) = items;
                     });
                 }
@@ -703,7 +616,7 @@ public:
 
     static PyObject* __add__(Derived* self, PyObject* other) {
         return visit(self, [&other](auto& list) {
-            return unwrap_variant(other, [&list](auto& other) {
+            return unwrap_python(other, [&list](auto& other) {
                 return Derived::construct(list + other);
             });
         });
@@ -711,7 +624,7 @@ public:
 
     static PyObject* __iadd__(Derived* self, PyObject* other) {
         return visit(self, [&self, &other](auto& list) {
-            unwrap_variant(other, [&list](auto& other) {
+            unwrap_python(other, [&list](auto& other) {
                 list += other;
             });
             return Py_NewRef(reinterpret_cast<PyObject*>(self));
@@ -733,7 +646,7 @@ public:
 
     static PyObject* __richcompare__(Derived* self, PyObject* other, int cmp) {
         return visit(self, [&other, &cmp](auto& list) {
-            return unwrap_variant(other, [&list, &cmp](auto& other) {
+            return unwrap_python(other, [&list, &cmp](auto& other) {
                 switch (cmp) {
                     case Py_LT:
                         return Py_NewRef(list < other ? Py_True : Py_False);
@@ -1083,8 +996,8 @@ Rotations are O(steps).
 };
 
 
-/* A discriminated union of templated `LinkedList` types that can be used from
-Python. */
+/* A Python type that exposes a discriminated union of C++ LinkedLists to the Python
+interpreter. */
 class PyLinkedList :
     public PyLinkedBase<PyLinkedList>,
     public PyListInterface<PyLinkedList>
@@ -1469,9 +1382,8 @@ public:
 
     inline static PyTypeObject Type = build_type();
 
-    /* Allocate and construct a fully-formed PyLinkedList from its C++ equivalent. */
     template <typename List>
-    inline static PyObject* construct(List&& list) {
+    static PyObject* construct(List&& list) {
         PyLinkedList* result = reinterpret_cast<PyLinkedList*>(
             Type.tp_new(&Type, nullptr, nullptr)
         );
@@ -1489,7 +1401,7 @@ public:
     }
 
     /* Check whether another PyObject* is of this type. */
-    inline static bool typecheck(PyObject* obj) {
+    static bool typecheck(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &Type);
         if (result == -1) {
             throw catch_python();
@@ -1500,9 +1412,9 @@ public:
 };
 
 
-/* Python module definition. */
+/* bertrand.structs.linked.list module definition. */
 static struct PyModuleDef module_list = {
-    PyModuleDef_HEAD_INIT,
+    .m_base = PyModuleDef_HEAD_INIT,
     .m_name = "list",
     .m_doc = (
         "This module contains an optimized LinkedList data structure for use "
@@ -1537,7 +1449,6 @@ PyMODINIT_FUNC PyInit_list(void) {
 }  // namespace linked
 
 
-/* Export to base namespace */
 using linked::LinkedList;
 using linked::PyLinkedList;
 

@@ -9,7 +9,6 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Add an item to the end of a linked set or dictionary. */
     template <typename View, typename Item>
     inline auto add(View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
@@ -22,7 +21,6 @@ namespace linked {
     }
 
 
-    /* Add an item to the beginning of a linked set or dictionary. */
     template <typename View, typename Item>
     inline auto add_left(View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
@@ -35,8 +33,6 @@ namespace linked {
     }
 
 
-    /* Add an item to the front of a set or dictionary, evicting the last item if
-    necessary and moving items that are already present. */
     template <typename View, typename Item>
     inline auto lru_add(View& view, const Item& item)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
@@ -50,7 +46,6 @@ namespace linked {
     }
 
 
-    /* Add a key-value pair to the end of a linked dictionary. */
     template <typename View, typename Key, typename Value>
     inline auto add(View& view, const Key& key, const Value& value)
         -> std::enable_if_t<ViewTraits<View>::dictlike, void>
@@ -63,7 +58,6 @@ namespace linked {
     }
 
 
-    /* Add a key-value pair to the end of a linked dictionary. */
     template <typename View, typename Key, typename Value>
     inline auto add_left(View& view, const Key& key, const Value& value)
         -> std::enable_if_t<ViewTraits<View>::dictlike, void>
@@ -76,8 +70,6 @@ namespace linked {
     }
 
 
-    /* Add a key-value pair to the front of a dictionary, evicting the last item if
-    necessary and moving pairs that are already present. */
     template <typename View, typename Key, typename Value>
     inline auto lru_add(View& view, const Key& key, const Value& value)
         -> std::enable_if_t<ViewTraits<View>::dictlike, void>

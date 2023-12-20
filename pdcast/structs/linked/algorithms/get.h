@@ -10,11 +10,9 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Get the value associated with a key if it is present in the dictionary, or throw
-    an error if it is not found. */
-    template <typename View, typename Key, typename Value = typename View::MappedValue>
+    template <typename View, typename Key>
     inline auto get(View& view, const Key& key)
-        -> std::enable_if_t<ViewTraits<View>::dictlike, Value&>
+        -> std::enable_if_t<ViewTraits<View>::dictlike, typename View::MappedValue&>
     {
         using Node = typename View::Node;
         Node* node = view.search(key);
@@ -25,8 +23,6 @@ namespace linked {
     }
 
 
-    /* Get the value associated with a key if it is present in the dictionary, or
-    return the default value. */
     template <typename View, typename Key, typename Value>
     inline auto get(View& view, const Key& key, Value& default_value)
         -> std::enable_if_t<ViewTraits<View>::dictlike, Value&>
@@ -40,11 +36,9 @@ namespace linked {
     }
 
 
-    /* Get the value associated with a key and move it to the front of the dictionary
-    if it is present.  Otherwise, throw an error. */
-    template <typename View, typename Key, typename Value = typename View::MappedValue>
+    template <typename View, typename Key>
     inline auto lru_get(View& view, const Key& key)
-        -> std::enable_if_t<ViewTraits<View>::dictlike, Value&>
+        -> std::enable_if_t<ViewTraits<View>::dictlike, typename View::MappedValue&>
     {
         using Node = typename View::Node;
         Node* node = view.template search<View::Allocator::MOVE_HEAD>(key);
@@ -55,8 +49,6 @@ namespace linked {
     }
 
 
-    /* Get the value associated with a key and move it to the front of the dictionary
-    if it is present.  Otherwise, return the default value. */
     template <typename View, typename Key, typename Value>
     inline auto lru_get(View& view, const Key& key, Value& default_value)
         -> std::enable_if_t<ViewTraits<View>::dictlike, Value&>

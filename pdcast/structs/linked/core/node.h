@@ -48,7 +48,7 @@ public:
 
     /* Apply an explicit type check to the value if it is a Python object. */
     template <bool cond = is_pyobject<Value>>
-    inline std::enable_if_t<cond, bool> typecheck(PyObject* specialization) const {
+    auto typecheck(PyObject* specialization) const -> std::enable_if_t<cond, bool> {
         if (specialization == nullptr) {
             return true;
         }
@@ -84,7 +84,7 @@ protected:
     }
 
     /* Copy assignment operator. */
-    inline BaseNode& operator=(const BaseNode& other) noexcept {
+    BaseNode& operator=(const BaseNode& other) noexcept {
         if (this == &other) {
             return *this;
         }
@@ -99,7 +99,7 @@ protected:
     }
 
     /* Move assignment operator. */
-    inline BaseNode& operator=(BaseNode&& other) noexcept {
+    BaseNode& operator=(BaseNode&& other) noexcept {
         if (this == &other) {
             return *this;
         }
@@ -643,19 +643,19 @@ public:
 
     /* Get the previous node in the list. */
     template <bool cond = NodeTraits<Wrapped>::has_prev>
-    inline std::enable_if_t<cond, Hashed*> prev() noexcept {
+    inline auto prev() noexcept -> std::enable_if_t<cond, Hashed*> {
         return static_cast<Hashed*>(Wrapped::prev());
     }
 
     /* Get the previous node in the list. */
     template <bool cond = NodeTraits<Wrapped>::has_prev>
-    inline std::enable_if_t<cond, const Hashed*> prev() const noexcept {
+    inline auto prev() const noexcept -> std::enable_if_t<cond, const Hashed*> {
         return static_cast<const Hashed*>(Wrapped::prev());
     }
 
     /* Set the previous node in the list. */
     template <bool cond = NodeTraits<Wrapped>::has_prev>
-    inline std::enable_if_t<cond, void> prev(Hashed* prev) noexcept {
+    inline auto prev(Hashed* prev) noexcept -> std::enable_if_t<cond, void> {
         Wrapped::prev(prev);
     }
 
@@ -699,7 +699,7 @@ protected:
     MappedType _mapped;
 
     /* Unpack a python tuple containing a key and value. */
-    inline static std::pair<PyObject*, PyObject*> unpack_python(PyObject* item) {
+    static std::pair<PyObject*, PyObject*> unpack_python(PyObject* item) {
         static_assert(
             is_pyobject<Value> && is_pyobject<MappedType>,
             "Python tuples can only be unpacked by PyObject* nodes"
@@ -849,19 +849,19 @@ public:
 
     /* Get the previous node in the list. */
     template <bool cond = NodeTraits<Wrapped>::has_prev>
-    inline std::enable_if_t<cond, Mapped*> prev() noexcept {
+    inline auto prev() noexcept -> std::enable_if_t<cond, Mapped*> {
         return static_cast<Mapped*>(Wrapped::prev());
     }
 
     /* Get the previous node in the list. */
     template <bool cond = NodeTraits<Wrapped>::has_prev>
-    inline std::enable_if_t<cond, const Mapped*> prev() const noexcept {
+    inline auto prev() const noexcept -> std::enable_if_t<cond, const Mapped*> {
         return static_cast<const Mapped*>(Wrapped::prev());
     }
 
     /* Set the previous node in the list. */
     template <bool cond = NodeTraits<Wrapped>::has_prev>
-    inline std::enable_if_t<cond, void> prev(Mapped* prev) noexcept {
+    inline auto prev(Mapped* prev) noexcept -> std::enable_if_t<cond, void> {
         Wrapped::prev(prev);
     }
 
@@ -887,7 +887,7 @@ public:
 
     /* Allow specialization of both the key and value of a mapped node. */
     template <bool cond = is_pyobject<typename Wrapped::Value>>
-    inline std::enable_if_t<cond, bool> typecheck(PyObject* specialization) const {
+    auto typecheck(PyObject* specialization) const -> std::enable_if_t<cond, bool> {
         if (specialization == nullptr) {
             return true;
         }

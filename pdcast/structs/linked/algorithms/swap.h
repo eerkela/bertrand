@@ -11,7 +11,6 @@ namespace bertrand {
 namespace linked {
 
 
-    /* Swap the positions of two values in a linked set or dictionary. */
     template <typename View, typename Item>
     auto swap(View& view, const Item& item1, const Item& item2)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>

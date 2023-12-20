@@ -10,15 +10,10 @@
 #include "../core/view.h"  // ViewTraits
 
 
-// TODO: intersection should overwrite values for dictlike views.
-
-
 namespace bertrand {
 namespace linked {
 
 
-    /* Update a linked set to hold the union of its current keys as well as those of an
-    arbitrary container. */
     template <bool left = false, typename View, typename Container>
     auto update(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
@@ -85,8 +80,6 @@ namespace linked {
     }
 
 
-    /* Update a set or dictionary, adding or moving items to the head and evicting from
-    the tail to make room. */
     template <typename View, typename Container>
     inline auto lru_update(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
@@ -116,8 +109,6 @@ namespace linked {
     }
 
 
-    /* Update a linked set or dictionary in-place, removing elements from a second
-    set or dictionary. */
     template <typename View, typename Container>
     auto difference_update(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
@@ -180,8 +171,6 @@ namespace linked {
     }
 
 
-    /* Update a linked set or dictionary in-place, keeping only elements found in
-    both sets or dictionaries. */
     template <typename View, typename Container>
     auto intersection_update(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::setlike, void>
@@ -215,8 +204,6 @@ namespace linked {
     }
 
 
-    /* Update a linked set or dictionary in-place, keeping only elements found in
-    both sets or dictionaries. */
     template <typename View, typename Container>
     auto intersection_update(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::dictlike, void>
@@ -284,10 +271,8 @@ namespace linked {
     }
 
 
-    /* Update a linked set or dictionary in-place, keeping only elements found in
-    either the set or a given container, but not both. */
     template <bool left = false, typename View, typename Container>
-    inline auto symmetric_difference_update(View& view, const Container& items)
+    auto symmetric_difference_update(View& view, const Container& items)
         -> std::enable_if_t<ViewTraits<View>::hashed, void>
     {
         using TempView = typename ViewTraits<View>::template Reconfigure<
