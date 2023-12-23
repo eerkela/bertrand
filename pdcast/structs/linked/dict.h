@@ -2178,14 +2178,14 @@ only if the dictionary's values are also hashable.
         }
 
         inline static PyObject* __iter__(PyProxy* self) noexcept {
-            return visit(self, [](auto& proxy) {
-                return iter(proxy).cpython();
+            return visit(self, [&self](auto& proxy) {
+                return iter(proxy).cpython(reinterpret_cast<PyObject*>(self));
             });
         }
 
         inline static PyObject* __reversed__(PyProxy* self, PyObject* = nullptr) noexcept {
-            return visit(self, [](auto& proxy) {
-                return iter(proxy).crpython();
+            return visit(self, [&self](auto& proxy) {
+                return iter(proxy).crpython(reinterpret_cast<PyObject*>(self));
             });
         }
 
@@ -2829,11 +2829,11 @@ These proxies support the following operations:
         }
 
         inline static PyObject* __iter__(PyItemsProxy* self) noexcept {
-            return Base::visit(self, [](auto& proxy) {
+            return Base::visit(self, [&self](auto& proxy) {
                 auto unwrap = [](python::Tuple<python::Ref::STEAL> item) {
                     return item.unwrap();  // relinquish ownership to Python
                 };
-                return iter(proxy, unwrap).cpython();
+                return iter(proxy, unwrap).cpython(reinterpret_cast<PyObject*>(self));
             });
         }
 
@@ -2841,11 +2841,11 @@ These proxies support the following operations:
             PyItemsProxy* self,
             PyObject* = nullptr
         ) noexcept {
-            return Base::visit(self, [](auto& proxy) {
+            return Base::visit(self, [&self](auto& proxy) {
                 auto unwrap = [](python::Tuple<python::Ref::STEAL> item) {
                     return item.unwrap();  // relinquish ownership to Python
                 };
-                return iter(proxy, unwrap).crpython();
+                return iter(proxy, unwrap).crpython(reinterpret_cast<PyObject*>(self));
             });
         }
 

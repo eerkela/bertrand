@@ -480,14 +480,14 @@ public:
     }
 
     inline static PyObject* __iter__(Derived* self) noexcept {
-        return visit(self, [](auto& list) {
-            return iter(list).python();
+        return visit(self, [&self](auto& list) {
+            return iter(list).python(reinterpret_cast<PyObject*>(self));
         });
     }
 
     inline static PyObject* __reversed__(Derived* self, PyObject* = nullptr) noexcept {
-        return visit(self, [](auto& list) {
-            return iter(list).rpython();
+        return visit(self, [&self](auto& list) {
+            return iter(list).rpython(reinterpret_cast<PyObject*>(self));
         });
     }
 

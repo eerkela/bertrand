@@ -156,9 +156,16 @@ namespace linked {
             // check if view is already sorted
             bool is_sorted = true;
             for (auto it = view.begin(); it.next() != nullptr; ++it) {
-                if (!le(*it, it.next()->value()) ^ reverse) {
-                    is_sorted = false;
-                    break;
+                if (reverse) {
+                    if (lt(*it, it.next()->value())) {
+                        is_sorted = false;
+                        break;
+                    }
+                } else {
+                    if (lt(it.next()->value(), *it)) {
+                        is_sorted = false;
+                        break;
+                    }
                 }
             }
             if (is_sorted) {

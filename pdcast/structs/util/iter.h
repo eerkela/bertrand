@@ -63,6 +63,13 @@ unexpected behavior.
 */
 
 
+
+// TODO: iterators must hold a reference to the container to ensure that it is not
+// garbage collected while the iterator is in use.  This happens if we iterate over
+// an rvalue container in Python.  The iterator will not keep the object alive, so
+// the container is deleted before the iterator is finished.  This causes a segfault
+
+
 namespace bertrand {
 namespace util {
 
@@ -370,6 +377,7 @@ class PyIterator {
     PyObject_HEAD
     alignas(Iterator) char first[sizeof(Iterator)];
     alignas(Iterator) char second[sizeof(Iterator)];
+    PyObject* reference;
 
 public:
     PyIterator() = delete;
@@ -377,7 +385,11 @@ public:
     PyIterator(PyIterator&&) = delete;
 
     /* Construct a Python iterator from a C++ iterator range. */
-    inline static PyObject* construct(Iterator&& begin, Iterator&& end) {
+    inline static PyObject* construct(
+        Iterator&& begin,
+        Iterator&& end,
+        PyObject* reference
+    ) {
         PyIterator* result = PyObject_New(PyIterator, &Type);
         if (result == nullptr) {
             throw std::runtime_error("could not allocate Python iterator");
@@ -385,6 +397,7 @@ public:
 
         new (&(result->first)) Iterator(std::move(begin));
         new (&(result->second)) Iterator(std::move(end));
+        result->reference = Py_XNewRef(reference);
         return reinterpret_cast<PyObject*>(result);
     }
 
@@ -405,7 +418,7 @@ public:
 
         PyObject* result = *begin;
         ++begin;
-        return Py_NewRef(result);  // new reference
+        return Py_XNewRef(result);
     }
 
 private:
@@ -414,6 +427,7 @@ private:
     inline static void __dealloc__(PyIterator* self) {
         reinterpret_cast<Iterator&>(self->first).~Iterator();
         reinterpret_cast<Iterator&>(self->second).~Iterator();
+        Py_XDECREF(self->reference);
         Type.tp_free(self);
     }
 
@@ -897,40 +911,45 @@ public:
      * heavy lifting for us and yields a valid Python iterator with minimal overhead.
      */
 
-    inline PyObject* python() {
+    // TODO: add an argument to specify a python object whose lifetime should be managed
+    // by the iterator.  This would allow for the following syntax:
+
+    // iter(cpp_container).python(py_equivalent)
+
+    inline PyObject* python(PyObject* reference = nullptr) {
         static_assert(
             Traits::Begin::exists && Traits::End::exists,
             "container does not implement begin() and end()"
         );
         using PyIter = PyIterator<typename Traits::Begin::type>;
-        return PyIter::construct(begin(), end());
+        return PyIter::construct(begin(), end(), reference);
     }
 
-    inline PyObject* cpython() {
+    inline PyObject* cpython(PyObject* reference = nullptr) {
         static_assert(
             Traits::CBegin::exists && Traits::CEnd::exists,
             "container does not implement cbegin() and cend()"
         );
         using PyIter = PyIterator<typename Traits::CBegin::type>;
-        return PyIter::construct(cbegin(), cend());
+        return PyIter::construct(cbegin(), cend(), reference);
     }
 
-    inline PyObject* rpython() {
+    inline PyObject* rpython(PyObject* reference = nullptr) {
         static_assert(
             Traits::RBegin::exists && Traits::REnd::exists,
             "container does not implement rbegin() and rend()"
         );
         using PyIter = PyIterator<typename Traits::RBegin::type>;
-        return PyIter::construct(rbegin(), rend());
+        return PyIter::construct(rbegin(), rend(), reference);
     }
 
-    inline PyObject* crpython() {
+    inline PyObject* crpython(PyObject* reference = nullptr) {
         static_assert(
             Traits::CRBegin::exists && Traits::CREnd::exists,
             "container does not implement crbegin() and crend()"
         );
         using PyIter = PyIterator<typename Traits::CRBegin::type>;
-        return PyIter::construct(crbegin(), crend());
+        return PyIter::construct(crbegin(), crend(), reference);
     }
 
 };

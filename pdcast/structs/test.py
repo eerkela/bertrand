@@ -1,11 +1,11 @@
 from __future__ import annotations
 from inspect import signature
-from typing import Any, Iterator, NoReturn
+from typing import Any, Iterable, Iterator, NoReturn
 
 import numpy as np
 import pandas as pd
 
-from linked import *  # TODO: replace built-in data structures with linked ones
+from linked import *
 
 
 class TypeBuilder:
@@ -54,8 +54,8 @@ class TypeBuilder:
         self.namespace["hash"] = hash(self.name)
         self.namespace["backend"] = self.backend
         self.namespace["supertype"] = self.supertype
-        self.namespace["subtypes"] = set()
-        self.namespace["implementations"] = {}
+        self.namespace["subtypes"] = LinkedSet[TypeMeta]()
+        self.namespace["implementations"] = LinkedDict[str:TypeMeta]()
         self.namespace["parametrized"] = False
         self.namespace["cache_size"] = cache_size
         self.namespace["flyweights"] = LinkedDict[str:TypeMeta](max_size=cache_size)
@@ -63,7 +63,7 @@ class TypeBuilder:
 
     def aliases(self) -> None:
         """TODO"""
-        aliases = set()
+        aliases = LinkedSet[str]()
         for alias in self.namespace.get("aliases", ()):
             if not isinstance(alias, str):
                 raise TypeError(f"aliases must be strings: {repr(alias)}")
@@ -271,7 +271,7 @@ class TypeBuilder:
             else:
                 self.supertype.implementations[self.backend] = typ
             if self.default:
-                self.supertype.default.append(typ)
+                self.supertype.default.append(typ)  # TODO: at C++ level, we could just assign this directly
 
         elif self.default:
             raise TypeError("`default` has no meaning for root types")
@@ -427,16 +427,16 @@ class TypeMeta(type):
         return cls.supertype is None
 
     @property
-    def children(cls) -> list[TypeMeta]:
+    def children(cls) -> LinkedSet[TypeMeta]:
         """TODO"""
-        result: list[TypeMeta] = []
+        result = LinkedSet[TypeMeta]()
         explode_children(cls, result)
         return result[1:]
 
     @property
-    def leaves(cls) -> list[TypeMeta]:
+    def leaves(cls) -> LinkedSet[TypeMeta]:
         """TODO"""
-        result: list[TypeMeta] = []
+        result = LinkedSet[TypeMeta]()
         explode_leaves(cls, result)
         return result
 
@@ -446,14 +446,14 @@ class TypeMeta(type):
         return not cls.subtypes and not cls.implementations
 
     @property
-    def larger(cls) -> list[TypeMeta]:
+    def larger(cls) -> LinkedSet[TypeMeta]:
         """TODO"""
-        return sorted([t for t in cls.root.leaves if t > cls])
+        return LinkedSet[TypeMeta](sorted(t for t in cls.root.leaves if t > cls))
 
     @property
     def smaller(cls) -> list[TypeMeta]:
         """TODO"""
-        return sorted([t for t in cls.root.leaves if t < cls])
+        return LinkedSet[TypeMeta](sorted(t for t in cls.root.leaves if t < cls))
 
     def __getattr__(cls, name: str) -> Any:
         params = super().__getattribute__("params")
@@ -492,22 +492,26 @@ class TypeMeta(type):
             return issubclass(other, cls)
         return isinstance(other, cls)
 
-    def __or__(cls, other: TypeMeta | list[TypeMeta]) -> list[TypeMeta]:  # type: ignore
-        if isinstance(other, list):
-            return [cls, *other]
-        return [cls, other]
+    def __or__(cls, other: TypeMeta | Iterable[TypeMeta]) -> LinkedSet[TypeMeta]:  # type: ignore
+        if isinstance(other, TypeMeta):
+            return LinkedSet[TypeMeta]((cls, other))
+        result = LinkedSet[TypeMeta](other)
+        result.add_left(cls)
+        return result
 
-    def __ror__(cls, other: TypeMeta | list[TypeMeta]) -> list[TypeMeta]:  # type: ignore
-        if isinstance(other, list):
-            return [*other, cls]
-        return [other, cls]
+    def __ror__(cls, other: TypeMeta | Iterable[TypeMeta]) -> LinkedSet[TypeMeta]:  # type: ignore
+        if isinstance(other, TypeMeta):
+            return LinkedSet[TypeMeta]((other, cls))
+        result = LinkedSet[TypeMeta](other)
+        result.add(cls)
+        return result
 
     def __lt__(cls, other: TypeMeta) -> bool:
         features = (
-            cls.max - cls.min,
-            cls.itemsize,
-            cls.nullable,
-            abs(cls.max + cls.min)
+            cls.max - cls.min,  # total range
+            cls.itemsize,  # memory footprint
+            cls.nullable,  # nullability
+            abs(cls.max + cls.min)  # bias away from zero
         )
         compare = (
             other.max - other.min,
@@ -539,19 +543,19 @@ class TypeMeta(type):
         return cls.slug
 
 
-def explode_children(t: TypeMeta, result: list[TypeMeta]) -> None:  # lol
+def explode_children(t: TypeMeta, result: LinkedSet[TypeMeta]) -> None:  # lol
     """Explode a type's hierarchy into a flat list of subtypes and implementations."""
-    result.append(t)
+    result.add(t)
     for sub in t.subtypes:
         explode_children(sub, result)
     for impl in t.implementations.values():
         explode_children(impl, result)
 
 
-def explode_leaves(t: TypeMeta, result: list[TypeMeta]) -> None:
+def explode_leaves(t: TypeMeta, result: LinkedSet[TypeMeta]) -> None:
     """Explode a type's hierarchy into a flat list of concrete leaf types."""
     if t.is_leaf:
-        result.append(t)
+        result.add(t)
     for sub in t.subtypes:
         explode_leaves(sub, result)
     for impl in t.implementations.values():
@@ -594,6 +598,12 @@ class Type(metaclass=TypeMeta):
 
         raise TypeError("abstract types cannot be constructed from a concrete dtype")
 
+
+
+class Union:
+
+    def __init__(self, *args: TypeMeta) -> None:
+        self.types = LinkedSet[TypeMeta](args)
 
 
 

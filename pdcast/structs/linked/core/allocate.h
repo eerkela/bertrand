@@ -1430,8 +1430,8 @@ private:
     }
 
     /* Look up a value in the hash table by providing an explicit hash/value. */
-    template <unsigned int flags = DEFAULT>
-    Node* _search(size_t hash, const Value& value) {
+    template <typename N, unsigned int flags = DEFAULT>
+    N* _search(size_t hash, const Value& value) {
         static_assert(
             !(flags & ~(MOVE_HEAD | MOVE_TAIL)),
             "search() only accepts the MOVE_HEAD and MOVE_TAIL flags"
@@ -1455,58 +1455,13 @@ private:
                 offset = idx % 4;
             }
             while (true) {
-                Node* node = bucket->node(offset);
+                N* node = bucket->node(offset);
                 if (node->hash() == hash && eq(node->value(), value)) {
                     if constexpr (flags & MOVE_HEAD) {
                         move_to_head(node);
                     } else if constexpr (flags & MOVE_TAIL) {
                         move_to_tail(node);
                     }
-                    return node;
-                }
-
-                // advance to next bucket
-                unsigned char next = bucket->next(offset);
-                if (!next) {
-                    break;
-                }
-                idx = (idx + next) & modulo;
-                bucket = table + (idx / 4);
-            }
-        }
-
-        // value not found
-        return nullptr;
-    }
-
-    /* Const equivalent for _search(hash, value). */
-    template <unsigned int flags = DEFAULT>
-    Node* _search(size_t hash, const Value& value) const {
-        static_assert(
-            !(flags & ~(MOVE_HEAD | MOVE_TAIL)),
-            "search() only accepts the MOVE_HEAD and MOVE_TAIL flags"
-        );
-        static_assert(
-            !(flags & (MOVE_HEAD | MOVE_TAIL)),
-            "cannot move nodes while search()-ing a const table"
-        );
-
-        // identify starting bucket
-        size_t idx = hash & modulo;
-        Bucket* bucket = table + (idx / 4);
-        size_t offset = idx % 4;
-
-        // if collision chain is empty, then no match is possible
-        unsigned char collisions = bucket->collisions(offset);
-        if (collisions != EMPTY) {
-            if (collisions) {  // advance to head of chain
-                idx = (idx + collisions) & modulo;
-                bucket = table + (idx / 4);
-                offset = idx % 4;
-            }
-            while (true) {
-                const Node* node = bucket->node(offset);
-                if (node->hash() == hash && eq(node->value(), value)) {
                     return node;
                 }
 
@@ -1758,7 +1713,7 @@ public:
 
     /* Copy constructor. */
     HashAllocator(const HashAllocator& other) :
-        Base(other), table(new Bucket[this->capacity]), modulo(other.modulo),
+        Base(other), table(new Bucket[(this->capacity + 3) / 4]), modulo(other.modulo),
         max_occupants(other.max_occupants)
     {
         if (this->occupied) {
@@ -1966,7 +1921,7 @@ public:
                     return create(std::move(*node));
                 }
             }
-            idx = (idx + 1) & modulo;
+            idx = (origin_idx + distance) & modulo;
             bucket = table + (idx / 4);
             offset = idx % 4;
         }
@@ -2111,13 +2066,13 @@ public:
     /* Search for a node by its value. */
     template <unsigned int flags = DEFAULT>
     inline Node* search(const Value& key) {
-        return _search<flags>(bertrand::hash(key), key);
+        return _search<Node, flags>(bertrand::hash(key), key);
     }
 
     /* Const allocator equivalent for search(value). */
     template <unsigned int flags = DEFAULT>
     inline const Node* search(const Value& key) const {
-        return _search<flags>(bertrand::hash(key), key);
+        return _search<const Node, flags>(bertrand::hash(key), key);
     }
 
     /* Search for a node by reusing a hash from another node. */
@@ -2128,10 +2083,10 @@ public:
     >
     inline std::enable_if_t<cond, Node*> search(const N* node) {
         if constexpr (NodeTraits<N>::has_hash) {
-            return _search<flags>(node->hash(), node->value());
+            return _search<Node, flags>(node->hash(), node->value());
         } else {
             size_t hash = bertrand::hash(node->value());
-            return _search<flags>(hash, node->value());
+            return _search<Node, flags>(hash, node->value());
         }
     }
 
@@ -2143,10 +2098,10 @@ public:
     >
     inline std::enable_if_t<cond, const Node*> search(const N* node) const {
         if constexpr (NodeTraits<N>::has_hash) {
-            return _search<flags>(node->hash(), node->value());
+            return _search<const Node, flags>(node->hash(), node->value());
         } else {
             size_t hash = bertrand::hash(node->value());
-            return _search<flags>(hash, node->value());
+            return _search<const Node, flags>(hash, node->value());
         }
     }
 
