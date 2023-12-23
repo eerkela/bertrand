@@ -1126,27 +1126,44 @@ private:
      */
 
     struct Bucket {
-        unsigned char collisions = EMPTY;
-        unsigned char next = EMPTY;
-        alignas(Node) unsigned char data[sizeof(Node)];
+        uint64_t hop_info = -1;  // initializes all collisions()/next() fields to EMPTY
+        alignas(Node) unsigned char data[sizeof(Node) * 4];
 
-        inline Node* node() noexcept {
-            return reinterpret_cast<Node*>(&data);
+        inline Node* node(size_t offset) noexcept {
+            return reinterpret_cast<Node*>(&data[sizeof(Node) * offset]);
+        }
+
+        inline unsigned char collisions(size_t offset) const noexcept {
+            return (hop_info >> (offset * 16)) & 0xFF;
+        }
+
+        inline void collisions(size_t offset, unsigned char value) noexcept {
+            hop_info &= ~(0xFFULL << (offset * 16));
+            hop_info |= ((uint64_t) value << (offset * 16));
+        }
+
+        inline unsigned char next(size_t offset) const noexcept {
+            return (hop_info >> (offset * 16 + 8)) & 0xFF;
+        }
+
+        inline void next(size_t offset, unsigned char value) noexcept {
+            hop_info &= ~(0xFFULL << (offset * 16 + 8));
+            hop_info |= ((uint64_t) value << (offset * 16 + 8));
         }
 
         template <typename... Args>
-        inline void construct(Args&&... args) {
-            new (reinterpret_cast<Node*>(&data)) Node(std::forward<Args>(args)...);
+        inline void construct(size_t offset, Args&&... args) {
+            new (node(offset)) Node(std::forward<Args>(args)...);
             // don't forget to set collisions and/or next!
         }
 
-        inline void destroy() noexcept {
-            reinterpret_cast<Node&>(data).~Node();
-            next = EMPTY;
+        inline void destroy(size_t offset) noexcept {
+            node(offset)->~Node();
+            next(offset, EMPTY);
         }
 
-        inline bool occupied() const noexcept {
-            return next != EMPTY;
+        inline bool occupied(size_t offset) const noexcept {
+            return next(offset) != EMPTY;
         }
 
     };
@@ -1194,51 +1211,60 @@ private:
             }
 
             // get origin bucket in new array
-            size_t origin_idx = hash & modulo;
-            Bucket* origin = other + origin_idx;
+            size_t idx = hash & modulo;
+            Bucket* origin = other + (idx / 4);
+            size_t offset = idx % 4;
+            size_t origin_offset = offset;
+            unsigned char collisions = origin->collisions(offset);
 
             // linear probe starting from origin
-            Bucket* prev = nullptr;
             Bucket* bucket = origin;
+            Bucket* prev = nullptr;
+            size_t prev_offset = 0;
             unsigned char prev_distance = 0;  // distance from origin to prev
             unsigned char distance = 0;  // current probe length
-            unsigned char next = origin->collisions;  // distance to next bucket in chain
-            while (bucket->occupied()) {
+            unsigned char next = collisions;  // distance to next bucket in chain
+            while (bucket->occupied(offset)) {
                 if (distance == next) {
                     prev = bucket;
+                    prev_offset = offset;
                     prev_distance = distance;
-                    next += bucket->next;
+                    next += bucket->next(offset);
                 }
                 if (++distance == MAX_PROBE_LENGTH) {
                     throw RuntimeError("exceeded maximum probe length");
                 }
-                bucket = other + ((origin_idx + distance) & modulo);
+                idx = (idx + 1) & modulo;
+                bucket = other + (idx / 4);
+                offset = idx % 4;
             };
 
             // update hop information
             if (prev == nullptr) {  // bucket is new head of chain
-                bucket->next = (origin->collisions != EMPTY) * (origin->collisions - distance);
-                origin->collisions = distance;
+                bucket->next(offset, (collisions != EMPTY) * (collisions - distance));
+                origin->collisions(origin_offset, distance);
             } else {  // bucket is in middle or end of chain
                 unsigned char delta = distance - prev_distance;
-                bucket->next = (prev->next != 0) * (prev->next - delta);
-                prev->next = delta;
+                unsigned char next = prev->next(prev_offset);
+                bucket->next(offset, (next != 0) * (next - delta));
+                prev->next(prev_offset, delta);
             }
 
             // transfer node into new array
             Node* next_node = curr_node->next();
             if constexpr (move) {
-                bucket->construct(std::move(*curr_node));
+                bucket->construct(offset, std::move(*curr_node));
             } else {
-                bucket->construct(*curr_node);
+                bucket->construct(offset, *curr_node);
             }
 
             // join with previous node and update head/tail pointers
+            Node* node = bucket->node(offset);
             if (curr_node == this->head) {
-                new_head = bucket->node();
+                new_head = node;
             }
-            Node::join(new_tail, bucket->node());
-            new_tail = bucket->node();
+            Node::join(new_tail, node);
+            new_tail = node;
             curr_node = next_node;
         }
 
@@ -1247,14 +1273,16 @@ private:
 
     /* Allocate a new table of a given size and transfer the contents of the list. */
     void resize(size_t new_capacity) {
-        Bucket* new_table = new Bucket[new_capacity];
+        Bucket* new_table = new Bucket[(new_capacity + 3) / 4];
         if constexpr (DEBUG) {
             std::cout << "    -> allocate: " << new_capacity << " nodes" << std::endl;
         }
 
         // move nodes into new table
         try {
-            auto [head, tail] = transfer<true>(new_table, new_capacity);
+            auto [head, tail] = (
+                transfer<true>(new_table, new_capacity)
+            );
             this->head = head;
             this->tail = tail;
         } catch (...) {  // exceeded maximum probe length
@@ -1415,17 +1443,19 @@ private:
 
         // identify starting bucket
         size_t idx = hash & modulo;
-        Bucket* bucket = table + idx;
+        Bucket* bucket = table + (idx / 4);
+        size_t offset = idx % 4;
 
         // if collision chain is empty, then no match is possible
-        if (bucket->collisions != EMPTY) {
-            if (bucket->collisions) {  // advance to head of chain
-                idx += bucket->collisions;
-                idx &= modulo;
-                bucket = table + idx;
+        unsigned char collisions = bucket->collisions(offset);
+        if (collisions != EMPTY) {
+            if (collisions) {  // advance to head of chain
+                idx = (idx + collisions) & modulo;
+                bucket = table + (idx / 4);
+                offset = idx % 4;
             }
             while (true) {
-                Node* node = bucket->node();
+                Node* node = bucket->node(offset);
                 if (node->hash() == hash && eq(node->value(), value)) {
                     if constexpr (flags & MOVE_HEAD) {
                         move_to_head(node);
@@ -1436,12 +1466,12 @@ private:
                 }
 
                 // advance to next bucket
-                if (!bucket->next) {
+                unsigned char next = bucket->next(offset);
+                if (!next) {
                     break;
                 }
-                idx += bucket->next;
-                idx &= modulo;
-                bucket = table + idx;
+                idx = (idx + next) & modulo;
+                bucket = table + (idx / 4);
             }
         }
 
@@ -1463,28 +1493,31 @@ private:
 
         // identify starting bucket
         size_t idx = hash & modulo;
-        Bucket* bucket = table + idx;
+        Bucket* bucket = table + (idx / 4);
+        size_t offset = idx % 4;
 
         // if collision chain is empty, then no match is possible
-        if (bucket->collisions != EMPTY) {
-            if (bucket->collisions) {  // advance to head of chain
-                idx += bucket->collisions;
-                idx &= modulo;
-                bucket = table + idx;
+        unsigned char collisions = bucket->collisions(offset);
+        if (collisions != EMPTY) {
+            if (collisions) {  // advance to head of chain
+                idx = (idx + collisions) & modulo;
+                bucket = table + (idx / 4);
+                offset = idx % 4;
             }
             while (true) {
-                const Node* node = bucket->node();
+                const Node* node = bucket->node(offset);
                 if (node->hash() == hash && eq(node->value(), value)) {
                     return node;
                 }
 
                 // advance to next bucket
-                if (!bucket->next) {
+                unsigned char next = bucket->next(offset);
+                if (!next) {
                     break;
                 }
-                idx += bucket->next;
-                idx &= modulo;
-                bucket = table + idx;
+                idx = (idx + next) & modulo;
+                bucket = table + (idx / 4);
+                offset = idx % 4;
             }
         }
 
@@ -1523,27 +1556,36 @@ private:
         );
 
         size_t idx = hash & modulo;
-        Bucket* origin = table + idx;
+        size_t offset = idx % 4;
+        Bucket* origin = table + (idx / 4);
+        size_t origin_offset = offset;
 
         // if collision chain is empty, then no match is possible
-        if (origin->collisions != EMPTY) {
+        unsigned char collisions = origin->collisions(offset);
+        if (collisions != EMPTY) {
+            size_t prev_offset = 0;
             Bucket* prev = nullptr;
             Bucket* bucket = origin;
-            if (origin->collisions) {
-                idx += origin->collisions;
-                idx &= modulo;
-                bucket = table + idx;
+            if (collisions) {
+                idx = (idx + collisions) & modulo;
+                bucket = table + (idx / 4);
+                offset = idx % 4;
             }
             while (true) {
-                Node* node = bucket->node();
+                Node* node = bucket->node(offset);
+                unsigned char next = bucket->next(offset);
                 if (node->hash() == hash && eq(node->value(), value)) {
                     // update hop information
-                    unsigned char has_next = (bucket->next > 0);
                     if (prev == nullptr) {  // bucket is head of collision chain
-                        origin->collisions = has_next ?
-                            origin->collisions + bucket->next : EMPTY;
+                        origin->collisions(
+                            origin_offset,
+                            (next > 0) ? collisions + next : EMPTY
+                        );
                     } else {  // bucket is in middle or end of collision chain
-                        prev->next = has_next * (prev->next + bucket->next);
+                        prev->next(
+                            prev_offset,
+                            (next > 0) * (prev->next(prev_offset) + next)
+                        );
                     }
 
                     if constexpr (flags & UNLINK) {
@@ -1562,14 +1604,14 @@ private:
                         if constexpr (is_pyobject<Mapped>) {
                             Py_INCREF(mapped);
                         }
-                        bucket->destroy();
+                        bucket->destroy(offset);
                         --this->occupied;
                         this->shrink();
                         return mapped;
 
                     // otherwise destroy and return void
                     } else {
-                        bucket->destroy();
+                        bucket->destroy(offset);
                         --this->occupied;
                         this->shrink();
                         return;
@@ -1577,13 +1619,14 @@ private:
                 }
 
                 // advance to next bucket
-                if (!bucket->next) {
+                if (!next) {
                     break;
                 }
-                idx += bucket->next;
-                idx &= modulo;
+                idx = (idx + next) & modulo;
                 prev = bucket;
-                bucket = table + idx;
+                prev_offset = offset;
+                bucket = table + (idx / 4);
+                offset = idx % 4;
             }
         }
 
@@ -1618,27 +1661,36 @@ private:
         );
 
         size_t idx = hash & modulo;
-        Bucket* origin = table + idx;
+        size_t offset = idx % 4;
+        Bucket* origin = table + (idx / 4);
+        size_t origin_offset = offset;
 
         // if collision chain is empty, then no match is possible
-        if (origin->collisions != EMPTY) {
+        unsigned char collisions = origin->collisions(offset);
+        if (collisions != EMPTY) {
+            size_t prev_offset = 0;
             Bucket* prev = nullptr;
             Bucket* bucket = origin;
-            if (origin->collisions) {
-                idx += origin->collisions;
-                idx &= modulo;
-                bucket = table + idx;
+            if (collisions) {
+                idx = (idx + collisions) & modulo;
+                bucket = table + (idx / 4);
+                offset = idx % 4;
             }
             while (true) {
-                Node* node = bucket->node();
+                Node* node = bucket->node(offset);
+                unsigned char next = bucket->next(offset);
                 if (node->hash() == hash && eq(node->value(), value)) {
                     // update hop information
-                    unsigned char has_next = (bucket->next > 0);
                     if (prev == nullptr) {  // bucket is head of collision chain
-                        origin->collisions = has_next ?
-                            origin->collisions + bucket->next : EMPTY;
+                        origin->collisions(
+                            origin_offset,
+                            (next > 0) ? collisions + next : EMPTY
+                        );
                     } else {  // bucket is in middle or end of collision chain
-                        prev->next = has_next * (prev->next + bucket->next);
+                        prev->next(
+                            prev_offset,
+                            (next > 0) * (prev->next(prev_offset) + next)
+                        );
                     }
 
                     if constexpr (flags & UNLINK) {
@@ -1657,14 +1709,14 @@ private:
                         if constexpr (is_pyobject<Mapped>) {
                             Py_INCREF(mapped);
                         }
-                        bucket->destroy();
+                        bucket->destroy(offset);
                         --this->occupied;
                         this->shrink();
                         return mapped;
 
                     // otherwise destroy and return void
                     } else {
-                        bucket->destroy();
+                        bucket->destroy(offset);
                         --this->occupied;
                         this->shrink();
                         return;
@@ -1672,13 +1724,14 @@ private:
                 }
 
                 // advance to next bucket
-                if (!bucket->next) {
+                if (!next) {
                     break;
                 }
-                idx += bucket->next;
-                idx &= modulo;
+                idx = (idx + next) & modulo;
                 prev = bucket;
-                bucket = table + idx;
+                prev_offset = offset;
+                bucket = table + (idx / 4);
+                offset = idx % 4;
             }
         }
 
@@ -1699,7 +1752,7 @@ public:
     /* Create an allocator with an optional fixed size. */
     HashAllocator(std::optional<size_t> capacity, PyObject* specialization) :
         Base(init_capacity(capacity), specialization),
-        table(new Bucket[this->capacity]), modulo(this->capacity - 1),
+        table(new Bucket[(this->capacity + 3) / 4]), modulo(this->capacity - 1),
         max_occupants(init_max_occupants(capacity))
     {}
 
@@ -1709,7 +1762,9 @@ public:
         max_occupants(other.max_occupants)
     {
         if (this->occupied) {
-            auto [head, tail] = other.template transfer<false>(table, this->capacity);
+            auto [head, tail] = (
+                other.template transfer<false>(table, this->capacity)
+            );
             this->head = head;
             this->tail = tail;
         }
@@ -1738,7 +1793,9 @@ public:
         modulo = other.modulo;
         max_occupants = other.max_occupants;
         if (this->occupied) {
-            auto [head, tail] = other.template transfer<false>(table, this->capacity);
+            auto [head, tail] = (
+                other.template transfer<false>(table, this->capacity)
+            );
             this->head = head;
             this->tail = tail;
         } else {
@@ -1809,36 +1866,40 @@ public:
         Base::init_node(node, std::forward<Args>(args)...);
 
         // search hash table to get origin bucket
-        size_t origin_idx = node->hash() & modulo;
-        Bucket* origin = table + origin_idx;
+        size_t idx = node->hash() & modulo;
+        Bucket* origin = table + (idx / 4);
+        size_t offset = idx % 4;
+        size_t origin_idx = idx;
+        size_t origin_offset = offset;
+        unsigned char collisions = origin->collisions(offset);
 
         // if bucket has collisions, search the chain for a matching value
-        if (origin->collisions != EMPTY) {
-            size_t idx = origin_idx;
+        if (collisions != EMPTY) {
             Bucket* bucket = origin;
-            if (origin->collisions) {  // advance to head of chain
-                idx += bucket->collisions;
-                idx &= modulo;
-                bucket = table + idx;
+            if (collisions) {  // advance to head of chain
+                idx = (idx + collisions) & modulo;
+                bucket = table + (idx / 4);
+                offset = idx % 4;
             }
             while (true) {
-                if (bucket->node()->hash() == node->hash() &&
-                    eq(bucket->node()->value(), node->value())
+                Node* curr = bucket->node(offset);
+                if (curr->hash() == node->hash() &&
+                    eq(curr->value(), node->value())
                 ) {
                     if constexpr (flags & EXIST_OK) {
                         if constexpr (
                             NodeTraits<Node>::has_mapped &&
                             (flags & REPLACE_MAPPED)
                         ) {
-                            bucket->node()->mapped(std::move(node->mapped()));
+                            curr->mapped(std::move(node->mapped()));
                         }
                         node->~Node();
                         if constexpr (flags & MOVE_HEAD) {
-                            move_to_head(bucket->node());
+                            move_to_head(curr);
                         } else if constexpr (flags & MOVE_TAIL) {
-                            move_to_tail(bucket->node());
+                            move_to_tail(curr);
                         }
-                        return bucket->node();
+                        return curr;
                     } else {
                         std::ostringstream msg;
                         msg << "duplicate key: " << repr(node->value());
@@ -1848,12 +1909,13 @@ public:
                 }
 
                 // advance to next bucket
-                if (!(bucket->next)) {
+                unsigned char next = bucket->next(offset);
+                if (!next) {
                     break;
                 }
-                idx += bucket->next;
-                idx &= modulo;
-                bucket = table + idx;
+                idx = (idx + next) & modulo;
+                bucket = table + (idx / 4);
+                offset = idx % 4;
             }
         }
 
@@ -1882,16 +1944,18 @@ public:
         }
 
         // linear probe starting from origin
-        Bucket* prev = nullptr;
         Bucket* bucket = origin;
+        Bucket* prev = nullptr;
+        size_t prev_offset = 0;
         unsigned char prev_distance = 0;  // distance from origin to prev
         unsigned char distance = 0;  // current probe length
-        unsigned char next = origin->collisions;  // distance to next bucket in chain
-        while (bucket->occupied()) {
+        unsigned char next = collisions;  // distance to next bucket in chain
+        while (bucket->occupied(offset)) {
             if (distance == next) {
                 prev = bucket;
+                prev_offset = offset;
                 prev_distance = distance;
-                next += bucket->next;
+                next += bucket->next(offset);
             }
             if (++distance == MAX_PROBE_LENGTH) {
                 if constexpr (Base::FIXED_SIZE) {
@@ -1902,23 +1966,26 @@ public:
                     return create(std::move(*node));
                 }
             }
-            bucket = table + ((origin_idx + distance) & modulo);
+            idx = (idx + 1) & modulo;
+            bucket = table + (idx / 4);
+            offset = idx % 4;
         }
 
         // update hop information
         if (prev == nullptr) {  // bucket is new head of chain
-            bucket->next = (origin->collisions != EMPTY) * (origin->collisions - distance);
-            origin->collisions = distance;
+            bucket->next(offset, (collisions != EMPTY) * (collisions - distance));
+            origin->collisions(origin_offset, distance);
         } else {  // bucket is in middle or end of chain
             unsigned char delta = distance - prev_distance;
-            bucket->next = (prev->next != 0) * (prev->next - delta);
-            prev->next = delta;
+            unsigned char next = prev->next(prev_offset);
+            bucket->next(offset, (next != 0) * (next - delta));
+            prev->next(prev_offset, delta);
         }
 
         // insert node into empty bucket
-        bucket->construct(std::move(*node));
+        bucket->construct(offset, std::move(*node));
         ++this->occupied;
-        node = bucket->node();
+        node = bucket->node(offset);
         if constexpr (flags & INSERT_HEAD) {
             insert_head(node);
         } else if constexpr (flags & INSERT_TAIL) {
@@ -2028,7 +2095,7 @@ public:
     /* Get the total amount of dynamic memory being managed by this allocator.  Hop
     information takes 2 extra bytes per bucket (maybe padded to 4/8). */
     inline size_t nbytes() const noexcept {
-        return sizeof(Node) + this->capacity * sizeof(Bucket);
+        return sizeof(Node) + ((this->capacity + 3) / 4) * sizeof(Bucket);
     }
 
     /* Get the maximum number of elements that this allocator can support if it does

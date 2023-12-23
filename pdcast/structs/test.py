@@ -5,6 +5,8 @@ from typing import Any, Iterator, NoReturn
 import numpy as np
 import pandas as pd
 
+from linked import *  # TODO: replace built-in data structures with linked ones
+
 
 class TypeBuilder:
 
@@ -20,7 +22,7 @@ class TypeBuilder:
     def __init__(
         self,
         name: str,
-        bases: tuple[type],
+        bases: tuple[TypeMeta],
         namespace: dict[str, Any],
         backend: str,
         cache_size: int | None,
@@ -56,7 +58,7 @@ class TypeBuilder:
         self.namespace["implementations"] = {}
         self.namespace["parametrized"] = False
         self.namespace["cache_size"] = cache_size
-        self.namespace["flyweights"] = {}
+        self.namespace["flyweights"] = LinkedDict[str:TypeMeta](max_size=cache_size)
         self.namespace["default"] = []  # TODO: at C++ level, we could just assign this directly
 
     def aliases(self) -> None:
@@ -171,7 +173,7 @@ class TypeBuilder:
         elif "__class_getitem__" in self.namespace:
             wrapped = self.namespace["__class_getitem__"]
 
-            def wrapper(cls: type, val: Any | tuple[Any, ...]) -> type:
+            def wrapper(cls: type, val: Any | tuple[Any, ...]) -> TypeMeta:
                 if isinstance(val, tuple):
                     return wrapped(cls, *val)
                 return wrapped(cls, val)
@@ -196,9 +198,9 @@ class TypeBuilder:
 
         # type is concrete, does not implement __class_getitem__, and parent is abstract
         elif self.supertype is not None and not self.supertype.backend:
-            def default(cls: type) -> type:
+            def default(cls: type) -> TypeMeta:
                 """TODO"""
-                return cls
+                return cls  # type: ignore
 
             self.namespace["__class_getitem__"] = classmethod(default)
 
@@ -225,9 +227,9 @@ class TypeBuilder:
 
         # type is concrete, does not implement from_scalar, and parent is abstract
         elif self.supertype is not None and not self.supertype.backend:
-            def default(cls: type, scalar: Any) -> type:
+            def default(cls: type, scalar: Any) -> TypeMeta:
                 """TODO"""
-                return cls
+                return cls  # type: ignore
 
             self.namespace["from_scalar"] = classmethod(default)
 
@@ -252,9 +254,9 @@ class TypeBuilder:
 
         # type is concrete, does not implement from_dtype, and parent is abstract
         elif self.supertype is not None and not self.supertype.backend:
-            def default(cls: type, dtype: Any) -> type:
+            def default(cls: type, dtype: Any) -> TypeMeta:
                 """TODO"""
-                return cls
+                return cls  # type: ignore
 
             self.namespace["from_dtype"] = classmethod(default)
 
@@ -277,40 +279,13 @@ class TypeBuilder:
         return typ
 
 
-
-
-def bias(t: TypeMeta) -> float:
-    """TODO"""
-    return abs(t.max + t.min) / (abs(t.max) + abs(t.min))
-
-
-def explode_tree(t: TypeMeta, result: list[TypeMeta]) -> None:
-    """TODO"""
-    result.append(t)
-    for sub in t.subtypes:
-        explode_tree(sub, result)
-    for impl in t.implementations.values():
-        explode_tree(impl, result)
-
-
-def explode_leaves(t: TypeMeta, result: list[TypeMeta]) -> None:
-    """TODO"""
-    if t.is_leaf:
-        result.append(t)
-    for sub in t.subtypes:
-        explode_leaves(sub, result)
-    for impl in t.implementations.values():
-        explode_leaves(impl, result)
-
-
-
 class TypeMeta(type):
     """TODO"""
 
     def __init__(
-        cls: type,
+        cls: TypeMeta,
         name: str,
-        bases: tuple[type],
+        bases: tuple[TypeMeta],
         namespace: dict[str, Any],
         **kwargs: Any
     ):
@@ -332,9 +307,9 @@ class TypeMeta(type):
             print()
 
     def __new__(
-        cls: type,
+        mcs: type,
         name: str,
-        bases: tuple[type],
+        bases: tuple[TypeMeta],
         namespace: dict[str, Any],
         backend: str = "",
         cache_size: int | None = None,
@@ -343,10 +318,7 @@ class TypeMeta(type):
         if len(bases) > 1:
             raise TypeError("bertrand types are limited to single inheritance")
         if len(bases) == 0 or bases[0] is object:
-            return super().__new__(cls, name, bases, namespace)
-
-        # TODO: if marked as default, parent must be abstract, and the abstract type
-        # will delegate to the default implementation.
+            return super().__new__(mcs, name, bases, namespace)
 
         build = TypeBuilder(name, bases, namespace, backend, cache_size, default)
         build.aliases()
@@ -358,7 +330,7 @@ class TypeMeta(type):
         build.from_dtype()
 
         return build.register(
-            super().__new__(cls, build.name, build.bases, build.namespace)
+            super().__new__(mcs, build.name, build.bases, build.namespace)
         )
 
     def flyweight(cls, **kwargs: Any) -> TypeMeta:
@@ -458,7 +430,7 @@ class TypeMeta(type):
     def children(cls) -> list[TypeMeta]:
         """TODO"""
         result: list[TypeMeta] = []
-        explode_tree(cls, result)
+        explode_children(cls, result)
         return result[1:]
 
     @property
@@ -498,13 +470,13 @@ class TypeMeta(type):
     def __subclasscheck__(cls, other: type) -> bool:
         return super().__subclasscheck__(other)
 
-    def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series:
+    def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any]:
         # TODO: Even cooler, this could just call cast() on the input, which would
         # enable lossless conversions
         if cls.default:
             return cls.default[0](*args, **kwargs)
 
-        return pd.Series(*args, dtype=cls.dtype, **kwargs)
+        return pd.Series(*args, dtype=cls.dtype, **kwargs)  # type: ignore
 
     def __hash__(cls) -> int:
         return cls.hash
@@ -520,24 +492,44 @@ class TypeMeta(type):
             return issubclass(other, cls)
         return isinstance(other, cls)
 
-    def __or__(cls, other: TypeMeta | list[TypeMeta]) -> list[TypeMeta]:
+    def __or__(cls, other: TypeMeta | list[TypeMeta]) -> list[TypeMeta]:  # type: ignore
         if isinstance(other, list):
             return [cls, *other]
         return [cls, other]
 
-    def __ror__(cls, other: TypeMeta | list[TypeMeta]) -> list[TypeMeta]:
+    def __ror__(cls, other: TypeMeta | list[TypeMeta]) -> list[TypeMeta]:  # type: ignore
         if isinstance(other, list):
             return [*other, cls]
         return [other, cls]
 
     def __lt__(cls, other: TypeMeta) -> bool:
-        features = (cls.max - cls.min, cls.itemsize, cls.nullable, bias(cls))
-        compare = (other.max - other.min, other.itemsize, other.nullable, bias(other))
+        features = (
+            cls.max - cls.min,
+            cls.itemsize,
+            cls.nullable,
+            abs(cls.max + cls.min)
+        )
+        compare = (
+            other.max - other.min,
+            other.itemsize,
+            other.nullable,
+            abs(other.max + other.min)
+        )
         return features < compare
 
     def __gt__(cls, other: TypeMeta) -> bool:
-        features = (cls.max - cls.min, cls.itemsize, cls.nullable, bias(cls))
-        compare = (other.max - other.min, other.itemsize, other.nullable, bias(other))
+        features = (
+            cls.max - cls.min,
+            cls.itemsize,
+            cls.nullable,
+            abs(cls.max + cls.min)
+        )
+        compare = (
+            other.max - other.min,
+            other.itemsize,
+            other.nullable,
+            abs(other.max + other.min)
+        )
         return features > compare
 
     def __str__(cls) -> str:
@@ -547,13 +539,29 @@ class TypeMeta(type):
         return cls.slug
 
 
+def explode_children(t: TypeMeta, result: list[TypeMeta]) -> None:  # lol
+    """Explode a type's hierarchy into a flat list of subtypes and implementations."""
+    result.append(t)
+    for sub in t.subtypes:
+        explode_children(sub, result)
+    for impl in t.implementations.values():
+        explode_children(impl, result)
 
+
+def explode_leaves(t: TypeMeta, result: list[TypeMeta]) -> None:
+    """Explode a type's hierarchy into a flat list of concrete leaf types."""
+    if t.is_leaf:
+        result.append(t)
+    for sub in t.subtypes:
+        explode_leaves(sub, result)
+    for impl in t.implementations.values():
+        explode_leaves(impl, result)
 
 
 class Type(metaclass=TypeMeta):
 
     class registry:
-        aliases: dict[str, type] = {}
+        aliases: dict[str, TypeMeta] = {}
 
     _numeric: bool = False
     _max: int | float = np.inf
@@ -564,14 +572,14 @@ class Type(metaclass=TypeMeta):
     def __new__(cls) -> NoReturn:
         raise TypeError("bertrand types cannot be instantiated")
 
-    def __class_getitem__(cls, val: str | tuple[Any, ...]) -> type:
+    def __class_getitem__(cls, val: str | tuple[Any, ...]) -> TypeMeta:
         """TODO"""
         if isinstance(val, str):
             return cls.implementations[val]
         return cls.implementations[val[0]][*(val[1:])]
 
     @classmethod
-    def from_scalar(cls, scalar: Any) -> NoReturn:
+    def from_scalar(cls, scalar: Any) -> TypeMeta:
         """TODO"""
         if cls.default:
             return cls.default[0].from_scalar(scalar)
@@ -579,12 +587,33 @@ class Type(metaclass=TypeMeta):
         raise TypeError(f"abstract type has no default implementation: {cls.slug}")
 
     @classmethod
-    def from_dtype(cls, dtype: Any) -> NoReturn:
+    def from_dtype(cls, dtype: Any) -> TypeMeta:
         """TODO"""
         if cls.default:
             return cls.default[0].from_dtype(dtype)
 
         raise TypeError("abstract types cannot be constructed from a concrete dtype")
+
+
+
+
+
+
+# TODO: create separate metaclass for decorator types, then implement CompositeType
+# as a concrete class.
+
+# decorator meta adds
+# .decorators: list[DecoratorMeta]
+# .wrapper: DecoratorMeta
+# .wrapped: TypeMeta | DecoratorMeta
+# .naked: TypeMeta
+# .transform  <- applies the decorator to a series of the wrapped type.
+# .inverse_transform  <- removes the decorator from a series of the wrapped type.
+
+
+
+# TODO: if Sparse[] gets a UnionType, then we should broadcast over the union.
+
 
 
 
@@ -613,7 +642,7 @@ class NumpyInt8(Int8, backend="numpy", default=True):
     dtype = np.dtype(np.int8)
     nullable = False
 
-    def __class_getitem__(cls, x: int = 1, y: int = 2, z: int = 3) -> NumpyInt8:
+    def __class_getitem__(cls, x = 1, y = 2, z = 3) -> NumpyInt8:
         return cls.flyweight(x=x, y=y, z=z)
 
 
