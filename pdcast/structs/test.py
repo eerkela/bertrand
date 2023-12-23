@@ -1,6 +1,6 @@
 from __future__ import annotations
 from inspect import signature
-from typing import Any, Iterable, Iterator, NoReturn
+from typing import Any, Callable, Iterable, Iterator, NoReturn
 
 import numpy as np
 import pandas as pd
@@ -50,16 +50,16 @@ class TypeBuilder:
             elif backend != base.backend:
                 raise TypeError(f"backend id must match its parent: {repr(backend)}")
 
-        self.namespace["slug"] = self.name
-        self.namespace["hash"] = hash(self.name)
-        self.namespace["backend"] = self.backend
-        self.namespace["supertype"] = self.supertype
-        self.namespace["subtypes"] = LinkedSet[TypeMeta]()
-        self.namespace["implementations"] = LinkedDict[str:TypeMeta]()
-        self.namespace["parametrized"] = False
-        self.namespace["cache_size"] = cache_size
-        self.namespace["flyweights"] = LinkedDict[str:TypeMeta](max_size=cache_size)
-        self.namespace["default"] = []  # TODO: at C++ level, we could just assign this directly
+        self.namespace["_slug"] = self.name
+        self.namespace["_hash"] = hash(self.name)
+        self.namespace["_backend"] = self.backend
+        self.namespace["_supertype"] = self.supertype
+        self.namespace["_subtypes"] = LinkedSet[TypeMeta]()
+        self.namespace["_implementations"] = LinkedDict[str:TypeMeta]()
+        self.namespace["_parametrized"] = False
+        self.namespace["_cache_size"] = cache_size
+        self.namespace["_flyweights"] = LinkedDict[str:TypeMeta](max_size=cache_size)
+        self.namespace["_default"] = []  # TODO: at C++ level, we could just assign this directly
 
     def aliases(self) -> None:
         """TODO"""
@@ -71,7 +71,8 @@ class TypeBuilder:
                 raise TypeError(f"aliases must be unique: {repr(alias)}")
             aliases.add(alias)
 
-        self.namespace["aliases"] = aliases
+        self.namespace.pop("aliases", None)
+        self.namespace["_aliases"] = aliases
 
     def dtype(self) -> None:
         """TODO"""
@@ -204,7 +205,7 @@ class TypeBuilder:
 
             self.namespace["__class_getitem__"] = classmethod(default)
 
-        self.namespace["params"] = parameters
+        self.namespace["_params"] = parameters
 
     def from_scalar(self) -> None:
         """TODO"""
@@ -262,16 +263,16 @@ class TypeBuilder:
 
     def register(self, typ: TypeMeta) -> TypeMeta:
         """TODO"""
-        for alias in self.namespace["aliases"]:
+        for alias in self.namespace["_aliases"]:
             Type.registry.aliases[alias] = typ
 
         if self.supertype is not None:
             if not self.backend:
-                self.supertype.subtypes.add(typ)
+                self.supertype._subtypes.add(typ)
             else:
-                self.supertype.implementations[self.backend] = typ
+                self.supertype._implementations[self.backend] = typ
             if self.default:
-                self.supertype.default.append(typ)  # TODO: at C++ level, we could just assign this directly
+                self.supertype._default.append(typ)  # TODO: at C++ level, we could just assign this directly
 
         elif self.default:
             raise TypeError("`default` has no meaning for root types")
@@ -293,17 +294,17 @@ class TypeMeta(type):
             print("-" * 80)
             print(f"name: {cls.__name__}")
             print(f"slug: {cls.slug}")
-            print(f"aliases: {cls.aliases}")
+            print(f"aliases: {cls._aliases}")
             print(f"cache_size: {cls.cache_size}")
             print(f"supertype: {cls.supertype}")
-            print(f"dtype: {getattr(cls, 'dtype', None)}")
-            print(f"scalar: {getattr(cls, 'scalar', None)}")
-            print(f"itemsize: {getattr(cls, 'itemsize', None)}")
-            print(f"numeric: {cls.numeric}")
-            print(f"max: {cls.max}")
-            print(f"min: {cls.min}")
-            print(f"nullable: {cls.nullable}")
-            print(f"missing: {cls.missing}")
+            print(f"dtype: {getattr(cls, '_dtype', None)}")
+            print(f"scalar: {getattr(cls, '_scalar', None)}")
+            print(f"itemsize: {getattr(cls, '_itemsize', None)}")
+            print(f"numeric: {cls._numeric}")
+            print(f"max: {cls._max}")
+            print(f"min: {cls._min}")
+            print(f"nullable: {cls._nullable}")
+            print(f"missing: {cls._missing}")
             print()
 
     def __new__(
@@ -347,9 +348,9 @@ class TypeMeta(type):
                 cls.__name__,
                 (cls,),
                 cls.params | {
-                    "slug": slug,
-                    "hash": hash(slug),
-                    "params": kwargs,
+                    "_slug": slug,
+                    "_hash": hash(slug),
+                    "_params": kwargs,
                     "__class_getitem__": __class_getitem__
                 }
             )
@@ -358,59 +359,115 @@ class TypeMeta(type):
         return typ
 
     @property
+    def slug(cls) -> str:
+        """TODO"""
+        return cls._slug
+
+    @property
+    def hash(cls) -> int:
+        """TODO"""
+        return cls._hash
+
+    @property
+    def backend(cls) -> str:
+        """TODO"""
+        return cls._backend
+
+    @property
+    def cache_size(cls) -> int:
+        """TODO"""
+        return cls._cache_size
+
+    @property
+    def flyweights(cls) -> LinkedDict[str, TypeMeta]:
+        """TODO"""
+        return cls._flyweights  # TODO: make this read-only, but automatically LRU update
+
+    @property
+    def abstract(cls) -> TypeMeta | None:
+        """TODO"""
+        if not cls._backend:
+            return cls
+        if cls.supertype is None:
+            return None
+        return cls.supertype.abstract
+
+    @property
+    def parametrized(cls) -> bool:
+        """TODO"""
+        return cls._parametrized
+
+    @property
+    def params(cls) -> LinkedDict[str, Any]:
+        """TODO"""
+        return cls._params
+
+    @property
+    def default(cls) -> TypeMeta:
+        """TODO"""
+        return None if not cls._default else cls._default[0]  # TODO: easier at C++ level
+
+    @property
+    def aliases(self) -> LinkedSet[str]:
+        """TODO"""
+        # TODO: make this an AliasManager, such that aliases can be added and removed
+        # dynamically.
+        return self._aliases
+
+    @property
     def dtype(cls) -> np.dtype | pd.api.extensions.ExtensionDtype | None:
         """TODO"""
         if cls.default:
-            return cls.default[0].dtype
+            return cls.default.dtype
         return cls._dtype
 
     @property
     def scalar(cls) -> type | None:
         """TODO"""
         if cls.default:
-            return cls.default[0].scalar
+            return cls.default.scalar
         return cls._scalar
 
     @property
     def itemsize(cls) -> int | None:
         """TODO"""
         if cls.default:
-            return cls.default[0].itemsize
+            return cls.default.itemsize
         return cls._itemsize
 
     @property
     def numeric(cls) -> bool:
         """TODO"""
         if cls.default:
-            return cls.default[0].numeric
+            return cls.default.numeric
         return cls._numeric
 
     @property
     def max(cls) -> int | float:
         """TODO"""
         if cls.default:
-            return cls.default[0].max
+            return cls.default.max
         return cls._max
 
     @property
     def min(cls) -> int | float:
         """TODO"""
         if cls.default:
-            return cls.default[0].min
+            return cls.default.min
         return cls._min
 
     @property
     def nullable(cls) -> bool:
         """TODO"""
         if cls.default:
-            return cls.default[0].nullable
+            return cls.default.nullable
         return cls._nullable
 
     @property
     def missing(cls) -> Any:
         """TODO"""
         if cls.default:
-            return cls.default[0].missing
+            return cls.default.missing
         return cls._missing
 
     @property
@@ -427,18 +484,33 @@ class TypeMeta(type):
         return cls.supertype is None
 
     @property
-    def children(cls) -> LinkedSet[TypeMeta]:
+    def supertype(cls) -> TypeMeta | None:
+        """TODO"""
+        return cls._supertype
+
+    @property
+    def subtypes(cls) -> Union:
+        """TODO"""
+        return Union.from_set(cls._subtypes)  # TODO: make this immutable
+
+    @property
+    def implementations(cls) -> Union:
+        """TODO"""
+        return Union(*cls._implementations.values())
+
+    @property
+    def children(cls) -> Union:
         """TODO"""
         result = LinkedSet[TypeMeta]()
         explode_children(cls, result)
-        return result[1:]
+        return Union.from_set(result[1:])
 
     @property
-    def leaves(cls) -> LinkedSet[TypeMeta]:
+    def leaves(cls) -> Union:
         """TODO"""
         result = LinkedSet[TypeMeta]()
         explode_leaves(cls, result)
-        return result
+        return Union.from_set(result)
 
     @property
     def is_leaf(cls) -> bool:
@@ -446,17 +518,19 @@ class TypeMeta(type):
         return not cls.subtypes and not cls.implementations
 
     @property
-    def larger(cls) -> LinkedSet[TypeMeta]:
+    def larger(cls) -> Union:
         """TODO"""
-        return LinkedSet[TypeMeta](sorted(t for t in cls.root.leaves if t > cls))
+        result = LinkedSet[TypeMeta](sorted(t for t in cls.root.leaves if t > cls))
+        return Union.from_set(result)
 
     @property
-    def smaller(cls) -> list[TypeMeta]:
+    def smaller(cls) -> Union:
         """TODO"""
-        return LinkedSet[TypeMeta](sorted(t for t in cls.root.leaves if t < cls))
+        result = LinkedSet[TypeMeta](sorted(t for t in cls.root.leaves if t < cls))
+        return Union.from_set(result)
 
     def __getattr__(cls, name: str) -> Any:
-        params = super().__getattribute__("params")
+        params = super().__getattribute__("_params")
         if name in params:
             return params[name]
         return super().__getattribute__(name)
@@ -474,12 +548,12 @@ class TypeMeta(type):
         # TODO: Even cooler, this could just call cast() on the input, which would
         # enable lossless conversions
         if cls.default:
-            return cls.default[0](*args, **kwargs)
+            return cls.default(*args, **kwargs)
 
         return pd.Series(*args, dtype=cls.dtype, **kwargs)  # type: ignore
 
     def __hash__(cls) -> int:
-        return cls.hash
+        return cls._hash
 
     def __len__(cls) -> int:
         return len(cls.leaves)
@@ -492,19 +566,21 @@ class TypeMeta(type):
             return issubclass(other, cls)
         return isinstance(other, cls)
 
-    def __or__(cls, other: TypeMeta | Iterable[TypeMeta]) -> LinkedSet[TypeMeta]:  # type: ignore
+    def __or__(cls, other: TypeMeta | Iterable[TypeMeta]) -> Union:  # type: ignore
         if isinstance(other, TypeMeta):
-            return LinkedSet[TypeMeta]((cls, other))
+            return Union(cls, other)
+
         result = LinkedSet[TypeMeta](other)
         result.add_left(cls)
-        return result
+        return Union.from_set(result)
 
-    def __ror__(cls, other: TypeMeta | Iterable[TypeMeta]) -> LinkedSet[TypeMeta]:  # type: ignore
+    def __ror__(cls, other: TypeMeta | Iterable[TypeMeta]) -> Union:  # type: ignore
         if isinstance(other, TypeMeta):
-            return LinkedSet[TypeMeta]((other, cls))
+            return Union(other, cls)
+
         result = LinkedSet[TypeMeta](other)
         result.add(cls)
-        return result
+        return Union.from_set(result)
 
     def __lt__(cls, other: TypeMeta) -> bool:
         features = (
@@ -520,6 +596,18 @@ class TypeMeta(type):
             abs(other.max + other.min)
         )
         return features < compare
+
+    def __le__(cls, other: TypeMeta) -> bool:
+        return cls == other or cls < other
+
+    def __eq__(cls, other: TypeMeta) -> bool:
+        return cls is other
+
+    def __ne__(cls, other: TypeMeta) -> bool:
+        return cls is not other
+
+    def __ge__(cls, other: TypeMeta) -> bool:
+        return cls == other or cls > other
 
     def __gt__(cls, other: TypeMeta) -> bool:
         features = (
@@ -537,10 +625,47 @@ class TypeMeta(type):
         return features > compare
 
     def __str__(cls) -> str:
-        return cls.slug
+        return cls._slug
 
     def __repr__(cls) -> str:
-        return cls.slug
+        return cls._slug
+
+
+# TODO: static analysis of decorator types
+class DecoratorBuilder:
+    pass
+
+
+
+class DecoratorMeta(type):
+    pass
+
+    def __new__(
+        mcs: type,
+        name: str,
+        bases: tuple[DecoratorMeta],
+        namespace: dict[str, Any],
+        backend: str = "",
+        cache_size: int | None = None,
+        default: bool = False
+    ) -> DecoratorMeta:
+        if len(bases) > 1:
+            raise TypeError("bertrand decorators are limited to single inheritance")
+        if len(bases) == 0 or bases[0] is object:
+            return super().__new__(mcs, name, bases, namespace)
+
+        build = DecoratorBuilder(name, bases, namespace, backend, cache_size, default)
+        build.aliases()
+        build.dtype()
+        build.missing()
+        build.class_getitem()
+        build.from_scalar()
+        build.from_dtype()
+
+        return build.register(
+            super().__new__(mcs, build.name, build.bases, build.namespace)
+        )
+
 
 
 def explode_children(t: TypeMeta, result: LinkedSet[TypeMeta]) -> None:  # lol
@@ -548,7 +673,7 @@ def explode_children(t: TypeMeta, result: LinkedSet[TypeMeta]) -> None:  # lol
     result.add(t)
     for sub in t.subtypes:
         explode_children(sub, result)
-    for impl in t.implementations.values():
+    for impl in t.implementations:
         explode_children(impl, result)
 
 
@@ -558,8 +683,156 @@ def explode_leaves(t: TypeMeta, result: LinkedSet[TypeMeta]) -> None:
         result.add(t)
     for sub in t.subtypes:
         explode_leaves(sub, result)
-    for impl in t.implementations.values():
+    for impl in t.implementations:
         explode_leaves(impl, result)
+
+
+class Union:
+
+    def __init__(self, *args: TypeMeta) -> None:
+        self.types = LinkedSet[TypeMeta](args)
+
+    @classmethod
+    def from_set(cls, types: LinkedSet[TypeMeta]) -> Union:
+        """TODO"""
+        result = cls.__new__(cls)
+        result.types = types
+        return result
+
+    @property
+    def index(self) -> NoReturn:
+        """TODO"""
+        raise NotImplementedError()
+
+    @property
+    def root(self) -> Union:
+        """TODO"""
+        return self.from_set(LinkedSet[TypeMeta](t.root for t in self.types))
+
+    @property
+    def supertype(self) -> Union:
+        """TODO"""
+        return self.from_set(LinkedSet[TypeMeta](t.supertype for t in self.types))
+
+    @property
+    def subtypes(self) -> Union:
+        """TODO"""
+        result = LinkedSet[TypeMeta]()
+        for typ in self.types:
+            result.update(typ.subtypes)
+        return self.from_set(result)
+
+    @property
+    def abstract(self) -> Union:
+        """TODO"""
+        return self.from_set(LinkedSet[TypeMeta](t.abstract for t in self.types))
+
+    @property
+    def implementations(self) -> Union:
+        """TODO"""
+        result = LinkedSet[TypeMeta]()
+        for typ in self.types:
+            result.update(typ.implementations)
+        return self.from_set(result)
+
+    @property
+    def children(self) -> Union:
+        """TODO"""
+        result = LinkedSet[TypeMeta]()
+        for typ in self.types:
+            result.update(typ.children)
+        return self.from_set(result)
+
+    @property
+    def leaves(self) -> Union:
+        """TODO"""
+        result = LinkedSet[TypeMeta]()
+        for typ in self.types:
+            result.update(typ.leaves)
+        return self.from_set(result)
+
+    def sorted(
+        self,
+        *,
+        key: Callable[[TypeMeta], Any] | None = None,
+        reverse: bool = False
+    ) -> Union:
+        """TODO"""
+        result = self.types.copy()
+        result.sort(key=key, reverse=reverse)
+        return self.from_set(result)
+
+    def __getattr__(self, name: str) -> LinkedDict[TypeMeta, Any]:
+        result = LinkedDict[TypeMeta, Any]()
+        for typ in self.types:
+            result[typ] = getattr(typ, name)
+        return result
+
+    def __getitem__(self, key: TypeMeta | slice) -> Union:
+        if isinstance(key, slice):
+            return self.from_set(self.types[key])
+        return self.types[key]
+
+    def __call__(self, *args: Any, **kwargs: Any) -> pd.Series[Any]:
+        for typ in self.types:
+            try:
+                return typ(*args, **kwargs)
+            except Exception:
+                continue
+        raise TypeError(f"cannot convert to union type: {self}")
+
+    def __contains__(self, other: type | Any) -> bool:
+        if isinstance(other, type):
+            return any(issubclass(other, typ) for typ in self.types)
+        return any(isinstance(other, typ) for typ in self.types)
+
+    def __len__(self) -> int:
+        return len(self.types)
+
+    def __iter__(self) -> Iterator[TypeMeta]:
+        return iter(self.types)
+
+    def __reversed__(self) -> Iterator[TypeMeta]:
+        return reversed(self.types)
+
+    def __or__(self, other: TypeMeta | Iterable[TypeMeta]) -> Union:
+        return self.from_set(self.types | other)
+
+    def __sub__(self, other: TypeMeta | Iterable[TypeMeta]) -> Union:
+        return self.from_set(self.types - other)
+
+    def __and__(self, other: TypeMeta | Iterable[TypeMeta]) -> Union:
+        return self.from_set(self.types & other)
+
+    def __xor__(self, other: TypeMeta | Iterable[TypeMeta]) -> Union:
+        return self.from_set(self.types ^ other)
+
+    # TODO: this has to do hierarchical checking, not just set comparison
+
+    def __lt__(self, other: Union) -> bool:
+        return self.types < other.types
+
+    def __le__(self, other: Union) -> bool:
+        return self.types <= other.types
+
+    def __eq__(self, other: Union) -> bool:
+        return self.types == other.types
+
+    def __ne__(self, other: Union) -> bool:
+        return self.types != other.types
+
+    def __ge__(self, other: Union) -> bool:
+        return self.types >= other.types
+
+    def __gt__(self, other: Union) -> bool:
+        return self.types > other.types
+
+    def __str__(self) -> str:
+        return f"{{{', '.join(str(t) for t in self.types)}}}"
+
+    def __repr__(self) -> str:
+        return f"Union({', '.join(repr(t) for t in self.types)})"
+
 
 
 class Type(metaclass=TypeMeta):
@@ -579,14 +852,14 @@ class Type(metaclass=TypeMeta):
     def __class_getitem__(cls, val: str | tuple[Any, ...]) -> TypeMeta:
         """TODO"""
         if isinstance(val, str):
-            return cls.implementations[val]
-        return cls.implementations[val[0]][*(val[1:])]
+            return cls._implementations[val]
+        return cls._implementations[val[0]][*(val[1:])]
 
     @classmethod
     def from_scalar(cls, scalar: Any) -> TypeMeta:
         """TODO"""
         if cls.default:
-            return cls.default[0].from_scalar(scalar)
+            return cls.default.from_scalar(scalar)
 
         raise TypeError(f"abstract type has no default implementation: {cls.slug}")
 
@@ -594,16 +867,15 @@ class Type(metaclass=TypeMeta):
     def from_dtype(cls, dtype: Any) -> TypeMeta:
         """TODO"""
         if cls.default:
-            return cls.default[0].from_dtype(dtype)
+            return cls.default.from_dtype(dtype)
 
         raise TypeError("abstract types cannot be constructed from a concrete dtype")
 
 
 
-class Union:
 
-    def __init__(self, *args: TypeMeta) -> None:
-        self.types = LinkedSet[TypeMeta](args)
+
+
 
 
 

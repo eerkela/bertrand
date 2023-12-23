@@ -178,7 +178,7 @@ public:
     }
 
     /* Sort the list in-place according to an optional key func. */
-    template <typename Func>
+    template <typename Func = PyObject*>
     inline void sort(Func key = nullptr, bool reverse = false) {
         linked::sort<linked::MergeSort>(this->view, key, reverse);
     }
@@ -1088,7 +1088,7 @@ public:
         try {
             PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
             PyObject* iterable = pyargs.parse(
-                "iterable", none_to_null, (PyObject*)nullptr
+                "iterable", none_to_null, (PyObject*) nullptr
             );
             std::optional<size_t> max_size = pyargs.parse(
                 "max_size",

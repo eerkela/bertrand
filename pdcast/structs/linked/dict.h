@@ -12,6 +12,7 @@
 #include <Python.h>  // CPython API
 #include "../util/args.h"  // PyArgs
 #include "../util/except.h"  // throw_python()
+#include "../util/func.h"  // identity
 #include "../util/ops.h"  // eq(), lexical_lt(), etc.
 #include "core/allocate.h"  // Config
 #include "core/view.h"  // DictView
@@ -1631,7 +1632,7 @@ public:
         return visit(self, [&args, &nargs](auto& dict) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
-            PyObject* default_ = pyargs.parse("default", nullptr, (PyObject*) nullptr);
+            PyObject* default_ = pyargs.parse("default", identity(), (PyObject*) nullptr);
             pyargs.finalize();
             if (default_ == nullptr) {
                 return dict.pop(key);
@@ -1658,7 +1659,7 @@ public:
         return visit(self, [&args, &nargs](auto& dict) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
-            PyObject* default_ = pyargs.parse("default", nullptr, (PyObject*) nullptr);
+            PyObject* default_ = pyargs.parse("default", identity(), (PyObject*) nullptr);
             pyargs.finalize();
             if (default_ == nullptr) {
                 return dict.get(key);
@@ -1673,7 +1674,7 @@ public:
         return visit(self, [&args, &nargs](auto& dict) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
-            PyObject* default_ = pyargs.parse("default", nullptr, (PyObject*) nullptr);
+            PyObject* default_ = pyargs.parse("default", identity(), (PyObject*) nullptr);
             pyargs.finalize();
             if (default_ == nullptr) {
                 return dict.lru_get(key);
@@ -1688,7 +1689,7 @@ public:
         return visit(self, [&args, &nargs](auto& dict) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
-            PyObject* value = pyargs.parse("default", nullptr, (PyObject*) nullptr);
+            PyObject* value = pyargs.parse("default", identity(), (PyObject*) nullptr);
             pyargs.finalize();
             return dict.setdefault(key, value);
         });
@@ -1699,7 +1700,7 @@ public:
         return visit(self, [&args, &nargs](auto& dict) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
-            PyObject* value = pyargs.parse("default", nullptr, (PyObject*) nullptr);
+            PyObject* value = pyargs.parse("default", identity(), (PyObject*) nullptr);
             pyargs.finalize();
             return dict.setdefault_left(key, value);
         });
@@ -1710,7 +1711,7 @@ public:
         return visit(self, [&args, &nargs](auto& dict) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* key = pyargs.parse("key");
-            PyObject* value = pyargs.parse("default", nullptr, (PyObject*) nullptr);
+            PyObject* value = pyargs.parse("default", identity(), (PyObject*) nullptr);
             pyargs.finalize();
             return dict.lru_setdefault(key, value);
         });
@@ -3217,7 +3218,7 @@ public:
         try {
             PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
             PyObject* keys = pyargs.parse("keys");
-            PyObject* value = pyargs.parse("value", nullptr, Py_None);
+            PyObject* value = pyargs.parse("value", identity(), Py_None);
             std::optional<size_t> max_size = pyargs.parse(
                 "max_size",
                 [](PyObject* obj) -> std::optional<size_t> {
@@ -3620,7 +3621,7 @@ private:
             try {
                 PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
                 PyObject* keys = pyargs.parse("keys");
-                PyObject* value = pyargs.parse("value", nullptr, Py_None);
+                PyObject* value = pyargs.parse("value", identity(), Py_None);
                 std::optional<size_t> max_size = pyargs.parse(
                     "max_size",
                     [](PyObject* obj) -> std::optional<size_t> {
