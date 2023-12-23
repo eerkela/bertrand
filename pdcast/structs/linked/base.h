@@ -277,10 +277,6 @@ Python. */
 template <typename Derived>
 class PyLinkedBase {
 protected:
-    using CallProtocol = bertrand::util::CallProtocol;
-
-    template <CallProtocol call>
-    using PyArgs = bertrand::util::PyArgs<call>;
 
     template <typename Func, typename Result = PyObject*>
     inline static Result visit(Derived* self, Func func, Result err_code = nullptr) {

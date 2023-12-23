@@ -10,22 +10,6 @@
 namespace bertrand {
 
 
-template <typename T>
-struct remove_rvalue {
-    using type = T;
-};
-
-
-template <typename T>
-struct remove_rvalue<T&&> {
-    using type = T;
-};
-
-
-template <typename T>
-using remove_rvalue_t = typename remove_rvalue<T>::type;
-
-
 /* A placeholder function that returns a single, unmodified argument. */
 struct identity {
     template <typename T>

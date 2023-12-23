@@ -25,7 +25,6 @@
 #include "algorithms/move.h"
 #include "algorithms/pop.h"
 #include "algorithms/position.h"
-// #include "algorithms/relative.h"
 #include "algorithms/remove.h"
 #include "algorithms/repr.h"
 #include "algorithms/reverse.h"
@@ -637,10 +636,6 @@ inline auto operator<<(std::ostream& stream, const LinkedSet<T, Flags, Ts...>& s
 /* CRTP mixin class containing the public set interface for a linked data structure. */
 template <typename Derived>
 class PySetInterface {
-    using CallProtocol = bertrand::util::CallProtocol;
-
-    template <CallProtocol call>
-    using PyArgs = bertrand::util::PyArgs<call>;
 
     template <typename Func, typename Result = PyObject*>
     static Result visit(Derived* self, Func func, Result err_code = nullptr) {

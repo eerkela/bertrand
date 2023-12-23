@@ -33,7 +33,6 @@
 #include "algorithms/move.h"
 #include "algorithms/pop.h"
 #include "algorithms/position.h"
-// #include "algorithms/relative.h"
 #include "algorithms/remove.h"
 #include "algorithms/repr.h"
 #include "algorithms/reverse.h"
@@ -1552,10 +1551,6 @@ inline auto operator*(long long other, const ItemsProxy<Dict, as_pytuple>& proxy
 /* CRTP mixin class containing the public dict interface for a linked data structure. */
 template <typename Derived>
 class PyDictInterface {
-    using CallProtocol = bertrand::util::CallProtocol;
-
-    template <CallProtocol call>
-    using PyArgs = bertrand::util::PyArgs<call>;
 
     template <typename Func, typename Result = PyObject*>
     static Result visit(Derived* self, Func func, Result err_code = nullptr) {
@@ -3005,11 +3000,6 @@ class PyLinkedDict :
     using IList = PyListInterface<PyLinkedDict>;
     using ISet = PySetInterface<PyLinkedDict>;
     using IDict = PyDictInterface<PyLinkedDict>;
-
-    using CallProtocol = bertrand::util::CallProtocol;
-
-    template <CallProtocol call>
-    using PyArgs = bertrand::util::PyArgs<call>;
 
     /* A std::variant representing all of the LinkedDict implementations that are
     constructable from Python. */

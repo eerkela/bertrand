@@ -46,6 +46,21 @@ inline constexpr bool is_pairlike = util::is_pairlike<
 >::value;
 
 
+template <typename T>
+struct remove_rvalue {
+    using type = T;
+};
+
+
+template <typename T>
+struct remove_rvalue<T&&> {
+    using type = T;
+};
+
+
+template <typename T>
+using remove_rvalue_t = typename remove_rvalue<T>::type;
+
 
 }  // namespace bertrand
 

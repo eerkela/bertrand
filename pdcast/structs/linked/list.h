@@ -375,10 +375,6 @@ inline auto operator*(long long other, const LinkedList<T, Flags, Ts...>& list) 
 /* CRTP mixin class containing the public list interface for a linked data structure. */
 template <typename Derived>
 class PyListInterface {
-    using CallProtocol = bertrand::util::CallProtocol;
-
-    template <CallProtocol call>
-    using PyArgs = bertrand::util::PyArgs<call>;
 
     template <typename Func, typename Result = PyObject*>
     static Result visit(Derived* self, Func func, Result err_code = nullptr) {
