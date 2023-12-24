@@ -46,6 +46,13 @@
 #include "algorithms/update.h"
 
 
+// TODO:
+// >>> LinkedDict.fromkeys("abc")
+// LinkedDict({"a": None, "b": None, "c": None})
+// >>> quit()
+// segmentation fault
+
+
 namespace bertrand {
 namespace linked {
 
@@ -3059,7 +3066,41 @@ class PyLinkedDict :
             case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
                 self->from_cpp(Alt<7>(std::forward<Args>(args)...));
                 break;
-            default:
+            default:  // should never happen
+                throw ValueError("invalid argument configuration");
+        }
+    }
+
+    /* Parse the configuration code and initialize the variant with the forwarded
+    arguments from a Python-level fromkeys() method. */
+    template <typename... Args>
+    static void build_fromkeys(unsigned int code, PyLinkedDict* self, Args&&... args) {
+        switch (code) {
+            case (Config::DEFAULT):
+                self->from_cpp(Alt<0>::fromkeys(std::forward<Args>(args)...));
+                break;
+            case (Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<1>::fromkeys(std::forward<Args>(args)...));
+                break;
+            case (Config::FIXED_SIZE):
+                self->from_cpp(Alt<2>::fromkeys(std::forward<Args>(args)...));
+                break;
+            case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<3>::fromkeys(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED):
+                self->from_cpp(Alt<4>::fromkeys(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<5>::fromkeys(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
+                self->from_cpp(Alt<6>::fromkeys(std::forward<Args>(args)...));
+                break;
+            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
+                self->from_cpp(Alt<7>::fromkeys(std::forward<Args>(args)...));
+                break;
+            default:  // should never happen
                 throw ValueError("invalid argument configuration");
         }
     }
@@ -3101,54 +3142,6 @@ class PyLinkedDict :
             } else {
                 build_variant(code, self, iterable, max_size, spec, reverse);
             }
-        }
-    }
-
-    /* Construct a PyLinkedDict from a Python-level fromkeys() method or one of its
-    specialized equivalents using __class_getitem__().  Optional constructor arguments
-    are used to determine the appropriate template configuration. */
-    static void initialize(
-        PyLinkedDict* self,
-        PyObject* keys,
-        PyObject* value,
-        std::optional<size_t> max_size,
-        PyObject* spec,
-        bool reverse,
-        bool singly_linked,
-        bool strictly_typed
-    ) {
-        unsigned int code = (
-            Config::SINGLY_LINKED * singly_linked |
-            Config::FIXED_SIZE * max_size.has_value() |
-            Config::STRICTLY_TYPED * strictly_typed
-        );
-        switch (code) {
-            case (Config::DEFAULT):
-                self->from_cpp(Alt<0>::fromkeys(keys, value, max_size, spec));
-                break;
-            case (Config::STRICTLY_TYPED):
-                self->from_cpp(Alt<1>::fromkeys(keys, value, max_size, spec));
-                break;
-            case (Config::FIXED_SIZE):
-                self->from_cpp(Alt<2>::fromkeys(keys, value, max_size, spec));
-                break;
-            case (Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                self->from_cpp(Alt<3>::fromkeys(keys, value, max_size, spec));
-                break;
-            case (Config::SINGLY_LINKED):
-                self->from_cpp(Alt<4>::fromkeys(keys, value, max_size, spec));
-                break;
-            case (Config::SINGLY_LINKED | Config::STRICTLY_TYPED):
-                self->from_cpp(Alt<5>::fromkeys(keys, value, max_size, spec));
-                break;
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE):
-                self->from_cpp(Alt<6>::fromkeys(keys, value, max_size, spec));
-                break;
-            case (Config::SINGLY_LINKED | Config::FIXED_SIZE | Config::STRICTLY_TYPED):
-                self->from_cpp(Alt<7>::fromkeys(keys, value, max_size, spec));
-                break;
-            default:
-                throw ValueError("invalid argument configuration");
         }
     }
 
@@ -3196,7 +3189,9 @@ public:
     }
 
     static PyObject* fromkeys(PyObject* type, PyObject* args, PyObject* kwargs) {
-        PyLinkedDict* self = PyObject_New(PyLinkedDict, &PyLinkedDict::Type);
+        PyLinkedDict* self = reinterpret_cast<PyLinkedDict*>(
+            Type.tp_new(&Type, nullptr, nullptr)
+        );
         if (self == nullptr) {
             return nullptr;
         }
@@ -3227,10 +3222,12 @@ public:
             bool singly_linked = pyargs.parse("singly_linked", is_truthy, false);
             pyargs.finalize();
 
-            initialize(
-                self, keys, value, max_size, spec, false, singly_linked, false
+            unsigned int code = (
+                Config::SINGLY_LINKED * singly_linked |
+                Config::FIXED_SIZE * max_size.has_value()
             );
 
+            build_fromkeys(code, self, keys, value, max_size, spec);
             return reinterpret_cast<PyObject*>(self);
     
         } catch (...) {
@@ -3599,8 +3596,15 @@ private:
     class Specialized : public Base::Specialized {
 
         static PyObject* fromkeys(PyObject* type, PyObject* args, PyObject* kwargs) {
-            PyLinkedDict* self = PyObject_New(PyLinkedDict, &PyLinkedDict::Type);
+            PyLinkedDict* self = reinterpret_cast<PyLinkedDict*>(
+                Type.tp_new(&Type, nullptr, nullptr)
+            );
             if (self == nullptr) {
+                return nullptr;
+            }
+            PyObject* spec = PyObject_GetAttrString(type, "_specialization");
+            if (spec == nullptr) {
+                Py_DECREF(self);
                 return nullptr;
             }
 
@@ -3629,23 +3633,18 @@ private:
                 bool singly_linked = pyargs.parse("singly_linked", is_truthy, false);
                 pyargs.finalize();
 
-                PyObject* spec = PyObject_GetAttrString(type, "_specialization");
-                PyLinkedDict::initialize(
-                    self,
-                    keys,
-                    value,
-                    max_size,
-                    spec,  // injected from __class_getitem__()
-                    false,
-                    singly_linked,
-                    true  // strictly typed
+                unsigned int code = (
+                    Config::SINGLY_LINKED * singly_linked |
+                    Config::FIXED_SIZE * max_size.has_value() |
+                    Config::STRICTLY_TYPED
                 );
-                Py_DECREF(spec);
 
+                build_fromkeys(code, self, keys, value, max_size, spec);
                 return reinterpret_cast<PyObject*>(self);
         
             } catch (...) {
                 Py_DECREF(self);
+                Py_DECREF(spec);
                 throw_python();
                 return nullptr;
             }

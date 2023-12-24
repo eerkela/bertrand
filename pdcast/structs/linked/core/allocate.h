@@ -3,7 +3,7 @@
 
 #include <cstddef>  // size_t
 #include <cstdlib>  // malloc(), calloc(), free()
-#include <iostream>  // std::cout, std::endl
+#include <iostream>  // std::cout
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
@@ -130,7 +130,7 @@ protected:
             }
         }
         if constexpr (DEBUG) {
-            std::cout << "    -> create: " << repr(node->value()) << std::endl;
+            std::cout << "    -> create: " << repr(node->value()) << "\n";
         }
     }
 
@@ -140,7 +140,7 @@ protected:
         while (curr != nullptr) {
             Node* next = curr->next();
             if constexpr (DEBUG) {
-                std::cout << "    -> recycle: " << repr(curr->value()) << std::endl;
+                std::cout << "    -> recycle: " << repr(curr->value()) << "\n";
             }
             curr->~Node();
             curr = next;
@@ -161,7 +161,7 @@ protected:
         specialization(Py_XNewRef(specialization))
     {
         if constexpr (DEBUG) {
-            std::cout << "    -> allocate: " << this->capacity << " nodes" << std::endl;
+            std::cout << "    -> allocate: " << this->capacity << " nodes\n";
         }
     }
 
@@ -178,7 +178,7 @@ public:
         occupied(other.occupied), specialization(Py_XNewRef(other.specialization))
     {
         if constexpr (DEBUG) {
-            std::cout << "    -> allocate: " << capacity << " nodes" << std::endl;
+            std::cout << "    -> allocate: " << capacity << " nodes\n";
         }
     }
 
@@ -213,7 +213,7 @@ public:
             tail = nullptr;
         }
         if constexpr (DEBUG) {
-            std::cout << "    -> deallocate: " << capacity << " nodes" << std::endl;
+            std::cout << "    -> deallocate: " << capacity << " nodes\n";
         }
 
         _frozen = other._frozen;
@@ -238,7 +238,7 @@ public:
             destroy_list();
         }
         if constexpr (DEBUG) {
-            std::cout << "    -> deallocate: " << capacity << " nodes" << std::endl;
+            std::cout << "    -> deallocate: " << capacity << " nodes\n";
         }
 
         _frozen = other._frozen;
@@ -272,8 +272,7 @@ public:
     /* Release a node from the list. */
     void recycle(Node* node) {
         if constexpr (DEBUG) {
-            std::cout << "    -> recycle: " << repr(node->value());
-            std::cout << std::endl;
+            std::cout << "    -> recycle: " << repr(node->value()) << "\n";
         }
         node->~Node();
         --occupied;
@@ -426,8 +425,7 @@ public:
         MemGuard(Derived* allocator) noexcept : allocator(allocator) {
             allocator->_frozen = true;
             if constexpr (DEBUG) {
-                std::cout << "FREEZE: " << allocator->capacity << " NODES";
-                std::cout << std::endl;
+                std::cout << "FREEZE: " << allocator->capacity << " NODES\n";
             }
         }
 
@@ -438,8 +436,7 @@ public:
         inline void destroy() noexcept {
             allocator->_frozen = false;
             if constexpr (DEBUG) {
-                std::cout << "UNFREEZE: " << allocator->capacity << " NODES";
-                std::cout << std::endl;
+                std::cout << "UNFREEZE: " << allocator->capacity << " NODES\n";
             }
 
             // NOTE: all allocators must implement a shrink() method
@@ -749,7 +746,7 @@ private:
     void resize(size_t new_capacity) {
         Node* new_array = Base::malloc_nodes(new_capacity);
         if constexpr (DEBUG) {
-            std::cout << "    -> allocate: " << new_capacity << " nodes" << std::endl;
+            std::cout << "    -> allocate: " << new_capacity << " nodes\n";
         }
 
         // move nodes into new array
@@ -760,8 +757,7 @@ private:
         // replace old array
         free(array);
         if constexpr (DEBUG) {
-            std::cout << "    -> deallocate: " << this->capacity << " nodes";
-            std::cout << std::endl;
+            std::cout << "    -> deallocate: " << this->capacity << " nodes\n";
         }
         array = new_array;
         free_list.first = nullptr;
@@ -785,7 +781,9 @@ public:
         free_list(std::make_pair(nullptr, nullptr))
     {
         if (this->occupied) {
-            auto [head, tail] = other.template transfer<false>(array);
+            auto [head, tail] = (
+                other.template transfer<false>(array)
+            );
             this->head = head;
             this->tail = tail;
         }
@@ -817,7 +815,9 @@ public:
 
         array = Base::malloc_nodes(this->capacity);
         if (this->occupied != 0) {
-            auto [head, tail] = other.template transfer<false>(array);
+            auto [head, tail] = (
+                other.template transfer<false>(array)
+            );
             this->head = head;
             this->tail = tail;
         } else {
@@ -855,8 +855,7 @@ public:
         if (array != nullptr) {
             free(array);
             if constexpr (DEBUG) {
-                std::cout << "    -> deallocate: " << this->capacity << " nodes";
-                std::cout << std::endl;
+                std::cout << "    -> deallocate: " << this->capacity << " nodes\n";
             }
         }
     }
@@ -930,13 +929,11 @@ public:
                 this->capacity = MIN_CAPACITY;
                 free(array);
                 if constexpr (DEBUG) {
-                    std::cout << "    -> deallocate: " << this->capacity << " nodes";
-                    std::cout << std::endl;
+                    std::cout << "    -> deallocate: " << this->capacity << " nodes\n";
                 }
                 array = Base::malloc_nodes(this->capacity);
                 if constexpr (DEBUG) {
-                    std::cout << "    -> allocate: " << this->capacity << " nodes";
-                    std::cout << std::endl;
+                    std::cout << "    -> allocate: " << this->capacity << " nodes\n";
                 }
             }
         }
@@ -1091,8 +1088,8 @@ public:
 
 private:
     using Value = typename Node::Value;
-    static constexpr unsigned char EMPTY = 255;
-    static constexpr unsigned char MAX_PROBE_LENGTH = 255;
+    static constexpr unsigned char EMPTY = -1;
+    static constexpr unsigned char MAX_PROBE_LENGTH = -1;
     static_assert(
         MAX_PROBE_LENGTH <= EMPTY,
         "neighborhood size must leave room for EMPTY flag"
@@ -1134,7 +1131,7 @@ private:
         }
 
         inline unsigned char collisions(size_t offset) const noexcept {
-            return (hop_info >> (offset * 16)) & 0xFF;
+            return (hop_info >> (offset * 16)) & 0xFFULL;
         }
 
         inline void collisions(size_t offset, unsigned char value) noexcept {
@@ -1143,7 +1140,7 @@ private:
         }
 
         inline unsigned char next(size_t offset) const noexcept {
-            return (hop_info >> (offset * 16 + 8)) & 0xFF;
+            return (hop_info >> (offset * 16 + 8)) & 0xFFULL;
         }
 
         inline void next(size_t offset, unsigned char value) noexcept {
@@ -1275,14 +1272,12 @@ private:
     void resize(size_t new_capacity) {
         Bucket* new_table = new Bucket[(new_capacity + 3) / 4];
         if constexpr (DEBUG) {
-            std::cout << "    -> allocate: " << new_capacity << " nodes" << std::endl;
+            std::cout << "    -> allocate: " << new_capacity << " nodes\n";
         }
 
         // move nodes into new table
         try {
-            auto [head, tail] = (
-                transfer<true>(new_table, new_capacity)
-            );
+            auto [head, tail] = transfer<true>(new_table, new_capacity);
             this->head = head;
             this->tail = tail;
         } catch (...) {  // exceeded maximum probe length
@@ -1301,8 +1296,7 @@ private:
 
         free(table);
         if constexpr (DEBUG) {
-            std::cout << "    -> deallocate: " << this->capacity << " nodes";
-            std::cout << std::endl;
+            std::cout << "    -> deallocate: " << this->capacity << " nodes\n";
         }
         this->capacity = new_capacity;
         table = new_table;
@@ -1511,16 +1505,16 @@ private:
         );
 
         size_t idx = hash & modulo;
-        size_t offset = idx % 4;
         Bucket* origin = table + (idx / 4);
+        size_t offset = idx % 4;
         size_t origin_offset = offset;
 
         // if collision chain is empty, then no match is possible
         unsigned char collisions = origin->collisions(offset);
         if (collisions != EMPTY) {
-            size_t prev_offset = 0;
-            Bucket* prev = nullptr;
             Bucket* bucket = origin;
+            Bucket* prev = nullptr;
+            size_t prev_offset = 0;
             if (collisions) {
                 idx = (idx + collisions) & modulo;
                 bucket = table + (idx / 4);
@@ -1530,7 +1524,6 @@ private:
                 Node* node = bucket->node(offset);
                 unsigned char next = bucket->next(offset);
                 if (node->hash() == hash && eq(node->value(), value)) {
-                    // update hop information
                     if (prev == nullptr) {  // bucket is head of collision chain
                         origin->collisions(
                             origin_offset,
@@ -1546,13 +1539,9 @@ private:
                     if constexpr (flags & UNLINK) {
                         unlink(node);
                     }
-
                     if constexpr (DEBUG) {
-                        std::cout << "    -> recycle: " << repr(value);
-                        std::cout << std::endl;
+                        std::cout << "    -> recycle: " << repr(value) << "\n";
                     }
-
-                    // return mapped value if directed
                     if constexpr (flags & RETURN_MAPPED) {
                         using Mapped = typename Node::MappedValue;
                         Mapped mapped(std::move(node->mapped()));
@@ -1563,8 +1552,6 @@ private:
                         --this->occupied;
                         this->shrink();
                         return mapped;
-
-                    // otherwise destroy and return void
                     } else {
                         bucket->destroy(offset);
                         --this->occupied;
@@ -1577,9 +1564,9 @@ private:
                 if (!next) {
                     break;
                 }
-                idx = (idx + next) & modulo;
                 prev = bucket;
                 prev_offset = offset;
+                idx = (idx + next) & modulo;
                 bucket = table + (idx / 4);
                 offset = idx % 4;
             }
@@ -1616,16 +1603,16 @@ private:
         );
 
         size_t idx = hash & modulo;
-        size_t offset = idx % 4;
         Bucket* origin = table + (idx / 4);
+        size_t offset = idx % 4;
         size_t origin_offset = offset;
 
         // if collision chain is empty, then no match is possible
         unsigned char collisions = origin->collisions(offset);
         if (collisions != EMPTY) {
-            size_t prev_offset = 0;
-            Bucket* prev = nullptr;
             Bucket* bucket = origin;
+            Bucket* prev = nullptr;
+            size_t prev_offset = 0;
             if (collisions) {
                 idx = (idx + collisions) & modulo;
                 bucket = table + (idx / 4);
@@ -1635,7 +1622,6 @@ private:
                 Node* node = bucket->node(offset);
                 unsigned char next = bucket->next(offset);
                 if (node->hash() == hash && eq(node->value(), value)) {
-                    // update hop information
                     if (prev == nullptr) {  // bucket is head of collision chain
                         origin->collisions(
                             origin_offset,
@@ -1651,13 +1637,9 @@ private:
                     if constexpr (flags & UNLINK) {
                         unlink(node);
                     }
-
                     if constexpr (DEBUG) {
-                        std::cout << "    -> recycle: " << repr(value);
-                        std::cout << std::endl;
+                        std::cout << "    -> recycle: " << repr(value) << "\n";
                     }
-
-                    // return mapped value if directed
                     if constexpr (flags & RETURN_MAPPED) {
                         using Mapped = typename Node::MappedValue;
                         Mapped mapped(std::move(node->mapped()));
@@ -1668,8 +1650,6 @@ private:
                         --this->occupied;
                         this->shrink();
                         return mapped;
-
-                    // otherwise destroy and return void
                     } else {
                         bucket->destroy(offset);
                         --this->occupied;
@@ -1682,9 +1662,9 @@ private:
                 if (!next) {
                     break;
                 }
-                idx = (idx + next) & modulo;
                 prev = bucket;
                 prev_offset = offset;
+                idx = (idx + next) & modulo;
                 bucket = table + (idx / 4);
                 offset = idx % 4;
             }
@@ -1786,8 +1766,7 @@ public:
         if (table != nullptr) {
             free(table);
             if constexpr (DEBUG) {
-                std::cout << "    -> deallocate: " << this->capacity << " nodes";
-                std::cout << std::endl;
+                std::cout << "    -> deallocate: " << this->capacity << " nodes\n";
             }
         }
     }
@@ -1821,16 +1800,16 @@ public:
         Base::init_node(node, std::forward<Args>(args)...);
 
         // search hash table to get origin bucket
-        size_t idx = node->hash() & modulo;
-        Bucket* origin = table + (idx / 4);
-        size_t offset = idx % 4;
-        size_t origin_idx = idx;
-        size_t origin_offset = offset;
-        unsigned char collisions = origin->collisions(offset);
+        size_t origin_idx = node->hash() & modulo;
+        Bucket* origin = table + (origin_idx / 4);
+        size_t origin_offset = origin_idx % 4;
+        unsigned char collisions = origin->collisions(origin_offset);
 
         // if bucket has collisions, search the chain for a matching value
         if (collisions != EMPTY) {
             Bucket* bucket = origin;
+            size_t idx = origin_idx;
+            size_t offset = origin_offset;
             if (collisions) {  // advance to head of chain
                 idx = (idx + collisions) & modulo;
                 bucket = table + (idx / 4);
@@ -1894,11 +1873,14 @@ public:
                 if (this->frozen()) throw Base::cannot_grow();
                 resize(this->capacity * 2);
                 origin_idx = node->hash() & modulo;
-                origin = table + origin_idx;
+                origin = table + (origin_idx / 4);
+                origin_offset = origin_idx % 4;
             }
         }
 
         // linear probe starting from origin
+        size_t idx = origin_idx;
+        size_t offset = origin_offset;
         Bucket* bucket = origin;
         Bucket* prev = nullptr;
         size_t prev_offset = 0;
@@ -1921,7 +1903,7 @@ public:
                     return create(std::move(*node));
                 }
             }
-            idx = (origin_idx + distance) & modulo;
+            idx = (idx + 1) & modulo;
             bucket = table + (idx / 4);
             offset = idx % 4;
         }
@@ -1978,13 +1960,11 @@ public:
                 this->capacity = MIN_CAPACITY;
                 free(table);
                 if constexpr (DEBUG) {
-                    std::cout << "    -> deallocate: " << this->capacity << " nodes";
-                    std::cout << std::endl;
+                    std::cout << "    -> deallocate: " << this->capacity << " nodes\n";
                 }
                 table = new Bucket[this->capacity];
                 if constexpr (DEBUG) {
-                    std::cout << "    -> allocate: " << this->capacity << " nodes";
-                    std::cout << std::endl;
+                    std::cout << "    -> allocate: " << this->capacity << " nodes\n";
                 }
                 modulo = this->capacity - 1;
             }
