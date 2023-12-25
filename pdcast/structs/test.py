@@ -11,361 +11,6 @@ from linked import *
 POINTER_SIZE = np.dtype(np.intp).itemsize
 
 
-#############################
-####    TYPE BUILDERS    ####
-#############################
-
-
-def get_from_calling_context(name: str) -> Any:
-    """Get an object from the calling context given its fully-qualified (dotted) name.
-    This is useful for extracting named objects from type hints when
-    `from __future__ import annotations` is enabled, which converts all type hints to
-    strings, or for parsing strings in the type specification mini-language.
-    """
-    path = name.split(".")
-    prefix = path[0]
-    frame = inspect.currentframe().f_back  # skip this frame
-    while frame is not None:
-        if prefix in frame.f_locals:
-            obj = frame.f_locals[prefix]
-        elif prefix in frame.f_globals:
-            obj = frame.f_globals[prefix]
-        elif prefix in frame.f_builtins:
-            obj = frame.f_builtins[prefix]
-        else:
-            frame = frame.f_back
-            continue
-
-        for component in path[1:]:
-            try:
-                obj = getattr(obj, component)
-            except AttributeError:
-                continue  # back off to next frame
-
-        return obj
-
-    raise TypeError(f"could not find object: {repr(name)}")
-
-
-class TypeBuilder:
-    """Base class for all namespace analyzers.  These are executed during
-    inheritance, just before instantiating a new type.  They thus have full
-    access to the inheriting class's namespace, and can parse it however they
-    see fit.
-    """
-
-    RESERVED_SLOTS: set[str] = {
-        "__init__", "__new__", "slug", "hash", "backend", "cache_size", "flyweights",
-        "abstract", "parametrized", "params", "root", "is_root", "supertype",
-        "subtypes", "implementations", "children", "leaves", "is_leaf", "larger",
-        "smaller", "__getattr__", "__instancecheck__", "__subclasscheck__", "__call__",
-        "__hash__", "__len__", "__iter__", "__contains__", "__or__", "__ror__",
-        "__lt__", "__le__", "__eq__", "__ne__", "__ge__", "__gt__", "__str__",
-        "__repr__",
-        # at C++ level, ensure that type does not implement number, sequence, or mapping
-        # protocols, or __richcompare__.  These are all reserved for internal use, and
-        # must be consistent across all types.
-    }
-
-    def __init__(self, name: str, bases: tuple[TypeMeta], namespace: dict[str, Any]):
-        nbases = len(bases)
-        if nbases != 1:
-            raise TypeError("bertrand types must inherit from a single bertrand type")
-
-        self.parent = bases[0]
-        self.name = name
-        self.bases = bases
-        self.namespace = namespace
-        self.annotations = namespace.get("__annotations__", {})
-        self.required = {} if self.parent is object else self.parent._required.copy()
-        self.overrides = {}
-
-    def validate(self, arg: str, value: Any) -> None:
-        """Validate a required argument by invoking its type hint with the specified
-        value and current namespace.
-        """
-        hint = self.required.pop(arg)
-
-        if isinstance(hint, str):
-            func = get_from_calling_context(hint)
-        else:
-            func = hint
-
-        try:
-            result = func(value, self.namespace, self.overrides)
-            self.overrides[arg] = result
-            self.annotations[arg] = type(result)
-        except Exception as err:
-            raise type(err)(f"{self.name}.{arg} -> {str(err)}")
-
-    def fill(self) -> TypeBuilder:
-        """Fill in any reserved slots in the namespace with their default values.  This
-        method should be called after parsing the namespace to avoid unnecessary work.
-        """
-        # required fields
-        self.namespace["_required"] = self.required
-        self.namespace["_config"] = self.overrides
-        self.namespace["_slug"] = self.name
-        self.namespace["_hash"] = hash(self.name)
-        if self.parent is object or self.parent is Type:
-            self.namespace["_supertype"] = None
-        else:
-            self.namespace["_supertype"] = self.parent
-        self.namespace["_subtypes"] = LinkedSet[TypeMeta]()
-        self.namespace["_implementations"] = LinkedDict[str:TypeMeta]()
-        self.namespace["_parametrized"] = False
-        self.namespace["_default"] = []
-        # self.namespace["_backend"]  # <- handled in subclasses
-        # self.namespace["_cache_size"]
-        # self.namespace["_flyweights"]
-
-        # renamed fields
-        self.namespace["_aliases"] = self.namespace.pop("aliases", LinkedSet[str | type]())
-
-        # optional fields
-        self.namespace.setdefault("_params", ())
-        self.namespace.setdefault("__annotations__", {}).update(self.annotations)
-        return self
-
-    def register(self, typ: TypeMeta) -> TypeMeta:
-        """Push a newly-created type into the global registry, registering any aliases
-        provided in its namespace.
-        """
-        for alias in self.namespace.get("_aliases"):
-            Type.registry.aliases[alias] = typ
-
-        return typ
-
-
-class AbstractBuilder(TypeBuilder):
-    """A strategy for analyzing abstract (backend = None) namespaces prior to
-    instantiating a new type.
-    """
-
-    RESERVED_SLOTS = TypeBuilder.RESERVED_SLOTS | {
-        "__class_getitem__",
-    }
-
-    def identity(self, value: Any, namespace: dict[str, Any]) -> Any:
-        """Simple identity function used to validate required arguments that do not
-        have any type hints.
-        """
-        return value
-
-    def parse(self) -> AbstractBuilder:
-        """Analyze the namespace and execute any relevant helper functions to validate
-        its configuration.
-        """
-        namespace = self.namespace.copy()
-
-        for name, value in namespace.items():
-            if value is Ellipsis:
-                self.required[name] = self.annotations.pop(name, self.identity)
-                del self.namespace[name]
-            elif name in self.required:
-                self.validate(name, self.namespace.pop(name))
-            elif name in self.RESERVED_SLOTS and self.parent is not object:
-                raise TypeError(
-                    f"type must not implement reserved attribute: {repr(name)}"
-                )
-
-        return self
-
-    def fill(self) -> AbstractBuilder:
-        """Fill in any missing slots in the namespace with default values, and evaluate
-        any derived attributes."""
-        super().fill()
-        self.namespace["_backend"] = ""
-        self.namespace["_cache_size"] = None
-        self.namespace["_flyweights"] = LinkedDict[str:TypeMeta]()
-
-        return self
-
-    def register(self, typ: TypeMeta) -> TypeMeta:
-        """TODO"""
-        if self.parent is not object:
-            super().register(typ)
-            self.parent._subtypes.add(typ)
-
-        return typ
-
-
-class ConcreteBuilder(TypeBuilder):
-    """A strategy for analyzing concrete (backend != None) namespaces prior to
-    instantiating a new type.
-    """
-
-    def __init__(
-        self,
-        name: str,
-        bases: tuple[TypeMeta],
-        namespace: dict[str, Any],
-        backend: str,
-        cache_size: int | None,
-    ):
-        super().__init__(name, bases, namespace)
-
-        if not isinstance(backend, str):
-            raise TypeError(f"backend id must be a string, not {repr(backend)}")
-
-        if self.parent is not object and self.parent is not Type:
-            if not self.parent._backend:
-                if backend in self.parent._implementations:
-                    raise TypeError(f"backend id must be unique: {repr(backend)}")
-            elif backend != self.parent._backend:
-                raise TypeError(f"backend id must match its parent: {repr(backend)}")
-
-        self.backend = backend
-        self.cache_size = cache_size
-
-    def parse(self) -> ConcreteBuilder:
-        """Analyze the namespace and execute any relevant helper functions to validate
-        its configuration.
-        """
-        for name, value in self.namespace.copy().items():
-            if value is Ellipsis:
-                raise TypeError(
-                    f"concrete types must not have required fields: {self.name}.{name}"
-                )
-            elif name in self.required:
-                self.validate(name, self.namespace.pop(name))
-            elif name in self.RESERVED_SLOTS:
-                raise TypeError(
-                    f"type must not implement reserved attribute: {repr(name)}"
-                )
-
-        for name in list(self.required):
-            self.validate(name, Ellipsis)
-
-        return self
-
-    def fill(self) -> ConcreteBuilder:
-        """Fill in any missing slots in the namespace with default values, and evaluate
-        any derived attributes.
-        """
-        super().fill()
-        self.namespace["_backend"] = self.backend
-        self.namespace["_cache_size"] = self.cache_size
-        self.namespace["_flyweights"] = LinkedDict[str:TypeMeta](max_size=self.cache_size)
-
-        return self
-
-    def register(self, typ: TypeMeta) -> TypeMeta:
-        """TODO"""
-        if self.parent is not object:
-            super().register(typ)
-            self.parent._implementations[self.backend] = typ
-
-        return typ
-
-    # def class_getitem(self) -> None:
-    #     """TODO"""
-    #     parameters = {}
-
-    #     # type is abstract
-    #     if not self.backend:
-    #         if "__class_getitem__" in self.namespace:
-    #             raise TypeError("abstract types must not implement __class_getitem__()")
-
-    #     # type is concrete and implements __class_getitem__
-    #     elif "__class_getitem__" in self.namespace:
-    #         wrapped = self.namespace["__class_getitem__"]
-
-    #         def wrapper(cls: type, val: Any | tuple[Any, ...]) -> TypeMeta:
-    #             if isinstance(val, tuple):
-    #                 return wrapped(cls, *val)
-    #             return wrapped(cls, val)
-
-    #         self.namespace["__class_getitem__"] = classmethod(wrapper)
-
-    #         skip = True
-    #         sig = signature(wrapped)
-    #         for par_name, param in sig.parameters.items():
-    #             if skip:
-    #                 skip = False
-    #                 continue
-    #             if param.kind == param.KEYWORD_ONLY or param.kind == param.VAR_KEYWORD:
-    #                 raise TypeError(
-    #                     "__class_getitem__() must not accept any keyword arguments"
-    #                 )
-    #             if param.default is param.empty:
-    #                 raise TypeError(
-    #                     "__class_getitem__() arguments must have default values"
-    #                 )
-    #             parameters[par_name] = param.default
-
-    #     # type is concrete, does not implement __class_getitem__, and parent is abstract
-    #     elif self.supertype is not None and not self.supertype.backend:
-    #         def default(cls: type) -> TypeMeta:
-    #             """TODO"""
-    #             return cls  # type: ignore
-
-    #         self.namespace["__class_getitem__"] = classmethod(default)
-
-    #     self.namespace["_params"] = parameters
-
-    # def from_scalar(self) -> None:
-    #     """TODO"""
-    #     # type is abstract
-    #     if not self.backend:
-    #         if "from_scalar" in self.namespace:
-    #             raise TypeError("abstract types must not implement from_scalar()")
-
-    #     # type is concrete and implements from_scalar
-    #     elif "from_scalar" in self.namespace:
-    #         sig = signature(self.namespace["from_scalar"])
-    #         params = list(sig.parameters.values())
-    #         if len(params) != 1 or not (
-    #             params[0].kind == params[0].POSITIONAL_ONLY or
-    #             params[0].kind == params[0].POSITIONAL_OR_KEYWORD
-    #         ):
-    #             raise TypeError(
-    #                 "from_scalar() must accept a single positional argument"
-    #             )
-
-    #     # type is concrete, does not implement from_scalar, and parent is abstract
-    #     elif self.supertype is not None and not self.supertype.backend:
-    #         def default(cls: type, scalar: Any) -> TypeMeta:
-    #             """TODO"""
-    #             return cls  # type: ignore
-
-    #         self.namespace["from_scalar"] = classmethod(default)
-
-    # def from_dtype(self) -> None:
-    #     """TODO"""
-    #     # type is abstract
-    #     if not self.backend:
-    #         if "from_dtype" in self.namespace:
-    #             raise TypeError("abstract types must not implement from_dtype()")
-
-    #     # type is concrete and implements from_dtype
-    #     elif "from_dtype" in self.namespace:
-    #         sig = signature(self.namespace["from_dtype"])
-    #         params = list(sig.parameters.values())
-    #         if len(params) != 1 or not (
-    #             params[0].kind == params[0].POSITIONAL_ONLY or
-    #             params[0].kind == params[0].POSITIONAL_OR_KEYWORD
-    #         ):
-    #             raise TypeError(
-    #                 "from_dtype() must accept a single positional argument"
-    #             )
-
-    #     # type is concrete, does not implement from_dtype, and parent is abstract
-    #     elif self.supertype is not None and not self.supertype.backend:
-    #         def default(cls: type, dtype: Any) -> TypeMeta:
-    #             """TODO"""
-    #             return cls  # type: ignore
-
-    #         self.namespace["from_dtype"] = classmethod(default)
-
-
-class DecoratorBuilder(TypeBuilder):
-    """A strategy for analyzing decorator namespaces (subclasses of TypeDecorator)
-    prior to instantiating a new type.
-    """
-    pass
-
-
 ###########################
 ####    METACLASSES    ####
 ###########################
@@ -405,29 +50,28 @@ class TypeMeta(type):
     ####    CONSTRUCTORS    ####
     ############################
 
-    # def __init__(
-    #     cls: TypeMeta,
-    #     name: str,
-    #     bases: tuple[TypeMeta],
-    #     namespace: dict[str, Any],
-    #     **kwargs: Any
-    # ):
-    #     if not (len(bases) == 0 or bases[0] is object):
-    #         print("-" * 80)
-    #         print(f"name: {cls.__name__}")
-    #         print(f"slug: {cls.slug}")
-    #         print(f"aliases: {cls._aliases}")
-    #         print(f"cache_size: {cls.cache_size}")
-    #         print(f"supertype: {cls.supertype}")
-    #         print(f"dtype: {getattr(cls, '_dtype', None)}")
-    #         print(f"scalar: {getattr(cls, '_scalar', None)}")
-    #         print(f"itemsize: {getattr(cls, '_itemsize', None)}")
-    #         print(f"numeric: {cls._numeric}")
-    #         print(f"max: {cls._max}")
-    #         print(f"min: {cls._min}")
-    #         print(f"nullable: {cls._nullable}")
-    #         print(f"missing: {cls._missing}")
-    #         print()
+    def __init__(
+        cls: TypeMeta,
+        name: str,
+        bases: tuple[TypeMeta],
+        namespace: dict[str, Any],
+        **kwargs: Any
+    ):
+        if not (len(bases) == 0 or bases[0] is object):
+            print("-" * 80)
+            print(f"name: {cls.__name__}")
+            print(f"slug: {cls.slug}")
+            print(f"aliases: {cls.aliases}")
+            print(f"cache_size: {cls.cache_size}")
+            print(f"supertype: {cls.supertype}")
+            print(f"dtype: {getattr(cls, 'dtype', '...')}")
+            print(f"scalar: {getattr(cls, 'scalar', '...')}")
+            print(f"itemsize: {getattr(cls, 'itemsize', '...')}")
+            print(f"max: {getattr(cls, 'max', '...')}")
+            print(f"min: {getattr(cls, 'min', '...')}")
+            print(f"is_nullable: {getattr(cls, 'is_nullable', '...')}")
+            print(f"missing: {getattr(cls, 'missing', '...')}")
+            print()
 
     def __new__(
         mcs: type,
@@ -518,11 +162,6 @@ class TypeMeta(type):
         return implementation
 
     @property
-    def is_nullable(cls) -> bool:
-        """Indicates whether this type redirects to a nullable implementation."""
-        return bool(cls._nullable)
-
-    @property
     def as_nullable(cls) -> TypeMeta:
         """Convert a concrete type to its nullable implementation, if it has one."""
         return cls if not cls.is_nullable else cls._nullable[0]
@@ -530,13 +169,6 @@ class TypeMeta(type):
     ################################
     ####    CLASS PROPERTIES    ####
     ################################
-
-    @property
-    def aliases(self) -> LinkedSet[str]:
-        """TODO"""
-        # TODO: make this an AliasManager, such that aliases can be added and removed
-        # dynamically.
-        return self._aliases
 
     @property
     def slug(cls) -> str:
@@ -549,28 +181,14 @@ class TypeMeta(type):
         return cls._hash
 
     @property
-    def itemsize(cls) -> int:
-        """TODO"""
-        return cls.dtype.itemsize
-
-    @property
     def backend(cls) -> str:
         """TODO"""
         return cls._backend
 
     @property
-    def is_abstract(cls) -> bool:
+    def itemsize(cls) -> int:
         """TODO"""
-        return not cls._backend
-
-    @property
-    def as_abstract(cls) -> TypeMeta | None:
-        """TODO"""
-        if cls.is_abstract:
-            return cls
-        if cls.supertype is None:
-            return None
-        return cls.supertype.abstract
+        return cls.dtype.itemsize
 
     @property
     def cache_size(cls) -> int:
@@ -585,7 +203,7 @@ class TypeMeta(type):
     @property
     def params(cls) -> LinkedDict[str, Any]:
         """TODO"""
-        return {k: cls._config[k] for k in cls._params}
+        return {k: cls._fields[k] for k in cls._params}
 
     @property
     def parametrized(cls) -> bool:
@@ -598,7 +216,7 @@ class TypeMeta(type):
         return cls.supertype is None
 
     @property
-    def as_root(cls) -> TypeMeta:
+    def root(cls) -> TypeMeta:
         """TODO"""
         parent = cls
         while parent.supertype is not None:
@@ -606,9 +224,23 @@ class TypeMeta(type):
         return parent
 
     @property
-    def as_supertype(cls) -> TypeMeta | None:
+    def supertype(cls) -> TypeMeta | None:
         """TODO"""
         return cls._supertype
+
+    @property
+    def is_abstract(cls) -> bool:
+        """TODO"""
+        return not cls._backend
+
+    @property
+    def abstract(cls) -> TypeMeta | None:
+        """TODO"""
+        if cls.is_abstract:
+            return cls
+        if cls.supertype is None:
+            return None
+        return cls.supertype.abstract
 
     @property
     def subtypes(cls) -> Union:
@@ -655,9 +287,9 @@ class TypeMeta(type):
         if not cls.is_default:
             return getattr(cls.as_default, name)
 
-        overrides = super().__getattribute__("_config")
-        if name in overrides:
-            return overrides[name]
+        fields = super().__getattribute__("_fields")
+        if name in fields:
+            return fields[name]
 
         raise AttributeError(
             f"type object '{cls.__name__}' has no attribute '{name}'"
@@ -775,6 +407,474 @@ class TypeMeta(type):
 
 
 # TODO: if Sparse[] gets a UnionType, then we should broadcast over the union.
+
+
+#############################
+####    TYPE BUILDERS    ####
+#############################
+
+
+def get_from_calling_context(name: str) -> Any:
+    """Get an object from the calling context given its fully-qualified (dotted) name.
+    This is useful for extracting named objects from type hints when
+    `from __future__ import annotations` is enabled, which converts all type hints to
+    strings, or for parsing strings in the type specification mini-language.
+    """
+    path = name.split(".")
+    prefix = path[0]
+    frame = inspect.currentframe().f_back  # skip this frame
+    while frame is not None:
+        if prefix in frame.f_locals:
+            obj = frame.f_locals[prefix]
+        elif prefix in frame.f_globals:
+            obj = frame.f_globals[prefix]
+        elif prefix in frame.f_builtins:
+            obj = frame.f_builtins[prefix]
+        else:
+            frame = frame.f_back
+            continue
+
+        for component in path[1:]:
+            try:
+                obj = getattr(obj, component)
+            except AttributeError:
+                continue  # back off to next frame
+
+        return obj
+
+    raise TypeError(f"could not find object: {repr(name)}")
+
+
+class TypeBuilder:
+    """Base class for all namespace analyzers.  These are executed during
+    inheritance, just before instantiating a new type.  They thus have full
+    access to the inheriting class's namespace, and can parse it however they
+    see fit.
+    """
+
+    RESERVED_SLOTS: set[str] = set(dir(TypeMeta)) ^ {
+        "__init__",
+        "__module__",
+        "__qualname__",
+        "__annotations__",
+    }
+    CONSTRUCTORS: set[str] = {
+        "__class_getitem__",
+        "from_scalar",
+        "from_dtype",
+        "from_string"
+    }
+
+    def __init__(self, name: str, bases: tuple[TypeMeta], namespace: dict[str, Any]):
+        nbases = len(bases)
+        if nbases != 1:
+            raise TypeError("bertrand types must inherit from a single bertrand type")
+
+        self.parent = bases[0]
+        self.name = name
+        self.bases = bases
+        self.namespace = namespace
+        self.annotations = namespace.get("__annotations__", {})
+        self.required = {} if self.parent is object else self.parent._required.copy()
+        self.fields = {}
+        self.methods = {}
+
+    def validate(self, arg: str, value: Any) -> None:
+        """Validate a required argument by invoking its type hint with the specified
+        value and current namespace.
+        """
+        hint = self.required.pop(arg)
+
+        if isinstance(hint, str):
+            func = get_from_calling_context(hint)
+        else:
+            func = hint
+
+        try:
+            result = func(value, self.namespace, self.fields)
+            self.fields[arg] = result
+            self.annotations[arg] = type(result)
+        except Exception as err:
+            raise type(err)(f"{self.name}.{arg} -> {str(err)}")
+
+    def fill(self) -> TypeBuilder:
+        """Fill in any reserved slots in the namespace with their default values.  This
+        method should be called after parsing the namespace to avoid unnecessary work.
+        """
+        # required fields
+        self.namespace["_required"] = self.required
+        self.namespace["_fields"] = self.fields
+        self.namespace["_methods"] = self.methods
+        self.namespace["_slug"] = self.name
+        self.namespace["_hash"] = hash(self.name)
+        if self.parent is object or self.parent is Type:
+            self.namespace["_supertype"] = None
+        else:
+            self.namespace["_supertype"] = self.parent
+        self.namespace["_subtypes"] = LinkedSet[TypeMeta]()
+        self.namespace["_implementations"] = LinkedDict[str:TypeMeta]()
+        self.namespace["_parametrized"] = False
+        self.namespace["_default"] = []
+        self.namespace["_nullable"] = []
+        # self.namespace["_backend"]  # <- handled in subclasses
+        # self.namespace["_cache_size"]
+        # self.namespace["_flyweights"]
+        # self.namespace["__class_getitem__"]
+        # self.namespace["from_scalar"]
+        # self.namespace["from_dtype"]
+        # self.namespace["from_string"]
+
+        # static fields (disables redirects)
+        self.namespace["aliases"] = self.fields.get("aliases", LinkedSet[str | type]())
+
+        # default fields
+        self.namespace.setdefault("__annotations__", {}).update(self.annotations)
+        return self
+
+    def register(self, typ: TypeMeta) -> TypeMeta:
+        """Push a newly-created type into the global registry, registering any aliases
+        provided in its namespace.
+        """
+        for alias in self.namespace["aliases"]:
+            Type.registry.aliases[alias] = typ
+
+        return typ
+
+
+class AbstractBuilder(TypeBuilder):
+    """A strategy for analyzing abstract (backend = None) namespaces prior to
+    instantiating a new type.
+    """
+
+    RESERVED_SLOTS = TypeBuilder.RESERVED_SLOTS | {
+        "__class_getitem__",
+        "from_scalar",
+        "from_dtype"
+        "from_string"
+    }
+
+    def identity(
+        self,
+        value: Any,
+        namespace: dict[str, Any],
+        processed: dict[str, Any]
+    ) -> Any:
+        """Simple identity function used to validate required arguments that do not
+        have any type hints.
+        """
+        if value is Ellipsis:
+            raise TypeError("missing required field")
+        return value
+
+    def parse(self) -> AbstractBuilder:
+        """Analyze the namespace and execute any relevant helper functions to validate
+        its configuration.
+        """
+        namespace = self.namespace.copy()
+
+        for name, value in namespace.items():
+            if value is Ellipsis:
+                self.required[name] = self.annotations.pop(name, self.identity)
+                del self.namespace[name]
+            elif name in self.required:
+                self.validate(name, self.namespace.pop(name))
+            elif name in self.RESERVED_SLOTS and self.parent is not object:
+                raise TypeError(
+                    f"type must not implement reserved attribute: {repr(name)}"
+                )
+            elif inspect.isfunction(value):
+                self.methods[name] = self.namespace.pop(name)
+
+        return self
+
+    def fill(self) -> AbstractBuilder:
+        """Fill in any missing slots in the namespace with default values, and evaluate
+        any derived attributes."""
+        super().fill()
+        self.namespace["_backend"] = ""
+        self.namespace["_cache_size"] = None
+        self.namespace["_flyweights"] = LinkedDict[str:TypeMeta]()
+
+        self.class_getitem()
+        self.from_scalar()
+        self.from_dtype()
+        self.from_string()
+
+        return self
+
+    def register(self, typ: TypeMeta) -> TypeMeta:
+        """TODO"""
+        if self.parent is not object:
+            super().register(typ)
+            self.parent._subtypes.add(typ)
+
+        return typ
+
+    def class_getitem(self) -> None:
+        """Parse a type's __class_getitem__ method (if it has one), producing a list of
+        parameters and their default values, as well as a wrapper function that can be
+        used to instantiate the type.
+        """
+        if "__class_getitem__" in self.namespace and self.parent is not object:
+            raise TypeError("abstract types must not implement __class_getitem__()")
+
+        def default(cls: type, val: str | tuple[Any, ...]) -> TypeMeta:
+            """Forward all arguments to the specified implementation."""
+            if isinstance(val, str):
+                return cls._implementations[val]
+            return cls._implementations[val[0]][*val[1:]]
+
+        self.namespace["__class_getitem__"] = classmethod(default)
+        self.namespace["_params"] = ()
+
+    def from_scalar(self) -> None:
+        """Parse a type's from_scalar() method (if it has one), ensuring that it is
+        callable with a single positional argument.
+        """
+        if "from_scalar" in self.namespace and self.parent is not object:
+            raise TypeError("abstract types must not implement from_scalar()")
+
+        # TODO: alternatively, we could forward to the default implementation
+
+        def default(cls: type, scalar: Any) -> TypeMeta:
+            """Throw an error if attempting to construct an abstract type."""
+            raise TypeError("abstract types cannot be constructed using from_scalar()")
+
+        self.namespace["from_scalar"] = classmethod(default)
+
+    def from_dtype(self) -> None:
+        """Parse a type's from_dtype() method (if it has one), ensuring that it is
+        callable with a single positional argument.
+        """
+        if "from_dtype" in self.namespace and self.parent is not object:
+            raise TypeError("abstract types must not implement from_dtype()")
+
+        def default(cls: type, dtype: Any) -> TypeMeta:
+            """Throw an error if attempting to construct an abstract type."""
+            raise TypeError("abstract types cannot be constructed using from_dtype()")
+
+        self.namespace["from_dtype"] = classmethod(default)
+
+    def from_string(self) -> None:
+        """Parse a type's from_string() method (if it has one), ensuring that it is
+        callable with the same number of positional arguments as __class_getitem__().
+        """
+        if "from_string" in self.namespace and self.parent is not object:
+            raise TypeError("abstract types must not implement from_string()")
+
+        def default(cls: type, backend: str, *args: str) -> TypeMeta:
+            """Forward all arguments to the specified implementation."""
+            return cls._implementations[backend].from_string(*args)
+
+        self.namespace["from_string"] = classmethod(default)
+
+
+class ConcreteBuilder(TypeBuilder):
+    """A strategy for analyzing concrete (backend != None) namespaces prior to
+    instantiating a new type.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        bases: tuple[TypeMeta],
+        namespace: dict[str, Any],
+        backend: str,
+        cache_size: int | None,
+    ):
+        super().__init__(name, bases, namespace)
+
+        if not isinstance(backend, str):
+            raise TypeError(f"backend id must be a string, not {repr(backend)}")
+
+        if self.parent is not object and self.parent is not Type:
+            if not self.parent._backend:
+                if backend in self.parent._implementations:
+                    raise TypeError(f"backend id must be unique: {repr(backend)}")
+            elif backend != self.parent._backend:
+                raise TypeError(f"backend id must match its parent: {repr(backend)}")
+
+        self.backend = backend
+        self.cache_size = cache_size
+
+    def parse(self) -> ConcreteBuilder:
+        """Analyze the namespace and execute any relevant helper functions to validate
+        its configuration.
+        """
+        for name, value in self.namespace.copy().items():
+            if value is Ellipsis:
+                raise TypeError(
+                    f"concrete types must not have required fields: {self.name}.{name}"
+                )
+            elif name in self.required:
+                self.validate(name, self.namespace.pop(name))
+            elif name in self.RESERVED_SLOTS:
+                raise TypeError(
+                    f"type must not implement reserved attribute: {repr(name)}"
+                )
+            elif inspect.isfunction(value):
+                self.methods[name] = self.namespace.pop(name)
+
+        for name in list(self.required):
+            self.validate(name, Ellipsis)
+
+        return self
+
+    def fill(self) -> ConcreteBuilder:
+        """Fill in any missing slots in the namespace with default values, and evaluate
+        any derived attributes.
+        """
+        super().fill()
+        self.namespace["_backend"] = self.backend
+        self.namespace["_cache_size"] = self.cache_size
+        self.namespace["_flyweights"] = LinkedDict[str:TypeMeta](max_size=self.cache_size)
+
+        self.class_getitem()
+        self.from_scalar()
+        self.from_dtype()
+        self.from_string()
+
+        return self
+
+    def register(self, typ: TypeMeta) -> TypeMeta:
+        """TODO"""
+        if self.parent is not object:
+            super().register(typ)
+            self.parent._implementations[self.backend] = typ
+
+        return typ
+
+    def class_getitem(self) -> None:
+        """Parse a type's __class_getitem__ method (if it has one), producing a list of
+        parameters and their default values, as well as a wrapper function that can be
+        used to instantiate the type.
+        """
+        parameters = {}
+
+        if "__class_getitem__" in self.namespace:
+            wrapped = self.namespace["__class_getitem__"]
+
+            def wrapper(cls: type, val: Any | tuple[Any, ...]) -> TypeMeta:
+                """Unwrap tuples and forward all arguments to the wrapped function."""
+                if isinstance(val, tuple):
+                    return wrapped(cls, *val)
+                return wrapped(cls, val)
+
+            self.namespace["__class_getitem__"] = classmethod(wrapper)
+
+            skip = True
+            sig = inspect.signature(wrapped)
+            for par_name, param in sig.parameters.items():
+                if skip:
+                    skip = False
+                    continue
+                if param.kind == param.KEYWORD_ONLY or param.kind == param.VAR_KEYWORD:
+                    raise TypeError(
+                        "__class_getitem__() must not accept any keyword arguments"
+                    )
+                if param.default is param.empty:
+                    raise TypeError(
+                        "__class_getitem__() arguments must have default values"
+                    )
+                parameters[par_name] = param.default
+
+            self.features.update((k, v) for k, v in parameters.items())
+
+        else:
+            def default(cls: type) -> TypeMeta:
+                """Default to identity function."""
+                return cls  # type: ignore
+
+            self.namespace["__class_getitem__"] = classmethod(default)
+
+        self.namespace["_params"] = tuple(parameters.keys())
+
+    def from_scalar(self) -> None:
+        """Parse a type's from_scalar() method (if it has one), ensuring that it is
+        callable with a single positional argument.
+        """
+        if "from_scalar" in self.namespace:
+            sig = inspect.signature(self.namespace["from_scalar"])
+            params = list(sig.parameters.values())
+            if len(params) != 1 or not (
+                params[0].kind == params[0].POSITIONAL_ONLY or
+                params[0].kind == params[0].POSITIONAL_OR_KEYWORD
+            ):
+                raise TypeError(
+                    "from_scalar() must accept a single positional argument"
+                )
+
+        else:
+            def default(cls: type, scalar: Any) -> TypeMeta:
+                """Default to identity function."""
+                return cls  # type: ignore
+
+            # TODO: in future, optimize this away entirely using a special bit flag
+            # during detect() loop
+
+            self.namespace["from_scalar"] = classmethod(default)
+
+    def from_dtype(self) -> None:
+        """Parse a type's from_dtype() method (if it has one), ensuring that it is
+        callable with a single positional argument.
+        """
+        if "from_dtype" in self.namespace:
+            sig = inspect.signature(self.namespace["from_dtype"])
+            params = list(sig.parameters.values())
+            if len(params) != 1 or not (
+                params[0].kind == params[0].POSITIONAL_ONLY or
+                params[0].kind == params[0].POSITIONAL_OR_KEYWORD
+            ):
+                raise TypeError(
+                    "from_dtype() must accept a single positional argument"
+                )
+
+        else:
+            def default(cls: type, dtype: Any) -> TypeMeta:
+                """Default to identity function."""
+                return cls  # type: ignore
+
+            self.namespace["from_dtype"] = classmethod(default)
+
+    def from_string(self) -> None:
+        """Parse a type's from_string() method (if it has one), ensuring that it is
+        callable with the same number of positional arguments as __class_getitem__().
+        """
+        if "from_string" in self.namespace:
+            sig = inspect.signature(self.namespace["from_string"])
+            observed = list(sig.parameters.values())
+            expected = self.namespace["_params"]
+            n = len(expected)
+            if len(observed) == n:
+                err_cond = False
+                for i in range(n):
+                    obs = observed[i]
+                    exp = expected[i]
+                    if obs.name != exp.name or obs.kind != exp.kind:
+                        err_cond = True
+                        break
+            else:
+                err_cond = True
+
+            if err_cond:
+                raise TypeError(
+                    "the signature of from_string() must match __class_getitem__(), "
+                    "ignoring default values"
+                )
+
+        else:
+            def default(cls: type) -> TypeMeta:
+                """Default to identity function."""
+                return cls  # type: ignore
+
+            self.namespace["from_string"] = classmethod(default)
+
+
+class DecoratorBuilder(TypeBuilder):
+    """A strategy for analyzing decorator namespaces (subclasses of TypeDecorator)
+    prior to instantiating a new type.
+    """
+    pass
 
 
 ##########################
@@ -965,35 +1065,72 @@ class Type(object, metaclass=TypeMeta):
     def __new__(cls) -> NoReturn:
         raise TypeError("bertrand types cannot be instantiated")
 
-    def __class_getitem__(cls, val: str | tuple[Any, ...]) -> TypeMeta:
-        """TODO"""
-        if isinstance(val, str):
-            return cls._implementations[val]
-        return cls._implementations[val[0]][*(val[1:])]
+    def __class_getitem__(cls, x: str = "foo", y: int = 2) -> TypeMeta:
+        """Example implementation showing how to create a parametrized type.  This
+        method will not be inherited by any subclasses, but can be overridden to
+        provide support for parametrization using a flyweight cache.
+
+        Positional arguments to the flyweight() helper function should be supplied in
+        the same order as they appear in the signature, and keywords are piped directly
+        into the resulting class's namespace, overriding any existing values.  In the
+        interest of speed, no checks are performed on the arguments, so it is up to the
+        user to ensure that they are valid.
+        """
+        return cls.flyweight(x, y, dtype=np.dtype("i4"), max=42)
 
     @classmethod
     def from_scalar(cls, scalar: Any) -> TypeMeta:
-        """TODO"""
-        if cls.is_default:
-            raise TypeError(f"abstract type has no default implementation: {cls.slug}")
-        return cls.as_default.from_scalar(scalar)
+        """Example implementation showing how to parse a scalar value into a
+        parametrized type.  This method will not be inherited by any subclasses, and
+        will be called automatically at every iteration of the detect() loop.  If left
+        blank, it will default to the identity function, and will be optimized away
+        during type detection.
+        """
+        foo = scalar.foo
+        bar = scalar.do_stuff(1, 2, 3)
+        return cls.flyweight(foo, bar, dtype=pd.DatetimeTZDtype(tz="UTC"))
 
     @classmethod
     def from_dtype(cls, dtype: Any) -> TypeMeta:
-        """TODO"""
-        if cls.is_default:
-            raise TypeError("abstract types cannot be constructed from a concrete dtype")
-        return cls.as_default.from_dtype(dtype)
+        """Example implementation showing how to parse a numpy/pandas dtype into a
+        parametrized type.  This method will not be inherited by any subclasses, and
+        will be called automatically whenever detect() encounters array-like data
+        labeled with this type.  If left blank, it will default to the identity
+        function, and will be optimized away during type detection.
+        """
+        unit = dtype.unit
+        step_size = dtype.step_size
+        return cls.flyweight(unit, step_size, dtype=dtype)
+
+    @classmethod
+    def from_string(cls, spam: str, eggs: str) -> TypeMeta:
+        """Example implementation showing how to parse a string in the
+        type-specification mini-language into a parametrized type.  This method will
+        not be inherited by any subclasses, and will be called automatically whenever
+        resolve() encounters a type identifier that matches one of this type's aliases.
+        The arguments are the comma-separated tokens parsed from the type's argument
+        list.  They are always provided as strings with no further processing other
+        than stripping leading/trailing whitespace.  It is up to the user to parse
+        them into the appropriate values.
+
+        If left blank, this method will default to a zero-argument implementation,
+        which effectively disables argument lists and can be optimized away during type
+        resolution.
+        """
+        return cls.flyweight(int(spam), pd.Timestamp(eggs))
 
 
-class Foo(Type):
-    pass
+# class Foo(Type):
+#     pass
 
 
 # @Foo.default
-class Bar(Foo, backend="bar"):
-    aliases = {"x", "y", int}
-    dtype = np.dtype("i4")
+# class Bar(Foo, backend="bar"):
+#     aliases = {"x", "y", int}
+#     dtype = np.dtype("i4")
+
+#     def foo(self):
+#         pass
 
 
 ###########################
@@ -1157,103 +1294,101 @@ class Bar(Foo, backend="bar"):
 
 
 
-# class Int(Type):
-#     aliases = {"int", "integer"}
+class Int(Type):
+    aliases = {"int", "integer"}
+
+
+@Int.default
+class Signed(Int):
+    aliases = {"signed"}
 
 
 
 
-# class Signed(Int, default=True):
-#     aliases = {"signed"}
+@Signed.default
+class Int64(Signed):
+    aliases = {"int64", "long long"}
+    max = 2**63 - 1
+    min = -2**63
+
+
+@Int64.default
+class NumpyInt64(Int64, backend="numpy"):
+    dtype = np.dtype(np.int64)
+    is_nullable = False
+
+
+@NumpyInt64.nullable
+class PandasInt64(Int64, backend="pandas"):
+    dtype = pd.Int64Dtype()
+    is_nullable = True
 
 
 
 
-# class Int8(Signed):
-#     aliases = {"int8", "char"}
-#     itemsize = 1
-#     max = 2**7 - 1
-#     min = -2**7
+class Int32(Signed):
+    aliases = {"int32", "long"}
+    max = 2**31 - 1
+    min = -2**31
 
 
-# class NumpyInt8(Int8, backend="numpy", default=True):
-#     dtype = np.dtype(np.int8)
-#     nullable = False
-
-#     def __class_getitem__(cls, arg: Any = None) -> NumpyInt8:
-#         # class Parametrized(NumpyInt8, params={"arg": arg}):
-#         #     dtype = np.dtype(arg)
-
-#         # return Parametrized
-
-#         # return cls.flyweight(arg=arg)
-#         return cls.flyweight(arg, dtype=np.dtype(arg))
+@Int32.default
+class NumpyInt32(Int32, backend="numpy"):
+    dtype = np.dtype(np.int32)
+    is_nullable = False
 
 
-# class PandasInt8(Int8, backend="pandas"):
-#     dtype = pd.Int8Dtype()
-#     nullable = True
+@NumpyInt32.nullable
+class PandasInt32(Int32, backend="pandas"):
+    dtype = pd.Int32Dtype()
+    is_nullable = True
 
 
 
 
-# class Int16(Signed):
-#     aliases = {"int16", "short"}
-#     itemsize = 2
-#     max = 2**15 - 1
-#     min = -2**15
+class Int16(Signed):
+    aliases = {"int16", "short"}
+    max = 2**15 - 1
+    min = -2**15
 
 
-# class NumpyInt16(Int16, backend="numpy", default=True):
-#     dtype = np.dtype(np.int16)
-#     nullable = False
+@Int16.default
+class NumpyInt16(Int16, backend="numpy"):
+    dtype = np.dtype(np.int16)
+    is_nullable = False
 
 
-# class PandasInt16(Int16, backend="pandas"):
-#     dtype = pd.Int16Dtype()
-#     nullable = True
-
-
-
-
-# class Int32(Signed):
-#     aliases = {"int32", "long"}
-#     itemsize = 4
-#     max = 2**31 - 1
-#     min = -2**31
-
-
-# class NumpyInt32(Int32, backend="numpy", default=True):
-#     dtype = np.dtype(np.int32)
-#     nullable = False
-
-
-# class PandasInt32(Int32, backend="pandas"):
-#     dtype = pd.Int32Dtype()
-#     nullable = True
+@NumpyInt16.nullable
+class PandasInt16(Int16, backend="pandas"):
+    dtype = pd.Int16Dtype()
+    is_nullable = True
 
 
 
 
-# class Int64(Signed, default=True):
-#     aliases = {"int64", "long long"}
-#     itemsize = 8
-#     max = 2**63 - 1
-#     min = -2**63
+class Int8(Signed):
+    aliases = {"int8", "char"}
+    max = 2**7 - 1
+    min = -2**7
 
 
-# class NumpyInt64(Int64, backend="numpy", default=True):
-#     dtype = np.dtype(np.int64)
-#     nullable = False
+@Int8.default
+class NumpyInt8(Int8, backend="numpy"):
+    dtype = np.dtype(np.int8)
+    is_nullable = False
+
+    def __class_getitem__(cls, arg: Any = None) -> TypeMeta:  # type: ignore
+        return cls.flyweight(arg, dtype=np.dtype(arg))
 
 
-# class PandasInt64(Int64, backend="pandas"):
-#     dtype = pd.Int64Dtype()
-#     nullable = True
+@NumpyInt8.nullable
+class PandasInt8(Int8, backend="pandas"):
+    dtype = pd.Int8Dtype()
+    is_nullable = True
 
 
 
 
-# print("=" * 80)
-# print(f"aliases: {Type.registry.aliases}")
-# print()
+print("=" * 80)
+print(f"aliases: {Type.registry.aliases}")
+print()
