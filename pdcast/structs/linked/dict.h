@@ -1637,9 +1637,9 @@ public:
             PyObject* default_ = pyargs.parse("default", identity(), (PyObject*) nullptr);
             pyargs.finalize();
             if (default_ == nullptr) {
-                return dict.pop(key);
+                return dict.pop(key);  // returns new reference
             } else {
-                return dict.pop(key, default_);
+                return dict.pop(key, default_);  // returns new reference
             }
         });
     }
@@ -1664,9 +1664,9 @@ public:
             PyObject* default_ = pyargs.parse("default", identity(), (PyObject*) nullptr);
             pyargs.finalize();
             if (default_ == nullptr) {
-                return dict.get(key);
+                return Py_NewRef(dict.get(key));
             } else {
-                return dict.get(key, default_);
+                return Py_NewRef(dict.get(key, default_));
             }
         });
     }
@@ -1679,9 +1679,9 @@ public:
             PyObject* default_ = pyargs.parse("default", identity(), (PyObject*) nullptr);
             pyargs.finalize();
             if (default_ == nullptr) {
-                return dict.lru_get(key);
+                return Py_NewRef(dict.lru_get(key));
             } else {
-                return dict.lru_get(key, default_);
+                return Py_NewRef(dict.lru_get(key, default_));
             }
         });
     }
@@ -1693,7 +1693,7 @@ public:
             PyObject* key = pyargs.parse("key");
             PyObject* value = pyargs.parse("default", identity(), (PyObject*) nullptr);
             pyargs.finalize();
-            return dict.setdefault(key, value);
+            return Py_NewRef(dict.setdefault(key, value));
         });
     }
 
@@ -1704,7 +1704,7 @@ public:
             PyObject* key = pyargs.parse("key");
             PyObject* value = pyargs.parse("default", identity(), (PyObject*) nullptr);
             pyargs.finalize();
-            return dict.setdefault_left(key, value);
+            return Py_NewRef(dict.setdefault_left(key, value));
         });
     }
 
@@ -1715,7 +1715,7 @@ public:
             PyObject* key = pyargs.parse("key");
             PyObject* value = pyargs.parse("default", identity(), (PyObject*) nullptr);
             pyargs.finalize();
-            return dict.lru_setdefault(key, value);
+            return Py_NewRef(dict.lru_setdefault(key, value));
         });
     }
 
@@ -1742,7 +1742,7 @@ public:
 
     static PyObject* __getitem__(Derived* self, PyObject* key) {
         return visit(self, [&key](auto& dict) {
-            return Py_XNewRef(dict[key].get());
+            return Py_NewRef(dict[key].get());
         });
     }
 

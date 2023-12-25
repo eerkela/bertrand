@@ -1628,8 +1628,6 @@ public:
 
     static int __init__(PyLinkedSet* self, PyObject* args, PyObject* kwargs) {
         static constexpr std::string_view meth_name{"__init__"};
-        using bertrand::util::CallProtocol;
-        using bertrand::util::PyArgs;
         using bertrand::util::none_to_null;
         using bertrand::util::parse_int;
         using bertrand::util::is_truthy;

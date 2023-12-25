@@ -549,7 +549,7 @@ public:
         return visit(self, [&key](auto& list) {
             if (PyIndex_Check(key)) {
                 long long index = bertrand::util::parse_int(key);
-                return Py_XNewRef(list.position(index).get());
+                return Py_NewRef(list.position(index).get());
             }
 
             if (PySlice_Check(key)) {
@@ -656,7 +656,7 @@ protected:
     /* Implement `PySequence_GetItem()` in CPython API. */
     static PyObject* __getitem_scalar__(Derived* self, Py_ssize_t index) {
         return visit(self, [&index](auto& list) {
-            return Py_XNewRef(list.position(index).get());
+            return Py_NewRef(list.position(index).get());
         });
     }
 
@@ -1076,8 +1076,6 @@ public:
 
     static int __init__(PyLinkedList* self, PyObject* args, PyObject* kwargs) {
         static constexpr std::string_view meth_name{"__init__"};
-        using bertrand::util::PyArgs;
-        using bertrand::util::CallProtocol;
         using bertrand::util::none_to_null;
         using bertrand::util::is_truthy;
         using bertrand::util::parse_int;
