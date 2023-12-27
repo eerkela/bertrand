@@ -2249,7 +2249,6 @@ only if the dictionary's values are also hashable.
     protected:
         friend PyDictInterface;
 
-        /* Construct a Python wrapper around a LinkedDict.keys() proxy. */
         static PyObject* construct(Derived* dict, CppProxy&& proxy) {
             PyProxy* self = reinterpret_cast<PyProxy*>(
                 PyProxy::Type.tp_alloc(&PyProxy::Type, 0)
@@ -2266,8 +2265,6 @@ only if the dictionary's values are also hashable.
             return reinterpret_cast<PyObject*>(self);
         }
 
-        /* Release the read-only dictionary reference when the proxy is garbage
-        collected. */
         static void __dealloc__(PyProxy* self) {
             Py_DECREF(self->_mapping);
             self->~PyProxy();

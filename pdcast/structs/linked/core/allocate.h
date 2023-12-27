@@ -1285,12 +1285,11 @@ private:
             if constexpr (Base::FIXED_SIZE) {
                 throw;
             } else {
-                if (!this->frozen()) {
-                    resize(new_capacity * 2);  // retry with larger table
-                    return;
-                } else {
+                if (this->frozen()) {
                     throw;
                 }
+                resize(new_capacity * 2);  // retry with larger table
+                return;
             }
         }
 
@@ -1870,7 +1869,9 @@ public:
             }
         } else {
             if (this->occupied >= this->capacity - (this->capacity / 4)) {
-                if (this->frozen()) throw Base::cannot_grow();
+                if (this->frozen()) {
+                    throw Base::cannot_grow();
+                }
                 resize(this->capacity * 2);
                 origin_idx = node->hash() & modulo;
                 origin = table + (origin_idx / 4);
