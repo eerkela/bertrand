@@ -2,6 +2,9 @@ from __future__ import annotations
 import inspect
 from typing import Any, Callable, Iterable, Iterator, NoReturn
 
+from sys import getrefcount as rc
+
+
 import numpy as np
 import pandas as pd
 
@@ -515,25 +518,6 @@ class TypeMeta(type):
         return cls._slug
 
 
-# TODO: >>> Int.leaves
-# segmentation fault
-# -> reference counting problem
-# seems to always happen around a resize
-# consistently happens after 5 calls to Int.leaves
-
-# TODO: can also get the same (?) bug by just spamming Int32.implementations for long
-# enough.  This doesn't happen for types that have no implementations though
-
-# It might be that Int.leaves just calls implementations a bunch of times, and that
-# the bug is actually in implementations.
-
-# TODO: is it possible that iterating over the values() proxy does not keep it alive?
-
-
-# TODO: fails after 66 + 1 calls to Int32.implementations
-
-
-
 class UnionMeta(type):
     """Metaclass for all composite bertrand types (those produced by Union[] or the
     bitwise or operator).
@@ -557,7 +541,7 @@ class UnionMeta(type):
         namespace: dict[str, Any],
     ) -> UnionMeta:
         if len(bases) != 0:
-            raise TypeError("Union must inherit from anything")
+            raise TypeError("Union must not inherit from anything")
         return super().__new__(mcs, name, bases, namespace | {
             "_types": LinkedSet()
         })

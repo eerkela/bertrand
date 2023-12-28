@@ -137,7 +137,7 @@ public:
     using Base::Base;
     using Base::operator=;
 
-    /* Construct a list from an input iterable. */
+    /* Construct a dictionary from an input iterable. */
     template <typename Container>
     LinkedDict(
         Container&& iterable,

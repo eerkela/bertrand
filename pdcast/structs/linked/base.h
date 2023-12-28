@@ -522,9 +522,14 @@ protected:
     inline static int __clear__(Derived* self) noexcept {
         return std::visit(
             [&](auto& list) {
-                for (auto item : list) {
-                    Py_CLEAR(item);
-                }
+                // NOTE: normally, we would do something this to support cyclic GC:
+                // for (auto item : list) {
+                //     Py_CLEAR(item);
+                // }
+                // However, this is not necessary for linked data structures, since
+                // the node destructor effectively accomplishes the same thing.  In
+                // fact, if we invoke Py_CLEAR, then we end up double-decrementing the
+                // refcount of each item, which can lead to some VERY subtle segfaults.
                 return 0;
             },
             self->variant
