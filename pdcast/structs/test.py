@@ -1,9 +1,7 @@
 from __future__ import annotations
 import inspect
-from typing import Any, Callable, Iterable, Iterator, NoReturn
-
-from sys import getrefcount as rc
-
+from types import MappingProxyType
+from typing import Any, Callable, Iterable, Iterator, Mapping, NoReturn
 
 import numpy as np
 import pandas as pd
@@ -154,7 +152,36 @@ def explode_leaves(t: TypeMeta, result: LinkedSet[TypeMeta]) -> None:
         explode_leaves(impl, result)
 
 
-class TypeMeta(type):
+def features(t: TypeMeta) -> tuple[Any, ...]:
+    """Extract a tuple of features representing the allowable range of a type, used for
+    sorting and comparison.
+    """
+    return (
+        t.max - t.min,  # total range
+        t.itemsize,  # memory footprint
+        t.is_nullable,  # nullability
+        abs(t.max + t.min),  # bias away from zero
+    )
+
+
+def union_getitem(cls: UnionMeta, key: int | slice) -> TypeMeta | DecoratorMeta | UnionMeta:
+    """A replacement for the base Union's __class_getitem__() method that allows for
+    integer-based indexing of the union's types.
+    """
+    if isinstance(key, slice):
+        return cls.from_types(cls._types[key])
+    return cls._types[key]
+
+
+class Meta(type):
+    """Base class for all bertrand metaclasses.  This serves only to anchor inheritance
+    and provide shared methods for all metaclasses.  It should not be used directly.
+    """
+
+    pass
+
+
+class TypeMeta(Meta):
     """Metaclass for all scalar bertrand types (those that inherit from bertrand.Type).
 
     This metaclass is responsible for parsing the namespace of a new type, validating
@@ -212,7 +239,7 @@ class TypeMeta(type):
     def flyweight(cls, *args: Any, **kwargs: Any) -> TypeMeta:
         """TODO"""
         slug = f"{cls.__name__}[{', '.join(repr(a) for a in args)}]"
-        typ = cls.flyweights.get(slug, None)
+        typ = cls._flyweights.lru_get(slug, None)
 
         if typ is None:
             def __class_getitem__(cls: type, *args: Any) -> NoReturn:
@@ -222,13 +249,14 @@ class TypeMeta(type):
                 TypeMeta,
                 cls.__name__,
                 (cls,),
-                cls.params | {kwargs} | {
+                {
                     "_slug": slug,
                     "_hash": hash(slug),
+                    "_fields": cls._fields | dict(zip(cls._params, args)) | kwargs,
                     "__class_getitem__": __class_getitem__
                 }
             )
-            cls.flyweights[slug] = typ
+            cls._flyweights.lru_add(slug, typ)
 
         return typ
 
@@ -305,19 +333,39 @@ class TypeMeta(type):
         return cls.dtype.itemsize
 
     @property
+    def methods(cls) -> Mapping[str, Callable[..., Any]]:
+        """TODO"""
+        return MappingProxyType(cls._methods)
+
+    @property
+    def decorators(cls) -> UnionMeta:
+        """TODO"""
+        return Union.from_types(LinkedSet())  # always empty
+
+    @property
+    def wrapped(cls) -> None:
+        """TODO"""
+        return None  # base case for recursion
+
+    @property
+    def unwrapped(cls) -> TypeMeta:
+        """TODO"""
+        return cls  # for consistency with decorators
+
+    @property
     def cache_size(cls) -> int:
         """TODO"""
         return cls._cache_size
 
     @property
-    def flyweights(cls) -> LinkedDict[str, TypeMeta]:
+    def flyweights(cls) -> Mapping[str, TypeMeta]:
         """TODO"""
-        return cls._flyweights  # TODO: make this read-only, but automatically LRU update
+        return MappingProxyType(cls._flyweights)
 
     @property
-    def params(cls) -> LinkedDict[str, Any]:
+    def params(cls) -> Mapping[str, Any]:
         """TODO"""
-        return {k: cls._fields[k] for k in cls._params}
+        return MappingProxyType({k: cls._fields[k] for k in cls._params})
 
     @property
     def is_abstract(cls) -> bool:
@@ -372,37 +420,37 @@ class TypeMeta(type):
         return cls.supertype.abstract
 
     @property
-    def subtypes(cls) -> Union:
+    def subtypes(cls) -> UnionMeta:
         """TODO"""
         return Union.from_types(cls._subtypes)
 
     @property
-    def implementations(cls) -> Union:
+    def implementations(cls) -> UnionMeta:
         """TODO"""
         return Union[*cls._implementations.values()]
 
     @property
-    def children(cls) -> Union:
+    def children(cls) -> UnionMeta:
         """TODO"""
         result = LinkedSet[TypeMeta]()
         explode_children(cls, result)
         return Union.from_types(result[1:])
 
     @property
-    def leaves(cls) -> Union:
+    def leaves(cls) -> UnionMeta:
         """TODO"""
         result = LinkedSet[TypeMeta]()
         explode_leaves(cls, result)
         return Union.from_types(result)
 
     @property
-    def larger(cls) -> Union:
+    def larger(cls) -> UnionMeta:
         """TODO"""
         result = LinkedSet[TypeMeta](sorted(t for t in cls.root.leaves if t > cls))
         return Union.from_types(result)
 
     @property
-    def smaller(cls) -> Union:
+    def smaller(cls) -> UnionMeta:
         """TODO"""
         result = LinkedSet[TypeMeta](sorted(t for t in cls.root.leaves if t < cls))
         return Union.from_types(result)
@@ -426,12 +474,6 @@ class TypeMeta(type):
     ####    SPECIAL METHODS    ####
     ###############################
 
-    def __instancecheck__(cls, other: Any) -> bool:
-        return isinstance(other, cls.scalar)
-
-    def __subclasscheck__(cls, other: type) -> bool:
-        return super().__subclasscheck__(other)
-
     def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any]:
         # TODO: Even cooler, this could just call cast() on the input, which would
         # enable lossless conversions
@@ -439,77 +481,63 @@ class TypeMeta(type):
             return pd.Series(*args, dtype=cls.dtype, **kwargs)
         return cls.as_default(*args, **kwargs)
 
-    def __hash__(cls) -> int:
-        return cls._hash
+    def __instancecheck__(cls, other: Any) -> bool:
+        return isinstance(other, cls.scalar)
 
-    def __len__(cls) -> int:
-        return len(cls.leaves)
-
-    def __iter__(cls) -> Iterator[TypeMeta]:
-        return iter(cls.leaves)
+    def __subclasscheck__(cls, other: type) -> bool:
+        return super().__subclasscheck__(other)
 
     def __contains__(cls, other: type | Any) -> bool:
         if isinstance(other, type):
-            return issubclass(other, cls)
-        return isinstance(other, cls)
+            return cls.__subclasscheck__(other)
+        return cls.__instancecheck__(other)
 
-    def __or__(cls, other: TypeMeta | Iterable[TypeMeta]) -> Union:  # type: ignore
-        if isinstance(other, TypeMeta):
+    def __hash__(cls) -> int:
+        return cls._hash
+
+    def __len__(cls) -> int:  # pylint: disable=invalid-length-returned
+        return cls.itemsize  # basically a Python-level sizeof() operator
+
+    def __or__(cls, other: TypeMeta | Iterable[TypeMeta]) -> UnionMeta:  # type: ignore
+        if isinstance(other, (TypeMeta, DecoratorMeta)):
             return Union[cls, other]
 
-        result = LinkedSet[TypeMeta](other)
-        result.add_left(cls)
+        result = LinkedSet[TypeMeta]([cls])
+        result.update(other)
         return Union.from_types(result)
 
-    def __ror__(cls, other: TypeMeta | Iterable[TypeMeta]) -> Union:  # type: ignore
-        if isinstance(other, TypeMeta):
+    def __ror__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:  # type: ignore
+        if isinstance(other, (TypeMeta, DecoratorMeta)):
             return Union[other, cls]
 
-        result = LinkedSet[TypeMeta](other)
-        result.add(cls)
+        result = LinkedSet[TypeMeta]([cls])
+        result.update(other)
         return Union.from_types(result)
 
+    # TODO: allow subtraction/intersection/xor by breaking types down into their
+    # children and then applying the operation at the union level.
+    # -> 
+
+    def __sub__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:
+        return cls.children - other
+
     def __lt__(cls, other: TypeMeta) -> bool:
-        features = (
-            cls.max - cls.min,  # total range
-            cls.itemsize,  # memory footprint
-            cls.is_nullable,  # nullability
-            abs(cls.max + cls.min)  # bias away from zero
-        )
-        compare = (
-            other.max - other.min,
-            other.itemsize,
-            other.is_nullable,
-            abs(other.max + other.min)
-        )
-        return features < compare
+        return cls is not other and features(cls) < features(other)
 
     def __le__(cls, other: TypeMeta) -> bool:
-        return cls == other or cls < other
+        return cls is other or features(cls) <= features(other)
 
     def __eq__(cls, other: TypeMeta) -> bool:
-        return cls is other
+        return cls is other or features(cls) == features(other)
 
-    def __ne__(cls, other: TypeMeta) -> bool:
-        return cls is not other
+    def __ne__(cls, other: Any) -> bool:
+        return cls is not other and features(cls) != features(other)
 
     def __ge__(cls, other: TypeMeta) -> bool:
-        return cls == other or cls > other
+        return cls is other or features(cls) >= features(other)
 
     def __gt__(cls, other: TypeMeta) -> bool:
-        features = (
-            cls.max - cls.min,
-            cls.itemsize,
-            cls.is_nullable,
-            abs(cls.max + cls.min)
-        )
-        compare = (
-            other.max - other.min,
-            other.itemsize,
-            other.is_nullable,
-            abs(other.max + other.min)
-        )
-        return features > compare
+        return cls is not other and features(cls) > features(other)
 
     def __str__(cls) -> str:
         return cls._slug
@@ -542,14 +570,18 @@ class UnionMeta(type):
     ) -> UnionMeta:
         if len(bases) != 0:
             raise TypeError("Union must not inherit from anything")
+
         return super().__new__(mcs, name, bases, namespace | {
-            "_types": LinkedSet()
+            "_types": LinkedSet(),
+            "_hash": hash(name + "[]")
         })
 
     def from_types(cls, types: LinkedSet[TypeMeta]) -> UnionMeta:
         """TODO"""
         return super().__new__(UnionMeta, cls.__name__, (cls,), {
-            "_types": types
+            "_types": types,
+            "_hash": hash(f"Union[{', '.join(t.slug for t in types)}]"),
+            "__class_getitem__": union_getitem
         })
 
     ################################
@@ -565,6 +597,14 @@ class UnionMeta(type):
         """
         raise NotImplementedError()
 
+    def collapse(cls) -> UnionMeta:
+        """TODO"""
+        result = LinkedSet()
+        for t in cls._types:
+            if not any(t is not other and t in other for other in cls._types):
+                result.add(t)
+        return cls.from_types(result)
+
     #################################
     ####    COMPOSITE PATTERN    ####
     #################################
@@ -577,7 +617,10 @@ class UnionMeta(type):
     @property
     def supertype(cls) -> UnionMeta:
         """TODO"""
-        return cls.from_types(LinkedSet(t.supertype for t in cls._types))
+        result = LinkedSet()
+        for t in cls._types:
+            result.add(t.supertype if t.supertype else t)
+        return cls.from_types(result)
 
     @property
     def subtypes(cls) -> UnionMeta:
@@ -639,28 +682,23 @@ class UnionMeta(type):
 
         raise TypeError(f"cannot convert to union type: {repr(cls)}")
 
+    def __instancecheck__(cls, other: Any) -> bool:
+        return any(isinstance(other, t) for t in cls._types)
+
+    def __subclasscheck__(cls, other: type) -> bool:
+        return any(issubclass(other, t) for t in cls._types)
+
+    def __contains__(cls, other: type | Any) -> bool:
+        if isinstance(other, type):
+            return cls.__subclasscheck__(other)
+        return cls.__instancecheck__(other)
+
     ###############################
     ####    SPECIAL METHODS    ####
     ###############################
 
-    # TODO: __class_getitem__ conflicts with __getitem__?  Should have from_types
-    # replace the former with the latter automatically?
-
-    # Union[str, int], Union[str | int], and str | int are valid, but
-    # Union[str, int][str] is not.  Instead, we can replace __getitem__ with an
-    # indexing/slicing method that returns a new UnionMeta.
-
-    # -> Union[str, int][0] -> String
-
-    # def __getitem__(cls, key: int | slice) -> UnionMeta | TypeMeta:
-    #     if isinstance(key, slice):
-    #         return cls.from_types(cls._types[key])
-    #     return cls.types[key]
-
-    # def __class_getitem__(cls, val: TypeMeta | tuple[TypeMeta, ...]) -> UnionMeta:
-    #     if isinstance(val, tuple):
-    #         return cls.from_types(LinkedSet(val))
-    #     return cls.from_types(LinkedSet((val,)))
+    def __hash__(cls) -> int:
+        return cls._hash
 
     def __len__(cls) -> int:
         return len(cls._types)
@@ -671,52 +709,110 @@ class UnionMeta(type):
     def __reversed__(cls) -> Iterator[TypeMeta]:
         return reversed(cls._types)
 
-    def __or__(cls, other: TypeMeta | Iterable[TypeMeta]) -> UnionMeta:  # type: ignore
-        if isinstance(other, TypeMeta):
-            return cls.from_types(result | (other,))
-        return cls.from_types(cls._types | other)
+    def __or__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:  # type: ignore
+        if isinstance(other, UnionMeta):
+            result = cls._types | other._types
+        elif isinstance(other, (TypeMeta, DecoratorMeta)):
+            result = cls._types | (other,)
+        else:
+            result = cls._types | other
+        return cls.from_types(result)
 
-    def __sub__(cls, other: TypeMeta | Iterable[TypeMeta]) -> UnionMeta:
-        if isinstance(other, TypeMeta):
-            return cls.from_types(result - (other,))
-        return cls.from_types(cls._types - other)
+    # TODO: subtraction/intersection/xor should consider each type's children, as well
+    # as the children of the other union.
+    # -> Signed - Int32 == Int8 | Int16 | Int32
 
-    def __and__(cls, other: TypeMeta | Iterable[TypeMeta]) -> UnionMeta:
-        if isinstance(other, TypeMeta):
-            return cls.from_types(cls._types & (other,))
-        return cls.from_types(cls._types & other)
+    # TODO: this works for sub, but need to extend to and/xor
 
-    def __xor__(cls, other: TypeMeta | Iterable[TypeMeta]) -> UnionMeta:
-        if isinstance(other, TypeMeta):
-            return cls.from_types(cls._types ^ (other,))
-        return cls.from_types(cls._types ^ other)
+    def __sub__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:
+        if isinstance(other, UnionMeta):
+            result = LinkedSet()
+            for typ in cls._types | cls.children:
+                if not any(t in typ or typ in t for t in other):
+                    result.add(typ)
 
-    def __lt__(cls, other: Iterable[TypeMeta]) -> bool:
-        if not isinstance(other, (TypeMeta, UnionMeta)):
-            other = cls.from_types(other)
-        return cls.children._types < other.children._types
+        elif isinstance(other, (TypeMeta, DecoratorMeta)):
+            result = LinkedSet()
+            for typ in cls._types | cls.children:
+                if not (other in typ or typ in other):
+                    result.add(typ)
 
-    def __le__(cls, other: Iterable[TypeMeta]) -> bool:
-        if not isinstance(other, (TypeMeta, UnionMeta)):
-            other = cls.from_types(other)
-        return cls.children._types <= other.children._types
+        else:
+            return NotImplemented
 
-    def __eq__(cls, other: Iterable[TypeMeta]) -> bool:
+        return cls.from_types(result).collapse()
+
+    def __and__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:
+        if isinstance(other, UnionMeta):
+            result = cls._types & other._types
+        elif isinstance(other, (TypeMeta, DecoratorMeta)):
+            result = cls._types & (other,)
+        else:
+            result = cls._types & other
+        return cls.from_types(result)
+
+    def __xor__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:
+        if isinstance(other, UnionMeta):
+            result = cls._types ^ other._types
+        elif isinstance(other, (TypeMeta, DecoratorMeta)):
+            result = cls._types ^ (other,)
+        else:
+            result = cls._types ^ other
+        return cls.from_types(result)
+
+    # TODO: these should maybe use the same range comparisons as TypeMeta.
+    # We could provide separate issubset(), issuperset(), __contains__ etc. methods for
+    # comparing unions.
+
+    def __lt__(cls, other: Meta | Iterable[Meta]) -> bool:
+        if isinstance(other, (TypeMeta, DecoratorMeta)):
+            other = cls.from_types(LinkedSet([other]))
+        elif not isinstance(other, UnionMeta):
+            return NotImplemented
+
+        return all(t in other for t in cls._types) and len(cls) < len(other)
+
+    def __le__(cls, other: Meta | Iterable[Meta]) -> bool:
+        if other is cls:
+            return True
+
+        if isinstance(other, (TypeMeta, DecoratorMeta)):
+            other = cls.from_types(LinkedSet([other]))
+        elif not isinstance(other, UnionMeta):
+            return NotImplemented
+
+        return all(t in other for t in cls._types) and len(cls) <= len(other)
+
+    # TODO: this equality operator has to account for order of types in the union
+    # if hash collisions are to be avoided when using it as a key in dictionary or
+    # set.
+
+    def __eq__(cls, other: Meta | Iterable[Meta]) -> bool:
+        if other is cls:
+            return True
+
+        if isinstance(other, (TypeMeta, DecoratorMeta)):
+            other = cls.from_types(LinkedSet([other]))
+        elif not isinstance(other, UnionMeta):
+            return NotImplemented
+
+
+
         if not isinstance(other, (TypeMeta, UnionMeta)):
             other = cls.from_types(other)
         return cls.children._types == other.children._types
 
-    def __ne__(cls, other: Iterable[TypeMeta]) -> bool:
+    def __ne__(cls, other: Meta | Iterable[Meta]) -> bool:
         if not isinstance(other, (TypeMeta, UnionMeta)):
             other = cls.from_types(other)
         return cls.children._types != other.children._types
 
-    def __ge__(cls, other: Iterable[TypeMeta]) -> bool:
+    def __ge__(cls, other: Meta | Iterable[Meta]) -> bool:
         if not isinstance(other, (TypeMeta, UnionMeta)):
             other = cls.from_types(other)
         return cls.children._types >= other.children._types
 
-    def __gt__(cls, other: Iterable[TypeMeta]) -> bool:
+    def __gt__(cls, other: Meta | Iterable[Meta]) -> bool:
         if not isinstance(other, (TypeMeta, UnionMeta)):
             other = cls.from_types(other)
         return cls.children._types > other.children._types
@@ -728,8 +824,298 @@ class UnionMeta(type):
         return f"Union[{', '.join(t.slug for t in cls._types)}]"
 
 
-# TODO: create separate metaclass for decorator types, then implement CompositeType
-# as a concrete class.
+class DecoratorMeta(type):
+    """Metaclass for all bertrand type decorators (those that inherit from
+    bertrand.DecoratorType).
+
+    This metaclass is responsible for parsing the namespace of a new decorator,
+    validating its configuration, and registering it in the global type registry.  It
+    also defines the basic behavior of all bertrand type decorators, including a
+    mechanism for applying/removing the decorator, traversing a type's decorator stack,
+    and allowing pass-through access to the wrapped type's attributes and methods.  It
+    is an example of the Gang of Four's
+    `Decorator Pattern <https://en.wikipedia.org/wiki/Decorator_pattern>`_.
+
+    See the documentation for the `DecoratorType` class for more information on how
+    these work.
+    """
+
+    ############################
+    ####    CONSTRUCTORS    ####
+    ############################
+
+    def __init__(
+        cls: DecoratorMeta,
+        name: str,
+        bases: tuple[type, ...],
+        namespace: dict[str, Any],
+        **kwargs: Any
+    ):
+        if not (len(bases) == 0 or bases[0] is object):
+            print("-" * 80)
+            # TODO
+
+    def __new__(
+        mcs: type,
+        name: str,
+        bases: tuple[type, ...],
+        namespace: dict[str, Any],
+        cache_size: int | None = None,
+    ) -> DecoratorMeta:
+        build = DecoratorBuilder(name, bases, namespace, cache_size)
+
+        return build.parse().fill().register(
+            super().__new__(mcs, build.name, build.bases, build.namespace)
+        )
+
+    def flyweight(cls, *args: Any, **kwargs: Any) -> DecoratorMeta:
+        """Return a cached instance of the decorator or create a new one if it does
+        not exist.  Positional arguments are used to identify the decorator, and
+        keyword arguments are piped into its resulting namespace.
+        """
+        slug = f"{cls.__name__}[{', '.join(repr(a) for a in args)}]"
+        typ = cls._flyweights.lru_get(slug, None)
+
+        if typ is None:
+            typ = super().__new__(
+                DecoratorMeta,
+                cls.__name__,
+                (cls,),
+                cls.params | kwargs | {
+                    "_slug": slug,
+                    "_hash": hash(slug),
+                }
+            )
+            cls._flyweights.lru_add(slug, typ)
+
+        return typ
+
+    ################################
+    ####    CLASS PROPERTIES    ####
+    ################################
+
+    @property
+    def slug(cls) -> str:
+        """TODO"""
+        return cls._slug
+
+    @property
+    def hash(cls) -> int:
+        """TODO"""
+        return cls._hash
+
+    @property
+    def decorators(cls) -> Union[DecoratorMeta]:
+        """TODO"""
+        result = LinkedSet()
+        curr = cls
+        while curr.wrapped is not None:
+            result.add(curr)
+            curr = curr.wrapped
+
+        return Union.from_types(result)
+
+    @property
+    def wrapped(cls) -> None | TypeMeta | DecoratorMeta:
+        """TODO"""
+        return cls._wrapped
+
+    @property
+    def unwrapped(cls) -> None | TypeMeta:
+        """TODO"""
+        result = cls._wrapped
+        while result.wrapped is not None:
+            result = result.wrapped
+        return result
+
+    @property
+    def cache_size(cls) -> int:
+        """TODO"""
+        return cls._cache_size
+
+    @property
+    def flyweights(cls) -> Mapping[str, DecoratorMeta]:
+        """TODO"""
+        return MappingProxyType(cls._flyweights)
+
+    @property
+    def params(cls) -> Mapping[str, Any]:
+        """TODO"""
+        return MappingProxyType({k: cls._fields[k] for k in cls._params})
+
+    @property
+    def as_default(cls) -> DecoratorMeta:
+        """TODO"""
+        if not cls._wrapped:
+            return cls
+        return cls.flyweight(cls._wrapped.as_default)  # NOTE: will recurse
+
+    @property
+    def as_nullable(cls) -> DecoratorMeta:
+        """TODO"""
+        if not cls._wrapped:
+            return cls
+        return cls.flyweight(cls._wrapped.as_nullable)
+
+    @property
+    def root(cls) -> DecoratorMeta:
+        """TODO"""
+        if not cls._wrapped:
+            return cls
+        return cls.flyweight(cls._wrapped.root)
+
+    @property
+    def supertype(cls) -> DecoratorMeta:
+        """TODO"""
+        if not cls._wrapped:
+            return cls
+        return cls.flyweight(cls._wrapped.supertype)
+
+    @property
+    def subtypes(cls) -> UnionMeta:
+        """TODO"""
+        result = LinkedSet()
+        if cls._wrapped:
+            for typ in cls._wrapped.subtypes:
+                result.add(cls.flyweight(typ))
+        return Union.from_types(result)
+
+    @property
+    def implementations(cls) -> UnionMeta:
+        """TODO"""
+        result = LinkedSet()
+        if cls._wrapped:
+            for typ in cls._wrapped.implementations:
+                result.add(cls.flyweight(typ))
+        return Union.from_types(result)
+
+    @property
+    def children(cls) -> UnionMeta:
+        """TODO"""
+        result = LinkedSet()
+        if cls._wrapped:
+            for typ in cls._wrapped.children:
+                result.add(cls.flyweight(typ))
+        return Union.from_types(result)
+
+    @property
+    def leaves(cls) -> UnionMeta:
+        """TODO"""
+        result = LinkedSet()
+        if cls._wrapped:
+            for typ in cls._wrapped.leaves:
+                result.add(cls.flyweight(typ))
+        return Union.from_types(result)
+
+    @property
+    def larger(cls) -> UnionMeta:
+        """TODO"""
+        result = LinkedSet()
+        if cls._wrapped:
+            for typ in cls._wrapped.larger:
+                result.add(cls.flyweight(typ))
+        return Union.from_types(result)
+
+    @property
+    def smaller(cls) -> UnionMeta:
+        """TODO"""
+        result = LinkedSet()
+        if cls._wrapped:
+            for typ in cls._wrapped.smaller:
+                result.add(cls.flyweight(typ))
+        return Union.from_types(result)
+
+    def __getattr__(cls, name: str) -> Any:
+        fields = super().__getattribute__("_fields")
+        if name in fields:
+            return fields[name]
+
+        wrapped = super().__getattribute__("_wrapped")
+        if wrapped:
+            return getattr(wrapped, name)
+
+        raise AttributeError(
+            f"type object '{cls.__name__}' has no attribute '{name}'"
+        )
+
+    def __setattr__(cls, name: str, val: Any) -> NoReturn:
+        raise TypeError("bertrand types are immutable")
+
+    ###############################
+    ####    SPECIAL METHODS    ####
+    ###############################
+
+    # TODO: comparisons, isinstance(), issubclass(), etc. should delegate to wrapped
+    # type.  They should also be able to compare against other decorators, and should
+    # take decorator order into account.
+
+    def __instancecheck__(cls, other: Any) -> bool:
+        # TODO: should require exact match?  i.e. isinstance(1, Sparse[Int]) == False.
+        # This starts getting complicated
+        return isinstance(other, cls.wrapped)
+
+    def __subclasscheck__(cls, other: type) -> bool:
+        # TODO: same as instancecheck
+        return super().__subclasscheck__(other)
+
+    def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any]:
+        return cls.transform(cls.wrapped(*args, **kwargs))
+
+    def __hash__(cls) -> int:
+        return cls._hash
+
+    def __len__(cls) -> int:
+        return cls.itemsize
+
+    def __contains__(cls, other: type | Any) -> bool:
+        if isinstance(other, type):
+            return issubclass(other, cls)
+        return isinstance(other, cls)
+
+    # TODO: all of these should be able to accept a decorator, type, or union
+
+    def __or__(cls, other: TypeMeta | Iterable[TypeMeta]) -> Union:  # type: ignore
+        if isinstance(other, (TypeMeta, DecoratorMeta)):
+            return Union[cls, other]
+
+        result = LinkedSet[TypeMeta](other)
+        result.add_left(cls)
+        return Union.from_types(result)
+
+    def __ror__(cls, other: TypeMeta | Iterable[TypeMeta]) -> Union:  # type: ignore
+        if isinstance(other, TypeMeta):
+            return Union[other, cls]
+
+        result = LinkedSet[TypeMeta](other)
+        result.add(cls)
+        return Union.from_types(result)
+
+    def __lt__(cls, other: TypeMeta) -> bool:
+        return cls is not other and features(cls) < features(other)
+
+    def __le__(cls, other: TypeMeta) -> bool:
+        return cls is other or features(cls) <= features(other)
+
+    def __eq__(cls, other: TypeMeta) -> bool:
+        return cls is other or features(cls) == features(other)
+
+    def __ne__(cls, other: Any) -> bool:
+        return cls is not other and features(cls) != features(other)
+
+    def __ge__(cls, other: TypeMeta) -> bool:
+        return cls is other or features(cls) >= features(other)
+
+    def __gt__(cls, other: TypeMeta) -> bool:
+        return cls is not other and features(cls) > features(other)
+
+    def __str__(cls) -> str:
+        return cls._slug
+
+    def __repr__(cls) -> str:
+        return cls._slug
+
+
+
 
 # decorator meta adds
 # .decorators: list[DecoratorMeta]
@@ -743,9 +1129,9 @@ class UnionMeta(type):
 # TODO: if Sparse[] gets a UnionType, then we should broadcast over the union.
 
 
-#############################
-####    TYPE BUILDERS    ####
-#############################
+###################################
+####    NAMESPACE ANALYZERS    ####
+###################################
 
 
 def get_from_calling_context(name: str) -> Any:
@@ -850,8 +1236,8 @@ class TypeBuilder:
             self.namespace["_supertype"] = None
         else:
             self.namespace["_supertype"] = self.parent
-        self.namespace["_subtypes"] = LinkedSet[TypeMeta]()
-        self.namespace["_implementations"] = LinkedDict[str:TypeMeta]()  # TODO: some kind of reference leak here
+        self.namespace["_subtypes"] = LinkedSet()
+        self.namespace["_implementations"] = LinkedDict()
         self.namespace["_parametrized"] = False
         self.namespace["_default"] = []
         self.namespace["_nullable"] = []
@@ -949,7 +1335,7 @@ class AbstractBuilder(TypeBuilder):
         super().fill()
         self.namespace["_backend"] = ""
         self.namespace["_cache_size"] = None
-        self.namespace["_flyweights"] = LinkedDict[str:TypeMeta]()
+        self.namespace["_flyweights"] = LinkedDict()
 
         self.class_getitem()
         self.from_scalar()
@@ -1068,7 +1454,8 @@ class ConcreteBuilder(TypeBuilder):
                 raise TypeError(
                     f"type must not implement reserved attribute: {repr(name)}"
                 )
-            elif inspect.isfunction(value):
+            elif inspect.isfunction(value) and name not in self.CONSTRUCTORS:
+                print("adding method", name)
                 self.methods[name] = self.namespace.pop(name)
 
         for name in list(self.required):
@@ -1083,7 +1470,7 @@ class ConcreteBuilder(TypeBuilder):
         super().fill()
         self.namespace["_backend"] = self.backend
         self.namespace["_cache_size"] = self.cache_size
-        self.namespace["_flyweights"] = LinkedDict[str:TypeMeta](max_size=self.cache_size)
+        self.namespace["_flyweights"] = LinkedDict(max_size=self.cache_size)
 
         self.class_getitem()
         self.from_scalar()
@@ -1134,7 +1521,7 @@ class ConcreteBuilder(TypeBuilder):
                     )
                 parameters[par_name] = param.default
 
-            self.features.update((k, v) for k, v in parameters.items())
+            self.fields.update((k, v) for k, v in parameters.items())
 
         else:
             def default(cls: type) -> TypeMeta:
@@ -1389,6 +1776,8 @@ def check_missing(
 
 
 class Type(object, metaclass=TypeMeta):
+    """TODO
+    """
 
     registry = REGISTRY
 
@@ -1533,6 +1922,21 @@ class Type(object, metaclass=TypeMeta):
     # overload __init__, __new__, or any classmethod versions of the reserved slots.
 
 
+# class DecoratorType(metaclass=DecoratorMeta):
+#     """TODO
+#     """
+
+#     @classmethod
+#     def transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
+#         """Apply the decorator to a series of the wrapped type."""
+#         return series
+
+#     @classmethod
+#     def inverse_transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
+#         """Remove the decorator from a series of the wrapped type."""
+#         return series
+
+
 class Union(metaclass=UnionMeta):
     """TODO
     """
@@ -1544,10 +1948,6 @@ class Union(metaclass=UnionMeta):
         if isinstance(val, tuple):
             return cls.from_types(LinkedSet(val))
         return cls.from_types(LinkedSet((val,)))
-
-
-
-
 
 
 
@@ -1640,7 +2040,7 @@ class Int8(Signed):
 
 
 @Int8.default
-class NumpyInt8(Int8, backend="numpy"):
+class NumpyInt8(Int8, backend="numpy", cache_size=2):
     dtype = np.dtype(np.int8)
     is_nullable = False
 

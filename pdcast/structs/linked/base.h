@@ -529,7 +529,7 @@ protected:
                 // However, this is not necessary for linked data structures, since
                 // the node destructor effectively accomplishes the same thing.  In
                 // fact, if we invoke Py_CLEAR, then we end up double-decrementing the
-                // refcount of each item, which can lead to some VERY subtle segfaults.
+                // refcount of each item, which can lead to some VERY subtle errors.
                 return 0;
             },
             self->variant
