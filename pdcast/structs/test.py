@@ -514,12 +514,17 @@ class TypeMeta(Meta):
         result.update(other)
         return Union.from_types(result)
 
-    # TODO: allow subtraction/intersection/xor by breaking types down into their
-    # children and then applying the operation at the union level.
-    # -> 
+    # TODO: >>> Int & Int32
+    # Union[Signed]  # should be Int32
 
     def __sub__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:
-        return cls.children - other
+        return (cls | cls.children) - other
+
+    def __and__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:
+        return (cls | cls.children) & other
+
+    def __xor__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:
+        return (cls | cls.children) ^ other
 
     def __lt__(cls, other: TypeMeta) -> bool:
         return cls is not other and features(cls) < features(other)
@@ -573,14 +578,18 @@ class UnionMeta(type):
 
         return super().__new__(mcs, name, bases, namespace | {
             "_types": LinkedSet(),
-            "_hash": hash(name + "[]")
+            "_hash": 42
         })
 
     def from_types(cls, types: LinkedSet[TypeMeta]) -> UnionMeta:
         """TODO"""
+        hash_val = 42  # to avoid collisions at hash=0
+        for t in types:
+            hash_val = (hash_val * 31 + hash(t)) % (2**63 - 1)  # mod not necessary in C++
+
         return super().__new__(UnionMeta, cls.__name__, (cls,), {
             "_types": types,
-            "_hash": hash(f"Union[{', '.join(t.slug for t in types)}]"),
+            "_hash": hash_val,
             "__class_getitem__": union_getitem
         })
 
@@ -718,11 +727,23 @@ class UnionMeta(type):
             result = cls._types | other
         return cls.from_types(result)
 
-    # TODO: subtraction/intersection/xor should consider each type's children, as well
-    # as the children of the other union.
-    # -> Signed - Int32 == Int8 | Int16 | Int32
+    def __and__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:
+        if isinstance(other, UnionMeta):
+            result = LinkedSet()
+            for typ in cls._types | cls.children:
+                if any(typ in t for t in other):
+                    result.add(typ)
 
-    # TODO: this works for sub, but need to extend to and/xor
+        elif isinstance(other, (TypeMeta, DecoratorMeta)):
+            result = LinkedSet()
+            for typ in cls._types | cls.children:
+                if typ in other:
+                    result.add(typ)
+
+        else:
+            return NotImplemented
+
+        return cls.from_types(result).collapse()
 
     def __sub__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:
         if isinstance(other, UnionMeta):
@@ -742,27 +763,29 @@ class UnionMeta(type):
 
         return cls.from_types(result).collapse()
 
-    def __and__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:
-        if isinstance(other, UnionMeta):
-            result = cls._types & other._types
-        elif isinstance(other, (TypeMeta, DecoratorMeta)):
-            result = cls._types & (other,)
-        else:
-            result = cls._types & other
-        return cls.from_types(result)
-
     def __xor__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:
         if isinstance(other, UnionMeta):
-            result = cls._types ^ other._types
-        elif isinstance(other, (TypeMeta, DecoratorMeta)):
-            result = cls._types ^ (other,)
-        else:
-            result = cls._types ^ other
-        return cls.from_types(result)
+            result = LinkedSet()
+            for typ in cls._types | cls.children:
+                if not any(t in typ or typ in t for t in other):
+                    result.add(typ)
+            for typ in other._types | other.children:
+                if not any(t in typ or typ in t for t in cls):
+                    result.add(typ)
 
-    # TODO: these should maybe use the same range comparisons as TypeMeta.
-    # We could provide separate issubset(), issuperset(), __contains__ etc. methods for
-    # comparing unions.
+        elif isinstance(other, (TypeMeta, DecoratorMeta)):
+            result = LinkedSet()
+            for typ in cls._types | cls.children:
+                if not (other in typ or typ in other):
+                    result.add(typ)
+            for typ in other | other.children:
+                if not (t in typ or typ in t for t in cls):
+                    result.add(typ)
+
+        else:
+            return NotImplemented
+
+        return cls.from_types(result).collapse()
 
     def __lt__(cls, other: Meta | Iterable[Meta]) -> bool:
         if isinstance(other, (TypeMeta, DecoratorMeta)):
@@ -783,29 +806,21 @@ class UnionMeta(type):
 
         return all(t in other for t in cls._types) and len(cls) <= len(other)
 
-    # TODO: this equality operator has to account for order of types in the union
-    # if hash collisions are to be avoided when using it as a key in dictionary or
-    # set.
-
     def __eq__(cls, other: Meta | Iterable[Meta]) -> bool:
-        if other is cls:
-            return True
+        if isinstance(other, UnionMeta):
+            return (
+                cls is other or
+                len(cls) == len(other) and
+                all(t is u for t, u in zip(cls, other))
+            )
 
         if isinstance(other, (TypeMeta, DecoratorMeta)):
-            other = cls.from_types(LinkedSet([other]))
-        elif not isinstance(other, UnionMeta):
-            return NotImplemented
+            return len(cls) == 1 and cls._types[0] is other
 
-
-
-        if not isinstance(other, (TypeMeta, UnionMeta)):
-            other = cls.from_types(other)
-        return cls.children._types == other.children._types
+        return NotImplemented
 
     def __ne__(cls, other: Meta | Iterable[Meta]) -> bool:
-        if not isinstance(other, (TypeMeta, UnionMeta)):
-            other = cls.from_types(other)
-        return cls.children._types != other.children._types
+        return not cls.__eq__(other)
 
     def __ge__(cls, other: Meta | Iterable[Meta]) -> bool:
         if not isinstance(other, (TypeMeta, UnionMeta)):
