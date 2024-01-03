@@ -9,7 +9,15 @@ import pandas as pd
 from linked import *
 
 
+class Empty:
+    """Placeholder for optional arguments for which None might be a valid option."""
+
+    def __repr__(self) -> str:
+        return "..."
+
+
 POINTER_SIZE = np.dtype(np.intp).itemsize
+EMPTY = Empty()
 
 
 ####################
@@ -18,6 +26,14 @@ POINTER_SIZE = np.dtype(np.intp).itemsize
 
 
 # TODO: need a set of edges to represent overrides for <, >, etc.
+# TODO: metaclass throws error if any non-classmethods are implemented on type objects.
+# -> non-member functions are more explicit and flexible.  Plus, if there's only one
+# syntax for declaring them, then it's easier to document and use.
+
+
+# TODO: raise an error if __class_getitem__() is implemented and from_string() is not.
+# These must always be implemented together, since from_string is meant to parse type
+# hints.
 
 
 class Precedence:
@@ -242,10 +258,10 @@ class TypeBuilder:
     simplified namespace into a fully-featured bertrand type.  They do this by looping
     through all the attributes that are defined in the class and executing any relevant
     helper functions to validate their configuration.  The builders also mark all
-    required fields (those assigned to Ellipsis), non-type dispatch methods, or
-    reserved attributes that they encounter, and fill in missing slots with default
-    values where possible.  If the type is improperly configured, the builder will
-    throw a series of informative error messages guiding the user towards a solution.
+    required fields (those assigned to Ellipsis) and reserved attributes that they
+    encounter, and fill in missing slots with default values where possible.  If the
+    type is improperly configured, the builder will throw a series of informative error
+    messages guiding the user towards a solution.
 
     The end result is a fully processed namespace that conforms to the expectations of
     each metaclass, which can then be used to instantiate the type.  This means that
@@ -295,11 +311,9 @@ class TypeBuilder:
         if parent is object:
             self.required = {}
             self.fields = {}
-            self.methods = {}
         else:
             self.required = self.parent._required.copy()
             self.fields = self.parent._fields.copy()
-            self.methods = self.parent._methods.copy()
 
     def validate(self, arg: str, value: Any) -> None:
         """Validate a required argument by invoking its type hint with the specified
@@ -326,13 +340,12 @@ class TypeBuilder:
         # required fields
         self.namespace["_required"] = self.required
         self.namespace["_fields"] = self.fields
-        self.namespace["_methods"] = self.methods
         self.namespace["_slug"] = self.name
         self.namespace["_hash"] = hash(self.name)
         if self.parent is object or self.parent is Type or self.parent is DecoratorType:
-            self.namespace["_supertype"] = None
+            self.namespace["_parent"] = None
         else:
-            self.namespace["_supertype"] = self.parent
+            self.namespace["_parent"] = self.parent
         self.namespace["_subtypes"] = LinkedSet()
         self.namespace["_implementations"] = LinkedDict()
         self.namespace["_parametrized"] = False
@@ -474,20 +487,19 @@ class TypeMeta(type):
 
     # NOTE: this metaclass uses the following internal fields, which are populated by
     # either AbstractBuilder or ConcreteBuilder:
-    #   _required: dict[str, Callable[..., Any]]
-    #   _fields: dict[str, Any]
-    #   _methods: dict[str, Callable[..., Any]]
     #   _slug: str
     #   _hash: int
-    #   _cache_size: int | None
-    #   _flyweights: LinkedDict[str, TypeMeta]
-    #   _parametrized: bool
-    #   _params: tuple[str]
-    #   _supertype: TypeMeta | None
+    #   _required: dict[str, Callable[..., Any]]
+    #   _fields: dict[str, Any]
+    #   _parent: TypeMeta | None
     #   _subtypes: LinkedSet[TypeMeta]
     #   _implementations: LinkedDict[str, TypeMeta]
     #   _default: list[TypeMeta]  # TODO: modify directly rather than using a list
     #   _nullable: list[TypeMeta]
+    #   _params: tuple[str]
+    #   _parametrized: bool
+    #   _cache_size: int | None
+    #   _flyweights: LinkedDict[str, TypeMeta]
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -515,15 +527,12 @@ class TypeMeta(type):
         if not (len(bases) == 0 or bases[0] is object):
             print("-" * 80)
             print(f"slug: {cls.slug}")
+            print(f"parent: {cls.parent}")
             print(f"aliases: {cls.aliases}")
             print(f"fields: {format_dict(fields)}")
-            print(f"methods: {format_dict(cls._methods)}")
-            print(f"is_abstract: {cls.is_abstract}")
-            print(f"is_concrete: {cls.is_concrete}")
             print(f"is_root: {cls.is_root}")
+            print(f"is_abstract: {cls.is_abstract}")
             print(f"is_leaf: {cls.is_leaf}")
-            print(f"abstract: {cls.abstract}")
-            print(f"supertype: {cls.supertype}")
             print(f"cache_size: {cls.cache_size}")
             print(f"itemsize: {getattr(cls, 'itemsize', '...')}")
             print()
@@ -562,7 +571,8 @@ class TypeMeta(type):
                     "_slug": slug,
                     "_hash": hash(slug),
                     "_fields": cls._fields | dict(zip(cls._params, args)) | kwargs,
-                    "_supertype": cls,
+                    "_parent": cls,
+                    "_parametrized": True,
                     "__class_getitem__": __class_getitem__
                 }
             )
@@ -643,26 +653,6 @@ class TypeMeta(type):
         return cls.dtype.itemsize
 
     @property
-    def methods(cls) -> Mapping[str, Callable[..., Any]]:
-        """TODO"""
-        return MappingProxyType(cls._methods)
-
-    @property
-    def decorators(cls) -> UnionMeta:
-        """TODO"""
-        return Union.from_types(LinkedSet())  # always empty
-
-    @property
-    def wrapped(cls) -> None:
-        """TODO"""
-        return None  # base case for recursion
-
-    @property
-    def unwrapped(cls) -> TypeMeta:
-        """TODO"""
-        return cls  # for consistency with decorators
-
-    @property
     def cache_size(cls) -> int:
         """TODO"""
         return cls._cache_size
@@ -688,11 +678,6 @@ class TypeMeta(type):
         return not cls._default
 
     @property
-    def is_concrete(cls) -> bool:
-        """TODO"""
-        return not cls.is_abstract and not cls.is_parametrized
-
-    @property
     def is_parametrized(cls) -> bool:
         """TODO"""
         return cls._parametrized
@@ -700,7 +685,7 @@ class TypeMeta(type):
     @property
     def is_root(cls) -> bool:
         """TODO"""
-        return cls.supertype is None
+        return cls.parent is None
 
     @property
     def is_leaf(cls) -> bool:
@@ -711,23 +696,14 @@ class TypeMeta(type):
     def root(cls) -> TypeMeta:
         """TODO"""
         parent = cls
-        while parent.supertype is not None:
-            parent = parent.supertype
+        while parent.parent is not None:
+            parent = parent.parent
         return parent
 
     @property
-    def supertype(cls) -> TypeMeta | None:
+    def parent(cls) -> TypeMeta | None:
         """TODO"""
-        return cls._supertype
-
-    @property
-    def abstract(cls) -> TypeMeta | None:
-        """TODO"""
-        if cls.is_abstract:
-            return cls
-        if cls.supertype is None:
-            return None
-        return cls.supertype.abstract
+        return cls._parent
 
     @property
     def subtypes(cls) -> UnionMeta:
@@ -765,6 +741,21 @@ class TypeMeta(type):
         result = LinkedSet[TypeMeta](sorted(t for t in cls.root.leaves if t < cls))
         return Union.from_types(result)
 
+    @property
+    def decorators(cls) -> UnionMeta:
+        """TODO"""
+        return Union.from_types(LinkedSet())  # always empty
+
+    @property
+    def wrapped(cls) -> None:
+        """TODO"""
+        return None  # base case for recursion
+
+    @property
+    def unwrapped(cls) -> TypeMeta:
+        """TODO"""
+        return cls  # for consistency with decorators
+
     def __getattr__(cls, name: str) -> Any:
         if not cls.is_default:
             return getattr(cls.as_default, name)
@@ -783,11 +774,10 @@ class TypeMeta(type):
     def __dir__(cls) -> set[str]:
         result = set(super().__dir__())
         result.update({
-            "slug", "hash", "backend", "itemsize", "methods", "decorators", "wrapped",
+            "slug", "hash", "backend", "itemsize", "decorators", "wrapped",
             "unwrapped", "cache_size", "flyweights", "params", "is_abstract",
-            "is_default", "is_concrete", "is_parametrized", "is_root", "is_leaf",
-            "root", "supertype", "abstract", "subtypes", "implementations",
-            "children", "leaves", "larger", "smaller"
+            "is_default", "is_parametrized", "is_root", "is_leaf", "root", "parent",
+            "subtypes", "implementations", "children", "leaves", "larger", "smaller"
         })
         if cls.is_default:
             result.update(cls._fields)
@@ -938,8 +928,6 @@ class AbstractBuilder(TypeBuilder):
                 raise TypeError(
                     f"type must not implement reserved attribute: {repr(name)}"
                 )
-            elif inspect.isfunction(value):
-                self.methods[name] = self.namespace.pop(name)
 
         return self
 
@@ -1028,16 +1016,12 @@ class ConcreteBuilder(TypeBuilder):
     """A builder-style parser for a concrete type's namespace (backend != None).
 
     Concrete types must implement all required fields, and may optionally define
-    additional fields that are not required.  They can also specify any number of
-    dispatch methods (any method or property that is not marked as a @classmethod),
-    which will automatically be converted into single-dispatch functions that are
-    attached directly to `pandas.Series` when bertrand.attach() is invoked.
-
-    Concrete types can also be parametrized by specifying a __class_getitem__ method
-    that accepts any number of positional arguments.  These arguments must have default
-    values, and the signature will be used to populate the base type's `params` dict.
-    Parametrized types are then instantiated using a flyweight caching strategy, which
-    involves an LRU dict of a specific size attached to the type itself.
+    additional fields that are not required.  They can also be parametrized by
+    specifying a __class_getitem__ method that accepts any number of positional
+    arguments.  These arguments must have default values, and the signature will be
+    used to populate the base type's `params` dict.  Parametrized types are then
+    instantiated using a flyweight caching strategy, which involves an LRU dict of a
+    specific size attached to the type itself.
     """
 
     def __init__(
@@ -1088,8 +1072,6 @@ class ConcreteBuilder(TypeBuilder):
                 )
             elif name in self.required:
                 self.validate(name, self.namespace.pop(name))
-            elif inspect.isfunction(value) and name not in self.CONSTRUCTORS:
-                self.methods[name] = self.namespace.pop(name)
 
         # validate any remaining required fields that were not explicitly assigned
         for name in list(self.required):
@@ -1250,6 +1232,60 @@ class ConcreteBuilder(TypeBuilder):
 ###############################
 
 
+# TODO: if we want to support dynamic fill values in Sparse[x, EMPTY], then we need
+# to pass EMPTY to __class_getitem__(), which means it needs to be listed as such in
+# params.
+
+# Maybe replace_wrapped() needs to be a classmethod that decorators can override?
+# This would allow sparse types to handle this internally.
+
+
+def replace_wrapped(cls: DecoratorMeta, typ: TypeMeta | DecoratorMeta) -> DecoratorMeta:
+    """Create a new decorator with the same parameters as the previous one, but with a
+    different wrapped type.
+    """
+    params = list(cls.params.values())[1:]
+    # base = cls.parent if cls.is_parametrized else cls  # TODO: this breaks NA carries for Sparse types with no missing value
+    base = cls
+
+    if not params:
+        return base.__class_getitem__(typ)
+    return base.__class_getitem__((typ, *params))
+
+
+def insort_decorator(
+    cls: DecoratorMeta,
+    other: TypeMeta | DecoratorMeta,
+    *args: Any,
+) -> DecoratorMeta:
+    """Insert a decorator into a type's decorator stack, ensuring that it obeys the
+    registry's current precedence.
+    """
+    # TODO: use replace_wrapped rather than reimplementing it here
+    visited = []
+    curr: DecoratorMeta | TypeMeta = other
+    wrapped = curr.wrapped
+    while wrapped:
+        concrete = curr._parent if curr.is_parametrized else curr
+        delta = REGISTRY.decorator_precedence.distance(cls, concrete)
+
+        if delta >= 0:  # cls is higher priority or identical to concrete
+            curr = wrapped
+            break
+
+        visited.append((concrete, list(curr.params.values())[1:]))
+        curr = wrapped
+        wrapped = curr.wrapped
+
+    result = original(cls, curr, *args)
+    for dec, params in reversed(visited):
+        if not params:
+            result = dec.__class_getitem__(result)
+        else:
+            result = dec.__class_getitem__((result, *params))
+    return result
+
+
 class DecoratorMeta(type):
     """Metaclass for all bertrand type decorators (those that inherit from
     bertrand.DecoratorType).
@@ -1268,15 +1304,15 @@ class DecoratorMeta(type):
 
     # NOTE: this metaclass uses the following internal fields, which are populated
     # by DecoratorBuilder:
-    #   _required: dict[str, Callable[..., Any]]
-    #   _fields: dict[str, Any]
-    #   _methods: dict[str, Callable[..., Any]]
     #   _slug: str
     #   _hash: int
+    #   _required: dict[str, Callable[..., Any]]
+    #   _fields: dict[str, Any]
+    #   _parent: DecoratorMeta      # NOTE: parent of this decorator, not wrapped
+    #   _params: tuple[str]
+    #   _parametrized: bool
     #   _cache_size: int | None
     #   _flyweights: LinkedDict[str, DecoratorMeta]
-    #   _parametrized: bool
-    #   _params: tuple[str]
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -1323,6 +1359,8 @@ class DecoratorMeta(type):
                     "_slug": slug,
                     "_hash": hash(slug),
                     "_fields": cls._fields | dict(zip(cls._params, args)) | kwargs,
+                    "_parent": cls,
+                    "_parametrized": True,
                 }
             )
             cls._flyweights.lru_add(slug, typ)
@@ -1342,11 +1380,6 @@ class DecoratorMeta(type):
     def hash(cls) -> int:
         """TODO"""
         return cls._hash
-
-    @property
-    def methods(cls) -> Mapping[str, Callable[..., Any]]:
-        """TODO"""
-        return MappingProxyType(cls._methods)
 
     @property
     def decorators(cls) -> UnionMeta:
@@ -1383,6 +1416,11 @@ class DecoratorMeta(type):
         return MappingProxyType(cls._flyweights)
 
     @property
+    def is_parametrized(cls) -> bool:
+        """TODO"""
+        return cls._parametrized
+
+    @property
     def params(cls) -> Mapping[str, Any]:
         """TODO"""
         return MappingProxyType({k: cls._fields[k] for k in cls._params})
@@ -1392,28 +1430,31 @@ class DecoratorMeta(type):
         """TODO"""
         if not cls.wrapped:
             return cls
-        return cls.flyweight(cls.wrapped.as_default)  # NOTE: will recurse
+        return replace_wrapped(cls, cls.wrapped.as_default)  # NOTE: will recurse
 
     @property
     def as_nullable(cls) -> DecoratorMeta:
         """TODO"""
         if not cls.wrapped:
             return cls
-        return cls.flyweight(cls.wrapped.as_nullable)
+        return replace_wrapped(cls, cls.wrapped.as_nullable)
 
     @property
     def root(cls) -> DecoratorMeta:
         """TODO"""
         if not cls.wrapped:
             return cls
-        return cls.flyweight(cls.wrapped.root)
+        return replace_wrapped(cls, cls.wrapped.root)
 
     @property
-    def supertype(cls) -> DecoratorMeta:
+    def parent(cls) -> DecoratorMeta | None:
         """TODO"""
         if not cls.wrapped:
             return cls
-        return cls.flyweight(cls.wrapped.supertype)
+        parent = cls.wrapped.parent
+        if parent is None:
+            return None
+        return replace_wrapped(cls, parent)
 
     @property
     def subtypes(cls) -> UnionMeta:
@@ -1421,7 +1462,7 @@ class DecoratorMeta(type):
         result = LinkedSet()
         if cls.wrapped:
             for typ in cls.wrapped.subtypes:
-                result.add(cls.flyweight(typ))
+                result.add(replace_wrapped(cls, typ))
         return Union.from_types(result)
 
     @property
@@ -1430,7 +1471,7 @@ class DecoratorMeta(type):
         result = LinkedSet()
         if cls.wrapped:
             for typ in cls.wrapped.implementations:
-                result.add(cls.flyweight(typ))
+                result.add(replace_wrapped(cls, typ))
         return Union.from_types(result)
 
     @property
@@ -1439,7 +1480,7 @@ class DecoratorMeta(type):
         result = LinkedSet()
         if cls.wrapped:
             for typ in cls.wrapped.children:
-                result.add(cls.flyweight(typ))
+                result.add(replace_wrapped(cls, typ))
         return Union.from_types(result)
 
     @property
@@ -1448,7 +1489,7 @@ class DecoratorMeta(type):
         result = LinkedSet()
         if cls.wrapped:
             for typ in cls.wrapped.leaves:
-                result.add(cls.flyweight(typ))
+                result.add(replace_wrapped(cls, typ))
         return Union.from_types(result)
 
     @property
@@ -1457,7 +1498,7 @@ class DecoratorMeta(type):
         result = LinkedSet()
         if cls.wrapped:
             for typ in cls.wrapped.larger:
-                result.add(cls.flyweight(typ))
+                result.add(replace_wrapped(cls, typ))
         return Union.from_types(result)
 
     @property
@@ -1466,7 +1507,7 @@ class DecoratorMeta(type):
         result = LinkedSet()
         if cls.wrapped:
             for typ in cls.wrapped.smaller:
-                result.add(cls.flyweight(typ))
+                result.add(replace_wrapped(cls, typ))
         return Union.from_types(result)
 
     def __getattr__(cls, name: str) -> Any:
@@ -1488,10 +1529,9 @@ class DecoratorMeta(type):
     def __dir__(cls) -> set[str]:
         result = set(super().__dir__())
         result.update({
-            "slug", "hash", "methods", "decorators", "wrapped", "unwrapped",
-            "cache_size", "flyweights", "params", "as_default", "as_nullable",
-            "root", "supertype", "subtypes", "implementations", "children", "leaves",
-            "larger", "smaller"
+            "slug", "hash", "decorators", "wrapped", "unwrapped", "cache_size",
+            "flyweights", "params", "as_default", "as_nullable", "root", "parent",
+            "subtypes", "implementations", "children", "leaves", "larger", "smaller"
         })
         result.update(cls._fields)
         curr = cls.wrapped
@@ -1617,8 +1657,6 @@ class DecoratorBuilder(TypeBuilder):
                 )
             elif name in self.required:
                 self.validate(name, self.namespace.pop(name))
-            elif inspect.isfunction(value) and name not in self.CONSTRUCTORS:
-                self.methods[name] = self.namespace.pop(name)
 
         # validate any remaining required fields that were not explicitly assigned
         for name in list(self.required):
@@ -1657,69 +1695,58 @@ class DecoratorBuilder(TypeBuilder):
         """
         parameters = {}
 
-        def insort(cls: DecoratorMeta, other: DecoratorMeta, *args: Any) -> DecoratorMeta:
-            visited = []
-            for dec in other.decorators:
-                delta = REGISTRY.decorator_precedence.distance(cls, dec)  # TODO: dec won't be in the registry since it's parametrized
-                if delta < 0:  # cls is lower priority than dec
-                    pass
-
-            return cls
-
         if "__class_getitem__" in self.namespace:
             original = self.namespace["__class_getitem__"]
 
-            def wrapper(cls: type, val: Any | tuple[Any, ...]) -> DecoratorMeta | UnionMeta:
+            def insort(
+                cls: DecoratorMeta,
+                other: TypeMeta | DecoratorMeta,
+                *args: Any
+            ) -> DecoratorMeta:
+                visited = []
+                curr: DecoratorMeta | TypeMeta = other
+                wrapped = curr.wrapped
+                while wrapped:
+                    concrete = curr._parent if curr.is_parametrized else curr
+                    delta = REGISTRY.decorator_precedence.distance(cls, concrete)
+
+                    if delta > 0:  # cls is higher priority or identical to concrete
+                        break
+                    elif delta == 0:  # cls is identical to concrete
+                        curr = wrapped
+                        break
+
+                    visited.append((concrete, list(curr.params.values())[1:]))
+                    curr = wrapped
+                    wrapped = curr.wrapped
+
+                result = original(cls, curr, *args)
+                for dec, params in reversed(visited):
+                    if not params:
+                        result = dec.__class_getitem__(result)
+                    else:
+                        result = dec.__class_getitem__((result, *params))
+                return result
+
+            def wrapper(
+                cls: DecoratorMeta,
+                val: Any | tuple[Any, ...]
+            ) -> DecoratorMeta | UnionMeta:
                 """Unwrap tuples/unions and forward arguments to the wrapped method."""
-                # NOTE: when inserting into the middle of the decorator stack, we need
-                # to instantiate a whole new decorator stack, which refers to the same
-                # trunk but with any prior decorators replaced.
-
-                if isinstance(val, TypeMeta):
-                    return original(cls, val)
-
-                if isinstance(val, DecoratorMeta):
-                    visited = []
-                    for dec in val.decorators:
-                        delta = REGISTRY.decorator_precedence.distance(cls, dec)
-                        if delta < 0:  # cls is lower priority than dec
-                            visited.append(dec)
-                            continue
-                        elif delta == 0:  # cls is identical to dec
-                            raise NotImplementedError()
-                        else:  # cls is higher priority than dec
-                            raise NotImplementedError()
-
-                    return original(cls, val)
-
+                if isinstance(val, (TypeMeta, DecoratorMeta)):
+                    return insort(cls, val)
 
                 if isinstance(val, UnionMeta):
-                    # TODO: insert into decorator stack
-                    return Union.from_types(LinkedSet(original(cls, t) for t in val))
+                    return Union.from_types(LinkedSet(insort(cls, t) for t in val))
 
                 if isinstance(val, tuple):
                     wrapped = val[0]
                     args = val[1:]
-                    # TODO: apply same logic as above for inserting into a decorator stack
-                    if isinstance(wrapped, TypeMeta):
-                        return original(cls, wrapped, *args)
-                    if isinstance(wrapped, DecoratorMeta):
-                        visited = []
-                        for dec in wrapped.decorators:
-                            delta = REGISTRY.decorator_precedence.distance(cls, dec)
-                            if delta < 0:
-                                visited.append(dec)
-                                continue
-                            elif delta == 0:
-                                raise NotImplementedError()
-                            else:
-                                raise NotImplementedError()
-
-
+                    if isinstance(wrapped, (TypeMeta, DecoratorMeta)):
+                        return insort(cls, wrapped, *args)
                     if isinstance(wrapped, UnionMeta):
-                        # TODO: insert into decorator stack
                         return Union.from_types(
-                            LinkedSet(original(cls, t, *args) for t in wrapped)
+                            LinkedSet(insort(cls, t, *args) for t in wrapped)
                         )
 
                 raise TypeError(
@@ -1727,7 +1754,7 @@ class DecoratorBuilder(TypeBuilder):
                     f"argument, not {repr(val)}"
                 )
 
-            self.namespace["__class_getitem__"] = classmethod(wrapper)
+            self.namespace["__class_getitem__"] = classmethod(wrapper)  # type: ignore
 
             skip = True
             sig = inspect.signature(original)
@@ -1755,21 +1782,48 @@ class DecoratorBuilder(TypeBuilder):
             self.class_getitem_signature = sig
 
         else:
+            def insort(
+                cls: DecoratorMeta,
+                other: TypeMeta | DecoratorMeta,
+                *args: Any
+            ) -> DecoratorMeta:
+                # breakpoint()
+
+                visited = []
+                curr: DecoratorMeta | TypeMeta = other
+                wrapped = curr.wrapped
+                while wrapped:
+                    concrete = curr._parent if curr.is_parametrized else curr
+                    delta = REGISTRY.decorator_precedence.distance(cls, concrete)
+
+                    if delta > 0:  # cls is higher priority or identical to concrete
+                        break
+                    elif delta == 0:  # cls is identical to concrete
+                        curr = wrapped
+                        break
+
+                    visited.append((concrete, list(curr.params.values())[1:]))
+                    curr = wrapped
+                    wrapped = curr.wrapped
+
+                result = cls.flyweight(curr)
+                for dec, params in reversed(visited):
+                    if not params:
+                        result = dec.__class_getitem__(result)
+                    else:
+                        result = dec.__class_getitem__((result, *params))
+                return result
+
             def default(
-                cls: type,
+                cls: DecoratorMeta,
                 wrapped: TypeMeta | DecoratorMeta | UnionMeta | None = None
             ) -> DecoratorMeta | UnionMeta:
                 """Default to identity function."""
-                if isinstance(wrapped, TypeMeta):
-                    return cls.flyweight(wrapped)
-
-                if isinstance(wrapped, DecoratorMeta):
-                    # TODO: insert into decorator stack
-                    raise NotImplementedError()
+                if isinstance(wrapped, (TypeMeta, DecoratorMeta)):
+                    return insort(cls, wrapped)
 
                 if isinstance(wrapped, UnionMeta):
-                    # TODO: insert into decorator stack
-                    return Union.from_types(LinkedSet(cls.flyweight(t) for t in wrapped))
+                    return Union.from_types(LinkedSet(insort(cls, t) for t in wrapped))
 
                 raise TypeError(
                     f"Decorators must accept another bertrand type as a first "
@@ -1778,7 +1832,7 @@ class DecoratorBuilder(TypeBuilder):
 
             parameters["wrapped"] = None
             self.fields["wrapped"] = None
-            self.namespace["__class_getitem__"] = classmethod(default)
+            self.namespace["__class_getitem__"] = classmethod(default)  # type: ignore
             self.class_getitem_signature = inspect.signature(default)
 
         self.namespace["_params"] = tuple(parameters.keys())
@@ -2014,11 +2068,11 @@ class UnionMeta(type):
         return cls.from_types(LinkedSet(t.root for t in cls._types))
 
     @property
-    def supertype(cls) -> UnionMeta:
+    def parent(cls) -> UnionMeta:
         """TODO"""
         result = LinkedSet()
         for t in cls._types:
-            result.add(t.supertype if t.supertype else t)
+            result.add(t.parent if t.parent else t)
         return cls.from_types(result)
 
     @property
@@ -2236,8 +2290,8 @@ class UnionMeta(type):
 
 # TODO: Type/DecoratorType should go in a separate bases.py file so that they can be
 # hosted verbatim in the docs.
-# -> metaclasses/builders go in meta.py or meta.h + meta.cpp
-# -> meta.py, type.py, decorator.py, union.py
+# -> metaclasses/builders/union go in meta.py or meta.h + meta.cpp
+# -> meta.py, type.py, decorator.py
 
 
 def check_scalar(
@@ -2435,7 +2489,10 @@ class Type(object, metaclass=TypeMeta):
     missing: check_missing = ...
 
     def __new__(cls) -> NoReturn:
-        raise TypeError("bertrand types cannot be instantiated")
+        # NOTE: Type's metaclass overloads the __call__() operator to produce a series
+        # of this type.  As such, it is not possible to instantiate a type directly,
+        # and neither __init__ nor this method will ever be called.
+        raise TypeError("bertrand types cannot have instances")
 
     def __class_getitem__(cls, x: str = "foo", y: int = 2) -> TypeMeta:
         """Example implementation showing how to create a parametrized type.  This
@@ -2498,44 +2555,6 @@ class Type(object, metaclass=TypeMeta):
         """
         return cls.flyweight(int(spam), pd.Timestamp(eggs))
 
-    # NOTE: Because bertrand types cannot be instantiated and their call operators map
-    # to Series constructors, any method that is not marked with @classmethod will
-    # automatically be converted into an equivalent dispatch function.  In this case,
-    # `self` will always be a Series object containing elements of this type, exactly
-    # as produced by calling the type directly.  The dispatch function will be chosen
-    # whenever the named method is called on a series of this type.
-
-    def round(self: Type, decimals: int = 0, *args: Any, **kwargs: Any) -> Type:
-        """Example implementation showing how to attach a method to Series objects of
-        this type.  This will be implicitly converted into a dispatch function of the
-        following form:
-
-        @virtual(pd.Series)
-        @dispatch
-        def round(series: Type, *args, **kwargs) -> Type:
-            return series.round.original(self, *args, **kwargs)
-
-        @round.overload
-        def round(series: ThisType, decimals: int = 0, *args, **kwargs) -> ThisType:
-            print("hello, world!")
-            return series + decimals
-
-        The conversion is performed automatically by the metaclass, and the overridden
-        `round()` method is stored under the `original` attribute of the dispatch
-        function for transparent access.  A trivial base implementation is provided for
-        convenience, which simply redirects to the original method if no matching type
-        is found.
-
-        Note that the @virtual decorator is only executed once `bertrand.attach()` is
-        invoked.  This is done to avoid muddying the pandas namespace with bertrand
-        functions if the user decides not to use them.
-        """
-        print("hello, world!")
-        return self + decimals
-
-    # TODO: allow users to overload math operators for series objects.  They just can't
-    # overload __init__, __new__, or any classmethod versions of the reserved slots.
-
 
 class DecoratorType(object, metaclass=DecoratorMeta):
     """TODO
@@ -2565,14 +2584,96 @@ class Union(metaclass=UnionMeta):
         return cls.from_types(LinkedSet((val,)))
 
 
+####################
+####    TEST    ####
+####################
+
+
+class Categorical(DecoratorType):
+    aliases = {"categorical"}
+
+    def __class_getitem__(
+        cls,
+        wrapped: TypeMeta | DecoratorMeta | None = None,
+        levels: Iterable[Any] | Empty = EMPTY
+    ) -> DecoratorMeta:
+        """TODO"""
+        if wrapped is None:
+            raise NotImplementedError("TODO")
+
+        if levels is EMPTY:
+            slug_repr = levels
+            dtype = pd.CategoricalDtype()  # NOTE: auto-detects levels when used
+        else:
+            levels = wrapped(levels)
+            slug_repr = f"[{', '.join(repr(l) for l in levels)}]"
+            dtype = pd.CategoricalDtype(levels)
+
+        return cls.flyweight(wrapped, slug_repr, dtype=dtype, levels=levels)  # type: ignore
+
+    @classmethod
+    def transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
+        """TODO"""
+        return series.astype(cls.dtype)
+
+    @classmethod
+    def inverse_transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
+        """TODO"""
+        return series.astype(cls.wrapped.dtype)
 
 
 
 
+# TODO: if fill_value is empty, then we need to carry it to any type we navigate to
+# from this type.  
 
 
 class Sparse(DecoratorType):
     aliases = {"sparse"}
+
+    def __class_getitem__(
+        cls,
+        wrapped: TypeMeta | DecoratorMeta | None = None,
+        fill_value: Any | Empty = EMPTY
+    ) -> DecoratorMeta:
+        """TODO"""
+        if wrapped is None:
+            raise NotImplementedError("TODO")
+
+        if fill_value is EMPTY or getattr(cls, "_is_empty", False):
+            fill = wrapped.missing
+            is_empty = True
+        else:
+            fill = wrapped(fill_value)
+            if len(fill) != 1:
+                raise TypeError(
+                    f"fill_value must be a scalar, not {repr(fill_value)}"
+                )
+            fill = fill[0]
+            is_empty = False
+
+        dtype = pd.SparseDtype(wrapped.dtype, fill)
+        return cls.flyweight(wrapped, fill, dtype=dtype, _is_empty=is_empty)
+
+    @classmethod
+    def transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
+        """TODO"""
+        return series.astype(cls.dtype)
+
+    @classmethod
+    def inverse_transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
+        """TODO"""
+        return series.sparse.to_dense()
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -2636,6 +2737,7 @@ class Int16(Signed):
     aliases = {"int16", "short"}
     max = 2**15 - 1
     min = -2**15
+    missing = np.nan
 
 
 @Int16.default
