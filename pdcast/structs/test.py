@@ -39,6 +39,14 @@ if TYPE_CHECKING:
 # hints.
 
 
+# TODO: detect() and resolve() might be registry methods?  That way we could call
+# REGISTRY.detect()/ REGISTRY.resolve() where necessary, without worrying about circular
+# imports.
+# -> This would break any special cases in either function, since we couldn't guarantee
+# that the registry would be populated at the time of the call.  It could work if there
+# were no special cases, though.
+
+
 class Precedence:
     """A linked set representing the priority given to each decorator in the type
     system.
@@ -813,10 +821,16 @@ class TypeMeta(type):
         return cls.as_default(*args, **kwargs)
 
     def __instancecheck__(cls, other: Any) -> bool:
+        # TODO: detect() the input and then call issubclass() on the result
         return isinstance(other, cls.scalar)
 
     def __subclasscheck__(cls, other: type) -> bool:
-        return super().__subclasscheck__(other)
+        check = super().__subclasscheck__
+        if isinstance(other, UnionMeta):
+            return all(check(o) for o in other)
+
+        # TODO: resolve() the input and then check() the result
+        return check(other)
 
     def __contains__(cls, other: type | Any) -> bool:
         if isinstance(other, type):
@@ -828,6 +842,9 @@ class TypeMeta(type):
 
     def __len__(cls) -> int:  # pylint: disable=invalid-length-returned
         return cls.itemsize  # basically a Python-level sizeof() operator
+
+    # TODO: comparisons should resolve() the input and then proceed as normal.  That
+    # way we could write Int | "i8" or Union["int", "datetime", str, np.dtype("M8[ns]")]
 
     def __or__(cls, other: META | Iterable[META]) -> UnionMeta:  # type: ignore
         if isinstance(other, (TypeMeta, DecoratorMeta)):
@@ -854,13 +871,15 @@ class TypeMeta(type):
     def __xor__(cls, other: META | Iterable[META]) -> UnionMeta:
         return Union.from_types(LinkedSet((cls,))) ^ other
 
+    # TODO: __lt__ should be able to take decorators and unions as well as regular types
+
     def __lt__(cls, other: TypeMeta) -> bool:
         return cls is not other and features(cls) < features(other)
 
     def __le__(cls, other: TypeMeta) -> bool:
         return cls is other or features(cls) <= features(other)
 
-    def __eq__(cls, other: TypeMeta) -> bool:
+    def __eq__(cls, other: Any) -> bool:
         return cls is other or features(cls) == features(other)
 
     def __ne__(cls, other: Any) -> bool:
@@ -967,7 +986,7 @@ class AbstractBuilder(TypeBuilder):
             return cls._implementations[val[0]][*val[1:]]
 
         self.namespace["__class_getitem__"] = classmethod(default)
-        self.namespace["_params"] = ()
+        self.namespace["_params"] = ("backend",)
 
     def from_scalar(self) -> None:
         """Parse a type's from_scalar() method (if it has one), ensuring that it is
@@ -1139,8 +1158,10 @@ class ConcreteBuilder(TypeBuilder):
             self.class_getitem_signature = sig
 
         else:
-            def default(cls: type) -> TypeMeta:
+            def default(cls: type, val: Any | tuple[Any, ...]) -> TypeMeta:
                 """Default to identity function."""
+                if val:
+                    raise TypeError(f"{cls.__name__} does not accept any parameters")
                 return cls  # type: ignore
 
             self.namespace["__class_getitem__"] = classmethod(default)
@@ -1250,6 +1271,11 @@ class ConcreteBuilder(TypeBuilder):
 # TODO:
 # >>> Sparse[Int32["numpy"]] in Sparse[Int32]
 # False
+
+
+# TODO:
+# >>> Sparse[Categorical]
+# AttributeError: type object 'Categorical' has no attribute 'missing'
 
 
 def insort_decorator(
@@ -1550,6 +1576,9 @@ class DecoratorMeta(type):
     # type.  They should also be able to compare against other decorators, and should
     # take decorator order into account.
 
+    # TODO: Sparse[Int32] in Sparse[Int] should return True
+
+
     def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any]:
         return cls.transform(cls.wrapped(*args, **kwargs))
 
@@ -1559,14 +1588,30 @@ class DecoratorMeta(type):
         return isinstance(other, cls.wrapped)
 
     def __subclasscheck__(cls, other: type) -> bool:
-        if isinstance(other, DecoratorMeta):
-            if cls.decorators != other.decorators:
-                return False
-            unwrapped = cls.unwrapped
-            if unwrapped is None:
-                return unwrapped is other.unwrapped
-            return cls.unwrapped.__subclasscheck__(other.unwrapped)  # type: ignore
+        if isinstance(other, TypeMeta):
+            return False
 
+        wrapped = cls.wrapped
+        parent = cls._parent if cls.is_parametrized else cls
+
+        if isinstance(other, DecoratorMeta):
+            if parent is not (other._parent if other.is_parametrized else other):
+                return False
+
+            if wrapped is None:
+                return True
+
+            forwarded = other.wrapped
+            if forwarded is None:
+                return False
+
+            return wrapped.__subclasscheck__(forwarded)
+
+        if isinstance(other, UnionMeta):
+            raise NotImplementedError()
+
+
+        raise NotImplementedError()
         return super().__subclasscheck__(other)
 
     def __contains__(cls, other: type | Any) -> bool:
@@ -1607,23 +1652,92 @@ class DecoratorMeta(type):
     def __xor__(cls, other: META | Iterable[META]) -> UnionMeta:
         return Union.from_types(LinkedSet((cls,))) ^ other
 
-    def __lt__(cls, other: TypeMeta) -> bool:
-        return cls is not other and features(cls) < features(other)
+    def __lt__(cls, other: META) -> bool:
+        if cls is other:
+            return False
 
-    def __le__(cls, other: TypeMeta) -> bool:
-        return cls is other or features(cls) <= features(other)
+        t1 = cls.wrapped
+        if t1 is None:
+            return False
 
-    def __eq__(cls, other: TypeMeta) -> bool:
-        return cls is other or features(cls) == features(other)
+        if isinstance(other, DecoratorMeta):
+            t2 = other.wrapped
+            if t2 is None:
+                return False
+            return t1 < t2
+
+        return t1 < other
+
+    def __le__(cls, other: META) -> bool:
+        if cls is other:
+            return True
+
+        t1 = cls.wrapped
+        if t1 is None:
+            return False
+
+        if isinstance(other, DecoratorMeta):
+            t2 = other.wrapped
+            if t2 is None:
+                return False
+            return t1 <= t2
+
+        return t1 <= other
+
+    # TODO:
+    # >>> Sparse[Int] == Int
+    # True
+
+    def __eq__(cls, other: META) -> bool:
+        if cls is other:
+            return True
+
+        t1 = cls.wrapped
+        if t1 is None:
+            return False
+
+        if isinstance(other, DecoratorMeta):
+            t2 = other.wrapped
+            if t2 is None:
+                return False
+            return t1 == t2
+
+        return t1 == other
 
     def __ne__(cls, other: Any) -> bool:
-        return cls is not other and features(cls) != features(other)
+        return not cls == other
 
-    def __ge__(cls, other: TypeMeta) -> bool:
-        return cls is other or features(cls) >= features(other)
+    def __ge__(cls, other: META) -> bool:
+        if cls is other:
+            return True
 
-    def __gt__(cls, other: TypeMeta) -> bool:
-        return cls is not other and features(cls) > features(other)
+        t1 = cls.wrapped
+        if t1 is None:
+            return False
+
+        if isinstance(other, DecoratorMeta):
+            t2 = other.wrapped
+            if t2 is None:
+                return False
+            return t1 >= t2
+
+        return t1 >= other
+
+    def __gt__(cls, other: META) -> bool:
+        if cls is other:
+            return False
+
+        t1 = cls.wrapped
+        if t1 is None:
+            return False
+
+        if isinstance(other, DecoratorMeta):
+            t2 = other.wrapped
+            if t2 is None:
+                return False
+            return t1 > t2
+
+        return t1 > other
 
     def __str__(cls) -> str:
         return cls._slug
@@ -2121,10 +2235,13 @@ class UnionMeta(type):
         raise TypeError(f"cannot convert to union type: {repr(cls)}")
 
     def __instancecheck__(cls, other: Any) -> bool:
-        return any(isinstance(other, t) for t in cls._types)
+        return any(isinstance(other, t) for t in cls)
 
     def __subclasscheck__(cls, other: type) -> bool:
-        return any(issubclass(other, t) for t in cls._types)
+        check = lambda o: any(issubclass(o, t) for t in cls)
+        if isinstance(other, UnionMeta):
+            return all(check(o) for o in other)
+        return check(other)
 
     def __contains__(cls, other: type | Any) -> bool:
         if isinstance(other, type):
@@ -2168,7 +2285,7 @@ class UnionMeta(type):
     def __reversed__(cls) -> Iterator[TypeMeta | DecoratorMeta]:
         return reversed(cls._types)
 
-    def __or__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:  # type: ignore
+    def __or__(cls, other: META | Iterable[META]) -> UnionMeta:  # type: ignore
         if isinstance(other, UnionMeta):
             result = cls._types | other._types
         elif isinstance(other, (TypeMeta, DecoratorMeta)):
@@ -2177,7 +2294,7 @@ class UnionMeta(type):
             result = cls._types | other
         return cls.from_types(result)
 
-    def __and__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:
+    def __and__(cls, other: META | Iterable[META]) -> UnionMeta:
         if isinstance(other, UnionMeta):
             result = LinkedSet()
             for typ in cls._types | cls.children:
@@ -2195,7 +2312,7 @@ class UnionMeta(type):
 
         return cls.from_types(result).collapse()
 
-    def __sub__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:
+    def __sub__(cls, other: META | Iterable[META]) -> UnionMeta:
         if isinstance(other, UnionMeta):
             result = LinkedSet()
             for typ in cls._types | cls.children:
@@ -2213,7 +2330,7 @@ class UnionMeta(type):
 
         return cls.from_types(result).collapse()
 
-    def __xor__(cls, other: Meta | Iterable[Meta]) -> UnionMeta:
+    def __xor__(cls, other: META | Iterable[META]) -> UnionMeta:
         if isinstance(other, UnionMeta):
             result = LinkedSet()
             for typ in cls._types | cls.children:
@@ -2237,7 +2354,7 @@ class UnionMeta(type):
 
         return cls.from_types(result).collapse()
 
-    def __lt__(cls, other: Meta | Iterable[Meta]) -> bool:
+    def __lt__(cls, other: META | Iterable[META]) -> bool:
         if isinstance(other, (TypeMeta, DecoratorMeta)):
             other = cls.from_types(LinkedSet([other]))
         elif not isinstance(other, UnionMeta):
@@ -2245,7 +2362,7 @@ class UnionMeta(type):
 
         return all(t in other for t in cls._types) and len(cls) < len(other)
 
-    def __le__(cls, other: Meta | Iterable[Meta]) -> bool:
+    def __le__(cls, other: META | Iterable[META]) -> bool:
         if other is cls:
             return True
 
@@ -2256,7 +2373,7 @@ class UnionMeta(type):
 
         return all(t in other for t in cls._types) and len(cls) <= len(other)
 
-    def __eq__(cls, other: Meta | Iterable[Meta]) -> bool:
+    def __eq__(cls, other: Any) -> bool:
         if isinstance(other, UnionMeta):
             return (
                 cls is other or
@@ -2269,15 +2386,15 @@ class UnionMeta(type):
 
         return NotImplemented
 
-    def __ne__(cls, other: Meta | Iterable[Meta]) -> bool:
+    def __ne__(cls, other: Any) -> bool:
         return not cls == other
 
-    def __ge__(cls, other: Meta | Iterable[Meta]) -> bool:
+    def __ge__(cls, other: META | Iterable[META]) -> bool:
         if not isinstance(other, (TypeMeta, UnionMeta)):
             other = cls.from_types(other)
         return cls.children._types >= other.children._types
 
-    def __gt__(cls, other: Meta | Iterable[Meta]) -> bool:
+    def __gt__(cls, other: META | Iterable[META]) -> bool:
         if not isinstance(other, (TypeMeta, UnionMeta)):
             other = cls.from_types(other)
         return cls.children._types > other.children._types
