@@ -365,13 +365,16 @@ class Aliases:
             raise TypeError(f"alias not found: {repr(alias)}")
 
         elif isinstance(alias, str):
+            self.aliases.remove(alias)
             REGISTRY.flush_regex()
             del REGISTRY.strings[alias]
 
         elif isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
+            self.aliases.remove(type(alias))
             del REGISTRY.dtypes[type(alias)]
 
         elif isinstance(alias, type):
+            self.aliases.remove(alias)
             if issubclass(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
                 del REGISTRY.dtypes[alias]
             else:
@@ -599,6 +602,7 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         if typ is None:
             raise TypeError(f"unrecognized dtype -> {repr(target)}")
 
+        # TODO: typ._defines_from_dtype?
         return typ.from_dtype(target)
 
     if isinstance(target, str):
@@ -650,6 +654,7 @@ def process_string(match: regex.Match) -> TypeMeta | DecoratorMeta | UnionMeta:
 
         args.append(substring.strip())
 
+    # TODO: typ._defines_from_string?
     return typ.from_string(*args)
 
 
@@ -698,17 +703,16 @@ def detect(data: Any, drop_na: bool = True) -> META | dict[str, META]:
         if data_type in REGISTRY.types:
             return detect_scalar(data, data_type)
         elif hasattr(data, "dtype"):
-            return detect_dtype(data, data_type, drop_na)
+            return detect_dtype(data, drop_na)
         else:
-            # convert to numpy array
+            # convert to numpy array and strip missing values
             arr = np.asarray(data, dtype=object)
             missing = pd.isna(arr)
             hasnans = missing.any()
             if hasnans:
                 arr = arr[~missing]  # pylint: disable=invalid-unary-operand-type
 
-            # loop through elementwise
-            union = detect_elementwise(arr, data_type, drop_na)
+            union = detect_elementwise(arr)
 
             # reinsert missing values
             if hasnans and not drop_na:
@@ -729,15 +733,17 @@ def detect_scalar(data: Any, data_type: type) -> META:
     typ = REGISTRY.types.get(data_type, None)
     if typ is None:
         return ObjectType(data_type)
+
+    # TODO: typ._defines_from_scalar?
     return typ.from_scalar(data)
 
 
-def detect_dtype(data: Any, data_type: type, drop_na: bool) -> META:
+def detect_dtype(data: Any, drop_na: bool) -> META:
     """TODO"""
     dtype = data.dtype
 
     if dtype == np.dtype(object):  # ambiguous - loop through elementwise
-        return detect_elementwise(data, data_type, drop_na)
+        return detect_elementwise(data)
 
     # if isinstance(dtype, SyntheticDtype):
     #     typ = dtype._bertrand_type
@@ -746,6 +752,7 @@ def detect_dtype(data: Any, data_type: type, drop_na: bool) -> META:
     if typ is None:
         raise TypeError(f"unrecognized dtype -> {repr(dtype)}")
 
+    # TODO: typ._defines_from_dtype?
     result = typ.from_dtype(dtype)
 
     if not drop_na:
@@ -763,7 +770,7 @@ def detect_dtype(data: Any, data_type: type, drop_na: bool) -> META:
     return result
 
 
-def detect_elementwise(data: Any, data_type: type, drop_na: bool) -> UnionMeta:
+def detect_elementwise(data: Any) -> UnionMeta:
     """TODO"""
     observed = LinkedSet()
     counts = []
@@ -778,8 +785,8 @@ def detect_elementwise(data: Any, data_type: type, drop_na: bool) -> UnionMeta:
         typ = lookup.get(element_type, None)
         if typ is None:
             typ = ObjectType[element_type]
-        # else:
-        #     typ = typ.from_scalar(element)  # TODO: skip if type is not parametrizable
+        elif typ._defines_from_scalar:  # pylint: disable=protected-access
+            typ = typ.from_scalar(element)  # optimized away if possible
 
         # update counts
         if typ is prev:
@@ -856,6 +863,9 @@ class TypeMeta(type):
     #   _parametrized: bool
     #   _cache_size: int | None
     #   _flyweights: LinkedDict[str, TypeMeta]
+    #   _defines_from_scalar: bool
+    #   _defines_from_dtype: bool
+    #   _defines_from_string: bool
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -1217,13 +1227,10 @@ class TypeMeta(type):
 
     def __contains__(cls, other: Any | TYPESPEC) -> bool:
         # pylint: disable=no-value-for-parameter
-        if (
-            isinstance(other, type) or
-            isinstance(other, (np.dtype, pd.api.extensions.ExtensionDtype)) or
-            isinstance(other, str) and REGISTRY.resolvable.fullmatch(other)
-        ):
+        try:
             return cls.__subclasscheck__(other)
-        return cls.__instancecheck__(other)
+        except TypeError:
+            return cls.__instancecheck__(other)
 
     def __hash__(cls) -> int:
         return cls._hash
@@ -1477,6 +1484,7 @@ class AbstractBuilder(TypeBuilder):
             """Throw an error if attempting to construct an abstract type."""
             raise TypeError("abstract types cannot be constructed using from_scalar()")
 
+        self.namespace["_defines_from_scalar"] = False
         self.namespace["from_scalar"] = classmethod(default)
 
     def from_dtype(self) -> None:
@@ -1490,6 +1498,7 @@ class AbstractBuilder(TypeBuilder):
             """Throw an error if attempting to construct an abstract type."""
             raise TypeError("abstract types cannot be constructed using from_dtype()")
 
+        self.namespace["_defines_from_scalar"] = False
         self.namespace["from_dtype"] = classmethod(default)
 
     def from_string(self) -> None:
@@ -1515,6 +1524,7 @@ class AbstractBuilder(TypeBuilder):
 
             raise TypeError(f"invalid backend: {repr(backend)}")
 
+        self.namespace["_defines_from_string"] = False
         self.namespace["from_string"] = classmethod(default)
 
 
@@ -1682,11 +1692,14 @@ class ConcreteBuilder(TypeBuilder):
                     "addition to cls)"
                 )
 
+            self.namespace["_defines_from_scalar"] = True
+
         else:
             def default(cls: type, scalar: Any) -> TypeMeta:
                 """Default to identity function."""
                 return cls  # type: ignore
 
+            self.namespace["_defines_from_scalar"] = False
             self.namespace["from_scalar"] = classmethod(default)
 
     def from_dtype(self) -> None:
@@ -1709,11 +1722,14 @@ class ConcreteBuilder(TypeBuilder):
                     "addition to cls)"
                 )
 
+            self.namespace["_defines_from_dtype"] = True
+
         else:
             def default(cls: type, dtype: Any) -> TypeMeta:
                 """Default to identity function."""
                 return cls  # type: ignore
 
+            self.namespace["_defines_from_dtype"] = False
             self.namespace["from_dtype"] = classmethod(default)
 
     def from_string(self) -> None:
@@ -1730,11 +1746,14 @@ class ConcreteBuilder(TypeBuilder):
                 p.replace(annotation=p.empty, default=p.default) for p in params
             ])
 
+            self.namespace["_defines_from_string"] = True
+
         else:
             def default(cls: type) -> TypeMeta:
                 """Default to identity function."""
                 return cls  # type: ignore
 
+            self.namespace["_defines_from_string"] = False
             self.namespace["from_string"] = classmethod(default)
             sig = inspect.Signature([
                 inspect.Parameter("cls", inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -3010,11 +3029,7 @@ class Union(metaclass=UnionMeta):
     def __new__(cls) -> NoReturn:
         raise TypeError("bertrand unions cannot be instantiated")
 
-    def __class_getitem__(
-        cls,
-        val: (TypeMeta | DecoratorMeta | UnionMeta |
-              tuple[TypeMeta | DecoratorMeta | UnionMeta, ...])
-    ) -> UnionMeta:
+    def __class_getitem__(cls, val: META | tuple[META, ...]) -> UnionMeta:
         if isinstance(val, (TypeMeta, DecoratorMeta)):
             return cls.from_types(LinkedSet((val,)))
         if isinstance(val, UnionMeta):
@@ -3074,13 +3089,15 @@ def check_scalar(
 
     if dtype is Ellipsis:
         processed["dtype"] = None  # TODO: synthesize dtype
-    elif value == dtype.type:
-        processed["dtype"] = dtype
     else:
-        raise TypeError(
-            f"scalar must be consistent with dtype.type: {repr(value)} != "
-            f"{repr(dtype.type)}"
-        )
+        processed["dtype"] = dtype
+    # elif value == dtype.type:
+    #     processed["dtype"] = dtype
+    # else:
+    #     raise TypeError(
+    #         f"scalar must be consistent with dtype.type: {repr(value)} != "
+    #         f"{repr(dtype.type)}"
+    #     )
 
     return value
 
@@ -3112,13 +3129,15 @@ def check_dtype(
 
     if scalar is Ellipsis:
         processed["scalar"] = value.type
-    elif value.type == scalar:
-        processed["scalar"] = scalar
     else:
-        raise TypeError(
-            f"dtype.type must be consistent with scalar: {repr(value.type)} != "
-            f"{repr(scalar)}"
-        )
+        processed["scalar"] = scalar
+    # elif value.type == scalar:
+    #     processed["scalar"] = scalar
+    # else:
+    #     raise TypeError(
+    #         f"dtype.type must be consistent with scalar: {repr(value.type)} != "
+    #         f"{repr(scalar)}"
+    #     )
 
     return value
 
@@ -3399,14 +3418,14 @@ class Signed(Int):
     aliases = {"signed"}
 
 
-# class PythonInt(Signed, backend="python"):
-#     aliases = {int}
-#     scalar = int
-#     dtype = np.dtype(object)
-#     max = np.inf
-#     min = -np.inf
-#     is_nullable = True
-#     missing = None
+class PythonInt(Signed, backend="python"):
+    aliases = {int}
+    scalar = int
+    dtype = np.dtype(object)
+    max = np.inf
+    min = -np.inf
+    is_nullable = True
+    missing = None
 
 
 
@@ -3523,8 +3542,15 @@ class PandasInt8(Int8, backend="pandas"):
 # Categories (3, Sparse[int64, <NA>]): [1, 2, 3]
 
 
+# TODO: from_dtype() should pass in the whole array, not just the dtype.  That way we
+# can infer levels for categorical data, etc.  Actually it should pass the dtype
+# plus the array, so that it works as expected in both detect() and resolve().
+# -> builders can enforce this by requiring a second positional argument that defaults
+# to None.
+
+
 class Categorical(DecoratorType, cache_size=256):
-    aliases = {"categorical"}
+    aliases = {"categorical", pd.CategoricalDtype()}
 
     def __class_getitem__(
         cls,
@@ -3554,7 +3580,7 @@ class Categorical(DecoratorType, cache_size=256):
 
 
 class Sparse(DecoratorType, cache_size=256):
-    aliases = {"sparse"}
+    aliases = {"sparse", pd.SparseDtype()}
     _is_empty = False
 
     def __class_getitem__(
@@ -3587,6 +3613,12 @@ class Sparse(DecoratorType, cache_size=256):
         typ = resolve(wrapped)
         # TODO: parse fill_value
         return cls[typ, fill_value]
+
+    @classmethod
+    def from_dtype(cls, dtype: pd.SparseDtype) -> DecoratorMeta:
+        """TODO"""
+        print("hello, world!")
+        return super().from_dtype(dtype)
 
     @classmethod
     def replace(cls, *args: Any, **kwargs: Any) -> DecoratorMeta:
