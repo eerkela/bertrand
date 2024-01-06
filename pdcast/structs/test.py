@@ -700,7 +700,23 @@ def detect(data: Any, drop_na: bool = True) -> META | dict[str, META]:
         elif hasattr(data, "dtype"):
             return detect_dtype(data, data_type, drop_na)
         else:
-            return detect_elementwise(data, data_type, drop_na)
+            # convert to numpy array
+            arr = np.asarray(data, dtype=object)
+            missing = pd.isna(arr)
+            hasnans = missing.any()
+            if hasnans:
+                arr = arr[~missing]  # pylint: disable=invalid-unary-operand-type
+
+            # loop through elementwise
+            union = detect_elementwise(arr, data_type, drop_na)
+
+            # reinsert missing values
+            if hasnans and not drop_na:
+                index = np.full(missing.shape[0], NullType, dtype=object)
+                index[~missing] = union.index  # pylint: disable=invalid-unary-operand-type
+                return Union.from_types(union | NullType, rle_encode(index))
+
+            return union
 
     return detect_scalar(data, data_type)
 
@@ -737,9 +753,9 @@ def detect_dtype(data: Any, data_type: type, drop_na: bool) -> META:
         if is_na.any():
             index = np.full(is_na.shape[0], NullType, dtype=object)
             if isinstance(result, UnionMeta):
-                index[~is_na] = result.index
+                index[~is_na] = result.index  # pylint: disable=invalid-unary-operand-type
             else:
-                index[~is_na] = result
+                index[~is_na] = result  # pylint: disable=invalid-unary-operand-type
 
             # TODO: from_types must accept optional index
             return Union.from_types(LinkedSet((result, NullType)), rle_encode(index))
@@ -747,9 +763,42 @@ def detect_dtype(data: Any, data_type: type, drop_na: bool) -> META:
     return result
 
 
-def detect_elementwise(data: Any, data_type: type, drop_na: bool) -> META:
+def detect_elementwise(data: Any, data_type: type, drop_na: bool) -> UnionMeta:
     """TODO"""
-    raise NotImplementedError()
+    observed = LinkedSet()
+    counts = []
+    count = 0
+    prev = None
+    lookup = REGISTRY.types
+
+    for element in data:
+        element_type = type(element)
+
+        # search for a matching type in the registry
+        typ = lookup.get(element_type, None)
+        if typ is None:
+            typ = ObjectType[element_type]
+        # else:
+        #     typ = typ.from_scalar(element)  # TODO: skip if type is not parametrizable
+
+        # update counts
+        if typ is prev:
+            count += 1
+        else:
+            observed.add(typ)
+            if prev is not None:
+                counts.append((prev, count))
+            prev = typ
+            count = 1
+
+    # add final count
+    if prev is not None:
+        observed.add(prev)
+        counts.append((prev, count))
+
+    # encode as structured array
+    index = np.array(counts, dtype=[("value", object), ("count", np.intp)])
+    return Union.from_types(observed, index)
 
 
 def rle_encode(arr: OBJECT_ARRAY) -> RLE_ARRAY:  # type: ignore
@@ -1397,8 +1446,20 @@ class AbstractBuilder(TypeBuilder):
         def default(cls: type, val: str | tuple[Any, ...]) -> TypeMeta:
             """Forward all arguments to the specified implementation."""
             if isinstance(val, str):
-                return cls._implementations[val]
-            return cls._implementations[val[0]][*val[1:]]
+                key = val
+                if key in cls._implementations:  # type: ignore
+                    return cls._implementations[key]  # type: ignore
+            else:
+                key = val[0]
+                if key in cls._implementations:  # type: ignore
+                    return cls._implementations[key][*val[1:]]  # type: ignore
+
+            if not cls.is_default:  # type: ignore
+                default = cls.as_default  # type: ignore
+                if default.is_abstract:
+                    return default.__class_getitem__(val)
+
+            raise TypeError(f"invalid backend: {repr(key)}")
 
         self.namespace["__class_getitem__"] = classmethod(default)
         self.namespace["_params"] = ("backend",)
@@ -1442,10 +1503,17 @@ class AbstractBuilder(TypeBuilder):
             """Forward all arguments to the specified implementation."""
             if not backend:
                 return cls
-            base = cls._implementations[backend]
-            if not args:
-                return base
-            return base.from_string(*args)
+
+            if backend in cls._implementations:  # type: ignore
+                typ = cls._implementations[backend]  # type: ignore
+                if not args:
+                    return typ
+                return typ.from_string(*args)
+
+            if not cls.is_default:  # type: ignore
+                return cls.as_default.from_string(backend, *args)  # type: ignore
+
+            raise TypeError(f"invalid backend: {repr(backend)}")
 
         self.namespace["from_string"] = classmethod(default)
 
@@ -2608,18 +2676,20 @@ class UnionMeta(type):
 
         return super().__new__(mcs, name, bases, namespace | {
             "_types": LinkedSet(),
-            "_hash": 42
+            "_hash": 42,
+            "_index": None,
         })
 
-    def from_types(cls, types: LinkedSet[TypeMeta]) -> UnionMeta:
+    def from_types(cls, types: LinkedSet[TypeMeta], index: RLE_ARRAY | None = None) -> UnionMeta:
         """TODO"""
         hash_val = 42  # to avoid collisions at hash=0
         for t in types:
-            hash_val = (hash_val * 31 + hash(t)) % (2**63 - 1)  # mod not necessary in C++
+            hash_val = (hash_val * 31 + hash(t)) % (2**63 - 1)  # TODO: mod not necessary in C++
 
         return super().__new__(UnionMeta, cls.__name__, (cls,), {
             "_types": types,
             "_hash": hash_val,
+            "_index": index,
             "__class_getitem__": union_getitem
         })
 
@@ -2628,13 +2698,15 @@ class UnionMeta(type):
     ################################
 
     @property
-    def index(cls) -> NoReturn:
+    def index(cls) -> OBJECT_ARRAY | None:
         """A 1D numpy array containing the observed type at every index of an iterable
         passed to `bertrand.detect()`.  This is stored internally as a run-length
         encoded array of flyweights for memory efficiency, and is expanded into a
         full array when accessed.
         """
-        raise NotImplementedError()
+        if cls._index is None:
+            return None
+        return rle_decode(cls._index)
 
     def collapse(cls) -> UnionMeta:
         """TODO"""
@@ -3327,6 +3399,15 @@ class Signed(Int):
     aliases = {"signed"}
 
 
+# class PythonInt(Signed, backend="python"):
+#     aliases = {int}
+#     scalar = int
+#     dtype = np.dtype(object)
+#     max = np.inf
+#     min = -np.inf
+#     is_nullable = True
+#     missing = None
+
 
 
 @Signed.default
@@ -3345,6 +3426,7 @@ class NumpyInt64(Int64, backend="numpy"):
 
 @NumpyInt64.nullable
 class PandasInt64(Int64, backend="pandas"):
+    aliases = {pd.Int64Dtype()}
     dtype = pd.Int64Dtype()
     is_nullable = True
 
@@ -3359,12 +3441,14 @@ class Int32(Signed):
 
 @Int32.default
 class NumpyInt32(Int32, backend="numpy"):
+    aliases = {np.int32, np.dtype(np.int32)}
     dtype = np.dtype(np.int32)
     is_nullable = False
 
 
 @NumpyInt32.nullable
 class PandasInt32(Int32, backend="pandas"):
+    aliases = {pd.Int32Dtype()}
     dtype = pd.Int32Dtype()
     is_nullable = True
 
@@ -3380,12 +3464,14 @@ class Int16(Signed):
 
 @Int16.default
 class NumpyInt16(Int16, backend="numpy"):
+    aliases = {np.int16, np.dtype(np.int16)}
     dtype = np.dtype(np.int16)
     is_nullable = False
 
 
 @NumpyInt16.nullable
 class PandasInt16(Int16, backend="pandas"):
+    aliases = {pd.Int16Dtype()}
     dtype = pd.Int16Dtype()
     is_nullable = True
 
@@ -3400,6 +3486,7 @@ class Int8(Signed):
 
 @Int8.default
 class NumpyInt8(Int8, backend="numpy", cache_size=2):
+    aliases = {np.int8, np.dtype(np.int8)}
     dtype = np.dtype(np.int8)
     is_nullable = False
 
@@ -3414,6 +3501,7 @@ class NumpyInt8(Int8, backend="numpy", cache_size=2):
 
 @NumpyInt8.nullable
 class PandasInt8(Int8, backend="pandas"):
+    aliases = {pd.Int8Dtype()}
     dtype = pd.Int8Dtype()
     is_nullable = True
 
