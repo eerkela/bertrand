@@ -469,9 +469,6 @@ cdef class TypeRegistry:
                     if isinstance(alias, str)
                 ]
 
-                # special case for sized unicode in numpy syntax
-                alias_strings.append(r"(?P<sized_unicode>U(?P<size>[0-9]*))$")
-
                 # sort longest first and join with regex OR
                 alias_strings.sort(key=len, reverse=True)
                 result = re.compile(
