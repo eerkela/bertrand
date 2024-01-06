@@ -2,7 +2,9 @@ from __future__ import annotations
 import collections
 import inspect
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Mapping, NoReturn
+from typing import (
+    Any, Callable, Iterable, Iterator, Mapping, NoReturn, TypeAlias
+)
 
 import numpy as np
 import pandas as pd
@@ -18,10 +20,14 @@ class Empty:
         return "..."
 
 
-POINTER_SIZE = np.dtype(np.intp).itemsize
-EMPTY = Empty()
-if TYPE_CHECKING:
-    META = TypeMeta | DecoratorMeta | UnionMeta
+EMPTY: Empty = Empty()
+POINTER_SIZE: int = np.dtype(np.intp).itemsize
+META: TypeAlias = "TypeMeta | DecoratorMeta | UnionMeta"
+DTYPE: TypeAlias = np.dtype[Any] | pd.api.extensions.ExtensionDtype
+ALIAS: TypeAlias = str | type | DTYPE
+TYPESPEC: TypeAlias = "META | ALIAS"
+OBJECT_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[np.object_]]
+RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]  # type: ignore
 
 
 ####################
@@ -47,25 +53,9 @@ if TYPE_CHECKING:
 # Union[Int16 | Int32] < Int64 == True
 
 
-
-
-# TODO: need a set of edges to represent overrides for <, >, etc.
 # TODO: metaclass throws error if any non-classmethods are implemented on type objects.
 # -> non-member functions are more explicit and flexible.  Plus, if there's only one
 # syntax for declaring them, then it's easier to document and use.
-
-
-# TODO: raise an error if __class_getitem__() is implemented and from_string() is not.
-# These must always be implemented together, since from_string is meant to parse type
-# hints.
-
-
-# TODO: detect() and resolve() might be registry methods?  That way we could call
-# REGISTRY.detect()/ REGISTRY.resolve() where necessary, without worrying about circular
-# imports.
-# -> This would break any special cases in either function, since we couldn't guarantee
-# that the registry would be populated at the time of the call.  It could work if there
-# were no special cases, though.
 
 
 class DecoratorPrecedence:
@@ -170,6 +160,9 @@ class TypeRegistry:
     types that are currently defined.
     """
 
+    # types are recorded in the same order as they are defined
+    _types: LinkedSet[TypeMeta | DecoratorMeta] = LinkedSet()
+
     # aliases are stored in separate dictionaries for performance reasons
     types: dict[type, TypeMeta | DecoratorMeta] = {}
     dtypes: dict[type, TypeMeta | DecoratorMeta] = {}
@@ -227,7 +220,7 @@ class TypeRegistry:
 
         return self._resolvable
 
-    def flush(self) -> None:
+    def flush_regex(self) -> None:
         """TODO"""
         self._regex = None
         self._resolvable = None
@@ -239,27 +232,36 @@ class TypeRegistry:
     @property
     def roots(self) -> UnionMeta:
         """TODO"""
-        raise NotImplementedError()
+        result = LinkedSet(t for t in self if isinstance(t, TypeMeta) and t.is_root)
+        return Union.from_types(result)
 
     @property
     def leaves(self) -> UnionMeta:
         """TODO"""
-        raise NotImplementedError()
+        result = LinkedSet(t for t in self if isinstance(t, TypeMeta) and t.is_leaf)
+        return Union.from_types(result)
 
     @property
-    def families(self) -> dict[str, UnionMeta]:
+    def backends(self) -> dict[str, UnionMeta]:
         """TODO"""
-        raise NotImplementedError()
+        result: dict[str, LinkedSet] = {}
+        for typ in self:
+            if isinstance(typ, TypeMeta) and typ.backend:
+                result.setdefault(typ.backend, LinkedSet()).add(typ)
+
+        return {k: Union.from_types(v) for k, v in result.items()}
 
     @property
     def decorators(self) -> UnionMeta:
         """TODO"""
-        raise NotImplementedError()
+        result = LinkedSet(t for t in self if isinstance(t, DecoratorMeta))
+        return Union.from_types(result)
 
     @property
     def abstract(self) -> UnionMeta:
         """TODO"""
-        raise NotImplementedError()
+        result = LinkedSet(t for t in self if isinstance(t, TypeMeta) and t.is_abstract)
+        return Union.from_types(result)
 
     ###############################
     ####    SPECIAL METHODS    ####
@@ -271,17 +273,22 @@ class TypeRegistry:
     def __iter__(self) -> Iterator[TypeMeta | DecoratorMeta]:
         return iter(self._types)
 
-    def __contains__(self, typ: TypeMeta | DecoratorMeta) -> bool:
-        return typ in self._types
+    def __contains__(self, spec: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        typ = resolve(spec)
+
+        if isinstance(typ, TypeMeta):
+            return (typ.parent if typ.is_parametrized else typ) in self._types
+
+        if isinstance(typ, DecoratorMeta):
+            return typ.wrapper in self._types
+
+        return all((t.parent if t.is_parametrized else t) in self._types for t in typ)
 
     def __str__(self) -> str:
         return f"{', '.join(str(t) for t in self)}"
 
     def __repr__(self) -> str:
         return f"TypeRegistry({{{', '.join(repr(t) for t in self)}}})"
-
-
-REGISTRY = TypeRegistry()
 
 
 class Aliases:
@@ -294,12 +301,9 @@ class Aliases:
     language of your choice.
     """
 
-    ALIAS = str | type | np.dtype[Any] | pd.api.extensions.ExtensionDtype
-    DTYPE_LIKE = (np.dtype, pd.api.extensions.ExtensionDtype)
-
     def __init__(self, aliases: LinkedSet[str | type]):
         self.aliases = aliases
-        self._parent: TypeMeta | None = None  # assigned after instantiation
+        self._parent: TypeMeta | DecoratorMeta | None = None  # deferred assignment
 
     @property
     def parent(self) -> TypeMeta:
@@ -320,10 +324,10 @@ class Aliases:
             if alias in REGISTRY.aliases:
                 raise TypeError(f"aliases must be unique: {repr(alias)}")
 
-            REGISTRY.flush()
             if isinstance(alias, str):
+                REGISTRY.flush_regex()
                 REGISTRY.strings[alias] = typ
-            elif issubclass(alias, self.DTYPE_LIKE):
+            elif issubclass(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
                 REGISTRY.dtypes[alias] = typ
             else:
                 REGISTRY.types[alias] = typ
@@ -336,13 +340,14 @@ class Aliases:
             raise TypeError(f"aliases must be unique: {repr(alias)}")
 
         elif isinstance(alias, str):
+            REGISTRY.flush_regex()
             REGISTRY.strings[alias] = self.parent
 
-        elif isinstance(alias, self.DTYPE_LIKE):
+        elif isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
             REGISTRY.dtypes[type(alias)] = self.parent
 
         elif isinstance(alias, type):
-            if issubclass(alias, self.DTYPE_LIKE):
+            if issubclass(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
                 REGISTRY.dtypes[alias] = self.parent
             else:
                 REGISTRY.types[alias] = self.parent
@@ -352,7 +357,6 @@ class Aliases:
                 f"aliases must be strings, types, or dtypes: {repr(alias)}"
             )
 
-        REGISTRY.flush()
         self.aliases.add(alias)
 
     def remove(self, alias: ALIAS) -> None:
@@ -361,24 +365,24 @@ class Aliases:
             raise TypeError(f"alias not found: {repr(alias)}")
 
         elif isinstance(alias, str):
-            key = alias
-            table = REGISTRY.strings
-        elif isinstance(alias, self.DTYPE_LIKE):
-            key = type(alias)
-            table = REGISTRY.dtypes
+            REGISTRY.flush_regex()
+            del REGISTRY.strings[alias]
+
+        elif isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
+            del REGISTRY.dtypes[type(alias)]
+
         elif isinstance(alias, type):
-            key = alias
-            if issubclass(alias, self.DTYPE_LIKE):
-                table = REGISTRY.dtypes
+            if issubclass(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
+                del REGISTRY.dtypes[alias]
             else:
-                table = REGISTRY.types
+                del REGISTRY.types[alias]
+
         else:
             raise TypeError(
                 f"aliases must be strings, types, or dtypes: {repr(alias)}"
             )
 
-        REGISTRY.flush()
-        del table[key]
+    # TODO: update(), discard(), pop(), clear(), etc.
 
     def __repr__(self) -> str:
         return f"Aliases({', '.join(repr(a) for a in self.aliases)})"
@@ -503,6 +507,7 @@ class TypeBuilder:
         provided in its namespace.
         """
         self.namespace["aliases"].parent = typ  # assigns aliases to global registry
+        REGISTRY._types.add(typ)
         return typ
 
     def aliases(self) -> None:
@@ -568,72 +573,15 @@ def get_from_calling_context(name: str) -> Any:
     raise TypeError(f"could not find object: {repr(name)}")
 
 
+REGISTRY = TypeRegistry()
+
+
 #########################
 ####    RESOLVE()    ####
 #########################
 
 
-# TODO
-# >>> resolve("sparse[categorical[Int32[numpy] | int8]]")
-# TypeError: Categorical.from_string() takes from 2 to 3 positional arguments but 4 were given
-# -> arguments should not be tokenized according to the same rules as the top-level statement.
-# commas are fine to split on, but bitwise or is not.  It should instead be left as a single
-# token.
-
-
-def nested_expr(prefix: str, suffix: str, group_name: str) -> str:
-    """Produce a regular expression to match nested sequences with the specified
-    opening and closing tokens.  Relies on PCRE-style recursive patterns.
-    """
-    opener = regex.escape(prefix)
-    closer = regex.escape(suffix)
-    body = rf"(?P<body>([^{opener}{closer}]|(?&{group_name}))*)"
-    return rf"(?P<{group_name}>{opener}{body}{closer})"
-
-
-INVOCATION = regex.compile(
-    rf"(?P<invocation>[^\(\)\[\],]+)"
-    rf"({nested_expr('(', ')', 'signature')}|{nested_expr('[', ']', 'options')})"
-)
-SEQUENCE = regex.compile(
-    rf"(?P<sequence>"
-    rf"{nested_expr('(', ')', 'parens')}|"
-    rf"{nested_expr('[', ']', 'brackets')})"
-)
-LITERAL = regex.compile(r"[^,]+")
-TOKEN = regex.compile(rf"{INVOCATION.pattern}|{SEQUENCE.pattern}|{LITERAL.pattern}")
-
-
-def process_string(match: regex.Match) -> TypeMeta | DecoratorMeta | UnionMeta:
-    """TODO"""
-    groups = match.groupdict()
-
-    if groups.get("sized_unicode"):  # special case for U32, U{xx} syntax
-        typ = StringType
-    else:
-        typ = REGISTRY.strings[groups["type"]]
-
-    arguments = groups["args"]
-    if not arguments:
-        return typ
-
-    args = []
-    for m in TOKEN.finditer(arguments):
-        substring = m.group()
-        if (
-            (substring.startswith("'") and substring.endswith("'")) or
-            (substring.startswith('"') and substring.endswith('"'))
-        ):
-            substring = substring[1:-1]
-
-        args.append(substring.strip())
-
-    return typ.from_string(*args)
-
-
-def resolve(
-    target: type | str | np.dtype[Any] | pd.api.extensions.ExtensionDtype
-) -> TypeMeta | DecoratorMeta | UnionMeta:
+def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
     """TODO"""
     if isinstance(target, (TypeMeta, DecoratorMeta, UnionMeta)):
         return target
@@ -669,65 +617,168 @@ def resolve(
 
         return process_string(matches[0])
 
+    if hasattr(target, "__iter__"):
+        result = LinkedSet(resolve(t) for t in target)  # type: ignore
+        if len(result) == 1:
+            return result[0]
+        return Union.from_types(result)
+
     raise TypeError(f"invalid specifier -> {repr(target)}")
+
+
+def process_string(match: regex.Match) -> TypeMeta | DecoratorMeta | UnionMeta:
+    """TODO"""
+    groups = match.groupdict()
+
+    if groups.get("sized_unicode"):  # special case for U32, U{xx} syntax
+        typ = StringType
+    else:
+        typ = REGISTRY.strings[groups["type"]]
+
+    arguments = groups["args"]
+    if not arguments:
+        return typ
+
+    args = []
+    for m in TOKEN.finditer(arguments):
+        substring = m.group()
+        if (
+            (substring.startswith("'") and substring.endswith("'")) or
+            (substring.startswith('"') and substring.endswith('"'))
+        ):
+            substring = substring[1:-1]
+
+        args.append(substring.strip())
+
+    return typ.from_string(*args)
+
+
+def nested_expr(prefix: str, suffix: str, group_name: str) -> str:
+    """Produce a regular expression to match nested sequences with the specified
+    opening and closing tokens.  Relies on PCRE-style recursive patterns.
+    """
+    opener = regex.escape(prefix)
+    closer = regex.escape(suffix)
+    body = rf"(?P<body>([^{opener}{closer}]|(?&{group_name}))*)"
+    return rf"(?P<{group_name}>{opener}{body}{closer})"
+
+
+INVOCATION = regex.compile(
+    rf"(?P<invocation>[^\(\)\[\],]+)"
+    rf"({nested_expr('(', ')', 'signature')}|{nested_expr('[', ']', 'options')})"
+)
+SEQUENCE = regex.compile(
+    rf"(?P<sequence>"
+    rf"{nested_expr('(', ')', 'parens')}|"
+    rf"{nested_expr('[', ']', 'brackets')})"
+)
+LITERAL = regex.compile(r"[^,]+")
+TOKEN = regex.compile(rf"{INVOCATION.pattern}|{SEQUENCE.pattern}|{LITERAL.pattern}")
+
+
+########################
+####    DETECT()    ####
+########################
+
+
+def detect(data: Any, drop_na: bool = True) -> META | dict[str, META]:
+    """TODO"""
+    data_type = type(data)
+
+    if issubclass(data_type, (TypeMeta, DecoratorMeta, UnionMeta)):
+        return data
+
+    if issubclass(data_type, pd.DataFrame):  # TODO: or a numpy array with a structured dtype
+        columnwise = {}
+        for col in data.columns:
+            columnwise[col] = detect(data[col], drop_na=drop_na)
+        return columnwise
+
+    if hasattr(data, "__iter__") and not isinstance(data, type):
+        if data_type in REGISTRY.types:
+            return detect_scalar(data, data_type)
+        elif hasattr(data, "dtype"):
+            return detect_dtype(data, data_type, drop_na)
+        else:
+            return detect_elementwise(data, data_type, drop_na)
+
+    return detect_scalar(data, data_type)
+
+
+def detect_scalar(data: Any, data_type: type) -> META:
+    """TODO"""
+    if pd.isna(data):
+        return NullType
+
+    typ = REGISTRY.types.get(data_type, None)
+    if typ is None:
+        return ObjectType(data_type)
+    return typ.from_scalar(data)
+
+
+def detect_dtype(data: Any, data_type: type, drop_na: bool) -> META:
+    """TODO"""
+    dtype = data.dtype
+
+    if dtype == np.dtype(object):  # ambiguous - loop through elementwise
+        return detect_elementwise(data, data_type, drop_na)
+
+    # if isinstance(dtype, SyntheticDtype):
+    #     typ = dtype._bertrand_type
+    # else:
+    typ = REGISTRY.dtypes.get(type(dtype), None)
+    if typ is None:
+        raise TypeError(f"unrecognized dtype -> {repr(dtype)}")
+
+    result = typ.from_dtype(dtype)
+
+    if not drop_na:
+        is_na = pd.isna(data)
+        if is_na.any():
+            index = np.full(is_na.shape[0], NullType, dtype=object)
+            if isinstance(result, UnionMeta):
+                index[~is_na] = result.index
+            else:
+                index[~is_na] = result
+
+            # TODO: from_types must accept optional index
+            return Union.from_types(LinkedSet((result, NullType)), rle_encode(index))
+
+    return result
+
+
+def detect_elementwise(data: Any, data_type: type, drop_na: bool) -> META:
+    """TODO"""
+    raise NotImplementedError()
+
+
+def rle_encode(arr: OBJECT_ARRAY) -> RLE_ARRAY:  # type: ignore
+    """TODO"""
+    # get indices where transitions occur
+    idx = np.flatnonzero(arr[:-1] != arr[1:])
+    idx = np.concatenate([[0], idx + 1, [arr.shape[0]]])
+
+    # get values at each transition
+    values = arr[idx[:-1]]
+
+    # compute run lengths as difference between transition indices
+    counts = np.diff(idx)
+
+    # encode as structured array
+    return np.array(
+        list(zip(values, counts)),
+        dtype=[("value", arr.dtype), ("count", np.intp)]
+    )
+
+
+def rle_decode(arr: RLE_ARRAY) -> OBJECT_ARRAY:
+    """TODO"""
+    return np.repeat(arr["value"], arr["count"])  # type: ignore
 
 
 ############################
 ####    SCALAR TYPES    ####
 ############################
-
-
-def format_dict(d: dict[str, Any]) -> str:
-    """Convert a dictionary into a string with standard indentation."""
-    if not d:
-        return "{}"
-
-    prefix = "{\n    "
-    sep = ",\n    "
-    suffix = "\n}"
-    return prefix + sep.join(f"{k}: {repr(v)}" for k, v in d.items()) + suffix
-
-
-def identity(value: Any, namespace: dict[str, Any], processed: dict[str, Any]) -> Any:
-    """Simple identity function used to validate required arguments that do not
-    have any type hints.
-    """
-    if value is Ellipsis:
-        raise TypeError("missing required field")
-    return value
-
-
-def explode_children(t: TypeMeta, result: LinkedSet[TypeMeta]) -> None:  # lol
-    """Explode a type's hierarchy into a flat list containing all of its subtypes and
-    implementations.
-    """
-    result.add(t)
-    for sub in t.subtypes:
-        explode_children(sub, result)
-    for impl in t.implementations:
-        explode_children(impl, result)
-
-
-def explode_leaves(t: TypeMeta, result: LinkedSet[TypeMeta]) -> None:
-    """Explode a type's hierarchy into a flat list of concrete leaf types."""
-    if t.is_leaf:
-        result.add(t)
-    for sub in t.subtypes:
-        explode_leaves(sub, result)
-    for impl in t.implementations:
-        explode_leaves(impl, result)
-
-
-def features(t: TypeMeta) -> tuple[Any, ...]:
-    """Extract a tuple of features representing the allowable range of a type, used for
-    range-based sorting and comparison.
-    """
-    return (
-        t.max - t.min,  # total range
-        t.itemsize,  # memory footprint
-        t.is_nullable,  # nullability
-        abs(t.max + t.min),  # bias away from zero
-    )
 
 
 class TypeMeta(type):
@@ -1101,16 +1152,22 @@ class TypeMeta(type):
         return cls.as_default(*args, **kwargs)
 
     def __instancecheck__(cls, other: Any) -> bool:
-        return cls.__subclasscheck__(cls.registry.detect(other))
+        typ = detect(other)
 
-    def __subclasscheck__(cls, other: type) -> bool:
+        # pylint: disable=no-value-for-parameter
+        if isinstance(typ, dict):
+            return all(cls.__subclasscheck__(t) for t in typ.values())
+        return cls.__subclasscheck__(typ)
+
+    def __subclasscheck__(cls, other: TYPESPEC) -> bool:
         check = super().__subclasscheck__
         typ = resolve(other)
         if isinstance(typ, UnionMeta):
             return all(check(t) for t in typ)
         return check(typ)
 
-    def __contains__(cls, other: type | Any) -> bool:
+    def __contains__(cls, other: Any | TYPESPEC) -> bool:
+        # pylint: disable=no-value-for-parameter
         if (
             isinstance(other, type) or
             isinstance(other, (np.dtype, pd.api.extensions.ExtensionDtype)) or
@@ -1128,45 +1185,126 @@ class TypeMeta(type):
     def __bool__(cls) -> bool:
         return True  # without this, Python defaults to len() > 0, which is wrong
 
-    # TODO: comparisons should resolve() the input and then proceed as normal.  That
-    # way we could write Int | "i8" or Union["int", "datetime", str, np.dtype("M8[ns]")]
+    # TODO: reverse versions to allow for ["int16", "int32"] | Int64 ?
 
-    def __or__(cls, other: META | Iterable[META]) -> UnionMeta:  # type: ignore
-        if isinstance(other, (TypeMeta, DecoratorMeta)):
-            return Union.from_types(LinkedSet((cls, other)))
+    def __or__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:  # type: ignore
+        try:
+            typ = resolve(other)
+        except TypeError:
+            return NotImplemented
+
+        if isinstance(typ, (TypeMeta, DecoratorMeta)):
+            return Union.from_types(LinkedSet((cls, typ)))
 
         result = LinkedSet((cls,))
-        result.update(other)
+        result.update(typ)
         return Union.from_types(result)
 
-    def __and__(cls, other: META | Iterable[META]) -> UnionMeta:
-        return Union.from_types(LinkedSet((cls,))) & other
+    def __and__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
+        try:
+            typ = resolve(other)
+        except TypeError:
+            return NotImplemented
 
-    def __sub__(cls, other: META | Iterable[META]) -> UnionMeta:
-        return Union.from_types(LinkedSet((cls,))) - other
+        return Union.from_types(LinkedSet((cls,))) & typ
 
-    def __xor__(cls, other: META | Iterable[META]) -> UnionMeta:
-        return Union.from_types(LinkedSet((cls,))) ^ other
+    def __sub__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
+        try:
+            typ = resolve(other)
+        except TypeError:
+            return NotImplemented
 
-    # TODO: __lt__ should be able to take decorators and unions as well as regular types
+        return Union.from_types(LinkedSet((cls,))) - typ
 
-    def __lt__(cls, other: TypeMeta) -> bool:
-        return cls is not other and features(cls) < features(other)
+    def __xor__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
+        try:
+            typ = resolve(other)
+        except TypeError:
+            return NotImplemented
 
-    def __le__(cls, other: TypeMeta) -> bool:
-        return cls is other or features(cls) <= features(other)
+        return Union.from_types(LinkedSet((cls,))) ^ typ
+
+    def __lt__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        typ = resolve(other)
+        if cls is typ:
+            return False
+
+        if isinstance(typ, UnionMeta):
+            return all(cls < t for t in typ)
+
+        if (cls, typ) in REGISTRY.comparison_overrides:
+            return True
+        if (typ, cls) in REGISTRY.comparison_overrides:
+            return False
+
+        return features(cls) < features(typ)
+
+    def __le__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        typ = resolve(other)
+        if cls is typ:
+            return True
+
+        if isinstance(typ, UnionMeta):
+            return all(cls <= t for t in typ)
+
+        if (cls, typ) in REGISTRY.comparison_overrides:
+            return True
+        if (typ, cls) in REGISTRY.comparison_overrides:
+            return False
+
+        return features(cls) <= features(typ)
 
     def __eq__(cls, other: Any) -> bool:
-        return cls is other or features(cls) == features(other)
+        try:
+            typ = resolve(other)
+        except TypeError:
+            return False
+
+        if cls is typ:
+            return True
+
+        if isinstance(typ, UnionMeta):
+            return all(cls < t for t in typ)
+
+        if (cls, typ) in REGISTRY.comparison_overrides:
+            return False
+        if (typ, cls) in REGISTRY.comparison_overrides:
+            return False
+
+        return features(cls) == features(typ)
 
     def __ne__(cls, other: Any) -> bool:
-        return cls is not other and features(cls) != features(other)
+        return not cls == other
 
-    def __ge__(cls, other: TypeMeta) -> bool:
-        return cls is other or features(cls) >= features(other)
+    def __ge__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        typ = resolve(other)
+        if cls is typ:
+            return True
 
-    def __gt__(cls, other: TypeMeta) -> bool:
-        return cls is not other and features(cls) > features(other)
+        if isinstance(typ, UnionMeta):
+            return all(cls >= t for t in typ)
+
+        if (cls, typ) in REGISTRY.comparison_overrides:
+            return False
+        if (typ, cls) in REGISTRY.comparison_overrides:
+            return True
+
+        return features(cls) >= features(typ)
+
+    def __gt__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        typ = resolve(other)
+        if cls is typ:
+            return False
+
+        if isinstance(typ, UnionMeta):
+            return all(cls > t for t in typ)
+
+        if (cls, typ) in REGISTRY.comparison_overrides:
+            return False
+        if (typ, cls) in REGISTRY.comparison_overrides:
+            return True
+
+        return features(cls) > features(typ)
 
     def __str__(cls) -> str:
         return cls._slug
@@ -1541,45 +1679,62 @@ class ConcreteBuilder(TypeBuilder):
             )
 
 
+def format_dict(d: dict[str, Any]) -> str:
+    """Convert a dictionary into a string with standard indentation."""
+    if not d:
+        return "{}"
+
+    prefix = "{\n    "
+    sep = ",\n    "
+    suffix = "\n}"
+    return prefix + sep.join(f"{k}: {repr(v)}" for k, v in d.items()) + suffix
+
+
+def identity(value: Any, namespace: dict[str, Any], processed: dict[str, Any]) -> Any:
+    """Simple identity function used to validate required arguments that do not
+    have any type hints.
+    """
+    if value is Ellipsis:
+        raise TypeError("missing required field")
+    return value
+
+
+def explode_children(t: TypeMeta, result: LinkedSet[TypeMeta]) -> None:  # lol
+    """Explode a type's hierarchy into a flat list containing all of its subtypes and
+    implementations.
+    """
+    result.add(t)
+    for sub in t.subtypes:
+        explode_children(sub, result)
+    for impl in t.implementations:
+        explode_children(impl, result)
+
+
+def explode_leaves(t: TypeMeta, result: LinkedSet[TypeMeta]) -> None:
+    """Explode a type's hierarchy into a flat list of concrete leaf types."""
+    if t.is_leaf:
+        result.add(t)
+    for sub in t.subtypes:
+        explode_leaves(sub, result)
+    for impl in t.implementations:
+        explode_leaves(impl, result)
+
+
+def features(t: TypeMeta | DecoratorMeta) -> tuple[int | float, int, bool, int]:
+    """Extract a tuple of features representing the allowable range of a type, used for
+    range-based sorting and comparison.
+    """
+    return (
+        t.max - t.min,  # total range
+        t.itemsize,  # memory footprint
+        t.is_nullable,  # nullability
+        abs(t.max + t.min),  # bias away from zero
+    )
+
+
 ###############################
 ####    DECORATOR TYPES    ####
 ###############################
-
-
-def insort_decorator(
-    invoke: Callable[..., DecoratorMeta],
-    cls: DecoratorMeta,
-    other: TypeMeta | DecoratorMeta,
-    *args: Any,
-) -> DecoratorMeta:
-    """Insert a decorator into a type's decorator stack, ensuring that it obeys the
-    registry's current precedence.
-    """
-    # TODO: use replace() rather than reimplementing it here
-    visited = []
-    curr: DecoratorMeta | TypeMeta = other
-    wrapped = curr.wrapped
-    while wrapped:
-        wrapper = curr.wrapper
-        delta = REGISTRY.decorator_precedence.distance(cls, wrapper)
-
-        if delta > 0:  # cls is higher priority or identical to wrapper
-            break
-        elif delta == 0:  # cls is identical to wrapper
-            curr = wrapped
-            break
-
-        visited.append((wrapper, list(curr.params.values())[1:]))
-        curr = wrapped
-        wrapped = curr.wrapped
-
-    result = invoke(cls, curr, *args)
-    for wrapper, params in reversed(visited):
-        if not params:
-            result = wrapper[result]
-        else:
-            result = wrapper[result, *params]
-    return result
 
 
 class DecoratorMeta(type):
@@ -2338,6 +2493,42 @@ class DecoratorBuilder(TypeBuilder):
                 )
 
 
+def insort_decorator(
+    invoke: Callable[..., DecoratorMeta],
+    cls: DecoratorMeta,
+    other: TypeMeta | DecoratorMeta,
+    *args: Any,
+) -> DecoratorMeta:
+    """Insert a decorator into a type's decorator stack, ensuring that it obeys the
+    registry's current precedence.
+    """
+    # TODO: use replace() rather than reimplementing it here
+    visited = []
+    curr: DecoratorMeta | TypeMeta = other
+    wrapped = curr.wrapped
+    while wrapped:
+        wrapper = curr.wrapper
+        delta = REGISTRY.decorator_precedence.distance(cls, wrapper)
+
+        if delta > 0:  # cls is higher priority or identical to wrapper
+            break
+        elif delta == 0:  # cls is identical to wrapper
+            curr = wrapped
+            break
+
+        visited.append((wrapper, list(curr.params.values())[1:]))
+        curr = wrapped
+        wrapped = curr.wrapped
+
+    result = invoke(cls, curr, *args)
+    for wrapper, params in reversed(visited):
+        if not params:
+            result = wrapper[result]
+        else:
+            result = wrapper[result, *params]
+    return result
+
+
 ###########################
 ####    UNION TYPES    ####
 ###########################
@@ -2388,15 +2579,6 @@ class DecoratorBuilder(TypeBuilder):
 # TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
 # >>> quit()
 # Segmentation fault
-
-
-def union_getitem(cls: UnionMeta, key: int | slice) -> TypeMeta | DecoratorMeta | UnionMeta:
-    """A parametrized replacement for the base Union's __class_getitem__() method that
-    allows for integer-based indexing/slicing of a union's types.
-    """
-    if isinstance(key, slice):
-        return cls.from_types(cls._types[key])
-    return cls._types[key]
 
 
 class UnionMeta(type):
@@ -2771,6 +2953,15 @@ class Union(metaclass=UnionMeta):
         raise TypeError(
             f"Union types must be instantiated with a bertrand type, not {repr(val)}"
         )
+
+
+def union_getitem(cls: UnionMeta, key: int | slice) -> TypeMeta | DecoratorMeta | UnionMeta:
+    """A parametrized replacement for the base Union's __class_getitem__() method that
+    allows for integer-based indexing/slicing of a union's types.
+    """
+    if isinstance(key, slice):
+        return cls.from_types(cls._types[key])  # type: ignore
+    return cls._types[key]  # type: ignore
 
 
 ##########################
