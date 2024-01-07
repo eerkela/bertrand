@@ -3029,17 +3029,11 @@ class Union(metaclass=UnionMeta):
     def __new__(cls) -> NoReturn:
         raise TypeError("bertrand unions cannot be instantiated")
 
-    def __class_getitem__(cls, val: META | tuple[META, ...]) -> UnionMeta:
-        if isinstance(val, (TypeMeta, DecoratorMeta)):
-            return cls.from_types(LinkedSet((val,)))
-        if isinstance(val, UnionMeta):
-            return val
-        if isinstance(val, tuple):
-            return cls.from_types(LinkedSet(val))
-
-        raise TypeError(
-            f"Union types must be instantiated with a bertrand type, not {repr(val)}"
-        )
+    def __class_getitem__(cls, val: TYPESPEC | tuple[TYPESPEC, ...]) -> UnionMeta:
+        typ = resolve(val)
+        if isinstance(typ, UnionMeta):
+            return typ
+        return cls.from_types(LinkedSet((typ,)))
 
 
 def union_getitem(cls: UnionMeta, key: int | slice) -> TypeMeta | DecoratorMeta | UnionMeta:
