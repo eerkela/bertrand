@@ -58,6 +58,10 @@ RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]  # 
 # syntax for declaring them, then it's easier to document and use.
 
 
+# TODO: it might be generally easier if the cases where None is returned (i.e. parent,
+# etc.) returned a self reference to the type they were called on.
+
+
 class DecoratorPrecedence:
     """A linked set representing the priority given to each decorator in the type
     system.
@@ -586,6 +590,9 @@ REGISTRY = TypeRegistry()
 
 def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
     """TODO"""
+    # TODO: case for slices and iterables of slices.  These would yield a structured
+    # union with the given column names and type objects.
+
     if isinstance(target, (TypeMeta, DecoratorMeta, UnionMeta)):
         return target
 
@@ -622,7 +629,14 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         return process_string(matches[0])
 
     if hasattr(target, "__iter__"):
-        result = LinkedSet(resolve(t) for t in target)  # type: ignore
+        result = LinkedSet()  # type: ignore
+        for t in target:
+            typ = resolve(t)
+            if isinstance(typ, UnionMeta):
+                result.update(typ)
+            else:
+                result.add(typ)
+
         if len(result) == 1:
             return result[0]
         return Union.from_types(result)
@@ -2694,19 +2708,48 @@ class UnionMeta(type):
             raise TypeError("Union must not inherit from anything")
 
         return super().__new__(mcs, name, bases, namespace | {
+            "_columns": None,
             "_types": LinkedSet(),
             "_hash": 42,
             "_index": None,
         })
 
-    def from_types(cls, types: LinkedSet[TypeMeta], index: RLE_ARRAY | None = None) -> UnionMeta:
+    def from_types(
+        cls,
+        types: LinkedSet[TypeMeta | DecoratorMeta],
+        index: RLE_ARRAY | None = None
+    ) -> UnionMeta:
         """TODO"""
-        hash_val = 42  # to avoid collisions at hash=0
+        hash_val = 42  # to avoid potential collisions at hash=0
         for t in types:
-            hash_val = (hash_val * 31 + hash(t)) % (2**63 - 1)  # TODO: mod not necessary in C++
+            hash_val = (hash_val * 31 + hash(t)) % (2**63 - 1)
 
         return super().__new__(UnionMeta, cls.__name__, (cls,), {
+            "_columns": None,
             "_types": types,
+            "_hash": hash_val,
+            "_index": index,
+            "__class_getitem__": union_getitem
+        })
+
+    def from_columns(
+        cls,
+        columns: dict[str, META],
+        index: RLE_ARRAY | None = None
+    ) -> UnionMeta:
+        """TODO"""
+        flattened = LinkedSet()
+        hash_val = 42
+        for k, v in columns.items():
+            if not isinstance(k, str):
+                raise TypeError("column names must be strings")
+            hash_val = (hash_val * 31 + hash(k)) % (2**63 - 1)
+            hash_val = (hash_val * 31 + hash(v)) % (2**63 - 1)
+            flattened.add(v)
+
+        return super().__new__(UnionMeta, cls.__name__, (cls,), {
+            "_columns": columns,
+            "_types": flattened,
             "_hash": hash_val,
             "_index": index,
             "__class_getitem__": union_getitem
@@ -2717,6 +2760,11 @@ class UnionMeta(type):
     ################################
 
     @property
+    def is_structured(cls) -> bool:
+        """TODO"""
+        return cls._columns is not None
+
+    @property
     def index(cls) -> OBJECT_ARRAY | None:
         """A 1D numpy array containing the observed type at every index of an iterable
         passed to `bertrand.detect()`.  This is stored internally as a run-length
@@ -2725,10 +2773,21 @@ class UnionMeta(type):
         """
         if cls._index is None:
             return None
+
+        if cls.is_structured:
+            raise NotImplementedError(
+                "return a structured array containing type index of every column"
+            )
+
         return rle_decode(cls._index)
 
     def collapse(cls) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError(
+                "collapse each column independently and return as structured union"
+            )
+
         result = LinkedSet()
         for t in cls:
             if not any(t is not other and t in other for other in cls):
@@ -2742,21 +2801,32 @@ class UnionMeta(type):
     @property
     def as_default(cls) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError("return a structured union of default types")
+
         return cls.from_types(LinkedSet(t.as_default for t in cls))
 
     @property
     def as_nullable(cls) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError("return a structured union of nullable types")
+
         return cls.from_types(LinkedSet(t.as_nullable for t in cls))
 
     @property
     def root(cls) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError("return a structured union of root types")
         return cls.from_types(LinkedSet(t.root for t in cls))
 
     @property
     def parent(cls) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError("return a structured union of parent types")
+
         result = LinkedSet()
         for t in cls:
             result.add(t.parent if t.parent else t)
@@ -2765,6 +2835,11 @@ class UnionMeta(type):
     @property
     def subtypes(cls) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError(
+                "return a structured union of unstructured subtypes"
+            )
+
         result = LinkedSet()
         for t in cls:
             result.update(t.subtypes)
@@ -2773,6 +2848,11 @@ class UnionMeta(type):
     @property
     def implementations(cls) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError(
+                "return a structured union of unstructured implementations"
+            )
+
         result = LinkedSet()
         for t in cls:
             result.update(t.implementations)
@@ -2781,6 +2861,11 @@ class UnionMeta(type):
     @property
     def children(cls) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError(
+                "return a structured union of unstructured children"
+            )
+
         result = LinkedSet()
         for t in cls:
             result.update(t.children)
@@ -2789,6 +2874,11 @@ class UnionMeta(type):
     @property
     def leaves(cls) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError(
+                "return a structured union of unstructured leaves"
+            )
+
         result = LinkedSet()
         for t in cls:
             result.update(t.leaves)
@@ -2797,6 +2887,11 @@ class UnionMeta(type):
     @property
     def larger(cls) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError(
+                "return a structured union of unstructured larger types"
+            )
+
         result = LinkedSet()
         for t in cls:
             result.update(t.larger)
@@ -2805,6 +2900,11 @@ class UnionMeta(type):
     @property
     def smaller(cls) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError(
+                "return a structured union of unstructured smaller types"
+            )
+
         result = LinkedSet()
         for t in cls:
             result.update(t.smaller)
@@ -2813,6 +2913,11 @@ class UnionMeta(type):
     @property
     def decorators(cls) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError(
+                "return a structured union of unstructured decorators"
+            )
+
         result = LinkedSet()
         for t in cls:
             result.update(t.decorators)
@@ -2821,19 +2926,31 @@ class UnionMeta(type):
     @property
     def wrapper(cls) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError("return a structured union of wrappers")
+
         return cls.from_types(LinkedSet(t.wrapper for t in cls))
 
     @property
     def wrapped(cls) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError("return a structured union of wrapped types")
+
         return cls.from_types(LinkedSet(t.wrapped for t in cls))
 
     @property
     def unwrapped(cls) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError("return a structured union of unwrapped types")
+
         return cls.from_types(LinkedSet(t.unwrapped for t in cls))
 
     def __getattr__(cls, name: str) -> dict[TypeMeta, Any]:
+        if cls.is_structured:
+            raise NotImplementedError("return a dict of dicts?  Or flatten?")
+
         types = super().__getattribute__("_types")
         return {t: getattr(t, name) for t in types}
 
@@ -2842,6 +2959,9 @@ class UnionMeta(type):
 
     def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any]:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError("return a dataframe with the given columns, data")
+
         for t in cls:
             try:
                 return t(*args, **kwargs)
@@ -2851,18 +2971,25 @@ class UnionMeta(type):
         raise TypeError(f"cannot convert to union type: {repr(cls)}")
 
     def __instancecheck__(cls, other: Any) -> bool:
+        if cls.is_structured:
+            raise NotImplementedError("check every column of a dataframe")
+
         return any(isinstance(other, t) for t in cls)
 
     def __subclasscheck__(cls, other: type) -> bool:
+        if cls.is_structured:
+            raise NotImplementedError("ensure other is a structured union and check every column")
+
         check = lambda o: any(issubclass(o, t) for t in cls)
         if isinstance(other, UnionMeta):
             return all(check(o) for o in other)
         return check(other)
 
     def __contains__(cls, other: type | Any) -> bool:
-        if isinstance(other, type):
+        try:
             return cls.__subclasscheck__(other)
-        return cls.__instancecheck__(other)
+        except TypeError:
+            return cls.__instancecheck__(other)
 
     #############################
     ####    UNION METHODS    ####
@@ -2870,6 +2997,9 @@ class UnionMeta(type):
 
     def replace(cls, *args: Any, **kwargs: Any) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError("not even sure what to do here")
+
         return Union.from_types(
             LinkedSet(t.replace(*args, **kwargs) for t in cls)
         )
@@ -2881,6 +3011,9 @@ class UnionMeta(type):
         reverse: bool = False
     ) -> UnionMeta:
         """TODO"""
+        if cls.is_structured:
+            raise NotImplementedError("sort each column independently")
+
         result = cls._types.copy()
         result.sort(key=key, reverse=reverse)
         return cls.from_types(result)
@@ -2890,18 +3023,26 @@ class UnionMeta(type):
     ###############################
 
     def __hash__(cls) -> int:
+        # TODO: account for column names during hashing?
         return cls._hash
 
     def __len__(cls) -> int:
+        # TODO: for structured unions, the number of columns.  For unstructured, number
+        # of types.
         return len(cls._types)
 
     def __iter__(cls) -> Iterator[TypeMeta | DecoratorMeta]:
+        # TODO: yield key-value pairs?
         return iter(cls._types)
 
     def __reversed__(cls) -> Iterator[TypeMeta | DecoratorMeta]:
+        # TODO: yield key-value pairs?
         return reversed(cls._types)
 
     def __or__(cls, other: META | Iterable[META]) -> UnionMeta:  # type: ignore
+        if cls.is_structured:
+            raise NotImplementedError("add columns and/or adjust their contents")
+
         if isinstance(other, UnionMeta):
             result = cls._types | other._types
         elif isinstance(other, (TypeMeta, DecoratorMeta)):
@@ -2911,6 +3052,9 @@ class UnionMeta(type):
         return cls.from_types(result)
 
     def __and__(cls, other: META | Iterable[META]) -> UnionMeta:
+        if cls.is_structured:
+            raise NotImplementedError("remove columns and/or adjust their contents")
+
         if isinstance(other, UnionMeta):
             result = LinkedSet()
             for typ in cls._types | cls.children:
@@ -2929,6 +3073,9 @@ class UnionMeta(type):
         return cls.from_types(result).collapse()
 
     def __sub__(cls, other: META | Iterable[META]) -> UnionMeta:
+        if cls.is_structured:
+            raise NotImplementedError("remove columns and/or adjust their contents")
+
         if isinstance(other, UnionMeta):
             result = LinkedSet()
             for typ in cls._types | cls.children:
@@ -2947,6 +3094,9 @@ class UnionMeta(type):
         return cls.from_types(result).collapse()
 
     def __xor__(cls, other: META | Iterable[META]) -> UnionMeta:
+        if cls.is_structured:
+            raise NotImplementedError("add/remove columns and/or adjust their contents")
+
         if isinstance(other, UnionMeta):
             result = LinkedSet()
             for typ in cls._types | cls.children:
@@ -2971,6 +3121,14 @@ class UnionMeta(type):
         return cls.from_types(result).collapse()
 
     def __lt__(cls, other: META | Iterable[META]) -> bool:
+        if other is cls:
+            return False
+
+        if cls.is_structured:
+            raise NotImplementedError(
+                "if other is also structured, compare shared columns, else broadcast"
+            )
+
         if isinstance(other, (TypeMeta, DecoratorMeta)):
             other = cls.from_types(LinkedSet([other]))
         elif not isinstance(other, UnionMeta):
@@ -2982,6 +3140,11 @@ class UnionMeta(type):
         if other is cls:
             return True
 
+        if cls.is_structured:
+            raise NotImplementedError(
+                "if other is also structured, compare shared columns, else broadcast"
+            )
+
         if isinstance(other, (TypeMeta, DecoratorMeta)):
             other = cls.from_types(LinkedSet([other]))
         elif not isinstance(other, UnionMeta):
@@ -2990,12 +3153,16 @@ class UnionMeta(type):
         return all(t in other for t in cls._types) and len(cls) <= len(other)
 
     def __eq__(cls, other: Any) -> bool:
-        if isinstance(other, UnionMeta):
-            return (
-                cls is other or
-                len(cls) == len(other) and
-                all(t is u for t, u in zip(cls, other))
+        if cls.is_structured:
+            raise NotImplementedError(
+                "if other is also structured, compare shared columns, else broadcast"
             )
+
+        if isinstance(other, UnionMeta):
+            if other is cls:
+                return True
+
+            return (len(cls) == len(other) and all(t is u for t, u in zip(cls, other)))
 
         if isinstance(other, (TypeMeta, DecoratorMeta)):
             return len(cls) == 1 and cls._types[0] is other
@@ -3006,19 +3173,41 @@ class UnionMeta(type):
         return not cls == other
 
     def __ge__(cls, other: META | Iterable[META]) -> bool:
+        if other is cls:
+            return True
+
+        if cls.is_structured:
+            raise NotImplementedError(
+                "if other is also structured, compare shared columns, else broadcast"
+            )
+
         if not isinstance(other, (TypeMeta, UnionMeta)):
             other = cls.from_types(other)
         return cls.children._types >= other.children._types
 
     def __gt__(cls, other: META | Iterable[META]) -> bool:
+        if other is cls:
+            return False
+
+        if cls.is_structured:
+            raise NotImplementedError(
+                "if other is also structured, compare shared columns, else broadcast"
+            )
+
         if not isinstance(other, (TypeMeta, UnionMeta)):
             other = cls.from_types(other)
         return cls.children._types > other.children._types
 
     def __str__(cls) -> str:
+        if cls.is_structured:
+            raise NotImplementedError("return a dictlike string representation")
+
         return f"{' | '.join(t.slug for t in cls._types)}"
 
     def __repr__(cls) -> str:
+        if cls.is_structured:
+            raise NotImplementedError("return a dictlike string representation")
+
         return f"Union[{', '.join(t.slug for t in cls._types)}]"
 
 
@@ -3030,10 +3219,17 @@ class Union(metaclass=UnionMeta):
         raise TypeError("bertrand unions cannot be instantiated")
 
     def __class_getitem__(cls, val: TYPESPEC | tuple[TYPESPEC, ...]) -> UnionMeta:
+        # print(val)
         typ = resolve(val)
         if isinstance(typ, UnionMeta):
             return typ
         return cls.from_types(LinkedSet((typ,)))
+
+    # TODO: support slice syntax for declaring structured unions?
+    # >>> Union["foo": Int32, "bar": Int8 | Int16]
+    # perhaps this creates a normal union, but records the groups for later use.
+    # it would behave the same, but could be used to create a structured array.
+    # call .structured to get a dict of column names to their types.
 
 
 def union_getitem(cls: UnionMeta, key: int | slice) -> TypeMeta | DecoratorMeta | UnionMeta:
