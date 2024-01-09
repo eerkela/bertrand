@@ -602,7 +602,25 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
             return REGISTRY.types[target]
         return ObjectType[target]
 
-    if isinstance(target, (np.dtype, pd.api.extensions.ExtensionDtype)):
+    if isinstance(target, np.dtype):
+        if target.fields:
+            result = {}
+            for col, (dtype, _) in target.fields.items():
+                typ = REGISTRY.dtypes.get(type(dtype), None)
+                if typ is None:
+                    raise TypeError(f"unrecognized dtype -> {repr(col)}: {repr(dtype)}")
+                # TODO: typ._defines_from_dtype?
+                result[col] = typ.from_dtype(dtype)
+
+            return Union.from_columns(result)
+
+        typ = REGISTRY.dtypes.get(type(target), None)
+        if typ is None:
+            raise TypeError(f"unrecognized dtype -> {repr(target)}")
+        # TODO: typ._defines_from_dtype?
+        return typ.from_dtype(target)
+
+    if isinstance(target, pd.api.extensions.ExtensionDtype):
         # if isinstance(target, SyntheticDtype):
         #     return target._bertrand_type
 
@@ -629,7 +647,41 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
 
         return process_string(matches[0])
 
+    if isinstance(target, slice):
+        return Union.from_columns({
+            target.start: resolve(target.stop)
+        })
+
+    if isinstance(target, dict):
+        return Union.from_columns({
+            key: resolve(value) for key, value in target.items()
+        })
+
     if hasattr(target, "__iter__"):
+        it = iter(target)
+        first = next(it)
+
+        if isinstance(first, slice):
+            result = {first.start: resolve(first.stop)}
+            for item in it:
+                if not isinstance(item, slice):
+                    raise TypeError(f"expected a slice -> {repr(item)}")
+                result[item.start] = resolve(item.stop)
+
+            return Union.from_columns(result)
+
+        if isinstance(first, (list, tuple)):
+            if len(first) != 2:
+                raise TypeError(f"expected a tuple of length 2 -> {repr(first)}")
+
+            result = {first[0]: resolve(first[1])}
+            for item in it:
+                if not isinstance(item, (list, tuple)) or len(item) != 2:
+                    raise TypeError(f"expected a tuple of length 2 -> {repr(item)}")
+                result[item[0]] = resolve(item[1])
+
+            return Union.from_columns(result)
+
         result = LinkedSet()  # type: ignore
         for t in target:
             typ = resolve(t)
@@ -701,8 +753,7 @@ TOKEN = regex.compile(rf"{INVOCATION.pattern}|{SEQUENCE.pattern}|{LITERAL.patter
 ########################
 
 
-# TODO: can check whether a numpy array has a structured dtype by checking the dtype's
-# .fields attribute.
+# TODO: detect() always returns a union?  That way the index is always available.
 
 
 def detect(data: Any, drop_na: bool = True) -> META:
@@ -712,11 +763,15 @@ def detect(data: Any, drop_na: bool = True) -> META:
     if issubclass(data_type, (TypeMeta, DecoratorMeta, UnionMeta)):
         return data
 
-    if issubclass(data_type, pd.DataFrame):  # TODO: or a numpy array with a structured dtype
-        columnwise = {}
-        for col in data.columns:
-            columnwise[col] = detect(data[col], drop_na=drop_na)
-        return columnwise
+    if issubclass(data_type, pd.DataFrame):
+        return Union.from_columns({
+            col: detect_dtype(data[col], drop_na=drop_na) for col in data.columns
+        })
+
+    if issubclass(data_type, np.ndarray) and data.dtype.fields:
+        return Union.from_columns({
+            col: detect_dtype(data[col], drop_na=drop_na) for col in data.dtype.names
+        })
 
     if hasattr(data, "__iter__") and not isinstance(data, type):
         if data_type in REGISTRY.types:
@@ -2727,6 +2782,8 @@ class UnionMeta(type):
         """TODO"""
         hash_val = 42  # to avoid potential collisions at hash=0
         for t in types:
+            if not isinstance(t, (TypeMeta, DecoratorMeta)):
+                raise TypeError("union members must be bertrand types")
             hash_val = (hash_val * 31 + hash(t)) % (2**63 - 1)
 
         return super().__new__(UnionMeta, cls.__name__, (cls,), {
@@ -2737,9 +2794,6 @@ class UnionMeta(type):
             "__class_getitem__": union_getitem
         })
 
-    # TODO: columns dictionary should contain actual type objects, not LinkedSets.
-    # That simplifies the implementation of .index.
-
     def from_columns(cls, columns: dict[str, META]) -> UnionMeta:
         """TODO"""
         hash_val = 42
@@ -2747,11 +2801,13 @@ class UnionMeta(type):
         for k, v in columns.items():
             if not isinstance(k, str):
                 raise TypeError("column names must be strings")
-            hash_val = (hash_val * 31 + hash(k) + hash(v)) % (2**63 - 1)
             if isinstance(v, UnionMeta):
                 flattened.update(v)
-            else:
+            elif isinstance(v, (TypeMeta, DecoratorMeta)):
                 flattened.add(v)
+            else:
+                raise TypeError("column values must be bertrand types")
+            hash_val = (hash_val * 31 + hash(k) + hash(v)) % (2**63 - 1)
 
         return super().__new__(UnionMeta, cls.__name__, (cls,), {
             "_columns": columns,
@@ -2778,6 +2834,7 @@ class UnionMeta(type):
         full array when accessed.
         """
         if cls.is_structured:
+            breakpoint()
             indices = {
                 col: rle_decode(typ._index) for col, typ in cls.items()  # type: ignore
                 if isinstance(typ, UnionMeta) and typ._index is not None
@@ -3127,7 +3184,10 @@ class UnionMeta(type):
             if cls.is_structured and typ.is_structured:
                 result = cls._columns.copy()
                 for k, v in typ._columns.items():
-                    result.setdefault(k, LinkedSet()).update(v)
+                    if k in result:
+                        result[k] |= v
+                    else:
+                        result[k] = v
                 return cls.from_columns(result)  # type: ignore
 
             result = cls._types | typ  # type: ignore
