@@ -36,17 +36,6 @@ RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]  # 
 ####################
 
 
-# TODO: focus on getting normal and union types working solidly, then worry about
-# decorators.  These are more complicated, since they can be applied to any type, and
-# can be nested.  They also need to implement the same interface as normal types in a
-# fairly intuitive way, which is tricky to get right.
-# -> Also, flesh out TypeRegistry.  regex + comparison overrides.
-# -> Could go whole hog and implement resolve()/detect() as registry methods.  That way
-# we could tie them into type methods to approximate the final configuration.  We
-# could also get a rough estimate of the performance we can expect.
-# -> resolve()/detect() should be non-member methods for simplicity.
-
-
 # TODO: Union comparisons should do the same thing as normal types in order to follow
 # the composite pattern.  We would just add separate issubset(), issuperset(), and
 # isdisjoint() methods to the Union class.
@@ -61,6 +50,10 @@ RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]  # 
 
 # TODO: it might be generally easier if the cases where None is returned (i.e. parent,
 # etc.) returned a self reference to the type they were called on.
+
+
+# TODO: membership checks against the root Type or DecoratorType should return True for
+# all types.
 
 
 class DecoratorPrecedence:
@@ -179,11 +172,20 @@ class TypeRegistry:
 
     def __init__(self) -> None:
         self._regex = None
+        self._column = None
         self._resolvable = None
 
     #######################
     ####    ALIASES    ####
     #######################
+
+    # TODO: regex goes like this:
+    # regex matches single alias + optional params
+    # column matches optional column name + any number of |-separated regex matches
+    # resolvable matches any number of , or |-separated column matches
+
+    # resolve() checks resolvable, then extracts each column from the input.  Then,
+    # we split each column value using regex, and process each substring individually.
 
     @property
     def aliases(self) -> dict[type | str, TypeMeta | DecoratorMeta]:
@@ -203,8 +205,8 @@ class TypeRegistry:
                 escaped.sort(key=len, reverse=True)  # avoids partial matches
                 escaped.append(r"(?P<sized_unicode>U(?P<size>[0-9]*))$")  # U32, U...
                 pattern = (
-                    rf"(?P<type>{'|'.join(escaped)})"
-                    rf"(?P<nested>\[(?P<args>([^\[\]]|(?&nested))*)\])?"  # recursive args
+                    rf"(?P<alias>{'|'.join(escaped)})"  # alias
+                    rf"(?P<params>\[(?P<args>([^\[\]]|(?&params))*)\])?"  # recursive args
                 )
 
             self._regex = regex.compile(pattern)
@@ -212,17 +214,22 @@ class TypeRegistry:
         return self._regex
 
     @property
+    def column(self) -> regex.Pattern:
+        """TODO"""
+        if self._column is None:
+            self._column = regex.compile(
+                rf"((?P<column>[^\(\)\[\]:,]+)\s*:\s*)?"  # optional column name
+                rf"(?P<type>{self.regex.pattern}(\s*[|]\s*(?&type))*)"  # any number of | separated types
+            )
+        return self._column
+
+    @property
     def resolvable(self) -> regex.Pattern:
         """TODO"""
         if self._resolvable is None:
-            # match any number of comma-separated identifiers
-            pattern = rf"(?P<atomic>{self.regex.pattern})(\s*[,|]\s*(?&atomic))*"
-
-            # ignore optional prefix/suffix if given
-            pattern = rf"(Union\[)?(?P<body>{pattern})(\])?"
-
-            self._resolvable = regex.compile(pattern)
-
+            self._resolvable = regex.compile(
+                rf"(?P<atom>{self.column.pattern}(\s*[,]\s*(?&atom))*)"  # any number of , separated columns
+            )
         return self._resolvable
 
     def flush_regex(self) -> None:
@@ -620,23 +627,32 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         return resolve_dtype(target)
 
     if isinstance(target, str):
-        # TODO: allow slice syntax in string form
+        # strip leading/trailing whitespace and special syntax related to unions
         stripped = target.strip()
+        if stripped.startswith("Union[") and stripped.endswith("]"):
+            as_union = True
+            stripped = stripped[6:-1].strip()
+        elif stripped.startswith("[") and stripped.endswith("]"):
+            as_union = True
+            stripped = stripped[1:-1].strip()
+        elif stripped.startswith("(") and stripped.endswith(")"):
+            as_union = True
+            stripped = stripped[1:-1].strip()
+        elif stripped.startswith("{") and stripped.endswith("}"):
+            as_union = True
+            stripped = stripped[1:-1].strip()
+        else:
+            as_union = False
+
+        # ensure string can be resolved into a valid type
         fullmatch = REGISTRY.resolvable.fullmatch(stripped)
         if not fullmatch:
             raise TypeError(f"invalid specifier -> {repr(target)}")
-        matches = list(REGISTRY.regex.finditer(fullmatch.group("body")))
-        if len(matches) > 1:
-            result = LinkedSet(process_string(s) for s in matches)
-            if len(result) == 1:
-                return result[0]
-            return Union.from_types(result)
-        return process_string(matches[0])
+
+        return resolve_string(fullmatch.group(), as_union)
 
     if isinstance(target, slice):
-        return Union.from_columns({
-            target.start: resolve(target.stop)
-        })
+        return Union.from_columns({target.start: resolve(target.stop)})
 
     if isinstance(target, dict):
         return Union.from_columns({
@@ -697,33 +713,84 @@ def resolve_dtype(target: DTYPE) -> META:
     return typ
 
 
-def process_string(match: regex.Match) -> TypeMeta | DecoratorMeta | UnionMeta:
+def resolve_string(target: str, as_union: bool) -> META:
+    """TODO"""
+    # split into optional column specifiers -> 'column: type | type | ...'
+    matches = list(REGISTRY.column.finditer(target))
+
+    # resolve each specifier individually
+    columns: dict[str, META] = {}
+    flat = LinkedSet()
+    for match in matches:
+        col = match.group("column")
+        specifiers = list(REGISTRY.regex.finditer(match.group("type")))
+
+        # if column name is given, then add to columns dict
+        if col:
+            col = col.strip()
+            if (
+                (col.startswith("'") and col.endswith("'")) or
+                (col.startswith('"') and col.endswith('"'))
+            ):
+                col = col[1:-1].strip()
+
+            if col in columns:
+                raise TypeError(f"duplicate column name -> {repr(col)}")
+
+            if len(specifiers) > 1:
+                columns[col] = Union.from_types(LinkedSet(
+                    process_string(s) for s in specifiers
+                ))
+            else:
+                columns[col] = process_string(specifiers[0])
+
+        # otherwise, add to flat set
+        else:
+            flat.update(process_string(s) for s in specifiers)
+
+    # disallow mixed syntax
+    if columns and flat:
+        raise TypeError(
+            f"cannot mix structured and unstructured syntax -> {repr(target)}"
+        )
+
+    if columns:
+        return Union.from_columns(columns)
+
+    if len(flat) == 1 and not as_union:
+        return flat.pop()
+
+    return Union.from_types(flat)
+
+
+def process_string(match: regex.Match) -> META:
     """TODO"""
     groups = match.groupdict()
 
+    # resolve alias to specified type
     if groups.get("sized_unicode"):  # special case for U32, U{xx} syntax
         typ = StringType
     else:
-        typ = REGISTRY.strings[groups["type"]]
+        typ = REGISTRY.strings[groups["alias"]]
 
+    # check for optional arguments
     arguments = groups["args"]
     if not arguments:
         return typ
 
+    # extract args
     args = []
     for m in TOKEN.finditer(arguments):
-        substring = m.group()
+        substring = m.group().strip()
         if (
             (substring.startswith("'") and substring.endswith("'")) or
             (substring.startswith('"') and substring.endswith('"'))
         ):
-            substring = substring[1:-1]
+            substring = substring[1:-1].strip()
+        args.append(substring)
 
-        args.append(substring.strip())
-
-    if typ._defines_from_string:  # pylint: disable=protected-access
-        return typ.from_string(*args)
-    return typ
+    # pass to type's from_string() method
+    return typ.from_string(*args)
 
 
 def nested_expr(prefix: str, suffix: str, group_name: str) -> str:
@@ -942,7 +1009,6 @@ class TypeMeta(type):
     #   _flyweights: LinkedDict[str, TypeMeta]
     #   _defines_from_scalar: bool
     #   _defines_from_dtype: bool
-    #   _defines_from_string: bool
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -1288,12 +1354,7 @@ class TypeMeta(type):
         return cls.as_default(*args, **kwargs)
 
     def __instancecheck__(cls, other: Any) -> bool:
-        typ = detect(other)
-
-        # pylint: disable=no-value-for-parameter
-        if isinstance(typ, dict):
-            return all(cls.__subclasscheck__(t) for t in typ.values())
-        return cls.__subclasscheck__(typ)
+        return cls.__subclasscheck__(detect(other))
 
     def __subclasscheck__(cls, other: TYPESPEC) -> bool:
         typ = resolve(other)
@@ -1303,7 +1364,6 @@ class TypeMeta(type):
         return check(typ)
 
     def __contains__(cls, other: Any | TYPESPEC) -> bool:
-        # pylint: disable=no-value-for-parameter
         try:
             return cls.__subclasscheck__(other)
         except TypeError:
@@ -1601,7 +1661,6 @@ class AbstractBuilder(TypeBuilder):
 
             raise TypeError(f"invalid backend: {repr(backend)}")
 
-        self.namespace["_defines_from_string"] = False
         self.namespace["from_string"] = classmethod(default)
 
 
@@ -1823,14 +1882,11 @@ class ConcreteBuilder(TypeBuilder):
                 p.replace(annotation=p.empty, default=p.default) for p in params
             ])
 
-            self.namespace["_defines_from_string"] = True
-
         else:
             def default(cls: type) -> TypeMeta:
                 """Default to identity function."""
                 return cls  # type: ignore
 
-            self.namespace["_defines_from_string"] = False
             self.namespace["from_string"] = classmethod(default)
             sig = inspect.Signature([
                 inspect.Parameter("cls", inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -2749,8 +2805,8 @@ def insort_decorator(
 
 
 class UnionMeta(type):
-    """Metaclass for all composite bertrand types (those produced by Union[] or the
-    bitwise or operator).
+    """Metaclass for all composite bertrand types (those produced by Union[] or setlike
+    operators).
 
     This metaclass is responsible for delegating operations to the union's members, and
     is an example of the Gang of Four's `Composite Pattern
@@ -2942,7 +2998,7 @@ class UnionMeta(type):
             raise NotImplementedError("sort each column independently")
 
         result = cls._types.copy()
-        result.sort(key=key, reverse=reverse)
+        result.sort(key=key, reverse=reverse)  # type: ignore
         return cls.from_types(result)
 
     def keys(cls) -> KeysView[str]:
@@ -2951,7 +3007,7 @@ class UnionMeta(type):
 
     def values(cls) -> ValuesView[META]:
         """TODO"""
-        return cls._columns.values()  # TODO: currently yields LinkedSet, should yield types
+        return cls._columns.values()
 
     def items(cls) -> ItemsView[str, META]:
         """TODO"""
@@ -3088,7 +3144,6 @@ class UnionMeta(type):
             return cls.from_columns({
                 k: v.wrapper if v.wrapper else v for k, v in cls.items()
             })
-
         return cls.from_types(LinkedSet(t.wrapper for t in cls))
 
     @property
@@ -3098,7 +3153,6 @@ class UnionMeta(type):
             return cls.from_columns({
                 k: v.wrapped if v.wrapped else v for k, v in cls.items()
             })
-
         return cls.from_types(LinkedSet(t.wrapped for t in cls))
 
     @property
@@ -3106,18 +3160,25 @@ class UnionMeta(type):
         """TODO"""
         if cls.is_structured:
             return cls.from_columns({k: v.unwrapped for k, v in cls.items()})
-
         return cls.from_types(LinkedSet(t.unwrapped for t in cls))
 
     def __getattr__(cls, name: str) -> dict[TypeMeta | str, Any]:
         if cls.is_structured:
             return {k: getattr(v, name) for k, v in cls.items()}
-
-        types = super().__getattribute__("_types")
-        return {t: getattr(t, name) for t in types}
+        return {t: getattr(t, name) for t in super().__getattribute__("_types")}
 
     def __setattr__(cls, key: str, val: Any) -> NoReturn:
         raise TypeError("unions are immutable")
+
+    def __dir__(cls) -> set[str]:
+        result = set(super().__dir__())
+        result.update({
+            "is_structured", "index", "collapse", "issubset", "issuperset",
+            "isdisjoint", "sorted", "keys", "values", "items",
+        })
+        for t in cls:
+            result.update(dir(t))
+        return result
 
     def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any] | pd.DataFrame:
         """TODO"""
@@ -3138,6 +3199,9 @@ class UnionMeta(type):
                 continue
 
         raise TypeError(f"cannot convert to union type: {repr(cls)}")
+
+    # TODO: does it make sense to raise an error if isinstance() is used on a
+    # structured union and the input is not a DataFrame?
 
     def __instancecheck__(cls, other: Any) -> bool:
         if cls.is_structured:
@@ -3448,13 +3512,13 @@ class Union(metaclass=UnionMeta):
         return cls.from_types(LinkedSet((typ,)))
 
 
-def union_getitem(cls: UnionMeta, key: int | slice | str) -> TypeMeta | DecoratorMeta | UnionMeta:
+def union_getitem(cls: UnionMeta, key: int | slice | str) -> META:
     """A parametrized replacement for the base Union's __class_getitem__() method that
     allows for integer-based indexing/slicing of a union's types, as well as
     string-based indexing of structured unions.
     """
     if cls.is_structured and isinstance(key, str):
-        return cls._columns[key]  # type: ignore
+        return cls._columns[key]
 
     if isinstance(key, slice):
         return cls.from_types(cls._types[key])  # type: ignore
