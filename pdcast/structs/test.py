@@ -164,9 +164,10 @@ class TypeRegistry:
     decorator_precedence: DecoratorPrecedence = DecoratorPrecedence()
 
     def __init__(self) -> None:
-        self._regex = None
-        self._column = None
-        self._resolvable = None
+        self._regex: None | regex.Pattern = None
+        self._column: None | regex.Pattern = None
+        self._resolvable: None | regex.Pattern = None
+        self._na_strings: None | dict[str, Any] = None
 
     #######################
     ####    ALIASES    ####
@@ -217,10 +218,24 @@ class TypeRegistry:
             )
         return self._resolvable
 
+    # TODO: maybe na_strings could just be aliases of the Missing type?
+
+    @property
+    def na_strings(self) -> dict[str, Any]:
+        """TODO"""
+        if self._na_strings is None:
+            self._na_strings = {
+                str(t.missing): t.missing for t in self
+                if isinstance(t, TypeMeta) and t.is_nullable
+            }
+        return self._na_strings
+
     def refresh_regex(self) -> None:
         """TODO"""
         self._regex = None
+        self._column = None
         self._resolvable = None
+        self._na_strings = None
 
     ################################
     ####    GLOBAL ACCESSORS    ####
@@ -1840,8 +1855,8 @@ class ConcreteBuilder(TypeBuilder):
                 params[1].kind == params[1].POSITIONAL_OR_KEYWORD
             ):
                 raise TypeError(
-                    "from_dtype() must accept a single positional argument (in "
-                    "addition to cls)"
+                    "from_dtype() must accept a single positional argument in "
+                    "addition to cls"
                 )
 
             self.namespace["_defines_from_dtype"] = True
@@ -2593,11 +2608,14 @@ class DecoratorBuilder(TypeBuilder):
                     "addition to cls)"
                 )
 
+            self.namespace["_defines_from_scalar"] = True
+
         else:
             def default(cls: type, scalar: Any) -> TypeMeta:
                 """Default to identity function."""
                 return cls  # type: ignore
 
+            self.namespace["_defines_from_scalar"] = False
             self.namespace["from_scalar"] = classmethod(default)
 
     def from_dtype(self) -> None:
@@ -2616,15 +2634,18 @@ class DecoratorBuilder(TypeBuilder):
                 params[1].kind == params[1].POSITIONAL_OR_KEYWORD
             ):
                 raise TypeError(
-                    "from_dtype() must accept a single positional argument (in "
-                    "addition to cls)"
+                    "from_dtype() must accept a single positional argument in "
+                    "addition to cls"
                 )
+
+            self.namespace["_defines_from_dtype"] = True
 
         else:
             def default(cls: type, dtype: Any) -> TypeMeta:
                 """Default to identity function."""
                 return cls  # type: ignore
 
+            self.namespace["_defines_from_dtype"] = False
             self.namespace["from_dtype"] = classmethod(default)
 
     def from_string(self) -> None:
@@ -3986,26 +4007,6 @@ class PandasInt8(Int8, backend="pandas"):
 
 
 
-# TODO: nested sparse/categorical doesn't work unless levels are explicitly specified
-# >>> Sparse[Categorical[Int]]([1, 2, 3])
-# 0    1
-# 1    2
-# 2    3
-# dtype: category
-# Categories (3, int64): [1, 2, 3]
-# >>> Sparse[Categorical[Int, [1, 2, 3]]]([1, 2, 3])
-# 0    1
-# 1    2
-# 2    3
-# dtype: category
-# Categories (3, Sparse[int64, <NA>]): [1, 2, 3]
-
-
-# TODO: from_dtype() should pass in the whole array, not just the dtype.  That way we
-# can infer levels for categorical data, etc.  Actually it should pass the dtype
-# plus the array, so that it works as expected in both detect() and resolve().
-# -> builders can enforce this by requiring a second positional argument that defaults
-# to None.
 
 
 class Categorical(DecoratorType, cache_size=256):
@@ -4023,6 +4024,10 @@ class Categorical(DecoratorType, cache_size=256):
         if levels is EMPTY:
             slug_repr = levels
             dtype = pd.CategoricalDtype()  # NOTE: auto-detects levels when used
+            patch = wrapped
+            while not patch.is_default:
+                patch = patch.as_default
+            dtype._bertrand_wrapped_type = patch  # disambiguates wrapped type
         else:
             levels = wrapped(levels)
             slug_repr = list(levels)
@@ -4031,11 +4036,38 @@ class Categorical(DecoratorType, cache_size=256):
         return cls.flyweight(wrapped, slug_repr, dtype=dtype, levels=levels)
 
     @classmethod
+    def from_dtype(cls, dtype: pd.CategoricalDtype) -> DecoratorMeta:
+        """TODO"""
+        if dtype.categories is None:
+            if hasattr(dtype, "_bertrand_wrapped_type"):  # type: ignore
+                return cls[dtype._bertrand_wrapped_type]
+            return cls
+        return cls[resolve(dtype.categories.dtype), dtype.categories]
+
+    @classmethod
     def from_string(cls, wrapped: str, levels: str | Empty = EMPTY) -> DecoratorMeta:
         """TODO"""
-        typ = resolve(wrapped)
-        # TODO: parse fill_value
-        return cls[typ, levels]
+        if levels is EMPTY:
+            return cls[resolve(wrapped), levels]
+
+        if levels.startswith("[") and levels.endswith("]"):
+            stripped = levels[1:-1].strip()
+        elif levels.startswith("(") and levels.endswith(")"):
+            stripped = levels[1:-1].strip()
+        else:
+            raise TypeError(f"invalid levels: {repr(levels)}")
+
+        breakpoint()
+        return cls[resolve(wrapped), list(s.group() for s in TOKEN.finditer(stripped))]
+
+    @classmethod
+    def transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
+        """TODO"""
+        if cls.dtype.categories is None:
+            dtype = pd.CategoricalDtype(cls.wrapped(series.unique()))
+        else:
+            dtype = cls.dtype
+        return series.astype(dtype, copy=False)
 
 
 class Sparse(DecoratorType, cache_size=256):
@@ -4057,6 +4089,8 @@ class Sparse(DecoratorType, cache_size=256):
 
         if is_empty:
             fill = wrapped.missing
+        elif pd.isna(fill_value):
+            fill = fill_value
         else:
             fill = wrapped(fill_value)
             if len(fill) != 1:
@@ -4067,17 +4101,14 @@ class Sparse(DecoratorType, cache_size=256):
         return cls.flyweight(wrapped, fill, dtype=dtype, _is_empty=is_empty)
 
     @classmethod
-    def from_string(cls, wrapped: str, fill_value: str | Empty = EMPTY) -> DecoratorMeta:
-        """TODO"""
-        typ = resolve(wrapped)
-        # TODO: parse fill_value
-        return cls[typ, fill_value]
-
-    @classmethod
     def from_dtype(cls, dtype: pd.SparseDtype) -> DecoratorMeta:
         """TODO"""
-        print("hello, world!")
-        return super().from_dtype(dtype)
+        return cls[resolve(dtype.subtype), dtype.fill_value]
+
+    @classmethod
+    def from_string(cls, wrapped: str, fill_value: str | Empty = EMPTY) -> DecoratorMeta:
+        """TODO"""
+        return cls[resolve(wrapped), REGISTRY.na_strings.get(fill_value, fill_value)]
 
     @classmethod
     def replace(cls, *args: Any, **kwargs: Any) -> DecoratorMeta:
@@ -4099,8 +4130,3 @@ class Sparse(DecoratorType, cache_size=256):
 print("=" * 80)
 print(f"aliases: {REGISTRY.aliases}")
 print()
-
-
-
-def foo(a: Int32["numpy"] | Int64["pandas"]):
-    pass
