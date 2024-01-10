@@ -36,13 +36,6 @@ RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]  # 
 ####################
 
 
-# TODO: Union comparisons should do the same thing as normal types in order to follow
-# the composite pattern.  We would just add separate issubset(), issuperset(), and
-# isdisjoint() methods to the Union class.
-
-# Union[Int16 | Int32] < Int64 == True
-
-
 # TODO: metaclass throws error if any non-classmethods are implemented on type objects.
 # -> non-member functions are more explicit and flexible.  Plus, if there's only one
 # syntax for declaring them, then it's easier to document and use.
@@ -179,14 +172,6 @@ class TypeRegistry:
     ####    ALIASES    ####
     #######################
 
-    # TODO: regex goes like this:
-    # regex matches single alias + optional params
-    # column matches optional column name + any number of |-separated regex matches
-    # resolvable matches any number of , or |-separated column matches
-
-    # resolve() checks resolvable, then extracts each column from the input.  Then,
-    # we split each column value using regex, and process each substring individually.
-
     @property
     def aliases(self) -> dict[type | str, TypeMeta | DecoratorMeta]:
         """Unify the type, dtype, and string registries into a single dictionary.
@@ -232,7 +217,7 @@ class TypeRegistry:
             )
         return self._resolvable
 
-    def flush_regex(self) -> None:
+    def refresh_regex(self) -> None:
         """TODO"""
         self._regex = None
         self._resolvable = None
@@ -337,7 +322,7 @@ class Aliases:
                 raise TypeError(f"aliases must be unique: {repr(alias)}")
 
             if isinstance(alias, str):
-                REGISTRY.flush_regex()
+                REGISTRY.refresh_regex()
                 REGISTRY.strings[alias] = typ
             elif issubclass(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
                 REGISTRY.dtypes[alias] = typ
@@ -352,7 +337,7 @@ class Aliases:
             raise TypeError(f"aliases must be unique: {repr(alias)}")
 
         elif isinstance(alias, str):
-            REGISTRY.flush_regex()
+            REGISTRY.refresh_regex()
             REGISTRY.strings[alias] = self.parent
 
         elif isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
@@ -378,7 +363,7 @@ class Aliases:
 
         elif isinstance(alias, str):
             self.aliases.remove(alias)
-            REGISTRY.flush_regex()
+            REGISTRY.refresh_regex()
             del REGISTRY.strings[alias]
 
         elif isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
@@ -596,9 +581,18 @@ REGISTRY = TypeRegistry()
 #########################
 
 
+# TODO: it makes sense to modify aliases to match python syntax.  This would make it
+# trivial to parse python-style type hints.
+
+
 # TODO: register NoneType to Missing type, such that int | None resolves to
 # Union[PythonInt, Missing]
 # Same with None alias, which allows parsing of type hints with None as a type
+
+
+# NOTE: string parsing currently does not support dictionaries or key-value mappings
+# within Union[] specifiers (i.e. Union[{"foo": ...}], Union[[("foo", ...)]]).  This
+# would add a lot of complexity, but could be added in the future if there's a need.
 
 
 def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
@@ -1453,18 +1447,10 @@ class TypeMeta(type):
         except TypeError:
             return False
 
-        if cls is typ:
-            return True
-
         if isinstance(typ, UnionMeta):
-            return all(cls < t for t in typ)
+            return all(cls is t for t in typ)
 
-        if (cls, typ) in REGISTRY.comparison_overrides:
-            return False
-        if (typ, cls) in REGISTRY.comparison_overrides:
-            return False
-
-        return features(cls) == features(typ)
+        return cls is typ
 
     def __ne__(cls, other: Any) -> bool:
         return not cls == other
@@ -3200,9 +3186,6 @@ class UnionMeta(type):
 
         raise TypeError(f"cannot convert to union type: {repr(cls)}")
 
-    # TODO: does it make sense to raise an error if isinstance() is used on a
-    # structured union and the input is not a DataFrame?
-
     def __instancecheck__(cls, other: Any) -> bool:
         if cls.is_structured:
             if isinstance(other, pd.DataFrame):
@@ -3218,6 +3201,8 @@ class UnionMeta(type):
                     all(x == y for x, y in zip(cls._columns, other.dtype.names)) and
                     all(isinstance(other[x], y) for x, y in cls.items())
                 )
+
+            return False
 
         return any(isinstance(other, t) for t in cls)
 
@@ -3411,9 +3396,6 @@ class UnionMeta(type):
 
         return all(all(t <= u for u in typ) for t in cls)
 
-    # TODO: == should be more specific.  It should only return strict equality, rather
-    # than doing a range check.  This should be the same for TypeMeta and DecoratorMeta
-
     def __eq__(cls, other: Any) -> bool:
         try:
             typ = resolve(other)
@@ -3421,18 +3403,20 @@ class UnionMeta(type):
             return False
 
         if isinstance(typ, (TypeMeta, DecoratorMeta)):
-            return len(cls) == 1 and cls._types[0] == typ
-
-        # TODO: need to apply special logic for structured/unstructured unions.
+            return all(t is typ for t in cls)
 
         if cls.is_structured and typ.is_structured:
             for k, v in cls.items():
                 t = typ._columns.get(k, None)
                 if t is None:
                     raise TypeError(f"no match for column '{k}'")
-                if not v == t:
+                if v is not t:
                     return False
+
             return True
+
+        elif cls.is_structured or typ.is_structured:
+            return False
 
         return len(cls) == len(typ) and all(t is u for t, u in zip(cls, other))
 
