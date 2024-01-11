@@ -146,7 +146,7 @@ struct PyArgs<CallProtocol::ARGS> {
 
     inline void finalize() {
         if (arg_idx < n_args) {
-            throw extra_positional(this->name, n_args, arg_idx);
+            throw extra_positional(this->name, arg_idx, n_args);
         }
     }
 
@@ -213,7 +213,7 @@ struct PyArgs<CallProtocol::KWARGS> {
 
     inline void finalize_positional() {
         if (arg_idx < n_args) {
-            throw extra_positional(this->name, n_args, arg_idx);
+            throw extra_positional(this->name, arg_idx, n_args);
         }
     }
 
@@ -451,7 +451,7 @@ struct PyArgs<CallProtocol::FASTCALL> {
 
     inline void finalize() {
         if (arg_idx < n_args) {
-            throw extra_positional(this->name, n_args, arg_idx);
+            throw extra_positional(this->name, arg_idx, n_args);
         }
     }
 
@@ -553,7 +553,7 @@ struct PyArgs<CallProtocol::VECTORCALL> {
 
     inline void finalize_positional() {
         if (arg_idx < n_args) {
-            throw extra_positional(this->name, n_args, arg_idx);
+            throw extra_positional(this->name, arg_idx, n_args);
         }
     }
 

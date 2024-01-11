@@ -11,6 +11,7 @@
 #include <thread>  // std::thread
 #include <type_traits>  // std::is_same_v, std::is_base_of_v, std::enable_if_t, etc.
 #include <unordered_set>  // std::unordered_set
+#include "args.h"  // PyArgs, CallProtocol
 #include "except.h"  // throw_python()
 #include "string.h"  // PyName
 
@@ -869,7 +870,6 @@ public:
         PyThreadGuard& operator=(const PyThreadGuard&) = delete;
         PyThreadGuard& operator=(PyThreadGuard&&) = delete;
 
-        /* Enter the context manager's block, acquiring a new lock. */
         static PyObject* __enter__(PyThreadGuard* self, PyObject* /* ignored */) {
             if (self->has_guard) {
                 PyErr_SetString(
@@ -898,7 +898,6 @@ public:
             return Py_NewRef(self);
         }
 
-        /* Exit the context manager's block, releasing the lock. */
         inline static PyObject* __exit__(PyThreadGuard* self, PyObject* /* ignored */) {
             if (self->has_guard) {
                 self->guard.~GuardType();
@@ -907,9 +906,12 @@ public:
             Py_RETURN_NONE;
         }
 
-        /* Check if the lock is acquired. */
         inline static PyObject* active(PyThreadGuard* self, void* /* ignored */) {
             return PyBool_FromLong(self->has_guard);
+        }
+
+        inline static PyObject* is_shared(PyThreadGuard* self, void* /* ignored */) {
+            return PyBool_FromLong(Traits::mode == LockMode::SHARED);
         }
 
     private:
@@ -982,10 +984,21 @@ bool
 )doc"
             };
 
+            static constexpr std::string_view is_shared {R"doc(
+Check if the lock allows for concurrent reads.
+
+Returns
+-------
+bool
+    True if the lock is shared, False otherwise.
+)doc"
+            };
+
         };
 
         inline static PyGetSetDef properties[] = {
             {"active", (getter) active, NULL, docs::active.data()},
+            {"is_shared", (getter) is_shared, NULL, docs::is_shared.data()},
             {NULL}  // sentinel
         };
 
@@ -1036,15 +1049,26 @@ bool
 
     /* Wrap an exclusive lock as a Python context manager. */
     inline static PyObject* __call__(PyLock* self, PyObject* args, PyObject* kwargs) {
-        if constexpr (!Traits::exclusive) {
-            PyErr_SetString(
-                PyExc_TypeError,
-                "lock cannot be acquired in exclusive mode"
-            );
+        static constexpr std::string_view meth_name{"lock"};
+
+        try {
+            PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
+            pyargs.finalize();  // no args allowed
+
+            if constexpr (!Traits::exclusive) {
+                PyErr_SetString(
+                    PyExc_TypeError,
+                    "lock cannot be acquired in exclusive mode"
+                );
+                return nullptr;
+            } else {
+                using Guard = typename LockTraits<LockType>::ExclusiveGuard;
+                return PyThreadGuard<Guard>::construct(self->lock);
+            }
+
+        } catch (...) {
+            throw_python();
             return nullptr;
-        } else {
-            using Guard = typename LockTraits<LockType>::ExclusiveGuard;
-            return PyThreadGuard<Guard>::construct(self->lock);
         }
     }
 

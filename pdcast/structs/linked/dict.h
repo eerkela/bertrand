@@ -3416,8 +3416,8 @@ constructor itself.
         BASE_PROPERTY(capacity),
         BASE_PROPERTY(max_size),
         BASE_PROPERTY(frozen),
-        BASE_PROPERTY(nbytes),
         BASE_PROPERTY(specialization),
+        BASE_PROPERTY(nbytes),
         {NULL}
     };
 

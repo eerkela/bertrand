@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import regex  # alternate (PCRE-style) regex engine
 
-from linked import *
+from linked import LinkedSet, LinkedDict
 
 
 class Empty:
@@ -39,6 +39,8 @@ RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]  # 
 # TODO: metaclass throws error if any non-classmethods are implemented on type objects.
 # -> non-member functions are more explicit and flexible.  Plus, if there's only one
 # syntax for declaring them, then it's easier to document and use.
+# -> or we could automatically convert all methods to classmethods, but maybe that's
+# going a bit too far
 
 
 # TODO: it might be generally easier if the cases where None is returned (i.e. parent,
