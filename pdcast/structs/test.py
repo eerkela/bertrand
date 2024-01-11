@@ -1,3 +1,6 @@
+"""This module defines the core of the bertrand type system, including the metaclass
+machinery, type primitives, and helper functions for detecting and resolving types.
+"""
 from __future__ import annotations
 import collections
 import inspect
@@ -9,7 +12,7 @@ from typing import (
 
 import numpy as np
 import pandas as pd
-import regex as re # alternate (PCRE-style) regex engine
+import regex as re  # alternate (PCRE-style) regex engine
 
 from linked import LinkedSet, LinkedDict
 
@@ -18,7 +21,13 @@ from linked import LinkedSet, LinkedDict
 
 
 class Empty:
-    """Placeholder for optional arguments for which None might be a valid option."""
+    """Placeholder for optional arguments in which None might be a valid option."""
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __str__(self) -> str:
+        return "..."
 
     def __repr__(self) -> str:
         return "..."
@@ -42,12 +51,12 @@ RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]
 # TODO: metaclass throws error if any non-classmethods are implemented on type objects.
 # -> non-member functions are more explicit and flexible.  Plus, if there's only one
 # syntax for declaring them, then it's easier to document and use.
-# -> or we could automatically convert all methods to classmethods, but maybe that's
-# going a bit too far
+# -> just filter out any methods that start/end with double underscore
 
 
 # TODO: it might be generally easier if the cases where None is returned (i.e. parent,
-# etc.) returned a self reference to the type they were called on.
+# wrapped) returned a self reference to the type they were called on.  That would
+# simplify union implementation somewhat.
 
 
 # TODO: membership checks against the root Type or DecoratorType should return True for
@@ -65,7 +74,7 @@ class DecoratorPrecedence:
 
     .. code-block:: python
 
-        >>> Type.registry.decorator_precedence
+        >>> Type.registry.decorators
         DecoratorPrecedence({A, B, C})
         >>> T
         T
@@ -82,8 +91,8 @@ class DecoratorPrecedence:
 
     .. code-block:: python
 
-        >>> Type.registry.decorator_precedence.move_to_index(A, -1)
-        >>> Type.registry.decorator_precedence
+        >>> Type.registry.decorators.move_to_index(A, -1)
+        >>> Type.registry.decorators
         DecoratorPrecedence({B, C, A})
         >>> A[B[C[T]]]
         B[C[A[T]]]
@@ -144,6 +153,23 @@ class DecoratorPrecedence:
             If either decorator is not in the precedence order.
         """
         return self._set.distance(decorator1, decorator2)
+
+    def swap(self, decorator1: DecoratorMeta, decorator2: DecoratorMeta) -> None:
+        """Swap the positions of two decorators in the precedence order.
+
+        Parameters
+        ----------
+        decorator1 : DecoratorMeta
+            The first decorator to swap.
+        decorator2 : DecoratorMeta
+            The second decorator to swap.
+
+        Raises
+        ------
+        KeyError
+            If either decorator is not in the precedence order.
+        """
+        self._set.swap(decorator1, decorator2)
 
     def move(self, decorator: DecoratorMeta, shift: int) -> None:
         """Move a decorator in the precedence order relative to its current position.
@@ -398,22 +424,32 @@ class TypeRegistry:
 
         return {k: Union.from_types(v) for k, v in result.items()}
 
-    # TODO: it might make sense to return DecoratorPrecedence directly from the
-    # .decorators accessor.  This would make it more straightforward to modify
-    # the precedence.
-
     @property
-    def decorators(self) -> UnionMeta:
-        """Get a union containing all the decorators that are stored in the
-        registry.
+    def decorators(self) -> DecoratorPrecedence:
+        """Get a simple precedence object containing all the unparametrized
+        decorators that are currently registered.
 
         Returns
         -------
-        UnionMeta
-            A union containing each decorator as an unparametrized base type.
+        DecoratorPrecedence
+            A linked set containing each decorator as an unparametrized base
+            type.  The order of the decorators in the set determines the order
+            in which they are nested when applied to a single type.  The
+            precedence object provides utilities for modifying this order.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> REGISTRY.decorators
+            DecoratorPrecedence(Categorical, Sparse)
+            >>> Sparse[Categorical[Int]]
+            Categorical[Sparse[Int, <NA>], ...]
+            >>> REGISTRY.decorators.swap(Sparse, Categorical)
+            >>> Sparse[Categorical[Int]]
+            Sparse[Categorical[Int, ...], <NA>]
         """
-        result = LinkedSet(t for t in self if isinstance(t, DecoratorMeta))
-        return Union.from_types(result)
+        return self.decorator_precedence
 
     @property
     def abstract(self) -> UnionMeta:
@@ -704,24 +740,46 @@ def get_from_calling_context(name: str) -> Any:
     """Get an object from the calling context given its fully-qualified (dotted) name
     as a string.
 
-    This function avoids calling eval() and the associated security risks by walking up
-    the call stack and searching the name in each frame's local, global, and built-in
-    namespaces.  More specifically, it searches for the first component of a dotted
-    name, and, if found, progressively resolves the remaining components by calling
-    getattr() on the previous result until the string is exhausted.  Otherwise, if no
-    match is found, it moves up to the next frame and repeats the process.
+    Parameters
+    ----------
+    name : str
+        The fully-qualified name of the object to retrieve.
+
+    Returns
+    -------
+    Any
+        The object corresponding to the specified name.
+
+    Raises
+    ------
+    AttributeError
+        If the named object cannot be found.
+
+    Notes
+    -----
+    This function avoids calling eval() and the associated security risks by traversing
+    the call stack and searching for the object in each frame's local, global, and
+    built-in namespaces.  More specifically, it searches for the first component of a
+    dotted name, and, if found, progressively resolves the remaining components by
+    calling getattr() on the previous result until the string is exhausted.  Otherwise,
+    if no match is found, it moves up to the next frame and repeats the process.
 
     This is primarily used to extract named objects from stringified type hints when
     `from __future__ import annotations` is enabled, or for parsing object strings in
     the type specification mini-language.
 
-    NOTE: PEP 649 (https://peps.python.org/pep-0649/) could make this partially
-    obsolete by avoiding stringification in the first place.  Still, it can be useful
-    in other contexts, so it's worth keeping around.
+    .. note::
+
+        PEP 649 (https://peps.python.org/pep-0649/) could make this partially obsolete
+        by avoiding stringification in the first place.  Still, it can be useful for
+        backwards compatibility.
     """
     path = name.split(".")
     prefix = path[0]
-    frame = inspect.currentframe().f_back  # skip this frame
+    frame = inspect.currentframe()
+    if frame is not None:
+        frame = frame.f_back  # skip this frame
+
     while frame is not None:
         if prefix in frame.f_locals:
             obj = frame.f_locals[prefix]
@@ -741,7 +799,7 @@ def get_from_calling_context(name: str) -> Any:
 
         return obj
 
-    raise TypeError(f"could not find object: {repr(name)}")
+    raise AttributeError(f"could not find object: {repr(name)}")
 
 
 REGISTRY = TypeRegistry()
@@ -3416,24 +3474,25 @@ class DecoratorBuilder(TypeBuilder):
         """
         super().fill()
 
-        self.class_getitem()
-        self.from_scalar()
-        self.from_dtype()
-        self.from_string()
-        self.transform()
-        self.inverse_transform()
+        self._class_getitem()
+        self._from_scalar()
+        self._from_dtype()
+        self._from_string()
+        self._transform()
+        self._inverse_transform()
 
         return self
 
-    def register(self, typ: DecoratorMeta) -> DecoratorMeta:
+    def register(self, typ: TypeMeta | DecoratorMeta) -> TypeMeta | DecoratorMeta:
         """Instantiate the type and register it in the global type registry."""
+        # pylint: disable=protected-access
         if self.parent is not object:
             super().register(typ)
-            REGISTRY.decorator_precedence._set.add(typ)  # pylint: disable=protected-access
+            REGISTRY.decorators._set.add(typ)
 
         return typ
 
-    def class_getitem(self) -> None:
+    def _class_getitem(self) -> None:
         """Parse a decorator's __class_getitem__ method (if it has one) and generate a
         wrapper that can be used to instantiate the type.
         """
@@ -3448,21 +3507,21 @@ class DecoratorBuilder(TypeBuilder):
             ) -> DecoratorMeta | UnionMeta:
                 """Unwrap tuples/unions and forward arguments to the wrapped method."""
                 if isinstance(val, (TypeMeta, DecoratorMeta)):
-                    return insort_decorator(invoke, cls, val)
+                    return _insort_decorator(invoke, cls, val)
 
                 if isinstance(val, UnionMeta):
                     return Union.from_types(
-                        LinkedSet(insort_decorator(invoke, cls, t) for t in val)
+                        LinkedSet(_insort_decorator(invoke, cls, t) for t in val)
                     )
 
                 if isinstance(val, tuple):
                     wrapped = val[0]
                     args = val[1:]
                     if isinstance(wrapped, (TypeMeta, DecoratorMeta)):
-                        return insort_decorator(invoke, cls, wrapped, *args)
+                        return _insort_decorator(invoke, cls, wrapped, *args)
                     if isinstance(wrapped, UnionMeta):
                         result = LinkedSet(
-                            insort_decorator(invoke, cls, t, *args) for t in wrapped
+                            _insort_decorator(invoke, cls, t, *args) for t in wrapped
                         )
                         return Union.from_types(result)
 
@@ -3510,11 +3569,11 @@ class DecoratorBuilder(TypeBuilder):
             ) -> DecoratorMeta | UnionMeta:
                 """Default to identity function."""
                 if isinstance(wrapped, (TypeMeta, DecoratorMeta)):
-                    return insort_decorator(invoke, cls, wrapped)
+                    return _insort_decorator(invoke, cls, wrapped)
 
                 if isinstance(wrapped, UnionMeta):
                     return Union.from_types(
-                        LinkedSet(insort_decorator(invoke, cls, t) for t in wrapped)
+                        LinkedSet(_insort_decorator(invoke, cls, t) for t in wrapped)
                     )
 
                 raise TypeError(
@@ -3532,7 +3591,7 @@ class DecoratorBuilder(TypeBuilder):
 
         self.namespace["_params"] = tuple(parameters.keys())
 
-    def from_scalar(self) -> None:
+    def _from_scalar(self) -> None:
         """Parse a decorator's from_scalar() method (if it has one) and ensure that it
         is callable with a single positional argument.
         """
@@ -3555,14 +3614,14 @@ class DecoratorBuilder(TypeBuilder):
             self.namespace["_defines_from_scalar"] = True
 
         else:
-            def default(cls: type, scalar: Any) -> TypeMeta:
+            def default(cls: DecoratorMeta, scalar: Any) -> DecoratorMeta:
                 """Default to identity function."""
-                return cls  # type: ignore
+                return cls
 
             self.namespace["_defines_from_scalar"] = False
-            self.namespace["from_scalar"] = classmethod(default)
+            self.namespace["from_scalar"] = classmethod(default)  # type: ignore
 
-    def from_dtype(self) -> None:
+    def _from_dtype(self) -> None:
         """Parse a decorator's from_dtype() method (if it has one) and ensure that it
         is callable with a single positional argument.
         """
@@ -3585,14 +3644,14 @@ class DecoratorBuilder(TypeBuilder):
             self.namespace["_defines_from_dtype"] = True
 
         else:
-            def default(cls: type, dtype: Any) -> TypeMeta:
+            def default(cls: DecoratorMeta, dtype: Any) -> DecoratorMeta:
                 """Default to identity function."""
-                return cls  # type: ignore
+                return cls
 
             self.namespace["_defines_from_dtype"] = False
-            self.namespace["from_dtype"] = classmethod(default)
+            self.namespace["from_dtype"] = classmethod(default)  # type: ignore
 
-    def from_string(self) -> None:
+    def _from_string(self) -> None:
         """Parse a decorator's from_string() method (if it has one) and ensure that it
         is callable with the same number of positional arguments as __class_getitem__().
         """
@@ -3607,11 +3666,11 @@ class DecoratorBuilder(TypeBuilder):
             ])
 
         else:
-            def default(cls: type, wrapped: str) -> TypeMeta:
+            def default(cls: DecoratorMeta, wrapped: str) -> DecoratorMeta:
                 """Default to identity function."""
                 return cls[wrapped]
 
-            self.namespace["from_string"] = classmethod(default)
+            self.namespace["from_string"] = classmethod(default)  # type: ignore
             sig = inspect.Signature([
                 inspect.Parameter("cls", inspect.Parameter.POSITIONAL_OR_KEYWORD),
                 inspect.Parameter("wrapped", inspect.Parameter.POSITIONAL_OR_KEYWORD),
@@ -3623,7 +3682,7 @@ class DecoratorBuilder(TypeBuilder):
                 f"exactly: {str(sig)} != {str(self.class_getitem_signature)}"
             )
 
-    def transform(self) -> None:
+    def _transform(self) -> None:
         """Parse a decorator's transform() method (if it has one) and ensure that it
         is callable with a single positional argument.
         """
@@ -3643,7 +3702,7 @@ class DecoratorBuilder(TypeBuilder):
                     "addition to cls)"
                 )
 
-    def inverse_transform(self) -> None:
+    def _inverse_transform(self) -> None:
         """Parse a decorator's inverse_transform() method (if it has one) and ensure
         that it is callable with a single positional argument.
         """
@@ -3664,7 +3723,7 @@ class DecoratorBuilder(TypeBuilder):
                 )
 
 
-def insort_decorator(
+def _insort_decorator(
     invoke: Callable[..., DecoratorMeta],
     cls: DecoratorMeta,
     other: TypeMeta | DecoratorMeta,
@@ -3679,7 +3738,7 @@ def insort_decorator(
     wrapped = curr.wrapped
     while wrapped:
         wrapper = curr.wrapper
-        delta = REGISTRY.decorator_precedence.distance(cls, wrapper)
+        delta = REGISTRY.decorators.distance(cls, wrapper)
 
         if delta > 0:  # cls is higher priority or identical to wrapper
             break
@@ -3799,13 +3858,18 @@ class UnionMeta(type):
                 raise TypeError("union members must be bertrand types")
             hash_val = (hash_val * 31 + hash(t)) % (2**63 - 1)
 
-        return super().__new__(UnionMeta, cls.__name__, (cls,), {
-            "_columns": {},
-            "_types": types,
-            "_hash": hash_val,
-            "_index": index,
-            "__class_getitem__": union_getitem
-        })
+        return super().__new__(
+            UnionMeta,
+            cls.__name__,
+            (cls,),
+            {
+                "_columns": {},
+                "_types": types,
+                "_hash": hash_val,
+                "_index": index,
+                "__class_getitem__": union_getitem
+            }
+        )
 
     def from_columns(cls, columns: dict[str, META]) -> UnionMeta:
         """TODO"""
@@ -4828,13 +4892,13 @@ class DecoratorType(object, metaclass=DecoratorMeta):
         return cls.wrapper[*forwarded.values()]  # type: ignore
 
 
+
+
+
+
 ####################
 ####    TEST    ####
 ####################
-
-
-# TODO: implement Object and Null here.  These are central to the type system, and are
-# used in the implementation of detect()/resolve().
 
 
 class Int(Type):

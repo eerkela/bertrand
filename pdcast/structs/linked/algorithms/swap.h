@@ -40,13 +40,13 @@ namespace linked {
             prev2 = node2->prev();
         } else {
             for (auto it = view.begin(), end = view.end(); it != end; ++it) {
-                if (it.next() == node1) {
-                    prev1 = it.curr();
+                if (it.curr() == node1) {
+                    prev1 = it.prev();
                     if (prev2 != nullptr) {
                         break;
                     }
-                } else if (it.next() == node2) {
-                    prev2 = it.curr();
+                } else if (it.curr() == node2) {
+                    prev2 = it.prev();
                     if (prev1 != nullptr) {
                         break;
                     }
@@ -56,10 +56,18 @@ namespace linked {
 
         Node* next1 = node1->next();
         Node* next2 = node2->next();
-        view.unlink(prev1, node1, next1);
-        view.unlink(prev2, node2, next2);
-        view.link(prev1, node2, next1);
-        view.link(prev2, node1, next2);
+        if (next1 == node2) {
+            view.unlink(prev1, node1, node2);
+            view.link(node2, node1, next2);
+        } else if (prev1 == node2) {
+            view.unlink(node2, node1, next1);
+            view.link(prev2, node1, node2);
+        } else {
+            view.unlink(prev1, node1, next1);
+            view.link(prev2, node1, next2);
+            view.unlink(prev2, node2, next2);
+            view.link(prev1, node2, next1);
+        }
     }
 
 
