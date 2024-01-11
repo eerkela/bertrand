@@ -1192,7 +1192,7 @@ class TypeMeta(type):
             print(f"slug: {cls.slug}")
             print(f"parent: {cls.parent}")
             print(f"aliases: {cls.aliases}")
-            print(f"fields: {format_dict(fields)}")
+            print(f"fields: {_format_dict(fields)}")
             print(f"is_root: {cls.is_root}")
             print(f"is_abstract: {cls.is_abstract}")
             print(f"is_leaf: {cls.is_leaf}")
@@ -1260,8 +1260,6 @@ class TypeMeta(type):
 
         See Also
         --------
-        cache_size: the maximum size of this type's flyweight cache.
-        flyweights: a read-only proxy for this type's flyweight cache.
         Type.__class_getitem__: defines parametrization behavior for bertrand types.
         Type.from_scalar: parses a scalar example of this type.
         Type.from_dtype: parses a numpy dtype object registered to this type.
@@ -1490,7 +1488,9 @@ class TypeMeta(type):
             >>> NumpyInt64.as_default
             NumpyInt64
         """
-        return cls if cls.is_default else cls._default[0]
+        if cls.is_default:
+            return cls
+        return cls._default[0]
 
     @property
     def as_nullable(cls) -> TypeMeta:
@@ -1600,6 +1600,19 @@ class TypeMeta(type):
         This is identical to the result of the :func:`len` operator when applied
         to a scalar type.  This behaves similarly to a Python-level ``sizeof()``
         operator as used in C/C++.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int8.itemsize
+            1
+            >>> Int16.itemsize
+            2
+            >>> Int32.itemsize
+            4
+            >>> Int64.itemsize
+            8
         """
         return cls.dtype.itemsize
 
@@ -1664,37 +1677,203 @@ class TypeMeta(type):
 
     @property
     def params(cls) -> Mapping[str, Any]:
-        """TODO"""
+        """A read-only mapping of parameters to their configured values.
+
+        Returns
+        -------
+        Mapping[str, Any]
+            A mapping of parameter names to their values.  These are determined by
+            to :meth:`Type.__class_getitem__()` when the type is parametrized.
+
+        Notes
+        -----
+        The parameter names and default values are inferred from the signature of
+        :meth:`Type.__class_getitem__()`, and are available as dotted attributes
+        on the type itself.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Datetime["pandas"].params
+            mappingproxy({'tz': None})
+            >>> Datetime["pandas"].tz is None
+            True
+            >>> Datetime["pandas", "UTC"].params
+            mappingproxy({'tz': datetime.timezone.utc})
+            >>> Datetime["pandas", "UTC"].tz
+            datetime.timezone.utc
+        """
         return MappingProxyType({k: cls._fields[k] for k in cls._params})
 
     @property
     def is_abstract(cls) -> bool:
-        """TODO"""
+        """Check whether the type is abstract.
+
+        Returns
+        -------
+        bool
+            True if the type is abstract (i.e. :attr:`backend` is set to the empty
+            string).  False otherwise.
+
+        See Also
+        --------
+        backend: the type's backend specifier.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.is_abstract
+            True
+            >>> Signed.is_abstract
+            True
+            >>> Int64.is_abstract
+            True
+            >>> NumpyInt64.is_abstract
+            False
+        """
         return not cls.backend
 
     @property
     def is_default(cls) -> bool:
-        """Indicates whether this type redirects to a default implementation."""
+        """Check whether the type is its own default implementation.
+
+        Returns
+        -------
+        bool
+            True if this type is concrete (and therefore cannot delegate) or if
+            it is abstract and does not have a :meth:`default` implementation.
+            False otherwise.
+
+        See Also
+        --------
+        default: registers a default implementation for an abstract type.
+        as_default: converts an abstract type to its default implementation.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.is_default
+            False
+            >>> Signed.is_default
+            False
+            >>> Int64.is_default
+            False
+            >>> NumpyInt64.is_default
+            True
+        """
         return not cls._default
 
     @property
     def is_parametrized(cls) -> bool:
-        """TODO"""
+        """Check whether the type is a parametrized flyweight.
+
+        Returns
+        -------
+        bool
+            True if the type was produced by one of the following parametrization
+            methods.  False otherwise.
+
+        See Also
+        --------
+        __class_getitem__: defines parametrization behavior for bertrand types.
+        from_scalar: parses a scalar example of this type.
+        from_dtype: parses a numpy dtype object registered to this type.
+        from_string: parses a string representation of this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Object.is_parametrized
+            False
+            >>> Object[int].is_parametrized
+            True
+        """
         return cls._parametrized
 
     @property
     def is_root(cls) -> bool:
-        """TODO"""
+        """Check whether the type is the root of its type hierarchy.
+
+        Returns
+        -------
+        bool
+            True if the type has no parent.  False otherwise.
+
+        Notes
+        -----
+        A root is any type that directly inherits from the generic :class:`Type`
+        class.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.is_root
+            True
+            >>> Signed.is_root
+            False
+            >>> Int64.is_root
+            False
+            >>> NumpyInt64.is_root
+            False
+        """
         return cls.parent is None
 
     @property
     def is_leaf(cls) -> bool:
-        """TODO"""
+        """Check whether the type is a leaf of its type hierarchy.
+
+        Returns
+        -------
+        bool
+            True if the type has no children.  False otherwise.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.is_leaf
+            False
+            >>> Signed.is_leaf
+            False
+            >>> Int64.is_leaf
+            False
+            >>> NumpyInt64.is_leaf
+            True
+        """
         return not cls.subtypes and not cls.implementations
 
     @property
     def root(cls) -> TypeMeta:
-        """TODO"""
+        """Get the root of this type's hierarchy.
+
+        Returns
+        -------
+        TypeMeta
+            The root type that this type ultimately inherits from.  This can be
+            a self-reference if :attr:`is_root` is True.
+
+        See Also
+        --------
+        parent: the immediate parent of this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.root
+            Int
+            >>> Signed.root
+            Int
+            >>> Int64.root
+            Int
+            >>> NumpyInt64.root
+            Int
+        """
         parent = cls
         while parent.parent is not None:
             parent = parent.parent
@@ -1702,64 +1881,385 @@ class TypeMeta(type):
 
     @property
     def parent(cls) -> TypeMeta | None:
-        """TODO"""
+        """Get the immediate parent of this type within the hierarchy.
+
+        Returns
+        -------
+        TypeMeta | None
+            The type that this type directly inherits from or None if :attr:`is_root`
+            is True.
+
+        See Also
+        --------
+        root: the root of this type's hierarchy.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.parent
+            None
+            >>> Signed.parent
+            Int
+            >>> Int64.parent
+            Signed
+            >>> NumpyInt64.parent
+            Int64
+        """
         return cls._parent
 
     @property
     def subtypes(cls) -> UnionMeta:
-        """TODO"""
+        """A union containing the abstract subtypes of this type.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing all of the abstract children of this type.  This
+            does not include concrete implementations of this type, which are
+            stored in a separate attribute.
+
+        See Also
+        --------
+        implementations: a union containing the concrete implementations of this type.
+        children: a union containing the immediate children of this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.subtypes
+            Union[Signed, Unsigned]
+            >>> Signed.subtypes
+            Union[Int64, Int32, Int16, Int8]
+            >>> Int64.subtypes
+            Union[]
+            >>> NumpyInt64.subtypes
+            Union[]
+        """
         return Union.from_types(cls._subtypes)
 
     @property
     def implementations(cls) -> UnionMeta:
-        """TODO"""
+        """A union containing the concrete implementations of this type.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing all of the concrete implementations of this type.
+            This does not include abstract subtypes of this type, which are stored
+            in a separate attribute.
+
+        See Also
+        --------
+        subtypes: a union containing the abstract subtypes of this type.
+        children: a union containing the immediate children of this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.implementations
+            Union[]
+            >>> Signed.implementations
+            Union[PythonInt]
+            >>> Int64.implementations
+            Union[NumpyInt64, PandasInt64]
+            >>> NumpyInt64.implementations
+            Union[]
+        """
         return Union.from_types(LinkedSet(cls._implementations.values()))
 
     @property
     def children(cls) -> UnionMeta:
-        """TODO"""
+        """A union containing all the children of this type.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing all descendants of this type in the hierarchy,
+            including grandchildren, great-grandchildren, etc.
+
+        See Also
+        --------
+        leaves: a union containing all the leaves of this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.children
+            Union[Signed, Int64, NumpyInt64, PandasInt64, Int32, NumpyInt32, PandasInt32, Int16, NumpyInt16, PandasInt16, Int8, NumpyInt8, PandasInt8, PythonInt]
+            >>> Signed.children
+            Union[Int64, NumpyInt64, PandasInt64, Int32, NumpyInt32, PandasInt32, Int16, NumpyInt16, PandasInt16, Int8, NumpyInt8, PandasInt8, PythonInt]
+            >>> Int64.children
+            Union[NumpyInt64, PandasInt64]
+            >>> NumpyInt64.children
+            Union[]
+        """
         result = LinkedSet()
-        explode_children(cls, result)
+        _explode_children(cls, result)
         return Union.from_types(result[1:])
 
     @property
     def leaves(cls) -> UnionMeta:
-        """TODO"""
+        """A union containing all the leaves contained in this type.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing all descendants of this type that are leaves in
+            the hierarchy, including grandchildren, great-grandchildren, etc.
+            This is identical to :attr:`children`, except that it excludes any
+            abstract types.
+
+        See Also
+        --------
+        children: a union containing all the children of this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.leaves
+            Union[NumpyInt64, PandasInt64, NumpyInt32, PandasInt32, NumpyInt16, PandasInt16, NumpyInt8, PandasInt8, PythonInt]
+            >>> Signed.leaves
+            Union[NumpyInt64, PandasInt64, NumpyInt32, PandasInt32, NumpyInt16, PandasInt16, NumpyInt8, PandasInt8, PythonInt]
+            >>> Int64.leaves
+            Union[NumpyInt64, PandasInt64]
+            >>> NumpyInt64.leaves
+            Union[]
+        """
         result = LinkedSet()
-        explode_leaves(cls, result)
-        return Union.from_types(result)
+        _explode_leaves(cls, result)
+        return Union.from_types(result[1:])
 
     @property
     def larger(cls) -> UnionMeta:
-        """TODO"""
+        """A union containing all the sibling types that have a larger representable
+        range than this type.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing all sibling types (leaves within the same hierarchy)
+            that compare greater than this type.  This is always returned in sorted
+            order, with the smallest type first.
+
+        See Also
+        --------
+        smaller: a union containing all the sibling types that are less than this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int32.larger
+            Union[NumpyUInt32, NumpyInt64, NumpyUInt64, PythonInt]
+            >>> Int64.larger
+            Union[NumpyUInt64, PythonInt]
+
+        This can also be used to dynamically upcast input data to the smallest type
+        that can fully represent it.  For instance, by forming a union with the type
+        itself, we can ensure that the input data is always converted to the smallest
+        option.
+
+        .. doctest::
+
+            >>> Int64 | Int64.larger
+            Union[Int32, NumpyUInt32, NumpyInt64, NumpyUInt64, PythonInt]
+            >>> (Int64 | Int64.larger)([1, 2, 3])
+            0    1
+            1    2
+            2    3
+            dtype: int64
+            >>> (Int64 | Int64.larger)([1, 2, 3, 2**64 - 1])
+            0                      1
+            1                      2
+            2                      3
+            3    9223372036854775807
+            dtype: uint64
+            >>> (Int64 | Int64.larger)([1, 2, 3, 2**80 - 1])
+            0                            1
+            1                            2
+            2                            3
+            3    1208925819614629174706175
+            dtype: PythonInt
+        """
         result = LinkedSet(sorted(t for t in cls.root.leaves if t > cls))
         return Union.from_types(result)
 
     @property
     def smaller(cls) -> UnionMeta:
-        """TODO"""
+        """A union containing all the sibling types that have a smaller representable
+        range than this type.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing all sibling types (leaves within the same hierarchy)
+            that compare less than this type.  This is always returned in sorted
+            order, with the smallest type first.
+
+        See Also
+        --------
+        larger: a union containing all the sibling types that are greater than this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int32.smaller
+            Union[NumpyInt8, NumpyUInt8, NumpyInt16, NumpyUInt16]
+            >>> Int64.smaller
+            Union[NumpyInt8, NumpyUInt8, NumpyInt16, NumpyUInt16, NumpyInt32, NumpyUInt32]
+
+        This can also be used to dynamically downcast input data to the smallest type
+        that can fully represent it.  For instance, by forming a union with the type
+        itself, we can ensure that the input data is always converted to the smallest
+        option.
+
+        .. doctest::
+
+            >>> Int32.smaller | Int32
+            Union[NumpyInt8, NumpyUInt8, NumpyInt16, NumpyUInt16, Int32]
+            >>> (Int32.smaller | Int32)([1, 2, 3])
+            0    1
+            1    2
+            2    3
+            dtype: int8
+            >>> (Int32.smaller | Int32)([1, 2, 3, 2**15 - 1])
+            0        1
+            1        2
+            2    32767
+            dtype: int16
+            >>> (Int32.smaller | Int32)([1, 2, 3, 2**31 - 1])
+            0             1
+            1             2
+            2    2147483647
+            dtype: int32
+        """
         result = LinkedSet(sorted(t for t in cls.root.leaves if t < cls))
         return Union.from_types(result)
 
     @property
     def decorators(cls) -> UnionMeta:
-        """TODO"""
-        return Union.from_types(LinkedSet())  # always empty
+        """A union containing all the decorators applied to this type.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing all the decorators that are attached to this type.
+
+        See Also
+        --------
+        wrapper: convert the outermost decorator into its unparametrized base type.
+        wrapped: the type that this type is decorating.
+        unwrapped: the innermost non-decorator type.
+
+        Notes
+        -----
+        This is always empty in the case of scalar (undecorated) types.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.decorators
+            Union[]
+            >>> Sparse[Int].decorators
+            Union[Sparse[Int, <NA>]]
+            >>> Categorical[Sparse[Int]].decorators
+            Union[Categorical[Sparse[Int, <NA>], ...], Sparse[Int, <NA>]]
+        """
+        return Union.from_types(LinkedSet())
 
     @property
-    def wrapper(cls) -> None:
-        """TODO"""
-        return None  # base case for decorators
+    def wrapper(cls) -> None:  # pylint: disable=redundant-returns-doc
+        """Return the outermost decorator as an unparametrized type.
+
+        Returns
+        -------
+        DecoratorMeta | None
+            A generic version of the outermost decorator, or None if the type is not
+            decorated.
+
+        See Also
+        --------
+        decorators: a union containing all the decorators that are attached to this type.
+        wrapped: the type that this type is decorating.
+        unwrapped: the innermost non-decorator type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.wrapper
+            None
+            >>> Sparse[Int].wrapper
+            Sparse
+            >>> Categorical[Sparse[Int]].wrapper
+            Categorical
+        """
+        return None
 
     @property
-    def wrapped(cls) -> None:
-        """TODO"""
-        return None  # base case for recursion
+    def wrapped(cls) -> None:  # pylint: disable=redundant-returns-doc
+        """Return the type that this type is decorating.
+
+        Returns
+        -------
+        TypeMeta | DecoratorMeta | None
+            If the type is a parametrized decorator, then the type that it wraps.
+            Otherwise, None.
+
+        See Also
+        --------
+        decorators: a union containing all the decorators that are attached to this type.
+        wrapper: convert the outermost decorator into its unparametrized base type.
+        unwrapped: the innermost non-decorator type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.wrapped
+            None
+            >>> Sparse[Int].wrapped
+            Int
+            >>> Categorical[Sparse[Int]].wrapped
+            Sparse[Int]
+        """
+        return None
 
     @property
     def unwrapped(cls) -> TypeMeta:
-        """TODO"""
-        return cls  # for consistency with decorators
+        """Return the innermost non-decorator type in the stack.
+
+        Returns
+        -------
+        TypeMeta
+            The innermost type in the stack that is not a parametrized decorator, or a
+            self-reference if the type is not decorated.
+
+        See Also
+        --------
+        decorators: a union containing all the decorators that are attached to this type.
+        wrapper: convert the outermost decorator into its unparametrized base type.
+        wrapped: the type that this type is decorating.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.unwrapped
+            Int
+            >>> Sparse[Int].unwrapped
+            Int
+            >>> Categorical[Sparse[Int]].unwrapped
+            Int
+        """
+        return cls
 
     def __getattr__(cls, name: str) -> Any:
         if not cls.is_default:
@@ -1817,9 +2317,9 @@ class TypeMeta(type):
 
     def __contains__(cls, other: Any | TYPESPEC) -> bool:
         try:
-            return cls.__subclasscheck__(other)
+            return cls.__subclasscheck__(other)  # pylint: disable=no-value-for-parameter
         except TypeError:
-            return cls.__instancecheck__(other)
+            return cls.__instancecheck__(other)  # pylint: disable=no-value-for-parameter
 
     def __hash__(cls) -> int:
         return cls._hash
@@ -1882,7 +2382,7 @@ class TypeMeta(type):
         if (typ, cls) in REGISTRY.comparison_overrides:
             return False
 
-        return features(cls) < features(typ)
+        return _features(cls) < _features(typ)
 
     def __le__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
         typ = resolve(other)
@@ -1897,7 +2397,7 @@ class TypeMeta(type):
         if (typ, cls) in REGISTRY.comparison_overrides:
             return False
 
-        return features(cls) <= features(typ)
+        return _features(cls) <= _features(typ)
 
     def __eq__(cls, other: Any) -> bool:
         try:
@@ -1926,7 +2426,7 @@ class TypeMeta(type):
         if (typ, cls) in REGISTRY.comparison_overrides:
             return True
 
-        return features(cls) >= features(typ)
+        return _features(cls) >= _features(typ)
 
     def __gt__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
         typ = resolve(other)
@@ -1941,7 +2441,7 @@ class TypeMeta(type):
         if (typ, cls) in REGISTRY.comparison_overrides:
             return True
 
-        return features(cls) > features(typ)
+        return _features(cls) > _features(typ)
 
     def __str__(cls) -> str:
         return cls._slug
@@ -1996,7 +2496,7 @@ class AbstractBuilder(TypeBuilder):
 
         for name, value in namespace.items():
             if value is Ellipsis:
-                self.required[name] = self.annotations.pop(name, identity)
+                self.required[name] = self.annotations.pop(name, _identity)
                 del self.namespace[name]
             elif name in self.required:
                 self.validate(name, self.namespace.pop(name))
@@ -2009,25 +2509,26 @@ class AbstractBuilder(TypeBuilder):
 
     def fill(self) -> AbstractBuilder:
         """Fill in any missing slots in the namespace with default values, and evaluate
-        any derived attributes."""
+        any derived attributes.
+        """
         super().fill()
-
-        self.class_getitem()
-        self.from_scalar()
-        self.from_dtype()
-        self.from_string()
+        self._class_getitem()
+        self._from_scalar()
+        self._from_dtype()
+        self._from_string()
 
         return self
 
-    def register(self, typ: TypeMeta) -> TypeMeta:
+    def register(self, typ: TypeMeta | DecoratorMeta) -> TypeMeta | DecoratorMeta:
         """TODO"""
+        # pylint: disable=protected-access
         if self.parent is not object:
             super().register(typ)
             self.parent._subtypes.add(typ)
 
         return typ
 
-    def class_getitem(self) -> None:
+    def _class_getitem(self) -> None:
         """Parse a type's __class_getitem__ method (if it has one), producing a list of
         parameters and their default values, as well as a wrapper function that can be
         used to instantiate the type.
@@ -2037,6 +2538,7 @@ class AbstractBuilder(TypeBuilder):
 
         def default(cls: type, val: str | tuple[Any, ...]) -> TypeMeta:
             """Forward all arguments to the specified implementation."""
+            # pylint: disable=protected-access
             if isinstance(val, str):
                 key = val
                 if key in cls._implementations:  # type: ignore
@@ -2056,7 +2558,7 @@ class AbstractBuilder(TypeBuilder):
         self.namespace["__class_getitem__"] = classmethod(default)
         self.namespace["_params"] = ("backend",)
 
-    def from_scalar(self) -> None:
+    def _from_scalar(self) -> None:
         """Parse a type's from_scalar() method (if it has one), ensuring that it is
         callable with a single positional argument.
         """
@@ -2065,51 +2567,52 @@ class AbstractBuilder(TypeBuilder):
 
         # TODO: alternatively, we could forward to the default implementation
 
-        def default(cls: type, scalar: Any) -> TypeMeta:
+        def default(cls: TypeMeta, scalar: Any) -> TypeMeta:
             """Throw an error if attempting to construct an abstract type."""
             raise TypeError("abstract types cannot be constructed using from_scalar()")
 
         self.namespace["_defines_from_scalar"] = False
-        self.namespace["from_scalar"] = classmethod(default)
+        self.namespace["from_scalar"] = classmethod(default)  # type: ignore
 
-    def from_dtype(self) -> None:
+    def _from_dtype(self) -> None:
         """Parse a type's from_dtype() method (if it has one), ensuring that it is
         callable with a single positional argument.
         """
         if "from_dtype" in self.namespace and self.parent is not object:
             raise TypeError("abstract types must not implement from_dtype()")
 
-        def default(cls: type, dtype: Any) -> TypeMeta:
+        def default(cls: TypeMeta, dtype: Any) -> TypeMeta:
             """Throw an error if attempting to construct an abstract type."""
             raise TypeError("abstract types cannot be constructed using from_dtype()")
 
         self.namespace["_defines_from_scalar"] = False
-        self.namespace["from_dtype"] = classmethod(default)
+        self.namespace["from_dtype"] = classmethod(default)  # type: ignore
 
-    def from_string(self) -> None:
+    def _from_string(self) -> None:
         """Parse a type's from_string() method (if it has one), ensuring that it is
         callable with the same number of positional arguments as __class_getitem__().
         """
         if "from_string" in self.namespace and self.parent is not object:
             raise TypeError("abstract types must not implement from_string()")
 
-        def default(cls: type, backend: str = "", *args: str) -> TypeMeta:
+        def default(cls: TypeMeta, backend: str = "", *args: str) -> TypeMeta:
             """Forward all arguments to the specified implementation."""
+            # pylint: disable=protected-access
             if not backend:
                 return cls
 
-            if backend in cls._implementations:  # type: ignore
-                typ = cls._implementations[backend]  # type: ignore
+            if backend in cls._implementations:
+                typ = cls._implementations[backend]
                 if not args:
                     return typ
                 return typ.from_string(*args)
 
-            if not cls.is_default:  # type: ignore
-                return cls.as_default.from_string(backend, *args)  # type: ignore
+            if not cls.is_default:
+                return cls.as_default.from_string(backend, *args)
 
             raise TypeError(f"invalid backend: {repr(backend)}")
 
-        self.namespace["from_string"] = classmethod(default)
+        self.namespace["from_string"] = classmethod(default)  # type: ignore
 
 
 class ConcreteBuilder(TypeBuilder):
@@ -2182,23 +2685,23 @@ class ConcreteBuilder(TypeBuilder):
         any derived attributes.
         """
         super().fill()
-
-        self.class_getitem()
-        self.from_scalar()
-        self.from_dtype()
-        self.from_string()
+        self._class_getitem()
+        self._from_scalar()
+        self._from_dtype()
+        self._from_string()
 
         return self
 
-    def register(self, typ: TypeMeta) -> TypeMeta:
+    def register(self, typ: TypeMeta | DecoratorMeta) -> TypeMeta | DecoratorMeta:
         """Instantiate the type and register it in the global type registry."""
+        # pylint: disable=protected-access
         if self.parent is not object:
             super().register(typ)
             self.parent._implementations[self.backend] = typ
 
         return typ
 
-    def class_getitem(self) -> None:
+    def _class_getitem(self) -> None:
         """Parse a type's __class_getitem__ method (if it has one), producing a list of
         parameters and their default values, as well as a wrapper function that can be
         used to instantiate the type.
@@ -2208,13 +2711,13 @@ class ConcreteBuilder(TypeBuilder):
         if "__class_getitem__" in self.namespace:
             original = self.namespace["__class_getitem__"]
 
-            def wrapper(cls: type, val: Any | tuple[Any, ...]) -> TypeMeta:
+            def wrapper(cls: TypeMeta, val: Any | tuple[Any, ...]) -> TypeMeta:
                 """Unwrap tuples and forward arguments to the original function."""
                 if isinstance(val, tuple):
                     return original(cls, *val)
                 return original(cls, val)
 
-            self.namespace["__class_getitem__"] = classmethod(wrapper)
+            self.namespace["__class_getitem__"] = classmethod(wrapper)  # type: ignore
 
             skip = True
             sig = inspect.signature(original)
@@ -2239,20 +2742,20 @@ class ConcreteBuilder(TypeBuilder):
             ])
 
         else:
-            def default(cls: type, val: Any | tuple[Any, ...]) -> TypeMeta:
+            def default(cls: TypeMeta, val: Any | tuple[Any, ...]) -> TypeMeta:
                 """Default to identity function."""
                 if val:
                     raise TypeError(f"{cls.__name__} does not accept any parameters")
-                return cls  # type: ignore
+                return cls
 
-            self.namespace["__class_getitem__"] = classmethod(default)
+            self.namespace["__class_getitem__"] = classmethod(default)  # type: ignore
             self.class_getitem_signature = inspect.Signature([
                 inspect.Parameter("cls", inspect.Parameter.POSITIONAL_OR_KEYWORD)
             ])
 
         self.namespace["_params"] = tuple(parameters.keys())
 
-    def from_scalar(self) -> None:
+    def _from_scalar(self) -> None:
         """Parse a type's from_scalar() method (if it has one), ensuring that it is
         callable with a single positional argument.
         """
@@ -2275,14 +2778,14 @@ class ConcreteBuilder(TypeBuilder):
             self.namespace["_defines_from_scalar"] = True
 
         else:
-            def default(cls: type, scalar: Any) -> TypeMeta:
+            def default(cls: TypeMeta, scalar: Any) -> TypeMeta:
                 """Default to identity function."""
-                return cls  # type: ignore
+                return cls
 
             self.namespace["_defines_from_scalar"] = False
-            self.namespace["from_scalar"] = classmethod(default)
+            self.namespace["from_scalar"] = classmethod(default)  # type: ignore
 
-    def from_dtype(self) -> None:
+    def _from_dtype(self) -> None:
         """Parse a type's from_dtype() method (if it has one), ensuring that it is
         callable with a single positional argument.
         """
@@ -2305,14 +2808,14 @@ class ConcreteBuilder(TypeBuilder):
             self.namespace["_defines_from_dtype"] = True
 
         else:
-            def default(cls: type, dtype: Any) -> TypeMeta:
+            def default(cls: TypeMeta, dtype: Any) -> TypeMeta:
                 """Default to identity function."""
-                return cls  # type: ignore
+                return cls
 
             self.namespace["_defines_from_dtype"] = False
-            self.namespace["from_dtype"] = classmethod(default)
+            self.namespace["from_dtype"] = classmethod(default)  # type: ignore
 
-    def from_string(self) -> None:
+    def _from_string(self) -> None:
         """Parse a type's from_string() method (if it has one), ensuring that it is
         callable with the same number of positional arguments as __class_getitem__().
         """
@@ -2327,11 +2830,11 @@ class ConcreteBuilder(TypeBuilder):
             ])
 
         else:
-            def default(cls: type) -> TypeMeta:
+            def default(cls: TypeMeta) -> TypeMeta:
                 """Default to identity function."""
-                return cls  # type: ignore
+                return cls
 
-            self.namespace["from_string"] = classmethod(default)
+            self.namespace["from_string"] = classmethod(default)  # type: ignore
             sig = inspect.Signature([
                 inspect.Parameter("cls", inspect.Parameter.POSITIONAL_OR_KEYWORD)
             ])
@@ -2343,7 +2846,7 @@ class ConcreteBuilder(TypeBuilder):
             )
 
 
-def format_dict(d: dict[str, Any]) -> str:
+def _format_dict(d: dict[str, Any]) -> str:
     """Convert a dictionary into a string with standard indentation."""
     if not d:
         return "{}"
@@ -2354,7 +2857,7 @@ def format_dict(d: dict[str, Any]) -> str:
     return prefix + sep.join(f"{k}: {repr(v)}" for k, v in d.items()) + suffix
 
 
-def identity(value: Any, namespace: dict[str, Any], processed: dict[str, Any]) -> Any:
+def _identity(value: Any, namespace: dict[str, Any], processed: dict[str, Any]) -> Any:
     """Simple identity function used to validate required arguments that do not
     have any type hints.
     """
@@ -2363,28 +2866,28 @@ def identity(value: Any, namespace: dict[str, Any], processed: dict[str, Any]) -
     return value
 
 
-def explode_children(t: TypeMeta, result: LinkedSet[TypeMeta]) -> None:  # lol
+def _explode_children(t: TypeMeta, result: LinkedSet[TypeMeta]) -> None:  # lol
     """Explode a type's hierarchy into a flat list containing all of its subtypes and
     implementations.
     """
     result.add(t)
     for sub in t.subtypes:
-        explode_children(sub, result)
+        _explode_children(sub, result)
     for impl in t.implementations:
-        explode_children(impl, result)
+        _explode_children(impl, result)
 
 
-def explode_leaves(t: TypeMeta, result: LinkedSet[TypeMeta]) -> None:
+def _explode_leaves(t: TypeMeta, result: LinkedSet[TypeMeta]) -> None:
     """Explode a type's hierarchy into a flat list of concrete leaf types."""
     if t.is_leaf:
         result.add(t)
     for sub in t.subtypes:
-        explode_leaves(sub, result)
+        _explode_leaves(sub, result)
     for impl in t.implementations:
-        explode_leaves(impl, result)
+        _explode_leaves(impl, result)
 
 
-def features(t: TypeMeta | DecoratorMeta) -> tuple[int | float, int, bool, int]:
+def _features(t: TypeMeta | DecoratorMeta) -> tuple[int | float, int, bool, int]:
     """Extract a tuple of features representing the allowable range of a type, used for
     range-based sorting and comparison.
     """
@@ -2446,7 +2949,7 @@ class DecoratorMeta(type):
             print("-" * 80)
             print(f"slug: {cls.slug}")
             print(f"aliases: {cls.aliases}")
-            print(f"fields: {format_dict(cls._fields)}")
+            print(f"fields: {_format_dict(cls._fields)}")
             print(f"cache_size: {cls.cache_size}")
             print()
 
