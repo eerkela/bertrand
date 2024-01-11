@@ -243,15 +243,13 @@ class TypeRegistry:
 
     # types are recorded in the same order as they are defined
     _types: LinkedSet[TypeMeta | DecoratorMeta] = LinkedSet()
+    _precedence: DecoratorPrecedence = DecoratorPrecedence()
+    _edges: set[tuple[TypeMeta, TypeMeta]] = set()
 
     # aliases are stored in separate dictionaries for performance reasons
     types: dict[type, TypeMeta | DecoratorMeta] = {}
     dtypes: dict[type, TypeMeta | DecoratorMeta] = {}
     strings: dict[str, TypeMeta | DecoratorMeta] = {}
-
-    # overrides for type comparisons, decorator precedence
-    comparison_overrides: set[tuple[TypeMeta, TypeMeta]] = set()
-    decorator_precedence: DecoratorPrecedence = DecoratorPrecedence()
 
     def __init__(self) -> None:
         self._regex: None | re.Pattern[str] = None
@@ -406,6 +404,20 @@ class TypeRegistry:
         return Union.from_types(result)
 
     @property
+    def abstract(self) -> UnionMeta:
+        """Get a union containing all the abstract types that are stored in the
+        registry.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing each abstract type as an unparametrized base
+            type.
+        """
+        result = LinkedSet(t for t in self if isinstance(t, TypeMeta) and t.is_abstract)
+        return Union.from_types(result)
+
+    @property
     def backends(self) -> dict[str, UnionMeta]:
         """Get a dictionary mapping backend specifiers to unions containing all
         the types that are registered under them.
@@ -449,21 +461,76 @@ class TypeRegistry:
             >>> Sparse[Categorical[Int]]
             Sparse[Categorical[Int, ...], <NA>]
         """
-        return self.decorator_precedence
+        return self._precedence
 
     @property
-    def abstract(self) -> UnionMeta:
-        """Get a union containing all the abstract types that are stored in the
-        registry.
+    def edges(self) -> set[tuple[TypeMeta, TypeMeta]]:
+        """A set of edges (A, B) where A is considered to be less than B.
 
         Returns
         -------
-        UnionMeta
-            A union containing each abstract type as an unparametrized base
-            type.
+        set[tuple[TypeMeta, TypeMeta]]
+            A set of edges representing overrides for the less-than and greater-than
+            operators.  Each edge is a tuple of two types, where the first type is
+            always considered to be less than the second type.
+
+        Examples
+        --------
+        By adding an edge to this set, users can customize the behavior of the
+        comparison operators for a particular type.
+
+        .. doctest::
+
+            >>> REGISTRY.edges
+            set()
+            >>> Int16 < Int32
+            True
+            >>> Int32 < Int16
+            False
+            >>> REGISTRY.edges.add((Int32, Int16))
+            >>> Int16 < Int32
+            False
+            >>> Int32 < Int16
+            True
+
+        Note that this also affects the order of the :attr:`Type.larger` and
+        :attr:`Type.smaller` attributes.
+
+        .. doctest::
+
+            >>> Int8.larger
+            Union[NumpyInt32, NumpyInt16, PandasInt64, PythonInt]
+            >>> Int64.smaller
+            Union[NumpyInt8, NumpyInt32, NumpyInt16]
+
+        Note also that edges that are applied to abstract parents will be propagated
+        to all their children.
+
+        .. doctest::
+
+            >>> Int32["numpy"] < Int16
+            True
+            >>> Int32["pandas"] < Int16
+            True
+            >>> Int32["numpy"] < Int16["numpy"]
+            True
+            >>> Int32["pandas] < Int16["numpy"]
+            True
+            >>> Int32["numpy"] < Int16["pandas"]
+            True
+            >>> Int32["pandas] < Int16["pandas"]
+            True
+
+        Lastly, edges are automatically inverted for the greater-than operator.
+
+        .. doctest::
+
+            >>> Int32 > Int16
+            False
+            >>> Int16 > Int32
+            True
         """
-        result = LinkedSet(t for t in self if isinstance(t, TypeMeta) and t.is_abstract)
-        return Union.from_types(result)
+        return self._edges
 
     ###############################
     ####    SPECIAL METHODS    ####
@@ -2435,10 +2502,18 @@ class TypeMeta(type):
         if isinstance(typ, UnionMeta):
             return all(cls < t for t in typ)
 
-        if (cls, typ) in REGISTRY.comparison_overrides:
-            return True
-        if (typ, cls) in REGISTRY.comparison_overrides:
-            return False
+        t1 = cls
+        t2 = typ.parent if typ.is_parametrized else typ  # TODO: might have problems if t2 is a decorator
+        while t2.parent is not None:  # type: ignore
+            while t1.parent is not None:
+                if (t1, t2) in REGISTRY.edges:
+                    return True
+                if (t2, t1) in REGISTRY.edges:
+                    return False
+                t1 = t1.parent
+
+            t1 = cls
+            t2 = t2.parent  # type: ignore
 
         return _features(cls) < _features(typ)
 
@@ -2450,10 +2525,18 @@ class TypeMeta(type):
         if isinstance(typ, UnionMeta):
             return all(cls <= t for t in typ)
 
-        if (cls, typ) in REGISTRY.comparison_overrides:
-            return True
-        if (typ, cls) in REGISTRY.comparison_overrides:
-            return False
+        t1 = cls
+        t2 = typ.parent if typ.is_parametrized else typ  # TODO: might have problems if t2 is a decorator
+        while t2.parent is not None:  # type: ignore
+            while t1.parent is not None:
+                if (t1, t2) in REGISTRY.edges:
+                    return True
+                if (t2, t1) in REGISTRY.edges:
+                    return False
+                t1 = t1.parent
+
+            t1 = cls
+            t2 = t2.parent  # type: ignore
 
         return _features(cls) <= _features(typ)
 
@@ -2479,10 +2562,18 @@ class TypeMeta(type):
         if isinstance(typ, UnionMeta):
             return all(cls >= t for t in typ)
 
-        if (cls, typ) in REGISTRY.comparison_overrides:
-            return False
-        if (typ, cls) in REGISTRY.comparison_overrides:
-            return True
+        t1 = cls
+        t2 = typ.parent if typ.is_parametrized else typ  # TODO: might have problems if t2 is a decorator
+        while t2.parent is not None:  # type: ignore
+            while t1.parent is not None:
+                if (t1, t2) in REGISTRY.edges:
+                    return False
+                if (t2, t1) in REGISTRY.edges:
+                    return True
+                t1 = t1.parent
+
+            t1 = cls
+            t2 = t2.parent  # type: ignore
 
         return _features(cls) >= _features(typ)
 
@@ -2494,10 +2585,18 @@ class TypeMeta(type):
         if isinstance(typ, UnionMeta):
             return all(cls > t for t in typ)
 
-        if (cls, typ) in REGISTRY.comparison_overrides:
-            return False
-        if (typ, cls) in REGISTRY.comparison_overrides:
-            return True
+        t1 = cls
+        t2 = typ.parent if typ.is_parametrized else typ  # TODO: might have problems if t2 is a decorator
+        while t2.parent is not None:  # type: ignore
+            while t1.parent is not None:
+                if (t1, t2) in REGISTRY.edges:
+                    return False
+                if (t2, t1) in REGISTRY.edges:
+                    return True
+                t1 = t1.parent
+
+            t1 = cls
+            t2 = t2.parent  # type: ignore
 
         return _features(cls) > _features(typ)
 
