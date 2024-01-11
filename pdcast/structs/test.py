@@ -9,9 +9,12 @@ from typing import (
 
 import numpy as np
 import pandas as pd
-import regex  # alternate (PCRE-style) regex engine
+import regex as re # alternate (PCRE-style) regex engine
 
 from linked import LinkedSet, LinkedDict
+
+
+# pylint: disable=unused-argument
 
 
 class Empty:
@@ -28,12 +31,12 @@ DTYPE: TypeAlias = np.dtype[Any] | pd.api.extensions.ExtensionDtype
 ALIAS: TypeAlias = str | type | DTYPE
 TYPESPEC: TypeAlias = "META | ALIAS"
 OBJECT_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[np.object_]]
-RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]  # type: ignore
+RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]
 
 
-####################
-####    BASE    ####
-####################
+########################
+####    REGISTRY    ####
+########################
 
 
 # TODO: metaclass throws error if any non-classmethods are implemented on type objects.
@@ -98,27 +101,86 @@ class DecoratorPrecedence:
         self._set = LinkedSet()
 
     def index(self, decorator: DecoratorMeta) -> int:
-        """Get the index of a decorator in the precedence order."""
+        """Get the index of a decorator in the precedence order.
+
+        Parameters
+        ----------
+        decorator : DecoratorMeta
+            The decorator type to search for.
+
+        Returns
+        -------
+        int
+            The index of the decorator in the precedence order.
+
+        Raises
+        ------
+        KeyError
+            If the decorator is not in the precedence order.
+        """
         return self._set.index(decorator)
 
     def distance(self, decorator1: DecoratorMeta, decorator2: DecoratorMeta) -> int:
-        """Get the distance between a decorator and the end of the precedence order."""
+        """Get the linear distance between two decorators in the precedence order.
+
+        Parameters
+        ----------
+        decorator1 : DecoratorMeta
+            The first decorator to search for.  This is used as the origin.
+        decorator2 : DecoratorMeta
+            The second decorator to search for.  This is the destination.
+
+        Returns
+        -------
+        int
+            The difference between the index of the first decorator and the index of
+            the second decorator.  This will be positive if the first decorator is
+            higher in the precedence order and negative if it is lower.  If the
+            decorators are the same, then the distance will be zero.
+
+        Raises
+        ------
+        KeyError
+            If either decorator is not in the precedence order.
+        """
         return self._set.distance(decorator1, decorator2)
 
-    def higher(self, decorator1: DecoratorMeta, decorator2: DecoratorMeta) -> bool:
-        """Check whether a decorator is higher in the precedence order than another."""
-        return self.distance(decorator1, decorator2) > 0
+    def move(self, decorator: DecoratorMeta, shift: int) -> None:
+        """Move a decorator in the precedence order relative to its current position.
 
-    def lower(self, decorator1: DecoratorMeta, decorator2: DecoratorMeta) -> bool:
-        """Check whether a decorator is lower in the precedence order than another."""
-        return self.distance(decorator1, decorator2) < 0
+        Parameters
+        ----------
+        decorator : DecoratorMeta
+            The decorator to move.
+        shift : int
+            The number of positions to move the decorator.  Positive values move the
+            decorator to the right, and negative values move it to the left, truncated
+            to the bounds of the container.
 
-    def move(self, decorator: DecoratorMeta, offset: int) -> None:
-        """Move a decorator in the precedence order relative to its current position."""
-        self._set.move(decorator, offset)
+        Raises
+        ------
+        KeyError
+            If the decorator is not in the precedence order.
+        """
+        self._set.move(decorator, shift)
 
     def move_to_index(self, decorator: DecoratorMeta, index: int) -> None:
-        """Move a decorator to the specified index in the precedence order."""
+        """Move a decorator to the specified index in the precedence order.
+
+        Parameters
+        ----------
+        decorator : DecoratorMeta
+            The decorator to move.
+        index : int
+            The index to move the decorator to, truncated to the bounds of the
+            container.  This supports negative indexing, which counts from the end of
+            the precedence order.
+
+        Raises
+        ------
+        KeyError
+            If the decorator is not in the precedence order.
+        """
         self._set.move_to_index(decorator, index)
 
     def __contains__(self, decorator: DecoratorMeta) -> bool:
@@ -166,9 +228,9 @@ class TypeRegistry:
     decorator_precedence: DecoratorPrecedence = DecoratorPrecedence()
 
     def __init__(self) -> None:
-        self._regex: None | regex.Pattern = None
-        self._column: None | regex.Pattern = None
-        self._resolvable: None | regex.Pattern = None
+        self._regex: None | re.Pattern[str] = None
+        self._column: None | re.Pattern[str] = None
+        self._resolvable: None | re.Pattern[str] = None
         self._na_strings: None | dict[str, Any] = None
 
     #######################
@@ -177,19 +239,40 @@ class TypeRegistry:
 
     @property
     def aliases(self) -> dict[type | str, TypeMeta | DecoratorMeta]:
-        """Unify the type, dtype, and string registries into a single dictionary.
-        These are usually separated for performance reasons.
+        """Get a dictionary mapping aliases to their corresponding types.
+
+        Returns
+        -------
+        dict[type | str, TypeMeta | DecoratorMeta]
+            A dictionary with aliases as keys and unparametrized types as values.
+
+        Notes
+        -----
+        Each category of alias is stored in its own separate dictionary for
+        performance reasons.  This attribute unifies them into a single mapping,
+        although changes to the resulting dictionary will not be reflected in the
+        registry.
         """
         return self.types | self.dtypes | self.strings
 
     @property
-    def regex(self) -> regex.Pattern:
-        """TODO"""
+    def regex(self) -> re.Pattern[str]:
+        """Get a regular expression to match a registered string alias plus any
+        optional arguments that follow it.
+
+        Returns
+        -------
+        regex.Pattern[str]
+            A regular expression that matches a single alias from the registry,
+            followed by any number of comma-separated arguments enclosed in square
+            brackets.  The alias is captured in a group named `alias`, and the
+            arguments are captured in a group named `args`.
+        """
         if self._regex is None:
             if not self.strings:
                 pattern = r".^"  # matches nothing
             else:
-                escaped = [regex.escape(alias) for alias in self.strings]
+                escaped = [re.escape(alias) for alias in self.strings]
                 escaped.sort(key=len, reverse=True)  # avoids partial matches
                 escaped.append(r"(?P<sized_unicode>U(?P<size>[0-9]*))$")  # U32, U...
                 pattern = (
@@ -197,26 +280,49 @@ class TypeRegistry:
                     rf"(?P<params>\[(?P<args>([^\[\]]|(?&params))*)\])?"  # recursive args
                 )
 
-            self._regex = regex.compile(pattern)
+            self._regex = re.compile(pattern)
 
         return self._regex
 
     @property
-    def column(self) -> regex.Pattern:
-        """TODO"""
+    def column(self) -> re.Pattern[str]:
+        """Get a regular expression to match an optional column name plus one or
+        more type specifiers.
+
+        Returns
+        -------
+        regex.Pattern[str]
+            A regular expression that matches an optional column name in slice
+            syntax, followed by any number of pipe-separated type specifiers
+            (`column: type | ...`).  The column name is captured in a group
+            named `column`, and the type specifiers are captured in a group
+            named `type`.
+        """
         if self._column is None:
-            self._column = regex.compile(
-                rf"((?P<column>[^\(\)\[\]:,]+)\s*:\s*)?"  # optional column name
-                rf"(?P<type>{self.regex.pattern}(\s*[|]\s*(?&type))*)"  # any number of | separated types
+            # match optional column name: any number of | separated types
+            self._column = re.compile(
+                rf"((?P<column>[^\(\)\[\]:,]+)\s*:\s*)?"  
+                rf"(?P<type>{self.regex.pattern}(\s*[|]\s*(?&type))*)"
             )
         return self._column
 
     @property
-    def resolvable(self) -> regex.Pattern:
-        """TODO"""
+    def resolvable(self) -> re.Pattern[str]:
+        """Get a regular expression to match any string that can be resolved
+        into a valid type.
+
+        Returns
+        -------
+        regex.Pattern[str]
+            A regular expression that matches any string that is composed
+            entirely by comma-separated column/type expressions.  If this
+            pattern matches, then the string is a valid target for
+            :meth:`resolve`.
+        """
         if self._resolvable is None:
-            self._resolvable = regex.compile(
-                rf"(?P<atom>{self.column.pattern}(\s*[,]\s*(?&atom))*)"  # any number of , separated columns
+            # match any number of , separated columns
+            self._resolvable = re.compile(
+                rf"(?P<atom>{self.column.pattern}(\s*[,]\s*(?&atom))*)"
             )
         return self._resolvable
 
@@ -233,7 +339,9 @@ class TypeRegistry:
         return self._na_strings
 
     def refresh_regex(self) -> None:
-        """TODO"""
+        """Clear the regex cache, forcing it to be rebuilt the next time it is
+        accessed.
+        """
         self._regex = None
         self._column = None
         self._resolvable = None
@@ -245,35 +353,79 @@ class TypeRegistry:
 
     @property
     def roots(self) -> UnionMeta:
-        """TODO"""
+        """Get a union containing all the root types that are stored in the
+        registry.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing the root types (those that inherit directly from
+            :class:`Type`) of every hierarchy.
+        """
         result = LinkedSet(t for t in self if isinstance(t, TypeMeta) and t.is_root)
         return Union.from_types(result)
 
     @property
     def leaves(self) -> UnionMeta:
-        """TODO"""
+        """Get a union containing all the leaf types that are stored in the
+        registry.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing the concrete leaf types (those that have no children) of
+            every hierarchy.
+        """
         result = LinkedSet(t for t in self if isinstance(t, TypeMeta) and t.is_leaf)
         return Union.from_types(result)
 
     @property
     def backends(self) -> dict[str, UnionMeta]:
-        """TODO"""
-        result: dict[str, LinkedSet] = {}
+        """Get a dictionary mapping backend specifiers to unions containing all
+        the types that are registered under them.
+
+        Returns
+        -------
+        dict[str, UnionMeta]
+            A dictionary of backend strings to union types.  The contents of
+            the union describe the family of types that are registered under
+            the backend.
+        """
+        result: dict[str, LinkedSet[TypeMeta]] = {}
         for typ in self:
             if isinstance(typ, TypeMeta) and typ.backend:
                 result.setdefault(typ.backend, LinkedSet()).add(typ)
 
         return {k: Union.from_types(v) for k, v in result.items()}
 
+    # TODO: it might make sense to return DecoratorPrecedence directly from the
+    # .decorators accessor.  This would make it more straightforward to modify
+    # the precedence.
+
     @property
     def decorators(self) -> UnionMeta:
-        """TODO"""
+        """Get a union containing all the decorators that are stored in the
+        registry.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing each decorator as an unparametrized base type.
+        """
         result = LinkedSet(t for t in self if isinstance(t, DecoratorMeta))
         return Union.from_types(result)
 
     @property
     def abstract(self) -> UnionMeta:
-        """TODO"""
+        """Get a union containing all the abstract types that are stored in the
+        registry.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing each abstract type as an unparametrized base
+            type.
+        """
         result = LinkedSet(t for t in self if isinstance(t, TypeMeta) and t.is_abstract)
         return Union.from_types(result)
 
@@ -320,12 +472,12 @@ class Aliases:
         self._parent: TypeMeta | DecoratorMeta | None = None  # deferred assignment
 
     @property
-    def parent(self) -> TypeMeta:
+    def parent(self) -> TypeMeta | DecoratorMeta | None:
         """Get the type that the aliases point to."""
-        return self._parent  # type: ignore
+        return self._parent
 
     @parent.setter
-    def parent(self, typ: TypeMeta) -> None:
+    def parent(self, typ: TypeMeta | DecoratorMeta) -> None:
         """Set the type associated with the aliases.  This is called automatically by
         the metaclass machinery when a type is instantiated, and will raise an error if
         called after that point.
@@ -455,12 +607,14 @@ class TypeBuilder:
     def __init__(
         self,
         name: str,
-        parent: TypeMeta | DecoratorMeta | type,
+        parent: TypeMeta | DecoratorMeta,
         namespace: dict[str, Any],
+        cache_size: int | None,
     ):
         self.name = name
         self.parent = parent
         self.namespace = namespace
+        self.cache_size = cache_size
         self.annotations = namespace.get("__annotations__", {})
         if parent is object:
             self.required = {}
@@ -505,9 +659,9 @@ class TypeBuilder:
         self.namespace["_parametrized"] = False
         self.namespace["_default"] = []
         self.namespace["_nullable"] = []
-        # self.namespace["_cache_size"]  # handled in subclasses
-        # self.namespace["_flyweights"]
-        # self.namespace["__class_getitem__"]
+        self.namespace["_cache_size"] = self.cache_size
+        self.namespace["_flyweights"] = LinkedDict(max_size=self.cache_size)
+        # self.namespace["__class_getitem__"]  # handled in subclasses
         # self.namespace["from_scalar"]
         # self.namespace["from_dtype"]
         # self.namespace["from_string"]
@@ -627,15 +781,15 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
 
     if isinstance(target, np.dtype):
         if target.fields:
-            return Union.from_columns({
-                col: resolve_dtype(dtype) for col, (dtype, _) in target.fields.items()
+            return Union.from_columns({  # type: ignore
+                col: _resolve_dtype(dtype) for col, (dtype, _) in target.fields.items()
             })
-        return resolve_dtype(target)
+        return _resolve_dtype(target)
 
     if isinstance(target, pd.api.extensions.ExtensionDtype):
         # if isinstance(target, SyntheticDtype):
         #     return target._bertrand_type
-        return resolve_dtype(target)
+        return _resolve_dtype(target)
 
     if isinstance(target, str):
         # strip leading/trailing whitespace and special syntax related to unions
@@ -660,7 +814,7 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         if not fullmatch:
             raise TypeError(f"invalid specifier -> {repr(target)}")
 
-        return resolve_string(fullmatch.group(), as_union)
+        return _resolve_string(fullmatch.group(), as_union)
 
     if isinstance(target, slice):
         return Union.from_columns({target.start: resolve(target.stop)})
@@ -678,43 +832,42 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
             return Union.from_types(LinkedSet())
 
         if isinstance(first, slice):
-            result = {first.start: resolve(first.stop)}
+            slices = {first.start: resolve(first.stop)}
             for item in it:
                 if not isinstance(item, slice):
                     raise TypeError(f"expected a slice -> {repr(item)}")
-                result[item.start] = resolve(item.stop)
-            return Union.from_columns(result)
+                slices[item.start] = resolve(item.stop)
+            return Union.from_columns(slices)
 
         if isinstance(first, (list, tuple)):
             if len(first) != 2:
                 raise TypeError(f"expected a tuple of length 2 -> {repr(first)}")
 
-            result = {first[0]: resolve(first[1])}
+            pairs = {first[0]: resolve(first[1])}
             for item in it:
                 if not isinstance(item, (list, tuple)) or len(item) != 2:
                     raise TypeError(f"expected a tuple of length 2 -> {repr(item)}")
-                result[item[0]] = resolve(item[1])
-            return Union.from_columns(result)
+                pairs[item[0]] = resolve(item[1])
+            return Union.from_columns(pairs)
 
         typ = resolve(first)
         if isinstance(typ, UnionMeta):
-            result = LinkedSet(typ)
+            flat = LinkedSet(typ)
         else:
-            result = LinkedSet([typ])
+            flat = LinkedSet([typ])
         for t in it:
             typ = resolve(t)
             if isinstance(typ, UnionMeta):
-                result.update(typ)
+                flat.update(typ)
             else:
-                result.add(typ)
+                flat.add(typ)
 
-        return Union.from_types(result)
+        return Union.from_types(flat)
 
     raise TypeError(f"invalid specifier -> {repr(target)}")
 
 
-def resolve_dtype(target: DTYPE) -> META:
-    """TODO"""
+def _resolve_dtype(target: DTYPE) -> META:
     typ = REGISTRY.dtypes.get(type(target), None)
     if typ is None:
         raise TypeError(f"unrecognized dtype -> {repr(target)}")
@@ -724,8 +877,7 @@ def resolve_dtype(target: DTYPE) -> META:
     return typ
 
 
-def resolve_string(target: str, as_union: bool) -> META:
-    """TODO"""
+def _resolve_string(target: str, as_union: bool) -> META:
     # split into optional column specifiers -> 'column: type | type | ...'
     matches = list(REGISTRY.column.finditer(target))
 
@@ -750,14 +902,14 @@ def resolve_string(target: str, as_union: bool) -> META:
 
             if len(specifiers) > 1:
                 columns[col] = Union.from_types(LinkedSet(
-                    process_string(s) for s in specifiers
+                    _process_string(s) for s in specifiers
                 ))
             else:
-                columns[col] = process_string(specifiers[0])
+                columns[col] = _process_string(specifiers[0])
 
         # otherwise, add to flat set
         else:
-            flat.update(process_string(s) for s in specifiers)
+            flat.update(_process_string(s) for s in specifiers)
 
     # disallow mixed syntax
     if columns and flat:
@@ -774,8 +926,7 @@ def resolve_string(target: str, as_union: bool) -> META:
     return Union.from_types(flat)
 
 
-def process_string(match: regex.Match) -> META:
-    """TODO"""
+def _process_string(match: re.Match[str]) -> META:
     groups = match.groupdict()
 
     # resolve alias to specified type
@@ -804,27 +955,27 @@ def process_string(match: regex.Match) -> META:
     return typ.from_string(*args)
 
 
-def nested_expr(prefix: str, suffix: str, group_name: str) -> str:
+def _nested_expr(prefix: str, suffix: str, group_name: str) -> str:
     """Produce a regular expression to match nested sequences with the specified
     opening and closing tokens.  Relies on PCRE-style recursive patterns.
     """
-    opener = regex.escape(prefix)
-    closer = regex.escape(suffix)
+    opener = re.escape(prefix)
+    closer = re.escape(suffix)
     body = rf"(?P<body>([^{opener}{closer}]|(?&{group_name}))*)"
     return rf"(?P<{group_name}>{opener}{body}{closer})"
 
 
-INVOCATION = regex.compile(
+INVOCATION = re.compile(
     rf"(?P<invocation>[^\(\)\[\],]+)"
-    rf"({nested_expr('(', ')', 'signature')}|{nested_expr('[', ']', 'options')})"
+    rf"({_nested_expr('(', ')', 'signature')}|{_nested_expr('[', ']', 'options')})"
 )
-SEQUENCE = regex.compile(
+SEQUENCE = re.compile(
     rf"(?P<sequence>"
-    rf"{nested_expr('(', ')', 'parens')}|"
-    rf"{nested_expr('[', ']', 'brackets')})"
+    rf"{_nested_expr('(', ')', 'parens')}|"
+    rf"{_nested_expr('[', ']', 'brackets')})"
 )
-LITERAL = regex.compile(r"[^,]+")
-TOKEN = regex.compile(rf"{INVOCATION.pattern}|{SEQUENCE.pattern}|{LITERAL.pattern}")
+LITERAL = re.compile(r"[^,]+")
+TOKEN = re.compile(rf"{INVOCATION.pattern}|{SEQUENCE.pattern}|{LITERAL.pattern}")
 
 
 ########################
@@ -841,19 +992,19 @@ def detect(data: Any, drop_na: bool = True) -> META:
 
     if issubclass(data_type, pd.DataFrame):
         return Union.from_columns({
-            col: detect_dtype(data[col], drop_na=drop_na) for col in data.columns
+            col: _detect_dtype(data[col], drop_na=drop_na) for col in data.columns
         })
 
     if issubclass(data_type, np.ndarray) and data.dtype.fields:
         return Union.from_columns({
-            col: detect_dtype(data[col], drop_na=drop_na) for col in data.dtype.names
+            col: _detect_dtype(data[col], drop_na=drop_na) for col in data.dtype.names
         })
 
     if hasattr(data, "__iter__") and not isinstance(data, type):
         if data_type in REGISTRY.types:
-            return detect_scalar(data, data_type)
+            return _detect_scalar(data, data_type)
         elif hasattr(data, "dtype"):
-            return detect_dtype(data, drop_na)
+            return _detect_dtype(data, drop_na)
         else:
             # convert to numpy array and strip missing values
             arr = np.asarray(data, dtype=object)
@@ -862,21 +1013,20 @@ def detect(data: Any, drop_na: bool = True) -> META:
             if hasnans:
                 arr = arr[~missing]  # pylint: disable=invalid-unary-operand-type
 
-            union = detect_elementwise(arr)
+            union = _detect_elementwise(arr)
 
             # reinsert missing values
             if hasnans and not drop_na:
                 index = np.full(missing.shape[0], NullType, dtype=object)
                 index[~missing] = union.index  # pylint: disable=invalid-unary-operand-type
-                return Union.from_types(union | NullType, rle_encode(index))
+                return Union.from_types(union | NullType, _rle_encode(index))
 
             return union
 
-    return detect_scalar(data, data_type)
+    return _detect_scalar(data, data_type)
 
 
-def detect_scalar(data: Any, data_type: type) -> META:
-    """TODO"""
+def _detect_scalar(data: Any, data_type: type) -> META:
     if pd.isna(data):
         return NullType
 
@@ -889,12 +1039,11 @@ def detect_scalar(data: Any, data_type: type) -> META:
     return typ
 
 
-def detect_dtype(data: Any, drop_na: bool) -> META:
-    """TODO"""
+def _detect_dtype(data: Any, drop_na: bool) -> META:
     dtype = data.dtype
 
     if dtype == np.dtype(object):  # ambiguous - loop through elementwise
-        return detect_elementwise(data)
+        return _detect_elementwise(data)
 
     # if isinstance(dtype, SyntheticDtype):
     #     typ = dtype._bertrand_type
@@ -916,7 +1065,7 @@ def detect_dtype(data: Any, drop_na: bool) -> META:
                 index[~is_na] = result.index  # pylint: disable=invalid-unary-operand-type
             else:
                 index[~is_na] = result  # pylint: disable=invalid-unary-operand-type
-            return Union.from_types(LinkedSet([result, NullType]), rle_encode(index))
+            return Union.from_types(LinkedSet([result, NullType]), _rle_encode(index))
 
     index = np.array(
         [(result, len(data))],
@@ -925,12 +1074,11 @@ def detect_dtype(data: Any, drop_na: bool) -> META:
     return Union.from_types(LinkedSet([result]), index)
 
 
-def detect_elementwise(data: Any) -> UnionMeta:
-    """TODO"""
+def _detect_elementwise(data: Any) -> UnionMeta:
     observed = LinkedSet()
     counts = []
     count = 0
-    prev = None
+    prev: None | TypeMeta | DecoratorMeta = None
     lookup = REGISTRY.types
 
     for element in data:
@@ -941,7 +1089,7 @@ def detect_elementwise(data: Any) -> UnionMeta:
         if typ is None:
             typ = ObjectType[element_type]
         elif typ._defines_from_scalar:  # pylint: disable=protected-access
-            typ = typ.from_scalar(element)  # optimized away if possible
+            typ = typ.from_scalar(element)
 
         # update counts
         if typ is prev:
@@ -963,8 +1111,10 @@ def detect_elementwise(data: Any) -> UnionMeta:
     return Union.from_types(observed, index)
 
 
-def rle_encode(arr: OBJECT_ARRAY) -> RLE_ARRAY:  # type: ignore
-    """TODO"""
+def _rle_encode(arr: OBJECT_ARRAY) -> RLE_ARRAY:  # type: ignore
+    """Apply run-length encoding to an array of objects, returning the result
+    as a structured array with two columns: "value" and "count".
+    """
     # get indices where transitions occur
     idx = np.flatnonzero(arr[:-1] != arr[1:])
     idx = np.concatenate([[0], idx + 1, [arr.shape[0]]])
@@ -982,8 +1132,10 @@ def rle_encode(arr: OBJECT_ARRAY) -> RLE_ARRAY:  # type: ignore
     )
 
 
-def rle_decode(arr: RLE_ARRAY) -> OBJECT_ARRAY:
-    """TODO"""
+def _rle_decode(arr: RLE_ARRAY) -> OBJECT_ARRAY:
+    """Undo run-length encoding on a structured array to recover the original
+    object array.
+    """
     return np.repeat(arr["value"], arr["count"])  # type: ignore
 
 
@@ -1003,23 +1155,23 @@ class TypeMeta(type):
     See the documentation for the `Type` class for more information on how these work.
     """
 
-    # NOTE: this metaclass uses the following internal fields, which are populated by
-    # either AbstractBuilder or ConcreteBuilder:
-    #   _slug: str
-    #   _hash: int
-    #   _required: dict[str, Callable[..., Any]]
-    #   _fields: dict[str, Any]
-    #   _parent: TypeMeta | None
-    #   _subtypes: LinkedSet[TypeMeta]
-    #   _implementations: LinkedDict[str, TypeMeta]
-    #   _default: list[TypeMeta]  # TODO: modify directly rather than using a list
-    #   _nullable: list[TypeMeta]
-    #   _params: tuple[str]
-    #   _parametrized: bool
-    #   _cache_size: int | None
-    #   _flyweights: LinkedDict[str, TypeMeta]
-    #   _defines_from_scalar: bool
-    #   _defines_from_dtype: bool
+    # This metaclass uses the following internal fields, as populated by AbstractBuilder
+    # or ConcreteBuilder based on the `backend` metaclass argument
+    _slug: str
+    _hash: int
+    _required: dict[str, Callable[..., Any]]
+    _fields: dict[str, Any]
+    _parent: TypeMeta | None
+    _subtypes: LinkedSet[TypeMeta]
+    _implementations: LinkedDict[str, TypeMeta]
+    _default: list[TypeMeta]  # NOTE: modify directly at the C++ level
+    _nullable: list[TypeMeta]
+    _params: tuple[str]
+    _parametrized: bool
+    _cache_size: int | None
+    _flyweights: LinkedDict[str, TypeMeta]
+    _defines_from_scalar: bool
+    _defines_from_dtype: bool
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -1057,12 +1209,24 @@ class TypeMeta(type):
         cache_size: int | None = None,
     ) -> TypeMeta:
         if not backend:
-            build = AbstractBuilder(name, bases, namespace)
-        else:
-            build = ConcreteBuilder(name, bases, namespace, backend, cache_size)
+            abstract = AbstractBuilder(name, bases, namespace, cache_size)
+            return abstract.parse().fill().register(
+                super().__new__(  # type: ignore
+                    mcs,
+                    abstract.name,
+                    (abstract.parent,),
+                    abstract.namespace
+                )
+            )
 
-        return build.parse().fill().register(
-            super().__new__(mcs, build.name, (build.parent,), build.namespace)
+        concrete = ConcreteBuilder(name, bases, namespace, backend, cache_size)
+        return concrete.parse().fill().register(
+            super().__new__(  # type: ignore
+                mcs,
+                concrete.name,
+                (concrete.parent,),
+                concrete.namespace
+            )
         )
 
     def flyweight(cls, *args: Any, **kwargs: Any) -> TypeMeta:
@@ -1093,6 +1257,15 @@ class TypeMeta(type):
             If the number of positional arguments does not match the signature of
             `__class_getitem__()`.  Note that order is not checked, so users should
             take care to ensure that the arguments are passed in the correct order.
+
+        See Also
+        --------
+        cache_size: the maximum size of this type's flyweight cache.
+        flyweights: a read-only proxy for this type's flyweight cache.
+        Type.__class_getitem__: defines parametrization behavior for bertrand types.
+        Type.from_scalar: parses a scalar example of this type.
+        Type.from_dtype: parses a numpy dtype object registered to this type.
+        Type.from_string: parses a string representation of this type.
 
         Notes
         -----
@@ -1143,49 +1316,216 @@ class TypeMeta(type):
     ####    CLASS DECORATORS    ####
     ################################
 
-    def default(cls, implementation: TypeMeta) -> TypeMeta:
+    def default(cls, redirect: TypeMeta) -> TypeMeta:
         """A class decorator that registers a default implementation for an abstract
         type.
+
+        Parameters
+        ----------
+        redirect: TypeMeta
+            The type to delegate to when attribute lookups fail on the abstract
+            type.  This type must be a subclass of the abstract type, and will
+            be validated before being registered.  It can be either abstract or
+            concrete, and may itself delegate to another type.
+
+        Returns
+        -------
+        TypeMeta
+            The type that was passed in, unmodified.
+
+        Raises
+        ------
+        TypeError
+            If the parent type is concrete, or if the decorated type is not a
+            subclass of the parent.
+
+        See Also
+        --------
+        as_default: converts an abstract type to its default implementation.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            class Foo(Type):
+                pass
+
+            assert not hasattr(Foo, "x")
+
+            @Foo.default
+            class Bar(Foo):
+                x = 1
+
+            @Bar.default
+            class Baz(Bar):
+                y = 2
+
+            assert Foo.x is Bar.x
+            assert Foo.y is Baz.y
         """
         if not cls.is_abstract:
             raise TypeError("concrete types cannot have default implementations")
 
-        if not issubclass(implementation, cls):
+        if not issubclass(redirect, cls):
             raise TypeError(
                 f"default implementation must be a subclass of {cls.__name__}"
             )
 
         if cls._default:
             cls._default.pop()
-        cls._default.append(implementation)  # NOTE: easier at C++ level
-        return implementation
+        cls._default.append(redirect)  # NOTE: easier at C++ level
+        return redirect
 
-    def nullable(cls, implementation: TypeMeta) -> TypeMeta:
+    def nullable(cls, redirect: TypeMeta) -> TypeMeta:
         """A class decorator that registers an alternate, nullable implementation for
         a concrete type.
+
+        Parameters
+        ----------
+        redirect: TypeMeta
+            The type to delegate to when missing values are encountered for this
+            type.  This will implicitly replace the original type during
+            conversions when missing values are present.  It will be validated
+            before being registered, and must be concrete.
+
+        Returns
+        -------
+        TypeMeta
+            The type that was passed in, unmodified.
+
+        Raises
+        ------
+        TypeError
+            If the parent type is abstract or already nullable, or if the decorated
+            type is not concrete.
+
+        See Also
+        --------
+        as_nullable: converts a concrete type to its nullable implementation.
+
+        Examples
+        --------
+        In general, the structure of a nullable type is as follows:
+
+        .. code-block:: python
+
+            class Foo(Type):  # abstract parent type
+                ...
+
+            @Foo.default
+            class Bar(Foo, backend="non_nullable"):  # non-nullable implementation
+                ...
+
+            @Bar.nullable
+            class Baz(Foo, backend="nullable"):  # nullable equivalent
+                ...
+
+        With this structure in place, any conversion to ``Foo`` or ``Bar`` will 
+        be automatically translated to ``Baz`` when missing values are present.
+
+        A practical example of this can be seen with numpy integer types, which
+        cannot store missing values by default.  Pandas implements a set of
+        functionally identical extension types to cover this case, which are
+        identical in every way except for their nullability.  As such, we can
+        implicitly convert to the pandas type whenever missing values are
+        encountered.
+
+        .. doctest::
+
+            >>> Int64["numpy"]([1, 2, 3])
+            0    1
+            1    2
+            2    3
+            dtype: int64
+            >>> Int64["numpy"]([1, 2, 3, None])
+            0       1
+            1       2
+            2       3
+            3    <NA>
+            dtype: Int64
+            >>> detect(_)
+            Union[PandasInt64]
         """
         if cls.is_abstract:
             raise TypeError(
                 f"abstract types cannot have nullable implementations: {cls.slug}"
             )
-
         if cls.is_nullable:
             raise TypeError(f"type is already nullable: {cls.slug}")
 
+        if redirect.is_abstract:
+            raise TypeError(
+                f"nullable implementations must be concrete: {redirect.slug}"
+            )
+
         if cls._nullable:
             cls._nullable.pop()
-        cls._nullable.append(implementation)
-        return implementation
+        cls._nullable.append(redirect)
+        return redirect
 
     @property
     def as_default(cls) -> TypeMeta:
-        """Convert an abstract type to its default implementation, if it has one."""
+        """Convert an abstract type to its default implementation, if it has one.
+
+        Returns
+        -------
+        TypeMeta
+            The default implementation of the type, if it has one.  Otherwise,
+            returns the type itself.
+
+        See Also
+        --------
+        default: registers a default implementation for an abstract type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.as_default
+            Signed
+            >>> Signed.as_default
+            Int64
+            >>> Int64.as_default
+            NumpyInt64
+            >>> NumpyInt64.as_default
+            NumpyInt64
+        """
         return cls if cls.is_default else cls._default[0]
 
     @property
     def as_nullable(cls) -> TypeMeta:
-        """Convert a concrete type to its nullable implementation, if it has one."""
-        return cls if cls.is_nullable else cls._nullable[0]
+        """Convert a concrete type to its nullable implementation, if it has one.
+
+        Returns
+        -------
+        TypeMeta
+            The type itself if it is already nullable.  Otherwise, the nullable
+            implementation that is registered to this type, if it has one.
+
+        Raises
+        ------
+        TypeError
+            If the type is marked as non-nullable and does not have a nullable
+            implementation.
+
+        See Also
+        --------
+        nullable: registers a nullable implementation for a concrete type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int64["numpy"].as_nullable
+            PandasInt64
+            >>> PandasInt64.as_nullable
+            PandasInt64
+        """
+        if cls.is_nullable:
+            return cls
+        if not cls._nullable:
+            raise TypeError(f"type is not nullable -> {cls.slug}")
+        return cls._nullable[0]
 
     ################################
     ####    CLASS PROPERTIES    ####
@@ -1193,32 +1533,133 @@ class TypeMeta(type):
 
     @property
     def slug(cls) -> str:
-        """TODO"""
+        """Get a string identifier for this type, as used to look up flyweights.
+
+        Returns
+        -------
+        str
+            A string concatenating the type's class name with its parameter
+            configuration, if any.
+        """
         return cls._slug
 
     @property
     def hash(cls) -> int:
-        """TODO"""
+        """Get a precomputed hash value for this type.
+
+        Returns
+        -------
+        int
+            A unique hash based on the type's string identifier.
+
+        Notes
+        -----
+        This is identical to the output of the :func:`hash` built-in function.
+        """
         return cls._hash
 
     @property
     def backend(cls) -> str:
-        """TODO"""
+        """Get a concrete type's backend specifier.
+
+        Returns
+        -------
+        str
+            A string identifying the backend that this type is registered to.
+            This is used to search an abstract parent's implementation
+            dictionary, allowing the concrete type to be resolved via
+            parametrization.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            class Foo(Type):
+                pass
+
+            class Bar(Foo, backend="bar"):
+                # required fields, etc.
+                ...
+
+            assert Foo["bar"] is Bar
+            assert Bar.backend == "bar"
+        """
         return cls._fields["backend"]
 
     @property
     def itemsize(cls) -> int:
-        """TODO"""
+        """The size of a single element of this type, in bytes.
+
+        Returns
+        -------
+        int
+            The width of this type in memory.
+    
+        Notes
+        -----
+        This is identical to the result of the :func:`len` operator when applied
+        to a scalar type.  This behaves similarly to a Python-level ``sizeof()``
+        operator as used in C/C++.
+        """
         return cls.dtype.itemsize
 
     @property
-    def cache_size(cls) -> int:
-        """TODO"""
+    def cache_size(cls) -> int | None:
+        """The maximum size of this type's flyweight cache, if it is limited to
+        a finite size.
+
+        Returns
+        -------
+        int | None
+            The maximum number of flyweights that can be stored in this type's
+            LRU cache.  If None, then the cache is unlimited.
+
+        See Also
+        --------
+        flyweight: create a flyweight with the specified parameters.
+        flyweights: a read-only proxy for this type's flyweight cache.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            class Foo(Type, cache_size=10):
+                ...
+
+            assert Foo.cache_size == 10
+        """
         return cls._cache_size
 
     @property
     def flyweights(cls) -> Mapping[str, TypeMeta]:
-        """TODO"""
+        """A read-only proxy for this type's flyweight cache.
+
+        Returns
+        -------
+        Mapping[str, TypeMeta]
+            A mapping of string identifiers to flyweight types.  This is a read-only
+            proxy for a :class:`LinkedDict`, which is a custom C++ data structure
+            that combines a hash table with a doubly-linked list.  The order of the
+            keys always reflects current LRU order, with the most recently used
+            flyweight at the beginning of the dictionary.  Note that this order is
+            not necessarily stable, and can change without invalidating the proxy.
+
+        See Also
+        --------
+        cache_size: the maximum size of this type's flyweight cache.
+        flyweight: create a flyweight with the specified parameters.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Object.flyweights
+            mappingproxy(LinkedDict({}))
+            >>> Object[int]
+            Object[<class 'int'>]
+            >>> Object.flyweights
+            mappingproxy(LinkedDict({"Object[<class 'int'>]": Object[<class 'int'>]}))
+        """
         return MappingProxyType(cls._flyweights)
 
     @property
@@ -1277,27 +1718,27 @@ class TypeMeta(type):
     @property
     def children(cls) -> UnionMeta:
         """TODO"""
-        result = LinkedSet[TypeMeta]()
+        result = LinkedSet()
         explode_children(cls, result)
         return Union.from_types(result[1:])
 
     @property
     def leaves(cls) -> UnionMeta:
         """TODO"""
-        result = LinkedSet[TypeMeta]()
+        result = LinkedSet()
         explode_leaves(cls, result)
         return Union.from_types(result)
 
     @property
     def larger(cls) -> UnionMeta:
         """TODO"""
-        result = LinkedSet[TypeMeta](sorted(t for t in cls.root.leaves if t > cls))
+        result = LinkedSet(sorted(t for t in cls.root.leaves if t > cls))
         return Union.from_types(result)
 
     @property
     def smaller(cls) -> UnionMeta:
         """TODO"""
-        result = LinkedSet[TypeMeta](sorted(t for t in cls.root.leaves if t < cls))
+        result = LinkedSet(sorted(t for t in cls.root.leaves if t < cls))
         return Union.from_types(result)
 
     @property
@@ -1365,7 +1806,7 @@ class TypeMeta(type):
         return cls.as_default(*args, **kwargs)
 
     def __instancecheck__(cls, other: Any) -> bool:
-        return cls.__subclasscheck__(detect(other))
+        return cls.__subclasscheck__(detect(other))  # pylint: disable=no-value-for-parameter
 
     def __subclasscheck__(cls, other: TYPESPEC) -> bool:
         typ = resolve(other)
@@ -1527,7 +1968,13 @@ class AbstractBuilder(TypeBuilder):
         "from_string"
     }
 
-    def __init__(self, name: str, bases: tuple[TypeMeta], namespace: dict[str, Any]):
+    def __init__(
+        self,
+        name: str,
+        bases: tuple[TypeMeta],
+        namespace: dict[str, Any],
+        cache_size: int | None
+    ):
         if len(bases) != 1 or not (bases[0] is object or issubclass(bases[0], Type)):
             raise TypeError(
                 f"abstract types must inherit from bertrand.Type or one of its "
@@ -1538,7 +1985,7 @@ class AbstractBuilder(TypeBuilder):
         if parent is not object and not parent.is_abstract:
             raise TypeError("abstract types must not inherit from concrete types")
 
-        super().__init__(name, parent, namespace)
+        super().__init__(name, parent, namespace, cache_size)
         self.fields["backend"] = ""
 
     def parse(self) -> AbstractBuilder:
@@ -1564,8 +2011,6 @@ class AbstractBuilder(TypeBuilder):
         """Fill in any missing slots in the namespace with default values, and evaluate
         any derived attributes."""
         super().fill()
-        self.namespace["_cache_size"] = None
-        self.namespace["_flyweights"] = LinkedDict()
 
         self.class_getitem()
         self.from_scalar()
@@ -1705,10 +2150,8 @@ class ConcreteBuilder(TypeBuilder):
             if backend in parent._implementations:
                 raise TypeError(f"backend id must be unique: {repr(backend)}")
 
-        super().__init__(name, parent, namespace)
-
+        super().__init__(name, parent, namespace, cache_size)
         self.backend = backend
-        self.cache_size = cache_size
         self.class_getitem_signature: inspect.Signature | None = None
         self.fields["backend"] = backend
 
@@ -1739,8 +2182,6 @@ class ConcreteBuilder(TypeBuilder):
         any derived attributes.
         """
         super().fill()
-        self.namespace["_cache_size"] = self.cache_size
-        self.namespace["_flyweights"] = LinkedDict(max_size=self.cache_size)
 
         self.class_getitem()
         self.from_scalar()
@@ -1978,15 +2419,17 @@ class DecoratorMeta(type):
 
     # NOTE: this metaclass uses the following internal fields, which are populated
     # by DecoratorBuilder:
-    #   _slug: str
-    #   _hash: int
-    #   _required: dict[str, Callable[..., Any]]
-    #   _fields: dict[str, Any]
-    #   _parent: DecoratorMeta      # NOTE: parent of this decorator, not wrapped
-    #   _params: tuple[str]
-    #   _parametrized: bool
-    #   _cache_size: int | None
-    #   _flyweights: LinkedDict[str, DecoratorMeta]
+    _slug: str
+    _hash: int
+    _required: dict[str, Callable[..., Any]]
+    _fields: dict[str, Any]
+    _parent: DecoratorMeta  # NOTE: parent of this decorator, not wrapped
+    _params: tuple[str]
+    _parametrized: bool
+    _cache_size: int | None
+    _flyweights: LinkedDict[str, DecoratorMeta]
+    _defines_from_scalar: bool
+    _defines_from_dtype: bool
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -2439,9 +2882,7 @@ class DecoratorBuilder(TypeBuilder):
                 f"{bases}"
             )
 
-        super().__init__(name, bases[0], namespace)
-
-        self.cache_size = cache_size
+        super().__init__(name, bases[0], namespace, cache_size)
         self.class_getitem_signature: inspect.Signature | None = None
 
     def parse(self) -> DecoratorBuilder:
@@ -2471,8 +2912,6 @@ class DecoratorBuilder(TypeBuilder):
         any derived attributes.
         """
         super().fill()
-        self.namespace["_cache_size"] = self.cache_size
-        self.namespace["_flyweights"] = LinkedDict(max_size=self.cache_size)
 
         self.class_getitem()
         self.from_scalar()
@@ -2906,7 +3345,7 @@ class UnionMeta(type):
         """
         if cls.is_structured:
             indices = {
-                col: rle_decode(typ._index) for col, typ in cls.items()  # type: ignore
+                col: _rle_decode(typ._index) for col, typ in cls.items()  # type: ignore
                 if isinstance(typ, UnionMeta) and typ._index is not None
             }
             if not indices:
@@ -2925,7 +3364,7 @@ class UnionMeta(type):
 
         if cls._index is None:
             return None  # type: ignore
-        return rle_decode(cls._index)  # type: ignore
+        return _rle_decode(cls._index)  # type: ignore
 
     def collapse(cls) -> UnionMeta:
         """TODO"""
@@ -3889,6 +4328,10 @@ class DecoratorType(object, metaclass=DecoratorMeta):
 ####################
 ####    TEST    ####
 ####################
+
+
+# TODO: implement Object and Null here.  These are central to the type system, and are
+# used in the implementation of detect()/resolve().
 
 
 class Int(Type):
