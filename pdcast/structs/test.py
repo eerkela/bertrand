@@ -927,7 +927,7 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
     if isinstance(target, type):
         if target in REGISTRY.types:
             return REGISTRY.types[target]
-        return ObjectType[target]
+        return Object[target]
 
     if isinstance(target, UnionType):  # python int | float | None syntax, not bertrand
         return Union.from_types(LinkedSet(resolve(t) for t in target.__args__))
@@ -1170,9 +1170,9 @@ def detect(data: Any, drop_na: bool = True) -> META:
 
             # reinsert missing values
             if hasnans and not drop_na:
-                index = np.full(missing.shape[0], NullType, dtype=object)
+                index = np.full(missing.shape[0], Missing, dtype=object)
                 index[~missing] = union.index  # pylint: disable=invalid-unary-operand-type
-                return Union.from_types(union | NullType, _rle_encode(index))
+                return Union.from_types(union | Missing, _rle_encode(index))
 
             return union
 
@@ -1181,11 +1181,11 @@ def detect(data: Any, drop_na: bool = True) -> META:
 
 def _detect_scalar(data: Any, data_type: type) -> META:
     if pd.isna(data):
-        return NullType
+        return Missing
 
     typ = REGISTRY.types.get(data_type, None)
     if typ is None:
-        return ObjectType(data_type)
+        return Object(data_type)
 
     if typ._defines_from_scalar:  # pylint: disable=protected-access
         return typ.from_scalar(data)
@@ -1213,12 +1213,12 @@ def _detect_dtype(data: Any, drop_na: bool) -> META:
     if not drop_na:
         is_na = pd.isna(data)
         if is_na.any():
-            index = np.full(is_na.shape[0], NullType, dtype=object)
+            index = np.full(is_na.shape[0], Missing, dtype=object)
             if isinstance(result, UnionMeta):
                 index[~is_na] = result.index  # pylint: disable=invalid-unary-operand-type
             else:
                 index[~is_na] = result  # pylint: disable=invalid-unary-operand-type
-            return Union.from_types(LinkedSet([result, NullType]), _rle_encode(index))
+            return Union.from_types(LinkedSet([result, Missing]), _rle_encode(index))
 
     index = np.array(
         [(result, len(data))],
@@ -1240,7 +1240,7 @@ def _detect_elementwise(data: Any) -> UnionMeta:
         # search for a matching type in the registry
         typ = lookup.get(element_type, None)
         if typ is None:
-            typ = ObjectType[element_type]
+            typ = Object[element_type]
         elif typ._defines_from_scalar:  # pylint: disable=protected-access
             typ = typ.from_scalar(element)
 
@@ -1381,6 +1381,14 @@ class TypeMeta(type):
                 concrete.namespace
             )
         )
+
+    def __getitem__(cls, params: Any | tuple[Any, ...]) -> TypeMeta:
+        """A wrapper around a type's `__class_getitem__` method that automatically
+        unpacks tuples into a more traditional call syntax.
+        """
+        if isinstance(params, tuple):
+            return cls.__class_getitem__(*params)
+        return cls.__class_getitem__(params)
 
     def flyweight(cls, *args: Any, **kwargs: Any) -> TypeMeta:
         """Get a flyweight type with the specified parameters.
@@ -2721,26 +2729,22 @@ class AbstractBuilder(TypeBuilder):
         if "__class_getitem__" in self.namespace and self.parent is not object:
             raise TypeError("abstract types must not implement __class_getitem__()")
 
-        def default(cls: type, val: str | tuple[Any, ...]) -> TypeMeta:
+        def default(cls: TypeMeta, backend: str, *args: Any) -> TypeMeta:
             """Forward all arguments to the specified implementation."""
             # pylint: disable=protected-access
-            if isinstance(val, str):
-                key = val
-                if key in cls._implementations:  # type: ignore
-                    return cls._implementations[key]  # type: ignore
-            else:
-                key = val[0]
-                if key in cls._implementations:  # type: ignore
-                    return cls._implementations[key][*val[1:]]  # type: ignore
+            if backend in cls._implementations:
+                if args:
+                    return cls._implementations[backend][*args]
+                return cls._implementations[backend]
 
-            if not cls.is_default:  # type: ignore
-                default = cls.as_default  # type: ignore
+            if not cls.is_default:
+                default = cls.as_default
                 if default.is_abstract:
-                    return default.__class_getitem__(val)
+                    return default.__class_getitem__(backend, *args)
 
-            raise TypeError(f"invalid backend: {repr(key)}")
+            raise TypeError(f"invalid backend: {repr(backend)}")
 
-        self.namespace["__class_getitem__"] = classmethod(default)
+        self.namespace["__class_getitem__"] = classmethod(default)  # type: ignore
         self.namespace["_params"] = ("backend",)
 
     def _from_scalar(self) -> None:
@@ -2894,18 +2898,8 @@ class ConcreteBuilder(TypeBuilder):
         parameters = {}
 
         if "__class_getitem__" in self.namespace:
-            original = self.namespace["__class_getitem__"]
-
-            def wrapper(cls: TypeMeta, val: Any | tuple[Any, ...]) -> TypeMeta:
-                """Unwrap tuples and forward arguments to the original function."""
-                if isinstance(val, tuple):
-                    return original(cls, *val)
-                return original(cls, val)
-
-            self.namespace["__class_getitem__"] = classmethod(wrapper)  # type: ignore
-
             skip = True
-            sig = inspect.signature(original)
+            sig = inspect.signature(self.namespace["__class_getitem__"])
             for par_name, param in sig.parameters.items():
                 if skip:
                     skip = False
@@ -2927,9 +2921,9 @@ class ConcreteBuilder(TypeBuilder):
             ])
 
         else:
-            def default(cls: TypeMeta, val: Any | tuple[Any, ...]) -> TypeMeta:
+            def default(cls: TypeMeta, *args: Any) -> TypeMeta:
                 """Default to identity function."""
-                if val:
+                if args:
                     raise TypeError(f"{cls.__name__} does not accept any parameters")
                 return cls
 
@@ -3148,6 +3142,14 @@ class DecoratorMeta(type):
         return build.parse().fill().register(
             super().__new__(mcs, build.name, (build.parent,), build.namespace)
         )
+
+    def __getitem__(cls, params: Any | tuple[Any, ...]) -> DecoratorMeta:
+        """A wrapper around a type's `__class_getitem__` method that automatically
+        unpacks tuples into a more traditional call syntax.
+        """
+        if isinstance(params, tuple):
+            return cls.__class_getitem__(*params)
+        return cls.__class_getitem__(params)
 
     def flyweight(cls, *args: Any, **kwargs: Any) -> DecoratorMeta:
         """Return a cached instance of the decorator or create a new one if it does
@@ -3628,31 +3630,21 @@ class DecoratorBuilder(TypeBuilder):
 
             def wrapper(
                 cls: DecoratorMeta,
-                val: Any | tuple[Any, ...]
+                wrapped: META,
+                *args: Any
             ) -> DecoratorMeta | UnionMeta:
                 """Unwrap tuples/unions and forward arguments to the wrapped method."""
-                if isinstance(val, (TypeMeta, DecoratorMeta)):
-                    return _insort_decorator(invoke, cls, val)
+                if isinstance(wrapped, (TypeMeta, DecoratorMeta)):
+                    return _insort_decorator(invoke, cls, wrapped, *args)
 
-                if isinstance(val, UnionMeta):
-                    return Union.from_types(
-                        LinkedSet(_insort_decorator(invoke, cls, t) for t in val)
-                    )
-
-                if isinstance(val, tuple):
-                    wrapped = val[0]
-                    args = val[1:]
-                    if isinstance(wrapped, (TypeMeta, DecoratorMeta)):
-                        return _insort_decorator(invoke, cls, wrapped, *args)
-                    if isinstance(wrapped, UnionMeta):
-                        result = LinkedSet(
-                            _insort_decorator(invoke, cls, t, *args) for t in wrapped
-                        )
-                        return Union.from_types(result)
+                if isinstance(wrapped, UnionMeta):
+                    return Union.from_types(LinkedSet(
+                        _insort_decorator(invoke, cls, t, *args) for t in wrapped
+                    ))
 
                 raise TypeError(
                     f"Decorators must accept another bertrand type as a first "
-                    f"argument, not {repr(val)}"
+                    f"argument, not {repr(wrapped)}"
                 )
 
             self.namespace["__class_getitem__"] = classmethod(wrapper)  # type: ignore
@@ -3688,10 +3680,7 @@ class DecoratorBuilder(TypeBuilder):
         else:
             invoke = lambda cls, wrapped, *args: cls.flyweight(wrapped, *args)
 
-            def default(
-                cls: DecoratorMeta,
-                wrapped: TypeMeta | DecoratorMeta | UnionMeta | None = None
-            ) -> DecoratorMeta | UnionMeta:
+            def default(cls: DecoratorMeta, wrapped: META) -> DecoratorMeta | UnionMeta:
                 """Default to identity function."""
                 if isinstance(wrapped, (TypeMeta, DecoratorMeta)):
                     return _insort_decorator(invoke, cls, wrapped)
@@ -4830,31 +4819,36 @@ def _check_missing(
 
 
 class Type(object, metaclass=TypeMeta):
-    """TODO
+    """Parent class for all scalar types.
+
+    Inheriting from this class triggers the metaclass machinery, which automatically
+    validates and registers the type.  As such, any type that inherits from this
+    class becomes the root of a new type hierarchy, and can be extended to create tree
+    structures of arbitrary depth.
     """
+
+    # NOTE: all types inherit a reference to the shared registry for convenience.
 
     registry = REGISTRY
 
-    # NOTE: every type has aliases which are strings, python types, or subclasses of
-    # np.dtype or pd.api.extensions.ExtensionDtype.  These aliases are used to identify
-    # the type during detect() and resolve() calls according to the following rules:
-    #   1.  Python type objects (e.g. int, float, datetime.datetime, or some other
-    #       custom type) are used during detect() to identify scalar values.  This
-    #       effectively calls the type() function on every index of an iterable and
-    #       searches the alias registry for the associated type.  It then calls the
-    #       type's from_scalar() method to allow for parametrization.
-    #   2.  numpy.dtype and pandas.api.extensions.ExtensionDtype objects or their types
-    #       (e.g. np.dtype("i4") vs type(np.dtype("i4"))) are used during detect() to
-    #       identify array-like containers that implement a `.dtype` attribute.  When
-    #       this occurs, the dtype's type is searched in the global registry to link
-    #       if to a bertrand type.  If found, the type's from_dtype() method is called
-    #       with the original dtype object.  The same process also occurs whenever
-    #       resolve() is called with a literal dtype argument.
-    #   3.  Strings are used during resolve() to identify types by their aliases.  When
-    #       a registered alias is encountered, the associated type's from_string()
-    #       method is called with the tokenized arguments.  Note that a type's aliases
-    #       implicitly include its class name, so that the type can be identified when
-    #       from __future__ import annotations is enabled.
+    # NOTE: every type has a collection of strings, python types, and numpy/pandas
+    # dtype objects which are used to identify the type during detect() and resolve()
+    # calls.  Here's how they work
+    #   1.  Python types (e.g. int, str, etc.) - used during elementwise detect() to
+    #       identify scalar values.  If defined, the type's `from_scalar()` method will
+    #       be called automatically to parse each element.
+    #   2.  numpy/pandas dtype objects (e.g. np.dtype("i4")) - used during detect() to
+    #       identify array-like containers that implement a `.dtype` attribute.  If
+    #       defined, the type's `from_dtype()` method will be called automatically to
+    #       parse the dtype.  The same process also occurs whenever resolve() is called
+    #       with a literal dtype argument.
+    #   3.  Strings - used during resolve() to identify types by their aliases.
+    #       Optional arguments can be provided in square brackets after the alias, and
+    #       will be tokenized and passed to the type's `from_string()` method, if it
+    #       exists.  Note that a type's aliases implicitly include its class name, so
+    #       that type hints containing the type can be identified when
+    #       `from __future__ import annotations` is enabled.  It is good practice to
+    #       follow suit with other aliases so they can be used in type hints as well.
 
     aliases = {"foo", int, type(np.dtype("i4"))}
 
@@ -4871,77 +4865,92 @@ class Type(object, metaclass=TypeMeta):
     is_nullable:    bool            = EMPTY(_check_is_nullable)  # type: ignore
     missing:        Any             = EMPTY(_check_missing)
 
+    # NOTE: Type's metaclass overloads the __call__() operator to produce a series of
+    # this type.  As such, it is not possible to instantiate a type directly, and
+    # implementing either `__init__` or `__new__` will cause a metaclass error.
+
     def __new__(cls) -> NoReturn:
-        # NOTE: Type's metaclass overloads the __call__() operator to produce a series
-        # of this type.  As such, it is not possible to instantiate a type directly,
-        # and neither __init__ nor this method will ever be called.
         raise TypeError("bertrand types cannot have instances")
 
-    def __class_getitem__(cls, x: str = "foo", y: int = 2) -> TypeMeta:
-        """Example implementation showing how to create a parametrized type.  This
-        method is a special case that will not be inherited by any subclasses, but can
-        be overridden to provide support for parametrization using a flyweight cache.
+    # NOTE: the following methods can be used to allow parametrization of a type using
+    # an integrated flyweight cache.  At minimum, a parametrized type must implement
+    # `__class_getitem__`, which specifies the parameter names and default values, as
+    # well as `from_string`, which parses the equivalent syntax in the
+    # type-specification mini-language.  The other methods are optional, and can be
+    # used to customize the behavior of the detect() and resolve() helper functions.
+
+    # None of these methods will be inherited by subclasses, so their behavior is
+    # unique for each type.  If they are not defined, they will default to the
+    # identity function, which will be optimized away where possible to improve
+    # performance.
+
+    def __class_getitem__(cls, spam: str = "foo", eggs: int = 2) -> TypeMeta:
+        """Example implementation showing how to create a parametrized type.
 
         When this method is defined, the metaclass will analyze its signature and
-        extract any default values, which will be forwarded to the class's base
-        namespace.  Each argument must have a default value, and the signature must
-        not contain any keyword arguments or varargs (i.e. *args or **kwargs) to be
-        considered valid.
+        extract any default values, which will be forwarded to the class's
+        :attr:`params <Type.params>` attribute, as well as its base namespace.  Each
+        argument must have a default value, and the signature must not contain any
+        keyword or variadic arguments (i.e. *args or **kwargs).
 
-        Positional arguments to the flyweight() helper function should be supplied in
-        the same order as they appear in the signature, and keywords are piped directly
-        into the resulting class's namespace, overriding any existing values.  In the
-        interest of speed, no checks are performed on the arguments, so it is up to the
-        user to ensure that they are in the expected format.
+        Positional arguments to the flyweight() helper method should be supplied in
+        the same order as they appear in the signature, and will be used to form the
+        string identifier for the type.  Keywords are piped directly into the resulting
+        class's namespace, and will override any existing values.  In the interest of
+        speed, no checks are performed on the arguments, so it is up to the user to
+        ensure that they are in the expected format.
         """
-        return cls.flyweight(x, y, dtype=np.dtype("i4"), max=42)
-
-    @classmethod
-    def from_scalar(cls, scalar: Any) -> TypeMeta:
-        """Example implementation showing how to parse a scalar value into a
-        parametrized type.  This method is a special case that will not be inherited by
-        any subclasses, and will be called automatically at every iteration of the
-        detect() loop.  If left blank, it will default to the identity function, which
-        will be optimized away during type detection.
-        """
-        foo = scalar.foo
-        bar = scalar.do_stuff(1, 2, 3)
-        return cls.flyweight(foo, bar, dtype=pd.DatetimeTZDtype(tz="UTC"))
-
-    @classmethod
-    def from_dtype(cls, dtype: Any) -> TypeMeta:
-        """Example implementation showing how to parse a numpy/pandas dtype into a
-        parametrized type.  This method is a special case that will not be inherited by
-        any subclasses, and will be called automatically whenever detect() or resolve()
-        encounters array-like data labeled with this type.  If left blank, it will
-        default to the identity function, which will be optimized away during type
-        detection.
-        """
-        unit = dtype.unit
-        step_size = dtype.step_size
-        return cls.flyweight(unit, step_size, dtype=dtype)
+        return cls.flyweight(spam, eggs, dtype=np.dtype("i4"))
 
     @classmethod
     def from_string(cls, spam: str, eggs: str) -> TypeMeta:
         """Example implementation showing how to parse a string in the
-        type-specification mini-language into a parametrized type.  This method is a
-        special case that will not be inherited by any subclasses, and will be called
-        automatically whenever resolve() encounters a string identifier that matches
-        one of this type's aliases. The arguments are the comma-separated tokens parsed
-        from the alias's argument list.  They are always provided as strings with no
-        further processing other than stripping leading/trailing whitespace.  It is up
-        to the user to parse them into the appropriate values.
+        type-specification mini-language.
 
-        If left blank, this method will default to a zero-argument implementation,
-        which effectively disables argument lists and will be optimized away during
-        type resolution.
+        This method will be called automatically whenever :func:`resolve` encounters
+        an alias that matches this type.  Its signature must match that of
+        :meth:`__class_getitem__`, and it will be invoked with the comma-separated
+        tokens parsed from the alias's argument list.  They are always provided as
+        strings, with no further processing other than stripping leading/trailing
+        whitespace.  It is up to the user to parse them into the appropriate type.
         """
-        return cls.flyweight(int(spam), pd.Timestamp(eggs))
+        return cls.flyweight(spam, int(eggs), dtype=np.dtype("i4"))
+
+    @classmethod
+    def from_scalar(cls, scalar: Any) -> TypeMeta:
+        """Example implementation showing how to parse a scalar value into a
+        parametrized type.
+
+        This method will be called during the main :func:`detect` loop whenever a
+        scalar or unlabeled sequence of scalars is encountered.  It should be fast,
+        since it will be called for every element in the array.  If left blank, it will
+        """
+        return cls.flyweight(scalar.spam, scalar.eggs(1, 2, 3), dtype=scalar.ham)
+
+    @classmethod
+    def from_dtype(cls, dtype: Any) -> TypeMeta:
+        """Example implementation showing how to parse a numpy/pandas dtype into a
+        parametrized type.
+        
+        This method will be called whenever :func:`detect` encounters array-like data
+        with a related dtype, or when :func:`resolve` is called with a dtype argument.
+        """
+        return cls.flyweight(dtype.unit, dtype.step_size, dtype=dtype)
+
+    # NOTE: the following methods are provided as default implementations inherited by
+    # descendent types.  They can be overridden to customize their behavior, although
+    # doing so is not recommended unless absolutely necessary.  Typically, users should
+    # invoke the parent method and modify the input/output, rather than reimplementing
+    # the method from scratch.
 
     @classmethod
     def replace(cls, *args: Any, **kwargs: Any) -> TypeMeta:
         """Base implementation of the replace() method, which produces a new type with
         a modified set of parameters.
+
+        This is a convenience method that allows users to modify a type without
+        mutating it.  It is equivalent to re-parametrizing the type with the provided
+        arguments, after merging with their existing values.
         """
         forwarded = dict(cls.params)
         positional = collections.deque(args)
