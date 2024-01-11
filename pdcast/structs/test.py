@@ -21,7 +21,32 @@ from linked import LinkedSet, LinkedDict
 
 
 class Empty:
-    """Placeholder for optional arguments in which None might be a valid option."""
+    """Placeholder for required fields of an abstract type.
+
+    A singleton instance of this class is exposed as a global ``EMPTY`` object.
+    If an attribute of an abstract type is assigned to this object, then it will
+    be marked as required in all concretions of that type.
+
+    The global ``EMPTY`` object can be called to inject a validation function
+    into the metaclass machinery, which will automatically be invoked on any
+    value that is assigned to the attribute.  If no value is assigned for a
+    particular concretion, the validator will be called with the global ``EMPTY``
+    object as its argument, and can either return a default value or raise an
+    error.  If no validator is supplied, the ``EMPTY`` object defaults to an
+    identity function, which raises an error if the value is missing.
+    """
+
+    def __init__(
+        self,
+        func: Callable[[Any | Empty, dict[str, Any], dict[str, Any]], Any]
+    ) -> None:
+        self.func = func
+
+    def __call__(
+        self,
+        func: Callable[[Any | Empty, dict[str, Any], dict[str, Any]], Any]
+    ) -> Empty:
+        return Empty(func)
 
     def __bool__(self) -> bool:
         return False
@@ -33,7 +58,20 @@ class Empty:
         return "..."
 
 
-EMPTY: Empty = Empty()
+def _identity(
+    value: Any | Empty,
+    namespace: dict[str, Any],
+    processed: dict[str, Any]
+) -> Any:
+    """Simple identity function used to validate required arguments that do not
+    have any type hints.
+    """
+    if value is EMPTY:
+        raise TypeError("missing required field")
+    return value
+
+
+EMPTY: Empty = Empty(_identity)
 POINTER_SIZE: int = np.dtype(np.intp).itemsize
 META: TypeAlias = "TypeMeta | DecoratorMeta | UnionMeta"
 DTYPE: TypeAlias = np.dtype[Any] | pd.api.extensions.ExtensionDtype
@@ -667,7 +705,7 @@ class TypeBuilder:
     simplified namespace into a fully-featured bertrand type.  They do this by looping
     through all the attributes that are defined in the class and executing any relevant
     helper functions to validate their configuration.  The builders also mark all
-    required fields (those assigned to Ellipsis) and reserved attributes that they
+    required fields (those assigned to ``EMPTY``) and reserved attributes that they
     encounter, and fill in missing slots with default values where possible.  If the
     type is improperly configured, the builder will throw a series of informative error
     messages guiding the user towards a solution.
@@ -718,7 +756,6 @@ class TypeBuilder:
         self.parent = parent
         self.namespace = namespace
         self.cache_size = cache_size
-        self.annotations = namespace.get("__annotations__", {})
         if parent is object:
             self.required = {}
             self.fields = {}
@@ -730,17 +767,10 @@ class TypeBuilder:
         """Validate a required argument by invoking its type hint with the specified
         value and current namespace.
         """
-        hint = self.required.pop(arg)
-
-        if isinstance(hint, str):
-            func = get_from_calling_context(hint)
-        else:
-            func = hint
-
+        func = self.required.pop(arg)
         try:
             result = func(value, self.namespace, self.fields)
             self.fields[arg] = result
-            self.annotations[arg] = type(result)
         except Exception as err:
             raise type(err)(f"{self.name}.{arg} -> {str(err)}")
 
@@ -770,10 +800,8 @@ class TypeBuilder:
         # self.namespace["from_string"]
 
         # static fields (disables redirects)
-        self.aliases()
+        self._aliases()
 
-        # default fields
-        self.namespace.setdefault("__annotations__", {}).update(self.annotations)
         return self
 
     def register(self, typ: TypeMeta | DecoratorMeta) -> TypeMeta | DecoratorMeta:
@@ -784,7 +812,7 @@ class TypeBuilder:
         REGISTRY._types.add(typ)
         return typ
 
-    def aliases(self) -> None:
+    def _aliases(self) -> None:
         """Parse a type's aliases field (if it has one), registering each one in the
         global type registry.
         """
@@ -2610,12 +2638,12 @@ class TypeMeta(type):
 class AbstractBuilder(TypeBuilder):
     """A builder-style parser for an abstract type's namespace (backend == None).
 
-    Abstract types support the creation of required fields through the Ellipsis syntax,
-    which must be inherited or defined by each of their concrete implementations.  This
-    rule is enforced by ConcreteBuilder, which is automatically chosen when the backend
-    is not None.  Note that in contrast to concrete types, abstract types do not
-    support parametrization, and attempting defining a corresponding constructor will
-    throw an error.
+    Abstract types support the creation of required fields through the ``EMPTY``
+    syntax, which must be inherited or defined by each of their concrete
+    implementations.  This rule is enforced by ConcreteBuilder, which is automatically
+    chosen when the backend is not None.  Note that in contrast to concrete types,
+    abstract types do not support parametrization, and attempting defining a
+    corresponding constructor will throw an error.
     """
 
     RESERVED = TypeBuilder.RESERVED | {
@@ -2652,8 +2680,8 @@ class AbstractBuilder(TypeBuilder):
         namespace = self.namespace.copy()
 
         for name, value in namespace.items():
-            if value is Ellipsis:
-                self.required[name] = self.annotations.pop(name, _identity)
+            if isinstance(value, Empty):
+                self.required[name] = value.func
                 del self.namespace[name]
             elif name in self.required:
                 self.validate(name, self.namespace.pop(name))
@@ -2820,7 +2848,7 @@ class ConcreteBuilder(TypeBuilder):
         its configuration.
         """
         for name, value in self.namespace.copy().items():
-            if value is Ellipsis:
+            if isinstance(value, Empty):
                 raise TypeError(
                     f"concrete types must not have required fields: {self.name}.{name}"
                 )
@@ -2833,7 +2861,7 @@ class ConcreteBuilder(TypeBuilder):
 
         # validate any remaining required fields that were not explicitly assigned
         for name in list(self.required):
-            self.validate(name, Ellipsis)
+            self.validate(name, EMPTY)
 
         return self
 
@@ -3014,15 +3042,6 @@ def _format_dict(d: dict[str, Any]) -> str:
     return prefix + sep.join(f"{k}: {repr(v)}" for k, v in d.items()) + suffix
 
 
-def _identity(value: Any, namespace: dict[str, Any], processed: dict[str, Any]) -> Any:
-    """Simple identity function used to validate required arguments that do not
-    have any type hints.
-    """
-    if value is Ellipsis:
-        raise TypeError("missing required field")
-    return value
-
-
 def _explode_children(t: TypeMeta, result: LinkedSet[TypeMeta]) -> None:  # lol
     """Explode a type's hierarchy into a flat list containing all of its subtypes and
     implementations.
@@ -3059,6 +3078,13 @@ def _features(t: TypeMeta | DecoratorMeta) -> tuple[int | float, int, bool, int]
 ###############################
 ####    DECORATOR TYPES    ####
 ###############################
+
+
+# TODO: focus on making decorators as minimally invasive as possible.
+# -> is_parametrized should always refer to underlying type?  Add a second flag to
+# check if the decorator itself is parametrized?
+# -> this might be reduced to .wrapped is not None
+
 
 
 class DecoratorMeta(type):
@@ -3550,7 +3576,7 @@ class DecoratorBuilder(TypeBuilder):
         its configuration.
         """
         for name, value in self.namespace.copy().items():
-            if value is Ellipsis:
+            if isinstance(value, Empty):
                 raise TypeError(
                     f"decorator types must not have required fields: {self.name}.{name}"
                 )
@@ -3563,7 +3589,7 @@ class DecoratorBuilder(TypeBuilder):
 
         # validate any remaining required fields that were not explicitly assigned
         for name in list(self.required):
-            self.validate(name, Ellipsis)
+            self.validate(name, EMPTY)
 
         return self
 
@@ -4649,8 +4675,8 @@ def union_getitem(cls: UnionMeta, key: int | slice | str) -> META:
 # -> meta.py, type.py, decorator.py
 
 
-def check_scalar(
-    value: Any,
+def _check_scalar(
+    value: Any | Empty,
     namespace: dict[str, Any],
     processed: dict[str, Any],
 ) -> type:
@@ -4660,10 +4686,10 @@ def check_scalar(
     if "scalar" in processed:  # auto-generated in check_dtype
         return processed["scalar"]
 
-    dtype = namespace.get("dtype", Ellipsis)
+    dtype = namespace.get("dtype", EMPTY)
 
-    if value is Ellipsis:
-        if dtype is Ellipsis:
+    if value is EMPTY:
+        if dtype is EMPTY:
             raise TypeError("type must define at least one of 'dtype' and/or 'scalar'")
         if not isinstance(dtype, (np.dtype, pd.api.extensions.ExtensionDtype)):
             raise TypeError(f"dtype must be a numpy/pandas dtype, not {repr(dtype)}")
@@ -4674,7 +4700,7 @@ def check_scalar(
     if not isinstance(value, type):
         raise TypeError(f"scalar must be a Python type object, not {repr(value)}")
 
-    if dtype is Ellipsis:
+    if dtype is EMPTY:
         processed["dtype"] = None  # TODO: synthesize dtype
     else:
         processed["dtype"] = dtype
@@ -4689,21 +4715,21 @@ def check_scalar(
     return value
 
 
-def check_dtype(
-    value: Any,
+def _check_dtype(
+    value: Any | Empty,
     namespace: dict[str, Any],
     processed: dict[str, Any]
-) -> np.dtype | pd.api.extensions.ExtensionDtype:
+) -> DTYPE:
     """Validate a numpy or pandas dtype provided in a bertrand type's namespace or
     infer it from a provided scalar.
     """
     if "dtype" in processed:  # auto-generated in check_scalar
         return processed["dtype"]
 
-    scalar = namespace.get("scalar", Ellipsis)
+    scalar = namespace.get("scalar", EMPTY)
 
-    if value is Ellipsis:
-        if scalar is Ellipsis:
+    if value is EMPTY:
+        if scalar is EMPTY:
             raise TypeError("type must define at least one of 'dtype' and/or 'scalar'")
         if not isinstance(scalar, type):
             raise TypeError(f"scalar must be a Python type object, not {repr(scalar)}")
@@ -4714,7 +4740,7 @@ def check_dtype(
     if not isinstance(value, (np.dtype, pd.api.extensions.ExtensionDtype)):
         raise TypeError(f"dtype must be a numpy/pandas dtype, not {repr(value)}")
 
-    if scalar is Ellipsis:
+    if scalar is EMPTY:
         processed["scalar"] = value.type
     else:
         processed["scalar"] = scalar
@@ -4729,8 +4755,8 @@ def check_dtype(
     return value
 
 
-def check_max(
-    value: Any,
+def _check_max(
+    value: Any | Empty,
     namespace: dict[str, Any],
     processed: dict[str, Any]
 ) -> int | float:
@@ -4740,7 +4766,7 @@ def check_max(
 
     min_val = namespace.get("min", -np.inf)
 
-    if value is Ellipsis:
+    if value is EMPTY:
         processed["min"] = min_val
         return np.inf
 
@@ -4754,8 +4780,8 @@ def check_max(
     return value
 
 
-def check_min(
-    value: Any,
+def _check_min(
+    value: Any | Empty,
     namespace: dict[str, Any],
     processed: dict[str, Any]
 ) -> int | float:
@@ -4765,7 +4791,7 @@ def check_min(
 
     max_val = namespace.get("max", np.inf)
 
-    if value is Ellipsis:
+    if value is EMPTY:
         processed["max"] = max_val
         return -np.inf
 
@@ -4779,22 +4805,22 @@ def check_min(
     return value
 
 
-def check_is_nullable(
-    value: Any,
+def _check_is_nullable(
+    value: Any | Empty,
     namespace: dict[str, Any],
     processed: dict[str, Any]
 ) -> bool:
     """Validate a nullability flag provided in a bertrand type's namespace."""
-    return True if value is Ellipsis else bool(value)
+    return True if value is EMPTY else bool(value)
 
 
-def check_missing(
-    value: Any,
+def _check_missing(
+    value: Any | Empty,
     namespace: dict[str, Any],
     processed: dict[str, Any]
 ) -> Any:
     """Validate a missing value provided in a bertrand type's namespace."""
-    if value is Ellipsis:
+    if value is EMPTY:
         return pd.NA
 
     if not pd.isna(value):
@@ -4832,20 +4858,18 @@ class Type(object, metaclass=TypeMeta):
 
     aliases = {"foo", int, type(np.dtype("i4"))}
 
-    # NOTE: Any field assigned to Ellipsis (...) is a required attribute that must be
-    # filled in by concrete subclasses of this type.  This rule is automatically
-    # enforced by the metaclass using the type-hinted validation function, defaulting
-    # to identity.  Each field can be inherited from a parent type unless otherwise
-    # noted.  If a type does not define a required attribute, then the validation
-    # function will receive Ellipsis as its value, and must either raise an error or
-    # replace it with a default value.
+    # NOTE: Any field assigned to EMPTY is a required attribute that must be defined
+    # by concretions of this type.  Each field can be inherited from a parent type
+    # with normal semantics.  If a type does not define a required attribute, then the
+    # validation function will receive EMPTY as its value, and must either raise an
+    # error or replace it with a default value.
 
-    scalar: check_scalar = ...
-    dtype: check_dtype = ...
-    max: check_max = ...
-    min: check_min = ...
-    is_nullable: check_is_nullable = ...
-    missing: check_missing = ...
+    scalar:         type            = EMPTY(_check_scalar)  # type: ignore
+    dtype:          DTYPE           = EMPTY(_check_dtype)  # type: ignore
+    max:            int | float     = EMPTY(_check_max)  # type: ignore
+    min:            int | float     = EMPTY(_check_min)  # type: ignore
+    is_nullable:    bool            = EMPTY(_check_is_nullable)  # type: ignore
+    missing:        Any             = EMPTY(_check_missing)
 
     def __new__(cls) -> NoReturn:
         # NOTE: Type's metaclass overloads the __call__() operator to produce a series
