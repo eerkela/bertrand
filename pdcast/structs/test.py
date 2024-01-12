@@ -580,6 +580,9 @@ class TypeRegistry:
     def __iter__(self) -> Iterator[TypeMeta | DecoratorMeta]:
         return iter(self._types)
 
+    def __reversed__(self) -> Iterator[TypeMeta | DecoratorMeta]:
+        return reversed(self._types)
+
     def __contains__(self, spec: TYPESPEC | Iterable[TYPESPEC]) -> bool:
         typ = resolve(spec)
 
@@ -613,16 +616,23 @@ class Aliases:
         self._parent: TypeMeta | DecoratorMeta | None = None  # deferred assignment
 
     @property
-    def parent(self) -> TypeMeta | DecoratorMeta | None:
-        """Get the type that the aliases point to."""
-        return self._parent
+    def parent(self) -> TypeMeta | DecoratorMeta:
+        """Get the type that this set of aliases points to.
+
+        Returns
+        -------
+        TypeMeta | DecoratorMeta
+            The type associated with these aliases.
+
+        Raises
+        ------
+        TypeError
+            If an attempt is made to reassign the type.
+        """
+        return self._parent  # type: ignore
 
     @parent.setter
     def parent(self, typ: TypeMeta | DecoratorMeta) -> None:
-        """Set the type associated with the aliases.  This is called automatically by
-        the metaclass machinery when a type is instantiated, and will raise an error if
-        called after that point.
-        """
         if self._parent is not None:
             raise TypeError("cannot reassign type")
 
@@ -641,14 +651,10 @@ class Aliases:
 
         self._parent = typ
 
-    def add(self, alias: ALIAS) -> None:
-        """Add an alias to a type, pushing it to the global registry."""
-        if alias in REGISTRY.aliases:
-            raise TypeError(f"aliases must be unique: {repr(alias)}")
-
-        elif isinstance(alias, str):
-            REGISTRY.refresh_regex()
+    def _register_alias(self, alias: ALIAS) -> None:
+        if isinstance(alias, str):
             REGISTRY.strings[alias] = self.parent
+            REGISTRY.refresh_regex()
 
         elif isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
             REGISTRY.dtypes[type(alias)] = self.parent
@@ -664,24 +670,15 @@ class Aliases:
                 f"aliases must be strings, types, or dtypes: {repr(alias)}"
             )
 
-        self.aliases.add(alias)
-
-    def remove(self, alias: ALIAS) -> None:
-        """Remove an alias from a type, removing it from the global registry."""
-        if alias not in REGISTRY.aliases:
-            raise TypeError(f"alias not found: {repr(alias)}")
-
-        elif isinstance(alias, str):
-            self.aliases.remove(alias)
-            REGISTRY.refresh_regex()
+    def _drop_alias(self, alias: ALIAS) -> None:
+        if isinstance(alias, str):
             del REGISTRY.strings[alias]
+            REGISTRY.refresh_regex()
 
         elif isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
-            self.aliases.remove(type(alias))
             del REGISTRY.dtypes[type(alias)]
 
         elif isinstance(alias, type):
-            self.aliases.remove(alias)
             if issubclass(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
                 del REGISTRY.dtypes[alias]
             else:
@@ -692,7 +689,179 @@ class Aliases:
                 f"aliases must be strings, types, or dtypes: {repr(alias)}"
             )
 
-    # TODO: update(), discard(), pop(), clear(), etc.
+    def add(self, alias: ALIAS) -> None:
+        """Add an alias to a type, pushing it to the global registry.
+
+        Parameters
+        ----------
+        alias : ALIAS
+            The alias to add.  This can be a string, a type, or a numpy/pandas dtype
+            object.
+
+        Raises
+        ------
+        KeyError
+            If the alias is already registered to another type
+        TypeError
+            If the alias is not a string, type, or dtype.
+
+        Notes
+        -----
+        Adding aliases to a type modifies the behavior of the :func:`detect` and
+        :func:`resolve` helper functions, allowing users to remap their output.  See
+        the documentation of these methods for more information.
+        """
+        if alias in REGISTRY.aliases:
+            raise KeyError(f"aliases must be unique: {repr(alias)}")
+
+        self._register_alias(alias)
+        self.aliases.add(alias)
+
+    def update(self, aliases: Iterable[ALIAS]) -> None:
+        """Add multiple aliases to a type, pushing them to the global registry.
+
+        Parameters
+        ----------
+        aliases : Iterable[ALIAS]
+            The aliases to add.  These can be strings, types, or numpy/pandas dtype
+            objects.
+
+        Raises
+        ------
+        KeyError
+            If any of the aliases are already registered to another type
+        TypeError
+            If any of the aliases are not strings, types, or dtypes.
+
+        Notes
+        -----
+        Adding aliases to a type modifies the behavior of the :func:`detect` and
+        :func:`resolve` helper functions, allowing users to remap their output.  See
+        the documentation of these methods for more information.
+        """
+        for alias in aliases:
+            self.add(alias)
+
+    def clear(self) -> None:
+        """Remove all aliases from a type, dropping them from the global registry.
+
+        Notes
+        -----
+        Removing aliases from a type modifies the behavior of the :func:`detect` and
+        :func:`resolve` helper functions, allowing users to remap their output.  See
+        the documentation of these methods for more information.
+
+        This effectively removes the type from consideration during type inference and
+        resolution.
+        """
+        for alias in self.aliases:
+            self._drop_alias(alias)
+        self.aliases.clear()
+
+    def remove(self, alias: ALIAS) -> None:
+        """Remove an alias from a type, dropping it from the global registry.
+
+        Parameters
+        ----------
+        alias : ALIAS
+            The alias to remove.  This can be a string, a type, or a numpy/pandas dtype
+            object.
+
+        Raises
+        ------
+        KeyError
+            If the alias is not registered to the type.
+
+        Notes
+        -----
+        Removing aliases from a type modifies the behavior of the :func:`detect` and
+        :func:`resolve` helper functions, allowing users to remap their output.  See
+        the documentation of these methods for more information.
+        """
+        if alias not in REGISTRY.aliases:
+            raise KeyError(f"alias not found: {repr(alias)}")
+
+        if isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
+            typ = type(alias)
+            self._drop_alias(typ)
+            self.aliases.remove(typ)
+        else:
+            self._drop_alias(alias)
+            self.aliases.remove(alias)
+
+    def discard(self, alias: ALIAS) -> None:
+        """Remove an alias from the set if it is present, reflecting changes in the
+        global registry.
+
+        Parameters
+        ----------
+        alias : ALIAS
+            The alias to remove.  This can be a string, a type, or a numpy/pandas dtype
+            object.
+
+        Notes
+        -----
+        Removing aliases from a type modifies the behavior of the :func:`detect` and
+        :func:`resolve` helper functions, allowing users to remap their output.  See
+        the documentation of these methods for more information.
+        """
+        if alias not in self.aliases:
+            return
+
+        if isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
+            typ = type(alias)
+            self._drop_alias(typ)
+            self.aliases.remove(typ)
+        else:
+            self._drop_alias(alias)
+            self.aliases.remove(alias)
+
+    def pop(self, index: int = -1) -> ALIAS:
+        """Pop an alias from the set, dropping it from the global registry.
+
+        Parameters
+        ----------
+        index : int, default -1
+            The index of the alias to pop.  This defaults to the last alias in the set.
+
+        Raises
+        ------
+        IndexError
+            If the index is out of bounds.
+
+        Returns
+        -------
+        ALIAS
+            The popped alias.
+
+        Notes
+        -----
+        Removing aliases from a type modifies the behavior of the :func:`detect` and
+        :func:`resolve` helper functions, allowing users to remap their output.  See
+        the documentation of these methods for more information.
+        """
+        result = self.aliases.pop(index)
+        self._drop_alias(result)
+        return result
+
+    __hash__ = None  # type: ignore
+
+    def __contains__(self, alias: ALIAS) -> bool:
+        if isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
+            return type(alias) in self.aliases
+        return alias in self.aliases
+
+    def __len__(self) -> int:
+        return len(self.aliases)
+
+    def __iter__(self) -> Iterator[ALIAS]:
+        return iter(self.aliases)
+
+    def __reversed__(self) -> Iterator[ALIAS]:
+        return reversed(self.aliases)
+
+    def __str__(self) -> str:
+        return f"{{{', '.join(repr(a) for a in self.aliases)}}}"
 
     def __repr__(self) -> str:
         return f"Aliases({', '.join(repr(a) for a in self.aliases)})"
@@ -763,17 +932,6 @@ class TypeBuilder:
             self.required = self.parent._required.copy()
             self.fields = self.parent._fields.copy()
 
-    def validate(self, arg: str, value: Any) -> None:
-        """Validate a required argument by invoking its type hint with the specified
-        value and current namespace.
-        """
-        func = self.required.pop(arg)
-        try:
-            result = func(value, self.namespace, self.fields)
-            self.fields[arg] = result
-        except Exception as err:
-            raise type(err)(f"{self.name}.{arg} -> {str(err)}")
-
     def fill(self) -> TypeBuilder:
         """Fill in any reserved slots in the namespace with their default values.  This
         method should be called after parsing the namespace to avoid unnecessary work.
@@ -800,7 +958,7 @@ class TypeBuilder:
         # self.namespace["from_string"]
 
         # static fields (disables redirects)
-        self._aliases()
+        self._parse_aliases()
 
         return self
 
@@ -812,7 +970,18 @@ class TypeBuilder:
         REGISTRY._types.add(typ)
         return typ
 
-    def _aliases(self) -> None:
+    def _validate(self, arg: str, value: Any) -> None:
+        """Validate a required argument (assigned to `EMPTY`) by invoking a bound
+        function with the specified value and current namespace.
+        """
+        try:
+            self.fields[arg] = self.required.pop(arg)(
+                value, self.namespace, self.fields
+            )
+        except Exception as err:
+            raise type(err)(f"{self.name}.{arg} -> {str(err)}")
+
+    def _parse_aliases(self) -> None:
         """Parse a type's aliases field (if it has one), registering each one in the
         global type registry.
         """
@@ -909,7 +1078,7 @@ REGISTRY = TypeRegistry()
 # trivial to parse python-style type hints.
 
 
-# TODO: register NoneType to Missing type, such that int | None resolves to
+# TODO: register NoneType to Missing, such that int | None resolves to
 # Union[PythonInt, Missing]
 # Same with None alias, which allows parsing of type hints with None as a type
 
@@ -920,7 +1089,203 @@ REGISTRY = TypeRegistry()
 
 
 def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
-    """TODO"""
+    """Convert a type specifier into an equivalent bertrand type.
+
+    Parameters
+    ----------
+    target : TYPESPEC | Iterable[TYPESPEC]
+        A type specifier to convert.  This can be a python type, a numpy/pandas dtype,
+        a string in the type specification mini-language, a previously-normalized
+        bertrand type, or an iterable containing any of the above.  If a mapping is
+        provided, then the keys will be used as column names and the values will be
+        interpreted as type specifiers.
+
+    Returns
+    -------
+    META
+        The equivalent bertrand type.
+
+    Raises
+    ------
+    TypeError
+        If the specifier cannot be resolved into a valid type.
+
+    See Also
+    --------
+    detect : Detect the type of a given object or container.
+
+    Notes
+    -----
+    This function is called internally wherever a type is expected, allowing users
+    to pass any of the supported type specifiers in place of a proper bertrand type.
+
+    The types that are returned by this function can be customized by modifying their
+    aliases or adding special constructor methods to return parametrized outputs.  For
+    reference, the global mapping for each type can be accessed via the
+    :attr:`TypeRegistry.aliases` attribute.
+
+    Examples
+    --------
+    :func:`resolve` can accept other bertrand types, in which case it will return its
+    argument unchanged.
+
+    .. doctest::
+
+        >>> resolve(Int)
+        Int
+        >>> resolve(Sparse[Int])
+        Sparse[Int, <NA>]
+        >>> resolve(Int | Float)
+        Union[Int, Float]
+
+    It can also accept python types in standard syntax, in which case it will search
+    the aliases dictionary for a matching type (or types in the case of a union):
+
+    .. doctest::
+
+        >>> resolve(str)
+        PythonString
+        >>> resolve(str | bool)
+        Union[PythonString, PythonBool]
+
+    Numpy/pandas dtypes can be parsed similarly, with optional parametrization for
+    each type:
+
+    .. doctest::
+
+        >>> resolve(np.dtype(np.int32))
+        NumpyInt32
+        >>> resolve(np.dtype([("foo", np.int32), ("bar", np.uint8)]))
+        Union['foo': NumpyInt32, 'bar': NumpyUInt8]
+        >>> resolve(pd.DatetimeTZDtype(tz="UTC"))
+        PandasTimestamp['UTC']
+        >>> resolve(pd.SparseDtype(np.int64))
+        Sparse[NumpyInt64, 0]
+
+    Numpy-style string specifiers are also supported, with similar semantics to numpy's
+    :func:`dtype() <numpy.dtype>` function:
+
+    .. doctest::
+    
+        >>> resolve("int32")
+        Int32
+        >>> resolve("?")
+        Bool
+        >>> resolve("U32")
+        SizedUnicode[32]
+
+    However, bertrand's string parsing capabilities are significantly more powerful
+    than numpy's, and can be used to specify more complex types.  For instance, one can
+    pass arguments to a type's constructor by enclosing them in square brackets,
+    equivalent to normal bertrand syntax:
+
+    .. doctest::
+
+        >>> resolve("M8[ns]")
+        NumpyDatetime64['ns']
+        >>> resolve("Object[int]")
+        Object[<class 'int'>]
+        >>> resolve("Timedelta[numpy, 10ns]")
+        NumpyTimedelta64['ns', 10]
+        >>> resolve("sparse[bool, False]")
+        Sparse[Bool, False]
+
+    This syntax is fully generalized, and each type can define its own semantics for
+    each argument, which they can parse however they like.  Just like their bertrand
+    equivalents, abstract types will accept an optional backend specifier and forward
+    any additional arguments to that type.  What's more, the arguments can themselves
+    be nested type specifiers, which is particularly relevant for decorator types:
+
+    .. doctest::
+
+        >>> resolve("Sparse[Timedelta[numpy, 10ns]]")
+        Sparse[NumpyTimedelta64['ns', 10], NaT]
+        >>> resolve("Sparse[Categorical[String[python]]]")
+        Sparse[Categorical[PythonString], <NA>]
+
+    Similarly, multiple comma or pipe-separated types can be given to form a union:
+
+    .. doctest::
+
+        >>> resolve("char, unsigned long")  # platform-specific
+        Union[Int8, UInt32]
+        >>> resolve("int32 | float64")
+        Union[Int32, Float64]
+        >>> resolve("Union[Int64[pandas], Categorical[string, [a, b, c]]")
+        Union[PandasInt64, Categorical[String, ['a', 'b', 'c']]]
+
+    Optional column names can also be defined to create a structured union:
+
+    .. doctest::
+
+        >>> resolve("foo: int32")
+        Union['foo': Int32]
+        >>> resolve("foo: int32 | int64, bar: bool")
+        Union['foo': Int32 | Int64, 'bar': Bool]
+        >>> resolve("Union[foo: categorical[string], bar: decimal]")
+        Union['foo': Categorical[String, <NA>], 'bar': Decimal]
+
+    This level of string parsing allows the type system to interpret type hints in
+    several different formats, both stringified and not, with identical semantics to
+    the normal bertrand types.
+
+    .. doctest::
+
+        >>> from __future__ import annotations
+        >>> def foo(x: int | None) -> "long long":
+        ...     ...
+        >>> foo.__annotations__
+        {'x': 'int | None', 'return': "'long long'"}
+        >>> resolve(foo.__annotations__["x"])
+        Union[PythonInt, Missing]
+        >>> resolve(foo.__annotations__["return"])
+        Int64
+
+    Lastly, :func:`resolve` can also accept an iterable containing any of the above
+    type specifiers, in which case it will return a union containing each type.
+
+    .. doctest::
+
+        >>> resolve([Decimal, float, pd.BooleanDtype(), "int32"])
+        Union[Decimal, PythonFloat, PandasBool, Int32]
+
+    If the iterable is a mapping or only contains key-value pairs of length 2, then
+    the keys will be interpreted as column names in a structured union:
+
+    .. doctest::
+
+        >>> resolve({"foo": complex, "bar": Unsigned["pandas"]})
+        Union['foo': PythonComplex, 'bar': PandasUInt64]
+        >>> resolve([("foo", complex), ("bar", Unsigned["pandas"])])
+        Union['foo': PythonComplex, 'bar': PandasUInt64]
+
+    These key-value pairs can also be represented as slices, which is used internally
+    by the normal union constructor to create structured unions:
+
+    .. doctest::
+
+        >>> resolve(slice("foo", np.int16))
+        Union['foo': NumpyInt16]
+        >>> resolve([slice("foo", np.uint8), slice("bar", "datetime")])
+        Union['foo': NumpyUInt8, 'bar': Datetime]
+
+    Lastly, each alias (python type, numpy/pandas dtype, or string specifier) can be
+    remapped dynamically at runtime, which will automatically change the behavior of
+    :func:`resolve`:
+
+    .. doctest::
+
+        >>> Decimal.aliases
+        Aliases({'decimal'})
+        >>> Decimal.aliases.add("foo")
+        >>> resolve("foo")
+        Decimal
+        >>> Decimal.aliases.remove("foo")
+        >>> resolve("foo")
+        Traceback (most recent call last):
+            ...
+        TypeError: invalid specifier -> 'foo'
+    """
     if isinstance(target, (TypeMeta, DecoratorMeta, UnionMeta)):
         return target
 
@@ -1137,7 +1502,162 @@ TOKEN = re.compile(rf"{INVOCATION.pattern}|{SEQUENCE.pattern}|{LITERAL.pattern}"
 
 
 def detect(data: Any, drop_na: bool = True) -> META:
-    """TODO"""
+    """Infer the type of a scalar, sequence, dataframe, or structured array.
+
+    Parameters
+    ----------
+    data : Any
+        The data to infer the type of.  This can either be a single object or a
+        collection of objects organized into a vector.  If the data is a numpy array
+        or pandas data structure with an appropriate dtype, then the dtype will be
+        interpreted directly in constant time.  Otherwise, the type will be inferred
+        elementwise in a fast, vectorized manner.
+    drop_na : bool, default True
+        Indicates whether to disregard missing values in the final type.  If set to
+        True (the default), then dtype-based inference will make no extra effort to
+        account for missing values, which gives optimal performance.  If False, missing
+        values will be inserted post-hoc by checking :func:`pandas.isna`.  For
+        elementwise inference, missing values are dropped either way.  This argument
+        simply controls whether they are reintroduced to the final type or discarded
+        before returning.
+
+    Returns
+    -------
+    META
+        The inferred bertrand type.
+
+    See Also
+    --------
+    resolve : Convert a type specifier into an equivalent bertrand type.
+
+    Notes
+    -----
+    This function is called internally by :func:`isinstance` to perform schema checks
+    on arbitrary data.  It is also used during the :func:`dispatch` process to
+    determine which overload(s) to call for a given set of arguments.
+
+    The types that are returned by this function can be customized by modifying their
+    aliases or adding special constructor methods to return parametrized outputs.  For
+    reference, the global mapping for each type can be accessed via the
+    :attr:`TypeRegistry.aliases` attribute.
+
+    .. note::
+
+        This function does not raise errors.  Instead, if it encounters an object that
+        it cannot resolve into a specialized type, it will return a parametrized
+        :class:`Object` type that wraps the Python class directly.  This is
+        functionally identical to numpy's `object` dtype, but is more type safe, since
+        it is labeled with an explicit Python type.
+
+    Examples
+    -------
+    :func:`detect` can accept scalar values, which are interpreted directly.
+
+    .. doctest::
+
+        >>> detect(1)
+        PythonInt
+        >>> detect(np.int32(1))
+        NumpyInt32
+        >>> detect("foo")
+        PythonString
+
+    The way this works is by calling the :class:`type() <python.type>` function on the
+    input and then searching the global registry for an identical type.  If one is
+    found, then the matching bertrand type's :meth:`from_scalar() <Type.from_scalar>`
+    method will be called to account for possible parametrization.  Otherwise, a
+    generic :class:`Object` type will be returned:
+
+    .. doctest::
+
+        >>> class Foo:
+        ...     pass
+        >>> detect(Foo())
+        Object[<class 'Foo'>]
+
+    This process is repeated multiple times for unlabeled sequences, which are
+    interpreted elementwise according to the same rules:
+
+    .. doctest::
+
+        >>> detect([1, 2, 3])
+        Union[PythonInt]
+        >>> detect([1, 2.0, "3", Foo()])
+        Union[PythonInt, PythonFloat, PythonString, Object[<class 'Foo'>]]
+
+    Note that these types are returned as unions even when they only contain a single
+    element type.  This is because the :func:`detect` function also records the
+    observed type at every index of the sequence, which can be used later for more
+    complex analysis.  Accessing these types can be done via the :attr:`Union.index`
+    attribute.
+
+    .. doctest::
+
+        >>> detect([1, 2, 3]).index
+        array([PythonInt, PythonInt, PythonInt], dtype=object)
+        >>> detect([1, 2.0, "3", Foo()]).index
+        array([PythonInt, PythonFloat, PythonString, Object[<class 'Foo'>]],
+              dtype=object)
+
+    .. note::
+
+        Internally, this array is stored using run-length encoding, which compresses
+        runs of a single type into a single entry.  This improves both detection speed
+        and memory efficiency.  When the array is accessed, it is automatically
+        expanded back into its original form.
+
+    If the input is a numpy array or pandas data structure with an appropriate dtype,
+    then the dtype will be interpreted directly in constant time:
+
+    .. doctest::
+
+        >>> detect(np.array([1, 2, 3]))
+        Union[NumpyInt64]
+        >>> detect(pd.Series([1, 2, 3]))
+        Union[NumpyInt64]
+        >>> arr = np.arange(10**6)
+        >>> from timeit import timeit
+        >>> timeit(lambda: detect(arr), number=10**3)  # doctest: +SKIP
+        0.005038505998527398
+
+    This also works for dataframes and structured arrays, which will return a
+    structured union containing the type of each column:
+
+    .. doctest::
+
+        >>> detect(pd.DataFrame({"foo": [1, 2, 3], "bar": [4., 5., 6.]}))
+        Union['foo': NumpyInt64, 'bar': NumpyFloat64]
+        >>> detect(np.array([(1, 4.), (2, 5.), (3, 6.)], dtype=[("foo", np.int64), ("bar", np.float64)]))
+        Union['foo': NumpyInt64, 'bar': NumpyFloat64]
+
+    Accessing the index of these objects yields a structured array containing the
+    observed type of each row:
+
+    .. doctest::
+
+        >>> detect(pd.DataFrame({"foo": [1, 2, 3], "bar": [4., 5., 6.]})).index
+        array([(NumpyInt64, NumpyFloat64), (NumpyInt64, NumpyFloat64),
+               (NumpyInt64, NumpyFloat64)], dtype=[('foo', 'O'), ('bar', 'O')])
+
+    If an array's dtype is ambiguous (i.e. ``dtype: object``), then the same
+    elementwise process from before is used to disambiguate:
+
+    .. doctest::
+
+        >>> detect(np.array([1, 2, 3], dtype=object))
+        Union[PythonInt]
+        >>> pd.DataFrame({"foo": [1, 2., "3", Foo()]})
+        Union['foo': PythonInt | PythonFloat | PythonString | Object[<class 'Foo'>]]
+
+    .. warning::
+
+        In the interest of speed, this function will not consider inheritance when
+        performing scalar or elementwise detection.  Instead, the python class must
+        exactly match one of the aliases in the registry.  If this is not the case,
+        then a spurious :class:`Object` type can be returned, which may not be what
+        the user intended.  In order to fix this, one should add an alias to the
+        expected type that specifically matches the class in question.
+    """
     data_type = type(data)
 
     if issubclass(data_type, (TypeMeta, DecoratorMeta, UnionMeta)):
@@ -1649,7 +2169,7 @@ class TypeMeta(type):
             >>> NumpyInt64.as_default
             NumpyInt64
         """
-        if cls.is_default:
+        if not cls._default:
             return cls
         return cls._default[0]
 
@@ -1919,13 +2439,15 @@ class TypeMeta(type):
             >>> Int.is_default
             False
             >>> Signed.is_default
-            False
+            True
             >>> Int64.is_default
-            False
+            True
             >>> NumpyInt64.is_default
             True
         """
-        return not cls._default
+        if cls.parent is None:
+            return False
+        return cls.parent.as_default is cls
 
     @property
     def is_parametrized(cls) -> bool:
@@ -2193,7 +2715,11 @@ class TypeMeta(type):
         """
         result = LinkedSet()
         _explode_leaves(cls, result)
-        return Union.from_types(result[1:])
+        if cls.is_leaf:
+            return Union.from_types(result[1:])
+        return Union.from_types(result)
+
+    # TODO: might be best to allow subtypes to override these properties.
 
     @property
     def larger(cls) -> UnionMeta:
@@ -2247,7 +2773,20 @@ class TypeMeta(type):
             3    1208925819614629174706175
             dtype: PythonInt
         """
-        result = LinkedSet(sorted(t for t in cls.root.leaves if t > cls))
+        features = lambda t: (t.max - t.min, t.itemsize, abs(t.max + t.min))
+        feats = features(cls)
+        types = sorted(t for t in cls.root.leaves if t > cls and features(t) != feats)
+        result = LinkedSet()
+        for t in types:
+            if result:
+                tail = result[-1]
+                if features(t) == features(tail):
+                    if t.is_default and not tail.is_default:  # prefer defaults
+                        result.pop()
+                    else:
+                        continue
+            result.add(t)
+
         return Union.from_types(result)
 
     @property
@@ -2300,7 +2839,20 @@ class TypeMeta(type):
             2    2147483647
             dtype: int32
         """
-        result = LinkedSet(sorted(t for t in cls.root.leaves if t < cls))
+        features = lambda t: (t.max - t.min, t.itemsize, abs(t.max + t.min))
+        feats = features(cls)
+        types = sorted(t for t in cls.root.leaves if t < cls and features(t) != feats)
+        result = LinkedSet()
+        for t in types:
+            if result:
+                tail = result[-1]
+                if features(t) == features(tail):
+                    if t.is_default and not tail.is_default:  # prefer defaults
+                        result.pop()
+                    else:
+                        continue
+            result.add(t)
+
         return Union.from_types(result)
 
     @property
@@ -2423,7 +2975,7 @@ class TypeMeta(type):
         return cls
 
     def __getattr__(cls, name: str) -> Any:
-        if not cls.is_default:
+        if cls._default:
             return getattr(cls.as_default, name)
 
         fields = super().__getattribute__("_fields")
@@ -2445,13 +2997,13 @@ class TypeMeta(type):
             "is_default", "is_parametrized", "is_root", "is_leaf", "root", "parent",
             "subtypes", "implementations", "children", "leaves", "larger", "smaller"
         })
-        if cls.is_default:
-            result.update(cls._fields)
-        else:
+        if cls._default:
             leaf = cls.as_default
             while not leaf.is_default:
                 leaf = leaf.as_default
             result.update(leaf._fields)
+        else:
+            result.update(cls._fields)
 
         return result
 
@@ -2462,9 +3014,9 @@ class TypeMeta(type):
     def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any]:
         # TODO: Even cooler, this could just call cast() on the input, which would
         # enable lossless conversions
-        if cls.is_default:
-            return pd.Series(*args, dtype=cls.dtype, **kwargs)
-        return cls.as_default(*args, **kwargs)
+        if cls._default:
+            return cls.as_default(*args, **kwargs)
+        return pd.Series(*args, dtype=cls.dtype, **kwargs)
 
     def __instancecheck__(cls, other: Any) -> bool:
         return cls.__subclasscheck__(detect(other))  # pylint: disable=no-value-for-parameter
@@ -2692,7 +3244,7 @@ class AbstractBuilder(TypeBuilder):
                 self.required[name] = value.func
                 del self.namespace[name]
             elif name in self.required:
-                self.validate(name, self.namespace.pop(name))
+                self._validate(name, self.namespace.pop(name))
             elif name in self.RESERVED and self.parent is not object:
                 raise TypeError(
                     f"type must not implement reserved attribute: {repr(name)}"
@@ -2737,7 +3289,7 @@ class AbstractBuilder(TypeBuilder):
                     return cls._implementations[backend][*args]
                 return cls._implementations[backend]
 
-            if not cls.is_default:
+            if cls._default:
                 default = cls.as_default
                 if default.is_abstract:
                     return default.__class_getitem__(backend, *args)
@@ -2796,7 +3348,7 @@ class AbstractBuilder(TypeBuilder):
                     return typ
                 return typ.from_string(*args)
 
-            if not cls.is_default:
+            if cls._default:
                 return cls.as_default.from_string(backend, *args)
 
             raise TypeError(f"invalid backend: {repr(backend)}")
@@ -2861,11 +3413,11 @@ class ConcreteBuilder(TypeBuilder):
                     f"type must not implement reserved attribute: {repr(name)}"
                 )
             elif name in self.required:
-                self.validate(name, self.namespace.pop(name))
+                self._validate(name, self.namespace.pop(name))
 
         # validate any remaining required fields that were not explicitly assigned
         for name in list(self.required):
-            self.validate(name, EMPTY)
+            self._validate(name, EMPTY)
 
         return self
 
@@ -3587,11 +4139,11 @@ class DecoratorBuilder(TypeBuilder):
                     f"type must not implement reserved attribute: {repr(name)}"
                 )
             elif name in self.required:
-                self.validate(name, self.namespace.pop(name))
+                self._validate(name, self.namespace.pop(name))
 
         # validate any remaining required fields that were not explicitly assigned
         for name in list(self.required):
-            self.validate(name, EMPTY)
+            self._validate(name, EMPTY)
 
         return self
 
@@ -3928,6 +4480,11 @@ def _insort_decorator(
 # TODO: need a bunch of special cases to handle empty unions
 
 
+# TODO: separate structured unions into StructuredMeta, which inherits from UnionMeta
+# and StructuredUnion, which is returned by Union.__getitem__().  This would avoid
+# having to check for is_structured() everywhere.
+
+
 class UnionMeta(type):
     """Metaclass for all composite bertrand types (those produced by Union[] or setlike
     operators).
@@ -3959,6 +4516,12 @@ class UnionMeta(type):
             "_hash": 42,
             "_index": None,
         })
+
+    def __getitem__(cls, types: TYPESPEC | tuple[TYPESPEC, ...]) -> UnionMeta:
+        typ = resolve(types)
+        if isinstance(typ, UnionMeta):
+            return typ
+        return cls.from_types(LinkedSet((typ,)))
 
     def from_types(
         cls,
@@ -4632,12 +5195,6 @@ class Union(metaclass=UnionMeta):
     def __new__(cls) -> NoReturn:
         raise TypeError("bertrand unions cannot be instantiated")
 
-    def __class_getitem__(cls, val: TYPESPEC | tuple[TYPESPEC, ...]) -> UnionMeta:
-        typ = resolve(val)
-        if isinstance(typ, UnionMeta):
-            return typ
-        return cls.from_types(LinkedSet((typ,)))
-
 
 def union_getitem(cls: UnionMeta, key: int | slice | str) -> META:
     """A parametrized replacement for the base Union's __class_getitem__() method that
@@ -5169,7 +5726,7 @@ class Categorical(DecoratorType, cache_size=256):
             slug_repr = levels
             dtype = pd.CategoricalDtype()  # NOTE: auto-detects levels when used
             patch = wrapped
-            while not patch.is_default:
+            while patch._default:
                 patch = patch.as_default
             dtype._bertrand_wrapped_type = patch  # disambiguates wrapped type
         else:
