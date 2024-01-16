@@ -17,6 +17,11 @@ import regex as re  # alternate (PCRE-style) regex engine
 from linked import LinkedSet, LinkedDict
 
 
+# TODO: occasionally get a hangup when building registry.  This is probably due to
+# some circular relationship in Linked structs.  Need to investigate, but hard to
+# reproduce.
+
+
 # pylint: disable=unused-argument
 
 
@@ -86,14 +91,6 @@ RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]
 ########################
 
 
-# TODO: change every reference to
-# - parent (never None)
-# - wrapped (never None)
-# - children (includes self)
-# - leaves (may include self)
-# - 
-
-
 class DecoratorPrecedence:
     """A linked set representing the priority given to each decorator in the type
     system.
@@ -106,19 +103,19 @@ class DecoratorPrecedence:
     .. code-block:: python
 
         >>> Type.registry.decorators
-        DecoratorPrecedence({A, B, C})
+        DecoratorPrecedence({D1, D2, D3})
         >>> T
         T
-        >>> B[T]
-        B[T]
-        >>> C[B[T]]
-        B[C[T]]
-        >>> B[C[A[T]]]
-        A[B[C[T]]]
+        >>> D2[T]
+        D2[T]
+        >>> D3[D2[T]]
+        D2[D3[T]]
+        >>> D2[D3[D1[T]]]
+        D1[D2[D3[T]]]
 
-    At each step, the decorator that is furthest to the right is applied first, and the
-    decorator furthest to the left is applied last.  We can modify this by changing the
-    precedence order:
+    At each step, the decorator that is furthest to the right in precedence is applied
+    first, and the decorator furthest to the left is applied last.  We can modify this
+    by changing the precedence order:
 
     .. code-block:: python
 
@@ -262,6 +259,142 @@ class DecoratorPrecedence:
         return f"DecoratorPrecedence({', '.join(repr(d) for d in self)})"
 
 
+class Edges:
+    """A set of edges representing overrides for a type's less-than and greater-than
+    operators.
+    """
+
+    def __init__(self) -> None:
+        self._set: set[tuple[TypeMeta, TypeMeta]] = set()
+
+    def add(self, typ1: TYPESPEC, typ2: TYPESPEC) -> None:
+        """Add an edge to the set.
+
+        Parameters
+        ----------
+        typ1 : TYPESPEC
+            A specifier for the first type in the edge.  This will always be considered
+            to be less than the second type.
+        typ2 : TYPESPEC
+            A specifier for the second type in the edge.  This will always be considered
+            greater than the first type.
+
+        Raises
+        ------
+        TypeError
+            If either type is not an unparametrized scalar type.
+        """
+        t1 = resolve(typ1)
+        t2 = resolve(typ2)
+
+        if not (isinstance(t1, TypeMeta) and isinstance(t2, TypeMeta)):
+            raise TypeError(
+                f"edges can only be drawn between scalar types, not {repr(t1)} and "
+                f"{repr(t2)}"
+            )
+
+        if t1.is_flyweight or t2.is_flyweight:
+            raise TypeError(
+                f"edges can only be drawn between unparametrized types, not "
+                f"{repr(t1)} and {repr(t2)}"
+            )
+
+        self._set.add((t1, t2))
+
+    def update(self, edges: Iterable[tuple[TYPESPEC, TYPESPEC]]) -> None:
+        """Add multiple edges to the set.
+
+        Parameters
+        ----------
+        edges : Iterable[tuple[TYPESPEC, TYPESPEC]]
+            An iterable of edges to add to the set.
+
+        Raises
+        ------
+        TypeError
+            If any of the edges are not between unparametrized scalar types.
+        """
+        for typ1, typ2 in edges:
+            self.add(typ1, typ2)
+
+    def clear(self) -> None:
+        """Remove all edges from the set, resetting comparisons to their defaults."""
+        self._set.clear()
+
+    def remove(self, typ1: TYPESPEC, typ2: TYPESPEC) -> None:
+        """Remove an edge from the set.
+
+        Parameters
+        ----------
+        typ1 : TYPESPEC
+            A specifier for the first type in the edge.
+        typ2 : TYPESPEC
+            A specifier for the second type in the edge.
+
+        Raises
+        ------
+        KeyError
+            If the edge is not in the set.
+        """
+        t1 = resolve(typ1)
+        t2 = resolve(typ2)
+        self._set.remove((t1, t2))  # type: ignore
+
+    def discard(self, typ1: TYPESPEC, typ2: TYPESPEC) -> None:
+        """Remove an edge from the set if it is present.
+
+        Parameters
+        ----------
+        typ1 : TYPESPEC
+            A specifier for the first type in the edge.
+        typ2 : TYPESPEC
+            A specifier for the second type in the edge.
+        """
+        t1 = resolve(typ1)
+        t2 = resolve(typ2)
+        self._set.discard((t1, t2))  # type: ignore
+
+    def pop(self) -> tuple[TYPESPEC, TYPESPEC]:
+        """Pop an edge from the set.
+
+        Returns
+        -------
+        tuple[TYPESPEC, TYPESPEC]
+            The popped edge.
+
+        Raises
+        ------
+        KeyError
+            If the set is empty.
+        """
+        return self._set.pop()
+
+    __hash__ = None  # type: ignore
+
+    def __contains__(self, edge: tuple[TYPESPEC, TYPESPEC]) -> bool:
+        if len(edge) != 2:
+            return False  # type: ignore
+        t1 = resolve(edge[0])
+        t2 = resolve(edge[1])
+        return (t1, t2) in self._set
+
+    def __len__(self) -> int:
+        return len(self._set)
+
+    def __iter__(self) -> Iterator[tuple[TypeMeta, TypeMeta]]:
+        return iter(self._set)
+
+    def __reversed__(self) -> Iterator[tuple[TypeMeta, TypeMeta]]:
+        # pylint: disable=bad-reversed-sequence
+        return reversed(self._set)  # type: ignore
+
+    def __str__(self) -> str:
+        return f"{{{', '.join(f'{repr(t1)} < {repr(t2)}' for t1, t2 in self)}}}"
+
+    def __repr__(self) -> str:
+        return f"Edges({', '.join(f'{repr(t1)} < {repr(t2)}' for t1, t2 in self)})"
+
+
 class TypeRegistry:
     """A registry containing the global state of the bertrand type system.
     
@@ -275,7 +408,7 @@ class TypeRegistry:
     # types are recorded in the same order as they are defined
     _types: LinkedSet[TypeMeta | DecoratorMeta] = LinkedSet()
     _precedence: DecoratorPrecedence = DecoratorPrecedence()
-    _edges: set[tuple[TypeMeta, TypeMeta]] = set()
+    _edges: Edges = Edges()
 
     # aliases are stored in separate dictionaries for performance reasons
     types: dict[type, TypeMeta | DecoratorMeta] = {}
@@ -495,70 +628,57 @@ class TypeRegistry:
         return self._precedence
 
     @property
-    def edges(self) -> set[tuple[TypeMeta, TypeMeta]]:
+    def edges(self) -> Edges:
         """A set of edges (A, B) where A is considered to be less than B.
 
         Returns
         -------
-        set[tuple[TypeMeta, TypeMeta]]
-            A set of edges representing overrides for the less-than and greater-than
-            operators.  Each edge is a tuple of two types, where the first type is
-            always considered to be less than the second type.
+        Edges
+            A collection of edges representing overrides for the less-than and
+            greater-than operators for scalar types.
 
         Examples
         --------
-        By adding an edge to this set, users can customize the behavior of the
-        comparison operators for a particular type.
+        This interface is used to customize comparisons between types in a symmetric
+        manner, without breaking the transitive property of the operators.  For
+        instance, if we want to make `Int32 < Int16` return `True`, then we can add an
+        edge to the set:
 
         .. doctest::
 
-            >>> REGISTRY.edges
-            set()
-            >>> Int16 < Int32
-            True
             >>> Int32 < Int16
             False
-            >>> REGISTRY.edges.add((Int32, Int16))
             >>> Int16 < Int32
-            False
+            True
+            >>> Type.registry.edges.add(Int32, Int16)
             >>> Int32 < Int16
             True
+            >>> Int16 < Int32
+            False
 
-        Note that this also affects the order of the :attr:`Type.larger` and
-        :attr:`Type.smaller` attributes.
-
-        .. doctest::
-
-            >>> Int8.larger
-            Union[NumpyInt32, NumpyInt16, PandasInt64, PythonInt]
-            >>> Int64.smaller
-            Union[NumpyInt8, NumpyInt32, NumpyInt16]
-
-        Note also that edges that are applied to abstract parents will be propagated
-        to all their children.
-
-        .. doctest::
-
-            >>> Int32["numpy"] < Int16
-            True
-            >>> Int32["pandas"] < Int16
-            True
-            >>> Int32["numpy"] < Int16["numpy"]
-            True
-            >>> Int32["pandas] < Int16["numpy"]
-            True
-            >>> Int32["numpy"] < Int16["pandas"]
-            True
-            >>> Int32["pandas] < Int16["pandas"]
-            True
-
-        Lastly, edges are automatically inverted for the greater-than operator.
+        This also affects the behavior of the greater-than operator, as well as the
+        order of the :attr:`larger <TypeMeta.larger>` and
+        :attr:`smaller <TypeMeta.smaller>` attributes:
 
         .. doctest::
 
             >>> Int32 > Int16
             False
             >>> Int16 > Int32
+            True
+            >>> Int32.larger
+            Union[NumpyInt16, NumpyInt64, PythonInt]
+            >>> Int16.smaller
+            Union[NumpyInt8, NumpyInt32]
+
+        Note that edges that are applied to abstract parents will be propagated to all
+        their children:
+
+        .. doctest::
+
+            >>> Int32["numpy"] < Int16["pandas"]
+            True
+            >>> Int16["numpy"] > Int32
             True
         """
         return self._edges
@@ -4316,6 +4436,8 @@ class TypeMeta(BaseMeta):
 
         raise _no_attribute(cls, name)
 
+    # TODO: update __dir__ once interface is finalized
+
     def __dir__(cls) -> set[str]:
         result = set(super().__dir__())
         result.update({
@@ -4369,18 +4491,9 @@ class TypeMeta(BaseMeta):
         if isinstance(typ, UnionMeta):
             return all(cls < t for t in typ)
 
-        t1 = cls
-        t2 = typ.parent if typ.is_flyweight else typ  # TODO: might have problems if t2 is a decorator
-        while not t2.is_root:
-            while not t1.is_root:
-                if (t1, t2) in REGISTRY.edges:
-                    return True
-                if (t2, t1) in REGISTRY.edges:
-                    return False
-                t1 = t1.parent
-
-            t1 = cls
-            t2 = t2.parent
+        edge = _has_edge(cls.base_type, typ.unwrapped.base_type)
+        if edge is not None:
+            return edge
 
         return _features(cls) < _features(typ)
 
@@ -4392,18 +4505,9 @@ class TypeMeta(BaseMeta):
         if isinstance(typ, UnionMeta):
             return all(cls <= t for t in typ)
 
-        t1 = cls
-        t2 = typ.parent if typ.is_flyweight else typ  # TODO: might have problems if t2 is a decorator
-        while not t2.is_root:
-            while not t1.is_root:
-                if (t1, t2) in REGISTRY.edges:
-                    return True
-                if (t2, t1) in REGISTRY.edges:
-                    return False
-                t1 = t1.parent
-
-            t1 = cls
-            t2 = t2.parent
+        edge = _has_edge(cls.base_type, typ.unwrapped.base_type)
+        if edge is not None:
+            return edge
 
         return _features(cls) <= _features(typ)
 
@@ -4429,18 +4533,9 @@ class TypeMeta(BaseMeta):
         if isinstance(typ, UnionMeta):
             return all(cls >= t for t in typ)
 
-        t1 = cls
-        t2 = typ.parent if typ.is_flyweight else typ  # TODO: might have problems if t2 is a decorator
-        while not t2.is_root:
-            while not t1.is_root:
-                if (t1, t2) in REGISTRY.edges:
-                    return False
-                if (t2, t1) in REGISTRY.edges:
-                    return True
-                t1 = t1.parent
-
-            t1 = cls
-            t2 = t2.parent
+        edge = _has_edge(cls.base_type, typ.unwrapped.base_type)
+        if edge is not None:
+            return not edge
 
         return _features(cls) >= _features(typ)
 
@@ -4452,18 +4547,9 @@ class TypeMeta(BaseMeta):
         if isinstance(typ, UnionMeta):
             return all(cls > t for t in typ)
 
-        t1 = cls
-        t2 = typ.parent if typ.is_flyweight else typ  # TODO: might have problems if t2 is a decorator
-        while not t2.is_root:
-            while not t1.is_root:
-                if (t1, t2) in REGISTRY.edges:
-                    return False
-                if (t2, t1) in REGISTRY.edges:
-                    return True
-                t1 = t1.parent
-
-            t1 = cls
-            t2 = t2.parent
+        edge = _has_edge(cls.base_type, typ.unwrapped.base_type)
+        if edge is not None:
+            return not edge
 
         return _features(cls) > _features(typ)
 
@@ -4567,7 +4653,7 @@ class DecoratorMeta(BaseMeta):
                     "_fields": cls._fields | dict(zip(cls._params, args)) | kwargs,
                     "_base_type": cls,
                     "_parametrized": True,
-                    "__class_getitem__": parametrized_getitem,
+                    "__class_getitem__": _parametrized_getitem,
                 } | kwargs  # TODO: unnecessary?
             )
             cls._flyweights.lru_add(slug, typ)
@@ -4725,25 +4811,29 @@ class DecoratorMeta(BaseMeta):
 
     @property
     def decorators(cls) -> UnionMeta:
-        """TODO"""
-        result = LinkedSet()
+        """Copied from TypeMeta."""
+        result = LinkedSet((cls,))
         curr = cls
-        while curr.wrapped is not None:  # TODO: wrapped is never none
+        while curr.wrapped is not curr:
+            curr = curr.wrapped  # type: ignore
             result.add(curr)
-            curr = curr.wrapped
-
         return Union.from_types(result)
 
     @property
     def wrapped(cls) -> TypeMeta | DecoratorMeta:
-        """TODO"""
-        return cls._fields["wrapped"]
+        """Copied from TypeMeta."""
+        result = cls._fields["wrapped"]
+        if result is None:
+            return cls
+        return result
+
+    # TODO: unwrapped always returns TypeMeta?
 
     @property
-    def unwrapped(cls) -> TypeMeta | None:
-        """TODO"""
-        result = cls
-        while isinstance(result, DecoratorMeta):
+    def unwrapped(cls) -> TypeMeta | DecoratorMeta:
+        """Copied from TypeMeta."""
+        result: TypeMeta | DecoratorMeta = cls
+        while result.wrapped is not result:
             result = result.wrapped
         return result
 
@@ -4756,10 +4846,12 @@ class DecoratorMeta(BaseMeta):
             return cls._fields[name]
 
         wrapped = cls._fields["wrapped"]
-        if wrapped:
+        if wrapped is not None:
             return getattr(wrapped, name)
 
         raise _no_attribute(cls, name)
+
+    # TODO: update __dir__ once interface is finalized
 
     def __dir__(cls) -> set[str]:
         result = set(super().__dir__())
@@ -4775,12 +4867,11 @@ class DecoratorMeta(BaseMeta):
             curr = curr.wrapped
         return result
 
-    # TODO: comparisons, isinstance(), issubclass(), etc. should delegate to wrapped
-    # type.  They should also be able to compare against other decorators, and should
-    # take decorator order into account.
-
     def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any]:
-        return cls.transform(cls.wrapped(*args, **kwargs))
+        wrapped = cls._fields["wrapped"]
+        if wrapped is None:
+            raise TypeError(f"decorator has no wrapped type -> {cls.slug}")
+        return cls.transform(wrapped(*args, **kwargs))
 
     # TODO:
     # >>> Sparse[Int16, 1] in Sparse[Int]
@@ -4837,10 +4928,25 @@ class DecoratorMeta(BaseMeta):
         return cls._hash
 
     def __len__(cls) -> int:
-        return cls.itemsize
+        wrapped = cls._fields["wrapped"]
+        if wrapped is None:
+            raise TypeError(f"decorator has no wrapped type -> {cls.slug}")
+        return len(wrapped)
 
     def __bool__(cls) -> bool:
-        return True  # without this, Python defaults to len() > 0, which is wrong
+        return True
+
+    def __iter__(cls) -> Iterator[DecoratorMeta]:
+        wrapped = cls._fields["wrapped"]
+        if wrapped is None:
+            raise TypeError(f"decorator has no wrapped type -> {cls.slug}")
+        return (cls.replace(t) for t in wrapped)
+
+    def __reversed__(cls) -> Iterator[DecoratorMeta]:
+        wrapped = cls._fields["wrapped"]
+        if wrapped is None:
+            raise TypeError(f"decorator has no wrapped type -> {cls.slug}")
+        return (cls.replace(t) for t in reversed(wrapped))
 
     def __lt__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
         typ = resolve(other)
@@ -4850,87 +4956,91 @@ class DecoratorMeta(BaseMeta):
         if isinstance(typ, UnionMeta):
             return all(cls < t for t in typ)
 
-        # TODO: check this for correctness.  If we swap to making wrapped return a
-        # self reference instead of None, this could be slightly simpler.
-
         t1 = cls.wrapped
-        if t1 is None:
+        if t1 is cls:
             return False
 
         if isinstance(typ, DecoratorMeta):
             t2 = typ.wrapped
-            if t2 is None:
+            if t2 is typ:
                 return False
             return t1 < t2
 
         return t1 < typ
 
     def __le__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
-        if cls is other:
+        typ = resolve(other)
+        if cls is typ:
             return True
 
+        if isinstance(typ, UnionMeta):
+            return all(cls <= t for t in typ)
+
         t1 = cls.wrapped
-        if t1 is None:
+        if t1 is cls:
             return False
 
-        if isinstance(other, DecoratorMeta):
-            t2 = other.wrapped
-            if t2 is None:
+        if isinstance(typ, DecoratorMeta):
+            t2 = typ.wrapped
+            if t2 is typ:
                 return False
             return t1 <= t2
 
-        return t1 <= other
+        return t1 <= typ
 
     def __eq__(cls, other: Any) -> bool:
-        if cls is other:
-            return True
-
-        t1 = cls.wrapped
-        if t1 is None:
+        try:
+            typ = resolve(other)
+        except TypeError:
             return False
 
-        if isinstance(other, DecoratorMeta):
-            t2 = other.wrapped
-            if t2 is None:
-                return False
-            return t1 == t2
+        if isinstance(typ, UnionMeta):
+            return all(cls is t for t in typ)
 
-        return t1 == other
+        return cls is typ
 
     def __ne__(cls, other: Any) -> bool:
         return not cls == other
 
     def __ge__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
-        if cls is other:
+        typ = resolve(other)
+        if cls is typ:
             return True
 
+        if isinstance(typ, UnionMeta):
+            return all(cls >= t for t in typ)
+
         t1 = cls.wrapped
-        if t1 is None:
+        if t1 is cls:
             return False
 
-        if isinstance(other, DecoratorMeta):
-            t2 = other.wrapped
-            if t2 is None:
+        if isinstance(typ, DecoratorMeta):
+            t2 = typ.wrapped
+            if t2 is typ:
                 return False
             return t1 >= t2
 
-        return t1 >= other
+        return t1 >= typ
 
     def __gt__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
-        if cls is other:
+        typ = resolve(other)
+        if cls is typ:
             return False
+
+        if isinstance(typ, UnionMeta):
+            return all(cls > t for t in typ)
 
         t1 = cls.wrapped
-        if t1 is None:
+        if t1 is cls:
             return False
 
-        if isinstance(other, DecoratorMeta):
-            t2 = other.wrapped
-            if t2 is None:
+        if isinstance(typ, DecoratorMeta):
+            t2 = typ.wrapped
+            if t2 is typ:
                 return False
             return t1 > t2
 
-        return t1 > other
+        return t1 > typ
 
     def __str__(cls) -> str:
         return cls._slug
@@ -5637,6 +5747,79 @@ DecoratorMeta.is_decorator.__doc__      = TypeMeta.is_decorator.__doc__
 DecoratorMeta.is_flyweight.__doc__      = TypeMeta.is_flyweight.__doc__
 
 
+# TODO:
+# >>> Sparse[Sparse[Int, 1]]
+# Sparse[Int, <NA>]
+# -> should preserve the innermost 1?
+
+
+def _insort_decorator(
+    invoke: Callable[..., DecoratorMeta],
+    cls: DecoratorMeta,
+    other: TypeMeta | DecoratorMeta,
+    *args: Any,
+) -> DecoratorMeta:
+    """Insert a decorator into a type's decorator stack, ensuring that it obeys the
+    registry's current precedence.
+    """
+    visited = []
+    curr: DecoratorMeta | TypeMeta = other
+    wrapped = curr.wrapped
+
+    while wrapped is not curr:
+        delta = REGISTRY.decorators.distance(cls, curr.base_type)  # type: ignore
+        if delta > 0:  # cls is higher priority or identical to current decorator
+            break
+        elif delta == 0:  # cls is identical to current decorator
+            curr = wrapped
+            break
+
+        visited.append(curr)
+        curr = wrapped
+        wrapped = curr.wrapped
+
+    result = invoke(cls, curr, *args)
+    for curr in reversed(visited):
+        result = curr.replace(result)
+    return result
+
+
+def _no_attribute(cls: type, name: str) -> AttributeError:
+    """Raise an AttributeError for a missing attribute."""
+    return AttributeError(f"type '{cls.__name__}' has no attribute '{name}'")
+
+
+def _has_edge(t1: TypeMeta, t2: TypeMeta) -> bool | None:
+    """Check whether an edge exists between two types in a comparison."""
+    edges = REGISTRY.edges
+    reset = t2
+
+    while not t1.is_root:
+        while not t2.is_root:
+            if (t1, t2) in edges:
+                return True
+            if (t2, t1) in edges:
+                return False
+            t2 = t2.parent
+
+        t1 = t1.parent
+        t2 = reset
+
+    return None
+
+
+def _features(t: TypeMeta | DecoratorMeta) -> tuple[int | float, int, bool, int]:
+    """Extract a tuple of features representing the allowable range of a type, used for
+    range-based sorting and comparison.
+    """
+    return (
+        t.max - t.min,  # total range
+        t.itemsize,  # memory footprint
+        t.is_nullable,  # nullability
+        abs(t.max + t.min),  # bias away from zero
+    )
+
+
 def _format_dict(d: dict[str, Any]) -> str:
     """Convert a dictionary into a string with standard indentation."""
     if not d:
@@ -5646,11 +5829,6 @@ def _format_dict(d: dict[str, Any]) -> str:
     sep = ",\n    "
     suffix = "\n}"
     return prefix + sep.join(f"{k}: {repr(v)}" for k, v in d.items()) + suffix
-
-
-def _no_attribute(cls: type, name: str) -> AttributeError:
-    """Raise an AttributeError for a missing attribute."""
-    return AttributeError(f"type '{cls.__name__}' has no attribute '{name}'")
 
 
 def _parametrized_getitem(cls: TypeMeta, *args: Any) -> NoReturn:
@@ -5669,63 +5847,6 @@ def _union_getitem(cls: UnionMeta, key: int | slice | str) -> META:
         return cls.from_types(cls._types[key])  # type: ignore
 
     return cls._types[key]  # type: ignore
-
-
-def _features(t: TypeMeta | DecoratorMeta) -> tuple[int | float, int, bool, int]:
-    """Extract a tuple of features representing the allowable range of a type, used for
-    range-based sorting and comparison.
-    """
-    return (
-        t.max - t.min,  # total range
-        t.itemsize,  # memory footprint
-        t.is_nullable,  # nullability
-        abs(t.max + t.min),  # bias away from zero
-    )
-
-
-def _insort_decorator(
-    invoke: Callable[..., DecoratorMeta],
-    cls: DecoratorMeta,
-    other: TypeMeta | DecoratorMeta,
-    *args: Any,
-) -> DecoratorMeta:
-    """Insert a decorator into a type's decorator stack, ensuring that it obeys the
-    registry's current precedence.
-    """
-    # TODO: use replace() rather than reimplementing it here
-    visited = []
-    curr: DecoratorMeta | TypeMeta = other
-
-    while curr.wrapped is not curr:
-        wrapper = curr.base_type
-
-
-
-    wrapped = curr.wrapped  # TODO: check for self reference
-
-    while wrapped:
-        wrapper = curr.base_type
-        if wrapper is None:
-            break
-        delta = REGISTRY.decorators.distance(cls, wrapper)
-
-        if delta > 0:  # cls is higher priority or identical to wrapper
-            break
-        elif delta == 0:  # cls is identical to wrapper
-            curr = wrapped
-            break
-
-        visited.append((wrapper, list(curr.params.values())[1:]))
-        curr = wrapped
-        wrapped = curr.wrapped
-
-    result = invoke(cls, curr, *args)
-    for wrapper, params in reversed(visited):
-        if not params:
-            result = wrapper[result]
-        else:
-            result = wrapper[result, *params]
-    return result
 
 
 ###########################
@@ -6108,23 +6229,123 @@ class DecoratorType(object, metaclass=DecoratorMeta):
     """TODO
     """
 
+    # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+
     # TODO: __class_getitem__(), from_scalar(), from_dtype(), from_string()
 
     @classmethod
     def transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
-        """Apply the decorator to a series of the wrapped type."""
+        """Apply the decorator to a series of the wrapped type.
+
+        Parameters
+        ----------
+        series : pd.Series[Any]
+            The series to transform.  This will always be of the type that the
+            decorator wraps.
+
+        Returns
+        -------
+        pd.Series
+            The transformed series, which should reflect the decorated type.
+
+        See Also
+        --------
+        inverse_transform : Remove the decorator from a series of the wrapped type.
+
+        Notes
+        -----
+        Conversions involving decorators are always handled from the inside out,
+        meaning that the input will first be converted to the wrapped type and then
+        transformed into the final result via this method.  This allows the user to
+        ignore the multivariate nature of the decorator and its corresponding
+        complexity in the conversion logic.
+
+        The default implementation of this method simply casts the series to the
+        decorator's :attr:`dtype <TypeMeta.dtype>`.  If the series is already of that
+        type, then this method is a no-op.  This is the simplest (and most efficient)
+        way to apply a decorator, but users can override this method to provide more
+        sophisticated logic if necessary.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int([1, 2, 3])
+            0    1
+            1    2
+            2    3
+            dtype: int64
+            >>> Sparse[Int].transform(_)
+            0    1
+            1    2
+            2    3
+            dtype: Sparse[int64, <NA>]
+            >>> Sparse[Int]([1, 2, 3])
+            0    1
+            1    2
+            2    3
+            dtype: Sparse[int64, <NA>]
+        """
         return series.astype(cls.dtype, copy=False)
 
     @classmethod
     def inverse_transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
-        """Remove the decorator from a series of the wrapped type."""
+        """Remove the decorator from a series of the wrapped type.
+
+        Parameters
+        ----------
+        series : pd.Series[Any]
+            The series to transform.  This will always be of the decorator's type.
+
+        Returns
+        -------
+        pd.Series
+            The transformed series, which should reflect the type that the decorator
+            wraps.
+
+        See Also
+        --------
+        transform : Apply the decorator to a series of the wrapped type.
+
+        Notes
+        -----
+        Conversions involving decorators are always handled from the inside out,
+        meaning that input decorators will be unwrapped using this method before
+        converting to the final result.  This allows the user to ignore the
+        multivariate nature of the decorator and its corresponding complexity in the
+        conversion logic.
+
+        The default implementation of this method simply casts the series to the
+        wrapped :attr:`dtype <TypeMeta.dtype>`.  If the series is already of that type,
+        then this method is a no-op.  This is the simplest (and most efficient) way to
+        remove a decorator, but users can override this method to provide more
+        sophisticated logic if necessary.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Sparse[Int]([1, 2, 3])
+            0    1
+            1    2
+            2    3
+            dtype: Sparse[int64, <NA>]
+            >>> Sparse[Int].inverse_transform(_)
+            0    1
+            1    2
+            2    3
+            dtype: int64
+            >>> Int(Sparse[Int]([1, 2, 3]))
+            0    1
+            1    2
+            2    3
+            dtype: int64
+        """
         return series.astype(cls.wrapped.dtype, copy=False)
 
     @classmethod
     def replace(cls, *args: Any, **kwargs: Any) -> DecoratorMeta:
-        """Base implementation of the replace() method, which produces a new type with
-        a modified set of parameters.
-        """
+        """Copied from Type."""
         forwarded = dict(cls.params)
         positional = collections.deque(args)
         n  = len(args)
@@ -6348,6 +6569,8 @@ class Categorical(DecoratorType, cache_size=256):
 class Sparse(DecoratorType, cache_size=256):
     aliases = {"sparse", pd.SparseDtype()}
     _is_empty = False
+
+    # TODO: Sparse[Categorical] does not work
 
     def __class_getitem__(
         cls,
