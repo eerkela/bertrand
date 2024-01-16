@@ -86,17 +86,6 @@ RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]
 ########################
 
 
-# TODO: metaclass throws error if any non-classmethods are implemented on type objects.
-# -> non-member functions are more explicit and flexible.  Plus, if there's only one
-# syntax for declaring them, then it's easier to document and use.
-# -> just filter out any methods that start/end with double underscore
-
-
-# TODO: it might be generally easier if the cases where None is returned (i.e. parent,
-# wrapped) returned a self reference to the type they were called on.  That would
-# simplify union implementation somewhat.
-
-
 # TODO: change every reference to
 # - parent (never None)
 # - wrapped (never None)
@@ -594,14 +583,14 @@ class TypeRegistry:
             return (typ.parent if typ.is_flyweight else typ) in self._types
 
         if isinstance(typ, DecoratorMeta):
-            return typ.wrapper in self._types
+            return typ.base_type in self._types
 
         for t in typ:
             if isinstance(t, TypeMeta):
                 if (t.parent if t.is_flyweight else t) not in self._types:
                     return False
             elif isinstance(t, DecoratorMeta):
-                if t.wrapper not in self._types:
+                if t.base_type not in self._types:
                     return False
 
         return True
@@ -611,9 +600,6 @@ class TypeRegistry:
 
     def __repr__(self) -> str:
         return f"TypeRegistry({{{', '.join(repr(t) for t in self)}}})"
-
-
-REGISTRY = TypeRegistry()
 
 
 class Aliases:
@@ -882,260 +868,7 @@ class Aliases:
         return f"Aliases({', '.join(repr(a) for a in self.aliases)})"
 
 
-class BaseMeta(type):
-    """Base class for all bertrand metaclasses.
-
-    This is not meant to be used directly.  It exists only to provide shared methods
-    and attributes to the other metaclasses.
-    """
-    # pylint: disable=no-value-for-parameter
-
-    @property
-    def registry(cls) -> TypeRegistry:
-        """A reference to the global type registry.
-
-        Returns
-        -------
-        TypeRegistry
-            The global type registry.
-
-        Notes
-        -----
-        This attribute is inherited by all bertrand type objects, and can be used to
-        access the global type registry from anywhere in the type system.  It is
-        identical to the global ``REGISTRY`` object.
-        """
-        return REGISTRY
-
-    def __getitem__(cls, params: Any | tuple[Any, ...]) -> META:
-        """A wrapper around a type's `__class_getitem__` method that automatically
-        unpacks tuples into a more traditional call syntax.
-        """
-        if isinstance(params, tuple):
-            return cls.__class_getitem__(*params)  # type: ignore
-        return cls.__class_getitem__(params)  # type: ignore
-
-    def __setattr__(cls, name: str, val: Any) -> NoReturn:
-        raise TypeError("bertrand types are immutable")
-
-    def __instancecheck__(cls, other: Any | Iterable[Any]) -> bool:
-        return cls.__subclasscheck__(detect(other))
-
-    def __contains__(cls, other: Any | TYPESPEC | Iterable[Any | TYPESPEC]) -> bool:
-        try:
-            return cls.__subclasscheck__(other)  # type: ignore
-        except TypeError:
-            return cls.__instancecheck__(other)
-
-    def __or__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:  # type: ignore
-        try:
-            typ = resolve(other)
-        except TypeError:
-            return NotImplemented
-
-        if isinstance(typ, UnionMeta):
-            result = LinkedSet((cls,))
-            result.update(typ)
-            return Union.from_types(result)
-
-        return Union.from_types(LinkedSet((cls, typ)))        
-
-    def __ror__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:  # type: ignore
-        try:
-            typ = resolve(other)
-        except TypeError:
-            return NotImplemented
-
-        return typ | cls
-
-    def __and__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
-        try:
-            typ = resolve(other)
-        except TypeError:
-            return NotImplemented
-
-        return Union.from_types(LinkedSet((cls,))) & typ
-
-    def __rand__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
-        try:
-            typ = resolve(other)
-        except TypeError:
-            return NotImplemented
-
-        return typ & cls
-
-    def __sub__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
-        try:
-            typ = resolve(other)
-        except TypeError:
-            return NotImplemented
-
-        return Union.from_types(LinkedSet((cls,))) - typ
-
-    def __rsub__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
-        try:
-            typ = resolve(other)
-        except TypeError:
-            return NotImplemented
-
-        return typ - cls
-
-    def __xor__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
-        try:
-            typ = resolve(other)
-        except TypeError:
-            return NotImplemented
-
-        return Union.from_types(LinkedSet((cls,))) ^ typ
-
-    def __rxor__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
-        try:
-            typ = resolve(other)
-        except TypeError:
-            return NotImplemented
-
-        return typ ^ cls
-
-
-class TypeBuilder:
-    """Common base for all namespace builders.
-
-    The builders that inherit from this class are responsible for transforming a type's
-    simplified namespace into a fully-featured bertrand type.  They do this by looping
-    through all the attributes that are defined in the class and executing any relevant
-    helper functions to validate their configuration.  The builders also mark all
-    required fields (those assigned to ``EMPTY``) and reserved attributes that they
-    encounter, and fill in missing slots with default values where possible.  If the
-    type is improperly configured, the builder will throw a series of informative error
-    messages guiding the user towards a solution.
-
-    The end result is a fully processed namespace that conforms to the expectations of
-    each metaclass, which can then be used to instantiate the type.  This means that
-    the output from the builder is directly converted into dotted names on the type, as
-    reflected by the `dir()` built-in function.  Since each builder is executed before
-    the type is instantiated, they have free reign to modify the namespace however they
-    see fit, without violating the type's read-only semantics.
-
-    These builders are what allow us to write new types without regard to the internal
-    mechanics of the type system.  Instead, the relevant information will be
-    automatically extracted from the namespace and used to construct the type, without
-    any additional work on the user's part.
-    """
-
-    # RESERVED: set[str] = set(dir(TypeMeta)) ^ {
-    #     "__init__",
-    #     "__module__",
-    #     "__qualname__",
-    #     "__annotations__",
-    # }
-
-    # reserved attributes will throw an error if implemented on user-defined types
-    RESERVED: set[str] = {
-        "__init__",
-        "__new__",
-        # TODO: others?
-    }
-
-    # constructors use special logic to allow for parametrization
-    CONSTRUCTORS: set[str] = {
-        "__class_getitem__",
-        "from_scalar",
-        "from_dtype",
-        "from_string"
-    }
-
-    def __init__(
-        self,
-        name: str,
-        parent: TypeMeta | DecoratorMeta,
-        namespace: dict[str, Any],
-        cache_size: int | None,
-    ):
-        self.name = name
-        self.parent = parent
-        self.namespace = namespace
-        self.cache_size = cache_size
-        if parent is object:
-            self.required = {}
-            self.fields = {}
-        else:
-            self.required = parent._required.copy()
-            self.fields = parent._fields.copy()
-
-    def fill(self) -> TypeBuilder:
-        """Fill in any reserved slots in the namespace with their default values.
-
-        This method should be called after parsing the namespace to avoid unnecessary
-        work.
-
-        Returns
-        -------
-        TypeBuilder
-            The builder instance, for chaining.
-        """
-        self.namespace["_required"] = self.required  # TODO: not relevant for decorators
-        self.namespace["_fields"] = self.fields
-        self.namespace["_slug"] = self.name
-        self.namespace["_hash"] = hash(self.name)
-        if self.parent is object or self.parent is Type or self.parent is DecoratorType:
-            self.namespace["_parent"] = None
-        else:
-            self.namespace["_parent"] = self.parent
-        self.namespace["_parametrized"] = False
-        self.namespace["_cache_size"] = self.cache_size
-        self.namespace["_flyweights"] = LinkedDict(max_size=self.cache_size)
-
-        self._parse_aliases()
-
-        return self
-
-    def register(self, typ: TypeMeta | DecoratorMeta) -> TypeMeta | DecoratorMeta:
-        """Push a newly-created type to the global registry, registering any aliases
-        provided in its namespace.
-
-        Parameters
-        ----------
-        typ : TypeMeta | DecoratorMeta
-            The final type to register.  This is typically the result of a fresh
-            call to type.__new__().
-
-        Returns
-        -------
-        TypeMeta | DecoratorMeta
-            The registered type.
-        """
-        typ.aliases.parent = typ  # pushes aliases to global registry
-        REGISTRY._types.add(typ)  # pylint: disable=protected-access
-        return typ
-
-    def _validate(self, arg: str, value: Any) -> None:
-        """Validate a required argument (one assigned to `EMPTY`) by invoking a bound
-        function with the specified value and current namespace.
-        """
-        try:
-            self.fields[arg] = self.required.pop(arg)(
-                value, self.namespace, self.fields
-            )
-        except Exception as err:
-            raise type(err)(f"{self.name}.{arg} -> {str(err)}")
-
-    def _parse_aliases(self) -> None:
-        """Parse a type's aliases field (if it has one), registering each one in the
-        global type registry.
-        """
-        if "aliases" in self.namespace:
-            aliases = LinkedSet[str | type]()
-            for alias in self.namespace.pop("aliases"):
-                if isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
-                    aliases.add(type(alias))
-                else:
-                    aliases.add(alias)
-
-            aliases.add_left(self.name)
-            self.namespace["_aliases"] = Aliases(aliases)
-
-        else:
-            self.namespace["_aliases"] = Aliases(LinkedSet[str | type]({self.name}))
+REGISTRY = TypeRegistry()
 
 
 # TODO: move get_from_caller() into object.py.  It is no longer referenced in this file
@@ -1956,1768 +1689,127 @@ def _rle_decode(arr: RLE_ARRAY) -> OBJECT_ARRAY:
     return np.repeat(arr["value"], arr["count"])  # type: ignore
 
 
-############################
-####    SCALAR TYPES    ####
-############################
+########################
+####    BUILDERS    ####
+########################
 
 
-class TypeMeta(BaseMeta):
-    """Metaclass for all scalar bertrand types (those that inherit from bertrand.Type).
+# TODO: metaclass throws error if any non-classmethods are implemented on type objects.
+# -> non-member functions are more explicit and flexible.  Plus, if there's only one
+# syntax for declaring them, then it's easier to document and use.
+# -> just filter out any methods that start/end with double underscore
 
-    This metaclass is responsible for parsing the namespace of a new type, validating
-    its configuration, and adding it to the global type registry.  It also defines the
-    basic behavior of all bertrand types, including the establishment of hierarchical
-    relationships, parametrization, and operator overloading.
 
-    See the documentation for the `Type` class for more information on how these work.
+class TypeBuilder:
+    """Common base for all namespace builders.
+
+    The builders that inherit from this class are responsible for transforming a type's
+    simplified namespace into a fully-featured bertrand type.  They do this by looping
+    through all the attributes that are defined in the class and executing any relevant
+    helper functions to validate their configuration.  The builders also mark all
+    required fields (those assigned to ``EMPTY``) and reserved attributes that they
+    encounter, and fill in missing slots with default values where possible.  If the
+    type is improperly configured, the builder will throw a series of informative error
+    messages guiding the user towards a solution.
+
+    The end result is a fully processed namespace that conforms to the expectations of
+    each metaclass, which can then be used to instantiate the type.  This means that
+    the output from the builder is directly converted into dotted names on the type, as
+    reflected by the `dir()` built-in function.  Since each builder is executed before
+    the type is instantiated, they have free reign to modify the namespace however they
+    see fit, without violating the type's read-only semantics.
+
+    These builders are what allow us to write new types without regard to the internal
+    mechanics of the type system.  Instead, the relevant information will be
+    automatically extracted from the namespace and used to construct the type, without
+    any additional work on the user's part.
     """
 
-    # This metaclass uses the following internal fields, as populated by AbstractBuilder
-    # or ConcreteBuilder based on the `backend` metaclass argument
-    _slug: str
-    _hash: int
-    _required: dict[str, Callable[..., Any]]
-    _fields: dict[str, Any]
-    _parent: TypeMeta | None
-    _subtypes: LinkedSet[TypeMeta]
-    _implementations: LinkedDict[str, TypeMeta]
-    _default: list[TypeMeta]
-    _nullable: list[TypeMeta]
-    _params: tuple[str]
-    _parametrized: bool
-    _cache_size: int | None
-    _flyweights: LinkedDict[str, TypeMeta]
-    _defines_from_scalar: bool
-    _defines_from_dtype: bool
+    # RESERVED: set[str] = set(dir(TypeMeta)) ^ {
+    #     "__init__",
+    #     "__module__",
+    #     "__qualname__",
+    #     "__annotations__",
+    # }
 
-    ############################
-    ####    CONSTRUCTORS    ####
-    ############################
+    # reserved attributes will throw an error if implemented on user-defined types
+    RESERVED: set[str] = {
+        "__init__",
+        "__new__",
+        # TODO: others?
+    }
+
+    # constructors use special logic to allow for parametrization
+    CONSTRUCTORS: set[str] = {
+        "__class_getitem__",
+        "from_scalar",
+        "from_dtype",
+        "from_string"
+    }
 
     def __init__(
-        cls: TypeMeta,
+        self,
         name: str,
-        bases: tuple[TypeMeta],
+        parent: TypeMeta | DecoratorMeta,
         namespace: dict[str, Any],
-        **kwargs: Any
+        cache_size: int | None,
     ):
-        fields = {k: "..." for k in cls._required}
-        fields |= cls._fields
+        self.name = name
+        self.parent = parent
+        self.namespace = namespace
+        self.cache_size = cache_size
+        if parent is object:
+            self.required: dict[str, Callable[[Any, dict[str, Any], dict[str, Any]], Any]] = {}
+            self.fields = {}
+        else:
+            self.required = parent._required.copy()
+            self.fields = parent._fields.copy()
 
-        if not (len(bases) == 0 or bases[0] is object):
-            print("-" * 80)
-            print(f"slug: {cls.slug}")
-            print(f"parent: {cls.parent}")
-            print(f"aliases: {cls.aliases}")
-            print(f"fields: {_format_dict(fields)}")
-            print(f"is_root: {cls.is_root}")
-            print(f"is_abstract: {cls.is_abstract}")
-            print(f"is_leaf: {cls.is_leaf}")
-            print(f"cache_size: {cls.cache_size}")
-            print(f"itemsize: {getattr(cls, 'itemsize', '...')}")
-            print()
+    def fill(self) -> TypeBuilder:
+        """Fill in any reserved slots in the namespace with their default values.
 
-    def __new__(
-        mcs: type,
-        name: str,
-        bases: tuple[TypeMeta],
-        namespace: dict[str, Any],
-        backend: str = "",
-        cache_size: int | None = None,
-    ) -> TypeMeta:
-        if not backend:
-            abstract = AbstractBuilder(name, bases, namespace, cache_size)
-            return abstract.parse().fill().register(
-                super().__new__(  # type: ignore
-                    mcs,
-                    abstract.name,
-                    (abstract.parent,),
-                    abstract.namespace
-                )
-            )
-
-        concrete = ConcreteBuilder(name, bases, namespace, backend, cache_size)
-        return concrete.parse().fill().register(
-            super().__new__(  # type: ignore
-                mcs,
-                concrete.name,
-                (concrete.parent,),
-                concrete.namespace
-            )
-        )
-
-    def flyweight(cls, *args: Any, **kwargs: Any) -> TypeMeta:
-        """Get a flyweight type with the specified parameters.
-
-        Parameters
-        ----------
-        *args: Any
-            Positional arguments used to parametrize the type.  These should always
-            match the signature of `__class_getitem__()` in both number and order, as
-            they will be inserted into the resulting type's namespace under that
-            assumption.  The values will also be used to construct a unique string
-            identifier for the type, which is used to look up the corresponding
-            flyweight in the type's LRU cache.
-        **kwargs: Any
-            Keyword arguments representing overrides for a parametrized type's fields.
-            These are injected directly into the type's namespace, and will override
-            any existing values with the same key(s).
+        This method should be called after parsing the namespace to avoid unnecessary
+        work.
 
         Returns
         -------
-        TypeMeta
-            A flyweight type with the specified parameters.
-
-        Raises
-        ------
-        TypeError
-            If the number of positional arguments does not match the signature of
-            `__class_getitem__()`.  Note that order is not checked, so users should
-            take care to ensure that the arguments are passed in the correct order.
-
-        See Also
-        --------
-        Type.__class_getitem__: defines parametrization behavior for bertrand types.
-        Type.from_scalar: parses a scalar example of this type.
-        Type.from_dtype: parses a numpy dtype object registered to this type.
-        Type.from_string: parses a string representation of this type.
-
-        Notes
-        -----
-        Flyweights are generated only once when they are first requested, and are
-        reused for any subsequent calls with the same parameters.  This is accomplished
-        by storing them in an LRU cache, which is unique to every type.  The cache
-        size can be controlled via the `cache_size` metaclass argument, which defaults
-        to None, signalling an infinite cache size.  If a finite cache is specified,
-        then the number of flyweights will be capped at that value, and the least
-        recently used flyweight will be evicted whenever the cache is full.
-
-        This method is typically called by the `__class_getitem__()` method of a
-        parametrized type, which is responsible for generating a new type with the
-        specified parameters.  Invoking this method handles all the caching logic and
-        instantiation details, and returns the resulting type to the caller.
+        TypeBuilder
+            The builder instance, for chaining.
         """
-        slug = f"{cls.__name__}[{', '.join(repr(a) for a in args)}]"
-        typ = cls._flyweights.lru_get(slug, None)
+        self.namespace["_required"] = self.required
+        self.namespace["_fields"] = self.fields
+        self.namespace["_slug"] = self.name
+        self.namespace["_hash"] = hash(self.name)
+        if self.parent is object or self.parent is Type or self.parent is DecoratorType:
+            self.namespace["_parent"] = None
+        else:
+            self.namespace["_parent"] = self.parent
+        self.namespace["_base_type"] = None
+        self.namespace["_parametrized"] = False
+        self.namespace["_cache_size"] = self.cache_size
+        self.namespace["_flyweights"] = LinkedDict(max_size=self.cache_size)
 
-        if typ is None:
-            if len(args) != len(cls._params):
-                raise TypeError(
-                    f"expected {len(cls._params)} positional arguments, got "
-                    f"{len(args)}"
-                )
+        aliases = LinkedSet[str | type]((self.name,))
+        if "aliases" in self.namespace:
+            for alias in self.namespace.pop("aliases"):
+                if isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
+                    aliases.add(type(alias))
+                else:
+                    aliases.add(alias)
 
-            def __class_getitem__(cls: type, *args: Any) -> NoReturn:
-                raise TypeError(f"{slug} cannot be re-parametrized")
+        self.namespace["_aliases"] = Aliases(aliases)
+        return self
 
-            typ = super().__new__(
-                TypeMeta,
-                cls.__name__,
-                (cls,),
-                {
-                    "_slug": slug,
-                    "_hash": hash(slug),
-                    "_fields": cls._fields | dict(zip(cls._params, args)) | kwargs,  # TODO: unnecessary if we modify approach to _fields
-                    "_parent": cls,
-                    "_parametrized": True,
-                    "__class_getitem__": __class_getitem__
-                } | kwargs
-            )
-            cls._flyweights.lru_add(slug, typ)
-
-        return typ
-
-    ################################
-    ####    CLASS DECORATORS    ####
-    ################################
-
-    def default(cls, other: TypeMeta) -> TypeMeta:
-        """A class decorator that registers a default implementation for an abstract
-        type.
-
-        Parameters
-        ----------
-        other: TypeMeta
-            The type to delegate to when attribute lookups fail on the abstract
-            type.  This type must be a subclass of the abstract type, and will
-            be validated before being registered.  It can be either abstract or
-            concrete, and may itself delegate to another type.
-
-        Returns
-        -------
-        TypeMeta
-            The type that was passed in, unmodified.
-
-        Raises
-        ------
-        TypeError
-            If the parent type is concrete, or if the decorated type is not a
-            subclass of the parent.
-
-        See Also
-        --------
-        as_default: converts an abstract type to its default implementation.
-
-        Examples
-        --------
-        .. code-block:: python
-
-            class Foo(Type):
-                pass
-
-            assert not hasattr(Foo, "x")
-
-            @Foo.default
-            class Bar(Foo):
-                x = 1
-
-            @Bar.default
-            class Baz(Bar):
-                y = 2
-
-            assert Foo.x is Bar.x
-            assert Foo.y is Baz.y
+    def _validate(self, arg: str, value: Any) -> None:
+        """Validate a required argument (one assigned to `EMPTY`) by invoking a bound
+        function with the specified value and current namespace.
         """
-        if not cls.is_abstract:
-            raise TypeError("concrete types cannot have default implementations")
-
-        if not issubclass(other, cls):
-            raise TypeError(
-                f"default implementation must be a subclass of {cls.__name__}"
-            )
-
-        if cls._default:
-            cls._default.pop()
-        cls._default.append(other)
-        return other
-
-    def nullable(cls, other: TypeMeta) -> TypeMeta:
-        """A class decorator that registers an alternate, nullable implementation for
-        a concrete type.
-
-        Parameters
-        ----------
-        other: TypeMeta
-            The type to delegate to when missing values are encountered for this
-            type.  This will implicitly replace the original type during
-            conversions when missing values are present.  It will be validated
-            before being registered, and must be concrete.
-
-        Returns
-        -------
-        TypeMeta
-            The type that was passed in, unmodified.
-
-        Raises
-        ------
-        TypeError
-            If the parent type is abstract or already nullable, or if the decorated
-            type is not concrete.
-
-        See Also
-        --------
-        as_nullable: converts a concrete type to its nullable implementation.
-
-        Examples
-        --------
-        In general, the structure of a nullable type is as follows:
-
-        .. code-block:: python
-
-            class Foo(Type):  # abstract parent type
-                ...
-
-            @Foo.default
-            class Bar(Foo, backend="non_nullable"):  # non-nullable implementation
-                ...
-
-            @Bar.nullable
-            class Baz(Foo, backend="nullable"):  # nullable equivalent
-                ...
-
-        With this structure in place, any conversion to ``Foo`` or ``Bar`` will 
-        be automatically translated to ``Baz`` when missing values are present.
-
-        A practical example of this can be seen with numpy integer types, which
-        cannot store missing values by default.  Pandas implements a set of
-        functionally identical extension types to cover this case, which are
-        identical in every way except for their nullability.  As such, we can
-        implicitly convert to the pandas type whenever missing values are
-        encountered.
-
-        .. doctest::
-
-            >>> Int64["numpy"]([1, 2, 3])
-            0    1
-            1    2
-            2    3
-            dtype: int64
-            >>> Int64["numpy"]([1, 2, 3, None])
-            0       1
-            1       2
-            2       3
-            3    <NA>
-            dtype: Int64
-            >>> detect(_)
-            Union[PandasInt64]
-        """
-        if cls.is_abstract:  # pylint: disable=using-constant-test
-            raise TypeError(
-                f"abstract types cannot have nullable implementations -> {cls.slug}"
-            )
-        if cls.is_nullable:
-            raise TypeError(f"type is already nullable -> {cls.slug}")
-
-        if other.is_abstract:
-            raise TypeError(
-                f"nullable implementations must be concrete -> {other.slug}"
-            )
-
-        if cls._nullable:
-            cls._nullable.pop()
-        cls._nullable.append(other)
-        return other
-
-    @property
-    def as_default(cls) -> TypeMeta:
-        """Convert an abstract type to its default implementation, if it has one.
-
-        Returns
-        -------
-        TypeMeta
-            The default implementation of the type, if it has one.  Otherwise,
-            returns the type itself.
-
-        See Also
-        --------
-        default: registers a default implementation for an abstract type.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.as_default
-            Signed
-            >>> Signed.as_default
-            Int64
-            >>> Int64.as_default
-            NumpyInt64
-            >>> NumpyInt64.as_default
-            NumpyInt64
-        """
-        if cls._default:
-            return cls._default[0]
-        return cls
-
-    @property
-    def as_nullable(cls) -> TypeMeta:
-        """Convert a concrete type to its nullable implementation, if it has one.
-
-        Returns
-        -------
-        TypeMeta
-            The type itself if it is already nullable.  Otherwise, the nullable
-            implementation that is registered to this type, if it has one.
-
-        Raises
-        ------
-        TypeError
-            If the type is marked as non-nullable and does not have a nullable
-            implementation.
-
-        See Also
-        --------
-        nullable: registers a nullable implementation for a concrete type.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int64["numpy"].as_nullable
-            PandasInt64
-            >>> PandasInt64.as_nullable
-            PandasInt64
-        """
-        if cls.is_nullable:
-            return cls
-        if cls._nullable:
-            return cls._nullable[0]
-        raise TypeError(f"type is not nullable -> {cls.slug}")
-
-    ################################
-    ####    CLASS PROPERTIES    ####
-    ################################
-
-    @property
-    def aliases(cls) -> Aliases:
-        """A setlike collection of aliases for this type.
-
-        Returns
-        -------
-        Aliases
-            A mutable container that holds aliases for this type.  These implement a
-            simplified set interface, and any changes are automatically reflected in
-            the global registry.
-
-        See Also
-        --------
-        TypeRegistry.aliases: the global registry of type aliases.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.aliases
-            Aliases('Int', 'int', 'integer')
-            >>> Int.aliases.add("foo")
-            >>> Int.aliases
-            Aliases('Int', 'int', 'integer', 'foo')
-            >>> resolve("foo")
-            Int
-            >>> Int.aliases.remove("foo")
-            >>> Int.aliases
-            Aliases('Int', 'int', 'integer')
-            >>> resolve("foo")
-            Traceback (most recent call last):
-                ...
-            TypeError: invalid specifier -> 'foo'
-        """
-        return cls._aliases
-
-    @property
-    def scalar(cls) -> type:
-        """The python type associated with a scalar value of this type.
-
-        Returns
-        -------
-        type
-            The python type to use for scalar values of this type.  This is identical
-            to the result of the :func:`type` function for a single element of this
-            type.
-
-        Raises
-        ------
-        AttributeError
-            If the type does not define a scalar type.  This can only occur for
-            abstract types that do not default to a concrete implementation.
-
-        See Also
-        --------
-        dtype: the numpy/pandas dtype associated with this type.
-
-        Notes
-        -----
-        This is a required field for all concrete types, as enforced by the metaclass
-        machinery.  It is not required for abstract types, since they do not have a
-        concrete implementation by default.
-
-        If this attribute is defined in the absence of an explicit :attr:`dtype`, then
-        a synthetic dtype will be produced automatically.  This is a special dtype that
-        wraps around the scalar type and represents the contents of a vector as
-        standard python objects.  It is functionally equivalent to numpy's ``object``
-        dtype, but is more type safe, since it is labeled with an explicit python type.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int64.scalar
-            <class 'numpy.int64'>
-            >>> Int32.scalar
-            <class 'numpy.int32'>
-            >>> Int16.scalar
-            <class 'numpy.int16'>
-            >>> Int8.scalar
-            <class 'numpy.int8'>
-        """
-        if not cls.is_default:
-            return cls.as_default.scalar
-
-        result = cls._fields.get("scalar", None)
-        if result is None:
-            raise AttributeError(
-                f"type object '{cls.__name__}' has no attribute 'scalar'"
-            )
-        return result
-
-    @property
-    def dtype(cls) -> DTYPE:
-        """The numpy/pandas dtype associated with vectors of this type.
-
-        Returns
-        -------
-        DTYPE
-            The numpy/pandas dtype to use for vectors of this type.
-
-        Raises
-        ------
-        AttributeError
-            If the type does not define a dtype.  This can only occur for abstract
-            types that do not default to a concrete implementation.
-
-        See Also
-        --------
-        scalar: the python type associated with a scalar value of this type.
-
-        Notes
-        -----
-        This is a required field for all concrete types, as enforced by the metaclass
-        machinery.  It is not required for abstract types, since they do not have a
-        concrete implementation by default.
-
-        If this attribute is defined in the absence of an explicit :attr:`scalar` type,
-        then the scalar type will be inferred automatically from ``dtype.type``.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int64.dtype
-            dtype('int64')
-            >>> Int32.dtype
-            dtype('int32')
-            >>> Int16.dtype
-            dtype('int16')
-            >>> Int8.dtype
-            dtype('int8')
-        """
-        if not cls.is_default:
-            return cls.as_default.dtype
-
-        result = cls._fields.get("dtype", None)
-        if result is None:
-            raise AttributeError(
-                f"type object '{cls.__name__}' has no attribute 'dtype'"
-            )
-        return result
-
-    @property
-    def max(cls) -> int | float:
-        """The maximum value that can be accurately represented by this type.
-
-        Returns
-        -------
-        int | float
-            An integer representing the maximum value that this type can store, or
-            positive infinity if the type is unbounded.
-
-        Raises
-        ------
-        AttributeError
-            If the type does not define a maximum value.  This can only occur for
-            abstract types that do not default to a concrete implementation.
-
-        See Also
-        --------
-        min: the minimum value that can be accurately represented by this type.
-
-        Notes
-        -----
-        This is a required field for all concrete types, as enforced by the metaclass
-        machinery.  It is not required for abstract types, since they do not have a
-        concrete implementation by default.
-
-        If this attribute is not provided, it defaults to positive infinity.
-
-        .. note::
-
-            For floating point and other real numeric types, this refers to the maximum
-            value that can be stored with integer precision at exponent 1.  This
-            typically reflects the size of the mantissa in the IEEE 754 specification,
-            which is used to determine overflow when performing integer/float
-            conversions.
-
-            .. doctest::
-
-                >>> Float64.max  # equal to 2**53, for a 53-bit mantissa
-                9007199254740992
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int64.max
-            9223372036854775807
-            >>> Int32.max
-            2147483647
-            >>> Int16.max
-            32767
-            >>> Int8.max
-            127
-        """
-        if not cls.is_default:
-            return cls.as_default.max
-
-        result = cls._fields.get("max", None)
-        if result is None:
-            raise AttributeError(
-                f"type object '{cls.__name__}' has no attribute 'max'"
-            )
-        return result
-
-    @property
-    def min(cls) -> int | float:
-        """The minimum value that can be accurately represented by this type.
-
-        Returns
-        -------
-        int | float
-            An integer representing the minimum value that this type can store, or
-            negative infinity if the type is unbounded.
-
-        Raises
-        ------
-        AttributeError
-            If the type does not define a minimum value.  This can only occur for
-            abstract types that do not default to a concrete implementation.
-
-        See Also
-        --------
-        max: the maximum value that can be accurately represented by this type.
-
-        Notes
-        -----
-        This is a required field for all concrete types, as enforced by the metaclass
-        machinery.  It is not required for abstract types, since they do not have a
-        concrete implementation by default.
-
-        If this attribute is not provided, it defaults to negative infinity.
-
-        .. note::
-
-            For floating point and other real numeric types, this refers to the minimum
-            value that can be stored with integer precision at exponent 1.  This
-            typically reflects the size of the mantissa in the IEEE 754 specification,
-            which is used to determine overflow when performing integer/float
-            conversions.
-
-            .. doctest::
-
-                >>> Float64.min  # equal to -2**53, for a 53-bit mantissa
-                -9007199254740992
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int64.min
-            -9223372036854775808
-            >>> Int32.min
-            -2147483648
-            >>> Int16.min
-            -32768
-            >>> Int8.min
-            -128
-        """
-        if not cls.is_default:
-            return cls.as_default.min
-
-        result = cls._fields.get("min", None)
-        if result is None:
-            raise AttributeError(
-                f"type object '{cls.__name__}' has no attribute 'min'"
-            )
-        return result
-
-    @property
-    def missing(cls) -> Any:
-        """The missing value to use for this type.
-
-        Returns
-        -------
-        Any
-            A special value to store in place of missing values.  This can be any
-            scalar value that passes a :func:`pandas.isna` check.
-
-        Raises
-        ------
-        AttributeError
-            If the type does not define a missing value.  This can only occur for
-            abstract types that do not default to a concrete implementation.
-
-        See Also
-        --------
-        is_nullable: a boolean flag indicating whether this type is nullable.
-        nullable: registers a nullable implementation for a concrete type.
-        as_nullable: converts a concrete type to its nullable implementation.
-
-        Notes
-        -----
-        This is a required field for all concrete types, as enforced by the metaclass
-        machinery.  It is not required for abstract types, since they do not have a
-        concrete implementation by default.
-
-        If this attribute is not provided, it defaults to :attr:`pandas.NA`.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int64.missing
-            <NA>
-            >>> Float64.missing
-            nan
-            >>> Complex128.missing
-            (nan+nanj)
-        """
-        if not cls.is_default:
-            return cls.as_default.missing
-
-        result = cls._fields.get("missing", None)
-        if result is None:
-            raise AttributeError(
-                f"type object '{cls.__name__}' has no attribute 'missing'"
-            )
-        return result
-
-    @property
-    def slug(cls) -> str:
-        """Get a string identifier for this type, as used to look up flyweights.
-
-        Returns
-        -------
-        str
-            A string concatenating the type's class name with its parameter
-            configuration, if any.
-        """
-        return cls._slug
-
-    @property
-    def hash(cls) -> int:
-        """Get a precomputed hash value for this type.
-
-        Returns
-        -------
-        int
-            A unique hash based on the type's string identifier.
-
-        Notes
-        -----
-        This is identical to the output of the :func:`hash` built-in function.
-        """
-        return cls._hash
-
-    @property
-    def backend(cls) -> str:
-        """Get a concrete type's backend specifier.
-
-        Returns
-        -------
-        str
-            A string identifying the backend that this type is registered to.
-            This is used to search an abstract parent's implementation
-            dictionary, allowing the concrete type to be resolved via
-            parametrization.
-
-        Examples
-        --------
-        .. code-block:: python
-
-            class Foo(Type):
-                pass
-
-            class Bar(Foo, backend="bar"):
-                # required fields, etc.
-                ...
-
-            assert Foo["bar"] is Bar
-            assert Bar.backend == "bar"
-        """
-        return cls._fields["backend"]
-
-    @property
-    def itemsize(cls) -> int:
-        """The size of a single element of this type, in bytes.
-
-        Returns
-        -------
-        int
-            The width of this type in memory.
-    
-        Notes
-        -----
-        This is identical to the result of the :func:`len` operator when applied
-        to a scalar type.  This behaves similarly to a Python-level ``sizeof()``
-        operator as used in C/C++.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int8.itemsize
-            1
-            >>> Int16.itemsize
-            2
-            >>> Int32.itemsize
-            4
-            >>> Int64.itemsize
-            8
-        """
-        return cls.dtype.itemsize
-
-    @property
-    def cache_size(cls) -> int | None:
-        """The maximum size of this type's flyweight cache, if it is limited to
-        a finite size.
-
-        Returns
-        -------
-        int | None
-            The maximum number of flyweights that can be stored in this type's
-            LRU cache.  If None, then the cache is unlimited.
-
-        See Also
-        --------
-        flyweight: create a flyweight with the specified parameters.
-        flyweights: a read-only proxy for this type's flyweight cache.
-
-        Examples
-        --------
-        .. code-block:: python
-
-            class Foo(Type, cache_size=10):
-                ...
-
-            assert Foo.cache_size == 10
-        """
-        return cls._cache_size
-
-    @property
-    def flyweights(cls) -> Mapping[str, TypeMeta]:
-        """A read-only proxy for this type's flyweight cache.
-
-        Returns
-        -------
-        Mapping[str, TypeMeta]
-            A mapping of string identifiers to flyweight types.  This is a read-only
-            proxy for a :class:`LinkedDict`, which is a custom C++ data structure
-            that combines a hash table with a doubly-linked list.  The order of the
-            keys always reflects current LRU order, with the most recently used
-            flyweight at the beginning of the dictionary.  Note that this order is
-            not necessarily stable, and can change without invalidating the proxy.
-
-        See Also
-        --------
-        cache_size: the maximum size of this type's flyweight cache.
-        flyweight: create a flyweight with the specified parameters.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Object.flyweights
-            mappingproxy(LinkedDict({}))
-            >>> Object[int]
-            Object[<class 'int'>]
-            >>> Object.flyweights
-            mappingproxy(LinkedDict({"Object[<class 'int'>]": Object[<class 'int'>]}))
-        """
-        return MappingProxyType(cls._flyweights)
-
-    @property
-    def params(cls) -> Mapping[str, Any]:
-        """A read-only mapping of parameters to their configured values.
-
-        Returns
-        -------
-        Mapping[str, Any]
-            A mapping of parameter names to their values.  These are determined by
-            to :meth:`Type.__class_getitem__()` when the type is parametrized.
-
-        Notes
-        -----
-        The parameter names and default values are inferred from the signature of
-        :meth:`Type.__class_getitem__()`, and are available as dotted attributes
-        on the type itself.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Datetime["pandas"].params
-            mappingproxy({'tz': None})
-            >>> Datetime["pandas"].tz is None
-            True
-            >>> Datetime["pandas", "UTC"].params
-            mappingproxy({'tz': datetime.timezone.utc})
-            >>> Datetime["pandas", "UTC"].tz
-            datetime.timezone.utc
-        """
-        return MappingProxyType({k: getattr(cls, k) for k in cls._params})
-
-    @property
-    def is_abstract(cls) -> bool:
-        """Check whether the type is abstract.
-
-        Returns
-        -------
-        bool
-            True if the type is abstract (i.e. :attr:`backend` is set to the empty
-            string).  False otherwise.
-
-        See Also
-        --------
-        backend: the type's backend specifier.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.is_abstract
-            True
-            >>> Signed.is_abstract
-            True
-            >>> Int64.is_abstract
-            True
-            >>> NumpyInt64.is_abstract
-            False
-        """
-        return not cls.backend
-
-    @property
-    def is_decorator(cls) -> bool:
-        """Check whether the type is a decorator type.
-
-        Returns
-        -------
-        bool
-            True if the type is a decorator type.  False otherwise.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.is_decorated
-            False
-            >>> Sparse[Int].is_decorated
-            True
-        """
-        return False
-
-    @property
-    def is_default(cls) -> bool:
-        """Check whether the type is its own default implementation.
-
-        Returns
-        -------
-        bool
-            True if this type is concrete or abstract with no default implementation.
-            False otherwise, signifying that it delegates attribute access to another
-            type.
-
-        See Also
-        --------
-        default: registers a default implementation for an abstract type.
-        as_default: converts an abstract type to its default implementation.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.is_default
-            False
-            >>> Signed.is_default
-            False
-            >>> Int64.is_default
-            False
-            >>> NumpyInt64.is_default
-            True
-        """
-        return not cls._default
-
-    @property
-    def is_flyweight(cls) -> bool:
-        """Check whether the type is a parametrized flyweight.
-
-        Returns
-        -------
-        bool
-            True if the type was produced by one of the following parametrization
-            methods.  False otherwise.
-
-        See Also
-        --------
-        __class_getitem__: defines parametrization behavior for bertrand types.
-        from_scalar: parses a scalar example of this type.
-        from_dtype: parses a numpy dtype object registered to this type.
-        from_string: parses a string representation of this type.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Object.is_flyweight
-            False
-            >>> Object[int].is_flyweight
-            True
-        """
-        return cls._parametrized
-
-    # TODO: note that is_leaf does not necessarily imply type is concrete
-
-    @property
-    def is_leaf(cls) -> bool:
-        """Check whether the type is a leaf of its type hierarchy.
-
-        Returns
-        -------
-        bool
-            True if the type has no immediate children.  False otherwise.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.is_leaf
-            False
-            >>> Signed.is_leaf
-            False
-            >>> Int64.is_leaf
-            False
-            >>> NumpyInt64.is_leaf
-            True
-        """
-        return not cls._subtypes and not cls._implementations
-
-    @property
-    def is_nullable(cls) -> bool:
-        """Indicates whether this type supports missing values.
-
-        Returns
-        -------
-        bool
-            True if the type can represent missing values.  False otherwise.
-
-        Raises
-        ------
-        AttributeError
-            If the type does not define a ``is_nullable`` attribute.
-
-        See Also
-        --------
-        nullable: registers a nullable implementation for a concrete type.
-        as_nullable: converts a concrete type to its nullable implementation.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int64["numpy"].is_nullable
-            False
-            >>> Int64["pandas"].is_nullable
-            True
-        """
-        if not cls.is_default:
-            return cls.as_default.is_nullable
-
-        result = cls._fields.get("is_nullable", None)
-        if result is None:
-            raise AttributeError(
-                f"type object '{cls.__name__}' has no attribute 'is_nullable'"
-            )
-        return result
-
-    @property
-    def is_root(cls) -> bool:
-        """Check whether the type is the root of its type hierarchy.
-
-        Returns
-        -------
-        bool
-            True if the type has no parent.  False otherwise.
-
-        Notes
-        -----
-        A root is any type that directly inherits from the generic :class:`Type`
-        class.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.is_root
-            True
-            >>> Signed.is_root
-            False
-            >>> Int64.is_root
-            False
-            >>> NumpyInt64.is_root
-            False
-        """
-        return cls._parent is None
-
-    @property
-    def is_structured(cls) -> bool:
-        """Indicates whether this type is a structured union.
-
-        Returns
-        -------
-        bool
-            True if the type is a structured union.  Always False for scalar types.
-
-        See Also
-        --------
-        is_union: indicates whether this type is a union.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.is_structured
-            False
-            >>> Union[Int, Float].is_structured
-            False
-            >>> Union["foo": Int, "bar": Float].is_structured
-            True
-        """
-        return False
-
-    @property
-    def is_union(cls) -> bool:
-        """Indicates whether this type is a union.
-
-        Returns
-        -------
-        bool
-            True if the type is a union.  Always False for scalar types.
-
-        See Also
-        --------
-        is_structured: indicates whether this type is a structured union.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.is_union
-            False
-            >>> Union[Int, Float].is_union
-            True
-            >>> Union["foo": Int, "bar": Float].is_union
-            True
-        """
-        return False
-
-    @property
-    def root(cls) -> TypeMeta:
-        """Get the root of this type's hierarchy.
-
-        Returns
-        -------
-        TypeMeta
-            The root type that this type ultimately inherits from.  This can be
-            a self-reference if :attr:`is_root` is True.
-
-        See Also
-        --------
-        parent: the immediate parent of this type.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.root
-            Int
-            >>> Signed.root
-            Int
-            >>> Int64.root
-            Int
-            >>> NumpyInt64.root
-            Int
-        """
-        # pylint: disable=protected-access
-        result = cls
-        while result._parent is not None:
-            result = result._parent
-        return result
-
-    @property
-    def parent(cls) -> TypeMeta:
-        """Get the immediate parent of this type within the hierarchy.
-
-        Returns
-        -------
-        TypeMeta | None
-            The type that this type directly inherits from or None if :attr:`is_root`
-            is True.
-
-        See Also
-        --------
-        root: the root of this type's hierarchy.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.parent
-            None
-            >>> Signed.parent
-            Int
-            >>> Int64.parent
-            Signed
-            >>> NumpyInt64.parent
-            Int64
-        """
-        if cls._parent is None:
-            return cls
-        return cls._parent
-
-    @property
-    def subtypes(cls) -> UnionMeta:
-        """A union containing the abstract subtypes of this type.
-
-        Returns
-        -------
-        UnionMeta
-            A union containing all of the abstract children of this type.  This
-            does not include concrete implementations of this type, which are
-            stored in a separate attribute.
-
-        See Also
-        --------
-        implementations: a union containing the concrete implementations of this type.
-        children: a union containing the immediate children of this type.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.subtypes
-            Union[Signed, Unsigned]
-            >>> Signed.subtypes
-            Union[Int64, Int32, Int16, Int8]
-            >>> Int64.subtypes
-            Union[]
-            >>> NumpyInt64.subtypes
-            Union[]
-        """
-        return Union.from_types(cls._subtypes)
-
-    @property
-    def implementations(cls) -> UnionMeta:
-        """A union containing the concrete implementations of this type.
-
-        Returns
-        -------
-        UnionMeta
-            A union containing all of the concrete implementations of this type.
-            This does not include abstract subtypes of this type, which are stored
-            in a separate attribute.
-
-        See Also
-        --------
-        subtypes: a union containing the abstract subtypes of this type.
-        children: a union containing the immediate children of this type.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.implementations
-            Union[]
-            >>> Signed.implementations
-            Union[PythonInt]
-            >>> Int64.implementations
-            Union[NumpyInt64, PandasInt64]
-            >>> NumpyInt64.implementations
-            Union[]
-        """
-        return Union.from_types(LinkedSet(cls._implementations.values()))
-
-    @property
-    def children(cls) -> UnionMeta:
-        """A union containing all the children of this type.
-
-        Returns
-        -------
-        UnionMeta
-            A union containing all descendants of this type in the hierarchy,
-            including grandchildren, great-grandchildren, etc.
-
-        See Also
-        --------
-        leaves: a union containing all the leaves of this type.
-
-        Notes
-        -----
-        Children are always returned in definition order (i.e. the order in which they
-        were registered).
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.children
-            Union[Int, Signed, Int64, NumpyInt64, PandasInt64, Int32, NumpyInt32, PandasInt32, Int16, NumpyInt16, PandasInt16, Int8, NumpyInt8, PandasInt8, PythonInt]
-            >>> Signed.children
-            Union[Signed, Int64, NumpyInt64, PandasInt64, Int32, NumpyInt32, PandasInt32, Int16, NumpyInt16, PandasInt16, Int8, NumpyInt8, PandasInt8, PythonInt]
-            >>> Int64.children
-            Union[Int64, NumpyInt64, PandasInt64]
-            >>> NumpyInt64.children
-            Union[NumpyInt64]
-        """
-        return Union.from_types(cls._children)
-
-    @property
-    def leaves(cls) -> UnionMeta:
-        """A union containing all the leaves contained in this type.
-
-        Returns
-        -------
-        UnionMeta
-            A union containing all descendants of this type that are leaves in
-            the hierarchy, including grandchildren, great-grandchildren, etc.
-            This is identical to :attr:`children`, except that it excludes any
-            abstract types.
-
-        See Also
-        --------
-        children: a union containing all the children of this type.
-
-        Note
-        ----
-        Leaves are always returned in definition order (i.e. the order in which they
-        were registered).
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.leaves
-            Union[NumpyInt64, PandasInt64, NumpyInt32, PandasInt32, NumpyInt16, PandasInt16, NumpyInt8, PandasInt8, PythonInt]
-            >>> Signed.leaves
-            Union[NumpyInt64, PandasInt64, NumpyInt32, PandasInt32, NumpyInt16, PandasInt16, NumpyInt8, PandasInt8, PythonInt]
-            >>> Int64.leaves
-            Union[NumpyInt64, PandasInt64]
-            >>> NumpyInt64.leaves
-            Union[NumpyInt64]
-        """
-        return Union.from_types(LinkedSet(t for t in cls._children if t.is_leaf))
-
-    @property
-    def larger(cls) -> UnionMeta:
-        """A union containing all the sibling types that have a larger representable
-        range than this type.
-
-        Returns
-        -------
-        UnionMeta
-            A union containing all sibling types (leaves within the same hierarchy)
-            that compare greater than this type.  This is always returned in sorted
-            order, with the smallest type first.
-
-        See Also
-        --------
-        smaller: a union containing all the sibling types that are less than this type.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int32.larger
-            Union[NumpyUInt32, NumpyInt64, NumpyUInt64, PythonInt]
-            >>> Int64.larger
-            Union[NumpyUInt64, PythonInt]
-
-        This can also be used to dynamically upcast input data to the smallest type
-        that can fully represent it.  For instance, by forming a union with the type
-        itself, we can ensure that the input data is always converted to the smallest
-        option.
-
-        .. doctest::
-
-            >>> Int64 | Int64.larger
-            Union[Int32, NumpyUInt32, NumpyInt64, NumpyUInt64, PythonInt]
-            >>> (Int64 | Int64.larger)([1, 2, 3])
-            0    1
-            1    2
-            2    3
-            dtype: int64
-            >>> (Int64 | Int64.larger)([1, 2, 3, 2**64 - 1])
-            0                      1
-            1                      2
-            2                      3
-            3    9223372036854775807
-            dtype: uint64
-            >>> (Int64 | Int64.larger)([1, 2, 3, 2**80 - 1])
-            0                            1
-            1                            2
-            2                            3
-            3    1208925819614629174706175
-            dtype: PythonInt
-        """
-        features = lambda t: (t.max - t.min, t.itemsize, abs(t.max + t.min))
-        fts = features(cls)
-        types = sorted(t for t in cls.root.leaves if t > cls and features(t) != fts)
-        result = LinkedSet()
-        for t in types:
-            if result:
-                tail = result[-1]
-                if features(t) == features(tail):
-                    if t.parent is tail.parent and t is t.parent.as_default:
-                        result.pop()
-                    else:
-                        continue
-            result.add(t)
-
-        return Union.from_types(result)
-
-    @property
-    def smaller(cls) -> UnionMeta:
-        """A union containing all the sibling types that have a smaller representable
-        range than this type.
-
-        Returns
-        -------
-        UnionMeta
-            A union containing all sibling types (leaves within the same hierarchy)
-            that compare less than this type.  This is always returned in sorted
-            order, with the smallest type first.
-
-        See Also
-        --------
-        larger: a union containing all the sibling types that are greater than this type.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int32.smaller
-            Union[NumpyInt8, NumpyUInt8, NumpyInt16, NumpyUInt16]
-            >>> Int64.smaller
-            Union[NumpyInt8, NumpyUInt8, NumpyInt16, NumpyUInt16, NumpyInt32, NumpyUInt32]
-
-        This can also be used to dynamically downcast input data to the smallest type
-        that can fully represent it.  For instance, by forming a union with the type
-        itself, we can ensure that the input data is always converted to the smallest
-        option.
-
-        .. doctest::
-
-            >>> Int32.smaller | Int32
-            Union[NumpyInt8, NumpyUInt8, NumpyInt16, NumpyUInt16, Int32]
-            >>> (Int32.smaller | Int32)([1, 2, 3])
-            0    1
-            1    2
-            2    3
-            dtype: int8
-            >>> (Int32.smaller | Int32)([1, 2, 3, 2**15 - 1])
-            0        1
-            1        2
-            2    32767
-            dtype: int16
-            >>> (Int32.smaller | Int32)([1, 2, 3, 2**31 - 1])
-            0             1
-            1             2
-            2    2147483647
-            dtype: int32
-        """
-        features = lambda t: (t.max - t.min, t.itemsize, abs(t.max + t.min))
-        feats = features(cls)
-        types = sorted(t for t in cls.root.leaves if t < cls and features(t) != feats)
-        result = LinkedSet()
-        for t in types:
-            if result:
-                tail = result[-1]
-                if features(t) == features(tail):
-                    if t.parent is tail.parent and t is t.parent.as_default:
-                        result.pop()
-                    else:
-                        continue
-            result.add(t)
-
-        return Union.from_types(result)
-
-    @property
-    def decorators(cls) -> UnionMeta:
-        """A union containing all the decorators applied to this type.
-
-        Returns
-        -------
-        UnionMeta
-            A union containing all the decorators that are attached to this type.
-
-        See Also
-        --------
-        wrapper: convert the outermost decorator into its unparametrized base type.
-        wrapped: the type that this type is decorating.
-        unwrapped: the innermost non-decorator type.
-
-        Notes
-        -----
-        This is always empty in the case of scalar (undecorated) types.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.decorators
-            Union[]
-            >>> Sparse[Int].decorators
-            Union[Sparse[Int, <NA>]]
-            >>> Categorical[Sparse[Int]].decorators
-            Union[Categorical[Sparse[Int, <NA>], ...], Sparse[Int, <NA>]]
-        """
-        return Union.from_types(LinkedSet())
-
-    @property
-    def wrapper(cls) -> None:  # pylint: disable=redundant-returns-doc
-        """Return the outermost decorator as an unparametrized type.
-
-        Returns
-        -------
-        DecoratorMeta | None
-            A generic version of the outermost decorator, or None if the type is not
-            decorated.
-
-        See Also
-        --------
-        decorators: a union containing all the decorators that are attached to this type.
-        wrapped: the type that this type is decorating.
-        unwrapped: the innermost non-decorator type.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.wrapper
-            None
-            >>> Sparse[Int].wrapper
-            Sparse
-            >>> Categorical[Sparse[Int]].wrapper
-            Categorical
-        """
-        return None
-
-    @property
-    def wrapped(cls) -> TypeMeta:  # pylint: disable=redundant-returns-doc
-        """Return the type that this type is decorating.
-
-        Returns
-        -------
-        TypeMeta | DecoratorMeta
-            If the type is a parametrized decorator, then the type that it wraps.
-            Otherwise, a self reference to the current type.
-
-        See Also
-        --------
-        decorators: a union containing all the decorators that are attached to this type.
-        wrapper: convert the outermost decorator into its unparametrized base type.
-        unwrapped: the innermost non-decorator type.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.wrapped
-            None
-            >>> Sparse[Int].wrapped
-            Int
-            >>> Categorical[Sparse[Int]].wrapped
-            Sparse[Int]
-        """
-        return cls
-
-    @property
-    def unwrapped(cls) -> TypeMeta:
-        """Return the innermost non-decorator type in the stack.
-
-        Returns
-        -------
-        TypeMeta
-            The innermost type in the stack that is not a parametrized decorator, or a
-            self-reference if the type is not decorated.
-
-        See Also
-        --------
-        decorators: a union containing all the decorators that are attached to this type.
-        wrapper: convert the outermost decorator into its unparametrized base type.
-        wrapped: the type that this type is decorating.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int.unwrapped
-            Int
-            >>> Sparse[Int].unwrapped
-            Int
-            >>> Categorical[Sparse[Int]].unwrapped
-            Int
-        """
-        return cls
-
-    def __getattr__(cls, name: str) -> Any:
-        if cls._default:
-            return getattr(cls.as_default, name)
-
-        if name in cls._fields:
-            return cls._fields[name]
-
-        raise AttributeError(
-            f"type object '{cls.__name__}' has no attribute '{name}'"
-        )
-
-    def __dir__(cls) -> set[str]:
-        result = set(super().__dir__())
-        result.update({
-            "slug", "hash", "backend", "itemsize", "decorators", "wrapped",
-            "unwrapped", "cache_size", "flyweights", "params", "is_abstract",
-            "is_default", "is_flyweight", "is_root", "is_leaf", "root", "parent",
-            "subtypes", "implementations", "children", "leaves", "larger", "smaller"
-        })
-        result.update(cls._fields)
-        end = cls
-        while not end.is_default:
-            end = end.as_default
-            result.update(end._fields)
-        return result
-
-    ###############################
-    ####    SPECIAL METHODS    ####
-    ###############################
-
-    def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any]:
-        # TODO: Even cooler, this could just call cast() on the input, which would
-        # enable lossless conversions
-        if cls._default:
-            return cls.as_default(*args, **kwargs)
-        return pd.Series(*args, dtype=cls.dtype, **kwargs)
-
-    def __subclasscheck__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
-        typ = resolve(other)
-        check = super().__subclasscheck__
-        if isinstance(typ, UnionMeta):
-            return all(check(t) for t in typ)
-        return check(typ)
-
-    def __hash__(cls) -> int:
-        return cls._hash
-
-    def __len__(cls) -> int:
-        return len(cls.children)
-
-    def __bool__(cls) -> bool:
-        return True
-
-    def __iter__(cls) -> Iterator[TypeMeta]:
-        return iter(cls.children)  # type: ignore
-
-    def __reversed__(cls) -> Iterator[TypeMeta]:
-        # pylint: disable=bad-reversed-sequence
-        return reversed(cls.children)  # type: ignore
-
-    def __lt__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
-        typ = resolve(other)
-        if cls is typ:
-            return False
-
-        if isinstance(typ, UnionMeta):
-            return all(cls < t for t in typ)
-
-        t1 = cls
-        t2 = typ.parent if typ.is_flyweight else typ  # TODO: might have problems if t2 is a decorator
-        while not t2.is_root:
-            while not t1.is_root:
-                if (t1, t2) in REGISTRY.edges:
-                    return True
-                if (t2, t1) in REGISTRY.edges:
-                    return False
-                t1 = t1.parent
-
-            t1 = cls
-            t2 = t2.parent
-
-        return _features(cls) < _features(typ)
-
-    def __le__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
-        typ = resolve(other)
-        if cls is typ:
-            return True
-
-        if isinstance(typ, UnionMeta):
-            return all(cls <= t for t in typ)
-
-        t1 = cls
-        t2 = typ.parent if typ.is_flyweight else typ  # TODO: might have problems if t2 is a decorator
-        while not t2.is_root:
-            while not t1.is_root:
-                if (t1, t2) in REGISTRY.edges:
-                    return True
-                if (t2, t1) in REGISTRY.edges:
-                    return False
-                t1 = t1.parent
-
-            t1 = cls
-            t2 = t2.parent
-
-        return _features(cls) <= _features(typ)
-
-    def __eq__(cls, other: Any) -> bool:
         try:
-            typ = resolve(other)
-        except TypeError:
-            return False
-
-        if isinstance(typ, UnionMeta):
-            return all(cls is t for t in typ)
-
-        return cls is typ
-
-    def __ne__(cls, other: Any) -> bool:
-        return not cls == other
-
-    def __ge__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
-        typ = resolve(other)
-        if cls is typ:
-            return True
-
-        if isinstance(typ, UnionMeta):
-            return all(cls >= t for t in typ)
-
-        t1 = cls
-        t2 = typ.parent if typ.is_flyweight else typ  # TODO: might have problems if t2 is a decorator
-        while not t2.is_root:
-            while not t1.is_root:
-                if (t1, t2) in REGISTRY.edges:
-                    return False
-                if (t2, t1) in REGISTRY.edges:
-                    return True
-                t1 = t1.parent
-
-            t1 = cls
-            t2 = t2.parent
-
-        return _features(cls) >= _features(typ)
-
-    def __gt__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
-        typ = resolve(other)
-        if cls is typ:
-            return False
-
-        if isinstance(typ, UnionMeta):
-            return all(cls > t for t in typ)
-
-        t1 = cls
-        t2 = typ.parent if typ.is_flyweight else typ  # TODO: might have problems if t2 is a decorator
-        while not t2.is_root:
-            while not t1.is_root:
-                if (t1, t2) in REGISTRY.edges:
-                    return False
-                if (t2, t1) in REGISTRY.edges:
-                    return True
-                t1 = t1.parent
-
-            t1 = cls
-            t2 = t2.parent
-
-        return _features(cls) > _features(typ)
-
-    def __str__(cls) -> str:
-        return cls._slug
-
-    def __repr__(cls) -> str:
-        return cls._slug
+            self.fields[arg] = self.required.pop(arg)(
+                value, self.namespace, self.fields
+            )
+        except Exception as err:
+            raise type(err)(f"{self.name}.{arg} -> {str(err)}")
 
 
 class AbstractBuilder(TypeBuilder):
@@ -3811,7 +1903,7 @@ class AbstractBuilder(TypeBuilder):
 
         return self
 
-    def register(self, typ: TypeMeta | DecoratorMeta) -> TypeMeta | DecoratorMeta:
+    def register(self, typ: TypeMeta) -> TypeMeta:  # type: ignore
         """Register a newly-created type, pushing changes to the parent type's
         namespace if necessary.
 
@@ -3829,14 +1921,16 @@ class AbstractBuilder(TypeBuilder):
         # pylint: disable=protected-access
         parent = self.parent
         if parent is not object:
-            super().register(typ)
             parent._subtypes.add(typ)
             parent._children.add(typ)
             while not parent.is_root:
                 parent = parent.parent
                 parent._children.add(typ)
 
-        typ._children.add(typ)
+            typ.aliases.parent = typ  # pushes aliases to global registry
+            typ._children.add(typ)
+            REGISTRY._types.add(typ)
+
         return typ
 
     def _class_getitem(self) -> None:
@@ -4021,7 +2115,7 @@ class ConcreteBuilder(TypeBuilder):
 
         return self
 
-    def register(self, typ: TypeMeta | DecoratorMeta) -> TypeMeta | DecoratorMeta:
+    def register(self, typ: TypeMeta) -> TypeMeta:
         """Register a newly-created type, pushing changes to the parent type's
         namespace if necessary.
 
@@ -4039,14 +2133,16 @@ class ConcreteBuilder(TypeBuilder):
         # pylint: disable=protected-access
         parent = self.parent
         if self.parent is not object:
-            super().register(typ)
             parent._implementations[self.backend] = typ
             parent._children.add(typ)
             while not parent.is_root:
                 parent = parent.parent
                 parent._children.add(typ)
 
-        typ._children.add(typ)
+            typ.aliases.parent = typ  # pushes aliases to global registry
+            typ._children.add(typ)
+            REGISTRY._types.add(typ)
+
         return typ
 
     def _class_getitem(self) -> None:
@@ -4184,483 +2280,6 @@ class ConcreteBuilder(TypeBuilder):
             )
 
 
-def _format_dict(d: dict[str, Any]) -> str:
-    """Convert a dictionary into a string with standard indentation."""
-    if not d:
-        return "{}"
-
-    prefix = "{\n    "
-    sep = ",\n    "
-    suffix = "\n}"
-    return prefix + sep.join(f"{k}: {repr(v)}" for k, v in d.items()) + suffix
-
-
-def _features(t: TypeMeta | DecoratorMeta) -> tuple[int | float, int, bool, int]:
-    """Extract a tuple of features representing the allowable range of a type, used for
-    range-based sorting and comparison.
-    """
-    return (
-        t.max - t.min,  # total range
-        t.itemsize,  # memory footprint
-        t.is_nullable,  # nullability
-        abs(t.max + t.min),  # bias away from zero
-    )
-
-
-###############################
-####    DECORATOR TYPES    ####
-###############################
-
-
-# TODO: focus on making decorators as minimally invasive as possible.
-# -> is_flyweight should always refer to underlying type?  Add a second flag to
-# check if the decorator itself is parametrized?
-# -> this might be reduced to .wrapped is not None
-
-
-# TODO: DecoratorMeta.is_decorated replaces is_flyweight checks?
-
-
-class DecoratorMeta(BaseMeta):
-    """Metaclass for all bertrand type decorators (those that inherit from
-    bertrand.DecoratorType).
-
-    This metaclass is responsible for parsing the namespace of a new decorator,
-    validating its configuration, and registering it in the global type registry.  It
-    also defines the basic behavior of all bertrand type decorators, including a
-    mechanism for applying/removing the decorator, traversing a type's decorator stack,
-    and allowing pass-through access to the wrapped type's attributes and methods.  It
-    is an example of the Gang of Four's
-    `Decorator Pattern <https://en.wikipedia.org/wiki/Decorator_pattern>`_.
-
-    See the documentation for the `DecoratorType` class for more information on how
-    these work.
-    """
-
-    # NOTE: this metaclass uses the following internal fields, which are populated
-    # by DecoratorBuilder:
-    _slug: str
-    _hash: int
-    _required: dict[str, Callable[..., Any]]
-    _fields: dict[str, Any]
-    _parent: DecoratorMeta  # NOTE: parent of this decorator, not wrapped
-    _params: tuple[str]
-    _parametrized: bool
-    _cache_size: int | None
-    _flyweights: LinkedDict[str, DecoratorMeta]
-    _defines_from_scalar: bool
-    _defines_from_dtype: bool
-
-    ############################
-    ####    CONSTRUCTORS    ####
-    ############################
-
-    def __init__(
-        cls: DecoratorMeta,
-        name: str,
-        bases: tuple[type, ...],
-        namespace: dict[str, Any],
-        **kwargs: Any
-    ):
-        if not (len(bases) == 0 or bases[0] is object):
-            print("-" * 80)
-            print(f"slug: {cls.slug}")
-            print(f"aliases: {cls.aliases}")
-            print(f"fields: {_format_dict(cls._fields)}")
-            print(f"cache_size: {cls.cache_size}")
-            print()
-
-    def __new__(
-        mcs: type,
-        name: str,
-        bases: tuple[type, ...],
-        namespace: dict[str, Any],
-        cache_size: int | None = None,
-    ) -> DecoratorMeta:
-        build = DecoratorBuilder(name, bases, namespace, cache_size)
-
-        return build.parse().fill().register(
-            super().__new__(mcs, build.name, (build.parent,), build.namespace)
-        )
-
-    def flyweight(cls, *args: Any, **kwargs: Any) -> DecoratorMeta:
-        """Return a cached instance of the decorator or create a new one if it does
-        not exist.  Positional arguments are used to identify the decorator, and
-        keyword arguments are piped into its resulting namespace.
-        """
-        slug = f"{cls.__name__}[{', '.join(repr(a) for a in args)}]"
-        typ = cls._flyweights.lru_get(slug, None)
-
-        if typ is None:
-            if len(args) != len(cls._params):
-                raise TypeError(
-                    f"expected {len(cls._params)} positional arguments, got "
-                    f"{len(args)}"
-                )
-
-            typ = super().__new__(
-                DecoratorMeta,
-                cls.__name__,
-                (cls,),
-                {
-                    "_slug": slug,
-                    "_hash": hash(slug),
-                    "_fields": cls._fields | dict(zip(cls._params, args)) | kwargs,
-                    "_parent": cls,
-                    "_parametrized": True,
-                } | kwargs
-            )
-            cls._flyweights.lru_add(slug, typ)
-
-        return typ
-
-    ################################
-    ####    CLASS PROPERTIES    ####
-    ################################
-
-    @property
-    def aliases(cls) -> Aliases:
-        """TODO"""
-        return cls._aliases
-
-    @property
-    def slug(cls) -> str:
-        """TODO"""
-        return cls._slug
-
-    @property
-    def hash(cls) -> int:
-        """TODO"""
-        return cls._hash
-
-    @property
-    def cache_size(cls) -> int:
-        """TODO"""
-        return cls._cache_size
-
-    @property
-    def flyweights(cls) -> Mapping[str, DecoratorMeta]:
-        """TODO"""
-        return MappingProxyType(cls._flyweights)
-
-    @property
-    def is_flyweight(cls) -> bool:
-        """TODO"""
-        return cls._parametrized
-
-    @property
-    def params(cls) -> Mapping[str, Any]:
-        """TODO"""
-        return MappingProxyType({k: cls._fields[k] for k in cls._params})
-
-    @property
-    def as_default(cls) -> DecoratorMeta:
-        """TODO"""
-        if not cls.wrapped:
-            return cls
-        return cls.replace(cls.wrapped.as_default)  # NOTE: will recurse
-
-    @property
-    def as_nullable(cls) -> DecoratorMeta:
-        """TODO"""
-        if not cls.wrapped:
-            return cls
-        return cls.replace(cls.wrapped.as_nullable)
-
-    @property
-    def root(cls) -> DecoratorMeta:
-        """TODO"""
-        if not cls.wrapped:
-            return cls
-        return cls.replace(cls.wrapped.root)
-
-    @property
-    def parent(cls) -> DecoratorMeta:
-        """TODO"""
-        if not cls.wrapped:
-            return cls
-        parent = cls.wrapped.parent
-        if parent is None:
-            return None
-        return cls.replace(parent)
-
-    @property
-    def subtypes(cls) -> UnionMeta:
-        """TODO"""
-        result = LinkedSet()
-        if cls.wrapped:
-            for typ in cls.wrapped.subtypes:
-                result.add(cls.replace(typ))
-        return Union.from_types(result)
-
-    @property
-    def implementations(cls) -> UnionMeta:
-        """TODO"""
-        result = LinkedSet()
-        if cls.wrapped:
-            for typ in cls.wrapped.implementations:
-                result.add(cls.replace(typ))
-        return Union.from_types(result)
-
-    @property
-    def children(cls) -> UnionMeta:
-        """TODO"""
-        result = LinkedSet()
-        if cls.wrapped:
-            for typ in cls.wrapped.children:
-                result.add(cls.replace(typ))
-        return Union.from_types(result)
-
-    @property
-    def leaves(cls) -> UnionMeta:
-        """TODO"""
-        result = LinkedSet()
-        if cls.wrapped:
-            for typ in cls.wrapped.leaves:
-                result.add(cls.replace(typ))
-        return Union.from_types(result)
-
-    @property
-    def larger(cls) -> UnionMeta:
-        """TODO"""
-        result = LinkedSet()
-        if cls.wrapped:
-            for typ in cls.wrapped.larger:
-                result.add(cls.replace(typ))
-        return Union.from_types(result)
-
-    @property
-    def smaller(cls) -> UnionMeta:
-        """TODO"""
-        result = LinkedSet()
-        if cls.wrapped:
-            for typ in cls.wrapped.smaller:
-                result.add(cls.replace(typ))
-        return Union.from_types(result)
-
-    @property
-    def decorators(cls) -> UnionMeta:
-        """TODO"""
-        result = LinkedSet()
-        curr = cls
-        while curr.wrapped is not None:
-            result.add(curr)
-            curr = curr.wrapped
-
-        return Union.from_types(result)
-
-    @property
-    def wrapper(cls) -> DecoratorMeta | None:
-        """Return the outermost decorator as a non-parametrized type."""
-        return cls._parent if cls.is_flyweight else cls
-
-    @property
-    def wrapped(cls) -> TypeMeta | DecoratorMeta | None:
-        """TODO"""
-        return cls._fields["wrapped"]
-
-    @property
-    def unwrapped(cls) -> TypeMeta | None:
-        """TODO"""
-        result = cls
-        while isinstance(result, DecoratorMeta):
-            result = result.wrapped
-        return result
-
-    def __getattr__(cls, name: str) -> Any:
-        if name in cls._fields:
-            return cls._fields[name]
-
-        wrapped = cls._fields["wrapped"]
-        if wrapped:
-            return getattr(wrapped, name)
-
-        raise AttributeError(
-            f"type object '{cls.__name__}' has no attribute '{name}'"
-        )
-
-    def __dir__(cls) -> set[str]:
-        result = set(super().__dir__())
-        result.update({
-            "slug", "hash", "decorators", "wrapped", "unwrapped", "cache_size",
-            "flyweights", "params", "as_default", "as_nullable", "root", "parent",
-            "subtypes", "implementations", "children", "leaves", "larger", "smaller"
-        })
-        result.update(cls._fields)
-        curr = cls.wrapped
-        while curr:
-            result.update(dir(curr))
-            curr = curr.wrapped
-        return result
-
-    ###############################
-    ####    SPECIAL METHODS    ####
-    ###############################
-
-    # TODO: comparisons, isinstance(), issubclass(), etc. should delegate to wrapped
-    # type.  They should also be able to compare against other decorators, and should
-    # take decorator order into account.
-
-    def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any]:
-        return cls.transform(cls.wrapped(*args, **kwargs))
-
-    # TODO:
-    # >>> Sparse[Int16, 1] in Sparse[Int]
-    # False  (should be True?)
-
-    # TODO: probably need some kind of supplemental is_empty field that checks whether
-    # parameters were supplied beyond wrapped.
-
-    def __subclasscheck__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
-        # naked types cannot be subclasses of decorators
-        if isinstance(other, TypeMeta):
-            return False
-
-        wrapper = cls.wrapper
-        wrapped = cls.wrapped
-
-        if isinstance(other, DecoratorMeta):
-            if cls is DecoratorType:
-                return True
-
-            # top-level decorator types do not match
-            if wrapper is not other.wrapper:
-                return False
-
-            # this decorator is not parametrized - treat as wildcard
-            if wrapped is None:  # TODO: check for is_empty?  Or rework is_flyweight to refer to params beyond wrapped?
-                return True
-
-            # other decorator is not parametrized - invert wildcard
-            forwarded = other.wrapped
-            if forwarded is None:
-                return False
-
-            # check parameters are compatible
-            params = list(cls.params.values())[1:]
-            forwarded_params = list(other.params.values())[1:]
-            for p1, p2 in zip(params, forwarded_params):
-                na1 = pd.isna(p1)
-                na2 = pd.isna(p2)
-                if na1 ^ na2 or not (na1 and na2 or p1 is p2 or p1 == p2):
-                    return False
-
-            # delegate to wrapped type
-            return wrapped.__subclasscheck__(forwarded)
-
-        # recur for unions
-        if isinstance(other, UnionMeta):
-            return all(cls.__subclasscheck__(o) for o in other)
-
-        # fall back to traditional issubclass() check (always returns false or error)
-        return super().__subclasscheck__(other)
-
-    def __hash__(cls) -> int:
-        return cls._hash
-
-    def __len__(cls) -> int:
-        return cls.itemsize
-
-    def __bool__(cls) -> bool:
-        return True  # without this, Python defaults to len() > 0, which is wrong
-
-    def __lt__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
-        typ = resolve(other)
-        if cls is typ:
-            return False
-
-        if isinstance(typ, UnionMeta):
-            return all(cls < t for t in typ)
-
-        # TODO: check this for correctness.  If we swap to making wrapped return a
-        # self reference instead of None, this could be slightly simpler.
-
-        t1 = cls.wrapped
-        if t1 is None:
-            return False
-
-        if isinstance(typ, DecoratorMeta):
-            t2 = typ.wrapped
-            if t2 is None:
-                return False
-            return t1 < t2
-
-        return t1 < typ
-
-    def __le__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
-        if cls is other:
-            return True
-
-        t1 = cls.wrapped
-        if t1 is None:
-            return False
-
-        if isinstance(other, DecoratorMeta):
-            t2 = other.wrapped
-            if t2 is None:
-                return False
-            return t1 <= t2
-
-        return t1 <= other
-
-    def __eq__(cls, other: Any) -> bool:
-        if cls is other:
-            return True
-
-        t1 = cls.wrapped
-        if t1 is None:
-            return False
-
-        if isinstance(other, DecoratorMeta):
-            t2 = other.wrapped
-            if t2 is None:
-                return False
-            return t1 == t2
-
-        return t1 == other
-
-    def __ne__(cls, other: Any) -> bool:
-        return not cls == other
-
-    def __ge__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
-        if cls is other:
-            return True
-
-        t1 = cls.wrapped
-        if t1 is None:
-            return False
-
-        if isinstance(other, DecoratorMeta):
-            t2 = other.wrapped
-            if t2 is None:
-                return False
-            return t1 >= t2
-
-        return t1 >= other
-
-    def __gt__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
-        if cls is other:
-            return False
-
-        t1 = cls.wrapped
-        if t1 is None:
-            return False
-
-        if isinstance(other, DecoratorMeta):
-            t2 = other.wrapped
-            if t2 is None:
-                return False
-            return t1 > t2
-
-        return t1 > other
-
-    def __str__(cls) -> str:
-        return cls._slug
-
-    def __repr__(cls) -> str:
-        return cls._slug
-
-
 class DecoratorBuilder(TypeBuilder):
     """A builder-style parser for a decorator type's namespace (any subclass of
     DecoratorType).
@@ -4724,11 +2343,13 @@ class DecoratorBuilder(TypeBuilder):
 
         return self
 
-    def register(self, typ: TypeMeta | DecoratorMeta) -> TypeMeta | DecoratorMeta:
+    def register(self, typ: DecoratorMeta) -> DecoratorMeta:
         """Instantiate the type and register it in the global type registry."""
         # pylint: disable=protected-access
-        if self.parent is not object:
-            super().register(typ)
+        parent = self.parent
+        if parent is not object:
+            typ.aliases.parent = typ  # pushes aliases to global registry
+            REGISTRY._types.add(typ)
             REGISTRY.decorators._set.add(typ)
 
         return typ
@@ -4951,95 +2572,2371 @@ class DecoratorBuilder(TypeBuilder):
                 )
 
 
-def _insort_decorator(
-    invoke: Callable[..., DecoratorMeta],
-    cls: DecoratorMeta,
-    other: TypeMeta | DecoratorMeta,
-    *args: Any,
-) -> DecoratorMeta:
-    """Insert a decorator into a type's decorator stack, ensuring that it obeys the
-    registry's current precedence.
+###########################
+####    METACLASSES    ####
+###########################
+
+
+class BaseMeta(type):
+    """Base class for all bertrand metaclasses.
+
+    This is not meant to be used directly.  It exists only to provide shared methods
+    and attributes to the other metaclasses.
     """
-    # TODO: use replace() rather than reimplementing it here
-    visited = []
-    curr: DecoratorMeta | TypeMeta = other
-    wrapped = curr.wrapped
-    while wrapped:
-        wrapper = curr.wrapper
-        delta = REGISTRY.decorators.distance(cls, wrapper)
+    # pylint: disable=no-value-for-parameter
 
-        if delta > 0:  # cls is higher priority or identical to wrapper
-            break
-        elif delta == 0:  # cls is identical to wrapper
-            curr = wrapped
-            break
+    @property
+    def registry(cls) -> TypeRegistry:
+        """A reference to the global type registry.
 
-        visited.append((wrapper, list(curr.params.values())[1:]))
-        curr = wrapped
-        wrapped = curr.wrapped
+        Returns
+        -------
+        TypeRegistry
+            The global type registry.
 
-    result = invoke(cls, curr, *args)
-    for wrapper, params in reversed(visited):
-        if not params:
-            result = wrapper[result]
-        else:
-            result = wrapper[result, *params]
-    return result
+        Notes
+        -----
+        This attribute is inherited by all bertrand type objects, and can be used to
+        access the global type registry from anywhere in the type system.  It is
+        identical to the global ``REGISTRY`` object.
+        """
+        return REGISTRY
+
+    def __getitem__(cls, params: Any | tuple[Any, ...]) -> META:
+        """A wrapper around a type's `__class_getitem__` method that automatically
+        unpacks tuples into a more traditional call syntax.
+        """
+        if isinstance(params, tuple):
+            return cls.__class_getitem__(*params)  # type: ignore
+        return cls.__class_getitem__(params)  # type: ignore
+
+    def __setattr__(cls, name: str, val: Any) -> NoReturn:
+        raise TypeError("bertrand types are immutable")
+
+    def __instancecheck__(cls, other: Any | Iterable[Any]) -> bool:
+        return cls.__subclasscheck__(detect(other))
+
+    def __contains__(cls, other: Any | TYPESPEC | Iterable[Any | TYPESPEC]) -> bool:
+        try:
+            return cls.__subclasscheck__(other)  # type: ignore
+        except TypeError:
+            return cls.__instancecheck__(other)
+
+    def __or__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:  # type: ignore
+        try:
+            typ = resolve(other)
+        except TypeError:
+            return NotImplemented
+
+        if isinstance(typ, UnionMeta):
+            result = LinkedSet((cls,))
+            result.update(typ)
+            return Union.from_types(result)
+
+        return Union.from_types(LinkedSet((cls, typ)))        
+
+    def __ror__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:  # type: ignore
+        try:
+            typ = resolve(other)
+        except TypeError:
+            return NotImplemented
+
+        return typ | cls
+
+    def __and__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
+        try:
+            typ = resolve(other)
+        except TypeError:
+            return NotImplemented
+
+        return Union.from_types(LinkedSet((cls,))) & typ
+
+    def __rand__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
+        try:
+            typ = resolve(other)
+        except TypeError:
+            return NotImplemented
+
+        return typ & cls
+
+    def __sub__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
+        try:
+            typ = resolve(other)
+        except TypeError:
+            return NotImplemented
+
+        return Union.from_types(LinkedSet((cls,))) - typ
+
+    def __rsub__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
+        try:
+            typ = resolve(other)
+        except TypeError:
+            return NotImplemented
+
+        return typ - cls
+
+    def __xor__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
+        try:
+            typ = resolve(other)
+        except TypeError:
+            return NotImplemented
+
+        return Union.from_types(LinkedSet((cls,))) ^ typ
+
+    def __rxor__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
+        try:
+            typ = resolve(other)
+        except TypeError:
+            return NotImplemented
+
+        return typ ^ cls
 
 
-###########################
-####    UNION TYPES    ####
-###########################
+class TypeMeta(BaseMeta):
+    """Metaclass for all scalar bertrand types (those that inherit from bertrand.Type).
+
+    This metaclass is responsible for parsing the namespace of a new type, validating
+    its configuration, and adding it to the global type registry.  It also defines the
+    basic behavior of all bertrand types, including the establishment of hierarchical
+    relationships, parametrization, and operator overloading.
+
+    See the documentation for the `Type` class for more information on how these work.
+    """
+
+    # This metaclass uses the following internal fields, as populated by AbstractBuilder
+    # or ConcreteBuilder based on the `backend` metaclass argument
+    _slug: str
+    _hash: int
+    _required: dict[str, Callable[..., Any]]
+    _fields: dict[str, Any]
+    _parent: TypeMeta | None
+    _base_type: TypeMeta | None
+    _children: LinkedSet[TypeMeta]
+    _subtypes: LinkedSet[TypeMeta]
+    _implementations: LinkedDict[str, TypeMeta]
+    _default: list[TypeMeta]
+    _nullable: list[TypeMeta]
+    _cache_size: int | None
+    _flyweights: LinkedDict[str, TypeMeta]
+    _params: tuple[str]
+    _parametrized: bool
+    _defines_from_scalar: bool
+    _defines_from_dtype: bool
+
+    ############################
+    ####    CONSTRUCTORS    ####
+    ############################
+
+    def __init__(
+        cls: TypeMeta,
+        name: str,
+        bases: tuple[TypeMeta],
+        namespace: dict[str, Any],
+        **kwargs: Any
+    ):
+        fields = {k: "..." for k in cls._required} | cls._fields
+        if not (len(bases) == 0 or bases[0] is object):
+            print("-" * 80)
+            print(f"slug: {cls.slug}")
+            print(f"parent: {cls.parent}")
+            print(f"aliases: {cls.aliases}")
+            print(f"fields: {_format_dict(fields)}")
+            print(f"is_root: {cls.is_root}")
+            print(f"is_abstract: {cls.is_abstract}")
+            print(f"is_leaf: {cls.is_leaf}")
+            print(f"cache_size: {cls.cache_size}")
+            print(f"itemsize: {getattr(cls, 'itemsize', '...')}")
+            print()
+
+    def __new__(
+        mcs: type,
+        name: str,
+        bases: tuple[TypeMeta],
+        namespace: dict[str, Any],
+        backend: str = "",
+        cache_size: int | None = None,
+    ) -> TypeMeta:
+        if not backend:
+            abstract = AbstractBuilder(name, bases, namespace, cache_size)
+            return abstract.parse().fill().register(
+                super().__new__(  # type: ignore
+                    mcs,
+                    abstract.name,
+                    (abstract.parent,),
+                    abstract.namespace
+                )
+            )
+
+        concrete = ConcreteBuilder(name, bases, namespace, backend, cache_size)
+        return concrete.parse().fill().register(
+            super().__new__(  # type: ignore
+                mcs,
+                concrete.name,
+                (concrete.parent,),
+                concrete.namespace
+            )
+        )
+
+    ##########################
+    ####    FLYWEIGHTS    ####
+    ##########################
+
+    def flyweight(cls, *args: Any, **kwargs: Any) -> TypeMeta:
+        """Get a flyweight type with the specified parameters.
+
+        Parameters
+        ----------
+        *args: Any
+            Positional arguments used to parametrize the type.  These should always
+            match the signature of `__class_getitem__()` in both number and order, as
+            they will be inserted into the resulting type's namespace under that
+            assumption.  The values will also be used to construct a unique string
+            identifier for the type, which is used to look up the corresponding
+            flyweight in the type's LRU cache.
+        **kwargs: Any
+            Keyword arguments representing overrides for a parametrized type's fields.
+            These are injected directly into the type's namespace, and will override
+            any existing values with the same key(s).
+
+        Returns
+        -------
+        TypeMeta
+            A flyweight type with the specified parameters.
+
+        Raises
+        ------
+        TypeError
+            If the number of positional arguments does not match the signature of
+            `__class_getitem__()`.  Note that order is not checked, so users should
+            take care to ensure that the arguments are passed in the same order.
+
+        See Also
+        --------
+        Type.__class_getitem__: defines parametrization behavior for bertrand types.
+        Type.from_scalar: parses a scalar example of this type.
+        Type.from_dtype: parses a numpy dtype object registered to this type.
+        Type.from_string: parses a string representation of this type.
+
+        Notes
+        -----
+        Flyweights are generated only once when they are first requested, and are
+        reused for any subsequent calls with the same parameters.  This is accomplished
+        by storing them in an LRU cache, which is unique to every type.  The cache
+        size can be controlled via the `cache_size` metaclass argument, which defaults
+        to None, signalling an infinite cache size.  If a finite cache is specified,
+        then the number of flyweights will be capped at that value, and the least
+        recently used flyweight will be evicted whenever the cache is full.
+
+        This method is typically called by the `__class_getitem__()` method of a
+        parametrized type, which is responsible for generating a new type with the
+        specified parameters.  Invoking this method handles all the caching logic and
+        instantiation details, and returns the resulting type to the caller.
+        """
+        slug = f"{cls.__name__}[{', '.join(repr(a) for a in args)}]"
+        typ = cls._flyweights.lru_get(slug, None)
+
+        if typ is None:
+            if len(args) != len(cls._params):
+                raise TypeError(
+                    f"expected {len(cls._params)} positional arguments, got "
+                    f"{len(args)}"
+                )
+
+            typ = super().__new__(
+                TypeMeta,
+                cls.__name__,
+                (cls,),
+                {
+                    "_slug": slug,
+                    "_hash": hash(slug),
+                    "_fields": cls._fields | dict(zip(cls._params, args)) | kwargs,
+                    "_base_type": cls,
+                    "_parametrized": True,
+                    "__class_getitem__": _parametrized_getitem,
+                } | kwargs  # TODO: unnecessary?
+            )
+            cls._flyweights.lru_add(slug, typ)
+
+        return typ
+
+    @property
+    def flyweights(cls) -> Mapping[str, TypeMeta]:
+        """A read-only proxy for this type's flyweight cache.
+
+        Returns
+        -------
+        Mapping[str, TypeMeta]
+            A mapping of string identifiers to flyweight types.  This is a read-only
+            proxy for a :class:`LinkedDict`, which is a custom C++ data structure
+            that combines a hash table with a doubly-linked list.  The order of the
+            keys always reflects current LRU order, with the most recently used
+            flyweight at the beginning of the dictionary.  Note that this order is
+            not necessarily stable, and can change without invalidating the proxy.
+
+        See Also
+        --------
+        cache_size: the maximum size of this type's flyweight cache.
+        flyweight: create a flyweight with the specified parameters.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Object.flyweights
+            mappingproxy(LinkedDict({}))
+            >>> Object[int]
+            Object[<class 'int'>]
+            >>> Object.flyweights
+            mappingproxy(LinkedDict({"Object[<class 'int'>]": Object[<class 'int'>]}))
+        """
+        return MappingProxyType(cls._flyweights)
+
+    @property
+    def is_flyweight(cls) -> bool:
+        """Check whether the type is a parametrized flyweight.
+
+        Returns
+        -------
+        bool
+            True if the type was produced by one of the following parametrization
+            methods.  False otherwise.
+
+        See Also
+        --------
+        __class_getitem__: defines parametrization behavior for bertrand types.
+        from_scalar: parses a scalar example of this type.
+        from_dtype: parses a numpy dtype object registered to this type.
+        from_string: parses a string representation of this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Object.is_flyweight
+            False
+            >>> Object[int].is_flyweight
+            True
+        """
+        return cls._parametrized
+
+    @property
+    def base_type(cls) -> TypeMeta:
+        """Return an unparametrized version of this type.
+
+        Returns
+        -------
+        TypeMeta
+            A type with all parameters removed.  If the type is not parametrized,
+            then this is a self-reference.
+
+        See Also
+        --------
+        flyweight: create a flyweight with the specified parameters.
+        flyweights: a read-only proxy for this type's flyweight cache.
+        is_flyweight: indicates whether this type is a parametrized flyweight.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Object.base_type
+            Object
+            >>> Object[int].base_type
+            Object
+            >>> Sparse[Object[int]].base_type
+            Sparse
+        """
+        if cls._base_type is None:
+            return cls
+        return cls._base_type
+
+    @property
+    def cache_size(cls) -> int | None:
+        """The maximum size of this type's flyweight cache, if it is limited to
+        a finite size.
+
+        Returns
+        -------
+        int | None
+            The maximum number of flyweights that can be stored in this type's
+            LRU cache.  If None, then the cache is unlimited.
+
+        See Also
+        --------
+        flyweight: create a flyweight with the specified parameters.
+        flyweights: a read-only proxy for this type's flyweight cache.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            class Foo(Type, cache_size=10):
+                ...
+
+            assert Foo.cache_size == 10
+        """
+        return cls._cache_size
+
+    @property
+    def params(cls) -> Mapping[str, Any]:
+        """A read-only mapping of parameters to their configured values.
+
+        Returns
+        -------
+        Mapping[str, Any]
+            A mapping of parameter names to their values.  These are determined by
+            to :meth:`Type.__class_getitem__()` when the type is parametrized.
+
+        Notes
+        -----
+        The parameter names and default values are inferred from the signature of
+        :meth:`__class_getitem__() <Type.__class_getitem__>`, and are available as
+        dotted attributes on the type itself.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> PandasTimestamp.params
+            mappingproxy({'tz': None})
+            >>> PandasTimestamp["UTC"].params
+            mappingproxy({'tz': datetime.timezone.utc})
+            >>> PandasTimestamp["UTC"].tz
+            datetime.timezone.utc
+        """
+        return MappingProxyType({k: getattr(cls, k) for k in cls._params})
+
+    ########################
+    ####    REQUIRED    ####
+    ########################
+
+    @property
+    def aliases(cls) -> Aliases:
+        """A setlike collection of aliases for this type.
+
+        Returns
+        -------
+        Aliases
+            A mutable container that holds aliases for this type.  These implement a
+            simplified set interface, and any changes are automatically reflected in
+            the global registry.
+
+        See Also
+        --------
+        TypeRegistry.aliases: the global registry of type aliases.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.aliases
+            Aliases('Int', 'int', 'integer')
+            >>> Int.aliases.add("foo")
+            >>> Int.aliases
+            Aliases('Int', 'int', 'integer', 'foo')
+            >>> resolve("foo")
+            Int
+            >>> Int.aliases.remove("foo")
+            >>> Int.aliases
+            Aliases('Int', 'int', 'integer')
+            >>> resolve("foo")
+            Traceback (most recent call last):
+                ...
+            TypeError: invalid specifier -> 'foo'
+        """
+        return cls._aliases
+
+    @property
+    def scalar(cls) -> type:
+        """The python type associated with a scalar value of this type.
+
+        Returns
+        -------
+        type
+            The python type to use for scalar values of this type.  This is identical
+            to the result of the :func:`type` function for a single element of this
+            type.
+
+        Raises
+        ------
+        AttributeError
+            If the type does not define a scalar type.  This can only occur for
+            abstract types that do not default to a concrete implementation.
+
+        See Also
+        --------
+        dtype: the numpy/pandas dtype associated with this type.
+
+        Notes
+        -----
+        This is a required field for all concrete types, as enforced by the metaclass
+        machinery.  It is not required for abstract types, since they do not have a
+        concrete implementation by default.
+
+        If this attribute is defined in the absence of an explicit :attr:`dtype`, then
+        a synthetic dtype will be produced automatically.  This is a special dtype that
+        wraps around the scalar type and represents the contents of a vector as
+        standard python objects.  It is functionally equivalent to numpy's ``object``
+        dtype, but is more type safe, since it is labeled with an explicit python type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int64.scalar
+            <class 'numpy.int64'>
+            >>> Int32.scalar
+            <class 'numpy.int32'>
+            >>> Int16.scalar
+            <class 'numpy.int16'>
+            >>> Int8.scalar
+            <class 'numpy.int8'>
+        """
+        if not cls.is_default:
+            return cls.as_default.scalar
+
+        result = cls._fields.get("scalar", None)
+        if result is None:
+            raise _no_attribute(cls, "scalar")
+        return result
+
+    @property
+    def dtype(cls) -> DTYPE:
+        """The numpy/pandas dtype associated with vectors of this type.
+
+        Returns
+        -------
+        DTYPE
+            The numpy/pandas dtype to use for vectors of this type.
+
+        Raises
+        ------
+        AttributeError
+            If the type does not define a dtype.  This can only occur for abstract
+            types that do not default to a concrete implementation.
+
+        See Also
+        --------
+        scalar: the python type associated with a scalar value of this type.
+
+        Notes
+        -----
+        This is a required field for all concrete types, as enforced by the metaclass
+        machinery.  It is not required for abstract types, since they do not have a
+        concrete implementation by default.
+
+        If this attribute is defined in the absence of an explicit :attr:`scalar` type,
+        then the scalar type will be inferred automatically from ``dtype.type``.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int64.dtype
+            dtype('int64')
+            >>> Int32.dtype
+            dtype('int32')
+            >>> Int16.dtype
+            dtype('int16')
+            >>> Int8.dtype
+            dtype('int8')
+        """
+        if not cls.is_default:
+            return cls.as_default.dtype
+
+        result = cls._fields.get("dtype", None)
+        if result is None:
+            raise _no_attribute(cls, "dtype")
+        return result
+
+    @property
+    def max(cls) -> int | float:
+        """The maximum value that can be accurately represented by this type.
+
+        Returns
+        -------
+        int | float
+            An integer representing the maximum value that this type can store, or
+            positive infinity if the type is unbounded.
+
+        Raises
+        ------
+        AttributeError
+            If the type does not define a maximum value.  This can only occur for
+            abstract types that do not default to a concrete implementation.
+
+        See Also
+        --------
+        min: the minimum value that can be accurately represented by this type.
+
+        Notes
+        -----
+        This is a required field for all concrete types, as enforced by the metaclass
+        machinery.  It is not required for abstract types, since they do not have a
+        concrete implementation by default.
+
+        If this attribute is not provided, it defaults to positive infinity.
+
+        .. note::
+
+            For floating point and other real numeric types, this refers to the maximum
+            value that can be stored with integer precision at exponent 1.  This
+            typically reflects the size of the mantissa in the IEEE 754 specification,
+            which is used to determine overflow when performing integer/float
+            conversions.
+
+            .. doctest::
+
+                >>> Float64.max  # equal to 2**53, for a 53-bit mantissa
+                9007199254740992
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int64.max
+            9223372036854775807
+            >>> Int32.max
+            2147483647
+            >>> Int16.max
+            32767
+            >>> Int8.max
+            127
+        """
+        if not cls.is_default:
+            return cls.as_default.max
+
+        result = cls._fields.get("max", None)
+        if result is None:
+            raise _no_attribute(cls, "max")
+        return result
+
+    @property
+    def min(cls) -> int | float:
+        """The minimum value that can be accurately represented by this type.
+
+        Returns
+        -------
+        int | float
+            An integer representing the minimum value that this type can store, or
+            negative infinity if the type is unbounded.
+
+        Raises
+        ------
+        AttributeError
+            If the type does not define a minimum value.  This can only occur for
+            abstract types that do not default to a concrete implementation.
+
+        See Also
+        --------
+        max: the maximum value that can be accurately represented by this type.
+
+        Notes
+        -----
+        This is a required field for all concrete types, as enforced by the metaclass
+        machinery.  It is not required for abstract types, since they do not have a
+        concrete implementation by default.
+
+        If this attribute is not provided, it defaults to negative infinity.
+
+        .. note::
+
+            For floating point and other real numeric types, this refers to the minimum
+            value that can be stored with integer precision at exponent 1.  This
+            typically reflects the size of the mantissa in the IEEE 754 specification,
+            which is used to determine overflow when performing integer/float
+            conversions.
+
+            .. doctest::
+
+                >>> Float64.min  # equal to -2**53, for a 53-bit mantissa
+                -9007199254740992
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int64.min
+            -9223372036854775808
+            >>> Int32.min
+            -2147483648
+            >>> Int16.min
+            -32768
+            >>> Int8.min
+            -128
+        """
+        if not cls.is_default:
+            return cls.as_default.min
+
+        result = cls._fields.get("min", None)
+        if result is None:
+            raise _no_attribute(cls, "min")
+        return result
+
+    @property
+    def missing(cls) -> Any:
+        """The missing value to use for this type.
+
+        Returns
+        -------
+        Any
+            A special value to store in place of missing values.  This can be any
+            scalar value that passes a :func:`pandas.isna` check.
+
+        Raises
+        ------
+        AttributeError
+            If the type does not define a missing value.  This can only occur for
+            abstract types that do not default to a concrete implementation.
+
+        See Also
+        --------
+        is_nullable: a boolean flag indicating whether this type is nullable.
+        nullable: registers a nullable implementation for a concrete type.
+        as_nullable: converts a concrete type to its nullable implementation.
+
+        Notes
+        -----
+        This is a required field for all concrete types, as enforced by the metaclass
+        machinery.  It is not required for abstract types, since they do not have a
+        concrete implementation by default.
+
+        If this attribute is not provided, it defaults to :attr:`pandas.NA`.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int64.missing
+            <NA>
+            >>> Float64.missing
+            nan
+            >>> Complex128.missing
+            (nan+nanj)
+        """
+        if not cls.is_default:
+            return cls.as_default.missing
+
+        result = cls._fields.get("missing", None)
+        if result is None:
+            raise _no_attribute(cls, "missing")
+        return result
+
+    #########################
+    ####    GENERATED    ####
+    #########################
+
+    @property
+    def slug(cls) -> str:
+        """Get a string identifier for this type, as used to look up flyweights.
+
+        Returns
+        -------
+        str
+            A string concatenating the type's class name with its parameter
+            configuration, if any.
+
+        Notes
+        -----
+        This is identical to the output of the :func:`str` and :func:`repr` built-in
+        functions on the type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.slug
+            'Int'
+            >>> PandasTimestamp["UTC"].slug
+            'PandasTimestamp[UTC]'
+            >>> Sparse[Int].slug
+            'Sparse[Int, <NA>]'
+        """
+        return cls._slug
+
+    @property
+    def hash(cls) -> int:
+        """Get a precomputed hash for this type.
+
+        Returns
+        -------
+        int
+            A unique hash based on the type's string identifier.
+
+        Notes
+        -----
+        This is identical to the output of the :func:`hash` built-in function.
+        """
+        return cls._hash
+
+    @property
+    def itemsize(cls) -> int:
+        """The size of a single element of this type, in bytes.
+
+        Returns
+        -------
+        int
+            The width of this type in memory.
+    
+        Notes
+        -----
+        This is identical to the result of the :func:`len` operator when applied
+        to a scalar type.  This behaves similarly to a Python-level ``sizeof()``
+        operator as used in C/C++.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int8.itemsize
+            1
+            >>> Int16.itemsize
+            2
+            >>> Int32.itemsize
+            4
+            >>> Int64.itemsize
+            8
+        """
+        return cls.dtype.itemsize
+
+    ################################
+    ####    CLASS DECORATORS    ####
+    ################################
+
+    def default(cls, other: TypeMeta) -> TypeMeta:
+        """A class decorator that registers a default implementation for an abstract
+        type.
+
+        Parameters
+        ----------
+        other: TypeMeta
+            The type to delegate to when attribute lookups fail on the abstract
+            type.  This type must be a subclass of the abstract type, and will
+            be validated before being registered.  It can be either abstract or
+            concrete, and may itself delegate to another type.
+
+        Returns
+        -------
+        TypeMeta
+            The type that was passed in, unmodified.
+
+        Raises
+        ------
+        TypeError
+            If the parent type is concrete, or if the decorated type is not a
+            subclass of the parent.
+
+        See Also
+        --------
+        as_default: converts an abstract type to its default implementation.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            class Foo(Type):
+                pass
+
+            assert not hasattr(Foo, "x")
+
+            @Foo.default
+            class Bar(Foo):
+                x = 1
+
+            @Bar.default
+            class Baz(Bar):
+                y = 2
+
+            assert Foo.x is Bar.x
+            assert Foo.y is Baz.y
+        """
+        if not cls.is_abstract:
+            raise TypeError("concrete types cannot have default implementations")
+
+        if not issubclass(other, cls):
+            raise TypeError(
+                f"default implementation must be a subclass of {cls.__name__}"
+            )
+
+        if cls._default:
+            cls._default.pop()
+        cls._default.append(other)
+        return other
+
+    def nullable(cls, other: TypeMeta) -> TypeMeta:
+        """A class decorator that registers an alternate, nullable implementation for
+        a concrete type.
+
+        Parameters
+        ----------
+        other: TypeMeta
+            The type to delegate to when missing values are encountered for this
+            type.  This will implicitly replace the original type during
+            conversions when missing values are present.  It will be validated
+            before being registered, and must be concrete.
+
+        Returns
+        -------
+        TypeMeta
+            The type that was passed in, unmodified.
+
+        Raises
+        ------
+        TypeError
+            If the parent type is abstract or already nullable, or if the decorated
+            type is not concrete.
+
+        See Also
+        --------
+        as_nullable: converts a concrete type to its nullable implementation.
+
+        Examples
+        --------
+        In general, the structure of a nullable type is as follows:
+
+        .. code-block:: python
+
+            class Foo(Type):  # abstract parent type
+                ...
+
+            @Foo.default
+            class Bar(Foo, backend="non_nullable"):  # non-nullable implementation
+                ...
+
+            @Bar.nullable
+            class Baz(Foo, backend="nullable"):  # nullable equivalent
+                ...
+
+        With this structure in place, any conversion to ``Foo`` or ``Bar`` will 
+        be automatically translated to ``Baz`` when missing values are present.
+
+        A practical example of this can be seen with numpy integer types, which
+        cannot store missing values by default.  Pandas implements a set of
+        functionally identical extension types to cover this case, which are
+        identical in every way except for their nullability.  As such, we can
+        implicitly convert to the pandas type whenever missing values are
+        encountered.
+
+        .. doctest::
+
+            >>> Int64["numpy"]([1, 2, 3])
+            0    1
+            1    2
+            2    3
+            dtype: int64
+            >>> Int64["numpy"]([1, 2, 3, None])
+            0       1
+            1       2
+            2       3
+            3    <NA>
+            dtype: Int64
+            >>> detect(_)
+            Union[PandasInt64]
+        """
+        if cls.is_abstract:  # pylint: disable=using-constant-test
+            raise TypeError(
+                f"abstract types cannot have nullable implementations -> {cls.slug}"
+            )
+        if cls.is_nullable:
+            raise TypeError(f"type is already nullable -> {cls.slug}")
+
+        if other.is_abstract:
+            raise TypeError(
+                f"nullable implementations must be concrete -> {other.slug}"
+            )
+
+        if cls._nullable:
+            cls._nullable.pop()
+        cls._nullable.append(other)
+        return other
+
+    @property
+    def as_default(cls) -> TypeMeta:
+        """Convert an abstract type to its default implementation, if it has one.
+
+        Returns
+        -------
+        TypeMeta
+            The default implementation of the type, if it has one.  Otherwise,
+            returns the type itself.
+
+        See Also
+        --------
+        default: registers a default implementation for an abstract type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.as_default
+            Signed
+            >>> Signed.as_default
+            Int64
+            >>> Int64.as_default
+            NumpyInt64
+            >>> NumpyInt64.as_default
+            NumpyInt64
+        """
+        if cls._default:
+            return cls._default[0]
+        return cls
+
+    @property
+    def as_nullable(cls) -> TypeMeta:
+        """Convert a concrete type to its nullable implementation, if it has one.
+
+        Returns
+        -------
+        TypeMeta
+            The type itself if it is already nullable.  Otherwise, the nullable
+            implementation that is registered to this type, if it has one.
+
+        Raises
+        ------
+        TypeError
+            If the type is marked as non-nullable and does not have a nullable
+            implementation.
+
+        See Also
+        --------
+        nullable: registers a nullable implementation for a concrete type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int64["numpy"].as_nullable
+            PandasInt64
+            >>> PandasInt64.as_nullable
+            PandasInt64
+        """
+        if cls.is_nullable:
+            return cls
+        if cls._nullable:
+            return cls._nullable[0]
+        raise TypeError(f"type is not nullable -> {cls.slug}")
+
+    @property
+    def is_default(cls) -> bool:
+        """Check whether the type is its own default implementation.
+
+        Returns
+        -------
+        bool
+            True if this type is concrete or abstract with no default implementation.
+            False otherwise, signifying that it delegates attribute access to another
+            type.
+
+        See Also
+        --------
+        default: registers a default implementation for an abstract type.
+        as_default: converts an abstract type to its default implementation.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.is_default
+            False
+            >>> Signed.is_default
+            False
+            >>> Int64.is_default
+            False
+            >>> NumpyInt64.is_default
+            True
+        """
+        return not cls._default
+
+    @property
+    def is_nullable(cls) -> bool:
+        """Indicates whether this type supports missing values.
+
+        Returns
+        -------
+        bool
+            True if the type can represent missing values.  False otherwise.
+
+        Raises
+        ------
+        AttributeError
+            If the type does not define a ``is_nullable`` attribute.
+
+        See Also
+        --------
+        nullable: registers a nullable implementation for a concrete type.
+        as_nullable: converts a concrete type to its nullable implementation.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int64["numpy"].is_nullable
+            False
+            >>> Int64["pandas"].is_nullable
+            True
+        """
+        if not cls.is_default:
+            return cls.as_default.is_nullable
+
+        result = cls._fields.get("is_nullable", None)
+        if result is None:
+            raise _no_attribute(cls, "is_nullable")
+        return result
+
+    #########################
+    ####    HIERARCHY    ####
+    #########################
+
+    @property
+    def root(cls) -> TypeMeta:
+        """Get the root of this type's hierarchy.
+
+        Returns
+        -------
+        TypeMeta
+            The root type that this type ultimately inherits from.  This can be
+            a self-reference if :attr:`is_root` is True.
+
+        See Also
+        --------
+        parent: the immediate parent of this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.root
+            Int
+            >>> Signed.root
+            Int
+            >>> Int64.root
+            Int
+            >>> NumpyInt64.root
+            Int
+        """
+        # pylint: disable=protected-access
+        result = cls
+        while result._parent is not None:
+            result = result._parent
+        return result
+
+    @property
+    def parent(cls) -> TypeMeta:
+        """Get the immediate parent of this type within the hierarchy.
+
+        Returns
+        -------
+        TypeMeta | None
+            The type that this type directly inherits from or None if :attr:`is_root`
+            is True.
+
+        See Also
+        --------
+        root: the root of this type's hierarchy.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.parent
+            None
+            >>> Signed.parent
+            Int
+            >>> Int64.parent
+            Signed
+            >>> NumpyInt64.parent
+            Int64
+        """
+        if cls._parent is None:
+            return cls
+        return cls._parent
+
+    @property
+    def is_root(cls) -> bool:
+        """Check whether the type is the root of its type hierarchy.
+
+        Returns
+        -------
+        bool
+            True if the type has no parent.  False otherwise.
+
+        Notes
+        -----
+        A root is any type that directly inherits from the generic :class:`Type`
+        class.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.is_root
+            True
+            >>> Signed.is_root
+            False
+            >>> Int64.is_root
+            False
+            >>> NumpyInt64.is_root
+            False
+        """
+        return cls._parent is None
+
+    @property
+    def subtypes(cls) -> UnionMeta:
+        """A union containing the abstract subtypes of this type.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing all of the abstract children of this type.  This
+            does not include concrete implementations of this type, which are
+            stored in a separate attribute.
+
+        See Also
+        --------
+        implementations: a union containing the concrete implementations of this type.
+        children: a union containing the immediate children of this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.subtypes
+            Union[Signed, Unsigned]
+            >>> Signed.subtypes
+            Union[Int64, Int32, Int16, Int8]
+            >>> Int64.subtypes
+            Union[]
+            >>> NumpyInt64.subtypes
+            Union[]
+        """
+        return Union.from_types(cls._subtypes)
+
+    @property
+    def implementations(cls) -> UnionMeta:
+        """A union containing the concrete implementations of this type.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing all of the concrete implementations of this type.
+            This does not include abstract subtypes of this type, which are stored
+            in a separate attribute.
+
+        See Also
+        --------
+        subtypes: a union containing the abstract subtypes of this type.
+        children: a union containing the immediate children of this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.implementations
+            Union[]
+            >>> Signed.implementations
+            Union[PythonInt]
+            >>> Int64.implementations
+            Union[NumpyInt64, PandasInt64]
+            >>> NumpyInt64.implementations
+            Union[]
+        """
+        return Union.from_types(LinkedSet(cls._implementations.values()))
+
+    @property
+    def children(cls) -> UnionMeta:
+        """A union containing all the children of this type.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing all descendants of this type in the hierarchy,
+            including grandchildren, great-grandchildren, etc.
+
+        See Also
+        --------
+        leaves: a union containing all the leaves of this type.
+
+        Notes
+        -----
+        Children are always returned in definition order (i.e. the order in which they
+        were registered).
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.children
+            Union[Int, Signed, Int64, NumpyInt64, PandasInt64, Int32, NumpyInt32, PandasInt32, Int16, NumpyInt16, PandasInt16, Int8, NumpyInt8, PandasInt8, PythonInt]
+            >>> Signed.children
+            Union[Signed, Int64, NumpyInt64, PandasInt64, Int32, NumpyInt32, PandasInt32, Int16, NumpyInt16, PandasInt16, Int8, NumpyInt8, PandasInt8, PythonInt]
+            >>> Int64.children
+            Union[Int64, NumpyInt64, PandasInt64]
+            >>> NumpyInt64.children
+            Union[NumpyInt64]
+        """
+        return Union.from_types(cls._children)
+
+    @property
+    def leaves(cls) -> UnionMeta:
+        """A union containing all the leaves contained in this type.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing all descendants of this type that are leaves in
+            the hierarchy, including grandchildren, great-grandchildren, etc.
+            This is identical to :attr:`children`, except that it excludes any
+            abstract types.
+
+        See Also
+        --------
+        children: a union containing all the children of this type.
+
+        Note
+        ----
+        Leaves are always returned in definition order (i.e. the order in which they
+        were registered).
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.leaves
+            Union[NumpyInt64, PandasInt64, NumpyInt32, PandasInt32, NumpyInt16, PandasInt16, NumpyInt8, PandasInt8, PythonInt]
+            >>> Signed.leaves
+            Union[NumpyInt64, PandasInt64, NumpyInt32, PandasInt32, NumpyInt16, PandasInt16, NumpyInt8, PandasInt8, PythonInt]
+            >>> Int64.leaves
+            Union[NumpyInt64, PandasInt64]
+            >>> NumpyInt64.leaves
+            Union[NumpyInt64]
+        """
+        return Union.from_types(LinkedSet(t for t in cls._children if t.is_leaf))
+
+    # TODO: note that is_leaf does not necessarily imply type is concrete
+
+    @property
+    def is_leaf(cls) -> bool:
+        """Check whether the type is a leaf of its type hierarchy.
+
+        Returns
+        -------
+        bool
+            True if the type has no immediate children.  False otherwise.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.is_leaf
+            False
+            >>> Signed.is_leaf
+            False
+            >>> Int64.is_leaf
+            False
+            >>> NumpyInt64.is_leaf
+            True
+        """
+        return not cls._subtypes and not cls._implementations
+
+    @property
+    def larger(cls) -> UnionMeta:
+        """A union containing all the sibling types that have a larger representable
+        range than this type.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing all sibling types (leaves within the same hierarchy)
+            that compare greater than this type.  This is always returned in sorted
+            order, with the smallest type first.
+
+        See Also
+        --------
+        smaller: a union containing all the sibling types that are less than this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int32.larger
+            Union[NumpyUInt32, NumpyInt64, NumpyUInt64, PythonInt]
+            >>> Int64.larger
+            Union[NumpyUInt64, PythonInt]
+
+        This can also be used to dynamically upcast input data to the smallest type
+        that can fully represent it.  For instance, by forming a union with the type
+        itself, we can ensure that the input data is always converted to the smallest
+        option.
+
+        .. doctest::
+
+            >>> Int64 | Int64.larger
+            Union[Int32, NumpyUInt32, NumpyInt64, NumpyUInt64, PythonInt]
+            >>> (Int64 | Int64.larger)([1, 2, 3])
+            0    1
+            1    2
+            2    3
+            dtype: int64
+            >>> (Int64 | Int64.larger)([1, 2, 3, 2**64 - 1])
+            0                      1
+            1                      2
+            2                      3
+            3    9223372036854775807
+            dtype: uint64
+            >>> (Int64 | Int64.larger)([1, 2, 3, 2**80 - 1])
+            0                            1
+            1                            2
+            2                            3
+            3    1208925819614629174706175
+            dtype: PythonInt
+        """
+        features = lambda t: (t.max - t.min, t.itemsize, abs(t.max + t.min))
+        fts = features(cls)
+        types = sorted(t for t in cls.root.leaves if t > cls and features(t) != fts)
+        result = LinkedSet()
+        for t in types:
+            if result:
+                tail = result[-1]
+                if features(t) == features(tail):
+                    if t.parent is tail.parent and t is t.parent.as_default:
+                        result.pop()
+                    else:
+                        continue
+            result.add(t)
+
+        return Union.from_types(result)
+
+    @property
+    def smaller(cls) -> UnionMeta:
+        """A union containing all the sibling types that have a smaller representable
+        range than this type.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing all sibling types (leaves within the same hierarchy)
+            that compare less than this type.  This is always returned in sorted
+            order, with the smallest type first.
+
+        See Also
+        --------
+        larger: a union containing all the sibling types that are greater than this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int32.smaller
+            Union[NumpyInt8, NumpyUInt8, NumpyInt16, NumpyUInt16]
+            >>> Int64.smaller
+            Union[NumpyInt8, NumpyUInt8, NumpyInt16, NumpyUInt16, NumpyInt32, NumpyUInt32]
+
+        This can also be used to dynamically downcast input data to the smallest type
+        that can fully represent it.  For instance, by forming a union with the type
+        itself, we can ensure that the input data is always converted to the smallest
+        option.
+
+        .. doctest::
+
+            >>> Int32.smaller | Int32
+            Union[NumpyInt8, NumpyUInt8, NumpyInt16, NumpyUInt16, Int32]
+            >>> (Int32.smaller | Int32)([1, 2, 3])
+            0    1
+            1    2
+            2    3
+            dtype: int8
+            >>> (Int32.smaller | Int32)([1, 2, 3, 2**15 - 1])
+            0        1
+            1        2
+            2    32767
+            dtype: int16
+            >>> (Int32.smaller | Int32)([1, 2, 3, 2**31 - 1])
+            0             1
+            1             2
+            2    2147483647
+            dtype: int32
+        """
+        features = lambda t: (t.max - t.min, t.itemsize, abs(t.max + t.min))
+        feats = features(cls)
+        types = sorted(t for t in cls.root.leaves if t < cls and features(t) != feats)
+        result = LinkedSet()
+        for t in types:
+            if result:
+                tail = result[-1]
+                if features(t) == features(tail):
+                    if t.parent is tail.parent and t is t.parent.as_default:
+                        result.pop()
+                    else:
+                        continue
+            result.add(t)
+
+        return Union.from_types(result)
+
+    #################################
+    ####    ABSTRACT/CONCRETE    ####
+    #################################
+
+    @property
+    def backend(cls) -> str:
+        """Get a concrete type's backend specifier.
+
+        Returns
+        -------
+        str
+            A string identifying the backend that this type is registered to.
+            This is used to search an abstract parent's implementation
+            dictionary, allowing the concrete type to be resolved via
+            parametrization.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            class Foo(Type):
+                pass
+
+            class Bar(Foo, backend="bar"):
+                # required fields, etc.
+                ...
+
+            assert Foo["bar"] is Bar
+            assert Bar.backend == "bar"
+        """
+        return cls._fields["backend"]
+
+    @property
+    def is_abstract(cls) -> bool:
+        """Check whether the type is abstract.
+
+        Returns
+        -------
+        bool
+            True if the type is abstract (i.e. :attr:`backend` is set to the empty
+            string).  False otherwise.
+
+        See Also
+        --------
+        backend: the type's backend specifier.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.is_abstract
+            True
+            >>> Signed.is_abstract
+            True
+            >>> Int64.is_abstract
+            True
+            >>> NumpyInt64.is_abstract
+            False
+        """
+        return not cls.backend
+
+    ##########################
+    ####    DECORATORS    ####
+    ##########################
+
+    @property
+    def is_decorator(cls) -> bool:
+        """Check whether the type is a decorator type.
+
+        Returns
+        -------
+        bool
+            True if the type is a decorator type.  False otherwise.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.is_decorated
+            False
+            >>> Sparse[Int].is_decorated
+            True
+        """
+        return False
+
+    @property
+    def decorators(cls) -> UnionMeta:
+        """A union containing all the decorators applied to this type.
+
+        Returns
+        -------
+        UnionMeta
+            A union containing all the decorators that are attached to this type.
+
+        See Also
+        --------
+        wrap: convert the outermost decorator into its unparametrized base type.
+        wrapped: the type that this type is decorating.
+        unwrapped: the innermost non-decorator type.
+
+        Notes
+        -----
+        This is always empty in the case of scalar (undecorated) types.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.decorators
+            Union[]
+            >>> Sparse[Int].decorators
+            Union[Sparse[Int, <NA>]]
+            >>> Categorical[Sparse[Int]].decorators
+            Union[Categorical[Sparse[Int, <NA>], ...], Sparse[Int, <NA>]]
+        """
+        return Union.from_types(LinkedSet())
+
+    @property
+    def wrapped(cls) -> TypeMeta:  # pylint: disable=redundant-returns-doc
+        """Return the type that this type is decorating.
+
+        Returns
+        -------
+        TypeMeta | DecoratorMeta
+            If the type is a parametrized decorator, then the type that it wraps.
+            Otherwise, a self reference to the current type.
+
+        See Also
+        --------
+        decorators: a union containing all the decorators that are attached to this type.
+        wrap: convert the outermost decorator into its unparametrized base type.
+        unwrapped: the innermost non-decorator type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.wrapped
+            None
+            >>> Sparse[Int].wrapped
+            Int
+            >>> Categorical[Sparse[Int]].wrapped
+            Sparse[Int]
+        """
+        return cls
+
+    @property
+    def unwrapped(cls) -> TypeMeta:
+        """Return the innermost non-decorator type in the stack.
+
+        Returns
+        -------
+        TypeMeta
+            The innermost type in the stack that is not a parametrized decorator, or a
+            self-reference if the type is not decorated.
+
+        See Also
+        --------
+        decorators: a union containing all the decorators that are attached to this type.
+        wrap: convert the outermost decorator into its unparametrized base type.
+        wrapped: the type that this type is decorating.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.unwrapped
+            Int
+            >>> Sparse[Int].unwrapped
+            Int
+            >>> Categorical[Sparse[Int]].unwrapped
+            Int
+        """
+        return cls
+
+    #####################
+    ####    UNION    ####
+    #####################
+
+    @property
+    def is_union(cls) -> bool:
+        """Indicates whether this type is a union.
+
+        Returns
+        -------
+        bool
+            True if the type is a union.  Always False for scalar types.
+
+        See Also
+        --------
+        is_structured: indicates whether this type is a structured union.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.is_union
+            False
+            >>> Union[Int, Float].is_union
+            True
+            >>> Union["foo": Int, "bar": Float].is_union
+            True
+        """
+        return False
+
+    @property
+    def is_structured(cls) -> bool:
+        """Indicates whether this type is a structured union.
+
+        Returns
+        -------
+        bool
+            True if the type is a structured union.  Always False for scalar types.
+
+        See Also
+        --------
+        is_union: indicates whether this type is a union.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int.is_structured
+            False
+            >>> Union[Int, Float].is_structured
+            False
+            >>> Union["foo": Int, "bar": Float].is_structured
+            True
+        """
+        return False
+
+    ###############################
+    ####    SPECIAL METHODS    ####
+    ###############################
+
+    def __getattr__(cls, name: str) -> Any:
+        if cls._default:
+            return getattr(cls.as_default, name)
+
+        if name in cls._fields:
+            return cls._fields[name]
+
+        raise _no_attribute(cls, name)
+
+    def __dir__(cls) -> set[str]:
+        result = set(super().__dir__())
+        result.update({
+            "slug", "hash", "backend", "itemsize", "decorators", "wrapped",
+            "unwrapped", "cache_size", "flyweights", "params", "is_abstract",
+            "is_default", "is_flyweight", "is_root", "is_leaf", "root", "parent",
+            "subtypes", "implementations", "children", "leaves", "larger", "smaller"
+        })
+        result.update(cls._fields)
+        end = cls
+        while not end.is_default:
+            end = end.as_default
+            result.update(end._fields)
+        return result
+
+    def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any]:
+        # TODO: Even cooler, this could just call cast() on the input, which would
+        # enable lossless conversions
+        if cls._default:
+            return cls.as_default(*args, **kwargs)
+        return pd.Series(*args, dtype=cls.dtype, **kwargs)
+
+    def __subclasscheck__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        typ = resolve(other)
+        check = super().__subclasscheck__
+        if isinstance(typ, UnionMeta):
+            return all(check(t) for t in typ)
+        return check(typ)
+
+    def __hash__(cls) -> int:
+        return cls._hash
+
+    def __len__(cls) -> int:
+        return len(cls.children)
+
+    def __bool__(cls) -> bool:
+        return True
+
+    def __iter__(cls) -> Iterator[TypeMeta]:
+        return iter(cls.children)  # type: ignore
+
+    def __reversed__(cls) -> Iterator[TypeMeta]:
+        # pylint: disable=bad-reversed-sequence
+        return reversed(cls.children)  # type: ignore
+
+    def __lt__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        typ = resolve(other)
+        if cls is typ:
+            return False
+
+        if isinstance(typ, UnionMeta):
+            return all(cls < t for t in typ)
+
+        t1 = cls
+        t2 = typ.parent if typ.is_flyweight else typ  # TODO: might have problems if t2 is a decorator
+        while not t2.is_root:
+            while not t1.is_root:
+                if (t1, t2) in REGISTRY.edges:
+                    return True
+                if (t2, t1) in REGISTRY.edges:
+                    return False
+                t1 = t1.parent
+
+            t1 = cls
+            t2 = t2.parent
+
+        return _features(cls) < _features(typ)
+
+    def __le__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        typ = resolve(other)
+        if cls is typ:
+            return True
+
+        if isinstance(typ, UnionMeta):
+            return all(cls <= t for t in typ)
+
+        t1 = cls
+        t2 = typ.parent if typ.is_flyweight else typ  # TODO: might have problems if t2 is a decorator
+        while not t2.is_root:
+            while not t1.is_root:
+                if (t1, t2) in REGISTRY.edges:
+                    return True
+                if (t2, t1) in REGISTRY.edges:
+                    return False
+                t1 = t1.parent
+
+            t1 = cls
+            t2 = t2.parent
+
+        return _features(cls) <= _features(typ)
+
+    def __eq__(cls, other: Any) -> bool:
+        try:
+            typ = resolve(other)
+        except TypeError:
+            return False
+
+        if isinstance(typ, UnionMeta):
+            return all(cls is t for t in typ)
+
+        return cls is typ
+
+    def __ne__(cls, other: Any) -> bool:
+        return not cls == other
+
+    def __ge__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        typ = resolve(other)
+        if cls is typ:
+            return True
+
+        if isinstance(typ, UnionMeta):
+            return all(cls >= t for t in typ)
+
+        t1 = cls
+        t2 = typ.parent if typ.is_flyweight else typ  # TODO: might have problems if t2 is a decorator
+        while not t2.is_root:
+            while not t1.is_root:
+                if (t1, t2) in REGISTRY.edges:
+                    return False
+                if (t2, t1) in REGISTRY.edges:
+                    return True
+                t1 = t1.parent
+
+            t1 = cls
+            t2 = t2.parent
+
+        return _features(cls) >= _features(typ)
+
+    def __gt__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        typ = resolve(other)
+        if cls is typ:
+            return False
+
+        if isinstance(typ, UnionMeta):
+            return all(cls > t for t in typ)
+
+        t1 = cls
+        t2 = typ.parent if typ.is_flyweight else typ  # TODO: might have problems if t2 is a decorator
+        while not t2.is_root:
+            while not t1.is_root:
+                if (t1, t2) in REGISTRY.edges:
+                    return False
+                if (t2, t1) in REGISTRY.edges:
+                    return True
+                t1 = t1.parent
+
+            t1 = cls
+            t2 = t2.parent
+
+        return _features(cls) > _features(typ)
+
+    def __str__(cls) -> str:
+        return cls._slug
+
+    def __repr__(cls) -> str:
+        return cls._slug
 
 
-# TODO: segmentation fault
-# >>> Union[Int8["numpy", "i4"]].replace("i2")
-# Union[NumpyInt8['i2']]
-# >>> Union[Int8["numpy", "i4"] | Int8["numpy", "?"]].replace("i2")
-# Traceback (most recent call last):
-#   File "<stdin>", line 1, in <module>
-#   File "/home/eerkela/data/pdcast/pdcast/structs/test.py", line 2207, in __repr__
-#     return f"Union[{', '.join(t.slug for t in cls._types)}]"
-#                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-# TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
-# >>> Union[Int8["numpy", "i4"], Int8["numpy", "?"]].replace("i2")
-# Union[NumpyInt8['i2']]
-# >>> Union[Int8["numpy", "i4"] | Int8["numpy", "?"]]
-# Traceback (most recent call last):
-#   File "<stdin>", line 1, in <module>
-#   File "/home/eerkela/data/pdcast/pdcast/structs/test.py", line 2207, in __repr__
-#     return f"Union[{', '.join(t.slug for t in cls._types)}]"
-#                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-# TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
-# >>> Union[Int8["numpy", "i4"] | Int8["numpy", "?"]]
-# Traceback (most recent call last):
-#   File "<stdin>", line 1, in <module>
-#   File "/home/eerkela/data/pdcast/pdcast/structs/test.py", line 2207, in __repr__
-#     return f"Union[{', '.join(t.slug for t in cls._types)}]"
-#                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-# TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
-# >>> import pdb; pdb.pm()
-# > /home/eerkela/data/pdcast/pdcast/structs/test.py(2207)__repr__()
-# -> return f"Union[{', '.join(t.slug for t in cls._types)}]"
-# (Pdb) cls
-# *** TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
-# (Pdb) cls._types
-# LinkedSet({Union[NumpyInt8['i4'], NumpyInt8['?']]})
-# (Pdb) cls
-# *** TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
-# (Pdb) q
-# >>> Int32 | Int64
-# Union[Int32, Int64]
-# >>> Union[Int32 | Int64]
-# Traceback (most recent call last):
-#   File "<stdin>", line 1, in <module>
-#   File "/home/eerkela/data/pdcast/pdcast/structs/test.py", line 2207, in __repr__
-# TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
-# >>> quit()
-# Segmentation fault
+class DecoratorMeta(BaseMeta):
+    """Metaclass for all bertrand type decorators (those that inherit from
+    bertrand.DecoratorType).
 
+    This metaclass is responsible for parsing the namespace of a new decorator,
+    validating its configuration, and registering it in the global type registry.  It
+    also defines the basic behavior of all bertrand type decorators, including a
+    mechanism for applying/removing the decorator, traversing a type's decorator stack,
+    and allowing pass-through access to the wrapped type's attributes and methods.  It
+    is an example of the Gang of Four's
+    `Decorator Pattern <https://en.wikipedia.org/wiki/Decorator_pattern>`_.
 
-# TODO: need a bunch of special cases to handle empty unions
+    See the documentation for the `DecoratorType` class for more information on how
+    these work.
+    """
+
+    # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+
+    # This metaclass uses the following internal fields, as populated by
+    # DecoratorBuilder:
+    _slug: str
+    _hash: int
+    _fields: dict[str, Any]
+    _base_type: DecoratorMeta | None
+    _cache_size: int | None
+    _flyweights: LinkedDict[str, DecoratorMeta]
+    _params: tuple[str]
+    _parametrized: bool
+    _defines_from_scalar: bool
+    _defines_from_dtype: bool
+
+    ############################
+    ####    CONSTRUCTORS    ####
+    ############################
+
+    def __init__(
+        cls: DecoratorMeta,
+        name: str,
+        bases: tuple[type, ...],
+        namespace: dict[str, Any],
+        **kwargs: Any
+    ):
+        if not (len(bases) == 0 or bases[0] is object):
+            print("-" * 80)
+            print(f"slug: {cls.slug}")
+            print(f"aliases: {cls.aliases}")
+            print(f"fields: {_format_dict(cls._fields)}")
+            print(f"cache_size: {cls.cache_size}")
+            print()
+
+    def __new__(
+        mcs: type,
+        name: str,
+        bases: tuple[DecoratorMeta],
+        namespace: dict[str, Any],
+        cache_size: int | None = None,
+    ) -> DecoratorMeta:
+        build = DecoratorBuilder(name, bases, namespace, cache_size)
+        return build.parse().fill().register(
+            super().__new__(  # type: ignore
+                mcs,
+                build.name,
+                (build.parent,),
+                build.namespace
+            )
+        )
+
+    ##########################
+    ####    FLYWEIGHTS    ####
+    ##########################
+
+    def flyweight(cls, *args: Any, **kwargs: Any) -> DecoratorMeta:
+        """Copied from TypeMeta."""
+        slug = f"{cls.__name__}[{', '.join(repr(a) for a in args)}]"
+        typ = cls._flyweights.lru_get(slug, None)
+
+        if typ is None:
+            if len(args) != len(cls._params):
+                raise TypeError(
+                    f"expected {len(cls._params)} positional arguments, got "
+                    f"{len(args)}"
+                )
+
+            typ = super().__new__(
+                DecoratorMeta,
+                cls.__name__,
+                (cls,),
+                {
+                    "_slug": slug,
+                    "_hash": hash(slug),
+                    "_fields": cls._fields | dict(zip(cls._params, args)) | kwargs,
+                    "_base_type": cls,
+                    "_parametrized": True,
+                    "__class_getitem__": parametrized_getitem,
+                } | kwargs  # TODO: unnecessary?
+            )
+            cls._flyweights.lru_add(slug, typ)
+
+        return typ
+
+    @property
+    def flyweights(cls) -> Mapping[str, DecoratorMeta]:
+        """Copied from TypeMeta."""
+        return MappingProxyType(cls._flyweights)
+
+    @property
+    def is_flyweight(cls) -> bool:
+        """Copied from TypeMeta."""
+        return cls._parametrized
+
+    @property
+    def base_type(cls) -> DecoratorMeta:
+        """Copied from TypeMeta."""
+        if cls._base_type is None:
+            return cls
+        return cls._base_type
+
+    @property
+    def cache_size(cls) -> int | None:
+        """Copied from TypeMeta."""
+        return cls._cache_size
+
+    @property
+    def params(cls) -> Mapping[str, Any]:
+        """Copied from TypeMeta."""
+        return MappingProxyType({k: getattr(cls, k) for k in cls._params})
+
+    ########################
+    ####    REQUIRED    ####
+    ########################
+
+    @property
+    def aliases(cls) -> Aliases:
+        """Copied from TypeMeta."""
+        return cls._aliases
+
+    #########################
+    ####    GENERATED    ####
+    #########################
+
+    @property
+    def slug(cls) -> str:
+        """Copied from TypeMeta."""
+        return cls._slug
+
+    @property
+    def hash(cls) -> int:
+        """Copied from TypeMeta."""
+        return cls._hash
+
+    ################################
+    ####    CLASS DECORATORS    ####
+    ################################
+
+    @property
+    def as_default(cls) -> DecoratorMeta:
+        """Copied from TypeMeta."""
+        if not cls.is_flyweight:
+            raise _no_attribute(cls, "as_default")
+        return cls.replace(cls.wrapped.as_default)
+
+    @property
+    def as_nullable(cls) -> DecoratorMeta:
+        """Copied from TypeMeta."""
+        if not cls.is_flyweight:
+            raise _no_attribute(cls, "as_nullable")
+        return cls.replace(cls.wrapped.as_nullable)
+
+    #########################
+    ####    HIERARCHY    ####
+    #########################
+
+    @property
+    def root(cls) -> DecoratorMeta:
+        """Copied from TypeMeta."""
+        if not cls.is_flyweight:
+            raise _no_attribute(cls, "root")
+        return cls.replace(cls.wrapped.root)
+
+    @property
+    def parent(cls) -> DecoratorMeta:
+        """Copied from TypeMeta."""
+        if not cls.is_flyweight:
+            raise _no_attribute(cls, "parent")
+        return cls.replace(cls.wrapped.parent)
+
+    @property
+    def subtypes(cls) -> UnionMeta:
+        """Copied from TypeMeta."""
+        if not cls.is_flyweight:
+            raise _no_attribute(cls, "subtypes")
+        return Union.from_types(LinkedSet(
+            cls.replace(t) for t in cls.wrapped.subtypes
+        ))
+
+    @property
+    def implementations(cls) -> UnionMeta:
+        """Copied from TypeMeta."""
+        if not cls.is_flyweight:
+            raise _no_attribute(cls, "implementations")
+        return Union.from_types(LinkedSet(
+            cls.replace(t) for t in cls.wrapped.implementations
+        ))
+
+    @property
+    def children(cls) -> UnionMeta:
+        """Copied from TypeMeta."""
+        if not cls.is_flyweight:
+            raise _no_attribute(cls, "children")
+        return Union.from_types(LinkedSet(
+            cls.replace(t) for t in cls.wrapped.children
+        ))
+
+    @property
+    def leaves(cls) -> UnionMeta:
+        """Copied from TypeMeta."""
+        if not cls.is_flyweight:
+            raise _no_attribute(cls, "leaves")
+        return Union.from_types(LinkedSet(
+            cls.replace(t) for t in cls.wrapped.leaves
+        ))
+
+    @property
+    def larger(cls) -> UnionMeta:
+        """Copied from TypeMeta."""
+        if not cls.is_flyweight:
+            raise _no_attribute(cls, "larger")
+        return Union.from_types(LinkedSet(
+            cls.replace(t) for t in cls.wrapped.larger
+        ))
+
+    @property
+    def smaller(cls) -> UnionMeta:
+        """Copied from TypeMeta."""
+        if not cls.is_flyweight:
+            raise _no_attribute(cls, "smaller")
+        return Union.from_types(LinkedSet(
+            cls.replace(t) for t in cls.wrapped.smaller
+        ))
+
+    ##########################
+    ####    DECORATORS    ####
+    ##########################
+
+    @property
+    def is_decorator(cls) -> bool:
+        """Copied from TypeMeta."""
+        return True
+
+    @property
+    def decorators(cls) -> UnionMeta:
+        """TODO"""
+        result = LinkedSet()
+        curr = cls
+        while curr.wrapped is not None:  # TODO: wrapped is never none
+            result.add(curr)
+            curr = curr.wrapped
+
+        return Union.from_types(result)
+
+    @property
+    def wrapped(cls) -> TypeMeta | DecoratorMeta:
+        """TODO"""
+        return cls._fields["wrapped"]
+
+    @property
+    def unwrapped(cls) -> TypeMeta | None:
+        """TODO"""
+        result = cls
+        while isinstance(result, DecoratorMeta):
+            result = result.wrapped
+        return result
+
+    ###############################
+    ####    SPECIAL METHODS    ####
+    ###############################
+
+    def __getattr__(cls, name: str) -> Any:
+        if name in cls._fields:
+            return cls._fields[name]
+
+        wrapped = cls._fields["wrapped"]
+        if wrapped:
+            return getattr(wrapped, name)
+
+        raise _no_attribute(cls, name)
+
+    def __dir__(cls) -> set[str]:
+        result = set(super().__dir__())
+        result.update({
+            "slug", "hash", "decorators", "wrapped", "unwrapped", "cache_size",
+            "flyweights", "params", "as_default", "as_nullable", "root", "parent",
+            "subtypes", "implementations", "children", "leaves", "larger", "smaller"
+        })
+        result.update(cls._fields)
+        curr = cls.wrapped
+        while curr:
+            result.update(dir(curr))
+            curr = curr.wrapped
+        return result
+
+    # TODO: comparisons, isinstance(), issubclass(), etc. should delegate to wrapped
+    # type.  They should also be able to compare against other decorators, and should
+    # take decorator order into account.
+
+    def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any]:
+        return cls.transform(cls.wrapped(*args, **kwargs))
+
+    # TODO:
+    # >>> Sparse[Int16, 1] in Sparse[Int]
+    # False  (should be True?)
+
+    # TODO: probably need some kind of supplemental is_empty field that checks whether
+    # parameters were supplied beyond wrapped.
+
+    def __subclasscheck__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        # naked types cannot be subclasses of decorators
+        if isinstance(other, TypeMeta):
+            return False
+
+        wrapper = cls.base_type
+        wrapped = cls.wrapped
+
+        if isinstance(other, DecoratorMeta):
+            if cls is DecoratorType:
+                return True
+
+            # top-level decorator types do not match
+            if wrapper is not other.base_type:
+                return False
+
+            # this decorator is not parametrized - treat as wildcard
+            if wrapped is None:  # TODO: check for is_empty?  Or rework is_flyweight to refer to params beyond wrapped?
+                return True
+
+            # other decorator is not parametrized - invert wildcard
+            forwarded = other.wrapped
+            if forwarded is None:
+                return False
+
+            # check parameters are compatible
+            params = list(cls.params.values())[1:]
+            forwarded_params = list(other.params.values())[1:]
+            for p1, p2 in zip(params, forwarded_params):
+                na1 = pd.isna(p1)
+                na2 = pd.isna(p2)
+                if na1 ^ na2 or not (na1 and na2 or p1 is p2 or p1 == p2):
+                    return False
+
+            # delegate to wrapped type
+            return wrapped.__subclasscheck__(forwarded)
+
+        # recur for unions
+        if isinstance(other, UnionMeta):
+            return all(cls.__subclasscheck__(o) for o in other)
+
+        # fall back to traditional issubclass() check (always returns false or error)
+        return super().__subclasscheck__(other)
+
+    def __hash__(cls) -> int:
+        return cls._hash
+
+    def __len__(cls) -> int:
+        return cls.itemsize
+
+    def __bool__(cls) -> bool:
+        return True  # without this, Python defaults to len() > 0, which is wrong
+
+    def __lt__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        typ = resolve(other)
+        if cls is typ:
+            return False
+
+        if isinstance(typ, UnionMeta):
+            return all(cls < t for t in typ)
+
+        # TODO: check this for correctness.  If we swap to making wrapped return a
+        # self reference instead of None, this could be slightly simpler.
+
+        t1 = cls.wrapped
+        if t1 is None:
+            return False
+
+        if isinstance(typ, DecoratorMeta):
+            t2 = typ.wrapped
+            if t2 is None:
+                return False
+            return t1 < t2
+
+        return t1 < typ
+
+    def __le__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        if cls is other:
+            return True
+
+        t1 = cls.wrapped
+        if t1 is None:
+            return False
+
+        if isinstance(other, DecoratorMeta):
+            t2 = other.wrapped
+            if t2 is None:
+                return False
+            return t1 <= t2
+
+        return t1 <= other
+
+    def __eq__(cls, other: Any) -> bool:
+        if cls is other:
+            return True
+
+        t1 = cls.wrapped
+        if t1 is None:
+            return False
+
+        if isinstance(other, DecoratorMeta):
+            t2 = other.wrapped
+            if t2 is None:
+                return False
+            return t1 == t2
+
+        return t1 == other
+
+    def __ne__(cls, other: Any) -> bool:
+        return not cls == other
+
+    def __ge__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        if cls is other:
+            return True
+
+        t1 = cls.wrapped
+        if t1 is None:
+            return False
+
+        if isinstance(other, DecoratorMeta):
+            t2 = other.wrapped
+            if t2 is None:
+                return False
+            return t1 >= t2
+
+        return t1 >= other
+
+    def __gt__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        if cls is other:
+            return False
+
+        t1 = cls.wrapped
+        if t1 is None:
+            return False
+
+        if isinstance(other, DecoratorMeta):
+            t2 = other.wrapped
+            if t2 is None:
+                return False
+            return t1 > t2
+
+        return t1 > other
+
+    def __str__(cls) -> str:
+        return cls._slug
+
+    def __repr__(cls) -> str:
+        return cls._slug
 
 
 # TODO: separate structured unions into StructuredMeta, which inherits from UnionMeta
@@ -5094,7 +4991,7 @@ class UnionMeta(BaseMeta):
                 "_types": types,
                 "_hash": hash_val,
                 "_index": index,
-                "__class_getitem__": union_getitem
+                "__class_getitem__": _union_getitem
             }
         )
 
@@ -5118,7 +5015,7 @@ class UnionMeta(BaseMeta):
             "_types": flattened,
             "_hash": hash_val,
             "_index": None,
-            "__class_getitem__": union_getitem
+            "__class_getitem__": _union_getitem
         })
 
     ################################
@@ -5380,13 +5277,13 @@ class UnionMeta(BaseMeta):
         return cls.from_types(result)
 
     @property
-    def wrapper(cls) -> UnionMeta:
+    def base_type(cls) -> UnionMeta:
         """TODO"""
         if cls.is_structured:
             return cls.from_columns({
-                k: v.wrapper if v.wrapper else v for k, v in cls.items()
+                k: v.base_type if v.base_type else v for k, v in cls.items()
             })
-        return cls.from_types(LinkedSet(t.wrapper for t in cls))
+        return cls.from_types(LinkedSet(t.base_type for t in cls))
 
     @property
     def wrapped(cls) -> UnionMeta:
@@ -5729,15 +5626,38 @@ class UnionMeta(BaseMeta):
         return f"Union[{', '.join(t.slug for t in cls._types)}]"
 
 
-class Union(metaclass=UnionMeta):
-    """TODO
-    """
+DecoratorMeta.flyweight.__doc__         = TypeMeta.flyweight.__doc__
+DecoratorMeta.aliases.__doc__           = TypeMeta.aliases.__doc__
+DecoratorMeta.slug.__doc__              = TypeMeta.slug.__doc__
+DecoratorMeta.hash.__doc__              = TypeMeta.hash.__doc__
+DecoratorMeta.cache_size.__doc__        = TypeMeta.cache_size.__doc__
+DecoratorMeta.flyweights.__doc__        = TypeMeta.flyweights.__doc__
+DecoratorMeta.params.__doc__            = TypeMeta.params.__doc__
+DecoratorMeta.is_decorator.__doc__      = TypeMeta.is_decorator.__doc__
+DecoratorMeta.is_flyweight.__doc__      = TypeMeta.is_flyweight.__doc__
 
-    def __new__(cls) -> NoReturn:
-        raise TypeError("bertrand unions cannot be instantiated")
+
+def _format_dict(d: dict[str, Any]) -> str:
+    """Convert a dictionary into a string with standard indentation."""
+    if not d:
+        return "{}"
+
+    prefix = "{\n    "
+    sep = ",\n    "
+    suffix = "\n}"
+    return prefix + sep.join(f"{k}: {repr(v)}" for k, v in d.items()) + suffix
 
 
-def union_getitem(cls: UnionMeta, key: int | slice | str) -> META:
+def _no_attribute(cls: type, name: str) -> AttributeError:
+    """Raise an AttributeError for a missing attribute."""
+    return AttributeError(f"type '{cls.__name__}' has no attribute '{name}'")
+
+
+def _parametrized_getitem(cls: TypeMeta, *args: Any) -> NoReturn:
+    raise TypeError(f"{cls.slug} cannot be re-parametrized")
+
+
+def _union_getitem(cls: UnionMeta, key: int | slice | str) -> META:
     """A parametrized replacement for the base Union's __class_getitem__() method that
     allows for integer-based indexing/slicing of a union's types, as well as
     string-based indexing of structured unions.
@@ -5749,6 +5669,119 @@ def union_getitem(cls: UnionMeta, key: int | slice | str) -> META:
         return cls.from_types(cls._types[key])  # type: ignore
 
     return cls._types[key]  # type: ignore
+
+
+def _features(t: TypeMeta | DecoratorMeta) -> tuple[int | float, int, bool, int]:
+    """Extract a tuple of features representing the allowable range of a type, used for
+    range-based sorting and comparison.
+    """
+    return (
+        t.max - t.min,  # total range
+        t.itemsize,  # memory footprint
+        t.is_nullable,  # nullability
+        abs(t.max + t.min),  # bias away from zero
+    )
+
+
+def _insort_decorator(
+    invoke: Callable[..., DecoratorMeta],
+    cls: DecoratorMeta,
+    other: TypeMeta | DecoratorMeta,
+    *args: Any,
+) -> DecoratorMeta:
+    """Insert a decorator into a type's decorator stack, ensuring that it obeys the
+    registry's current precedence.
+    """
+    # TODO: use replace() rather than reimplementing it here
+    visited = []
+    curr: DecoratorMeta | TypeMeta = other
+
+    while curr.wrapped is not curr:
+        wrapper = curr.base_type
+
+
+
+    wrapped = curr.wrapped  # TODO: check for self reference
+
+    while wrapped:
+        wrapper = curr.base_type
+        if wrapper is None:
+            break
+        delta = REGISTRY.decorators.distance(cls, wrapper)
+
+        if delta > 0:  # cls is higher priority or identical to wrapper
+            break
+        elif delta == 0:  # cls is identical to wrapper
+            curr = wrapped
+            break
+
+        visited.append((wrapper, list(curr.params.values())[1:]))
+        curr = wrapped
+        wrapped = curr.wrapped
+
+    result = invoke(cls, curr, *args)
+    for wrapper, params in reversed(visited):
+        if not params:
+            result = wrapper[result]
+        else:
+            result = wrapper[result, *params]
+    return result
+
+
+###########################
+####    UNION TYPES    ####
+###########################
+
+
+# TODO: segmentation fault
+# >>> Union[Int8["numpy", "i4"]].replace("i2")
+# Union[NumpyInt8['i2']]
+# >>> Union[Int8["numpy", "i4"] | Int8["numpy", "?"]].replace("i2")
+# Traceback (most recent call last):
+#   File "<stdin>", line 1, in <module>
+#   File "/home/eerkela/data/pdcast/pdcast/structs/test.py", line 2207, in __repr__
+#     return f"Union[{', '.join(t.slug for t in cls._types)}]"
+#                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+# TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
+# >>> Union[Int8["numpy", "i4"], Int8["numpy", "?"]].replace("i2")
+# Union[NumpyInt8['i2']]
+# >>> Union[Int8["numpy", "i4"] | Int8["numpy", "?"]]
+# Traceback (most recent call last):
+#   File "<stdin>", line 1, in <module>
+#   File "/home/eerkela/data/pdcast/pdcast/structs/test.py", line 2207, in __repr__
+#     return f"Union[{', '.join(t.slug for t in cls._types)}]"
+#                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+# TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
+# >>> Union[Int8["numpy", "i4"] | Int8["numpy", "?"]]
+# Traceback (most recent call last):
+#   File "<stdin>", line 1, in <module>
+#   File "/home/eerkela/data/pdcast/pdcast/structs/test.py", line 2207, in __repr__
+#     return f"Union[{', '.join(t.slug for t in cls._types)}]"
+#                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+# TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
+# >>> import pdb; pdb.pm()
+# > /home/eerkela/data/pdcast/pdcast/structs/test.py(2207)__repr__()
+# -> return f"Union[{', '.join(t.slug for t in cls._types)}]"
+# (Pdb) cls
+# *** TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
+# (Pdb) cls._types
+# LinkedSet({Union[NumpyInt8['i4'], NumpyInt8['?']]})
+# (Pdb) cls
+# *** TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
+# (Pdb) q
+# >>> Int32 | Int64
+# Union[Int32, Int64]
+# >>> Union[Int32 | Int64]
+# Traceback (most recent call last):
+#   File "<stdin>", line 1, in <module>
+#   File "/home/eerkela/data/pdcast/pdcast/structs/test.py", line 2207, in __repr__
+# TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
+# >>> quit()
+# Segmentation fault
+
+
+# TODO: need a bunch of special cases to handle empty unions
+
 
 
 ##########################
@@ -6068,7 +6101,7 @@ class Type(object, metaclass=TypeMeta):
                 f"{'' if singular else 's'} [{', '.join(repr(k) for k in kwargs)}]"
             )
 
-        return cls.wrapper[*forwarded.values()]  # type: ignore
+        return cls.base_type[*forwarded.values()]  # type: ignore
 
 
 class DecoratorType(object, metaclass=DecoratorMeta):
@@ -6115,11 +6148,15 @@ class DecoratorType(object, metaclass=DecoratorMeta):
                 f"{'' if singular else 's'} [{', '.join(repr(k) for k in kwargs)}]"
             )
 
-        return cls.wrapper[*forwarded.values()]  # type: ignore
+        return cls.base_type[*forwarded.values()]  # type: ignore
 
 
+class Union(metaclass=UnionMeta):
+    """TODO
+    """
 
-
+    def __new__(cls) -> NoReturn:
+        raise TypeError("bertrand unions cannot be instantiated")
 
 
 ####################
