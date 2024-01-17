@@ -17,12 +17,22 @@ import regex as re  # alternate (PCRE-style) regex engine
 from linked import LinkedSet, LinkedDict
 
 
+# NOTE: this module is kind of huge, and would ordinarily be split into multiple files.
+# However, due to the depth and complexity of metaprogramming, doing so would introduce
+# a large number of circular dependencies, and would make the code much harder to
+# read and maintain.  Additionally, the metaclass machinery is sensitive to the order
+# in which classes are defined, and much of the length is due to inline documentation
+# rather than actual code, so splitting it up would not necessarily make it any easier
+# to navigate.  As such, I have opted to keep everything in one place for simplicity,
+# and to copy docs wherever possible to compress the overall size.
+
+
 # TODO: occasionally get a hangup when building registry.  This is probably due to
 # some circular relationship in Linked structs.  Need to investigate, but hard to
 # reproduce.
 
 
-# pylint: disable=unused-argument
+# pylint: disable=unused-argument, using-constant-test
 
 
 class Empty:
@@ -84,6 +94,10 @@ ALIAS: TypeAlias = str | type | DTYPE
 TYPESPEC: TypeAlias = "META | ALIAS"
 OBJECT_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[np.object_]]
 RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]
+
+
+# if DEBUG=True, print a config message whenever a new type is created.
+DEBUG: bool = False
 
 
 ########################
@@ -1081,7 +1095,7 @@ def get_from_calling_context(name: str, skip: int = 0) -> Any:
 
 
 # NOTE: string parsing currently does not support dictionaries or key-value mappings
-# within Union[] specifiers (i.e. Union[{"foo": ...}], Union[[("foo", ...)]]).  This
+# within Union[] operator (i.e. Union[{"foo": ...}], Union[[("foo", ...)]]).  This
 # is technically possible to implement, but would add a lot of extra complexity.
 
 
@@ -1351,7 +1365,7 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
             for item in it:
                 if not isinstance(item, slice):
                     raise TypeError(f"expected a slice -> {repr(item)}")
-                slices[item.start] = resolve(item.stop)
+                slices[item.start] = resolve(item.stop)  # type: ignore
             return StructuredUnion.from_columns(slices)
 
         if isinstance(first, (list, tuple)):
@@ -1360,9 +1374,9 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
 
             pairs = {first[0]: resolve(first[1])}
             for item in it:
-                if not isinstance(item, (list, tuple)) or len(item) != 2:
+                if not isinstance(item, (list, tuple)) or len(item) != 2:  # type: ignore
                     raise TypeError(f"expected a tuple of length 2 -> {repr(item)}")
-                pairs[item[0]] = resolve(item[1])
+                pairs[item[0]] = resolve(item[1])  # type: ignore
             return StructuredUnion.from_columns(pairs)
 
         typ = resolve(first)
@@ -1809,930 +1823,6 @@ def _rle_decode(arr: RLE_ARRAY) -> OBJECT_ARRAY:
     return np.repeat(arr["value"], arr["count"])  # type: ignore
 
 
-########################
-####    BUILDERS    ####
-########################
-
-
-class TypeBuilder:
-    """Common base for all namespace builders.
-
-    The builders that inherit from this class are responsible for transforming a type's
-    simplified namespace into a fully-featured bertrand type.  They do this by looping
-    through all the attributes that are defined in the class and executing any relevant
-    helper functions to validate their configuration.  The builders also mark all
-    required fields (those assigned to ``EMPTY``) and reserved attributes that they
-    encounter, and fill in missing slots with default values where possible.  If the
-    type is improperly configured, the builder will throw a series of informative error
-    messages guiding the user towards a solution.
-
-    The end result is a fully processed namespace that conforms to the expectations of
-    each metaclass, which can then be used to instantiate the type.  This means that
-    the output from the builder is directly converted into dotted names on the type, as
-    reflected by the `dir()` built-in function.  Since each builder is executed before
-    the type is instantiated, they have free reign to modify the namespace however they
-    see fit, without violating the type's read-only semantics.
-
-    These builders are what allow us to write new types without regard to the internal
-    mechanics of the type system.  Instead, the relevant information will be
-    automatically extracted from the namespace and used to construct the type, without
-    any additional work on the user's part.
-    """
-
-    # RESERVED: set[str] = set(dir(TypeMeta)) ^ {
-    #     "__init__",
-    #     "__module__",
-    #     "__qualname__",
-    #     "__annotations__",
-    # }
-
-    # reserved attributes will throw an error if implemented on user-defined types
-    RESERVED: set[str] = {
-        "__init__",
-        "__new__",
-        # TODO: others?
-    }
-
-    # constructors use special logic to allow for parametrization
-    CONSTRUCTORS: set[str] = {
-        "__class_getitem__",
-        "from_scalar",
-        "from_dtype",
-        "from_string"
-    }
-
-    def __init__(
-        self,
-        name: str,
-        parent: TypeMeta | DecoratorMeta,
-        namespace: dict[str, Any],
-        cache_size: int | None,
-    ):
-        self.name = name
-        self.parent = parent
-        self.namespace = namespace
-        self.cache_size = cache_size
-        if parent is Base:
-            self.required: dict[str, Callable[[Any, dict[str, Any], dict[str, Any]], Any]] = {}
-            self.fields = {}
-        else:
-            self.required = parent._required.copy()
-            self.fields = parent._fields.copy()
-
-    def fill(self) -> TypeBuilder:
-        """Fill in any reserved slots in the namespace with their default values.
-
-        This method should be called after parsing the namespace to avoid unnecessary
-        work.
-
-        Returns
-        -------
-        TypeBuilder
-            The builder instance, for chaining.
-        """
-        self.namespace["_required"] = self.required
-        self.namespace["_fields"] = self.fields
-        self.namespace["_slug"] = self.name
-        self.namespace["_hash"] = hash(self.name)
-        if self.parent is Base or self.parent is Type or self.parent is DecoratorType:
-            self.namespace["_parent"] = None
-        else:
-            self.namespace["_parent"] = self.parent
-        self.namespace["_base_type"] = None
-        self.namespace["_parametrized"] = False
-        self.namespace["_cache_size"] = self.cache_size
-        self.namespace["_flyweights"] = LinkedDict(max_size=self.cache_size)
-
-        aliases = LinkedSet[str | type]((self.name,))
-        if "aliases" in self.namespace:
-            for alias in self.namespace.pop("aliases"):
-                if isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
-                    aliases.add(type(alias))
-                else:
-                    aliases.add(alias)
-
-        self.namespace["_aliases"] = Aliases(aliases)
-        return self
-
-    def _validate(self, arg: str, value: Any) -> None:
-        """Validate a required argument (one assigned to `EMPTY`) by invoking a bound
-        function with the specified value and current namespace.
-        """
-        try:
-            self.fields[arg] = self.required.pop(arg)(
-                value, self.namespace, self.fields
-            )
-        except Exception as err:
-            raise type(err)(f"{self.name}.{arg} -> {str(err)}")
-
-
-class AbstractBuilder(TypeBuilder):
-    """A builder-style parser for an abstract type's namespace (backend == None).
-
-    Abstract types support the creation of required fields through the ``EMPTY``
-    syntax, which must be inherited or defined by each of their concrete
-    implementations.  This rule is enforced by ConcreteBuilder, which is automatically
-    chosen when the backend is not None.  Note that in contrast to concrete types,
-    abstract types do not support parametrization, and attempting defining a
-    corresponding constructor will throw an error.
-    """
-
-    RESERVED = TypeBuilder.RESERVED | {
-        "__class_getitem__",
-        "from_scalar",
-        "from_dtype"
-        "from_string"
-    }
-
-    def __init__(
-        self,
-        name: str,
-        bases: tuple[TypeMeta],
-        namespace: dict[str, Any],
-        cache_size: int | None
-    ):
-        if len(bases) != 1 or not (bases[0] is Base or issubclass(bases[0], Type)):
-            raise TypeError(
-                f"abstract types must inherit from bertrand.Type or one of its "
-                f"subclasses, not {bases}"
-            )
-
-        parent = bases[0]
-        if parent is not Base and not parent.is_abstract:
-            raise TypeError("abstract types must not inherit from concrete types")
-
-        super().__init__(name, parent, namespace, cache_size)
-
-    def parse(self) -> AbstractBuilder:
-        """Analyze the namespace and execute any relevant helper functions to validate
-        its configuration.
-
-        Returns
-        -------
-        AbstractBuilder
-            A reference to the current builder instance, for chaining.
-
-        Raises
-        ------
-        TypeError
-            If the type implements a reserved attribute.
-        """
-        namespace = self.namespace.copy()
-
-        for name, value in namespace.items():
-            if isinstance(value, Empty):
-                self.required[name] = value.func
-                del self.namespace[name]
-            elif name in self.required:
-                self._validate(name, self.namespace.pop(name))
-            elif name in self.RESERVED and self.parent is not Base:
-                raise TypeError(
-                    f"type must not implement reserved attribute: {repr(name)}"
-                )
-
-        return self
-
-    def fill(self) -> AbstractBuilder:
-        """Fill in any missing slots in the namespace with default values, and evaluate
-        any derived attributes.
-
-        Returns
-        -------
-        AbstractBuilder
-            A reference to the current builder instance, for chaining.
-        """
-        super().fill()
-        self.namespace["_children"] = LinkedSet()
-        self.namespace["_subtypes"] = LinkedSet()
-        self.namespace["_implementations"] = LinkedDict()
-        self.namespace["_default"] = []
-        self.namespace["_nullable"] = []
-
-        self.fields["backend"] = ""
-
-        self._class_getitem()
-        self._from_scalar()
-        self._from_dtype()
-        self._from_string()
-
-        return self
-
-    def register(self, typ: TypeMeta) -> TypeMeta:
-        """Register a newly-created type, pushing changes to the parent type's
-        namespace if necessary.
-
-        Parameters
-        ----------
-        typ : TypeMeta
-            The final type to register.  This is typically the result of a fresh
-            call to type.__new__().
-
-        Returns
-        -------
-        TypeMeta
-            The registered type.
-        """
-        # pylint: disable=protected-access
-        parent = self.parent
-        if parent is not Base:
-            parent._subtypes.add(typ)
-            parent._children.add(typ)
-            while not parent.is_root:
-                parent = parent.parent
-                parent._children.add(typ)
-
-            typ.aliases.parent = typ  # pushes aliases to global registry
-            typ._children.add(typ)
-            REGISTRY._types.add(typ)
-
-        return typ
-
-    def _class_getitem(self) -> None:
-        """Parse a type's __class_getitem__ method (if it has one), producing a list of
-        parameters and their default values, as well as a wrapper function that can be
-        used to instantiate the type.
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-        if "__class_getitem__" in self.namespace and self.parent is not Base:
-            raise TypeError("abstract types must not implement __class_getitem__()")
-
-        def default(cls: TypeMeta, backend: str, *args: Any) -> TypeMeta:
-            """Forward all arguments to the specified implementation."""
-            # pylint: disable=protected-access
-            if backend in cls._implementations:
-                if args:
-                    return cls._implementations[backend][*args]
-                return cls._implementations[backend]
-
-            if cls._default:
-                default = cls.as_default
-                if default.is_abstract:
-                    return default.__class_getitem__(backend, *args)
-
-            raise TypeError(f"invalid backend: {repr(backend)}")
-
-        self.namespace["__class_getitem__"] = classmethod(default)  # type: ignore
-        self.namespace["_params"] = ("backend",)
-
-    def _from_scalar(self) -> None:
-        """Parse a type's from_scalar() method (if it has one), ensuring that it is
-        callable with a single positional argument.
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-        if "from_scalar" in self.namespace and self.parent is not Base:
-            raise TypeError("abstract types must not implement from_scalar()")
-
-        def default(cls: TypeMeta, scalar: Any) -> TypeMeta:
-            """Throw an error if attempting to construct an abstract type."""
-            raise TypeError("abstract types cannot be constructed using from_scalar()")
-
-        self.namespace["_defines_from_scalar"] = False
-        self.namespace["from_scalar"] = classmethod(default)  # type: ignore
-
-    def _from_dtype(self) -> None:
-        """Parse a type's from_dtype() method (if it has one), ensuring that it is
-        callable with a single positional argument.
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-        if "from_dtype" in self.namespace and self.parent is not Base:
-            raise TypeError("abstract types must not implement from_dtype()")
-
-        def default(cls: TypeMeta, dtype: Any) -> TypeMeta:
-            """Throw an error if attempting to construct an abstract type."""
-            raise TypeError("abstract types cannot be constructed using from_dtype()")
-
-        self.namespace["_defines_from_scalar"] = False
-        self.namespace["from_dtype"] = classmethod(default)  # type: ignore
-
-    def _from_string(self) -> None:
-        """Parse a type's from_string() method (if it has one), ensuring that it is
-        callable with the same number of positional arguments as __class_getitem__().
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-        if "from_string" in self.namespace and self.parent is not Base:
-            raise TypeError("abstract types must not implement from_string()")
-
-        def default(cls: TypeMeta, backend: str, *args: str) -> TypeMeta:
-            """Forward all arguments to the specified implementation."""
-            # pylint: disable=protected-access
-            if not backend:
-                return cls
-
-            if backend in cls._implementations:
-                typ = cls._implementations[backend]
-                if not args:
-                    return typ
-                return typ.from_string(*args)
-
-            if cls._default:
-                return cls.as_default.from_string(backend, *args)
-
-            raise TypeError(f"invalid backend: {repr(backend)}")
-
-        self.namespace["from_string"] = classmethod(default)  # type: ignore
-
-
-class ConcreteBuilder(TypeBuilder):
-    """A builder-style parser for a concrete type's namespace (backend != None).
-
-    Concrete types must implement all required fields, and may optionally define
-    additional fields that are not required.  They can also be parametrized by
-    specifying a __class_getitem__ method that accepts any number of positional
-    arguments.  These arguments must have default values, and the signature will be
-    used to populate the base type's `params` dict.  Parametrized types are then
-    instantiated using a flyweight caching strategy, which involves an LRU dict of a
-    specific size attached to the type itself.
-    """
-
-    def __init__(
-        self,
-        name: str,
-        bases: tuple[TypeMeta],
-        namespace: dict[str, Any],
-        backend: str,
-        cache_size: int | None,
-    ):
-        if len(bases) != 1 or not (bases[0] is Base or issubclass(bases[0], Type)):
-            raise TypeError(
-                f"concrete types must only inherit from bertrand.Type or one of its "
-                f"subclasses, not {bases}"
-            )
-
-        if not isinstance(backend, str):
-            raise TypeError(f"backend id must be a string, not {repr(backend)}")
-
-        parent = bases[0]
-        if parent is not Base:
-            if not parent.is_abstract:
-                raise TypeError(
-                    "concrete types must not inherit from other concrete types"
-                )
-            if backend in parent._implementations:
-                raise TypeError(f"backend id must be unique: {repr(backend)}")
-
-        super().__init__(name, parent, namespace, cache_size)
-        self.backend = backend
-        self.class_getitem_signature: inspect.Signature | None = None
-
-    def parse(self) -> ConcreteBuilder:
-        """Analyze the namespace and execute any relevant helper functions to validate
-        its configuration.
-
-        Returns
-        -------
-        ConcreteBuilder
-            A reference to the current builder instance, for chaining.
-
-        Raises
-        ------
-        TypeError
-            If the type implements a reserved attribute.
-        """
-        for name, value in self.namespace.copy().items():
-            if isinstance(value, Empty):
-                raise TypeError(
-                    f"concrete types must not have required fields: {self.name}.{name}"
-                )
-            elif name in self.RESERVED:
-                raise TypeError(
-                    f"type must not implement reserved attribute: {repr(name)}"
-                )
-            elif name in self.required:
-                self._validate(name, self.namespace.pop(name))
-
-        # validate any remaining required fields that were not explicitly assigned
-        for name in list(self.required):
-            self._validate(name, EMPTY)
-
-        return self
-
-    def fill(self) -> ConcreteBuilder:
-        """Fill in any missing slots in the namespace with default values, and evaluate
-        any derived attributes.
-
-        Returns
-        -------
-        ConcreteBuilder
-            A reference to the current builder instance, for chaining.
-        """
-        super().fill()
-        self.namespace["_children"] = LinkedSet()
-        self.namespace["_subtypes"] = LinkedSet()
-        self.namespace["_implementations"] = LinkedDict()
-        self.namespace["_default"] = []
-        self.namespace["_nullable"] = []
-
-        self.fields["backend"] = self.backend
-
-        self._class_getitem()
-        self._from_scalar()
-        self._from_dtype()
-        self._from_string()
-
-        return self
-
-    def register(self, typ: TypeMeta) -> TypeMeta:
-        """Register a newly-created type, pushing changes to the parent type's
-        namespace if necessary.
-
-        Parameters
-        ----------
-        typ : TypeMeta
-            The final type to register.  This is typically the result of a fresh
-            call to type.__new__().
-
-        Returns
-        -------
-        TypeMeta
-            The registered type.
-        """
-        # pylint: disable=protected-access
-        parent = self.parent
-        if self.parent is not Base:
-            parent._implementations[self.backend] = typ
-            parent._children.add(typ)
-            while not parent.is_root:
-                parent = parent.parent
-                parent._children.add(typ)
-
-            typ.aliases.parent = typ  # pushes aliases to global registry
-            typ._children.add(typ)
-            REGISTRY._types.add(typ)
-
-        return typ
-
-    def _class_getitem(self) -> None:
-        """Parse a type's __class_getitem__ method (if it has one), producing a list of
-        parameters and their default values, as well as a wrapper function that can be
-        used to instantiate the type.
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-        parameters = {}
-
-        if "__class_getitem__" in self.namespace:
-            skip = True
-            sig = inspect.signature(self.namespace["__class_getitem__"])
-            for par_name, param in sig.parameters.items():
-                if skip:
-                    skip = False
-                    continue
-                if param.kind == param.KEYWORD_ONLY or param.kind == param.VAR_KEYWORD:
-                    raise TypeError(
-                        "__class_getitem__() must not accept any keyword arguments"
-                    )
-                if param.default is param.empty:
-                    raise TypeError(
-                        "__class_getitem__() arguments must have default values"
-                    )
-                parameters[par_name] = param.default
-
-            self.fields.update((k, v) for k, v in parameters.items())
-            self.class_getitem_signature = inspect.Signature([
-                p.replace(annotation=p.empty, default=p.empty)
-                for p in sig.parameters.values()
-            ])
-
-        else:
-            def default(cls: TypeMeta, *args: Any) -> TypeMeta:
-                """Default to identity function."""
-                if args:
-                    raise TypeError(f"{cls.__name__} does not accept any parameters")
-                return cls
-
-            self.namespace["__class_getitem__"] = classmethod(default)  # type: ignore
-            self.class_getitem_signature = inspect.Signature([
-                inspect.Parameter("cls", inspect.Parameter.POSITIONAL_OR_KEYWORD)
-            ])
-
-        self.namespace["_params"] = tuple(parameters.keys())
-
-    def _from_scalar(self) -> None:
-        """Parse a type's from_scalar() method (if it has one), ensuring that it is
-        callable with a single positional argument.
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-        if "from_scalar" in self.namespace:
-            method = self.namespace["from_scalar"]
-            if not isinstance(method, classmethod):
-                raise TypeError("from_scalar() must be a classmethod")
-
-            sig = inspect.signature(method.__wrapped__)
-            params = list(sig.parameters.values())
-            if len(params) != 2 or not (
-                params[1].kind == params[1].POSITIONAL_ONLY or
-                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
-            ):
-                raise TypeError(
-                    "from_scalar() must accept a single positional argument (in "
-                    "addition to cls)"
-                )
-
-            self.namespace["_defines_from_scalar"] = True
-
-        else:
-            def default(cls: TypeMeta, scalar: Any) -> TypeMeta:
-                """Default to identity function."""
-                return cls
-
-            self.namespace["_defines_from_scalar"] = False
-            self.namespace["from_scalar"] = classmethod(default)  # type: ignore
-
-    def _from_dtype(self) -> None:
-        """Parse a type's from_dtype() method (if it has one), ensuring that it is
-        callable with a single positional argument.
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-        if "from_dtype" in self.namespace:
-            method = self.namespace["from_dtype"]
-            if not isinstance(method, classmethod):
-                raise TypeError("from_dtype() must be a classmethod")
-
-            sig = inspect.signature(method.__wrapped__)
-            params = list(sig.parameters.values())
-            if len(params) != 2 or not (
-                params[1].kind == params[1].POSITIONAL_ONLY or
-                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
-            ):
-                raise TypeError(
-                    "from_dtype() must accept a single positional argument in "
-                    "addition to cls"
-                )
-
-            self.namespace["_defines_from_dtype"] = True
-
-        else:
-            def default(cls: TypeMeta, dtype: Any) -> TypeMeta:
-                """Default to identity function."""
-                return cls
-
-            self.namespace["_defines_from_dtype"] = False
-            self.namespace["from_dtype"] = classmethod(default)  # type: ignore
-
-    def _from_string(self) -> None:
-        """Parse a type's from_string() method (if it has one), ensuring that it is
-        callable with the same number of positional arguments as __class_getitem__().
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-        if "from_string" in self.namespace:
-            method = self.namespace["from_string"]
-            if not isinstance(method, classmethod):
-                raise TypeError("from_string() must be a classmethod")
-
-            params = inspect.signature(method.__wrapped__).parameters.values()
-            sig = inspect.Signature([
-                p.replace(annotation=p.empty, default=p.default) for p in params
-            ])
-
-        else:
-            def default(cls: TypeMeta) -> TypeMeta:
-                """Default to identity function."""
-                return cls
-
-            self.namespace["from_string"] = classmethod(default)  # type: ignore
-            sig = inspect.Signature([
-                inspect.Parameter("cls", inspect.Parameter.POSITIONAL_OR_KEYWORD)
-            ])
-
-        if sig != self.class_getitem_signature:
-            raise TypeError(
-                f"the signature of from_string() must match __class_getitem__(): "
-                f"{str(sig)} != {str(self.class_getitem_signature)}"
-            )
-
-
-class DecoratorBuilder(TypeBuilder):
-    """A builder-style parser for a decorator type's namespace (any subclass of
-    DecoratorType).
-
-    Decorator types are similar to concrete types except that they are implicitly
-    parametrized to wrap around another type and modify its behavior.  They can accept
-    additional parameters to configure the decorator, but must take at least one
-    positional argument that specifies the type to be wrapped.
-    """
-
-    def __init__(
-        self,
-        name: str,
-        bases: tuple[DecoratorMeta],
-        namespace: dict[str, Any],
-        cache_size: int | None,
-    ):
-        if len(bases) != 1 or not (bases[0] is Base or bases[0] is DecoratorType):
-            raise TypeError(
-                f"decorators must only inherit from bertrand.DecoratorType, not "
-                f"{bases}"
-            )
-
-        super().__init__(name, bases[0], namespace, cache_size)
-        self.class_getitem_signature: inspect.Signature | None = None
-
-    def parse(self) -> DecoratorBuilder:
-        """Analyze the namespace and execute any relevant helper functions to validate
-        its configuration.
-
-        Returns
-        -------
-        DecoratorBuilder
-            A reference to the current builder instance, for chaining.
-
-        Raises
-        ------
-        TypeError
-            If the type implements a reserved attribute, or defines a required field.
-        """
-        for name, value in self.namespace.copy().items():
-            if isinstance(value, Empty):
-                raise TypeError(
-                    f"decorator types must not have required fields: {self.name}.{name}"
-                )
-            if name in self.RESERVED:
-                raise TypeError(
-                    f"type must not implement reserved attribute: {repr(name)}"
-                )
-            if name in self.required:
-                self._validate(name, self.namespace.pop(name))
-
-        # validate any remaining required fields that were not explicitly assigned
-        for name in list(self.required):
-            self._validate(name, EMPTY)
-
-        return self
-
-    def fill(self) -> DecoratorBuilder:
-        """Fill in any missing slots in the namespace with default values, and evaluate
-        any derived attributes.
-
-        Returns
-        -------
-        DecoratorBuilder
-            A reference to the current builder instance, for chaining.
-        """
-        super().fill()
-
-        self._class_getitem()
-        self._from_scalar()
-        self._from_dtype()
-        self._from_string()
-        self._transform()
-        self._inverse_transform()
-
-        return self
-
-    def register(self, typ: DecoratorMeta) -> DecoratorMeta:
-        """Instantiate the type and register it in the global type registry.
-
-        Parameters
-        ----------
-        typ : DecoratorMeta
-            The final type to register.  This is typically the result of a fresh
-            call to type.__new__().
-
-        Returns
-        -------
-        DecoratorMeta
-            The registered type.
-        """
-        # pylint: disable=protected-access
-        parent = self.parent
-        if parent is not Base:
-            typ.aliases.parent = typ  # pushes aliases to global registry
-            REGISTRY._types.add(typ)
-            REGISTRY.decorators._set.add(typ)
-
-        return typ
-
-    def _class_getitem(self) -> None:
-        """Parse a decorator's __class_getitem__ method (if it has one) and generate a
-        wrapper that can be used to instantiate the type.
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-        parameters = {}
-
-        if "__class_getitem__" in self.namespace:
-            invoke = self.namespace["__class_getitem__"]
-
-            def wrapper(
-                cls: DecoratorMeta,
-                wrapped: META,
-                *args: Any
-            ) -> DecoratorMeta | UnionMeta:
-                """Unwrap tuples/unions and forward arguments to the wrapped method."""
-                if isinstance(wrapped, (TypeMeta, DecoratorMeta)):
-                    return _insort_decorator(invoke, cls, wrapped, *args)
-
-                if isinstance(wrapped, UnionMeta):
-                    return Union.from_types(LinkedSet(
-                        _insort_decorator(invoke, cls, t, *args) for t in wrapped
-                    ))
-
-                raise TypeError(
-                    f"Decorators must accept another bertrand type as a first "
-                    f"argument, not {repr(wrapped)}"
-                )
-
-            self.namespace["__class_getitem__"] = classmethod(wrapper)  # type: ignore
-
-            skip = True
-            sig = inspect.signature(invoke)
-            if len(sig.parameters) < 2:
-                raise TypeError(
-                    "__class_getitem__() must accept at least one positional argument "
-                    "describing the type to decorate (in addition to cls)"
-                )
-
-            for par_name, param in sig.parameters.items():
-                if skip:
-                    skip = False
-                    continue
-                if param.kind == param.KEYWORD_ONLY or param.kind == param.VAR_KEYWORD:
-                    raise TypeError(
-                        "__class_getitem__() must not accept any keyword arguments"
-                    )
-                if param.default is param.empty:
-                    raise TypeError(
-                        "__class_getitem__() arguments must have default values"
-                    )
-                parameters[par_name] = param.default
-
-            self.fields.update((k, v) for k, v in parameters.items())
-            self.class_getitem_signature = inspect.Signature([
-                p.replace(annotation=p.empty, default=p.empty)
-                for p in sig.parameters.values()
-            ])
-
-        else:
-            invoke = lambda cls, wrapped, *args: cls.flyweight(wrapped, *args)
-
-            def default(cls: DecoratorMeta, wrapped: META) -> DecoratorMeta | UnionMeta:
-                """Default to identity function."""
-                if isinstance(wrapped, (TypeMeta, DecoratorMeta)):
-                    return _insort_decorator(invoke, cls, wrapped)
-
-                if isinstance(wrapped, UnionMeta):
-                    return Union.from_types(
-                        LinkedSet(_insort_decorator(invoke, cls, t) for t in wrapped)
-                    )
-
-                raise TypeError(
-                    f"Decorators must accept another bertrand type as a first "
-                    f"argument, not {repr(wrapped)}"
-                )
-
-            parameters["wrapped"] = None
-            self.fields["wrapped"] = None
-            self.namespace["__class_getitem__"] = classmethod(default)  # type: ignore
-            self.class_getitem_signature = inspect.Signature([
-                inspect.Parameter("cls", inspect.Parameter.POSITIONAL_OR_KEYWORD),
-                inspect.Parameter("wrapped", inspect.Parameter.POSITIONAL_OR_KEYWORD),
-            ])
-
-        self.namespace["_params"] = tuple(parameters.keys())
-
-    def _from_scalar(self) -> None:
-        """Parse a decorator's from_scalar() method (if it has one) and ensure that it
-        is callable with a single positional argument.
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-        if "from_scalar" in self.namespace:
-            method = self.namespace["from_scalar"]
-            if not isinstance(method, classmethod):
-                raise TypeError("from_scalar() must be a class method")
-
-            sig = inspect.signature(method.__wrapped__)
-            params = list(sig.parameters.values())
-            if len(params) != 2 or not (
-                params[1].kind == params[1].POSITIONAL_ONLY or
-                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
-            ):
-                raise TypeError(
-                    "from_scalar() must accept a single positional argument (in "
-                    "addition to cls)"
-                )
-
-            self.namespace["_defines_from_scalar"] = True
-
-        else:
-            def default(cls: DecoratorMeta, scalar: Any) -> DecoratorMeta:
-                """Default to identity function."""
-                return cls
-
-            self.namespace["_defines_from_scalar"] = False
-            self.namespace["from_scalar"] = classmethod(default)  # type: ignore
-
-    def _from_dtype(self) -> None:
-        """Parse a decorator's from_dtype() method (if it has one) and ensure that it
-        is callable with a single positional argument.
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-        if "from_dtype" in self.namespace:
-            method = self.namespace["from_dtype"]
-            if not isinstance(method, classmethod):
-                raise TypeError("from_dtype() must be a class method")
-
-            sig = inspect.signature(method.__wrapped__)
-            params = list(sig.parameters.values())
-            if len(params) != 2 or not (
-                params[1].kind == params[1].POSITIONAL_ONLY or
-                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
-            ):
-                raise TypeError(
-                    "from_dtype() must accept a single positional argument in "
-                    "addition to cls"
-                )
-
-            self.namespace["_defines_from_dtype"] = True
-
-        else:
-            def default(cls: DecoratorMeta, dtype: Any) -> DecoratorMeta:
-                """Default to identity function."""
-                return cls
-
-            self.namespace["_defines_from_dtype"] = False
-            self.namespace["from_dtype"] = classmethod(default)  # type: ignore
-
-    def _from_string(self) -> None:
-        """Parse a decorator's from_string() method (if it has one) and ensure that it
-        is callable with the same number of positional arguments as __class_getitem__().
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-        if "from_string" in self.namespace:
-            method = self.namespace["from_string"]
-            if not isinstance(method, classmethod):
-                raise TypeError("from_string() must be a class method")
-
-            params = inspect.signature(method.__wrapped__).parameters.values()
-            sig = inspect.Signature([
-                p.replace(annotation=p.empty, default=p.empty) for p in params
-            ])
-
-        else:
-            def default(cls: DecoratorMeta, wrapped: str) -> DecoratorMeta:
-                """Default to identity function."""
-                return cls[wrapped]  # type: ignore
-
-            self.namespace["from_string"] = classmethod(default)  # type: ignore
-            sig = inspect.Signature([
-                inspect.Parameter("cls", inspect.Parameter.POSITIONAL_OR_KEYWORD),
-                inspect.Parameter("wrapped", inspect.Parameter.POSITIONAL_OR_KEYWORD),
-            ])
-
-        if sig != self.class_getitem_signature:
-            raise TypeError(
-                f"the signature of from_string() must match __class_getitem__() "
-                f"exactly: {str(sig)} != {str(self.class_getitem_signature)}"
-            )
-
-    def _transform(self) -> None:
-        """Parse a decorator's transform() method (if it has one) and ensure that it
-        is callable with a single positional argument.
-        """
-        if "transform" in self.namespace:
-            method = self.namespace["transform"]
-            if not isinstance(method, classmethod):
-                raise TypeError("transform() must be a class method")
-
-            sig = inspect.signature(method.__wrapped__)
-            params = list(sig.parameters.values())
-            if len(params) != 2 or not (
-                params[1].kind == params[1].POSITIONAL_ONLY or
-                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
-            ):
-                raise TypeError(
-                    "transform() must accept a single positional argument (in "
-                    "addition to cls)"
-                )
-
-    def _inverse_transform(self) -> None:
-        """Parse a decorator's inverse_transform() method (if it has one) and ensure
-        that it is callable with a single positional argument.
-        """
-        if "inverse_transform" in self.namespace:
-            method = self.namespace["inverse_transform"]
-            if not isinstance(method, classmethod):
-                raise TypeError("inverse_transform() must be a class method")
-
-            sig = inspect.signature(method.__wrapped__)
-            params = list(sig.parameters.values())
-            if len(params) != 2 or not (
-                params[1].kind == params[1].POSITIONAL_ONLY or
-                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
-            ):
-                raise TypeError(
-                    "inverse_transform() must accept a single positional argument (in "
-                    "addition to cls)"
-                )
-
-
 ###########################
 ####    METACLASSES    ####
 ###########################
@@ -2763,14 +1853,6 @@ class BaseMeta(type):
         """
         return REGISTRY
 
-    def __getitem__(cls, params: Any | tuple[Any, ...]) -> META:
-        """A wrapper around a type's `__class_getitem__` method that automatically
-        unpacks tuples into a more traditional call syntax.
-        """
-        if isinstance(params, tuple):
-            return cls.__class_getitem__(*params)  # type: ignore
-        return cls.__class_getitem__(params)  # type: ignore
-
     def __setattr__(cls, name: str, val: Any) -> NoReturn:
         raise TypeError("bertrand types are immutable")
 
@@ -2794,7 +1876,7 @@ class BaseMeta(type):
             result.update(typ)
             return Union.from_types(result)
 
-        return Union.from_types(LinkedSet((cls, typ)))        
+        return Union.from_types(LinkedSet((cls, typ)))
 
     def __ror__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:  # type: ignore
         try:
@@ -2864,8 +1946,8 @@ class TypeMeta(BaseMeta):
     See the documentation for the `Type` class for more information on how these work.
     """
 
-    # This metaclass uses the following internal fields, as populated by AbstractBuilder
-    # or ConcreteBuilder based on the `backend` metaclass argument
+    # This metaclass uses the following internal fields, which are populated by either
+    # AbstractBuilder or ConcreteBuilder depending on the `backend` metaclass argument:
     _slug: str
     _hash: int
     _required: dict[str, Callable[..., Any]]
@@ -2895,19 +1977,20 @@ class TypeMeta(BaseMeta):
         namespace: dict[str, Any],
         **kwargs: Any
     ):
-        fields = {k: "..." for k in cls._required} | cls._fields
-        if not (len(bases) == 0 or bases[0] is Base):
-            print("-" * 80)
-            print(f"slug: {cls.slug}")
-            print(f"parent: {cls.parent}")
-            print(f"aliases: {cls.aliases}")
-            print(f"fields: {_format_dict(fields)}")
-            print(f"is_root: {cls.is_root}")
-            print(f"is_abstract: {cls.is_abstract}")
-            print(f"is_leaf: {cls.is_leaf}")
-            print(f"cache_size: {cls.cache_size}")
-            print(f"itemsize: {getattr(cls, 'itemsize', '...')}")
-            print()
+        if DEBUG:
+            fields = {k: "..." for k in cls._required} | cls._fields
+            if not (len(bases) == 0 or bases[0] is Base):
+                print("-" * 80)
+                print(f"slug: {cls.slug}")
+                print(f"parent: {cls.parent}")
+                print(f"aliases: {cls.aliases}")
+                print(f"fields: {_format_dict(fields)}")
+                print(f"is_root: {cls.is_root}")
+                print(f"is_abstract: {cls.is_abstract}")
+                print(f"is_leaf: {cls.is_leaf}")
+                print(f"cache_size: {cls.cache_size}")
+                print(f"itemsize: {getattr(cls, 'itemsize', '...')}")
+                print()
 
     def __new__(
         mcs: type,
@@ -2937,6 +2020,14 @@ class TypeMeta(BaseMeta):
                 concrete.namespace
             )
         )
+
+    def __getitem__(cls, params: Any | tuple[Any, ...]) -> META:
+        """A wrapper around a type's `__class_getitem__` method that automatically
+        unpacks tuples into a more traditional call syntax.
+        """
+        if isinstance(params, tuple):
+            return cls.__class_getitem__(*params)
+        return cls.__class_getitem__(params)
 
     ##########################
     ####    FLYWEIGHTS    ####
@@ -3014,7 +2105,7 @@ class TypeMeta(BaseMeta):
                     "_base_type": cls,
                     "_parametrized": True,
                     "__class_getitem__": _parametrized_getitem,
-                } | kwargs  # TODO: unnecessary?
+                }
             )
             cls._flyweights.lru_add(slug, typ)
 
@@ -3483,9 +2574,35 @@ class TypeMeta(BaseMeta):
             raise _no_attribute(cls, "missing")
         return result
 
-    #########################
-    ####    GENERATED    ####
-    #########################
+    @property
+    def itemsize(cls) -> int:
+        """The size of a single element of this type, in bytes.
+
+        Returns
+        -------
+        int
+            The width of this type in memory.
+    
+        Notes
+        -----
+        This is identical to the result of the :func:`len` operator when applied
+        to a scalar type.  This behaves similarly to a Python-level ``sizeof()``
+        operator as used in C/C++.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int8.itemsize
+            1
+            >>> Int16.itemsize
+            2
+            >>> Int32.itemsize
+            4
+            >>> Int64.itemsize
+            8
+        """
+        return cls.dtype.itemsize
 
     @property
     def slug(cls) -> str:
@@ -3529,36 +2646,6 @@ class TypeMeta(BaseMeta):
         This is identical to the output of the :func:`hash` built-in function.
         """
         return cls._hash
-
-    @property
-    def itemsize(cls) -> int:
-        """The size of a single element of this type, in bytes.
-
-        Returns
-        -------
-        int
-            The width of this type in memory.
-    
-        Notes
-        -----
-        This is identical to the result of the :func:`len` operator when applied
-        to a scalar type.  This behaves similarly to a Python-level ``sizeof()``
-        operator as used in C/C++.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int8.itemsize
-            1
-            >>> Int16.itemsize
-            2
-            >>> Int32.itemsize
-            4
-            >>> Int64.itemsize
-            8
-        """
-        return cls.dtype.itemsize
 
     ################################
     ####    CLASS DECORATORS    ####
@@ -4475,16 +3562,8 @@ class TypeMeta(BaseMeta):
 
         raise _no_attribute(cls, name)
 
-    # TODO: update __dir__ once interface is finalized
-
     def __dir__(cls) -> set[str]:
-        result = set(super().__dir__())
-        result.update({
-            "slug", "hash", "backend", "itemsize", "decorators", "wrapped",
-            "unwrapped", "cache_size", "flyweights", "params", "is_abstract",
-            "is_default", "is_flyweight", "is_root", "is_leaf", "root", "parent",
-            "subtypes", "implementations", "children", "leaves", "larger", "smaller"
-        })
+        result = set(dir(TypeMeta))
         result.update(cls._fields)
         end = cls
         while not end.is_default:
@@ -4497,7 +3576,7 @@ class TypeMeta(BaseMeta):
         # enable lossless conversions
         if cls._default:
             return cls.as_default(*args, **kwargs)
-        return pd.Series(*args, dtype=cls.dtype, **kwargs)
+        return pd.Series(*args, dtype=cls.dtype, **kwargs)  # type: ignore
 
     def __subclasscheck__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
         typ = resolve(other)
@@ -4530,7 +3609,7 @@ class TypeMeta(BaseMeta):
         if isinstance(typ, UnionMeta):
             return all(cls < t for t in typ)
 
-        edge = _has_edge(cls.base_type, typ.unwrapped.base_type)
+        edge = _has_edge(cls.base_type, typ.unwrapped.base_type)  # type: ignore
         if edge is not None:
             return edge
 
@@ -4544,7 +3623,7 @@ class TypeMeta(BaseMeta):
         if isinstance(typ, UnionMeta):
             return all(cls <= t for t in typ)
 
-        edge = _has_edge(cls.base_type, typ.unwrapped.base_type)
+        edge = _has_edge(cls.base_type, typ.unwrapped.base_type)  # type: ignore
         if edge is not None:
             return edge
 
@@ -4572,7 +3651,7 @@ class TypeMeta(BaseMeta):
         if isinstance(typ, UnionMeta):
             return all(cls >= t for t in typ)
 
-        edge = _has_edge(cls.base_type, typ.unwrapped.base_type)
+        edge = _has_edge(cls.base_type, typ.unwrapped.base_type)  # type: ignore
         if edge is not None:
             return not edge
 
@@ -4586,7 +3665,7 @@ class TypeMeta(BaseMeta):
         if isinstance(typ, UnionMeta):
             return all(cls > t for t in typ)
 
-        edge = _has_edge(cls.base_type, typ.unwrapped.base_type)
+        edge = _has_edge(cls.base_type, typ.unwrapped.base_type)  # type: ignore
         if edge is not None:
             return not edge
 
@@ -4617,7 +3696,7 @@ class DecoratorMeta(BaseMeta):
 
     # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
 
-    # This metaclass uses the following internal fields, as populated by
+    # This metaclass uses the following internal fields, which are populated by
     # DecoratorBuilder:
     _slug: str
     _hash: int
@@ -4641,7 +3720,7 @@ class DecoratorMeta(BaseMeta):
         namespace: dict[str, Any],
         **kwargs: Any
     ):
-        if not (len(bases) == 0 or bases[0] is Base):
+        if DEBUG and not (len(bases) == 0 or bases[0] is Base):
             print("-" * 80)
             print(f"slug: {cls.slug}")
             print(f"aliases: {cls.aliases}")
@@ -4665,6 +3744,14 @@ class DecoratorMeta(BaseMeta):
                 build.namespace
             )
         )
+
+    def __getitem__(cls, params: Any | tuple[Any, ...]) -> META:
+        """A wrapper around a type's `__class_getitem__` method that automatically
+        unpacks tuples into a more traditional call syntax.
+        """
+        if isinstance(params, tuple):
+            return cls.__class_getitem__(*params)
+        return cls.__class_getitem__(params)
 
     ##########################
     ####    FLYWEIGHTS    ####
@@ -4693,7 +3780,7 @@ class DecoratorMeta(BaseMeta):
                     "_base_type": cls,
                     "_parametrized": True,
                     "__class_getitem__": _parametrized_getitem,
-                } | kwargs  # TODO: unnecessary?
+                }
             )
             cls._flyweights.lru_add(slug, typ)
 
@@ -4734,10 +3821,6 @@ class DecoratorMeta(BaseMeta):
     def aliases(cls) -> Aliases:
         """Copied from TypeMeta."""
         return cls._aliases
-
-    #########################
-    ####    GENERATED    ####
-    #########################
 
     @property
     def slug(cls) -> str:
@@ -4866,8 +3949,6 @@ class DecoratorMeta(BaseMeta):
             return cls
         return result
 
-    # TODO: unwrapped always returns TypeMeta?
-
     @property
     def unwrapped(cls) -> TypeMeta | DecoratorMeta:
         """Copied from TypeMeta."""
@@ -4890,20 +3971,13 @@ class DecoratorMeta(BaseMeta):
 
         raise _no_attribute(cls, name)
 
-    # TODO: update __dir__ once interface is finalized
-
     def __dir__(cls) -> set[str]:
-        result = set(super().__dir__())
-        result.update({
-            "slug", "hash", "decorators", "wrapped", "unwrapped", "cache_size",
-            "flyweights", "params", "as_default", "as_nullable", "root", "parent",
-            "subtypes", "implementations", "children", "leaves", "larger", "smaller"
-        })
+        result = set(dir(DecoratorMeta))
         result.update(cls._fields)
-        curr = cls.wrapped
-        while curr:
-            result.update(dir(curr))
+        curr: TypeMeta | DecoratorMeta = cls
+        while curr.wrapped is not curr:
             curr = curr.wrapped
+            result.update(dir(curr))
         return result
 
     def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any]:
@@ -4928,6 +4002,7 @@ class DecoratorMeta(BaseMeta):
 
         # broadcast across unions
         if isinstance(typ, UnionMeta):
+            # pylint: disable=no-value-for-parameter
             return all(cls.__subclasscheck__(t) for t in typ)
 
         # DecoratorType acts as wildcard
@@ -4984,6 +4059,7 @@ class DecoratorMeta(BaseMeta):
         return (cls.replace(t) for t in reversed(wrapped))
 
     def __lt__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        # pylint: disable=comparison-with-callable
         typ = resolve(other)
         if cls is typ:
             return False
@@ -5004,6 +4080,7 @@ class DecoratorMeta(BaseMeta):
         return t1 < typ
 
     def __le__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        # pylint: disable=comparison-with-callable
         typ = resolve(other)
         if cls is typ:
             return True
@@ -5038,6 +4115,7 @@ class DecoratorMeta(BaseMeta):
         return not cls == other
 
     def __ge__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        # pylint: disable=comparison-with-callable
         typ = resolve(other)
         if cls is typ:
             return True
@@ -5058,6 +4136,7 @@ class DecoratorMeta(BaseMeta):
         return t1 >= typ
 
     def __gt__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
+        # pylint: disable=comparison-with-callable
         typ = resolve(other)
         if cls is typ:
             return False
@@ -5106,7 +4185,7 @@ class UnionMeta(BaseMeta):
     ####    CONSTRUCTORS    ####
     ############################
 
-    def __getitem__(cls, types: TYPESPEC | tuple[TYPESPEC]) -> UnionMeta:
+    def __getitem__(cls, types: TYPESPEC | tuple[TYPESPEC, ...]) -> UnionMeta:
         return cls.__class_getitem__(types)  # type: ignore
 
     def from_types(
@@ -5153,6 +4232,10 @@ class UnionMeta(BaseMeta):
             "_index": index,
             "__class_getitem__": _union_getitem
         })
+
+    def replace(cls, *args: Any, **kwargs: Any) -> UnionMeta:
+        """Copied from TypeMeta."""
+        return cls.from_types(LinkedSet(t.replace(*args, **kwargs) for t in cls))
 
     ##########################
     ####    FLYWEIGHTS    ####
@@ -5287,7 +4370,23 @@ class UnionMeta(BaseMeta):
         return _rle_decode(cls._index)
 
     def collapse(cls) -> UnionMeta:
-        """TODO"""
+        """Remove any redundant types from the union.
+
+        Returns
+        -------
+        UnionMeta
+            A new union containing only those types that are not contained by any other
+            type in the union.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Union[Int8, Int8["numpy"], Int8["pandas"]]
+            Union[Int8, NumpyInt8, PandasInt8]
+            >>> _.collapse()
+            Union[Int8]
+        """
         result = LinkedSet()
         for t in cls:
             if not any(t is not u and issubclass(t, u) for u in cls):
@@ -5299,7 +4398,39 @@ class UnionMeta(BaseMeta):
         other: TYPESPEC | Iterable[TYPESPEC],
         strict: bool = False
     ) -> bool:
-        """TODO"""
+        """Check whether all types in this union are also in another type.
+
+        Parameters
+        ----------
+        other: TYPESPEC | Iterable[TYPESPEC]
+            The type(s) to check against.  These will be processed according to the
+            :func:`resolve` function.
+        strict: bool, default False
+            If True, then the comparison type must contain at least one type that is
+            not in the union.
+
+        Returns
+        -------
+        bool
+            True if all types in this union are also in the comparison type, accounting
+            for strictness.
+
+        See Also
+        --------
+        issuperset: check whether all types in another type are also in this union.
+        isdisjoint: check whether this union has no types in common with another type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Union[Int8, Int16].issubset(Int)
+            True
+            >>> Union[Int8, Int16].issubset(Int8 | Int16)
+            True
+            >>> Union[Int8, Int16].issubset(Int8 | Int16, strict=True)
+            False
+        """
         typ = resolve(other)
         if cls is typ:
             return not strict
@@ -5318,7 +4449,39 @@ class UnionMeta(BaseMeta):
         other: TYPESPEC | Iterable[TYPESPEC],
         strict: bool = False
     ) -> bool:
-        """TODO"""
+        """Check whether all types in another type are also in this union.
+
+        Parameters
+        ----------
+        other: TYPESPEC | Iterable[TYPESPEC]
+            The type(s) to check against.  These will be processed according to the
+            :func:`resolve` function.
+        strict: bool, default False
+            If True, then this union must contain at least one type that is not in the
+            comparison type.
+
+        Returns
+        -------
+        bool
+            True if all types in the comparison type are also in this union, accounting
+            for strictness.
+
+        See Also
+        --------
+        issubset: check whether all types in this union are also in another type.
+        isdisjoint: check whether this union has no types in common with another type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Union[Int8, Int16].issuperset(Int8)
+            True
+            >>> Union[Int8, Int16].issuperset(Int8 | Int16)
+            True
+            >>> Union[Int8, Int16].issuperset(Int8 | Int16, strict=True)
+            False
+        """
         typ = resolve(other)
         if cls is typ:
             return not strict
@@ -5336,7 +4499,33 @@ class UnionMeta(BaseMeta):
         return result
 
     def isdisjoint(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
-        """TODO"""
+        """Check whether this union has no types in common with another type.
+
+        Parameters
+        ----------
+        other: TYPESPEC | Iterable[TYPESPEC]
+            The type(s) to check against.  These will be processed according to the
+            :func:`resolve` function.
+
+        Returns
+        -------
+        bool
+            True if this union has no types in common with the comparison type.
+
+        See Also
+        --------
+        issubset: check whether all types in this union are also in another type.
+        issuperset: check whether all types in another type are also in this union.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Union[Int8, Int16].isdisjoint(Int32 | Int64)
+            True
+            >>> Union[Int8, Int16].isdisjoint(Int16 | Int32)
+            False
+        """
         typ = resolve(other)
         if cls is typ:
             return False
@@ -5352,25 +4541,115 @@ class UnionMeta(BaseMeta):
         key: Callable[[TypeMeta], Any] | None = None,
         reverse: bool = False
     ) -> UnionMeta:
-        """TODO"""
+        """Return a new union with types sorted according to an optional key function.
+
+        Parameters
+        ----------
+        key: Callable[[TypeMeta], Any], optional
+            A function that takes a type and returns a value to use for sorting.
+            Defaults to normal ``<`` comparisons if not specified.
+        reverse: bool, default False
+            If True, sort the types in descending order.
+
+        Returns
+        -------
+        UnionMeta
+            A new union with the types sorted according to the specified key function.
+
+        See Also
+        --------
+        TypeRegistry.edges: overrides for the default comparison operators.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Union[Int16, Int32, Int8].sorted()
+            Union[Int8, Int16, Int32]
+            >>> Union[Int16, Int32, Int8].sorted(reverse=True)
+            Union[Int32, Int16, Int8]
+            >>> Union[Int16, Int32, Int8].sorted(key=lambda t: t.itemsize)
+            Union[Int8, Int16, Int32]
+        """
         result = cls._types.copy()
         result.sort(key=key, reverse=reverse)
         return cls.from_types(result)
 
-    def replace(cls, *args: Any, **kwargs: Any) -> UnionMeta:
-        """TODO"""
-        return cls.from_types(LinkedSet(t.replace(*args, **kwargs) for t in cls))
-
     def keys(cls) -> KeysView[str]:
-        """TODO"""
+        """Return the column names of a structured union.
+
+        Returns
+        -------
+        KeysView[str]
+            The name of each column in a structured union.  If the union is not
+            structured, then an empty view is returned.
+
+        See Also
+        --------
+        values: return the types of each column in a structured union.
+        items: return the column names and types of a structured union.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Union[Int8, Int16].keys()
+            dict_keys([])
+            >>> Union["foo": Int8 | Int16].keys()
+            dict_keys(['foo'])
+        """
         return {}.keys()
 
     def values(cls) -> ValuesView[META]:
-        """TODO"""
+        """Return the type of each column in a structured union.
+
+        Returns
+        -------
+        ValuesView[META]
+            The type of each column in a structured union.  These can include any
+            bertrand type object besides another structured union.  If the original
+            union is not structured, then an empty view is returned.
+
+        See Also
+        --------
+        keys: return the column names of a structured union.
+        items: return the column names and types of a structured union.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Union[Int8, Int16].values()
+            dict_values([])
+            >>> Union["foo": Int8 | Int16].values()
+            dict_values([Union[Int8, Int16]])
+        """
         return {}.values()
 
     def items(cls) -> ItemsView[str, META]:
-        """TODO"""
+        """Return the column name and type of each column in a structured union.
+
+        Returns
+        -------
+        ItemsView[str, META]
+            A sequence containing tuples of length 2, where the first element is the
+            column name and the second element is the type of that column.  If the
+            original union is not structured, then an empty view is returned.
+
+        See Also
+        --------
+        keys: return the column names of a structured union.
+        values: return the types of each column in a structured union.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Union[Int8, Int16].items()
+            dict_items([])
+            >>> Union["foo": Int8 | Int16].items()
+            dict_items([('foo', Union[Int8, Int16])])
+        """
         return {}.items()
 
     ###############################
@@ -5381,27 +4660,23 @@ class UnionMeta(BaseMeta):
         return {t: getattr(t, name) for t in cls._types}
 
     def __dir__(cls) -> set[str]:
-        result = set(super().__dir__())
-        result.update({
-            "is_structured", "index", "collapse", "issubset", "issuperset",
-            "isdisjoint", "sorted", "keys", "values", "items",
-        })
+        result = set(dir(UnionMeta))
         for t in cls:
             result.update(dir(t))
         return result
 
     def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any]:
-        """TODO"""
         for t in cls:
             try:
                 return t(*args, **kwargs)
-            except Exception:
+            except Exception:  # pylint: disable=broad-exception-caught
                 continue
 
         raise TypeError(f"cannot convert to union type: {repr(cls)}")
 
     def __instancecheck__(cls, other: Any) -> bool:
-        return any(isinstance(other, t) for t in cls)
+        observed = detect(other)
+        return any(issubclass(observed, t) for t in cls)
 
     def __subclasscheck__(cls, other: TYPESPEC) -> bool:
         typ = resolve(other)
@@ -5429,7 +4704,7 @@ class UnionMeta(BaseMeta):
 
         if isinstance(typ, UnionMeta):
             return cls.from_types(cls._types | typ)
-        return cls.from_types(cls._types | (typ,))  # type: ignore
+        return cls.from_types(cls._types | (typ,))
 
     def __and__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
         try:
@@ -5579,7 +4854,7 @@ class StructuredMeta(UnionMeta):
         """Copied from UnionMeta."""
         raise TypeError("cannot create structured union from a flat set of types")
 
-    def from_columns(cls, columns: dict[str, META]) -> StructuredMeta:
+    def from_columns(cls, columns: Mapping[str, META]) -> StructuredMeta:
         """Construct a structured union from a mapping of column names to type objects.
 
         Parameters
@@ -5626,8 +4901,12 @@ class StructuredMeta(UnionMeta):
             "_types": flattened,
             "_hash": hash_val,
             "_index": None,
-            "__class_getitem__": _structured_getitem  # TODO: broken due to __getitem__ in UnionMeta
+            "__class_getitem__": _structured_getitem
         })
+
+    def replace(cls, *args: Any, **kwargs: Any) -> StructuredMeta:
+        """Copied from UnionMeta."""
+        return cls.from_columns({k: v.replace(*args, **kwargs) for k, v in cls.items()})
 
     ##########################
     ####    FLYWEIGHTS    ####
@@ -5816,10 +5095,6 @@ class StructuredMeta(UnionMeta):
             for k, v in cls.items()
         })
 
-    def replace(cls, *args: Any, **kwargs: Any) -> StructuredMeta:
-        """Copied from UnionMeta."""
-        return cls.from_columns({k: v.replace(*args, **kwargs) for k, v in cls.items()})
-
     def keys(cls) -> KeysView[str]:
         """Copied from UnionMeta."""
         return cls._columns.keys()
@@ -5840,7 +5115,6 @@ class StructuredMeta(UnionMeta):
         return {k: getattr(v, name) for k, v in cls.items()}
 
     def __call__(cls, *args: Any, **kwargs: Any) -> pd.DataFrame:  # type: ignore
-        """TODO"""
         if len(args) != len(cls._columns):
             raise TypeError(
                 f"structured union expects {len(cls._columns)} positional "
@@ -6095,6 +5369,7 @@ UnionMeta.wrapped.__doc__                   = TypeMeta.wrapped.__doc__
 UnionMeta.unwrapped.__doc__                 = TypeMeta.unwrapped.__doc__
 UnionMeta.is_union.__doc__                  = TypeMeta.is_union.__doc__
 UnionMeta.is_structured.__doc__             = TypeMeta.is_structured.__doc__
+# UnionMeta.replace.__doc__                   = TypeMeta.replace.__doc__
 StructuredMeta.from_types.__doc__           = UnionMeta.from_types.__doc__
 StructuredMeta.base_type.__doc__            = UnionMeta.base_type.__doc__
 StructuredMeta.as_default.__doc__           = UnionMeta.as_default.__doc__
@@ -6117,10 +5392,10 @@ StructuredMeta.issubset.__doc__             = UnionMeta.issubset.__doc__
 StructuredMeta.issuperset.__doc__           = UnionMeta.issuperset.__doc__
 StructuredMeta.isdisjoint.__doc__           = UnionMeta.isdisjoint.__doc__
 StructuredMeta.sorted.__doc__               = UnionMeta.sorted.__doc__
-StructuredMeta.replace.__doc__              = UnionMeta.replace.__doc__
 StructuredMeta.keys.__doc__                 = UnionMeta.keys.__doc__
 StructuredMeta.values.__doc__               = UnionMeta.values.__doc__
 StructuredMeta.items.__doc__                = UnionMeta.items.__doc__
+# StructuredMeta.replace.__doc__              = UnionMeta.replace.__doc__
 
 
 # TODO:
@@ -6234,10 +5509,926 @@ def _structured_getitem(cls: StructuredMeta, key: int | slice | str) -> META:
     return list(cls.values())[key]
 
 
+########################
+####    BUILDERS    ####
+########################
 
-###########################
-####    UNION TYPES    ####
-###########################
+
+class TypeBuilder:
+    """Common base for all namespace builders.
+
+    The builders that inherit from this class are responsible for transforming a type's
+    simplified namespace into a fully-featured bertrand type.  They do this by looping
+    through all the attributes that are defined in the class and executing any relevant
+    helper functions to validate their configuration.  The builders also mark all
+    required fields (those assigned to ``EMPTY``) and reserved attributes that they
+    encounter, and fill in missing slots with default values where possible.  If the
+    type is improperly configured, the builder will throw a series of informative error
+    messages guiding the user towards a solution.
+
+    The end result is a fully processed namespace that conforms to the expectations of
+    each metaclass, which can then be used to instantiate the type.  This means that
+    the output from the builder is directly converted into dotted names on the type, as
+    reflected by the `dir()` built-in function.  Since each builder is executed before
+    the type is instantiated, they have free reign to modify the namespace however they
+    see fit, without violating the type's read-only semantics.
+
+    These builders are what allow us to write new types without regard to the internal
+    mechanics of the type system.  Instead, the relevant information will be
+    automatically extracted from the namespace and used to construct the type, without
+    any additional work on the user's part.
+    """
+
+    # reserved attributes will throw an error if implemented on user-defined types
+    RESERVED: set[str] = set(dir(TypeMeta)) - {
+        "__module__",
+        "__qualname__",
+        "__annotations__",
+        "__doc__",
+        "aliases",
+        "scalar",
+        "dtype",
+        "max",
+        "min",
+        "missing",
+        "is_nullable"
+    }
+
+    def __init__(
+        self,
+        name: str,
+        parent: TypeMeta | DecoratorMeta,
+        namespace: dict[str, Any],
+        cache_size: int | None,
+    ):
+        self.name = name
+        self.parent = parent
+        self.namespace = namespace
+        self.cache_size = cache_size
+        if parent is Base:
+            self.required: dict[str, Callable[[Any, dict[str, Any], dict[str, Any]], Any]] = {}
+            self.fields = {}
+        else:
+            self.required = parent._required.copy()
+            self.fields = parent._fields.copy()
+
+    def fill(self) -> TypeBuilder:
+        """Fill in any reserved slots in the namespace with their default values.
+
+        This method should be called after parsing the namespace to avoid unnecessary
+        work.
+
+        Returns
+        -------
+        TypeBuilder
+            The builder instance, for chaining.
+        """
+        self.namespace["_required"] = self.required
+        self.namespace["_fields"] = self.fields
+        self.namespace["_slug"] = self.name
+        self.namespace["_hash"] = hash(self.name)
+        if self.parent is Base or self.parent is Type or self.parent is DecoratorType:
+            self.namespace["_parent"] = None
+        else:
+            self.namespace["_parent"] = self.parent
+        self.namespace["_base_type"] = None
+        self.namespace["_parametrized"] = False
+        self.namespace["_cache_size"] = self.cache_size
+        self.namespace["_flyweights"] = LinkedDict(max_size=self.cache_size)
+
+        aliases = LinkedSet[str | type]((self.name,))
+        if "aliases" in self.namespace:
+            for alias in self.namespace.pop("aliases"):
+                if isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
+                    aliases.add(type(alias))
+                else:
+                    aliases.add(alias)
+
+        self.namespace["_aliases"] = Aliases(aliases)
+        return self
+
+    def _validate(self, arg: str, value: Any) -> None:
+        """Validate a required argument (one assigned to `EMPTY`) by invoking a bound
+        function with the specified value and current namespace.
+        """
+        try:
+            self.fields[arg] = self.required.pop(arg)(
+                value, self.namespace, self.fields
+            )
+        except Exception as err:
+            raise type(err)(f"{self.name}.{arg} -> {str(err)}")
+
+
+class AbstractBuilder(TypeBuilder):
+    """A builder-style parser for an abstract type's namespace (backend == None).
+
+    Abstract types support the creation of required fields through the ``EMPTY``
+    syntax, which must be inherited or defined by each of their concrete
+    implementations.  This rule is enforced by ConcreteBuilder, which is automatically
+    chosen when the backend is not None.  Note that in contrast to concrete types,
+    abstract types do not support parametrization, and attempting defining a
+    corresponding constructor will throw an error.
+    """
+
+    RESERVED = TypeBuilder.RESERVED | {
+        "__class_getitem__",
+        "from_scalar",
+        "from_dtype"
+        "from_string"
+    }
+
+    def __init__(
+        self,
+        name: str,
+        bases: tuple[TypeMeta],
+        namespace: dict[str, Any],
+        cache_size: int | None
+    ):
+        if len(bases) != 1 or not (bases[0] is Base or issubclass(bases[0], Type)):
+            raise TypeError(
+                f"abstract types must inherit from bertrand.Type or one of its "
+                f"subclasses, not {bases}"
+            )
+
+        parent = bases[0]
+        if parent is not Base and not parent.is_abstract:
+            raise TypeError("abstract types must not inherit from concrete types")
+
+        super().__init__(name, parent, namespace, cache_size)
+
+    def parse(self) -> AbstractBuilder:
+        """Analyze the namespace and execute any relevant helper functions to validate
+        its configuration.
+
+        Returns
+        -------
+        AbstractBuilder
+            A reference to the current builder instance, for chaining.
+
+        Raises
+        ------
+        TypeError
+            If the type implements a reserved attribute.
+        """
+        namespace = self.namespace.copy()
+
+        for name, value in namespace.items():
+            if isinstance(value, Empty):
+                self.required[name] = value.func
+                del self.namespace[name]
+            elif name in self.required:
+                self._validate(name, self.namespace.pop(name))
+            elif name in self.RESERVED and self.parent is not Base:
+                raise TypeError(
+                    f"type must not implement reserved attribute: {repr(name)}"
+                )
+
+        return self
+
+    def fill(self) -> AbstractBuilder:
+        """Fill in any missing slots in the namespace with default values, and evaluate
+        any derived attributes.
+
+        Returns
+        -------
+        AbstractBuilder
+            A reference to the current builder instance, for chaining.
+        """
+        super().fill()
+        self.namespace["_children"] = LinkedSet()
+        self.namespace["_subtypes"] = LinkedSet()
+        self.namespace["_implementations"] = LinkedDict()
+        self.namespace["_default"] = []
+        self.namespace["_nullable"] = []
+
+        self.fields["backend"] = ""
+
+        self._class_getitem()
+        self._from_scalar()
+        self._from_dtype()
+        self._from_string()
+
+        return self
+
+    def register(self, typ: TypeMeta) -> TypeMeta:
+        """Register a newly-created type, pushing changes to the parent type's
+        namespace if necessary.
+
+        Parameters
+        ----------
+        typ : TypeMeta
+            The final type to register.  This is typically the result of a fresh
+            call to type.__new__().
+
+        Returns
+        -------
+        TypeMeta
+            The registered type.
+        """
+        # pylint: disable=protected-access
+        parent = self.parent
+        if parent is not Base:
+            parent._subtypes.add(typ)
+            parent._children.add(typ)
+            while not parent.is_root:
+                parent = parent.parent
+                parent._children.add(typ)
+
+            typ.aliases.parent = typ  # pushes aliases to global registry
+            typ._children.add(typ)
+            REGISTRY._types.add(typ)
+
+        return typ
+
+    def _class_getitem(self) -> None:
+        """Parse a type's __class_getitem__ method (if it has one), producing a list of
+        parameters and their default values, as well as a wrapper function that can be
+        used to instantiate the type.
+        """
+        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+
+        if "__class_getitem__" in self.namespace and self.parent is not Base:
+            raise TypeError("abstract types must not implement __class_getitem__()")
+
+        def default(cls: TypeMeta, backend: str, *args: Any) -> TypeMeta:
+            """Forward all arguments to the specified implementation."""
+            # pylint: disable=protected-access
+            if backend in cls._implementations:
+                if args:
+                    return cls._implementations[backend][*args]
+                return cls._implementations[backend]
+
+            if cls._default:
+                default = cls.as_default
+                if default.is_abstract:
+                    return default.__class_getitem__(backend, *args)
+
+            raise TypeError(f"invalid backend: {repr(backend)}")
+
+        self.namespace["__class_getitem__"] = classmethod(default)  # type: ignore
+        self.namespace["_params"] = ("backend",)
+
+    def _from_scalar(self) -> None:
+        """Parse a type's from_scalar() method (if it has one), ensuring that it is
+        callable with a single positional argument.
+        """
+        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+
+        if "from_scalar" in self.namespace and self.parent is not Base:
+            raise TypeError("abstract types must not implement from_scalar()")
+
+        def default(cls: TypeMeta, scalar: Any) -> TypeMeta:
+            """Throw an error if attempting to construct an abstract type."""
+            raise TypeError("abstract types cannot be constructed using from_scalar()")
+
+        self.namespace["_defines_from_scalar"] = False
+        self.namespace["from_scalar"] = classmethod(default)  # type: ignore
+
+    def _from_dtype(self) -> None:
+        """Parse a type's from_dtype() method (if it has one), ensuring that it is
+        callable with a single positional argument.
+        """
+        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+
+        if "from_dtype" in self.namespace and self.parent is not Base:
+            raise TypeError("abstract types must not implement from_dtype()")
+
+        def default(cls: TypeMeta, dtype: Any) -> TypeMeta:
+            """Throw an error if attempting to construct an abstract type."""
+            raise TypeError("abstract types cannot be constructed using from_dtype()")
+
+        self.namespace["_defines_from_scalar"] = False
+        self.namespace["from_dtype"] = classmethod(default)  # type: ignore
+
+    def _from_string(self) -> None:
+        """Parse a type's from_string() method (if it has one), ensuring that it is
+        callable with the same number of positional arguments as __class_getitem__().
+        """
+        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+
+        if "from_string" in self.namespace and self.parent is not Base:
+            raise TypeError("abstract types must not implement from_string()")
+
+        def default(cls: TypeMeta, backend: str, *args: str) -> TypeMeta:
+            """Forward all arguments to the specified implementation."""
+            # pylint: disable=protected-access
+            if not backend:
+                return cls
+
+            if backend in cls._implementations:
+                typ = cls._implementations[backend]
+                if not args:
+                    return typ
+                return typ.from_string(*args)
+
+            if cls._default:
+                return cls.as_default.from_string(backend, *args)
+
+            raise TypeError(f"invalid backend: {repr(backend)}")
+
+        self.namespace["from_string"] = classmethod(default)  # type: ignore
+
+
+class ConcreteBuilder(TypeBuilder):
+    """A builder-style parser for a concrete type's namespace (backend != None).
+
+    Concrete types must implement all required fields, and may optionally define
+    additional fields that are not required.  They can also be parametrized by
+    specifying a __class_getitem__ method that accepts any number of positional
+    arguments.  These arguments must have default values, and the signature will be
+    used to populate the base type's `params` dict.  Parametrized types are then
+    instantiated using a flyweight caching strategy, which involves an LRU dict of a
+    specific size attached to the type itself.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        bases: tuple[TypeMeta],
+        namespace: dict[str, Any],
+        backend: str,
+        cache_size: int | None,
+    ):
+        if len(bases) != 1 or not (bases[0] is Base or issubclass(bases[0], Type)):
+            raise TypeError(
+                f"concrete types must only inherit from bertrand.Type or one of its "
+                f"subclasses, not {bases}"
+            )
+
+        if not isinstance(backend, str):
+            raise TypeError(f"backend id must be a string, not {repr(backend)}")
+
+        parent = bases[0]
+        if parent is not Base:
+            if not parent.is_abstract:
+                raise TypeError(
+                    "concrete types must not inherit from other concrete types"
+                )
+            if backend in parent._implementations:
+                raise TypeError(f"backend id must be unique: {repr(backend)}")
+
+        super().__init__(name, parent, namespace, cache_size)
+        self.backend = backend
+        self.class_getitem_signature: inspect.Signature | None = None
+
+    def parse(self) -> ConcreteBuilder:
+        """Analyze the namespace and execute any relevant helper functions to validate
+        its configuration.
+
+        Returns
+        -------
+        ConcreteBuilder
+            A reference to the current builder instance, for chaining.
+
+        Raises
+        ------
+        TypeError
+            If the type implements a reserved attribute.
+        """
+        for name, value in self.namespace.copy().items():
+            if isinstance(value, Empty):
+                raise TypeError(
+                    f"concrete types must not have required fields: {self.name}.{name}"
+                )
+            elif name in self.RESERVED:
+                raise TypeError(
+                    f"type must not implement reserved attribute: {repr(name)}"
+                )
+            elif name in self.required:
+                self._validate(name, self.namespace.pop(name))
+
+        # validate any remaining required fields that were not explicitly assigned
+        for name in list(self.required):
+            self._validate(name, EMPTY)
+
+        return self
+
+    def fill(self) -> ConcreteBuilder:
+        """Fill in any missing slots in the namespace with default values, and evaluate
+        any derived attributes.
+
+        Returns
+        -------
+        ConcreteBuilder
+            A reference to the current builder instance, for chaining.
+        """
+        super().fill()
+        self.namespace["_children"] = LinkedSet()
+        self.namespace["_subtypes"] = LinkedSet()
+        self.namespace["_implementations"] = LinkedDict()
+        self.namespace["_default"] = []
+        self.namespace["_nullable"] = []
+
+        self.fields["backend"] = self.backend
+
+        self._class_getitem()
+        self._from_scalar()
+        self._from_dtype()
+        self._from_string()
+
+        return self
+
+    def register(self, typ: TypeMeta) -> TypeMeta:
+        """Register a newly-created type, pushing changes to the parent type's
+        namespace if necessary.
+
+        Parameters
+        ----------
+        typ : TypeMeta
+            The final type to register.  This is typically the result of a fresh
+            call to type.__new__().
+
+        Returns
+        -------
+        TypeMeta
+            The registered type.
+        """
+        # pylint: disable=protected-access
+        parent = self.parent
+        if self.parent is not Base:
+            parent._implementations[self.backend] = typ
+            parent._children.add(typ)
+            while not parent.is_root:
+                parent = parent.parent
+                parent._children.add(typ)
+
+            typ.aliases.parent = typ  # pushes aliases to global registry
+            typ._children.add(typ)
+            REGISTRY._types.add(typ)
+
+        return typ
+
+    def _class_getitem(self) -> None:
+        """Parse a type's __class_getitem__ method (if it has one), producing a list of
+        parameters and their default values, as well as a wrapper function that can be
+        used to instantiate the type.
+        """
+        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+        parameters = {}
+
+        if "__class_getitem__" in self.namespace:
+            skip = True
+            sig = inspect.signature(self.namespace["__class_getitem__"])
+            for par_name, param in sig.parameters.items():
+                if skip:
+                    skip = False
+                    continue
+                if param.kind == param.KEYWORD_ONLY or param.kind == param.VAR_KEYWORD:
+                    raise TypeError(
+                        "__class_getitem__() must not accept any keyword arguments"
+                    )
+                if param.default is param.empty:
+                    raise TypeError(
+                        "__class_getitem__() arguments must have default values"
+                    )
+                parameters[par_name] = param.default
+
+            self.fields.update((k, v) for k, v in parameters.items())
+            self.class_getitem_signature = inspect.Signature([
+                p.replace(annotation=p.empty, default=p.empty)
+                for p in sig.parameters.values()
+            ])
+
+        else:
+            def default(cls: TypeMeta, *args: Any) -> TypeMeta:
+                """Default to identity function."""
+                if args:
+                    raise TypeError(f"{cls.__name__} does not accept any parameters")
+                return cls
+
+            self.namespace["__class_getitem__"] = classmethod(default)  # type: ignore
+            self.class_getitem_signature = inspect.Signature([
+                inspect.Parameter("cls", inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            ])
+
+        self.namespace["_params"] = tuple(parameters.keys())
+
+    def _from_scalar(self) -> None:
+        """Parse a type's from_scalar() method (if it has one), ensuring that it is
+        callable with a single positional argument.
+        """
+        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+
+        if "from_scalar" in self.namespace:
+            method = self.namespace["from_scalar"]
+            if not isinstance(method, classmethod):
+                raise TypeError("from_scalar() must be a classmethod")
+
+            sig = inspect.signature(method.__wrapped__)
+            params = list(sig.parameters.values())
+            if len(params) != 2 or not (
+                params[1].kind == params[1].POSITIONAL_ONLY or
+                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
+            ):
+                raise TypeError(
+                    "from_scalar() must accept a single positional argument (in "
+                    "addition to cls)"
+                )
+
+            self.namespace["_defines_from_scalar"] = True
+
+        else:
+            def default(cls: TypeMeta, scalar: Any) -> TypeMeta:
+                """Default to identity function."""
+                return cls
+
+            self.namespace["_defines_from_scalar"] = False
+            self.namespace["from_scalar"] = classmethod(default)  # type: ignore
+
+    def _from_dtype(self) -> None:
+        """Parse a type's from_dtype() method (if it has one), ensuring that it is
+        callable with a single positional argument.
+        """
+        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+
+        if "from_dtype" in self.namespace:
+            method = self.namespace["from_dtype"]
+            if not isinstance(method, classmethod):
+                raise TypeError("from_dtype() must be a classmethod")
+
+            sig = inspect.signature(method.__wrapped__)
+            params = list(sig.parameters.values())
+            if len(params) != 2 or not (
+                params[1].kind == params[1].POSITIONAL_ONLY or
+                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
+            ):
+                raise TypeError(
+                    "from_dtype() must accept a single positional argument in "
+                    "addition to cls"
+                )
+
+            self.namespace["_defines_from_dtype"] = True
+
+        else:
+            def default(cls: TypeMeta, dtype: Any) -> TypeMeta:
+                """Default to identity function."""
+                return cls
+
+            self.namespace["_defines_from_dtype"] = False
+            self.namespace["from_dtype"] = classmethod(default)  # type: ignore
+
+    def _from_string(self) -> None:
+        """Parse a type's from_string() method (if it has one), ensuring that it is
+        callable with the same number of positional arguments as __class_getitem__().
+        """
+        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+
+        if "from_string" in self.namespace:
+            method = self.namespace["from_string"]
+            if not isinstance(method, classmethod):
+                raise TypeError("from_string() must be a classmethod")
+
+            params = inspect.signature(method.__wrapped__).parameters.values()
+            sig = inspect.Signature([
+                p.replace(annotation=p.empty, default=p.default) for p in params
+            ])
+
+        else:
+            def default(cls: TypeMeta) -> TypeMeta:
+                """Default to identity function."""
+                return cls
+
+            self.namespace["from_string"] = classmethod(default)  # type: ignore
+            sig = inspect.Signature([
+                inspect.Parameter("cls", inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            ])
+
+        if sig != self.class_getitem_signature:
+            raise TypeError(
+                f"the signature of from_string() must match __class_getitem__(): "
+                f"{str(sig)} != {str(self.class_getitem_signature)}"
+            )
+
+
+class DecoratorBuilder(TypeBuilder):
+    """A builder-style parser for a decorator type's namespace (any subclass of
+    DecoratorType).
+
+    Decorator types are similar to concrete types except that they are implicitly
+    parametrized to wrap around another type and modify its behavior.  They can accept
+    additional parameters to configure the decorator, but must take at least one
+    positional argument that specifies the type to be wrapped.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        bases: tuple[DecoratorMeta],
+        namespace: dict[str, Any],
+        cache_size: int | None,
+    ):
+        if len(bases) != 1 or not (bases[0] is Base or bases[0] is DecoratorType):
+            raise TypeError(
+                f"decorators must only inherit from bertrand.DecoratorType, not "
+                f"{bases}"
+            )
+
+        super().__init__(name, bases[0], namespace, cache_size)
+        self.class_getitem_signature: inspect.Signature | None = None
+
+    def parse(self) -> DecoratorBuilder:
+        """Analyze the namespace and execute any relevant helper functions to validate
+        its configuration.
+
+        Returns
+        -------
+        DecoratorBuilder
+            A reference to the current builder instance, for chaining.
+
+        Raises
+        ------
+        TypeError
+            If the type implements a reserved attribute, or defines a required field.
+        """
+        for name, value in self.namespace.copy().items():
+            if isinstance(value, Empty):
+                raise TypeError(
+                    f"decorator types must not have required fields: {self.name}.{name}"
+                )
+            if name in self.RESERVED:
+                raise TypeError(
+                    f"type must not implement reserved attribute: {repr(name)}"
+                )
+            if name in self.required:
+                self._validate(name, self.namespace.pop(name))
+
+        # validate any remaining required fields that were not explicitly assigned
+        for name in list(self.required):
+            self._validate(name, EMPTY)
+
+        return self
+
+    def fill(self) -> DecoratorBuilder:
+        """Fill in any missing slots in the namespace with default values, and evaluate
+        any derived attributes.
+
+        Returns
+        -------
+        DecoratorBuilder
+            A reference to the current builder instance, for chaining.
+        """
+        super().fill()
+
+        self._class_getitem()
+        self._from_scalar()
+        self._from_dtype()
+        self._from_string()
+        self._transform()
+        self._inverse_transform()
+
+        return self
+
+    def register(self, typ: DecoratorMeta) -> DecoratorMeta:
+        """Instantiate the type and register it in the global type registry.
+
+        Parameters
+        ----------
+        typ : DecoratorMeta
+            The final type to register.  This is typically the result of a fresh
+            call to type.__new__().
+
+        Returns
+        -------
+        DecoratorMeta
+            The registered type.
+        """
+        # pylint: disable=protected-access
+        parent = self.parent
+        if parent is not Base:
+            typ.aliases.parent = typ  # pushes aliases to global registry
+            REGISTRY._types.add(typ)
+            REGISTRY.decorators._set.add(typ)
+
+        return typ
+
+    def _class_getitem(self) -> None:
+        """Parse a decorator's __class_getitem__ method (if it has one) and generate a
+        wrapper that can be used to instantiate the type.
+        """
+        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+        parameters = {}
+
+        if "__class_getitem__" in self.namespace:
+            invoke = self.namespace["__class_getitem__"]
+
+            def wrapper(
+                cls: DecoratorMeta,
+                wrapped: META,
+                *args: Any
+            ) -> DecoratorMeta | UnionMeta:
+                """Unwrap tuples/unions and forward arguments to the wrapped method."""
+                if isinstance(wrapped, (TypeMeta, DecoratorMeta)):
+                    return _insort_decorator(invoke, cls, wrapped, *args)
+
+                if isinstance(wrapped, UnionMeta):
+                    return Union.from_types(LinkedSet(
+                        _insort_decorator(invoke, cls, t, *args) for t in wrapped
+                    ))
+
+                raise TypeError(
+                    f"Decorators must accept another bertrand type as a first "
+                    f"argument, not {repr(wrapped)}"
+                )
+
+            self.namespace["__class_getitem__"] = classmethod(wrapper)  # type: ignore
+
+            skip = True
+            sig = inspect.signature(invoke)
+            if len(sig.parameters) < 2:
+                raise TypeError(
+                    "__class_getitem__() must accept at least one positional argument "
+                    "describing the type to decorate (in addition to cls)"
+                )
+
+            for par_name, param in sig.parameters.items():
+                if skip:
+                    skip = False
+                    continue
+                if param.kind == param.KEYWORD_ONLY or param.kind == param.VAR_KEYWORD:
+                    raise TypeError(
+                        "__class_getitem__() must not accept any keyword arguments"
+                    )
+                if param.default is param.empty:
+                    raise TypeError(
+                        "__class_getitem__() arguments must have default values"
+                    )
+                parameters[par_name] = param.default
+
+            self.fields.update((k, v) for k, v in parameters.items())
+            self.class_getitem_signature = inspect.Signature([
+                p.replace(annotation=p.empty, default=p.empty)
+                for p in sig.parameters.values()
+            ])
+
+        else:
+            invoke = lambda cls, wrapped, *args: cls.flyweight(wrapped, *args)
+
+            def default(cls: DecoratorMeta, wrapped: META) -> DecoratorMeta | UnionMeta:
+                """Default to identity function."""
+                if isinstance(wrapped, (TypeMeta, DecoratorMeta)):
+                    return _insort_decorator(invoke, cls, wrapped)
+
+                if isinstance(wrapped, UnionMeta):
+                    return Union.from_types(
+                        LinkedSet(_insort_decorator(invoke, cls, t) for t in wrapped)
+                    )
+
+                raise TypeError(
+                    f"Decorators must accept another bertrand type as a first "
+                    f"argument, not {repr(wrapped)}"
+                )
+
+            parameters["wrapped"] = None
+            self.fields["wrapped"] = None
+            self.namespace["__class_getitem__"] = classmethod(default)  # type: ignore
+            self.class_getitem_signature = inspect.Signature([
+                inspect.Parameter("cls", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+                inspect.Parameter("wrapped", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+            ])
+
+        self.namespace["_params"] = tuple(parameters.keys())
+
+    def _from_scalar(self) -> None:
+        """Parse a decorator's from_scalar() method (if it has one) and ensure that it
+        is callable with a single positional argument.
+        """
+        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+
+        if "from_scalar" in self.namespace:
+            method = self.namespace["from_scalar"]
+            if not isinstance(method, classmethod):
+                raise TypeError("from_scalar() must be a class method")
+
+            sig = inspect.signature(method.__wrapped__)
+            params = list(sig.parameters.values())
+            if len(params) != 2 or not (
+                params[1].kind == params[1].POSITIONAL_ONLY or
+                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
+            ):
+                raise TypeError(
+                    "from_scalar() must accept a single positional argument (in "
+                    "addition to cls)"
+                )
+
+            self.namespace["_defines_from_scalar"] = True
+
+        else:
+            def default(cls: DecoratorMeta, scalar: Any) -> DecoratorMeta:
+                """Default to identity function."""
+                return cls
+
+            self.namespace["_defines_from_scalar"] = False
+            self.namespace["from_scalar"] = classmethod(default)  # type: ignore
+
+    def _from_dtype(self) -> None:
+        """Parse a decorator's from_dtype() method (if it has one) and ensure that it
+        is callable with a single positional argument.
+        """
+        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+
+        if "from_dtype" in self.namespace:
+            method = self.namespace["from_dtype"]
+            if not isinstance(method, classmethod):
+                raise TypeError("from_dtype() must be a class method")
+
+            sig = inspect.signature(method.__wrapped__)
+            params = list(sig.parameters.values())
+            if len(params) != 2 or not (
+                params[1].kind == params[1].POSITIONAL_ONLY or
+                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
+            ):
+                raise TypeError(
+                    "from_dtype() must accept a single positional argument in "
+                    "addition to cls"
+                )
+
+            self.namespace["_defines_from_dtype"] = True
+
+        else:
+            def default(cls: DecoratorMeta, dtype: Any) -> DecoratorMeta:
+                """Default to identity function."""
+                return cls
+
+            self.namespace["_defines_from_dtype"] = False
+            self.namespace["from_dtype"] = classmethod(default)  # type: ignore
+
+    def _from_string(self) -> None:
+        """Parse a decorator's from_string() method (if it has one) and ensure that it
+        is callable with the same number of positional arguments as __class_getitem__().
+        """
+        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+
+        if "from_string" in self.namespace:
+            method = self.namespace["from_string"]
+            if not isinstance(method, classmethod):
+                raise TypeError("from_string() must be a class method")
+
+            params = inspect.signature(method.__wrapped__).parameters.values()
+            sig = inspect.Signature([
+                p.replace(annotation=p.empty, default=p.empty) for p in params
+            ])
+
+        else:
+            def default(cls: DecoratorMeta, wrapped: str) -> DecoratorMeta:
+                """Default to identity function."""
+                return cls[wrapped]  # type: ignore
+
+            self.namespace["from_string"] = classmethod(default)  # type: ignore
+            sig = inspect.Signature([
+                inspect.Parameter("cls", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+                inspect.Parameter("wrapped", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+            ])
+
+        if sig != self.class_getitem_signature:
+            raise TypeError(
+                f"the signature of from_string() must match __class_getitem__() "
+                f"exactly: {str(sig)} != {str(self.class_getitem_signature)}"
+            )
+
+    def _transform(self) -> None:
+        """Parse a decorator's transform() method (if it has one) and ensure that it
+        is callable with a single positional argument.
+        """
+        if "transform" in self.namespace:
+            method = self.namespace["transform"]
+            if not isinstance(method, classmethod):
+                raise TypeError("transform() must be a class method")
+
+            sig = inspect.signature(method.__wrapped__)
+            params = list(sig.parameters.values())
+            if len(params) != 2 or not (
+                params[1].kind == params[1].POSITIONAL_ONLY or
+                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
+            ):
+                raise TypeError(
+                    "transform() must accept a single positional argument (in "
+                    "addition to cls)"
+                )
+
+    def _inverse_transform(self) -> None:
+        """Parse a decorator's inverse_transform() method (if it has one) and ensure
+        that it is callable with a single positional argument.
+        """
+        if "inverse_transform" in self.namespace:
+            method = self.namespace["inverse_transform"]
+            if not isinstance(method, classmethod):
+                raise TypeError("inverse_transform() must be a class method")
+
+            sig = inspect.signature(method.__wrapped__)
+            params = list(sig.parameters.values())
+            if len(params) != 2 or not (
+                params[1].kind == params[1].POSITIONAL_ONLY or
+                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
+            ):
+                raise TypeError(
+                    "inverse_transform() must accept a single positional argument (in "
+                    "addition to cls)"
+                )
+
+
+##########################
+####    BASE TYPES    ####
+##########################
 
 
 # TODO: segmentation fault
@@ -6289,11 +6480,6 @@ def _structured_getitem(cls: StructuredMeta, key: int | slice | str) -> META:
 
 # TODO: need a bunch of special cases to handle empty unions
 
-
-
-##########################
-####    BASE TYPES    ####
-##########################
 
 
 # TODO: Type/DecoratorType should go in a separate bases.py file so that they can be
@@ -6776,6 +6962,18 @@ class StructuredUnion(Union, metaclass=StructuredMeta):
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 ####################
 ####    TEST    ####
 ####################
@@ -6882,7 +7080,7 @@ class NumpyInt8(Int8, backend="numpy", cache_size=2):
     is_nullable = False
 
     def __class_getitem__(cls, arg: Any = "i8") -> TypeMeta:  # type: ignore
-        return cls.flyweight(arg, dtype=np.dtype(arg))
+        return cls.flyweight(arg, dtype=np.dtype(arg), itemsize=42)
 
     @classmethod
     def from_string(cls, arg: str) -> TypeMeta:  # type: ignore
@@ -7020,7 +7218,7 @@ class Sparse(DecoratorType, cache_size=256):
 
 
 
-
-print("=" * 80)
-print(f"aliases: {REGISTRY.aliases}")
-print()
+if DEBUG:
+    print("=" * 80)
+    print(f"aliases: {REGISTRY.aliases}")
+    print()
