@@ -5106,11 +5106,8 @@ class UnionMeta(BaseMeta):
     ####    CONSTRUCTORS    ####
     ############################
 
-    def __getitem__(cls, types: TYPESPEC | tuple[TYPESPEC, ...]) -> UnionMeta:
-        typ = resolve(types)
-        if isinstance(typ, UnionMeta):
-            return typ
-        return cls.from_types(LinkedSet((typ,)))
+    def __getitem__(cls, types: TYPESPEC | tuple[TYPESPEC]) -> UnionMeta:
+        return cls.__class_getitem__(types)  # type: ignore
 
     def from_types(
         cls,
@@ -5629,7 +5626,7 @@ class StructuredMeta(UnionMeta):
             "_types": flattened,
             "_hash": hash_val,
             "_index": None,
-            "__class_getitem__": _union_getitem
+            "__class_getitem__": _structured_getitem  # TODO: broken due to __getitem__ in UnionMeta
         })
 
     ##########################
@@ -6214,18 +6211,28 @@ def _parametrized_getitem(cls: TypeMeta, *args: Any) -> NoReturn:
     raise TypeError(f"{cls.slug} cannot be re-parametrized")
 
 
-def _union_getitem(cls: UnionMeta, key: int | slice | str) -> META:
+def _union_getitem(cls: UnionMeta, key: int | slice) -> META:
     """A parametrized replacement for the base Union's __class_getitem__() method that
-    allows for integer-based indexing/slicing of a union's types, as well as
-    string-based indexing of structured unions.
+    allows for integer-based indexing/slicing of a union's types.
     """
-    if cls.is_structured and isinstance(key, str):
-        return cls._columns[key]
-
+    # pylint: disable=protected-access
     if isinstance(key, slice):
-        return cls.from_types(cls._types[key])  # type: ignore
+        return cls.from_types(cls._types[key])
+    return cls._types[key]
 
-    return cls._types[key]  # type: ignore
+
+def _structured_getitem(cls: StructuredMeta, key: int | slice | str) -> META:
+    """A parametrized replacement for the base Union's __class_getitem__() method that
+    allows for string-based lookup as well as integer indexing into the union's
+    columns
+    """
+    # pylint: disable=protected-access
+    if isinstance(key, str):
+        return cls._columns[key]
+    if isinstance(key, slice):
+        return cls.from_columns({k: v for k, v in list(cls.items())[key]})
+    return list(cls.values())[key]
+
 
 
 ###########################
@@ -6756,8 +6763,14 @@ class Union(Base, metaclass=UnionMeta):
     """TODO
     """
 
+    def __class_getitem__(cls, types: TYPESPEC | tuple[TYPESPEC, ...]) -> UnionMeta:
+        typ = resolve(types)
+        if isinstance(typ, UnionMeta):
+            return typ
+        return cls.from_types(LinkedSet((typ,)))
 
-class StructuredUnion(Base, metaclass=StructuredMeta):
+
+class StructuredUnion(Union, metaclass=StructuredMeta):
     """TODO
     """
 
