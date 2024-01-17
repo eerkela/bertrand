@@ -1828,6 +1828,14 @@ def _rle_decode(arr: RLE_ARRAY) -> OBJECT_ARRAY:
 ###########################
 
 
+# TODO: properties of metaclasses will not be overridden by class variables on
+# subclasses.  Class methods, on the other hand, will.  As such, we can safely provide
+# default implementations of from_x(), replace() on the metaclass itself for
+# documentation purposes.  We might also want to check for overrides in fields for all
+# properties that are implemented on the metaclass, so that flyweight() can override
+# them.
+
+
 class BaseMeta(type):
     """Base class for all bertrand metaclasses.
 
@@ -2402,6 +2410,50 @@ class TypeMeta(BaseMeta):
         return result
 
     @property
+    def itemsize(cls) -> int:
+        """The size of a single element of this type, in bytes.
+
+        Returns
+        -------
+        int
+            The width of this type in memory.
+    
+        Raises
+        ------
+        AttributeError
+            If the type does not define an itemsize.  This can only occur for abstract
+            types that do not default to a concrete implementation.
+    
+        Notes
+        -----
+        This is a required field for all concrete types, as enforced by the metaclass
+        machinery.  It is not required for abstract types, since they do not have a
+        concrete implementation by default.
+
+        If this attribute is not provided, it will be inferred from ``dtype.itemsize``.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int8.itemsize
+            1
+            >>> Int16.itemsize
+            2
+            >>> Int32.itemsize
+            4
+            >>> Int64.itemsize
+            8
+        """
+        if not cls.is_default:
+            return cls.as_default.itemsize
+
+        result = cls._fields.get("itemsize", None)
+        if result is None:
+            raise _no_attribute(cls, "itemsize")
+        return result
+
+    @property
     def max(cls) -> int | float:
         """The maximum value that can be accurately represented by this type.
 
@@ -2526,6 +2578,42 @@ class TypeMeta(BaseMeta):
         return result
 
     @property
+    def is_nullable(cls) -> bool:
+        """Indicates whether this type supports missing values.
+
+        Returns
+        -------
+        bool
+            True if the type can represent missing values.  False otherwise.
+
+        Raises
+        ------
+        AttributeError
+            If the type does not define a ``is_nullable`` attribute.
+
+        See Also
+        --------
+        nullable: registers a nullable implementation for a concrete type.
+        as_nullable: converts a concrete type to its nullable implementation.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> Int64["numpy"].is_nullable
+            False
+            >>> Int64["pandas"].is_nullable
+            True
+        """
+        if not cls.is_default:
+            return cls.as_default.is_nullable
+
+        result = cls._fields.get("is_nullable", None)
+        if result is None:
+            raise _no_attribute(cls, "is_nullable")
+        return result
+
+    @property
     def missing(cls) -> Any:
         """The missing value to use for this type.
 
@@ -2573,36 +2661,6 @@ class TypeMeta(BaseMeta):
         if result is None:
             raise _no_attribute(cls, "missing")
         return result
-
-    @property
-    def itemsize(cls) -> int:
-        """The size of a single element of this type, in bytes.
-
-        Returns
-        -------
-        int
-            The width of this type in memory.
-    
-        Notes
-        -----
-        This is identical to the result of the :func:`len` operator when applied
-        to a scalar type.  This behaves similarly to a Python-level ``sizeof()``
-        operator as used in C/C++.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int8.itemsize
-            1
-            >>> Int16.itemsize
-            2
-            >>> Int32.itemsize
-            4
-            >>> Int64.itemsize
-            8
-        """
-        return cls.dtype.itemsize
 
     @property
     def slug(cls) -> str:
@@ -2894,42 +2952,6 @@ class TypeMeta(BaseMeta):
             True
         """
         return not cls._default
-
-    @property
-    def is_nullable(cls) -> bool:
-        """Indicates whether this type supports missing values.
-
-        Returns
-        -------
-        bool
-            True if the type can represent missing values.  False otherwise.
-
-        Raises
-        ------
-        AttributeError
-            If the type does not define a ``is_nullable`` attribute.
-
-        See Also
-        --------
-        nullable: registers a nullable implementation for a concrete type.
-        as_nullable: converts a concrete type to its nullable implementation.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> Int64["numpy"].is_nullable
-            False
-            >>> Int64["pandas"].is_nullable
-            True
-        """
-        if not cls.is_default:
-            return cls.as_default.is_nullable
-
-        result = cls._fields.get("is_nullable", None)
-        if result is None:
-            raise _no_attribute(cls, "is_nullable")
-        return result
 
     #########################
     ####    HIERARCHY    ####
@@ -5548,6 +5570,7 @@ class TypeBuilder:
         "aliases",
         "scalar",
         "dtype",
+        "itemsize",
         "max",
         "min",
         "missing",
@@ -6431,57 +6454,6 @@ class DecoratorBuilder(TypeBuilder):
 ##########################
 
 
-# TODO: segmentation fault
-# >>> Union[Int8["numpy", "i4"]].replace("i2")
-# Union[NumpyInt8['i2']]
-# >>> Union[Int8["numpy", "i4"] | Int8["numpy", "?"]].replace("i2")
-# Traceback (most recent call last):
-#   File "<stdin>", line 1, in <module>
-#   File "/home/eerkela/data/pdcast/pdcast/structs/test.py", line 2207, in __repr__
-#     return f"Union[{', '.join(t.slug for t in cls._types)}]"
-#                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-# TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
-# >>> Union[Int8["numpy", "i4"], Int8["numpy", "?"]].replace("i2")
-# Union[NumpyInt8['i2']]
-# >>> Union[Int8["numpy", "i4"] | Int8["numpy", "?"]]
-# Traceback (most recent call last):
-#   File "<stdin>", line 1, in <module>
-#   File "/home/eerkela/data/pdcast/pdcast/structs/test.py", line 2207, in __repr__
-#     return f"Union[{', '.join(t.slug for t in cls._types)}]"
-#                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-# TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
-# >>> Union[Int8["numpy", "i4"] | Int8["numpy", "?"]]
-# Traceback (most recent call last):
-#   File "<stdin>", line 1, in <module>
-#   File "/home/eerkela/data/pdcast/pdcast/structs/test.py", line 2207, in __repr__
-#     return f"Union[{', '.join(t.slug for t in cls._types)}]"
-#                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-# TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
-# >>> import pdb; pdb.pm()
-# > /home/eerkela/data/pdcast/pdcast/structs/test.py(2207)__repr__()
-# -> return f"Union[{', '.join(t.slug for t in cls._types)}]"
-# (Pdb) cls
-# *** TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
-# (Pdb) cls._types
-# LinkedSet({Union[NumpyInt8['i4'], NumpyInt8['?']]})
-# (Pdb) cls
-# *** TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
-# (Pdb) q
-# >>> Int32 | Int64
-# Union[Int32, Int64]
-# >>> Union[Int32 | Int64]
-# Traceback (most recent call last):
-#   File "<stdin>", line 1, in <module>
-#   File "/home/eerkela/data/pdcast/pdcast/structs/test.py", line 2207, in __repr__
-# TypeError: sequence item 0: expected str instance, bertrand.LinkedDict found
-# >>> quit()
-# Segmentation fault
-
-
-# TODO: need a bunch of special cases to handle empty unions
-
-
-
 # TODO: Type/DecoratorType should go in a separate bases.py file so that they can be
 # hosted verbatim in the docs.
 # -> metaclasses/builders/union go in meta.py or meta.h + meta.cpp
@@ -6564,6 +6536,24 @@ def _check_dtype(
     #         f"dtype.type must be consistent with scalar: {repr(value.type)} != "
     #         f"{repr(scalar)}"
     #     )
+
+    return value
+
+
+def _check_itemsize(
+    value: Any | Empty,
+    namespace: dict[str, Any],
+    processed: dict[str, Any]
+) -> int:
+    """Validate an itemsize provided in a bertrand type's namespace."""
+    if value is EMPTY:
+        if "dtype" in namespace:
+            return namespace["dtype"].itemsize
+        if "dtype" in processed:
+            return processed["dtype"].itemsize
+
+    if not isinstance(value, int) or value <= 0:
+        raise TypeError(f"itemsize must be a positive integer, not {repr(value)}")
 
     return value
 
@@ -6688,6 +6678,7 @@ class Type(Base, metaclass=TypeMeta):
 
     scalar:         type            = EMPTY(_check_scalar)  # type: ignore
     dtype:          DTYPE           = EMPTY(_check_dtype)  # type: ignore
+    itemsize:       int             = EMPTY(_check_itemsize)  # type: ignore
     max:            int | float     = EMPTY(_check_max)  # type: ignore
     min:            int | float     = EMPTY(_check_min)  # type: ignore
     is_nullable:    bool            = EMPTY(_check_is_nullable)  # type: ignore
@@ -7080,7 +7071,7 @@ class NumpyInt8(Int8, backend="numpy", cache_size=2):
     is_nullable = False
 
     def __class_getitem__(cls, arg: Any = "i8") -> TypeMeta:  # type: ignore
-        return cls.flyweight(arg, dtype=np.dtype(arg), itemsize=42)
+        return cls.flyweight(arg, dtype=np.dtype(arg))
 
     @classmethod
     def from_string(cls, arg: str) -> TypeMeta:  # type: ignore
