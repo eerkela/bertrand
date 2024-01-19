@@ -1826,8 +1826,9 @@ def _rle_decode(arr: RLE_ARRAY) -> OBJECT_ARRAY:
 
 
 T = TypeVar("T")
-STRUCTURED_RETURN = Mapping[str, T | Mapping["TypeMeta | DecoratorMeta", T]]
-META_RETURN = PyUnion[T, Mapping["TypeMeta | DecoratorMeta", T], STRUCTURED_RETURN[T]]
+UNION_RETURN = Mapping["TypeMeta | DecoratorMeta", T]
+STRUCTURED_RETURN = Mapping[str, T | UNION_RETURN[T]]
+META_RETURN = PyUnion[T, UNION_RETURN[T], STRUCTURED_RETURN[T]]
 
 
 def _copy_docs(cls: type) -> type:
@@ -5084,7 +5085,7 @@ class UnionMeta(BaseMeta):
     ##########################
 
     @property
-    def is_flyweight(cls) -> Mapping[TypeMeta | DecoratorMeta, bool]:
+    def is_flyweight(cls) -> UNION_RETURN[bool]:
         return cls.__getattr__("is_flyweight")
 
     @property
@@ -5098,14 +5099,14 @@ class UnionMeta(BaseMeta):
         return cls.from_types(LinkedSet(t.base_type for t in cls))
 
     @property
-    def cache_size(cls) -> Mapping[TypeMeta | DecoratorMeta, int | None]:
+    def cache_size(cls) -> UNION_RETURN[int | None]:
         return cls.__getattr__("cache_size")
 
     @property
-    def params(cls) -> Mapping[TypeMeta | DecoratorMeta, Mapping[str, Any]]:
+    def params(cls) -> UNION_RETURN[Mapping[str, Any]]:
         return cls.__getattr__("params")
 
-    def flyweight(cls, *args: Any, **kwargs: Any) -> UnionMeta:
+    def flyweight(cls, *args: Any, **kwargs: Any) -> NoReturn:
         raise _no_attribute(cls, "flyweight")
 
     def replace(cls, *args: Any, **kwargs: Any) -> UnionMeta:
@@ -5116,7 +5117,7 @@ class UnionMeta(BaseMeta):
     ################################
 
     @property
-    def is_default(cls) -> Mapping[TypeMeta | DecoratorMeta, bool]:
+    def is_default(cls) -> UNION_RETURN[bool]:
         return cls.__getattr__("is_default")
 
     @property
@@ -5138,51 +5139,51 @@ class UnionMeta(BaseMeta):
     ####################
 
     @property
-    def aliases(cls) -> Mapping[TypeMeta | DecoratorMeta, Aliases]:
+    def aliases(cls) -> UNION_RETURN[Aliases]:
         return cls.__getattr__("aliases")
 
     @property
-    def scalar(cls) -> Mapping[TypeMeta | DecoratorMeta, type]:
+    def scalar(cls) -> UNION_RETURN[type]:
         return cls.__getattr__("scalar")
 
     @property
-    def dtype(cls) -> Mapping[TypeMeta | DecoratorMeta, DTYPE]:
+    def dtype(cls) -> UNION_RETURN[DTYPE]:
         return cls.__getattr__("dtype")
 
     @property
-    def itemsize(cls) -> Mapping[TypeMeta | DecoratorMeta, int]:
+    def itemsize(cls) -> UNION_RETURN[int]:
         return cls.__getattr__("itemsize")
 
     @property
-    def max(cls) -> Mapping[TypeMeta | DecoratorMeta, int | float]:
+    def max(cls) -> UNION_RETURN[int | float]:
         return cls.__getattr__("max")
 
     @property
-    def min(cls) -> Mapping[TypeMeta | DecoratorMeta, int | float]:
+    def min(cls) -> UNION_RETURN[int | float]:
         return cls.__getattr__("min")
 
     @property
-    def is_nullable(cls) -> Mapping[TypeMeta | DecoratorMeta, bool]:
+    def is_nullable(cls) -> UNION_RETURN[bool]:
         return cls.__getattr__("is_nullable")
 
     @property
-    def missing(cls) -> Mapping[TypeMeta | DecoratorMeta, Any]:
+    def missing(cls) -> UNION_RETURN[Any]:
         return cls.__getattr__("missing")
 
     @property
-    def slug(cls) -> Mapping[TypeMeta | DecoratorMeta, str]:
+    def slug(cls) -> UNION_RETURN[str]:
         return cls.__getattr__("slug")
 
     @property
-    def hash(cls) -> Mapping[TypeMeta | DecoratorMeta, int]:
+    def hash(cls) -> UNION_RETURN[int]:
         return cls.__getattr__("hash")
 
     @property
-    def backend(cls) -> Mapping[TypeMeta | DecoratorMeta, str]:
+    def backend(cls) -> UNION_RETURN[str]:
         return cls.__getattr__("backend")
 
     @property
-    def is_abstract(cls) -> Mapping[TypeMeta | DecoratorMeta, bool]:
+    def is_abstract(cls) -> UNION_RETURN[bool]:
         return cls.__getattr__("is_abstract")
 
     #########################
@@ -5190,7 +5191,7 @@ class UnionMeta(BaseMeta):
     #########################
 
     @property
-    def is_root(cls) -> Mapping[TypeMeta | DecoratorMeta, bool]:
+    def is_root(cls) -> UNION_RETURN[bool]:
         return cls.__getattr__("is_root")
 
     @property
@@ -5223,7 +5224,7 @@ class UnionMeta(BaseMeta):
         return cls.from_types(result)
 
     @property
-    def is_leaf(cls) -> Mapping[TypeMeta | DecoratorMeta, bool]:
+    def is_leaf(cls) -> UNION_RETURN[bool]:
         return cls.__getattr__("is_leaf")
 
     @property
@@ -5252,7 +5253,7 @@ class UnionMeta(BaseMeta):
     ##########################
 
     @property
-    def is_decorator(cls) -> Mapping[TypeMeta | DecoratorMeta, bool]:
+    def is_decorator(cls) -> UNION_RETURN[bool]:
         return cls.__getattr__("is_decorator")
 
     @property
@@ -5332,7 +5333,7 @@ class UnionMeta(BaseMeta):
 
         raise TypeError(f"cannot convert to union type: {repr(cls)}")
 
-    def __getattr__(cls, name: str) -> Mapping[TypeMeta | DecoratorMeta, Any]:
+    def __getattr__(cls, name: str) -> UNION_RETURN[Any]:
         return {t: getattr(t, name) for t in cls._types}
 
     def __dir__(cls) -> set[str]:
@@ -5496,6 +5497,10 @@ class UnionMeta(BaseMeta):
         return f"Union[{', '.join(t.slug for t in cls._types)}]"
 
 
+# TODO: StructuredMeta should use STRUCTURED_RETURN hints where possible.  That way,
+# mypy can infer these return types
+
+
 @_copy_docs
 class StructuredMeta(UnionMeta):
     """Metaclass for structured unions, which are produced by the `Union[]` operator
@@ -5517,12 +5522,13 @@ class StructuredMeta(UnionMeta):
     ####    CONSTRUCTORS    ####
     ############################
 
+    # TODO: copy from_types docs from UnionMeta
+
     def from_types(
         cls,
         types: LinkedSet[TypeMeta | DecoratorMeta],
         index: RLE_ARRAY | None = None
     ) -> NoReturn:
-        """Copied from UnionMeta."""
         raise TypeError("cannot create structured union from a flat set of types")
 
     def from_columns(cls, columns: Mapping[str, META]) -> StructuredMeta:
@@ -5581,11 +5587,9 @@ class StructuredMeta(UnionMeta):
 
     @property
     def base_type(cls) -> StructuredMeta:
-        """Copied from TypeMeta."""
         return cls.from_columns({k: v.base_type for k, v in cls.items()})
 
     def replace(cls, *args: Any, **kwargs: Any) -> StructuredMeta:
-        """Copied from UnionMeta."""
         return cls.from_columns({k: v.replace(*args, **kwargs) for k, v in cls.items()})
 
     ################################
@@ -5594,12 +5598,10 @@ class StructuredMeta(UnionMeta):
 
     @property
     def as_default(cls) -> StructuredMeta:
-        """Copied from TypeMeta."""
         return cls.from_columns({k: v.as_default for k, v in cls.items()})
 
     @property
     def as_nullable(cls) -> StructuredMeta:
-        """Copied from TypeMeta."""
         return cls.from_columns({k: v.as_nullable for k, v in cls.items()})
 
     #########################
@@ -5608,37 +5610,30 @@ class StructuredMeta(UnionMeta):
 
     @property
     def root(cls) -> StructuredMeta:
-        """Copied from TypeMeta."""
         return cls.from_columns({k: v.root for k, v in cls.items()})
 
     @property
     def parent(cls) -> StructuredMeta:
-        """Copied from TypeMeta."""
         return cls.from_columns({k: v.parent for k, v in cls.items()})
 
     @property
     def subtypes(cls) -> StructuredMeta:
-        """Copied from TypeMeta."""
         return cls.from_columns({k: v.subtypes for k, v in cls.items()})
 
     @property
     def implementations(cls) -> StructuredMeta:
-        """Copied from TypeMeta."""
         return cls.from_columns({k: v.implementations for k, v in cls.items()})
 
     @property
     def children(cls) -> StructuredMeta:
-        """Copied from TypeMeta."""
         return cls.from_columns({k: v.children for k, v in cls.items()})
 
     @property
     def leaves(cls) -> StructuredMeta:
-        """Copied from TypeMeta."""
         return cls.from_columns({k: v.leaves for k, v in cls.items()})
 
     @property
     def larger(cls) -> StructuredMeta:
-        """Copied from TypeMeta."""
         return cls.from_columns({k: v.larger for k, v in cls.items()})
 
     ##########################
@@ -5647,17 +5642,14 @@ class StructuredMeta(UnionMeta):
 
     @property
     def decorators(cls) -> StructuredMeta:
-        """Copied from TypeMeta."""
         return cls.from_columns({k: v.decorators for k, v in cls.items()})
 
     @property
     def wrapped(cls) -> StructuredMeta:
-        """Copied from TypeMeta."""
         return cls.from_columns({k: v.wrapped for k, v in cls.items()})
 
     @property
     def unwrapped(cls) -> StructuredMeta:
-        """Copied from TypeMeta."""
         return cls.from_columns({k: v.unwrapped for k, v in cls.items()})
 
     #####################
@@ -5666,12 +5658,10 @@ class StructuredMeta(UnionMeta):
 
     @property
     def is_structured(cls) -> bool:
-        """Copied from TypeMeta."""
         return True
 
     @property
     def index(cls) -> OBJECT_ARRAY | None:
-        """Copied from UnionMeta."""
         # pylint: disable=protected-access
         indices = {
             col: _rle_decode(t._index) for col, t in cls.items()
@@ -5691,7 +5681,6 @@ class StructuredMeta(UnionMeta):
         return arr
 
     def collapse(cls) -> StructuredMeta:
-        """Copied from UnionMeta."""
         return cls.from_columns({
             k: v.collapse() if isinstance(v, UnionMeta) else v for k, v in cls.items()
         })
@@ -5701,7 +5690,6 @@ class StructuredMeta(UnionMeta):
         other: TYPESPEC | Iterable[TYPESPEC],
         strict: bool = False
     ) -> bool:
-        """Copied from UnionMeta."""
         typ = resolve(other)
         if cls is typ:
             return not strict
@@ -5727,7 +5715,6 @@ class StructuredMeta(UnionMeta):
         other: TYPESPEC | Iterable[TYPESPEC],
         strict: bool = False
     ) -> bool:
-        """Copied from UnionMeta."""
         typ = resolve(other)
         if cls is typ:
             return not strict
@@ -5749,7 +5736,6 @@ class StructuredMeta(UnionMeta):
         )
 
     def isdisjoint(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
-        """Copied from UnionMeta."""
         typ = resolve(other)
         if cls is typ:
             return False
@@ -5771,22 +5757,18 @@ class StructuredMeta(UnionMeta):
         key: Callable[[TypeMeta], Any] | None = None,
         reverse: bool = False
     ) -> StructuredMeta:
-        """Copied from UnionMeta."""
         return cls.from_columns({
             k: v.sorted(key=key, reverse=reverse) if isinstance(v, UnionMeta) else v
             for k, v in cls.items()
         })
 
     def keys(cls) -> KeysView[str]:
-        """Copied from UnionMeta."""
         return cls._columns.keys()
 
     def values(cls) -> ValuesView[META]:
-        """Copied from UnionMeta."""
         return cls._columns.values()
 
     def items(cls) -> ItemsView[str, META]:
-        """Copied from UnionMeta."""
         return cls._columns.items()
 
     ###############################
@@ -6893,12 +6875,24 @@ class DecoratorBuilder(TypeBuilder):
 
             def wrapper(
                 cls: DecoratorMeta,
-                wrapped: META,
+                wrapped: TYPESPEC | Iterable[TYPESPEC],
                 *args: Any
             ) -> DecoratorMeta | UnionMeta:
                 """Unwrap tuples/unions and forward arguments to the wrapped method."""
                 if isinstance(wrapped, (TypeMeta, DecoratorMeta)):
                     return _insort_decorator(invoke, cls, wrapped, *args)
+
+                if isinstance(wrapped, StructuredMeta):
+                    columns = {}
+                    for k, v in wrapped.items():
+                        if isinstance(v, UnionMeta):
+                            columns[k] = Union.from_types(LinkedSet(
+                                _insort_decorator(invoke, cls, t, *args) for t in v
+                            ))
+                        else:
+                            columns[k] = _insort_decorator(invoke, cls, v, *args)
+
+                    return StructuredUnion.from_columns(columns)
 
                 if isinstance(wrapped, UnionMeta):
                     return Union.from_types(LinkedSet(
@@ -6950,6 +6944,18 @@ class DecoratorBuilder(TypeBuilder):
                 """Default to identity function."""
                 if isinstance(wrapped, (TypeMeta, DecoratorMeta)):
                     return _insort_decorator(invoke, cls, wrapped)
+
+                if isinstance(wrapped, StructuredMeta):
+                    columns = {}
+                    for k, v in wrapped.items():
+                        if isinstance(v, UnionMeta):
+                            columns[k] = Union.from_types(LinkedSet(
+                                _insort_decorator(invoke, cls, t) for t in v
+                            ))
+                        else:
+                            columns[k] = _insort_decorator(invoke, cls, v)
+
+                    return StructuredUnion.from_columns(columns)
 
                 if isinstance(wrapped, UnionMeta):
                     return Union.from_types(
