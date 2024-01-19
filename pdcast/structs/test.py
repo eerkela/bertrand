@@ -7,8 +7,9 @@ import inspect
 from types import MappingProxyType, UnionType
 from typing import (
     Any, Callable, ItemsView, Iterable, Iterator, KeysView, Mapping, NoReturn,
-    TypeAlias, ValuesView
+    TypeAlias, TypeVar, ValuesView
 )
+from typing import Union as PyUnion
 
 import numpy as np
 import pandas as pd
@@ -1745,10 +1746,7 @@ def _detect_dtype(data: Any, drop_na: bool) -> META:
         is_na = pd.isna(data)
         if is_na.any():
             index = np.full(is_na.shape[0], Missing, dtype=object)
-            if isinstance(result, UnionMeta):
-                index[~is_na] = result.index  # pylint: disable=invalid-unary-operand-type
-            else:
-                index[~is_na] = result  # pylint: disable=invalid-unary-operand-type
+            index[~is_na] = result  # pylint: disable=invalid-unary-operand-type
             return Union.from_types(LinkedSet([result, Missing]), _rle_encode(index))
 
     index = np.array(
@@ -1828,6 +1826,24 @@ def _rle_decode(arr: RLE_ARRAY) -> OBJECT_ARRAY:
 ###########################
 
 
+T = TypeVar("T")
+META_RETURN = PyUnion[
+    T,
+    Mapping["TypeMeta | DecoratorMeta", T],
+    Mapping[str, T | Mapping["TypeMeta | DecoratorMeta", T]],
+]
+
+
+def _copy_docs(cls: type) -> type:
+    """Copy docstrings from BaseMeta to the specified class."""
+    ignore = {"mro"}
+    for name in dir(BaseMeta):
+        if not name.startswith("_") and name not in ignore:
+            getattr(cls, name).__doc__ = getattr(BaseMeta, name).__doc__
+
+    return cls
+
+
 class BaseMeta(type):
     """Base class for all bertrand metaclasses.
 
@@ -1840,8 +1856,6 @@ class BaseMeta(type):
     # TODO: correctly document all return types in both hints and docs, plus note all
     # special cases for each type.  This class contains all documentation, so it should
     # be robust.
-
-    # TODO: account for return types being dicts in case of union.
 
     @property
     def registry(cls) -> TypeRegistry:
@@ -1868,11 +1882,9 @@ class BaseMeta(type):
         """A wrapper around a type's `__class_getitem__` method that automatically
         unpacks tuples into a more traditional call syntax.
         """
-        if isinstance(params, tuple):
-            return cls.__class_getitem__(*params)
-        return cls.__class_getitem__(params)
+        raise NotImplementedError()
 
-    def from_scalar(cls, scalar: Any) -> META:
+    def from_scalar(cls, scalar: Any) -> TypeMeta | DecoratorMeta:
         """Construct a type from a scalar example of that type.
 
         Parameters
@@ -1907,7 +1919,7 @@ class BaseMeta(type):
         """
         raise NotImplementedError()
 
-    def from_dtype(cls, dtype: DTYPE) -> META:
+    def from_dtype(cls, dtype: DTYPE) -> TypeMeta | DecoratorMeta:
         """Construct a type from an equivalent numpy/pandas dtype object.
 
         Parameters
@@ -1945,7 +1957,7 @@ class BaseMeta(type):
         """
         raise NotImplementedError()
 
-    def from_string(cls, *args: str) -> META:
+    def from_string(cls, *args: str) -> TypeMeta | DecoratorMeta:
         """Construct a type from a string in the type-specification mini-language.
 
         Parameters
@@ -1995,7 +2007,7 @@ class BaseMeta(type):
     ##########################
 
     @property
-    def is_flyweight(cls) -> bool:
+    def is_flyweight(cls) -> META_RETURN[bool]:
         """Check whether the type is a parametrized flyweight.
 
         Returns
@@ -2023,7 +2035,7 @@ class BaseMeta(type):
         raise NotImplementedError()
 
     @property
-    def flyweights(cls) -> Mapping[str, TypeMeta | DecoratorMeta]:
+    def flyweights(cls) -> META_RETURN[Mapping[str, TypeMeta | DecoratorMeta]]:
         """A read-only proxy for this type's flyweight cache.
 
         Returns
@@ -2084,7 +2096,7 @@ class BaseMeta(type):
         raise NotImplementedError()
 
     @property
-    def cache_size(cls) -> int | None:
+    def cache_size(cls) -> META_RETURN[int | None]:
         """The maximum size of this type's flyweight cache, if it is limited to
         a finite size.
 
@@ -2111,7 +2123,7 @@ class BaseMeta(type):
         raise NotImplementedError()
 
     @property
-    def params(cls) -> Mapping[str, Any]:
+    def params(cls) -> META_RETURN[Mapping[str, Any]]:
         """A read-only mapping of parameters to their configured values.
 
         Returns
@@ -2251,7 +2263,7 @@ class BaseMeta(type):
     ################################
 
     @property
-    def is_default(cls) -> bool:
+    def is_default(cls) -> META_RETURN[bool]:
         """Check whether the type is its own default implementation.
 
         Returns
@@ -2467,7 +2479,7 @@ class BaseMeta(type):
     ####################
 
     @property
-    def aliases(cls) -> Aliases:
+    def aliases(cls) -> META_RETURN[Aliases]:
         """A setlike collection of aliases for this type.
 
         Returns
@@ -2503,7 +2515,7 @@ class BaseMeta(type):
         raise NotImplementedError()
 
     @property
-    def scalar(cls) -> type:
+    def scalar(cls) -> META_RETURN[type]:
         """The python type associated with a scalar value of this type.
 
         Returns
@@ -2551,7 +2563,7 @@ class BaseMeta(type):
         raise NotImplementedError()
 
     @property
-    def dtype(cls) -> DTYPE:
+    def dtype(cls) -> META_RETURN[DTYPE]:
         """The numpy/pandas dtype associated with vectors of this type.
 
         Returns
@@ -2594,7 +2606,7 @@ class BaseMeta(type):
         raise NotImplementedError()
 
     @property
-    def itemsize(cls) -> int:
+    def itemsize(cls) -> META_RETURN[int]:
         """The size of a single element of this type, in bytes.
 
         Returns
@@ -2632,7 +2644,7 @@ class BaseMeta(type):
         raise NotImplementedError()
 
     @property
-    def max(cls) -> int | float:
+    def max(cls) -> META_RETURN[int | float]:
         """The maximum value that can be accurately represented by this type.
 
         Returns
@@ -2688,7 +2700,7 @@ class BaseMeta(type):
         raise NotImplementedError()
 
     @property
-    def min(cls) -> int | float:
+    def min(cls) -> META_RETURN[int | float]:
         """The minimum value that can be accurately represented by this type.
 
         Returns
@@ -2744,7 +2756,7 @@ class BaseMeta(type):
         raise NotImplementedError()
 
     @property
-    def is_nullable(cls) -> bool:
+    def is_nullable(cls) -> META_RETURN[bool]:
         """Indicates whether this type supports missing values.
 
         Returns
@@ -2774,7 +2786,7 @@ class BaseMeta(type):
         raise NotImplementedError()
 
     @property
-    def missing(cls) -> Any:
+    def missing(cls) -> META_RETURN[Any]:
         """The missing value to use for this type.
 
         Returns
@@ -2817,7 +2829,7 @@ class BaseMeta(type):
         raise NotImplementedError()
 
     @property
-    def slug(cls) -> str:
+    def slug(cls) -> META_RETURN[str]:
         """Get a string identifier for this type, as used to look up flyweights.
 
         Returns
@@ -2845,7 +2857,7 @@ class BaseMeta(type):
         raise NotImplementedError()
 
     @property
-    def hash(cls) -> int:
+    def hash(cls) -> META_RETURN[int]:
         """Get a precomputed hash for this type.
 
         Returns
@@ -2860,7 +2872,7 @@ class BaseMeta(type):
         raise NotImplementedError()
 
     @property
-    def backend(cls) -> str:
+    def backend(cls) -> META_RETURN[str]:
         """Get a concrete type's backend specifier.
 
         Returns
@@ -2888,7 +2900,7 @@ class BaseMeta(type):
         raise NotImplementedError()
 
     @property
-    def is_abstract(cls) -> bool:
+    def is_abstract(cls) -> META_RETURN[bool]:
         """Check whether the type is abstract.
 
         Returns
@@ -2921,7 +2933,7 @@ class BaseMeta(type):
     #########################
 
     @property
-    def is_root(cls) -> bool:
+    def is_root(cls) -> META_RETURN[bool]:
         """Check whether the type is the root of its type hierarchy.
 
         Returns
@@ -3104,7 +3116,7 @@ class BaseMeta(type):
         raise NotImplementedError()
 
     @property
-    def is_leaf(cls) -> bool:
+    def is_leaf(cls) -> META_RETURN[bool]:
         """Check whether the type is a leaf of its type hierarchy.
 
         Returns
@@ -3274,7 +3286,7 @@ class BaseMeta(type):
     ###########################
 
     @property
-    def is_decorator(cls) -> bool:
+    def is_decorator(cls) -> META_RETURN[bool]:
         """Check whether the type is a decorator type.
 
         Returns
@@ -3975,6 +3987,7 @@ class BaseMeta(type):
         raise NotImplementedError()
 
 
+@_copy_docs
 class TypeMeta(BaseMeta):
     """Metaclass for all scalar bertrand types (those that inherit from bertrand.Type).
 
@@ -4055,6 +4068,11 @@ class TypeMeta(BaseMeta):
             (concrete.parent,),
             concrete.namespace
         ))
+
+    def __getitem__(cls, params: Any | tuple[Any, ...]) -> TypeMeta:
+        if isinstance(params, tuple):
+            return cls.__class_getitem__(*params)
+        return cls.__class_getitem__(params)
 
     # NOTE: builders always override these methods during type instantiation, so the
     # versions provided here will never actually be called in practice.
@@ -4374,7 +4392,7 @@ class TypeMeta(BaseMeta):
         return Union.from_types(LinkedSet())
 
     @property
-    def wrapped(cls) -> TypeMeta:  # pylint: disable=redundant-returns-doc
+    def wrapped(cls) -> TypeMeta:
         return cls
 
     @property
@@ -4516,6 +4534,7 @@ class TypeMeta(BaseMeta):
         return cls._slug
 
 
+@_copy_docs
 class DecoratorMeta(BaseMeta):
     """Metaclass for all bertrand type decorators (those that inherit from
     bertrand.DecoratorType).
@@ -4578,17 +4597,22 @@ class DecoratorMeta(BaseMeta):
             build.namespace
         ))
 
+    def __getitem__(cls, params: Any | tuple[Any, ...]) -> DecoratorMeta:
+        if isinstance(params, tuple):
+            return cls.__class_getitem__(*params)
+        return cls.__class_getitem__(params)
+
     # NOTE: builders always override these methods during type instantiation, so the
     # versions provided here will never actually be called in practice.
 
     def from_scalar(cls, scalar: Any) -> DecoratorMeta:
-        raise NotImplementedError()  # see TypeMeta
+        raise NotImplementedError()
 
     def from_dtype(cls, dtype: DTYPE) -> DecoratorMeta:
-        raise NotImplementedError()  # see TypeMeta
+        raise NotImplementedError()
 
     def from_string(cls, *args: str) -> DecoratorMeta:
-        raise NotImplementedError()  # see TypeMeta
+        raise NotImplementedError()
 
     ##########################
     ####    FLYWEIGHTS    ####
@@ -5048,6 +5072,7 @@ class DecoratorMeta(BaseMeta):
         return cls._slug
 
 
+@_copy_docs
 class UnionMeta(BaseMeta):
     """Metaclass for all union types (those produced by Union[] or setlike operators).
 
@@ -5117,27 +5142,27 @@ class UnionMeta(BaseMeta):
             "__class_getitem__": _union_getitem
         })
 
-    def from_scalar(cls, scalar: Any) -> UnionMeta:
+    def from_scalar(cls, scalar: Any) -> NoReturn:
         raise _no_attribute(cls, "from_scalar")
 
-    def from_dtype(cls, dtype: DTYPE) -> UnionMeta:
+    def from_dtype(cls, dtype: DTYPE) -> NoReturn:
         raise _no_attribute(cls, "from_dtype")
 
-    def from_string(cls, *args: str) -> UnionMeta:
+    def from_string(cls, *args: str) -> NoReturn:
         raise _no_attribute(cls, "from_string")
 
     ##########################
     ####    FLYWEIGHTS    ####
     ##########################
 
-    # TODO: check all return type annotations conform to __getattr__
-
     @property
-    def is_flyweight(cls) -> bool:
+    def is_flyweight(cls) -> Mapping[TypeMeta | DecoratorMeta, bool]:
         return cls.__getattr__("is_flyweight")
 
     @property
-    def flyweights(cls) -> Mapping[TypeMeta | DecoratorMeta, Mapping[str, TypeMeta | DecoratorMeta]]:
+    def flyweights(
+        cls
+    ) -> Mapping[TypeMeta | DecoratorMeta, Mapping[str, TypeMeta | DecoratorMeta]]:
         return cls.__getattr__("flyweights")
 
     @property
@@ -5145,7 +5170,7 @@ class UnionMeta(BaseMeta):
         return cls.from_types(LinkedSet(t.base_type for t in cls))
 
     @property
-    def cache_size(cls) -> int | None:
+    def cache_size(cls) -> Mapping[TypeMeta | DecoratorMeta, int | None]:
         return cls.__getattr__("cache_size")
 
     @property
@@ -5174,10 +5199,10 @@ class UnionMeta(BaseMeta):
     def as_nullable(cls) -> UnionMeta:
         return cls.from_types(LinkedSet(t.as_nullable for t in cls))
 
-    def default(cls, other: TypeMeta) -> UnionMeta:
+    def default(cls, other: TypeMeta) -> NoReturn:
         raise _no_attribute(cls, "default")
 
-    def nullable(cls, other: TypeMeta) -> UnionMeta:
+    def nullable(cls, other: TypeMeta) -> NoReturn:
         raise _no_attribute(cls, "nullable")
 
     ####################
@@ -5367,7 +5392,7 @@ class UnionMeta(BaseMeta):
 
         raise TypeError(f"cannot convert to union type: {repr(cls)}")
 
-    def __getattr__(cls, name: str) -> dict[TypeMeta | DecoratorMeta, Any]:
+    def __getattr__(cls, name: str) -> Mapping[TypeMeta | DecoratorMeta, Any]:
         return {t: getattr(t, name) for t in cls._types}
 
     def __dir__(cls) -> set[str]:
@@ -5531,6 +5556,7 @@ class UnionMeta(BaseMeta):
         return f"Union[{', '.join(t.slug for t in cls._types)}]"
 
 
+@_copy_docs
 class StructuredMeta(UnionMeta):
     """Metaclass for structured unions, which are produced by the `Union[]` operator
     when called with a mapping of column names to type specifiers.
@@ -5601,7 +5627,7 @@ class StructuredMeta(UnionMeta):
                 raise TypeError("column values must be bertrand types")
             hash_val = (hash_val * 31 + hash(k) + hash(v)) % (2**63 - 1)
 
-        return BaseMeta.__new__(UnionMeta, cls.__name__, (cls,), {
+        return BaseMeta.__new__(StructuredMeta, cls.__name__, (cls,), {
             "_columns": columns,
             "_types": flattened,
             "_hash": hash_val,
@@ -5827,7 +5853,7 @@ class StructuredMeta(UnionMeta):
     ####    SPECIAL METHODS    ####
     ###############################
 
-    def __getattr__(cls, name: str) -> dict[TypeMeta | DecoratorMeta, Any]:
+    def __getattr__(cls, name: str) -> Mapping[str, Any]:  # type: ignore
         return {k: getattr(v, name) for k, v in cls.items()}
 
     def __call__(cls, *args: Any, **kwargs: Any) -> pd.DataFrame:  # type: ignore
@@ -5858,7 +5884,7 @@ class StructuredMeta(UnionMeta):
 
         return False
 
-    def __subclasscheck__(cls, other: TYPESPEC) -> bool:
+    def __subclasscheck__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> bool:
         typ = resolve(other)
 
         if isinstance(typ, StructuredMeta):
@@ -6107,7 +6133,7 @@ def _has_edge(t1: TypeMeta, t2: TypeMeta) -> bool | None:
     return None
 
 
-def _features(t: TypeMeta | DecoratorMeta) -> tuple[int | float, int, bool, int]:
+def _features(t: TypeMeta | DecoratorMeta) -> tuple[int | float, int, bool, int | float]:
     """Extract a tuple of features representing the allowable range of a type, used for
     range-based sorting and comparison.
     """
@@ -6158,20 +6184,6 @@ def _structured_getitem(cls: StructuredMeta, key: int | slice | str) -> META:
     if isinstance(key, slice):
         return cls.from_columns({k: v for k, v in list(cls.items())[key]})
     return list(cls.values())[key]
-
-
-def _copy_docs(cls: type) -> None:
-    """Copy docstrings from BaseMeta to the specified class."""
-    ignore = {"mro"}
-    for name in dir(BaseMeta):
-        if not name.startswith("_") and name not in ignore:
-            getattr(cls, name).__doc__ = getattr(BaseMeta, name).__doc__
-
-
-_copy_docs(TypeMeta)
-_copy_docs(DecoratorMeta)
-_copy_docs(UnionMeta)
-_copy_docs(StructuredMeta)
 
 
 ########################
