@@ -89,7 +89,7 @@ def _identity(
 
 EMPTY: Empty = Empty(_identity)
 POINTER_SIZE: int = np.dtype(np.intp).itemsize
-META: TypeAlias = "TypeMeta | DecoratorMeta | UnionMeta"
+META: TypeAlias = "TypeMeta | DecoratorMeta | UnionMeta | StructuredMeta"
 DTYPE: TypeAlias = np.dtype[Any] | pd.api.extensions.ExtensionDtype
 ALIAS: TypeAlias = str | type | DTYPE
 TYPESPEC: TypeAlias = "META | ALIAS"
@@ -97,8 +97,7 @@ OBJECT_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[np.object_]]
 RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]
 
 
-# if DEBUG=True, print a config message whenever a new type is created.
-DEBUG: bool = False
+DEBUG: bool = False  # if True, print a debug message whenever a new type is created
 
 
 ########################
@@ -1827,11 +1826,8 @@ def _rle_decode(arr: RLE_ARRAY) -> OBJECT_ARRAY:
 
 
 T = TypeVar("T")
-META_RETURN = PyUnion[
-    T,
-    Mapping["TypeMeta | DecoratorMeta", T],
-    Mapping[str, T | Mapping["TypeMeta | DecoratorMeta", T]],
-]
+STRUCTURED_RETURN = Mapping[str, T | Mapping["TypeMeta | DecoratorMeta", T]]
+META_RETURN = PyUnion[T, Mapping["TypeMeta | DecoratorMeta", T], STRUCTURED_RETURN[T]]
 
 
 def _copy_docs(cls: type) -> type:
@@ -1853,9 +1849,8 @@ class BaseMeta(type):
 
     # pylint: disable=no-value-for-parameter, redundant-returns-doc
 
-    # TODO: correctly document all return types in both hints and docs, plus note all
-    # special cases for each type.  This class contains all documentation, so it should
-    # be robust.
+    # TODO: correctly document all return types in docs, plus note all special cases
+    # for each type.  This class contains all documentation, so it should be robust.
 
     @property
     def registry(cls) -> TypeRegistry:
@@ -1894,7 +1889,7 @@ class BaseMeta(type):
 
         Returns
         -------
-        META
+        TypeMeta | DecoratorMeta
             A type object corresponding to the given scalar.  Each type is free to
             interpret this scalar however it sees fit, and may return a parametrized
             type based on its value.
@@ -1930,7 +1925,7 @@ class BaseMeta(type):
 
         Returns
         -------
-        META
+        TypeMeta | DecoratorMeta
             A type object corresponding to the given dtype.  Each type is free to
             interpret the dtype however it sees fit, and may return a parametrized
             type based on its value.
@@ -1970,7 +1965,7 @@ class BaseMeta(type):
 
         Returns
         -------
-        META
+        TypeMeta | DecoratorMeta
             A type object corresponding to the given arguments.  Each type is free to
             interpret these arguments however it sees fit, and may return a
             parametrized type based on their values.
@@ -2151,7 +2146,7 @@ class BaseMeta(type):
         """
         raise NotImplementedError()
 
-    def flyweight(cls, *args: Any, **kwargs: Any) -> META:
+    def flyweight(cls, *args: Any, **kwargs: Any) -> TypeMeta | DecoratorMeta:
         """Get a flyweight type with the specified parameters.
 
         Parameters
@@ -3863,8 +3858,11 @@ class BaseMeta(type):
     def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any] | pd.DataFrame:
         raise NotImplementedError()
 
-    def __setattr__(cls, name: str, val: Any) -> NoReturn:
-        raise TypeError("bertrand types are immutable")
+    def __setattr__(cls, name: str, val: Any) -> None:
+        if name in {"_parent", "_base_type", "_default", "_nullable"}:
+            super().__setattr__(name, val)
+        else:
+            raise TypeError("bertrand types are immutable")
 
     def __hash__(cls) -> int:
         raise NotImplementedError()
@@ -3998,19 +3996,19 @@ class TypeMeta(BaseMeta):
 
     See the documentation for the `Type` class for more information on how these work.
     """
-    # pylint: disable=missing-return-doc
+    # pylint: disable=missing-return-doc, no-value-for-parameter
 
     _slug: str
     _hash: int
     _required: dict[str, Callable[..., Any]]
     _fields: dict[str, Any]
-    _parent: TypeMeta | None
-    _base_type: TypeMeta | None
+    _parent: TypeMeta
+    _base_type: TypeMeta
     _children: LinkedSet[TypeMeta]
     _subtypes: LinkedSet[TypeMeta]
     _implementations: LinkedDict[str, TypeMeta]
-    _default: list[TypeMeta]
-    _nullable: list[TypeMeta]
+    _default: TypeMeta
+    _nullable: TypeMeta | None
     _cache_size: int | None
     _flyweights: LinkedDict[str, TypeMeta]
     _params: tuple[str]
@@ -4100,8 +4098,6 @@ class TypeMeta(BaseMeta):
 
     @property
     def base_type(cls) -> TypeMeta:
-        if cls._base_type is None:
-            return cls
         return cls._base_type
 
     @property
@@ -4149,22 +4145,21 @@ class TypeMeta(BaseMeta):
 
     @property
     def is_default(cls) -> bool:
-        return not cls._default
+        return cls is cls._default
 
     @property
     def as_default(cls) -> TypeMeta:
-        if cls._default:
-            return cls._default[0]
-        return cls
+        return cls._default
 
     @property
     def as_nullable(cls) -> TypeMeta:
-        if cls.is_nullable:
-            return cls
-        if cls._nullable:
-            return cls._nullable[0]
+        if cls._nullable is None:
+            if not cls.is_default:
+                return cls.as_default.as_nullable
 
-        raise TypeError(f"type is not nullable -> {cls.slug}")
+            raise TypeError(f"type is not nullable -> {cls.slug}")
+
+        return cls._nullable
 
     def default(cls, other: TypeMeta) -> TypeMeta:
         if not cls.is_abstract:
@@ -4175,10 +4170,7 @@ class TypeMeta(BaseMeta):
                 f"default implementation must be a subclass of {cls.__name__}"
             )
 
-        if cls._default:
-            cls._default.pop()
-        cls._default.append(other)
-
+        cls._default = other
         return other
 
     def nullable(cls, other: TypeMeta) -> TypeMeta:
@@ -4194,10 +4186,7 @@ class TypeMeta(BaseMeta):
                 f"nullable implementations must be concrete -> {other.slug}"
             )
 
-        if cls._nullable:
-            cls._nullable.pop()
-        cls._nullable.append(other)
-
+        cls._nullable = other
         return other
 
     ####################
@@ -4210,80 +4199,31 @@ class TypeMeta(BaseMeta):
 
     @property
     def scalar(cls) -> type:
-        if not cls.is_default:
-            return cls.as_default.scalar
-
-        result = cls._fields.get("scalar", None)
-        if result is None:
-            raise _no_attribute(cls, "scalar")
-
-        return result
+        return cls.__getattr__("scalar")
 
     @property
     def dtype(cls) -> DTYPE:
-        if not cls.is_default:
-            return cls.as_default.dtype
-
-        result = cls._fields.get("dtype", None)
-        if result is None:
-            raise _no_attribute(cls, "dtype")
-
-        return result
+        return cls.__getattr__("dtype")
 
     @property
     def itemsize(cls) -> int:
-        if not cls.is_default:
-            return cls.as_default.itemsize
-
-        result = cls._fields.get("itemsize", None)
-        if result is None:
-            raise _no_attribute(cls, "itemsize")
-
-        return result
+        return cls.__getattr__("itemsize")
 
     @property
     def max(cls) -> int | float:
-        if not cls.is_default:
-            return cls.as_default.max
-
-        result = cls._fields.get("max", None)
-        if result is None:
-            raise _no_attribute(cls, "max")
-
-        return result
+        return cls.__getattr__("max")
 
     @property
     def min(cls) -> int | float:
-        if not cls.is_default:
-            return cls.as_default.min
-
-        result = cls._fields.get("min", None)
-        if result is None:
-            raise _no_attribute(cls, "min")
-
-        return result
+        return cls.__getattr__("min")
 
     @property
     def is_nullable(cls) -> bool:
-        if not cls.is_default:
-            return cls.as_default.is_nullable
-
-        result = cls._fields.get("is_nullable", None)
-        if result is None:
-            raise _no_attribute(cls, "is_nullable")
-
-        return result
+        return cls.__getattr__("is_nullable")
 
     @property
     def missing(cls) -> Any:
-        if not cls.is_default:
-            return cls.as_default.missing
-
-        result = cls._fields.get("missing", None)
-        if result is None:
-            raise _no_attribute(cls, "missing")
-
-        return result
+        return cls.__getattr__("missing")
 
     @property
     def slug(cls) -> str:
@@ -4307,20 +4247,17 @@ class TypeMeta(BaseMeta):
 
     @property
     def is_root(cls) -> bool:
-        return cls._parent is None
+        return cls is cls._parent
 
     @property
     def root(cls) -> TypeMeta:
-        # pylint: disable=protected-access
         result = cls
-        while result._parent is not None:
-            result = result._parent
+        while not result.is_root:
+            result = result.parent
         return result
 
     @property
     def parent(cls) -> TypeMeta:
-        if cls._parent is None:
-            return cls
         return cls._parent
 
     @property
@@ -4412,12 +4349,12 @@ class TypeMeta(BaseMeta):
     def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any]:
         # TODO: Even cooler, this could just call cast() on the input, which would
         # enable lossless conversions
-        if cls._default:
+        if cls is cls._default:
             return cls.as_default(*args, **kwargs)
         return pd.Series(*args, dtype=cls.dtype, **kwargs)  # type: ignore
 
     def __getattr__(cls, name: str) -> Any:
-        if cls._default:
+        if cls is not cls._default:
             return getattr(cls.as_default, name)
 
         if name in cls._fields:
@@ -4555,7 +4492,7 @@ class DecoratorMeta(BaseMeta):
     _slug: str
     _hash: int
     _fields: dict[str, Any]
-    _base_type: DecoratorMeta | None
+    _base_type: DecoratorMeta
     _cache_size: int | None
     _flyweights: LinkedDict[str, DecoratorMeta]
     _params: tuple[str]
@@ -4626,13 +4563,8 @@ class DecoratorMeta(BaseMeta):
     def flyweights(cls) -> Mapping[str, DecoratorMeta]:
         return MappingProxyType(cls._flyweights)
 
-    # TODO: directly assign _base_type in builder using a list or something similar.
-    # That way we can avoid an extra branch here.
-
     @property
     def base_type(cls) -> DecoratorMeta:
-        if cls._base_type is None:
-            return cls
         return cls._base_type
 
     @property
@@ -4843,14 +4775,9 @@ class DecoratorMeta(BaseMeta):
             result.add(curr)
         return Union.from_types(result)
 
-    # TODO: assign directly to wrapped rather than using an extra conditional here.
-
     @property
     def wrapped(cls) -> TypeMeta | DecoratorMeta:
-        result = cls._fields["wrapped"]
-        if result is None:
-            return cls
-        return result
+        return cls._fields["wrapped"]
 
     @property
     def unwrapped(cls) -> TypeMeta | DecoratorMeta:
@@ -4874,7 +4801,7 @@ class DecoratorMeta(BaseMeta):
             return cls._fields[name]
 
         wrapped = cls._fields["wrapped"]
-        if wrapped is not None:
+        if cls is not wrapped:
             return getattr(wrapped, name)
 
         raise _no_attribute(cls, name)
@@ -4890,8 +4817,9 @@ class DecoratorMeta(BaseMeta):
 
     def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any]:
         wrapped = cls._fields["wrapped"]
-        if wrapped is None:
+        if cls is wrapped:
             raise TypeError(f"decorator has no wrapped type -> {cls.slug}")
+
         # pylint: disable=no-value-for-parameter
         return cls.transform(wrapped(*args, **kwargs))
 
@@ -4948,7 +4876,7 @@ class DecoratorMeta(BaseMeta):
 
     def __len__(cls) -> int:
         wrapped = cls._fields["wrapped"]
-        if wrapped is None:
+        if cls is wrapped:
             raise TypeError(f"decorator has no wrapped type -> {cls.slug}")
         return len(wrapped)
 
@@ -4957,13 +4885,13 @@ class DecoratorMeta(BaseMeta):
 
     def __iter__(cls) -> Iterator[DecoratorMeta]:
         wrapped = cls._fields["wrapped"]
-        if wrapped is None:
+        if cls is wrapped:
             raise TypeError(f"decorator has no wrapped type -> {cls.slug}")
         return (cls.replace(t) for t in wrapped)
 
     def __reversed__(cls) -> Iterator[DecoratorMeta]:
         wrapped = cls._fields["wrapped"]
-        if wrapped is None:
+        if cls is wrapped:
             raise TypeError(f"decorator has no wrapped type -> {cls.slug}")
         return (cls.replace(t) for t in reversed(wrapped))
 
@@ -5343,10 +5271,22 @@ class UnionMeta(BaseMeta):
         return cls.from_types(LinkedSet(t.unwrapped for t in cls))
 
     def transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
-        raise _no_attribute(cls, "transform")
+        for t in cls:
+            try:
+                return t.transform(series)
+            except Exception:  # pylint: disable=broad-exception-caught
+                continue
+
+        raise TypeError(f"invalid transform: {repr(cls)}")
 
     def inverse_transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
-        raise _no_attribute(cls, "inverse_transform")
+        for t in cls:
+            try:
+                return t.inverse_transform(series)
+            except Exception:  # pylint: disable=broad-exception-caught
+                continue
+
+        raise TypeError(f"invalid inverse transform: {repr(cls)}")
 
     #####################
     ####    UNION    ####
@@ -6265,10 +6205,10 @@ class TypeBuilder:
         self.namespace["_slug"] = self.name
         self.namespace["_hash"] = hash(self.name)
         if self.parent is Base or self.parent is Type or self.parent is DecoratorType:
-            self.namespace["_parent"] = None
+            self.namespace["_parent"] = None  # replaced with self-ref in register()
         else:
             self.namespace["_parent"] = self.parent
-        self.namespace["_base_type"] = None
+        self.namespace["_base_type"] = None  # replaced with self-ref in register()
         self.namespace["_parametrized"] = False
         self.namespace["_cache_size"] = self.cache_size
         self.namespace["_flyweights"] = LinkedDict(max_size=self.cache_size)
@@ -6371,8 +6311,8 @@ class AbstractBuilder(TypeBuilder):
         self.namespace["_children"] = LinkedSet()
         self.namespace["_subtypes"] = LinkedSet()
         self.namespace["_implementations"] = LinkedDict()
-        self.namespace["_default"] = []
-        self.namespace["_nullable"] = []
+        self.namespace["_default"] = None  # replaced with self-ref in register()
+        self.namespace["_nullable"] = None
 
         self.fields["backend"] = ""
 
@@ -6399,17 +6339,26 @@ class AbstractBuilder(TypeBuilder):
             The registered type.
         """
         # pylint: disable=protected-access
+        if typ._parent is None:
+            typ._parent = typ  # type: ignore
+        if typ._base_type is None:
+            typ._base_type = typ  # type: ignore
+        if typ._default is None:
+            typ._default = typ  # type: ignore
+        if typ._nullable is None and self.fields.get("is_nullable", False):
+            typ._nullable = typ
+
         parent = self.parent
         if parent is not Base:
+            typ.aliases.parent = typ  # pushes aliases to global registry
+            typ._children.add(typ)
+            REGISTRY._types.add(typ)
+
             parent._subtypes.add(typ)
             parent._children.add(typ)
             while not parent.is_root:
                 parent = parent.parent
                 parent._children.add(typ)
-
-            typ.aliases.parent = typ  # pushes aliases to global registry
-            typ._children.add(typ)
-            REGISTRY._types.add(typ)
 
         return typ
 
@@ -6433,7 +6382,7 @@ class AbstractBuilder(TypeBuilder):
                     return cls._implementations[backend][*args]
                 return cls._implementations[backend]
 
-            if cls._default:
+            if cls is not cls._default:
                 default = cls.as_default
                 if default.is_abstract:
                     return default.__class_getitem__(backend, *args)
@@ -6618,8 +6567,8 @@ class ConcreteBuilder(TypeBuilder):
         self.namespace["_children"] = LinkedSet()
         self.namespace["_subtypes"] = LinkedSet()
         self.namespace["_implementations"] = LinkedDict()
-        self.namespace["_default"] = []
-        self.namespace["_nullable"] = []
+        self.namespace["_default"] = None
+        self.namespace["_nullable"] = None
 
         self.fields["backend"] = self.backend
 
@@ -6646,17 +6595,26 @@ class ConcreteBuilder(TypeBuilder):
             The registered type.
         """
         # pylint: disable=protected-access
+        if typ._parent is None:
+            typ._parent = typ  # type: ignore
+        if typ._base_type is None:
+            typ._base_type = typ  # type: ignore
+        if typ._default is None:
+            typ._default = typ  # type: ignore
+        if typ._nullable is None and self.fields.get("is_nullable", False):
+            typ._nullable = typ
+
         parent = self.parent
         if self.parent is not Base:
+            typ.aliases.parent = typ  # pushes aliases to global registry
+            typ._children.add(typ)
+            REGISTRY._types.add(typ)
+
             parent._implementations[self.backend] = typ
             parent._children.add(typ)
             while not parent.is_root:
                 parent = parent.parent
                 parent._children.add(typ)
-
-            typ.aliases.parent = typ  # pushes aliases to global registry
-            typ._children.add(typ)
-            REGISTRY._types.add(typ)
 
         return typ
 
@@ -6911,6 +6869,10 @@ class DecoratorBuilder(TypeBuilder):
             The registered type.
         """
         # pylint: disable=protected-access
+        typ._fields["wrapped"] = typ
+        if typ._base_type is None:
+            typ._base_type = typ  # type: ignore
+
         parent = self.parent
         if parent is not Base:
             typ.aliases.parent = typ  # pushes aliases to global registry
@@ -7000,7 +6962,6 @@ class DecoratorBuilder(TypeBuilder):
                 )
 
             parameters["wrapped"] = None
-            self.fields["wrapped"] = None
             self.namespace["__class_getitem__"] = classmethod(default)  # type: ignore
             self.class_getitem_signature = inspect.Signature([
                 inspect.Parameter("cls", inspect.Parameter.POSITIONAL_OR_KEYWORD),
@@ -7706,7 +7667,7 @@ class Categorical(DecoratorType, cache_size=256):
             slug_repr = levels
             dtype = pd.CategoricalDtype()  # NOTE: auto-detects levels when used
             patch = wrapped
-            while patch._default:
+            while not patch.is_default:
                 patch = patch.as_default
             dtype._bertrand_wrapped_type = patch  # disambiguates wrapped type
         else:
