@@ -3,13 +3,13 @@ requires = ["setuptools", "wheel", "cython >= 3.0.0", "numpy"]
 build-backend = "setuptools.build_meta:__legacy__"
 
 [tool.setuptools.packages.find]
-include = ["pdcast*"]
+include = ["bertrand*"]
 
 [tool.setuptools.package-data]
-pdcast = ["py.typed"]
+bertrand = ["py.typed"]
 
 [project]
-name = "pdcast"
+name = "bertrand"
 version = "0.5.1"
 description = "flexible type extensions for pandas"
 authors = [
@@ -100,9 +100,9 @@ dev = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/eerkela/pdcast"
+"Homepage" = "https://github.com/eerkela/bertrand"
 # "Documentation" = "<link to readthedocs>"
-"Issue Tracker" = "https://github.com/eerkela/pdcast/issues"
+"Issue Tracker" = "https://github.com/eerkela/bertrand/issues"
 
 [tool.bumpver]
 current_version = "0.5.1"
@@ -114,7 +114,7 @@ push = true
 
 [tool.bumpver.file_patterns]
 "pyproject.toml" = ['current_version = "{version}"', 'version = "{version}"']
-"pdcast/__init__.py" = ['__version__ = "{version}"']
+"bertrand/__init__.py" = ['__version__ = "{version}"']
 
 [tool.cibuildwheel.windows]
 before-all = "choco install visualstudio2022buildtools"  # C/C++ build tools
@@ -122,7 +122,7 @@ before-all = "choco install visualstudio2022buildtools"  # C/C++ build tools
 [tool.pylint]
 ignore-patterns = [".*\\.pyi"]       # ignore type stubs
 disable = ["too-many-lines"]         # disable max line length for modules
-extension-pkg-allow-list = "pdcast"  # load Cython extensions
+extension-pkg-allow-list = "bertrand"  # load Cython extensions
 load-plugins = ["pylint.extensions.docparams"]
 accept-no-param-doc = false          # force function parameters to be documented
 accept-no-return-doc = false         # force function return values to be documented

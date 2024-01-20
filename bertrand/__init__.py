@@ -50,6 +50,13 @@
 # from .check import typecheck
 
 
+# from .decorators import attach, dispatch, introspect
+# from .convert import cast
+# from .types import *
+from .structs import LinkedList, LinkedSet, LinkedDict
+
+
+
 # # importing * from types also masks module names, which can be troublesome
 # del array         # type: ignore
 # del base          # type: ignore
@@ -66,5 +73,5 @@
 # del timedelta     # type: ignore
 
 
-# # version number (handled by bumpver)
-# __version__ = "0.5.1"
+# version number (handled by bumpver)
+__version__ = "0.5.1"

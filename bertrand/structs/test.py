@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import regex as re  # alternate (PCRE-style) regex engine
 
-from linked import LinkedSet, LinkedDict
+from bertrand import LinkedSet, LinkedDict
 
 
 # NOTE: this module is kind of huge, and would ordinarily be split into multiple files.
@@ -1297,7 +1297,7 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
             ...
         TypeError: invalid specifier -> 'foo'
     """
-    if isinstance(target, (TypeMeta, DecoratorMeta, UnionMeta)):
+    if isinstance(target, (TypeMeta, DecoratorMeta, UnionMeta, StructuredMeta)):
         return target
 
     if isinstance(target, type):
@@ -1671,7 +1671,7 @@ def detect(data: Any, drop_na: bool = True) -> META:
     """
     data_type = type(data)
 
-    if issubclass(data_type, (TypeMeta, DecoratorMeta, UnionMeta)):
+    if issubclass(data_type, (TypeMeta, DecoratorMeta, UnionMeta, StructuredMeta)):
         return data
 
     if issubclass(data_type, pd.DataFrame):
@@ -1849,9 +1849,6 @@ class BaseMeta(type):
     """
 
     # pylint: disable=no-value-for-parameter, redundant-returns-doc
-
-    # TODO: correctly document all return types in docs, plus note all special cases
-    # for each type.  This class contains all documentation, so it should be robust.
 
     @property
     def registry(cls) -> TypeRegistry:
@@ -2068,9 +2065,9 @@ class BaseMeta(type):
 
         Returns
         -------
-        TypeMeta
-            A type with all parameters removed.  If the type is not parametrized,
-            then this is a self-reference.
+        META
+            A type (possibly a union) with all parameters removed.  If the type is not
+            parametrized, then this will be a self-reference.
 
         See Also
         --------
@@ -2219,7 +2216,7 @@ class BaseMeta(type):
 
         Returns
         -------
-        TypeMeta
+        META
             A newly-parametrized type with the specified configuration.
 
         Raises
@@ -2295,7 +2292,7 @@ class BaseMeta(type):
 
         Returns
         -------
-        TypeMeta
+        META
             The default implementation of the type, if it has one.  Otherwise,
             returns the type itself.
 
@@ -2324,7 +2321,7 @@ class BaseMeta(type):
 
         Returns
         -------
-        TypeMeta
+        META
             The type itself if it is already nullable.  Otherwise, the nullable
             implementation that is registered to this type, if it has one.
 
@@ -2963,7 +2960,7 @@ class BaseMeta(type):
 
         Returns
         -------
-        TypeMeta
+        META
             The root type that this type ultimately inherits from.  This can be
             a self-reference if :attr:`is_root` is True.
 
@@ -2992,9 +2989,9 @@ class BaseMeta(type):
 
         Returns
         -------
-        TypeMeta | None
-            The type that this type directly inherits from or None if :attr:`is_root`
-            is True.
+        META
+            The type that this type directly inherits from or a self reference if
+            :attr:`is_root` is True.
 
         See Also
         --------
@@ -3339,7 +3336,7 @@ class BaseMeta(type):
 
         Returns
         -------
-        TypeMeta | DecoratorMeta
+        META
             If the type is a parametrized decorator, then the type that it wraps.
             Otherwise, a self reference to the current type.
 
@@ -3368,7 +3365,7 @@ class BaseMeta(type):
 
         Returns
         -------
-        TypeMeta
+        META
             The innermost type in the stack that is not a parametrized decorator, or a
             self-reference if the type is not decorated.
 
