@@ -1,23 +1,16 @@
 """This module contains all the prepackaged boolean types for the ``pdcast``
 type system.
 """
-import sys
+from sys import getsizeof
 
 import numpy as np
 import pandas as pd
 
-from .base cimport ScalarType, AbstractType
-from .base import register
+from .base import Type
 
 
-#######################
-####    GENERIC    ####
-#######################
-
-
-@register
-class BooleanType(AbstractType):
-    """Generic boolean type.
+class Bool(Type):
+    """Abstract boolean type.
 
     *   **aliases:** ``"bool"``, ``"boolean"``, ``"bool_"``, ``"bool8"``,
         ``"b1"``, ``"?"``
@@ -47,19 +40,11 @@ class BooleanType(AbstractType):
         PythonBooleanType()
     """
 
-    name = "bool"
     aliases = {"bool", "boolean", "bool_", "bool8", "b1", "?"}
 
 
-#####################
-####    NUMPY    ####
-#####################
-
-
-@register
-@BooleanType.default
-@BooleanType.implementation("numpy")
-class NumpyBooleanType(ScalarType):
+@Bool.default
+class NumpyBool(Bool, backend="numpy"):
     """Numpy boolean type.
 
     *   **aliases:** :class:`numpy.bool_`, ``numpy.dtype(bool)``
@@ -88,25 +73,13 @@ class NumpyBooleanType(ScalarType):
     aliases = {np.bool_, np.dtype(np.bool_)}
     dtype = np.dtype(np.bool_)
     itemsize = 1
-    type_def = np.bool_
-    is_numeric = True
     max = 1
     min = 0
     is_nullable = False
 
-    def make_nullable(self) -> ScalarType:
-        """Convert this type to a nullable equivalent."""
-        return self.registry[PandasBooleanType]
 
-
-######################
-####    PANDAS    ####
-######################
-
-
-@register
-@BooleanType.implementation("pandas")
-class PandasBooleanType(ScalarType):
+@NumpyBool.nullable
+class PandasBool(Bool, backend="pandas"):
     """Pandas boolean type.
 
     *   **aliases:** ``"Boolean"``, :class:`pandas.BooleanDtype`
@@ -134,23 +107,14 @@ class PandasBooleanType(ScalarType):
         PandasBooleanType()
     """
 
-    aliases = {pd.BooleanDtype, "Boolean"}
+    aliases = {pd.BooleanDtype}
     dtype = pd.BooleanDtype()
     itemsize = 1
-    type_def = np.bool_
-    is_numeric = True
     max = 1
     min = 0
 
 
-######################
-####    PYTHON    ####
-######################
-
-
-@register
-@BooleanType.implementation("python")
-class PythonBooleanType(ScalarType):
+class PythonBool(Bool, backend="python"):
     """Python boolean type.
 
     *   **aliases:** :class:`bool <python:bool>`
@@ -174,19 +138,7 @@ class PythonBooleanType(ScalarType):
     """
 
     aliases = {bool}
-    itemsize = sys.getsizeof(True)
-    type_def = bool
-    is_numeric = True
+    scalar = bool
+    itemsize = getsizeof(True)
     max = 1
     min = 0
-
-
-#######################
-####    PRIVATE    ####
-#######################
-
-
-# overrides for ``<`` and ``>`` operators ``(A < B)``
-ScalarType.registry.priority.update([
-    (NumpyBooleanType, PandasBooleanType),
-])

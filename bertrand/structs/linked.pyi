@@ -4,8 +4,8 @@ from typing import (
 )
 
 
-K = TypeVar("K")
-V = TypeVar("V")
+K = TypeVar("K", covariant=True)
+V = TypeVar("V", covariant=True)
 
 
 class Lock:

@@ -2,9 +2,10 @@
 machinery, type primitives, and helper functions for detecting and resolving types.
 """
 from __future__ import annotations
-import collections
+
 import inspect
-from types import MappingProxyType, UnionType
+from types import MappingProxyType
+from types import UnionType as PyUnionType
 from typing import (
     Any, Callable, ItemsView, Iterable, Iterator, KeysView, Mapping, NoReturn,
     TypeAlias, TypeVar, ValuesView
@@ -15,7 +16,7 @@ import numpy as np
 import pandas as pd
 import regex as re  # alternate (PCRE-style) regex engine
 
-from bertrand import LinkedSet, LinkedDict
+from bertrand.structs import LinkedSet, LinkedDict
 
 
 # NOTE: this module is kind of huge, and would ordinarily be split into multiple files.
@@ -149,7 +150,7 @@ class DecoratorPrecedence:
     """
 
     def __init__(self) -> None:
-        self._set = LinkedSet()
+        self._set: LinkedSet[DecoratorMeta] = LinkedSet()
 
     def index(self, decorator: DecoratorMeta) -> int:
         """Get the index of a decorator in the precedence order.
@@ -1305,7 +1306,7 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
             return REGISTRY.types[target]
         return Object[target]
 
-    if isinstance(target, UnionType):  # python int | float | None syntax, not bertrand
+    if isinstance(target, PyUnionType):
         return Union.from_types(LinkedSet(resolve(t) for t in target.__args__))
 
     if isinstance(target, np.dtype):
@@ -3609,7 +3610,7 @@ class BaseMeta(type):
     def sorted(
         cls,
         *,
-        key: Callable[[TypeMeta], Any] | None = None,
+        key: Callable[[TypeMeta | DecoratorMeta], Any] | None = None,
         reverse: bool = False
     ) -> UnionMeta:
         """Return a new union with types sorted according to an optional key function.
@@ -5201,21 +5202,21 @@ class UnionMeta(BaseMeta):
 
     @property
     def subtypes(cls) -> UnionMeta:
-        result = LinkedSet()
+        result: LinkedSet[TypeMeta | DecoratorMeta] = LinkedSet()
         for t in cls:
             result.update(t.subtypes)
         return cls.from_types(result)
 
     @property
     def implementations(cls) -> UnionMeta:
-        result = LinkedSet()
+        result: LinkedSet[TypeMeta | DecoratorMeta] = LinkedSet()
         for t in cls:
             result.update(t.implementations)
         return cls.from_types(result)
 
     @property
     def children(cls) -> UnionMeta:
-        result = LinkedSet()
+        result: LinkedSet[TypeMeta | DecoratorMeta] = LinkedSet()
         for t in cls:
             result.update(t.children)
         return cls.from_types(result)
@@ -5226,21 +5227,21 @@ class UnionMeta(BaseMeta):
 
     @property
     def leaves(cls) -> UnionMeta:
-        result = LinkedSet()
+        result: LinkedSet[TypeMeta | DecoratorMeta] = LinkedSet()
         for t in cls:
             result.update(t.leaves)
         return cls.from_types(result)
 
     @property
     def larger(cls) -> UnionMeta:
-        result = LinkedSet()
+        result: LinkedSet[TypeMeta | DecoratorMeta] = LinkedSet()
         for t in cls:
             result.update(t.larger)
         return cls.from_types(result)
 
     @property
     def smaller(cls) -> UnionMeta:
-        result = LinkedSet()
+        result: LinkedSet[TypeMeta | DecoratorMeta] = LinkedSet()
         for t in cls:
             result.update(t.smaller)
         return cls.from_types(result)
@@ -5255,7 +5256,7 @@ class UnionMeta(BaseMeta):
 
     @property
     def decorators(cls) -> UnionMeta:
-        result = LinkedSet()
+        result: LinkedSet[TypeMeta | DecoratorMeta] = LinkedSet()
         for t in cls:
             result.update(t.decorators)
         return cls.from_types(result)
@@ -5301,7 +5302,7 @@ class UnionMeta(BaseMeta):
         return _rle_decode(cls._index)
 
     def collapse(cls) -> UnionMeta:
-        result = LinkedSet()
+        result: LinkedSet[TypeMeta | DecoratorMeta] = LinkedSet()
         for t in cls:
             if not any(t is not u and issubclass(t, u) for u in cls):
                 result.add(t)
@@ -5310,7 +5311,7 @@ class UnionMeta(BaseMeta):
     def sorted(
         cls,
         *,
-        key: Callable[[TypeMeta], Any] | None = None,
+        key: Callable[[TypeMeta | DecoratorMeta], Any] | None = None,
         reverse: bool = False
     ) -> UnionMeta:
         result = cls._types.copy()
@@ -5414,7 +5415,7 @@ class UnionMeta(BaseMeta):
         except TypeError:
             return NotImplemented
 
-        result = LinkedSet()
+        result: LinkedSet[TypeMeta | DecoratorMeta] = LinkedSet()
         if isinstance(typ, UnionMeta):
             for t in cls.children:
                 if not any(issubclass(t, u) or issubclass(u, t) for u in typ):
@@ -5556,7 +5557,7 @@ class StructuredMeta(UnionMeta):
         expressive syntax and automatically resolves each specifier.
         """
         hash_val = 42  # to avoid potential collisions at hash=0
-        flattened = LinkedSet()
+        flattened: LinkedSet[TypeMeta | DecoratorMeta] = LinkedSet()
         for k, v in columns.items():
             if not isinstance(k, str):
                 raise TypeError("column names must be strings")
@@ -5751,7 +5752,7 @@ class StructuredMeta(UnionMeta):
     def sorted(
         cls,
         *,
-        key: Callable[[TypeMeta], Any] | None = None,
+        key: Callable[[TypeMeta | DecoratorMeta], Any] | None = None,
         reverse: bool = False
     ) -> StructuredMeta:
         return cls.from_columns({
@@ -6183,7 +6184,7 @@ class TypeBuilder:
         self.namespace["_fields"] = self.fields
         self.namespace["_slug"] = self.name
         self.namespace["_hash"] = hash(self.name)
-        if self.parent is Base or self.parent is Type or self.parent is DecoratorType:
+        if self.parent is Base or self.parent.__bases__[0] is Base:
             self.namespace["_parent"] = None  # replaced with self-ref in register()
         else:
             self.namespace["_parent"] = self.parent
@@ -6201,6 +6202,9 @@ class TypeBuilder:
                     aliases.add(alias)
 
         self.namespace["_aliases"] = Aliases(aliases)
+
+        self._from_scalar()
+        self._from_dtype()
         return self
 
     def _validate(self, arg: str, value: Any) -> None:
@@ -6214,6 +6218,70 @@ class TypeBuilder:
         except Exception as err:
             raise type(err)(f"{self.name}.{arg} -> {str(err)}")
 
+    def _from_scalar(self) -> None:
+        """Parse a decorator's from_scalar() method (if it has one) and ensure that it
+        is callable with a single positional argument.
+        """
+        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+
+        if "from_scalar" in self.namespace:
+            method = self.namespace["from_scalar"]
+            if not isinstance(method, classmethod):
+                raise TypeError(f"{self.name} -> from_scalar must be a classmethod")
+
+            sig = inspect.signature(method.__wrapped__)
+            params = list(sig.parameters.values())
+            if len(params) != 2 or not (
+                params[1].kind == params[1].POSITIONAL_ONLY or
+                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
+            ):
+                raise TypeError(
+                    f"{self.name} -> from_scalar must accept a single positional "
+                    f"argument (in addition to cls)"
+                )
+
+            self.namespace["_defines_from_scalar"] = True
+
+        else:
+            def default(cls: DecoratorMeta, scalar: Any) -> DecoratorMeta:
+                """Default to identity function."""
+                return cls
+
+            self.namespace["_defines_from_scalar"] = False
+            self.namespace["from_scalar"] = classmethod(default)  # type: ignore
+
+    def _from_dtype(self) -> None:
+        """Parse a type's from_dtype() method (if it has one), ensuring that it is
+        callable with a single positional argument.
+        """
+        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+
+        if "from_dtype" in self.namespace:
+            method = self.namespace["from_dtype"]
+            if not isinstance(method, classmethod):
+                raise TypeError(f"{self.name} -> from_dtype must be a classmethod")
+
+            sig = inspect.signature(method.__wrapped__)
+            params = list(sig.parameters.values())
+            if len(params) != 2 or not (
+                params[1].kind == params[1].POSITIONAL_ONLY or
+                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
+            ):
+                raise TypeError(
+                    f"{self.name} -> from_dtype must accept a single positional "
+                    "argument (in addition to cls)"
+                )
+
+            self.namespace["_defines_from_dtype"] = True
+
+        else:
+            def default(cls: TypeMeta, dtype: Any) -> TypeMeta:
+                """Default to identity function."""
+                return cls
+
+            self.namespace["_defines_from_dtype"] = False
+            self.namespace["from_dtype"] = classmethod(default)  # type: ignore
+
 
 class AbstractBuilder(TypeBuilder):
     """A builder-style parser for an abstract type's namespace (backend == None).
@@ -6225,6 +6293,8 @@ class AbstractBuilder(TypeBuilder):
     abstract types do not support parametrization, and attempting defining a
     corresponding constructor will throw an error.
     """
+
+    RESERVED = TypeBuilder.RESERVED - {"from_dtype"}
 
     def __init__(
         self,
@@ -6296,8 +6366,6 @@ class AbstractBuilder(TypeBuilder):
         self.fields["backend"] = ""
 
         self._class_getitem()
-        self._from_scalar()
-        self._from_dtype()
         self._from_string()
 
         return self
@@ -6370,48 +6438,6 @@ class AbstractBuilder(TypeBuilder):
 
         self.namespace["__class_getitem__"] = classmethod(default)  # type: ignore
         self.namespace["_params"] = ("backend",)
-
-    def _from_scalar(self) -> None:
-        """Parse a type's from_scalar() method (if it has one), ensuring that it is
-        callable with a single positional argument.
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-        if "from_scalar" in self.namespace and self.parent is not Base:
-            raise TypeError(
-                f"{self.name} -> abstract types must not implement from_scalar"
-            )
-
-        def default(cls: TypeMeta, scalar: Any) -> TypeMeta:
-            """Throw an error if attempting to construct an abstract type."""
-            raise TypeError(
-                f"{self.name} -> abstract types cannot be constructed from scalar "
-                f"examples"
-            )
-
-        self.namespace["_defines_from_scalar"] = False
-        self.namespace["from_scalar"] = classmethod(default)  # type: ignore
-
-    def _from_dtype(self) -> None:
-        """Parse a type's from_dtype() method (if it has one), ensuring that it is
-        callable with a single positional argument.
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-        if "from_dtype" in self.namespace and self.parent is not Base:
-            raise TypeError(
-                f"{self.name} -> abstract types must not implement from_dtype"
-            )
-
-        def default(cls: TypeMeta, dtype: Any) -> TypeMeta:
-            """Throw an error if attempting to construct an abstract type."""
-            raise TypeError(
-                f"{self.name} -> abstract types cannot be constructed from "
-                f"numpy/pandas dtypes"
-            )
-
-        self.namespace["_defines_from_scalar"] = False
-        self.namespace["from_dtype"] = classmethod(default)  # type: ignore
 
     def _from_string(self) -> None:
         """Parse a type's from_string() method (if it has one), ensuring that it is
@@ -6552,8 +6578,6 @@ class ConcreteBuilder(TypeBuilder):
         self.fields["backend"] = self.backend
 
         self._class_getitem()
-        self._from_scalar()
-        self._from_dtype()
         self._from_string()
 
         return self
@@ -6645,70 +6669,6 @@ class ConcreteBuilder(TypeBuilder):
             ])
 
         self.namespace["_params"] = tuple(parameters.keys())
-
-    def _from_scalar(self) -> None:
-        """Parse a type's from_scalar() method (if it has one), ensuring that it is
-        callable with a single positional argument.
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-        if "from_scalar" in self.namespace:
-            method = self.namespace["from_scalar"]
-            if not isinstance(method, classmethod):
-                raise TypeError(f"{self.name} -> from_scalar must be a classmethod")
-
-            sig = inspect.signature(method.__wrapped__)
-            params = list(sig.parameters.values())
-            if len(params) != 2 or not (
-                params[1].kind == params[1].POSITIONAL_ONLY or
-                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
-            ):
-                raise TypeError(
-                    f"{self.name} -> from_scalar must accept a single positional "
-                    "argument (in addition to cls)"
-                )
-
-            self.namespace["_defines_from_scalar"] = True
-
-        else:
-            def default(cls: TypeMeta, scalar: Any) -> TypeMeta:
-                """Default to identity function."""
-                return cls
-
-            self.namespace["_defines_from_scalar"] = False
-            self.namespace["from_scalar"] = classmethod(default)  # type: ignore
-
-    def _from_dtype(self) -> None:
-        """Parse a type's from_dtype() method (if it has one), ensuring that it is
-        callable with a single positional argument.
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-        if "from_dtype" in self.namespace:
-            method = self.namespace["from_dtype"]
-            if not isinstance(method, classmethod):
-                raise TypeError(f"{self.name} -> from_dtype must be a classmethod")
-
-            sig = inspect.signature(method.__wrapped__)
-            params = list(sig.parameters.values())
-            if len(params) != 2 or not (
-                params[1].kind == params[1].POSITIONAL_ONLY or
-                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
-            ):
-                raise TypeError(
-                    f"{self.name} -> from_dtype must accept a single positional "
-                    "argument (in addition to cls)"
-                )
-
-            self.namespace["_defines_from_dtype"] = True
-
-        else:
-            def default(cls: TypeMeta, dtype: Any) -> TypeMeta:
-                """Default to identity function."""
-                return cls
-
-            self.namespace["_defines_from_dtype"] = False
-            self.namespace["from_dtype"] = classmethod(default)  # type: ignore
 
     def _from_string(self) -> None:
         """Parse a type's from_string() method (if it has one), ensuring that it is
@@ -6825,8 +6785,6 @@ class DecoratorBuilder(TypeBuilder):
         super().fill()
 
         self._class_getitem()
-        self._from_scalar()
-        self._from_dtype()
         self._from_string()
         self._transform()
         self._inverse_transform()
@@ -6973,70 +6931,6 @@ class DecoratorBuilder(TypeBuilder):
 
         self.namespace["_params"] = tuple(parameters.keys())
 
-    def _from_scalar(self) -> None:
-        """Parse a decorator's from_scalar() method (if it has one) and ensure that it
-        is callable with a single positional argument.
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-        if "from_scalar" in self.namespace:
-            method = self.namespace["from_scalar"]
-            if not isinstance(method, classmethod):
-                raise TypeError(f"{self.name} -> from_scalar must be a classmethod")
-
-            sig = inspect.signature(method.__wrapped__)
-            params = list(sig.parameters.values())
-            if len(params) != 2 or not (
-                params[1].kind == params[1].POSITIONAL_ONLY or
-                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
-            ):
-                raise TypeError(
-                    f"{self.name} -> from_scalar must accept a single positional "
-                    f"argument (in addition to cls)"
-                )
-
-            self.namespace["_defines_from_scalar"] = True
-
-        else:
-            def default(cls: DecoratorMeta, scalar: Any) -> DecoratorMeta:
-                """Default to identity function."""
-                return cls
-
-            self.namespace["_defines_from_scalar"] = False
-            self.namespace["from_scalar"] = classmethod(default)  # type: ignore
-
-    def _from_dtype(self) -> None:
-        """Parse a decorator's from_dtype() method (if it has one) and ensure that it
-        is callable with a single positional argument.
-        """
-        # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-        if "from_dtype" in self.namespace:
-            method = self.namespace["from_dtype"]
-            if not isinstance(method, classmethod):
-                raise TypeError(f"{self.name} -> from_dtype must be a classmethod")
-
-            sig = inspect.signature(method.__wrapped__)
-            params = list(sig.parameters.values())
-            if len(params) != 2 or not (
-                params[1].kind == params[1].POSITIONAL_ONLY or
-                params[1].kind == params[1].POSITIONAL_OR_KEYWORD
-            ):
-                raise TypeError(
-                    f"{self.name} -> from_dtype must accept a single positional "
-                    f"argument (in addition to cls)"
-                )
-
-            self.namespace["_defines_from_dtype"] = True
-
-        else:
-            def default(cls: DecoratorMeta, dtype: Any) -> DecoratorMeta:
-                """Default to identity function."""
-                return cls
-
-            self.namespace["_defines_from_dtype"] = False
-            self.namespace["from_dtype"] = classmethod(default)  # type: ignore
-
     def _from_string(self) -> None:
         """Parse a decorator's from_string() method (if it has one) and ensure that it
         is callable with the same number of positional arguments as __class_getitem__().
@@ -7113,187 +7007,13 @@ class DecoratorBuilder(TypeBuilder):
                 )
 
 
-##########################
-####    BASE TYPES    ####
-##########################
+###############################
+####    PRIMITIVE TYPES    ####
+###############################
 
 
-# TODO: Type/DecoratorType should go in a separate bases.py file so that they can be
-# hosted verbatim in the docs.
-# -> metaclasses/builders/union go in meta.py or meta.h + meta.cpp
-# -> meta.py, type.py, decorator.py
-
-
-def _check_scalar(
-    value: Any | Empty,
-    namespace: dict[str, Any],
-    processed: dict[str, Any],
-) -> type:
-    """Validate a scalar Python type provided in a bertrand type's namespace or infer
-    it from a provided dtype.
-    """
-    if "scalar" in processed:  # auto-generated in check_dtype
-        return processed["scalar"]
-
-    dtype = namespace.get("dtype", EMPTY)
-
-    if value is EMPTY:
-        if dtype is EMPTY:
-            raise TypeError("type must define at least one of 'dtype' and/or 'scalar'")
-        if not isinstance(dtype, (np.dtype, pd.api.extensions.ExtensionDtype)):
-            raise TypeError(f"dtype must be a numpy/pandas dtype, not {repr(dtype)}")
-
-        processed["dtype"] = dtype
-        return dtype.type
-
-    if not isinstance(value, type):
-        raise TypeError(f"scalar must be a Python type object, not {repr(value)}")
-
-    if dtype is EMPTY:
-        processed["dtype"] = None  # TODO: synthesize dtype
-    else:
-        processed["dtype"] = dtype
-    # elif value == dtype.type:
-    #     processed["dtype"] = dtype
-    # else:
-    #     raise TypeError(
-    #         f"scalar must be consistent with dtype.type: {repr(value)} != "
-    #         f"{repr(dtype.type)}"
-    #     )
-
-    return value
-
-
-def _check_dtype(
-    value: Any | Empty,
-    namespace: dict[str, Any],
-    processed: dict[str, Any]
-) -> DTYPE:
-    """Validate a numpy or pandas dtype provided in a bertrand type's namespace or
-    infer it from a provided scalar.
-    """
-    if "dtype" in processed:  # auto-generated in check_scalar
-        return processed["dtype"]
-
-    scalar = namespace.get("scalar", EMPTY)
-
-    if value is EMPTY:
-        if scalar is EMPTY:
-            raise TypeError("type must define at least one of 'dtype' and/or 'scalar'")
-        if not isinstance(scalar, type):
-            raise TypeError(f"scalar must be a Python type object, not {repr(scalar)}")
-
-        processed["scalar"] = scalar
-        return None  # TODO: synthesize dtype
-
-    if not isinstance(value, (np.dtype, pd.api.extensions.ExtensionDtype)):
-        raise TypeError(f"dtype must be a numpy/pandas dtype, not {repr(value)}")
-
-    if scalar is EMPTY:
-        processed["scalar"] = value.type
-    else:
-        processed["scalar"] = scalar
-    # elif value.type == scalar:
-    #     processed["scalar"] = scalar
-    # else:
-    #     raise TypeError(
-    #         f"dtype.type must be consistent with scalar: {repr(value.type)} != "
-    #         f"{repr(scalar)}"
-    #     )
-
-    return value
-
-
-def _check_itemsize(
-    value: Any | Empty,
-    namespace: dict[str, Any],
-    processed: dict[str, Any]
-) -> int:
-    """Validate an itemsize provided in a bertrand type's namespace."""
-    if value is EMPTY:
-        if "dtype" in namespace:
-            return namespace["dtype"].itemsize
-        if "dtype" in processed:
-            return processed["dtype"].itemsize
-
-    if not isinstance(value, int) or value <= 0:
-        raise TypeError(f"itemsize must be a positive integer, not {repr(value)}")
-
-    return value
-
-
-def _check_max(
-    value: Any | Empty,
-    namespace: dict[str, Any],
-    processed: dict[str, Any]
-) -> int | float:
-    """Validate a maximum value provided in a bertrand type's namespace."""
-    if "max" in processed:  # auto-generated in check_min
-        return processed["max"]
-
-    min_val = namespace.get("min", -np.inf)
-
-    if value is EMPTY:
-        processed["min"] = min_val
-        return np.inf
-
-    if not (isinstance(value, int) or isinstance(value, float) and value == np.inf):
-        raise TypeError(f"min must be an integer or infinity, not {repr(value)}")
-
-    if value < min_val:
-        raise TypeError(f"max must be greater than min: {value} < {min_val}")
-
-    processed["min"] = min_val
-    return value
-
-
-def _check_min(
-    value: Any | Empty,
-    namespace: dict[str, Any],
-    processed: dict[str, Any]
-) -> int | float:
-    """Validate a minimum value provided in a bertrand type's namespace."""
-    if "min" in processed:  # auto-generated in check_max
-        return processed["min"]
-
-    max_val = namespace.get("max", np.inf)
-
-    if value is EMPTY:
-        processed["max"] = max_val
-        return -np.inf
-
-    if not (isinstance(value, int) or isinstance(value, float) and value == -np.inf):
-        raise TypeError(f"min must be an integer or infinity, not {repr(value)}")
-
-    if value > max_val:
-        raise TypeError(f"min must be less than or equal to max: {value} > {max_val}")
-
-    processed["max"] = max_val
-    return value
-
-
-def _check_is_nullable(
-    value: Any | Empty,
-    namespace: dict[str, Any],
-    processed: dict[str, Any]
-) -> bool:
-    """Validate a nullability flag provided in a bertrand type's namespace."""
-    return True if value is EMPTY else bool(value)
-
-
-def _check_missing(
-    value: Any | Empty,
-    namespace: dict[str, Any],
-    processed: dict[str, Any]
-) -> Any:
-    """Validate a missing value provided in a bertrand type's namespace."""
-    if value is EMPTY:
-        return pd.NA
-
-    if not pd.isna(value):
-        raise TypeError(f"missing value must pass a pandas.isna() check: {repr(value)}")
-
-    return value
+# NOTE: Type and DecoratorType are listed in separate files alongside this one to
+# allow them to be directly hosted in the documentation.
 
 
 class Base:
@@ -7302,202 +7022,6 @@ class Base:
 
     def __new__(cls) -> NoReturn:
         raise TypeError("bertrand types cannot be instantiated")
-
-
-class Type(Base, metaclass=TypeMeta):
-    """Parent class for all scalar types.
-
-    Inheriting from this class triggers the metaclass machinery, which automatically
-    validates and registers the inheriting type.  As such, any class that inherits from
-    this type becomes the root of a new type hierarchy, which can be extended to create
-    tree structures of arbitrary depth.
-    """
-
-    # NOTE: every type has a collection of strings, python types, and numpy/pandas
-    # dtype objects which are used to identify the type during detect() and resolve()
-    # calls.  Here's how they work
-    #   1.  Python types (e.g. int, str, etc.) - used during elementwise detect() to
-    #       identify scalar values.  If defined, the type's `from_scalar()` method will
-    #       be called automatically to parse each element.
-    #   2.  numpy/pandas dtype objects (e.g. np.dtype("i4")) - used during detect() to
-    #       identify array-like containers that implement a `.dtype` attribute.  If
-    #       defined, the type's `from_dtype()` method will be called automatically to
-    #       parse the dtype.  The same process also occurs whenever resolve() is called
-    #       with a literal dtype argument.
-    #   3.  Strings - used during resolve() to identify types by their aliases.
-    #       Optional arguments can be provided in square brackets after the alias, and
-    #       will be tokenized and passed to the type's `from_string()` method, if it
-    #       exists.  Note that a type's aliases implicitly include its class name, so
-    #       that type hints containing the type can be identified when
-    #       `from __future__ import annotations` is enabled.  It is good practice to
-    #       follow suit with other aliases so they can be used in type hints as well.
-
-    aliases = {"foo", int, type(np.dtype("i4"))}  # <- for example (not evaluated)
-
-    # NOTE: Any field assigned to EMPTY is a required attribute that must be defined
-    # by concretions of this type.  Each field can be inherited from a parent type
-    # with normal semantics.  If a type does not define a required attribute, then the
-    # validation function will receive EMPTY as its value, and must either raise an
-    # error or replace it with a default value.
-
-    scalar:         type            = EMPTY(_check_scalar)  # type: ignore
-    dtype:          DTYPE           = EMPTY(_check_dtype)  # type: ignore
-    itemsize:       int             = EMPTY(_check_itemsize)  # type: ignore
-    max:            int | float     = EMPTY(_check_max)  # type: ignore
-    min:            int | float     = EMPTY(_check_min)  # type: ignore
-    is_nullable:    bool            = EMPTY(_check_is_nullable)  # type: ignore
-    missing:        Any             = EMPTY(_check_missing)
-
-    # NOTE: the following methods can be used to allow parametrization of a type using
-    # an integrated flyweight cache.  At minimum, a parametrized type must implement
-    # `__class_getitem__`, which specifies the parameter names and default values, as
-    # well as `from_string`, which parses the equivalent syntax in the
-    # type-specification mini-language.  The other methods are optional, and can be
-    # used to customize the behavior of the detect() and resolve() helper functions.
-
-    # None of these methods will be inherited by subclasses, so their behavior is
-    # unique for each type.  If they are not defined, they will default to the
-    # identity function, which will be optimized away where possible to improve
-    # performance.
-
-    def __class_getitem__(cls, spam: str = "foo", eggs: int = 2) -> TypeMeta:
-        """Example implementation showing how to create a parametrized type.
-
-        When this method is defined, the metaclass will analyze its signature and
-        extract any default values, which will be forwarded to the class's
-        :attr:`params <Type.params>` attribute, as well as its base namespace.  Each
-        argument must have a default value, and the signature must not contain any
-        keyword or variadic arguments (i.e. *args or **kwargs).
-
-        Positional arguments to the flyweight() helper method should be supplied in
-        the same order as they appear in the signature, and will be used to form the
-        string identifier for the type.  Keywords are piped directly into the resulting
-        class's namespace, and will override any existing values.  In the interest of
-        speed, no checks are performed on the arguments, so it is up to the user to
-        ensure that they are in the expected format.
-        """
-        return cls.flyweight(spam, eggs, dtype=np.dtype("i4"))
-
-    @classmethod
-    def from_string(cls, spam: str, eggs: str) -> TypeMeta:
-        """Example implementation showing how to parse a string in the
-        type-specification mini-language.
-
-        This method will be called automatically whenever :func:`resolve` encounters
-        an alias that matches this type.  Its signature must match that of
-        :meth:`__class_getitem__`, and it will be invoked with the comma-separated
-        tokens parsed from the alias's argument list.  They are always provided as
-        strings, with no further processing other than stripping leading/trailing
-        whitespace.  It is up to the user to parse them into the appropriate type.
-        """
-        return cls.flyweight(spam, int(eggs), dtype=np.dtype("i4"))
-
-    @classmethod
-    def from_scalar(cls, scalar: Any) -> TypeMeta:
-        """Example implementation showing how to parse a scalar value into a
-        parametrized type.
-
-        This method will be called during the main :func:`detect` loop whenever a
-        scalar or unlabeled sequence of scalars is encountered.  It should be fast,
-        since it will be called for every element in the array.  If left blank, it will
-        """
-        return cls.flyweight(scalar.spam, scalar.eggs(1, 2, 3), dtype=scalar.ham)
-
-    @classmethod
-    def from_dtype(cls, dtype: Any) -> TypeMeta:
-        """Example implementation showing how to parse a numpy/pandas dtype into a
-        parametrized type.
-        
-        This method will be called whenever :func:`detect` encounters array-like data
-        with a related dtype, or when :func:`resolve` is called with a dtype argument.
-        """
-        return cls.flyweight(dtype.unit, dtype.step_size, dtype=dtype)
-
-    # NOTE: the following methods are provided as default implementations inherited by
-    # descendent types.  They can be overridden to customize their behavior, although
-    # doing so is not recommended unless absolutely necessary.  Typically, users should
-    # invoke the parent method via super() and modify the input/output, rather than
-    # reimplementing the method from scratch.
-
-    @classmethod
-    def replace(cls, *args: Any, **kwargs: Any) -> TypeMeta:
-        """Base implementation of the replace() method, which is inherited by all
-        descendant types.
-        """
-        forwarded = dict(cls.params)
-        positional = collections.deque(args)
-        n  = len(args)
-        i = 0
-        for k in forwarded:
-            if i < n:
-                forwarded[k] = positional.popleft()
-            elif k in kwargs:
-                forwarded[k] = kwargs.pop(k)
-
-        if positional:
-            raise TypeError(
-                f"replace() takes at most {len(cls.params)} positional arguments but "
-                f"{n} were given"
-            )
-        if kwargs:
-            singular = len(kwargs) == 1
-            raise TypeError(
-                f"replace() got {'an ' if singular else ''}unexpected keyword argument"
-                f"{'' if singular else 's'} [{', '.join(repr(k) for k in kwargs)}]"
-            )
-
-        return cls.base_type[*forwarded.values()]
-
-
-class DecoratorType(Base, metaclass=DecoratorMeta):
-    """TODO
-    """
-
-    # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
-
-    # TODO: __class_getitem__(), from_scalar(), from_dtype(), from_string()
-
-    @classmethod
-    def transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
-        """Base implementation of the transform() method, which is inherited by all
-        descendant types.
-        """
-        return series.astype(cls.dtype, copy=False)
-
-    @classmethod
-    def inverse_transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
-        """Base implementation of the inverse_transform() method, which is inherited by
-        all descendant types.
-        """
-        return series.astype(cls.wrapped.dtype, copy=False)
-
-    @classmethod
-    def replace(cls, *args: Any, **kwargs: Any) -> DecoratorMeta:
-        """Copied from TypeMeta."""
-        forwarded = dict(cls.params)
-        positional = collections.deque(args)
-        n  = len(args)
-        i = 0
-        for k in forwarded:
-            if i < n:
-                i += 1
-                forwarded[k] = positional.popleft()
-            elif k in kwargs:
-                forwarded[k] = kwargs.pop(k)
-
-        if positional:
-            raise TypeError(
-                f"replace() takes at most {len(cls.params)} positional arguments but "
-                f"{n} were given"
-            )
-        if kwargs:
-            singular = len(kwargs) == 1
-            raise TypeError(
-                f"replace() got {'an ' if singular else ''}unexpected keyword argument"
-                f"{'' if singular else 's'} [{', '.join(repr(k) for k in kwargs)}]"
-            )
-
-        return cls.base_type[*forwarded.values()]
 
 
 class Union(Base, metaclass=UnionMeta):
@@ -7529,251 +7053,135 @@ class StructuredUnion(Union, metaclass=StructuredMeta):
 
 
 
-####################
-####    TEST    ####
-####################
+# ####################
+# ####    TEST    ####
+# ####################
+
+
+
+
+
+
+# class Categorical(DecoratorType, cache_size=256):
+#     aliases = {"categorical", pd.CategoricalDtype()}
+
+#     def __class_getitem__(
+#         cls,
+#         wrapped: TypeMeta | DecoratorMeta | None = None,
+#         levels: Iterable[Any] | Empty = EMPTY
+#     ) -> DecoratorMeta:
+#         """TODO"""
+#         if wrapped is None:
+#             raise NotImplementedError("TODO")  # should never occur
+
+#         if levels is EMPTY:
+#             slug_repr = levels
+#             dtype = pd.CategoricalDtype()  # NOTE: auto-detects levels when used
+#             patch = wrapped
+#             while not patch.is_default:
+#                 patch = patch.as_default
+#             dtype._bertrand_wrapped_type = patch  # disambiguates wrapped type
+#         else:
+#             levels = wrapped(levels)
+#             slug_repr = list(levels)
+#             dtype = pd.CategoricalDtype(levels)
+
+#         return cls.flyweight(wrapped, slug_repr, dtype=dtype, levels=levels)
+
+#     @classmethod
+#     def from_dtype(cls, dtype: pd.CategoricalDtype) -> DecoratorMeta:
+#         """TODO"""
+#         if dtype.categories is None:
+#             if hasattr(dtype, "_bertrand_wrapped_type"):  # type: ignore
+#                 return cls[dtype._bertrand_wrapped_type]
+#             return cls
+#         return cls[resolve(dtype.categories.dtype), dtype.categories]
+
+#     @classmethod
+#     def from_string(cls, wrapped: str, levels: str | Empty = EMPTY) -> DecoratorMeta:
+#         """TODO"""
+#         if levels is EMPTY:
+#             return cls[resolve(wrapped), levels]
+
+#         if levels.startswith("[") and levels.endswith("]"):
+#             stripped = levels[1:-1].strip()
+#         elif levels.startswith("(") and levels.endswith(")"):
+#             stripped = levels[1:-1].strip()
+#         else:
+#             raise TypeError(f"invalid levels: {repr(levels)}")
+
+#         breakpoint()
+#         return cls[resolve(wrapped), list(s.group() for s in TOKEN.finditer(stripped))]
+
+#     @classmethod
+#     def transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
+#         """TODO"""
+#         if cls.dtype.categories is None:
+#             dtype = pd.CategoricalDtype(cls.wrapped(series.unique()))
+#         else:
+#             dtype = cls.dtype
+#         return series.astype(dtype, copy=False)
+
+
+# class Sparse(DecoratorType, cache_size=256):
+#     aliases = {"sparse", pd.SparseDtype()}
+#     _is_empty = False
+
+#     # TODO: Sparse[Categorical] does not work
+
+#     def __class_getitem__(
+#         cls,
+#         wrapped: TypeMeta | DecoratorMeta = None,  # type: ignore
+#         fill_value: Any | Empty = EMPTY
+#     ) -> DecoratorMeta:
+#         """TODO"""
+#         # NOTE: metaclass automatically raises an error when wrapped is None.  Listing
+#         # it as such in the signature just sets the default value.
+#         is_empty = fill_value is EMPTY
+
+#         if isinstance(wrapped.unwrapped, DecoratorMeta):
+#             return cls.flyweight(wrapped, fill_value, dtype=None, _is_empty=is_empty)
+
+#         if is_empty:
+#             fill = wrapped.missing
+#         elif pd.isna(fill_value):
+#             fill = fill_value
+#         else:
+#             fill = wrapped(fill_value)
+#             if len(fill) != 1:
+#                 raise TypeError(f"fill_value must be a scalar, not {repr(fill_value)}")
+#             fill = fill[0]
+
+#         dtype = pd.SparseDtype(wrapped.dtype, fill)
+#         return cls.flyweight(wrapped, fill, dtype=dtype, _is_empty=is_empty)
 
+#     @classmethod
+#     def from_dtype(cls, dtype: pd.SparseDtype) -> DecoratorMeta:
+#         """TODO"""
+#         return cls[resolve(dtype.subtype), dtype.fill_value]
 
-class Int(Type):
-    aliases = {"int", "integer"}
+#     @classmethod
+#     def from_string(cls, wrapped: str, fill_value: str | Empty = EMPTY) -> DecoratorMeta:
+#         """TODO"""
+#         return cls[resolve(wrapped), REGISTRY.na_strings.get(fill_value, fill_value)]
 
+#     @classmethod
+#     def replace(cls, *args: Any, **kwargs: Any) -> DecoratorMeta:
+#         """TODO"""
+#         if cls._is_empty and len(args) < 2 and "fill_value" not in kwargs:
+#             kwargs["fill_value"] = EMPTY
+#         return super().replace(*args, **kwargs)
 
-@Int.default
-class Signed(Int):
-    aliases = {"signed"}
+#     @classmethod
+#     def inverse_transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
+#         """TODO"""
+#         return series.sparse.to_dense()
 
 
-class PythonInt(Signed, backend="python"):
-    aliases = {int}
-    scalar = int
-    dtype = np.dtype(object)
-    max = np.inf
-    min = -np.inf
-    is_nullable = True
-    missing = None
 
 
 
-@Signed.default
-class Int64(Signed):
-    aliases = {"int64", "long long"}
-    max = 2**63 - 1
-    min = -2**63
-
-
-@Int64.default
-class NumpyInt64(Int64, backend="numpy"):
-    aliases = {np.int64, np.dtype(np.int64)}
-    dtype = np.dtype(np.int64)
-    is_nullable = False
-
-
-@NumpyInt64.nullable
-class PandasInt64(Int64, backend="pandas"):
-    aliases = {pd.Int64Dtype()}
-    dtype = pd.Int64Dtype()
-    is_nullable = True
-
-
-
-
-class Int32(Signed):
-    aliases = {"int32", "long"}
-    max = 2**31 - 1
-    min = -2**31
-
-
-@Int32.default
-class NumpyInt32(Int32, backend="numpy"):
-    aliases = {np.int32, np.dtype(np.int32)}
-    dtype = np.dtype(np.int32)
-    is_nullable = False
-
-
-@NumpyInt32.nullable
-class PandasInt32(Int32, backend="pandas"):
-    aliases = {pd.Int32Dtype()}
-    dtype = pd.Int32Dtype()
-    is_nullable = True
-
-
-
-
-class Int16(Signed):
-    aliases = {"int16", "short"}
-    max = 2**15 - 1
-    min = -2**15
-    missing = np.nan
-
-
-@Int16.default
-class NumpyInt16(Int16, backend="numpy"):
-    aliases = {np.int16, np.dtype(np.int16)}
-    dtype = np.dtype(np.int16)
-    is_nullable = False
-
-
-@NumpyInt16.nullable
-class PandasInt16(Int16, backend="pandas"):
-    aliases = {pd.Int16Dtype()}
-    dtype = pd.Int16Dtype()
-    is_nullable = True
-
-
-
-
-class Int8(Signed):
-    aliases = {"int8", "char"}
-    max = 2**7 - 1
-    min = -2**7
-
-
-@Int8.default
-class NumpyInt8(Int8, backend="numpy", cache_size=2):
-    aliases = {np.int8, np.dtype(np.int8)}
-    dtype = np.dtype(np.int8)
-    is_nullable = False
-
-    def __class_getitem__(cls, arg: Any = "i8") -> TypeMeta:  # type: ignore
-        return cls.flyweight(arg, dtype=np.dtype(arg))
-
-    @classmethod
-    def from_string(cls, arg: str) -> TypeMeta:  # type: ignore
-        """TODO"""
-        return cls[arg]
-
-
-@NumpyInt8.nullable
-class PandasInt8(Int8, backend="pandas"):
-    aliases = {pd.Int8Dtype()}
-    dtype = pd.Int8Dtype()
-    is_nullable = True
-
-
-
-
-
-
-class Categorical(DecoratorType, cache_size=256):
-    aliases = {"categorical", pd.CategoricalDtype()}
-
-    def __class_getitem__(
-        cls,
-        wrapped: TypeMeta | DecoratorMeta | None = None,
-        levels: Iterable[Any] | Empty = EMPTY
-    ) -> DecoratorMeta:
-        """TODO"""
-        if wrapped is None:
-            raise NotImplementedError("TODO")  # should never occur
-
-        if levels is EMPTY:
-            slug_repr = levels
-            dtype = pd.CategoricalDtype()  # NOTE: auto-detects levels when used
-            patch = wrapped
-            while not patch.is_default:
-                patch = patch.as_default
-            dtype._bertrand_wrapped_type = patch  # disambiguates wrapped type
-        else:
-            levels = wrapped(levels)
-            slug_repr = list(levels)
-            dtype = pd.CategoricalDtype(levels)
-
-        return cls.flyweight(wrapped, slug_repr, dtype=dtype, levels=levels)
-
-    @classmethod
-    def from_dtype(cls, dtype: pd.CategoricalDtype) -> DecoratorMeta:
-        """TODO"""
-        if dtype.categories is None:
-            if hasattr(dtype, "_bertrand_wrapped_type"):  # type: ignore
-                return cls[dtype._bertrand_wrapped_type]
-            return cls
-        return cls[resolve(dtype.categories.dtype), dtype.categories]
-
-    @classmethod
-    def from_string(cls, wrapped: str, levels: str | Empty = EMPTY) -> DecoratorMeta:
-        """TODO"""
-        if levels is EMPTY:
-            return cls[resolve(wrapped), levels]
-
-        if levels.startswith("[") and levels.endswith("]"):
-            stripped = levels[1:-1].strip()
-        elif levels.startswith("(") and levels.endswith(")"):
-            stripped = levels[1:-1].strip()
-        else:
-            raise TypeError(f"invalid levels: {repr(levels)}")
-
-        breakpoint()
-        return cls[resolve(wrapped), list(s.group() for s in TOKEN.finditer(stripped))]
-
-    @classmethod
-    def transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
-        """TODO"""
-        if cls.dtype.categories is None:
-            dtype = pd.CategoricalDtype(cls.wrapped(series.unique()))
-        else:
-            dtype = cls.dtype
-        return series.astype(dtype, copy=False)
-
-
-class Sparse(DecoratorType, cache_size=256):
-    aliases = {"sparse", pd.SparseDtype()}
-    _is_empty = False
-
-    # TODO: Sparse[Categorical] does not work
-
-    def __class_getitem__(
-        cls,
-        wrapped: TypeMeta | DecoratorMeta = None,  # type: ignore
-        fill_value: Any | Empty = EMPTY
-    ) -> DecoratorMeta:
-        """TODO"""
-        # NOTE: metaclass automatically raises an error when wrapped is None.  Listing
-        # it as such in the signature just sets the default value.
-        is_empty = fill_value is EMPTY
-
-        if isinstance(wrapped.unwrapped, DecoratorMeta):
-            return cls.flyweight(wrapped, fill_value, dtype=None, _is_empty=is_empty)
-
-        if is_empty:
-            fill = wrapped.missing
-        elif pd.isna(fill_value):
-            fill = fill_value
-        else:
-            fill = wrapped(fill_value)
-            if len(fill) != 1:
-                raise TypeError(f"fill_value must be a scalar, not {repr(fill_value)}")
-            fill = fill[0]
-
-        dtype = pd.SparseDtype(wrapped.dtype, fill)
-        return cls.flyweight(wrapped, fill, dtype=dtype, _is_empty=is_empty)
-
-    @classmethod
-    def from_dtype(cls, dtype: pd.SparseDtype) -> DecoratorMeta:
-        """TODO"""
-        return cls[resolve(dtype.subtype), dtype.fill_value]
-
-    @classmethod
-    def from_string(cls, wrapped: str, fill_value: str | Empty = EMPTY) -> DecoratorMeta:
-        """TODO"""
-        return cls[resolve(wrapped), REGISTRY.na_strings.get(fill_value, fill_value)]
-
-    @classmethod
-    def replace(cls, *args: Any, **kwargs: Any) -> DecoratorMeta:
-        """TODO"""
-        if cls._is_empty and len(args) < 2 and "fill_value" not in kwargs:
-            kwargs["fill_value"] = EMPTY
-        return super().replace(*args, **kwargs)
-
-    @classmethod
-    def inverse_transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
-        """TODO"""
-        return series.sparse.to_dense()
-
-
-
-
-
-if DEBUG:
-    print("=" * 80)
-    print(f"aliases: {REGISTRY.aliases}")
-    print()
+# if DEBUG:
+#     print("=" * 80)
+#     print(f"aliases: {REGISTRY.aliases}")
+#     print()

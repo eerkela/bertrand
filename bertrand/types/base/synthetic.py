@@ -22,6 +22,7 @@ construct_array_type()
 """
 # pylint: disable=unused-argument
 from __future__ import annotations
+
 from collections import Counter
 import numbers
 import sys
@@ -34,7 +35,7 @@ from pandas.core.arrays import ExtensionArray, PandasArray
 from pandas.core.dtypes.base import ExtensionDtype
 from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries  # type: ignore
 
-from pdcast.util.type_hints import array_like, dtype_like
+from bertrand.util.type_hints import array_like, dtype_like
 
 
 # TODO: merge this with the equivalent stub

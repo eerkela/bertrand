@@ -1,16 +1,14 @@
 """This module describes a ``CategoricalType`` object, which can be used to
 dynamically wrap other types.
 """
+from __future__ import annotations
+
+from typing import Any, Iterable
+
 import numpy as np
 import pandas as pd
 
-from pdcast.resolve cimport sequence, tokenize
-from pdcast.resolve import resolve_type
-from pdcast.detect import detect_type
-from pdcast.util.type_hints import array_like, dtype_like, type_specifier
-
-from .base cimport DecoratorType, CompositeType, VectorType, Type
-from .base import register
+from .base import EMPTY, DecoratorMeta, DecoratorType, Empty, TypeMeta
 
 
 # TODO: CategoricalType should be able to accept CompositeType?
@@ -21,22 +19,39 @@ from .base import register
 # dispatchable even without needing a composite wrapper.
 
 
-@register
-class CategoricalType(DecoratorType):
+class Categorical(DecoratorType, cache_size=256):
     """Categorical decorator for :class:`ScalarType` objects.
 
     This decorator keeps track of categorical levels for series objects of the
     wrapped type.
     """
 
-    name = "categorical"
-    aliases = {
-        pd.CategoricalDtype, "category", "Category", "categorical",
-        "Categorical"
-    }
+    aliases = {pd.CategoricalDtype, "Category", "category", "categorical"}
 
-    def __init__(self, wrapped: VectorType = None, levels: list = None):
-        super(type(self), self).__init__(wrapped=wrapped, levels=levels)
+    def __class_getitem__(
+        cls,
+        wrapped: TypeMeta | DecoratorMeta | None = None,
+        levels: Iterable[Any] | Empty = EMPTY
+    ) -> DecoratorMeta:
+        if wrapped is None:
+            raise NotImplementedError("TODO")  # should never occur
+
+        if levels is EMPTY:
+            slug_repr = levels
+            dtype = pd.CategoricalDtype()  # NOTE: auto-detects levels when used
+            patch = wrapped
+            while not patch.is_default:
+                patch = patch.as_default
+            dtype._bertrand_wrapped_type = patch  # disambiguates wrapped type
+        else:
+            levels = wrapped(levels)
+            slug_repr = list(levels)
+            dtype = pd.CategoricalDtype(levels)
+
+        return cls.flyweight(wrapped, slug_repr, dtype=dtype, levels=levels)
+
+
+
 
     ############################
     ####    CONSTRUCTORS    ####

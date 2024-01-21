@@ -71,6 +71,7 @@ keywords = [
 dependencies = [
     "numpy",
     "pandas >= 2.0.0",
+    "pyarrow",
     "python-dateutil",
     "pytz",
     "regex",
@@ -86,7 +87,6 @@ dev = [
     "cython >= 3.0.0",
     "mypy",
     "pandas-stubs",
-    "pyarrow",
     "pylint",
     "pytest",
     "sphinx",
