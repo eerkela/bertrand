@@ -5,18 +5,7 @@ from sys import getsizeof
 
 import numpy as np
 
-from .base import Type
-
-
-# TODO: figure out how to redirect to equiv_complex
-# -> need to somehow delay evaluation until after all types are defined
-# Maybe EMPTY(func, deferred=True) or something?
-
-
-# TODO: use abstract fields to define equiv_float, equiv_complex.  This would look
-# something like:
-
-# equiv_complex: TypeMeta = Empty(_set_equiv_complex)
+from .base import Type, TypeMeta
 
 
 class Float(Type):
@@ -24,12 +13,11 @@ class Float(Type):
 
     aliases = {"float", "floating", "f"}
 
-    # @property
-    # def equiv_complex(self) -> ScalarType:
-    #     """An equivalent complex type."""
-    #     from .complex import ComplexType
-
-    #     return self.registry[ComplexType]
+    @property
+    def equiv_complex(self) -> TypeMeta:
+        """An equivalent complex type."""
+        from .complex import Complex
+        return Complex
 
 
 @Float.default
@@ -40,12 +28,11 @@ class Float64(Float):
     max = 2**53
     min = -2**53
 
-    # @property
-    # def equiv_complex(self) -> ScalarType:
-    #     """An equivalent complex type."""
-    #     from .complex import Complex128Type
-
-    #     return self.registry[Complex128Type]
+    @property
+    def equiv_complex(self) -> TypeMeta:
+        """An equivalent complex type."""
+        from .complex import Complex128
+        return Complex128
 
 
 @Float64.default
@@ -56,12 +43,11 @@ class NumpyFloat64(Float64, backend="numpy"):
     dtype = np.dtype(np.float64)
     missing = np.nan
 
-    # @property
-    # def equiv_complex(self) -> ScalarType:
-    #     """An equivalent complex type."""
-    #     from .complex import NumpyComplex128Type
-
-    #     return self.registry[NumpyComplex128Type]
+    @property
+    def equiv_complex(self) -> TypeMeta:
+        """An equivalent complex type."""
+        from .complex import NumpyComplex128
+        return NumpyComplex128
 
 
 class PythonFloat(Float, backend="python"):
@@ -73,12 +59,11 @@ class PythonFloat(Float, backend="python"):
     itemsize = getsizeof(1.0)
     missing = np.nan
 
-    # @property
-    # def equiv_complex(self) -> ScalarType:
-    #     """An equivalent complex type."""
-    #     from .complex import PythonComplexType
-
-    #     return self.registry[PythonComplexType]
+    @property
+    def equiv_complex(self) -> TypeMeta:
+        """An equivalent complex type."""
+        from .complex import PythonComplex
+        return PythonComplex
 
 
 class Float32(Float):
@@ -88,12 +73,11 @@ class Float32(Float):
     max = 2**24
     min = -2**24
 
-    # @property
-    # def equiv_complex(self) -> ScalarType:
-    #     """An equivalent complex type."""
-    #     from .complex import Complex64Type
-
-    #     return self.registry[Complex64Type]
+    @property
+    def equiv_complex(self) -> TypeMeta:
+        """An equivalent complex type."""
+        from .complex import Complex64
+        return Complex64
 
 
 @Float32.default
@@ -104,12 +88,11 @@ class NumpyFloat32(Float32, backend="numpy"):
     dtype = np.dtype(np.float32)
     missing = np.nan
 
-    # @property
-    # def equiv_complex(self) -> ScalarType:
-    #     """An equivalent complex type."""
-    #     from .complex import NumpyComplex64Type
-
-    #     return self.registry[NumpyComplex64Type]
+    @property
+    def equiv_complex(self) -> TypeMeta:
+        """An equivalent complex type."""
+        from .complex import NumpyComplex64
+        return NumpyComplex64
 
 
 class Float16(Float):
@@ -119,12 +102,11 @@ class Float16(Float):
     max = 2**11
     min = -2**11
 
-    # @property
-    # def equiv_complex(self) -> ScalarType:
-    #     """An equivalent complex type."""
-    #     from .complex import Complex64Type
-
-    #     return self.registry[Complex64Type]
+    @property
+    def equiv_complex(self) -> TypeMeta:
+        """An equivalent complex type."""
+        from .complex import Complex64
+        return Complex64
 
 
 @Float16.default
@@ -135,12 +117,11 @@ class NumpyFloat16(Float16, backend="numpy"):
     dtype = np.dtype(np.float16)
     missing = np.nan
 
-    # @property
-    # def equiv_complex(self) -> ScalarType:
-    #     """An equivalent complex type."""
-    #     from .complex import NumpyComplex64Type
-
-    #     return self.registry[NumpyComplex64Type]
+    @property
+    def equiv_complex(self) -> TypeMeta:
+        """An equivalent complex type."""
+        from .complex import NumpyComplex64
+        return NumpyComplex64
 
 
 #################################
@@ -165,12 +146,11 @@ class Float80(Float):
         "float80", "longdouble", "longfloat", "long double", "long float", "f10", "g"
     }
 
-    # @property
-    # def equiv_complex(self) -> ScalarType:
-    #     """An equivalent complex type."""
-    #     from .complex import Complex160Type
-
-    #     return self.registry[Complex160Type]
+    @property
+    def equiv_complex(self) -> TypeMeta:
+        """An equivalent complex type."""
+        from .complex import Complex160
+        return Complex160
 
 
 @Float80.default
@@ -183,9 +163,8 @@ class NumpyFloat80(Float80, backend="numpy"):
     max = 2**64
     min = -2**64
 
-    # @property
-    # def equiv_complex(self) -> ScalarType:
-    #     """An equivalent complex type."""
-    #     from .complex import NumpyComplex160Type
-
-    #     return self.registry[NumpyComplex160Type]
+    @property
+    def equiv_complex(self) -> TypeMeta:
+        """An equivalent complex type."""
+        from .complex import NumpyComplex160
+        return NumpyComplex160

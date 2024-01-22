@@ -5,10 +5,7 @@ from sys import getsizeof
 
 import numpy as np
 
-from .base import Type
-
-
-# TODO: figure out redirect to equiv_float
+from .base import Type, TypeMeta
 
 
 class Complex(Type):
@@ -16,12 +13,11 @@ class Complex(Type):
 
     aliases = {"complex", "cfloat", "complex float", "complex floating", "c"}
 
-    # @property
-    # def equiv_float(self) -> ScalarType:
-    #     """An equivalent floating point type."""
-    #     from .float import FloatType
-
-    #     return self.registry[FloatType]
+    @property
+    def equiv_float(self) -> TypeMeta:
+        """An equivalent floating point type."""
+        from .float import Float
+        return Float
 
 
 @Complex.default
@@ -32,12 +28,11 @@ class Complex128(Complex):
     max = 2**53
     min = -2**53
 
-    # @property
-    # def equiv_float(self) -> ScalarType:
-    #     """An equivalent floating point type."""
-    #     from .float import Float64Type
-
-    #     return self.registry[Float64Type]
+    @property
+    def equiv_float(self) -> TypeMeta:
+        """An equivalent floating point type."""
+        from .float import Float64
+        return Float64
 
 
 @Complex128.default
@@ -48,12 +43,11 @@ class NumpyComplex128(Complex128, backend="numpy"):
     dtype = np.dtype(np.complex128)
     missing = np.complex128("nan+nanj")
 
-    # @property
-    # def equiv_float(self) -> ScalarType:
-    #     """An equivalent floating point type."""
-    #     from .float import NumpyFloat64Type
-
-    #     return self.registry[NumpyFloat64Type]
+    @property
+    def equiv_float(self) -> TypeMeta:
+        """An equivalent floating point type."""
+        from .float import NumpyFloat64
+        return NumpyFloat64
 
 
 class PythonComplex(Complex128, backend="python"):
@@ -65,12 +59,11 @@ class PythonComplex(Complex128, backend="python"):
     itemsize = getsizeof(1.0+1.0j)
     missing = np.complex128("nan+nanj")
 
-    # @property
-    # def equiv_float(self) -> ScalarType:
-    #     """An equivalent floating point type."""
-    #     from .float import PythonFloatType
-
-    #     return self.registry[PythonFloatType]
+    @property
+    def equiv_float(self) -> TypeMeta:
+        """An equivalent floating point type."""
+        from .float import PythonFloat
+        return PythonFloat
 
 
 class Complex64(Complex):
@@ -80,12 +73,11 @@ class Complex64(Complex):
     max = 2**24
     min = -2**24
 
-    # @property
-    # def equiv_float(self) -> ScalarType:
-    #     """An equivalent floating point type."""
-    #     from .float import Float32Type
-
-    #     return self.registry[Float32Type]
+    @property
+    def equiv_float(self) -> TypeMeta:
+        """An equivalent floating point type."""
+        from .float import Float32
+        return Float32
 
 
 @Complex64.default
@@ -96,12 +88,11 @@ class NumpyComplex64(Complex64, backend="numpy"):
     dtype = np.dtype(np.complex64)
     missing = np.complex64("nan+nanj")
 
-    # @property
-    # def equiv_float(self) -> ScalarType:
-    #     """An equivalent floating point type."""
-    #     from .float import NumpyFloat32Type
-
-    #     return self.registry[NumpyFloat32Type]
+    @property
+    def equiv_float(self) -> TypeMeta:
+        """An equivalent floating point type."""
+        from .float import NumpyFloat32
+        return NumpyFloat32
 
 
 #########################################
@@ -130,12 +121,11 @@ class Complex160(Complex):
     max = 2**64
     min = -2**64
 
-    # @property
-    # def equiv_float(self) -> ScalarType:
-    #     """An equivalent floating point type."""
-    #     from .float import Float80Type
-
-    #     return self.registry[Float80Type]
+    @property
+    def equiv_float(self) -> TypeMeta:
+        """An equivalent floating point type."""
+        from .float import Float80
+        return Float80
 
 
 @Complex160.default
@@ -146,9 +136,8 @@ class NumpyComplex160(Complex160, backend="numpy"):
     dtype = np.dtype(np.clongdouble)
     missing = np.clongdouble("nan+nanj")
 
-    # @property
-    # def equiv_float(self) -> ScalarType:
-    #     """An equivalent floating point type."""
-    #     from .float import NumpyFloat80Type
-
-    #     return self.registry[NumpyFloat80Type]
+    @property
+    def equiv_float(self) -> TypeMeta:
+        """An equivalent floating point type."""
+        from .float import NumpyFloat80
+        return NumpyFloat80

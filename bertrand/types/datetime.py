@@ -3,168 +3,113 @@ type system.
 """
 import datetime
 import re
+from sys import getsizeof
 
 import numpy as np
 import pandas as pd
 
-from pdcast.resolve import resolve_type
-from pdcast.util import time
-from pdcast.util.type_hints import array_like, dtype_like, type_specifier
-
-from .base cimport ScalarType, AbstractType, CompositeType
-from .base import register
+from .base import Type, TypeMeta
 
 
-#######################
-####    GENERIC    ####
-#######################
+class Datetime(Type):
 
-
-@register
-class DatetimeType(AbstractType):
-
-    name = "datetime"
     aliases = {"datetime"}
 
 
-######################
-####    PANDAS    ####
-######################
+@Datetime.default
+class PandasTimestamp(Datetime, backend="pandas", cache_size=64):
 
-
-@register
-@DatetimeType.default
-@DatetimeType.implementation("pandas")
-class PandasTimestampType(ScalarType):
-
-    _cache_size = 64
     aliases = {
-        pd.Timestamp,
-        pd.DatetimeTZDtype,
-        "Timestamp",
-        "pandas.Timestamp",
+        pd.Timestamp, pd.DatetimeTZDtype, "Timestamp", "pandas.Timestamp",
         "pd.Timestamp",
     }
-    type_def = pd.Timestamp
+    scalar = pd.Timestamp
+    dtype = np.dtype("M8[ns]")
     itemsize = 8
-    na_value = pd.NaT
+    missing = pd.NaT
 
-    def __init__(self, tz: datetime.tzinfo | str | None = None):
-        self.min = pd.Timestamp.min.value
-        self.max = pd.Timestamp.max.value
+    def __class_getitem__(cls, tz: datetime.tzinfo | str | None = None):
+        _min = pd.Timestamp.min.value
+        _max = pd.Timestamp.max.value
 
-        # NOTE: timezone localization can cause timestamps to overflow.  To
-        # compensate for this, we adjust the min/max values artificially reduce
-        # the available range.
+        # # NOTE: timezone localization can cause timestamps to overflow.  To
+        # # compensate for this, we adjust the min/max values artificially reduce
+        # # the available range.
 
-        tz = time.tz(tz, {})
-        if tz:
-            min_offset = time.pytimedelta_to_ns(tz.utcoffset(pd.Timestamp.min))
-            max_offset = time.pytimedelta_to_ns(tz.utcoffset(pd.Timestamp.max))
-            self.min = max(self.min + min_offset, self.min)
-            self.max = min(self.max + max_offset, self.max)
+        # tz = time.tz(tz, {})
+        # if tz:
+        #     min_offset = time.pytimedelta_to_ns(tz.utcoffset(pd.Timestamp.min))
+        #     max_offset = time.pytimedelta_to_ns(tz.utcoffset(pd.Timestamp.max))
+        #     self.min = max(self.min + min_offset, self.min)
+        #     self.max = min(self.max + max_offset, self.max)
 
-        super(type(self), self).__init__(tz=tz)
-
-    ############################
-    ####    CONSTRUCTORS    ####
-    ############################
-
-    def from_string(self, context: str = None) -> ScalarType:
-        """Parse a timestamp string in the type specification mini-language."""
-        if context is None:
-            return self
-
-        return self(tz=time.tz(context, {}))
-
-    def from_dtype(
-        self,
-        dtype: dtype_like,
-        array: array_like = None,
-    ) -> ScalarType:
-        """Translate a pandas DatetimeTZDtype into the pdcast type system."""
-        return self(tz=getattr(dtype, "tz", None))
-
-    def from_scalar(self, example: pd.Timestamp) -> ScalarType:
-        """Parse a scalar pandas timestamp according to timezone."""
-        return self(tz=example.tzinfo)
-
-    #############################
-    ####    CONFIGURATION    ####
-    #############################
-
-    @property
-    def dtype(self) -> dtype_like:
-        """Use a numpy dtype if no timezone is given, otherwise use the
-        associated pandas extension type.
-        """
-        if self.tz is None:
-            return np.dtype("M8[ns]")
-        return pd.DatetimeTZDtype(tz=self.tz)
-
-
-######################
-####    PYTHON    ####
-######################
-
-
-@register
-@DatetimeType.implementation("python")
-class PythonDatetimeType(ScalarType):
-
-    _cache_size = 64
-    aliases = {datetime.datetime, "pydatetime", "datetime.datetime"}
-    na_value = pd.NaT
-    type_def = datetime.datetime
-    max = time.pydatetime_to_ns(datetime.datetime.max)
-    min = time.pydatetime_to_ns(datetime.datetime.min)
-
-    def __init__(self, tz: datetime.tzinfo = None):
-        tz = time.tz(tz, {})
-        super(type(self), self).__init__(tz=tz)
-
-    ###########################
-    ####   CONSTRUCTORS    ####
-    ###########################
-
-    def from_string(self, tz: str = None) -> ScalarType:
-        """Parse a type string in the type specification mini-language."""
         if tz is None:
-            return self
+            return cls.flyweight(tz)
 
-        return self(tz=time.tz(tz, {}))
+        return cls.flyweight(tz, dtype=pd.DatetimeTZDtype(tz=tz))
 
-    def from_scalar(self, example: datetime.datetime) -> ScalarType:
+    @classmethod
+    def from_string(cls, tz: str | None = None) -> TypeMeta:
+        """Parse a timestamp string in the type specification mini-language."""
+        return cls[tz]
+
+    @classmethod
+    def from_scalar(cls, scalar: pd.Timestamp) -> TypeMeta:
+        """Parse a scalar pandas timestamp according to timezone."""
+        return cls[scalar.tzinfo]
+
+    @classmethod
+    def from_dtype(cls, dtype: pd.DatetimeTZDtype) -> TypeMeta:
+        """Translate a pandas DatetimeTZDtype into the pdcast type system."""
+        return cls[dtype.tz]
+
+    # @property
+    # def dtype(self) -> dtype_like:
+    #     """Use a numpy dtype if no timezone is given, otherwise use the
+    #     associated pandas extension type.
+    #     """
+    #     if self.tz is None:
+    #         return np.dtype("M8[ns]")
+    #     return pd.DatetimeTZDtype(tz=self.tz)
+
+
+class PythonDatetime(Datetime, backend="python", cache_size=64):
+
+    aliases = {datetime.datetime, "pydatetime", "datetime.datetime"}
+    scalar = datetime.datetime
+    # max = time.pydatetime_to_ns(datetime.datetime.max)
+    # min = time.pydatetime_to_ns(datetime.datetime.min)
+    missing = pd.NaT
+
+    def __class_getitem__(cls, tz: datetime.tzinfo | None = None):
+        # tz = time.tz(tz, {})
+        return cls.flyweight(tz)
+
+    @classmethod
+    def from_string(cls, tz: str | None = None) -> TypeMeta:
+        """Parse a type string in the type specification mini-language."""
+        return cls[tz]
+
+    @classmethod
+    def from_scalar(cls, scalar: datetime.datetime) -> TypeMeta:
         """Parse a scalar datetime according to timezone."""
-        return self(tz=example.tzinfo)
+        return cls[scalar.tzinfo]
 
 
-#####################
-####    NUMPY    ####
-#####################
-
-
-@register
-@DatetimeType.implementation("numpy")
-class NumpyDatetime64Type(ScalarType):
+class NumpyDatetime64Type(Datetime, backend="numpy", cache_size=64):
 
     # NOTE: dtype is set to object due to pandas and its penchant for
     # automatically converting datetimes to pd.Timestamp.  Otherwise, we'd use
     # a custom ExtensionDtype/ObjectDtype or the raw numpy dtypes here.
 
-    _cache_size = 64
     aliases = {
-        np.datetime64,
-        np.dtype("M8"),
-        "M8",
-        "datetime64",
-        "numpy.datetime64",
+        np.datetime64, np.dtype("M8"), "M8", "datetime64", "numpy.datetime64",
         "np.datetime64",
     }
-    type_def = np.datetime64
+    scalar = np.datetime64
     dtype = np.dtype(object)  # workaround for above
     itemsize = 8
-    na_value = np.datetime64("nat")
+    missing = np.datetime64("nat")
 
     def __init__(self, unit: str = None, step_size: int = 1):
         if unit is None:
@@ -268,15 +213,15 @@ class NumpyDatetime64Type(ScalarType):
 #######################
 
 
-# overrides for ``<`` and ``>`` operators ``(A < B)``
-ScalarType.registry.priority.update([
-    (PandasTimestampType, PythonDatetimeType),
-    (PandasTimestampType, NumpyDatetime64Type),
-    (PythonDatetimeType, NumpyDatetime64Type),
-])
+# # overrides for ``<`` and ``>`` operators ``(A < B)``
+# ScalarType.registry.priority.update([
+#     (PandasTimestampType, PythonDatetimeType),
+#     (PandasTimestampType, NumpyDatetime64Type),
+#     (PythonDatetimeType, NumpyDatetime64Type),
+# ])
 
 
 # regex to parse numpy-style "M8[{step_size}{unit}]" strings
-cdef object M8_pattern = re.compile(
+M8_pattern: re.Pattern[str] = re.compile(
     r"(?P<step_size>[0-9]+)?(?P<unit>ns|us|ms|s|m|h|D|W|M|Y)"
 )

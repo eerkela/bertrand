@@ -4,14 +4,19 @@ type system.
 import datetime
 import re
 from sys import getsizeof
-# from typing import Iterator
 
 import numpy as np
 import pandas as pd
 
-# from pdcast.util import time
+# from bertrand.util import time
 
-from .base import REGISTRY, Type
+from .base import Type, TypeMeta
+
+
+# TODO:
+# >>> Timedelta["numpy", "5ns"].params
+# mappingproxy({'unit': None, 'step_size': None})
+# -> should be: mappingproxy({'unit': 'ns', 'step_size': 5})
 
 
 class Timedelta(Type):
@@ -46,121 +51,117 @@ class PythonTimedelta(Timedelta, backend="python"):
     missing = pd.NaT
 
 
-# class NumpyTimedelta64(Timedelta, backend="numpy", cache_size=64):
-#     """Numpy timedelta64 type."""
+class NumpyTimedelta64(Timedelta, backend="numpy", cache_size=64):
+    """Numpy timedelta64 type."""
 
-#     # NOTE: dtype is set to object due to pandas and its penchant for
-#     # automatically converting datetimes to pd.Timestamp.  Otherwise, we'd use
-#     # an ObjectDtype or the raw numpy dtypes here.
+    # NOTE: dtype is set to object due to pandas and its penchant for
+    # automatically converting datetimes to pd.Timestamp.  Otherwise, we'd use
+    # an ObjectDtype or the raw numpy dtypes here.
 
-#     aliases = {
-#         np.timedelta64,
-#         np.dtype("m8"),
-#         "m8",
-#         "timedelta64",
-#         "numpy.timedelta64",
-#         "np.timedelta64",
-#     }
-#     type_def = np.timedelta64
-#     dtype = np.dtype(object)  # workaround for above
-#     itemsize = 8
-#     na_value = np.timedelta64("NaT")
+    aliases = {
+        np.timedelta64, np.dtype("m8"), "m8", "timedelta64", "numpy.timedelta64",
+        "np.timedelta64",
+    }
+    scalar = np.timedelta64
+    dtype = np.dtype(object)  # workaround for above
+    itemsize = 8
+    na_value = np.timedelta64("NaT")
 
-#     def __init__(self, unit: str = None, step_size: int = 1):
-#         if unit is None:
-#             self.min = 1  # NOTE: these values always trigger upcast mechanism
-#             self.max = 0
-#         else:
-#             # NOTE: these epochs are chosen to minimize range in the event of
-#             # irregular units ('Y'/'M'), so that conversions work regardless of
-#             # leap days and irregular month lengths.
-#             self.max = time.convert_unit(
-#                 2**63 - 1,
-#                 unit,
-#                 "ns",
-#                 since=time.Epoch(np.datetime64("2001-02-01"))
-#             )
-#             self.min = time.convert_unit(
-#                 -2**63 + 1,  # NOTE: -2**63 reserved for NaT
-#                 unit,
-#                 "ns",
-#                 since=time.Epoch(np.datetime64("2000-02-01"))
-#             )
+    def __class_getitem__(
+        cls,
+        unit: str | None = None,
+        step_size: int | None = None
+    ) -> TypeMeta:
+        if unit is None:
+            # inverted max, min always triggers upcast mechanism during conversions
+            return cls.flyweight(unit, None, max=0, min=1)
 
-#         super(type(self), self).__init__(unit=unit, step_size=step_size)
+        # parse numpy-style m8 string
+        m8 = m8_pattern.match(unit)
+        if m8 is None:
+            raise ValueError(f"invalid unit: '{unit}'")
 
-#     ############################
-#     ####    CONSTRUCTORS    ####
-#     ############################
+        p_unit = m8.group("unit")
+        if step_size is None:
+            p_step = int(m8.group("step_size") or 1)
+        elif m8.group("step_size"):
+            raise ValueError(
+                f"conflicting units: '{unit}' != '{p_unit}, {step_size}'"
+            )
+        else:
+            if step_size is None:
+                p_step = 1
+            elif step_size < 1:
+                raise ValueError(f"step size must be positive: {step_size}")
+            else:
+                p_step = step_size
 
-#     def from_string(
-#         self,
-#         unit: str = None,
-#         step_size: str = None
-#     ) -> ScalarType:
-#         """Parse an m8 string in the type specification mini-language.
+        # # NOTE: these epochs are chosen to minimize range in the event of irregular
+        # # units ('Y'/'M'), so that conversions work regardless of leap days and
+        # # irregular month lengths
+        # _max = time.convert_unit(
+        #     2**63 - 1,
+        #     p_unit,
+        #     "ns",
+        #     since=time.Epoch(np.datetime64("2001-02-01"))
+        # )
+        # _min = time.convert_unit(
+        #     -2**63 + 1,  # NOTE: -2**63 reserved for NaT
+        #     p_unit,
+        #     "ns",
+        #     since=time.Epoch(np.datetime64("2000-02-01"))
+        # )
 
-#         Numpy timedeltas support two different parametrized syntaxes:
+        # return cls.flyweight(unit, step_size, max=_max, min=_min)
+        return cls.flyweight(p_unit, p_step)
+
+    @classmethod
+    def from_scalar(cls, scalar: np.timedelta64) -> TypeMeta:
+        """Parse a scalar m8 value according to unit, step size."""
+        unit, step_size = np.datetime_data(scalar)
+        return cls.flyweight(unit, step_size)
+
+    @classmethod
+    def from_dtype(cls, dtype: np.dtype[np.timedelta64]) -> TypeMeta:
+        """Translate a numpy m8 dtype into the pdcast type system."""
+        unit, step_size = np.datetime_data(dtype)
+
+        # # NOTE: pandas uses numpy m8 dtypes for its own Timedelta type, so we
+        # # need to check the type of the array to detect this case.
+        # if isinstance(array, (pd.Index, pd.Series)):
+        #     # TODO: include non-ns units?
+        #     return PandasTimedeltaType
+
+        return cls.flyweight(None if unit == "generic" else unit, step_size)
+
+    @classmethod
+    def from_string(
+        cls,
+        unit: str | None = None,
+        step_size: str | None = None
+    ) -> TypeMeta:
+        """Parse an m8 string in the type specification mini-language.
+
+        Numpy timedeltas support two different parametrized syntaxes:
         
-#             1.  Numpy format, which concatenates step size and unit into a
-#                 single field (e.g. 'm8[5ns]').
-#             2.  pdcast format, which lists each field individually (e.g.
-#                 'timedelta[numpy, ns, 5]').  This matches the output of the
-#                 str() function for these types.
-#         """
-#         if unit is None:
-#             return self
+            1.  Numpy format, which concatenates step size and unit into a
+                single field (e.g. 'm8[5ns]').
+            2.  pdcast format, which lists each field individually (e.g.
+                'timedelta[numpy, ns, 5]').  This matches the output of the
+                str() function for these types.
+        """
+        if step_size is None:
+            return cls[unit, step_size]
 
-#         m8 = m8_pattern.match(unit)
-#         parsed_unit = m8.group("unit")
-#         if step_size is not None:
-#             if m8.group("step_size"):
-#                 raise ValueError(
-#                     f"conflicting units: '{unit}' vs '{parsed_unit}, "
-#                     f"{step_size}'"
-#                 )
-#             parsed_step_size = int(step_size)
-#         else:
-#             parsed_step_size = int(m8.group("step_size") or 1)
+        return cls[unit, int(step_size)]
 
-#         return self(unit=parsed_unit, step_size=parsed_step_size)
-
-#     def from_dtype(
-#         self,
-#         dtype: dtype_like,
-#         array: array_like | None = None
-#     ) -> ScalarType:
-#         """Translate a numpy m8 dtype into the pdcast type system."""
-#         unit, step_size = np.datetime_data(dtype)
-
-#         # NOTE: pandas uses numpy m8 dtypes for its own Timedelta type, so we
-#         # need to check the type of the array to detect this case.
-#         if isinstance(array, (pd.Index, pd.Series)):
-#             # TODO: include non-ns units?
-#             return PandasTimedeltaType
-
-#         return self(
-#             unit=None if unit == "generic" else unit,
-#             step_size=step_size
-#         )
-
-#     def from_scalar(self, example: np.timedelta64) -> ScalarType:
-#         """Parse a scalar m8 value according to unit, step size."""
-#         unit, step_size = np.datetime_data(example)
-
-#         return self(unit=unit, step_size=step_size)
-
-#     #############################
-#     ####    CONFIGURATION    ####
-#     #############################
-
-#     @property
-#     def larger(self) -> Iterator:
-#         """If no original unit is given, iterate through each one in order."""
-#         if self.unit is None:
-#             yield from (self(unit=unit) for unit in time.valid_units)
-#         else:
-#             yield from ()
+    # @property
+    # def larger(self) -> Iterator:
+    #     """If no original unit is given, iterate through each one in order."""
+    #     if self.unit is None:
+    #         yield from (self(unit=unit) for unit in time.valid_units)
+    #     else:
+    #         yield from ()
 
 
 #######################

@@ -165,7 +165,6 @@ boolean_array = np.ndarray[np.bool_, np.dtype[np.bool_]]
 valid_kinds = Literal['b', 'i', 'u', 'f', 'c', 'm', 'M', 'O', 'S', 'U', 'V']
 
 
-
 class ObjectDtype(ExtensionDtype):
     """Base class for automatically-generated ExtensionDtype definitions.
 

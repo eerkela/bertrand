@@ -14,6 +14,10 @@ from typing import Union as PyUnion
 
 import numpy as np
 import pandas as pd
+from pandas.api.extensions import register_extension_dtype
+from pandas.core.arrays import ExtensionArray, PandasArray
+from pandas.core.dtypes.base import ExtensionDtype
+from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries
 import regex as re  # alternate (PCRE-style) regex engine
 
 from bertrand.structs import LinkedSet, LinkedDict
@@ -30,7 +34,7 @@ from bertrand.structs import LinkedSet, LinkedDict
 
 
 # TODO: occasionally get a hangup when building registry.  This is probably due to
-# some circular relationship in Linked structs.  Need to investigate, but hard to
+# some circular reference in LinkedSet or LinkedDict.  Need to investigate, but hard to
 # reproduce.
 
 
@@ -1079,6 +1083,961 @@ def get_from_calling_context(name: str, skip: int = 0) -> Any:
         return obj
 
     raise AttributeError(f"could not find object: {repr(name)}")
+
+
+################################
+####    SYNTHETIC DTYPES    ####
+################################
+
+
+class SyntheticDtype(ExtensionDtype):
+    """TODO"""
+
+    def __init__(self) -> None:
+        if not hasattr(self, "_bertrand_type"):
+            raise NotImplementedError(
+                "synthetic dtypes cannot be instantiated directly - use "
+                "synthesize_dtype() instead"
+            )
+
+    def _get_common_dtype(self, dtypes: list[DTYPE]) -> SyntheticDtype | None:
+        """TODO"""
+        if len(set(dtypes)) == 1:  # only itself
+            return self
+        return None
+
+    @classmethod
+    def construct_from_string(cls, string: str) -> NoReturn:
+        """TODO"""
+        raise TypeError(
+            f"Cannot construct '{cls.__name__}' from string - use bertrand.resolve() "
+            f"instead"
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._bertrand_type, name)
+
+    def __dir__(self) -> set[str]:
+        result = set(dir(type(self)))
+        result |= self.__dict__.keys()
+        result |= set(dir(self._bertrand_type))
+        return result
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({str(self._bertrand_type)})"
+
+
+class SyntheticArray(ExtensionArray):
+    """A synthetic array type that is used to store values of a synthetic dtype.
+
+    These use ``dtype: object`` arrays under the hood, which are fully generic and can
+    store any Python object.  This class exists solely to disambiguate the array's
+    contents when used with a synthetic dtype.  Any extra functionality is limited to
+    conversions to and from the type that is stored in the underlying array, which are
+    applied automatically whenever items are inserted or extracted. 
+
+    The rest of this documentation is taken from the ExtensionArray interface:
+    https://github.com/pandas-dev/pandas/blob/v2.2.0/pandas/core/arrays/base.py#L110-L2398
+
+    Attributes
+    ----------
+    dtype
+    nbytes
+    ndim
+    shape
+
+    Methods
+    -------
+    argsort
+    astype
+    copy
+    dropna
+    duplicated
+    factorize
+    fillna
+    equals
+    insert
+    interpolate
+    isin
+    isna
+    ravel
+    repeat
+    searchsorted
+    shift
+    take
+    tolist
+    unique
+    view
+    _accumulate
+    _concat_same_type
+    _explode
+    _formatter
+    _from_factorized
+    _from_sequence
+    _from_sequence_of_strings
+    _hash_pandas_object
+    _pad_or_backfill
+    _reduce
+    _values_for_argsort
+    _values_for_factorize
+
+    Notes
+    -----
+    The interface includes the following abstract methods that must be
+    implemented by subclasses:
+
+    * _from_sequence
+    * _from_factorized
+    * __getitem__
+    * __len__
+    * __eq__
+    * dtype
+    * nbytes
+    * isna
+    * take
+    * copy
+    * _concat_same_type
+    * interpolate
+
+    A default repr displaying the type, (truncated) data, length,
+    and dtype is provided. It can be customized or replaced by
+    by overriding:
+
+    * __repr__ : A default repr for the ExtensionArray.
+    * _formatter : Print scalars inside a Series or DataFrame.
+
+    Some methods require casting the ExtensionArray to an ndarray of Python
+    objects with ``self.astype(object)``, which may be expensive. When
+    performance is a concern, we highly recommend overriding the following
+    methods:
+
+    * fillna
+    * _pad_or_backfill
+    * dropna
+    * unique
+    * factorize / _values_for_factorize
+    * argsort, argmax, argmin / _values_for_argsort
+    * searchsorted
+    * map
+
+    The remaining methods implemented on this class should be performant,
+    as they only compose abstract methods. Still, a more efficient
+    implementation may be available, and these methods can be overridden.
+
+    One can implement methods to handle array accumulations or reductions.
+
+    * _accumulate
+    * _reduce
+
+    One can implement methods to handle parsing from strings that will be used
+    in methods such as ``pandas.io.parsers.read_csv``.
+
+    * _from_sequence_of_strings
+
+    This class does not inherit from 'abc.ABCMeta' for performance reasons.
+    Methods and properties required by the interface raise
+    ``pandas.errors.AbstractMethodError`` and no ``register`` method is
+    provided for registering virtual subclasses.
+
+    ExtensionArrays are limited to 1 dimension.
+
+    They may be backed by none, one, or many NumPy arrays. For example,
+    ``pandas.Categorical`` is an extension array backed by two arrays,
+    one for codes and one for categories. An array of IPv6 address may
+    be backed by a NumPy structured array with two fields, one for the
+    lower 64 bits and one for the upper 64 bits. Or they may be backed
+    by some other storage type, like Python lists. Pandas makes no
+    assumptions on how the data are stored, just that it can be converted
+    to a NumPy array.
+    The ExtensionArray interface does not impose any rules on how this data
+    is stored. However, currently, the backing data cannot be stored in
+    attributes called ``.values`` or ``._values`` to ensure full compatibility
+    with pandas internals. But other names as ``.data``, ``._data``,
+    ``._items``, ... can be freely used.
+
+    If implementing NumPy's ``__array_ufunc__`` interface, pandas expects
+    that
+
+    1. You defer by returning ``NotImplemented`` when any Series are present
+       in `inputs`. Pandas will extract the arrays and call the ufunc again.
+    2. You define a ``_HANDLED_TYPES`` tuple as an attribute on the class.
+       Pandas inspect this to determine whether the ufunc is valid for the
+       types present.
+
+    See :ref:`extending.extension.ufunc` for more.
+
+    By default, ExtensionArrays are not hashable.  Immutable subclasses may
+    override this behavior.
+
+    Examples
+    --------
+    Please see the following:
+
+    https://github.com/pandas-dev/pandas/blob/main/pandas/tests/extension/list/array.py
+    """
+
+    # these priorities are used as defaults in pandas test code
+    __array_priority__: int = 1000
+    __pandas_priority__: int = 1000
+
+    # aliases for underlying array to ensure pandas compatibility.  Pandas lists all 3
+    # of these in its internal ExtensionArray interface, so we need to do the same
+    data: np.ndarray[Any, np.dtype[np.object_]]
+    _data: np.ndarray[Any, np.dtype[np.object_]]
+    _items: np.ndarray[Any, np.dtype[np.object_]]
+
+    # link to bertrand type system
+    _bertrand_type: TypeMeta
+
+    # basic attributes
+    dtype: SyntheticDtype
+    _dtype: SyntheticDtype
+    nbytes: int
+
+    def __init__(
+        self,
+        values: Iterable[Any],
+        dtype: DTYPE | None = None,
+        copy: bool = False
+    ) -> None:
+        # NOTE: this does NOT coerce inputs; that's handled by cast() directly.  This
+        # means it is not necessarily safe to pass in arbitrary values to this
+        # constructor - the input should always be passed through cast() first.
+        if not hasattr(self, "_bertrand_type"):
+            raise NotImplementedError(
+                "synthetic dtypes cannot be instantiated directly - use "
+                "synthesize_dtype() instead"
+            )
+
+        self.data = self._data = self._items = np.asarray(values, dtype=object)
+        self.dtype = self._dtype = self._bertrand_type.dtype  # type: ignore
+        self.nbytes = self._bertrand_type.itemsize * self.data.shape[0]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.data, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in ("data", "_data", "_items", "dtype", "_dtype", "nbytes"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self.data, name, value)
+
+    ############################
+    ####    CONSTRUCTORS    ####
+    ############################
+
+    @classmethod
+    def _from_sequence(
+        cls,
+        scalars: Iterable[Any],
+        dtype: DTYPE | None = None,
+        copy: bool = False
+    ) -> ExtensionArray:
+        """Construct a new ExtensionArray from a sequence of scalars.
+
+        Parameters
+        ----------
+        scalars : Sequence
+            Each element will be an instance of the scalar type for this array,
+            ``cls.dtype.type`` or be converted into this type in this method.
+        dtype : dtype, optional
+            Construct for this particular dtype. This should be a Dtype compatible
+            with the ExtensionArray.
+        copy : bool, default False
+            If True, copy the underlying data.
+
+        Returns
+        -------
+        ExtensionArray
+
+        Examples
+        --------
+        >>> pd.arrays.IntegerArray._from_sequence([4, 5])
+        <IntegerArray>
+        [4, 5]
+        Length: 2, dtype: Int64
+        """
+        return cls(scalars, dtype=dtype, copy=copy)
+
+    @classmethod
+    def _from_factorized(
+        cls,
+        values: np.ndarray[Any, np.dtype[np.int64]],
+        original: SyntheticArray
+    ) -> SyntheticArray:
+        """Reconstruct a SyntheticArray after factorization.
+
+        Parameters
+        ----------
+        values : ndarray
+            An integer ndarray with the factorized values.
+        original : ExtensionArray
+            The original SyntheticArray that factorize was called on.
+
+        Returns
+        -------
+        SyntheticArray
+            The reconstructed SyntheticArray.
+
+        See Also
+        --------
+        factorize : Top-level factorize method that dispatches here.
+        ExtensionArray.factorize : Encode the array as an enumerated type.
+        """
+        return cls(values, dtype=original.dtype)
+
+    @classmethod
+    def _concat_same_type(cls, to_concat: Iterable[SyntheticArray]) -> SyntheticArray:
+        """Concatenate multiple arrays of this dtype.
+
+        Parameters
+        ----------
+        to_concat : Iterable[SyntheticArray]
+            sequence of arrays of this type.
+
+        Returns
+        -------
+        SyntheticArray
+            A concatenated array containing all the elements in the input arrays.
+        """
+        return cls(np.concatenate([x.data for x in to_concat]))
+
+    ########################
+    ####    INTERNAL    ####
+    ########################
+
+    def _values_for_argsort(self) -> np.ndarray[Any, np.dtype[np.object_]]:
+        """TODO"""
+        return self.data
+
+    def _values_for_factorize(self) -> tuple[np.ndarray[Any, np.dtype[np.object_]], Any]:
+        """TODO"""
+        return self.data, self.dtype.na_value
+
+    def _reduce(self, name: str, skipna: bool = True, **kwargs: Any) -> Any:
+        """TODO"""
+        if skipna:
+            nans = self.isna()  # if no NA's, skipna is irrelevant
+            if nans.any():
+                return self[~nans]._reduce(name, skipna=False, **kwargs)
+
+        if name == "sum" and len(self) == 0:
+            # GH#29630 avoid returning int 0 or np.bool_(False) on old numpy
+            return self._bertrand_type.scalar(0)
+
+        try:
+            op = getattr(self.data, name)
+        except AttributeError as err:
+            msg = f"{repr(self._bertrand_type)} does not support the {name} operation"
+            raise NotImplementedError(msg) from err
+
+        return op(axis=0)
+
+    def __array_ufunc__(
+        self,
+        ufunc: np.ufunc,
+        method: str,
+        *inputs: Any,
+        **kwargs: Any
+    ) -> SyntheticArray | tuple[SyntheticArray, ...]:
+        """TODO"""
+        # pandas unboxes these so we don't need to implement them ourselves
+        if any(
+            isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame))  # type: ignore
+            for other in inputs
+        ):
+            return NotImplemented
+
+        # get handled values
+        array_like = (np.ndarray, ExtensionArray)
+        scalar_like = (self._bertrand_type.scalar,)
+        if self.dtype._is_numeric:  # pylint: disable=protected-access
+            scalar_like += (numbers.Number,)
+
+        if not all(isinstance(t, array_like + scalar_like) for t in inputs):
+            return NotImplemented
+
+        inputs = tuple(x.data if isinstance(x, ExtensionArray) else x for x in inputs)
+        result = getattr(ufunc, method)(*inputs, **kwargs)
+
+        def _reconstruct(x: Any) -> SyntheticArray:
+            if isinstance(x, scalar_like):
+                return x
+            return type(self)._from_sequence(x)
+
+        if isinstance(result, tuple):
+            return tuple(_reconstruct(x) for x in result)
+        return _reconstruct(result)
+
+    def __arrow_array__(self, typ: DTYPE | None = None) -> Any:
+        """TODO"""
+        import pyarrow
+        return pyarrow.array(self.data, type=typ)
+
+    def __from_arrow__(self, array: Any) -> SyntheticArray:
+        """TODO"""
+        return self._from_sequence(array)
+
+    ######################
+    ####    PUBLIC    ####
+    ######################
+
+    def astype(
+        self,
+        dtype: DTYPE,
+        copy: bool = True
+    ) -> np.ndarray[Any, np.dtype[Any]] | ExtensionArray:
+        """TODO"""
+        dtype = pd.api.types.pandas_dtype(dtype)
+        if pd.core.dtypes.common.is_dtype_equal(dtype, self.dtype):
+            if not copy:
+                return self
+            return self.copy()
+
+        if isinstance(dtype, ExtensionDtype):
+            cls = dtype.construct_array_type()
+            return cls._from_sequence(self.data, dtype=dtype, copy=copy)
+
+        return self.data.astype(dtype=dtype, copy=copy)
+
+    def isna(self) -> np.ndarray[Any, np.dtype[np.bool_]]:
+        """TODO"""
+        return pd.isna(self.data)
+
+    def take(
+        self,
+        indices: Iterable[int],
+        allow_fill: bool = False,
+        fill_value: Any | None = None
+    ) -> SyntheticArray:
+        """TODO"""
+        from pandas.core.algorithms import take
+
+        data = self.data
+        if allow_fill and fill_value is None:
+            fill_value = self.dtype.na_value
+
+        result = take(
+            data,
+            indices,
+            fill_value=fill_value,
+            allow_fill=allow_fill
+        )
+        return self._from_sequence(result, dtype=self.dtype)
+
+    def copy(self) -> SyntheticArray:
+        """TODO"""
+        return type(self)(self.data.copy())
+
+    #####################
+    ####    EXTRA    ####
+    #####################
+
+    # TODO: implement unique()?  Is this necessary?
+
+    # NOTE: these are not defined in the base ExtensionArray class, but are
+    # called in several pandas operations.
+
+    def round(self, *args: Any, **kwargs: Any) -> SyntheticArray:
+        """TODO"""
+        return self._from_sequence(self.data.round(*args, **kwargs))
+
+    def value_counts(self, dropna: bool = True) -> pd.Series[Any]:
+        """TODO"""
+        # disregard nans to begin with
+        mask = self.isna()
+        counts = Counter(self.data[~mask])
+        result = pd.Series(
+            counts.values(),
+            index=pd.Index(list(counts.keys()), dtype=self.dtype)
+        )
+        if dropna:
+            return result.astype("Int64")
+
+        # if including nans, count mask
+        nans = pd.Series(
+            [mask.sum()],
+            index=pd.Index([self.dtype.na_value], dtype=self.dtype)
+        )
+        result = pd.concat([result, nans])
+        return result.astype("Int64")
+
+    #################################
+    ####    CONTAINER METHODS    ####
+    #################################
+
+    def __getitem__(self, key: int | slice) -> Any | SyntheticArray:
+        if isinstance(key, slice):
+            return self._from_sequence(self.data[key])
+        return self.data[key]
+
+    def __setitem__(self, key: int | slice, value: Any) -> None:
+        from bertrand.convert import cast
+        converted = cast(value, self._bertrand_type)
+
+        if isinstance(key, slice):
+            self.data[key] = np.asarray(converted)
+        else:
+            if len(converted) != 1:
+                raise ValueError(
+                    "setting an array element with a sequence."
+                )
+            self.data[key] = converted[0]
+
+    def __delitem__(self, key: Any) -> NoReturn:  # type: ignore
+        # arrays don't support indexed deletion, so this always raises a numpy error
+        del self.data[key]  # type: ignore
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+    def __contains__(self, other: Any) -> bool:
+        return other in self.data
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(self.data)
+
+    def __reversed__(self) -> Iterator[Any]:
+        return reversed(self.data)
+
+    ###############################
+    ####    UNARY OPERATORS    ####
+    ###############################
+
+    def __abs__(self) -> SyntheticArray:
+        return _rectify(abs(self.data), self._bertrand_type)
+
+    def __neg__(self) -> SyntheticArray:
+        # NOTE: typical negation gives nonsensical answers for boolean object arrays:
+        # >>> ~np.array([True, False, True], dtype=object)
+        # array([-2, -1, -2], dtype=object)
+        if self.dtype._is_boolean:
+            return self.__invert__()
+
+        # TODO: negating a boolean array yields integers, not booleans
+
+        return _rectify(-self.data, self._bertrand_type)
+
+    def __pos__(self) -> SyntheticArray:
+        return _rectify(+self.data, self._bertrand_type)
+
+    def __invert__(self) -> SyntheticArray:
+        # NOTE: typical inversion gives nonsensical answers for boolean object arrays:
+        # >>> ~np.array([True, False, True], dtype=object)
+        # array([-2, -1, -2], dtype=object)
+        if self.dtype._is_boolean:
+            return self.__xor__(True)  # corrects for the above
+
+        return _rectify(~self.data, self._bertrand_type)
+
+    ################################
+    ####    BINARY OPERATORS    ####
+    ################################
+
+    # NOTE: pandas recommends that we do not handle the series, index, or dataframe
+    # cases ourselves.  Instead, we should return NotImplemented, which causes pandas
+    # to unbox a pandas array from the other operand and try again.
+
+    def __and__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(self.data & np.asarray(other), self._bertrand_type)
+
+    def __rand__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(np.asarray(other) & self.data, self._bertrand_type)
+
+    def __iand__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        self.data &= np.asarray(other)
+        return _rectify(self.data, self._bertrand_type)
+
+    def __or__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(self.data & np.asarray(other), self._bertrand_type)
+
+    def __ror__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(np.asarray(other) | self.data, self._bertrand_type)
+
+    def __ior__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        self.data |= np.asarray(other)
+        return _rectify(self.data, self._bertrand_type)
+
+    def __xor__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(self.data & np.asarray(other), self._bertrand_type)
+
+    def __rxor__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(np.asarray(other) ^ self.data, self._bertrand_type)
+
+    def __ixor__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        self.data ^= np.asarray(other)
+        return _rectify(self.data, self._bertrand_type)
+
+    def __rshift__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(self.data & np.asarray(other), self._bertrand_type)
+
+    def __rrshift__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(np.asarray(other) >> self.data, self._bertrand_type)
+
+    def __irshift__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        self.data >>= np.asarray(other)
+        return _rectify(self.data, self._bertrand_type)
+
+    def __lshift__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(self.data & np.asarray(other), self._bertrand_type)
+
+    def __rlshift__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(np.asarray(other) << self.data, self._bertrand_type)
+
+    def __ilshift__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        self.data <<= np.asarray(other)
+        return _rectify(self.data, self._bertrand_type)
+
+    ##############################
+    ####    MATH OPERATORS    ####
+    ##############################
+
+    def __add__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(self.data + np.asarray(other), self._bertrand_type)
+
+    def __radd__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(np.asarray(other) + self.data, self._bertrand_type)
+
+    def __iadd__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        self.data += np.asarray(other)
+        return _rectify(self.data, self._bertrand_type)
+
+    def __sub__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(self.data - np.asarray(other), self._bertrand_type)
+
+    def __rsub__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(np.asarray(other) - self.data, self._bertrand_type)
+
+    def __isub__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        self.data -= np.asarray(other)
+        return _rectify(self.data, self._bertrand_type)
+
+    def __mul__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(self.data * np.asarray(other), self._bertrand_type)
+
+    def __rmul__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(np.asarray(other) * self.data, self._bertrand_type)
+
+    def __imul__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        self.data *= np.asarray(other)
+        return _rectify(self.data, self._bertrand_type)
+
+    def __matmul__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(self.data @ np.asarray(other), self._bertrand_type)
+
+    def __rmatmul__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(np.asarray(other) @ self.data, self._bertrand_type)
+
+    def __imatmul__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        self.data @= np.asarray(other)
+        return _rectify(self.data, self._bertrand_type)
+
+    def __truediv__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(self.data / np.asarray(other), self._bertrand_type)
+
+    def __rtruediv__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(np.asarray(other) / self.data, self._bertrand_type)
+
+    def __itruediv__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        self.data /= np.asarray(other)
+        return _rectify(self.data, self._bertrand_type)
+
+    def __floordiv__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(self.data // np.asarray(other), self._bertrand_type)
+
+    def __rfloordiv__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(np.asarray(other) // self.data, self._bertrand_type)
+
+    def __ifloordiv__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        self.data //= np.asarray(other)
+        return _rectify(self.data, self._bertrand_type)
+
+    def __mod__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(self.data % np.asarray(other), self._bertrand_type)
+
+    def __rmod__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(np.asarray(other) % self.data, self._bertrand_type)
+
+    def __imod__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        self.data %= np.asarray(other)
+        return _rectify(self.data, self._bertrand_type)
+
+    def __divmod__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(divmod(self.data, np.asarray(other)), self._bertrand_type)
+
+    def __rdivmod__(self, other: Any) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(divmod(np.asarray(other), self.data), self._bertrand_type)
+
+    def __pow__(self, other: Any, mod: Any | None = None) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(pow(self.data, np.asarray(other), mod), self._bertrand_type)
+
+    def __rpow__(self, other: Any, mod: Any | None = None) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return _rectify(pow(np.asarray(other), self.data, mod), self._bertrand_type)
+
+    def __ipow__(self, other: Any, mod: Any | None = None) -> ExtensionArray:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        self.data **= np.asarray(other)
+        return _rectify(self.data, self._bertrand_type)
+
+    ####################################
+    ####    COMPARISON OPERATORS    ####
+    ####################################
+
+    def __lt__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return self.data < other
+
+    def __le__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return self.data <= other
+
+    def __eq__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return self.data == other
+
+    def __ne__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return self.data != other
+
+    def __gt__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return self.data > other
+
+    def __ge__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return self.data >= other
+
+
+def synthesize_dtype(typ: TypeMeta) -> SyntheticDtype:
+    """TODO"""
+    # hack - allows us to use the same name for the global and local classes
+    global SyntheticDtype
+    _SyntheticDtype = SyntheticDtype
+
+    @register_extension_dtype
+    class SyntheticDtype(_SyntheticDtype):
+        """TODO"""
+
+        _bertrand_type = typ
+        name = repr(typ)
+        type = typ.scalar
+        kind = "O"
+        _is_boolean = issubclass(typ, Bool)  # TODO: this creates a potential circular reference
+        _is_numeric = typ.is_numeric  # TODO: mark this in types
+        _can_hold_na = typ.is_nullable
+
+        @classmethod
+        def construct_array_type(cls) -> type[SyntheticArray]:
+            """TODO"""
+            # hack - allows us to use the same name for the global and local classes
+            global SyntheticArray
+            _SyntheticArray = SyntheticArray
+
+            class SyntheticArray(_SyntheticArray):
+
+                def __init__(self, *args: Any, **kwargs: Any) -> None:
+                    self._bertrand_type = typ
+                    super().__init__(*args, **kwargs)
+
+            SyntheticArray.__doc__ = (
+                f"An abstract data type, automatically generated to store\n"
+                f"{repr(typ)} objects."
+            )
+            return SyntheticArray
+
+    SyntheticDtype.__doc__ = (
+        f"An abstract data type, automatically generated to store {typ.scalar}\n"
+        f"objects."
+    )
+    return SyntheticDtype()
+
+
+def _rectify(
+    arr: np.ndarray[Any, np.dtype[Any]],
+    orig_dtype: SyntheticDtype
+) -> ExtensionArray:
+    """Rectify the result of a math operation to the detected type of the
+    first element.
+
+    Parameters
+    ----------
+    arr : np.ndarray
+        The array to rectify.  This is typically the result of a math
+        operation, which may or may not coerce the result to a different type.
+
+    Returns
+    -------
+    ExtensionArray
+        The rectified array.  This is always returned as a pandas-compatible
+        `ExtensionArray` object.
+
+    Notes
+    -----
+    The output type is determined by the first non-missing element of the
+    input array.
+    """
+    # check for empty array
+    if arr.shape[0] == 0:
+        return arr
+
+    # find missing values
+    nans = pd.isna(arr)
+    idx = nans.argmin()
+    if nans[idx]:  # array contains only missing values
+        # TODO
+        raise NotImplementedError()
+
+    # get first non-missing element and detect its type
+    first = arr[idx]
+    detected = detect(first)
+
+    # fill with new type's missing value
+    if detected != orig_dtype:
+        arr[nans] = detected.missing
+
+    # get array type associated with final dtype
+    dtype = detected.dtype
+    if isinstance(dtype, ExtensionDtype):
+        array_type = dtype.construct_array_type()
+    else:
+        array_type = PandasArray
+
+    # construct output array
+    return array_type._from_sequence(arr, dtype=dtype, copy=False)
 
 
 #########################
@@ -4349,8 +5308,8 @@ class TypeMeta(BaseMeta):
         # TODO: Even cooler, this could just call cast() on the input, which would
         # enable lossless conversions
         if cls is cls._default:
-            return cls.as_default(*args, **kwargs)
-        return pd.Series(*args, dtype=cls.dtype, **kwargs)  # type: ignore
+            return pd.Series(*args, dtype=cls.dtype, **kwargs)
+        return cls.as_default(*args, **kwargs)
 
     def __getattr__(cls, name: str) -> Any:
         if cls is not cls._default:
@@ -6111,6 +7070,28 @@ def _structured_getitem(cls: StructuredMeta, key: int | slice | str) -> META:
 ########################
 
 
+class TypeProperty:
+    """A class property descriptor.
+
+    Builders implicitly promote all ``@property`` attributes defined on a bertrand type
+    object into instances of this class so that they can be accessed from the type
+    itself.  Since types cannot have instances, there will never be a case where a
+    property is accessed in the normal way.  Therefore, we can promote to this type to
+    make it work anyways.
+    """
+
+    def __init__(self, fget: Callable[..., Any]):
+        if isinstance(fget, (classmethod, staticmethod)):
+            self.fget = fget
+        else:
+            self.fget = classmethod(fget)  # type: ignore
+
+    def __get__(self, obj: Any, cls: type | None = None) -> Any:
+        if cls is None:
+            return self.fget.__get__(obj, type(obj))()
+        return self.fget.__get__(obj, cls)()
+
+
 class TypeBuilder:
     """Common base for all namespace builders.
 
@@ -6331,19 +7312,41 @@ class AbstractBuilder(TypeBuilder):
         TypeError
             If the type implements a reserved attribute.
         """
-        namespace = self.namespace.copy()
+        for name, value in self.namespace.copy().items():
 
-        for name, value in namespace.items():
-            if isinstance(value, Empty):
-                self.required[name] = value.func
-                del self.namespace[name]
-            elif name in self.required:
-                self._validate(name, self.namespace.pop(name))
-            elif name in self.RESERVED and self.parent is not Base:
+            # check for reserved attribute
+            if name in self.RESERVED and self.parent is not Base:
                 raise TypeError(
                     f"{self.name} -> must not implement reserved attribute: "
                     f"{repr(name)}"
                 )
+
+            # register a new required field
+            elif isinstance(value, Empty):
+                self.required[name] = value.func
+                del self.namespace[name]
+
+            # assign to a required field
+            elif name in self.required:
+                self._validate(name, self.namespace.pop(name))
+
+            # promote properties to class properties
+            elif isinstance(value, property):
+                if value.fset is not None:
+                    raise TypeError(
+                        f"{self.name}.{name} -> type properties cannot have setters"
+                    )
+                if value.fdel is not None:
+                    raise TypeError(
+                        f"{self.name}.{name} -> type properties cannot have deleters"
+                    )
+
+                self.namespace[name] = TypeProperty(value.fget)
+
+            # promote methods to class methods
+            elif callable(value) and not isinstance(value, (classmethod, staticmethod)):
+                if not (name.startswith("__") and name.endswith("__")):
+                    self.namespace[name] = classmethod(value)
 
         return self
 
@@ -6540,20 +7543,43 @@ class ConcreteBuilder(TypeBuilder):
             If the type implements a reserved attribute.
         """
         for name, value in self.namespace.copy().items():
-            if isinstance(value, Empty):
-                raise TypeError(
-                    f"{self.name} -> concrete types must not have required fields: "
-                    f"{self.name}.{name}"
-                )
-            elif name in self.RESERVED:
+            # check for reserved attribute
+            if name in self.RESERVED:
                 raise TypeError(
                     f"{self.name} -> must not implement reserved attribute: "
                     f"{repr(name)}"
                 )
+
+            # disallow new required fields
+            elif isinstance(value, Empty):
+                raise TypeError(
+                    f"{self.name} -> concrete types must not have required fields: "
+                    f"{self.name}.{name}"
+                )
+
+            # assign to a required field
             elif name in self.required:
                 self._validate(name, self.namespace.pop(name))
 
-        # validate any remaining required fields that were not explicitly assigned
+            # promote properties to class properties
+            elif isinstance(value, property):
+                if value.fset is not None:
+                    raise TypeError(
+                        f"{self.name}.{name} -> type properties cannot have setters"
+                    )
+                if value.fdel is not None:
+                    raise TypeError(
+                        f"{self.name}.{name} -> type properties cannot have deleters"
+                    )
+
+                self.namespace[name] = TypeProperty(value.fget)
+
+            # promote methods to class methods
+            elif callable(value) and not isinstance(value, (classmethod, staticmethod)):
+                if not (name.startswith("__") and name.endswith("__")):
+                    self.namespace[name] = classmethod(value)
+
+        # validate any remaining required fields that were not explicitly assigned to
         for name in list(self.required):
             self._validate(name, EMPTY)
 
@@ -6679,11 +7705,11 @@ class ConcreteBuilder(TypeBuilder):
         if "from_string" in self.namespace:
             method = self.namespace["from_string"]
             if not isinstance(method, classmethod):
-                raise TypeError(f"{self.name} -> from_string must be a classmethod")
+                raise TypeError(f"{self.name} -> from_string() must be a classmethod")
 
             params = inspect.signature(method.__wrapped__).parameters.values()
             sig = inspect.Signature([
-                p.replace(annotation=p.empty, default=p.default) for p in params
+                p.replace(annotation=p.empty, default=p.empty) for p in params
             ])
 
         else:
@@ -6698,8 +7724,8 @@ class ConcreteBuilder(TypeBuilder):
 
         if sig != self.class_getitem_signature:
             raise TypeError(
-                f"{self.name} -> the signature of from_string must match "
-                f"__class_getitem__: {str(sig)} != {str(self.class_getitem_signature)}"
+                f"{self.name} -> signatures must match: from_string{str(sig)} != "
+                f"__class_getitem__{str(self.class_getitem_signature)}"
             )
 
 
@@ -6754,18 +7780,41 @@ class DecoratorBuilder(TypeBuilder):
             If the type implements a reserved attribute, or defines a required field.
         """
         for name, value in self.namespace.copy().items():
-            if isinstance(value, Empty):
-                raise TypeError(
-                    f"{self.name} -> decorator types must not have required fields: "
-                    f"{self.name}.{name}"
-                )
+            # check for reserved attribute
             if name in self.RESERVED:
                 raise TypeError(
                     f"{self.name} -> must not implement reserved attribute: "
                     f"{repr(name)}"
                 )
+
+            # disallow required fields
+            if isinstance(value, Empty):
+                raise TypeError(
+                    f"{self.name} -> decorator types must not have required fields: "
+                    f"{self.name}.{name}"
+                )
+
+            # assign to a required field
             if name in self.required:
                 self._validate(name, self.namespace.pop(name))
+
+            # promote properties to class properties
+            elif isinstance(value, property):
+                if value.fset is not None:
+                    raise TypeError(
+                        f"{self.name}.{name} -> type properties cannot have setters"
+                    )
+                if value.fdel is not None:
+                    raise TypeError(
+                        f"{self.name}.{name} -> type properties cannot have deleters"
+                    )
+
+                self.namespace[name] = TypeProperty(value.fget)
+
+            # promote methods to class methods
+            elif callable(value) and not isinstance(value, (classmethod, staticmethod)):
+                if not (name.startswith("__") and name.endswith("__")):
+                    self.namespace[name] = classmethod(value)
 
         # validate any remaining required fields that were not explicitly assigned
         for name in list(self.required):
@@ -6940,7 +7989,7 @@ class DecoratorBuilder(TypeBuilder):
         if "from_string" in self.namespace:
             method = self.namespace["from_string"]
             if not isinstance(method, classmethod):
-                raise TypeError(f"{self.name} -> from_string must be a classmethod")
+                raise TypeError(f"{self.name} -> from_string() must be a classmethod")
 
             params = inspect.signature(method.__wrapped__).parameters.values()
             sig = inspect.Signature([
@@ -6960,8 +8009,8 @@ class DecoratorBuilder(TypeBuilder):
 
         if sig != self.class_getitem_signature:
             raise TypeError(
-                f"{self.name} -> the signature of from_string must match "
-                f"__class_getitem__: {str(sig)} != {str(self.class_getitem_signature)}"
+                f"{self.name} -> signatures must match: from_string{str(sig)} != "
+                f"__class_getitem__{str(self.class_getitem_signature)}"
             )
 
     def _transform(self) -> None:
@@ -7005,6 +8054,9 @@ class DecoratorBuilder(TypeBuilder):
                     f"{self.name} -> inverse_transform must accept a single "
                     f"positional argument (in addition to cls)"
                 )
+
+
+
 
 
 ###############################

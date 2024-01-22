@@ -116,7 +116,7 @@ from .integer import (
     NumpyUInt16, PandasUInt16, UInt8, NumpyUInt8, PandasUInt8
 )
 from .string import String, PythonString, PyArrowString
-from .timedelta import Timedelta, PandasTimedelta, PythonTimedelta
+from .timedelta import Timedelta, PandasTimedelta, PythonTimedelta, NumpyTimedelta64
 
 
 # importing * from base also masks module names, which can be troublesome
