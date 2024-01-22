@@ -30,7 +30,6 @@ class PythonInt(Signed, backend="python"):
 
     aliases = {int}
     scalar = int
-    dtype = np.dtype(object)  # TODO: synthesize dtype
     max = np.inf
     min = -np.inf
     is_nullable = True

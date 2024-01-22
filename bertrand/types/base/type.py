@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .meta import DTYPE, EMPTY, Base, Empty, TypeMeta
+from .meta import DTYPE, EMPTY, POINTER_SIZE, Base, Empty, TypeMeta
 
 
 # TODO: probably just put this back in meta.py and then provide a simple example here
@@ -81,7 +81,7 @@ def _check_dtype(
             raise TypeError(f"scalar must be a Python type object, not {repr(scalar)}")
 
         processed["scalar"] = scalar
-        return None  # TODO: synthesize dtype
+        return None  # NOTE: causes dtype to be synthesized during builder.register()
 
     if not isinstance(value, (np.dtype, pd.api.extensions.ExtensionDtype)):
         raise TypeError(f"dtype must be a numpy/pandas dtype, not {repr(value)}")
@@ -109,9 +109,16 @@ def _check_itemsize(
     """Validate an itemsize provided in a bertrand type's namespace."""
     if value is EMPTY:
         if "dtype" in namespace:
-            return namespace["dtype"].itemsize
+            dtype = namespace["dtype"]
+            if dtype is None:
+                return POINTER_SIZE
+            return dtype.itemsize
+
         if "dtype" in processed:
-            return processed["dtype"].itemsize
+            dtype = processed["dtype"]
+            if dtype is None:
+                return POINTER_SIZE
+            return dtype.itemsize
 
     if not isinstance(value, int) or value <= 0:
         raise TypeError(f"itemsize must be a positive integer, not {repr(value)}")
@@ -178,6 +185,15 @@ def _check_is_nullable(
     return True if value is EMPTY else bool(value)
 
 
+def _check_is_numeric(
+    value: Any | Empty,
+    namespace: dict[str, Any],
+    processed: dict[str, Any]
+) -> bool:
+    """Validate a numeric flag provided in a bertrand type's namespace."""
+    return False if value is EMPTY else bool(value)
+
+
 def _check_missing(
     value: Any | Empty,
     namespace: dict[str, Any],
@@ -235,6 +251,7 @@ class Type(Base, metaclass=TypeMeta):
     max:            int | float     = EMPTY(_check_max)  # type: ignore
     min:            int | float     = EMPTY(_check_min)  # type: ignore
     is_nullable:    bool            = EMPTY(_check_is_nullable)  # type: ignore
+    is_numeric:     bool            = EMPTY(_check_is_numeric)  # type: ignore
     missing:        Any             = EMPTY(_check_missing)
 
     # NOTE: the following methods can be used to allow parametrization of a type using

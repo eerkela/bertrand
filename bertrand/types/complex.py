@@ -1,8 +1,6 @@
 """This module contains all the prepackaged complex types for the ``pdcast``
 type system.
 """
-from sys import getsizeof
-
 import numpy as np
 
 from .base import Type, TypeMeta
@@ -55,8 +53,6 @@ class PythonComplex(Complex128, backend="python"):
 
     aliases = {complex}
     scalar = complex
-    dtype = np.dtype(object)  # TODO: synthesize dtype
-    itemsize = getsizeof(1.0+1.0j)
     missing = np.complex128("nan+nanj")
 
     @property

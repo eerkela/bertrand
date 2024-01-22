@@ -1,8 +1,6 @@
 """This module contains all the prepackaged boolean types for the ``pdcast``
 type system.
 """
-from sys import getsizeof
-
 import numpy as np
 import pandas as pd
 
@@ -139,6 +137,5 @@ class PythonBool(Bool, backend="python"):
 
     aliases = {bool}
     scalar = bool
-    itemsize = getsizeof(True)
     max = 1
     min = 0

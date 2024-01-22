@@ -3,6 +3,7 @@ machinery, type primitives, and helper functions for detecting and resolving typ
 """
 from __future__ import annotations
 
+from collections import Counter
 import inspect
 from types import MappingProxyType
 from types import UnionType as PyUnionType
@@ -13,10 +14,12 @@ from typing import (
 from typing import Union as PyUnion
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 from pandas.api.extensions import register_extension_dtype
-from pandas.core.arrays import ExtensionArray, PandasArray
+from pandas.core.arrays import ExtensionArray, NumpyExtensionArray
 from pandas.core.dtypes.base import ExtensionDtype
+from pandas.core.dtypes.common import is_scalar
 from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries
 import regex as re  # alternate (PCRE-style) regex engine
 
@@ -1289,11 +1292,6 @@ class SyntheticArray(ExtensionArray):
     # link to bertrand type system
     _bertrand_type: TypeMeta
 
-    # basic attributes
-    dtype: SyntheticDtype
-    _dtype: SyntheticDtype
-    nbytes: int
-
     def __init__(
         self,
         values: Iterable[Any],
@@ -1309,9 +1307,12 @@ class SyntheticArray(ExtensionArray):
                 "synthesize_dtype() instead"
             )
 
-        self.data = self._data = self._items = np.asarray(values, dtype=object)
-        self.dtype = self._dtype = self._bertrand_type.dtype  # type: ignore
-        self.nbytes = self._bertrand_type.itemsize * self.data.shape[0]
+        if copy:
+            self.data = np.array(values, dtype=object)
+        else:
+            self.data = np.asarray(values, dtype=object)
+
+        self._data = self._items = self.data
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.data, name)
@@ -1330,6 +1331,7 @@ class SyntheticArray(ExtensionArray):
     def _from_sequence(
         cls,
         scalars: Iterable[Any],
+        *,
         dtype: DTYPE | None = None,
         copy: bool = False
     ) -> ExtensionArray:
@@ -1337,14 +1339,13 @@ class SyntheticArray(ExtensionArray):
 
         Parameters
         ----------
-        scalars : Sequence
+        scalars: Iterable[Any]
             Each element will be an instance of the scalar type for this array,
             ``cls.dtype.type`` or be converted into this type in this method.
-        dtype : dtype, optional
-            Construct for this particular dtype. This should be a Dtype compatible
-            with the ExtensionArray.
+        dtype : SyntheticDtype, optional
+            An instance of SyntheticDtype compatible with this array.
         copy : bool, default False
-            If True, copy the underlying data.
+            If False and scalars are already the correct dtype, return as-is.
 
         Returns
         -------
@@ -1357,14 +1358,57 @@ class SyntheticArray(ExtensionArray):
         [4, 5]
         Length: 2, dtype: Int64
         """
+        if isinstance(scalars, (ABCSeries, ABCIndex)):  # type: ignore
+            scalars = scalars.array  # type: ignore
+
+        if isinstance(scalars, cls):
+            return scalars.copy() if copy else scalars
+
+        # NOTE: this does NOT coerce inputs; that's handled by cast() directly.  This
+        # means it is not necessarily safe to pass in arbitrary values to this
+        # constructor - the input should always be passed through cast() first.
         return cls(scalars, dtype=dtype, copy=copy)
+
+    @classmethod
+    def _from_sequence_of_strings(
+        cls,
+        strings: Iterable[str],
+        *,
+        dtype: DTYPE | None = None,
+        copy: bool = False
+    ) -> ExtensionArray:
+        """
+        Construct a new ExtensionArray from a sequence of strings.
+
+        Parameters
+        ----------
+        strings : Sequence
+            Each element will be an instance of the scalar type for this
+            array, ``cls.dtype.type``.
+        dtype : dtype, optional
+            An instance of SyntheticDtype compatible with this array.
+        copy : bool, default False
+            If False and strings are already the correct dtype, return as-is.
+
+        Returns
+        -------
+        ExtensionArray
+
+        Examples
+        --------
+        >>> pd.arrays.IntegerArray._from_sequence_of_strings(["1", "2", "3"])
+        <IntegerArray>
+        [1, 2, 3]
+        Length: 3, dtype: Int64
+        """
+        return cls._from_sequence(strings, dtype=dtype, copy=copy)
 
     @classmethod
     def _from_factorized(
         cls,
         values: np.ndarray[Any, np.dtype[np.int64]],
-        original: SyntheticArray
-    ) -> SyntheticArray:
+        original: ExtensionArray
+    ) -> ExtensionArray:
         """Reconstruct a SyntheticArray after factorization.
 
         Parameters
@@ -1372,22 +1416,32 @@ class SyntheticArray(ExtensionArray):
         values : ndarray
             An integer ndarray with the factorized values.
         original : ExtensionArray
-            The original SyntheticArray that factorize was called on.
+            The original ExtensionArray that factorize was called on.
 
         Returns
         -------
-        SyntheticArray
-            The reconstructed SyntheticArray.
+        ExtensionArray
+            The reconstructed ExtensionArray.
 
         See Also
         --------
         factorize : Top-level factorize method that dispatches here.
-        ExtensionArray.factorize : Encode the array as an enumerated type.
+        ExtensionArray.factorize : Encode the extension array as an enumerated type.
+
+        Examples
+        --------
+        >>> interv_arr = pd.arrays.IntervalArray([pd.Interval(0, 1),
+        ...                                      pd.Interval(1, 5), pd.Interval(1, 5)])
+        >>> codes, uniques = pd.factorize(interv_arr)
+        >>> pd.arrays.IntervalArray._from_factorized(uniques, interv_arr)
+        <IntervalArray>
+        [(0, 1], (1, 5]]
+        Length: 2, dtype: interval[int64, right]
         """
-        return cls(values, dtype=original.dtype)
+        return cls(values, dtype=original.dtype, copy=True)
 
     @classmethod
-    def _concat_same_type(cls, to_concat: Iterable[SyntheticArray]) -> SyntheticArray:
+    def _concat_same_type(cls, to_concat: Iterable[SyntheticArray]) -> ExtensionArray:
         """Concatenate multiple arrays of this dtype.
 
         Parameters
@@ -1397,202 +1451,48 @@ class SyntheticArray(ExtensionArray):
 
         Returns
         -------
-        SyntheticArray
+        ExtensionArray
             A concatenated array containing all the elements in the input arrays.
+
+        Examples
+        --------
+        >>> arr1 = pd.array([1, 2, 3])
+        >>> arr2 = pd.array([4, 5, 6])
+        >>> pd.arrays.IntegerArray._concat_same_type([arr1, arr2])
+        <IntegerArray>
+        [1, 2, 3, 4, 5, 6]
+        Length: 6, dtype: Int64
         """
         return cls(np.concatenate([x.data for x in to_concat]))
 
-    ########################
-    ####    INTERNAL    ####
-    ########################
-
-    def _values_for_argsort(self) -> np.ndarray[Any, np.dtype[np.object_]]:
-        """TODO"""
-        return self.data
-
-    def _values_for_factorize(self) -> tuple[np.ndarray[Any, np.dtype[np.object_]], Any]:
-        """TODO"""
-        return self.data, self.dtype.na_value
-
-    def _reduce(self, name: str, skipna: bool = True, **kwargs: Any) -> Any:
-        """TODO"""
-        if skipna:
-            nans = self.isna()  # if no NA's, skipna is irrelevant
-            if nans.any():
-                return self[~nans]._reduce(name, skipna=False, **kwargs)
-
-        if name == "sum" and len(self) == 0:
-            # GH#29630 avoid returning int 0 or np.bool_(False) on old numpy
-            return self._bertrand_type.scalar(0)
-
-        try:
-            op = getattr(self.data, name)
-        except AttributeError as err:
-            msg = f"{repr(self._bertrand_type)} does not support the {name} operation"
-            raise NotImplementedError(msg) from err
-
-        return op(axis=0)
-
-    def __array_ufunc__(
-        self,
-        ufunc: np.ufunc,
-        method: str,
-        *inputs: Any,
-        **kwargs: Any
-    ) -> SyntheticArray | tuple[SyntheticArray, ...]:
-        """TODO"""
-        # pandas unboxes these so we don't need to implement them ourselves
-        if any(
-            isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame))  # type: ignore
-            for other in inputs
-        ):
-            return NotImplemented
-
-        # get handled values
-        array_like = (np.ndarray, ExtensionArray)
-        scalar_like = (self._bertrand_type.scalar,)
-        if self.dtype._is_numeric:  # pylint: disable=protected-access
-            scalar_like += (numbers.Number,)
-
-        if not all(isinstance(t, array_like + scalar_like) for t in inputs):
-            return NotImplemented
-
-        inputs = tuple(x.data if isinstance(x, ExtensionArray) else x for x in inputs)
-        result = getattr(ufunc, method)(*inputs, **kwargs)
-
-        def _reconstruct(x: Any) -> SyntheticArray:
-            if isinstance(x, scalar_like):
-                return x
-            return type(self)._from_sequence(x)
-
-        if isinstance(result, tuple):
-            return tuple(_reconstruct(x) for x in result)
-        return _reconstruct(result)
-
-    def __arrow_array__(self, typ: DTYPE | None = None) -> Any:
-        """TODO"""
-        import pyarrow
-        return pyarrow.array(self.data, type=typ)
-
-    def __from_arrow__(self, array: Any) -> SyntheticArray:
-        """TODO"""
-        return self._from_sequence(array)
-
-    ######################
-    ####    PUBLIC    ####
-    ######################
-
-    def astype(
-        self,
-        dtype: DTYPE,
-        copy: bool = True
-    ) -> np.ndarray[Any, np.dtype[Any]] | ExtensionArray:
-        """TODO"""
-        dtype = pd.api.types.pandas_dtype(dtype)
-        if pd.core.dtypes.common.is_dtype_equal(dtype, self.dtype):
-            if not copy:
-                return self
-            return self.copy()
-
-        if isinstance(dtype, ExtensionDtype):
-            cls = dtype.construct_array_type()
-            return cls._from_sequence(self.data, dtype=dtype, copy=copy)
-
-        return self.data.astype(dtype=dtype, copy=copy)
-
-    def isna(self) -> np.ndarray[Any, np.dtype[np.bool_]]:
-        """TODO"""
-        return pd.isna(self.data)
-
-    def take(
-        self,
-        indices: Iterable[int],
-        allow_fill: bool = False,
-        fill_value: Any | None = None
-    ) -> SyntheticArray:
-        """TODO"""
-        from pandas.core.algorithms import take
-
-        data = self.data
-        if allow_fill and fill_value is None:
-            fill_value = self.dtype.na_value
-
-        result = take(
-            data,
-            indices,
-            fill_value=fill_value,
-            allow_fill=allow_fill
-        )
-        return self._from_sequence(result, dtype=self.dtype)
-
-    def copy(self) -> SyntheticArray:
-        """TODO"""
-        return type(self)(self.data.copy())
-
-    #####################
-    ####    EXTRA    ####
-    #####################
-
-    # TODO: implement unique()?  Is this necessary?
-
-    # NOTE: these are not defined in the base ExtensionArray class, but are
-    # called in several pandas operations.
-
-    def round(self, *args: Any, **kwargs: Any) -> SyntheticArray:
-        """TODO"""
-        return self._from_sequence(self.data.round(*args, **kwargs))
-
-    def value_counts(self, dropna: bool = True) -> pd.Series[Any]:
-        """TODO"""
-        # disregard nans to begin with
-        mask = self.isna()
-        counts = Counter(self.data[~mask])
-        result = pd.Series(
-            counts.values(),
-            index=pd.Index(list(counts.keys()), dtype=self.dtype)
-        )
-        if dropna:
-            return result.astype("Int64")
-
-        # if including nans, count mask
-        nans = pd.Series(
-            [mask.sum()],
-            index=pd.Index([self.dtype.na_value], dtype=self.dtype)
-        )
-        result = pd.concat([result, nans])
-        return result.astype("Int64")
-
     #################################
-    ####    CONTAINER METHODS    ####
+    ####    SEQUENCE PROTOCOL    ####
     #################################
 
-    def __getitem__(self, key: int | slice) -> Any | SyntheticArray:
-        if isinstance(key, slice):
-            return self._from_sequence(self.data[key])
+    def __getitem__(
+        self,
+        key: int | slice | np.ndarray[Any, np.dtype[Any]]
+    ) -> ExtensionArray | Any:
+        if isinstance(key, (slice, np.ndarray)):
+            return type(self)(self.data[key])
         return self.data[key]
 
-    def __setitem__(self, key: int | slice, value: Any) -> None:
-        from bertrand.convert import cast
-        converted = cast(value, self._bertrand_type)
+    def __setitem__(
+        self,
+        key: int | slice | np.ndarray[Any, np.dtype[Any]],
+        value: Any
+    ) -> None:
+        converted = self._bertrand_type(value)
 
-        if isinstance(key, slice):
-            self.data[key] = np.asarray(converted)
+        if isinstance(key, (slice, np.ndarray)):
+            self.data[key] = converted.array.to_numpy()
+        elif len(converted) != 1:
+            raise ValueError("setting an array element with a sequence.")
         else:
-            if len(converted) != 1:
-                raise ValueError(
-                    "setting an array element with a sequence."
-                )
             self.data[key] = converted[0]
 
-    def __delitem__(self, key: Any) -> NoReturn:  # type: ignore
-        # arrays don't support indexed deletion, so this always raises a numpy error
-        del self.data[key]  # type: ignore
-
     def __len__(self) -> int:
-        return len(self.data)
-
-    def __contains__(self, other: Any) -> bool:
-        return other in self.data
+        return self.data.shape[0]
 
     def __iter__(self) -> Iterator[Any]:
         return iter(self.data)
@@ -1600,136 +1500,674 @@ class SyntheticArray(ExtensionArray):
     def __reversed__(self) -> Iterator[Any]:
         return reversed(self.data)
 
+    def __contains__(self, item: Any) -> bool | np.bool_:
+        # GH37867
+        # comparisons of any item to pd.NA always return pd.NA, so e.g. "a" in [pd.NA]
+        # would raise a TypeError. The implementation below works around that.
+        if is_scalar(item) and pd.isna(item):
+            if (
+                self._can_hold_na and
+                item is self.dtype.na_value or isinstance(item, self.dtype.type)
+            ):
+                return self._hasna
+            return False
+
+        return item in self.data
+
+    ################################
+    ####    PANDAS INTERFACE    ####
+    ################################
+
+    @property
+    def dtype(self) -> SyntheticDtype:
+        """The dtype for this array.
+
+        Returns
+        -------
+        SyntheticDtype
+            An automatically-generated dtype describing elements of this array.  This
+            is equivalent to an ``object`` dtype, except that explicitly labels the
+            python type that is stored in the array.
+
+        Examples
+        --------
+        >>> pd.array([1, 2, 3]).dtype
+        Int64Dtype()
+        """
+        return self._bertrand_type.dtype
+
+    @property
+    def nbytes(self) -> int:
+        """The number of bytes needed to store this object in memory.
+
+        Returns
+        -------
+        int
+            The width in bytes occupied by the array.
+
+        Examples
+        --------
+        >>> pd.array([1, 2, 3]).nbytes
+        27
+        """
+        return self._bertrand_type.itemsize * self.data.shape[0]
+
+    def __arrow_array__(self, typ: DTYPE | None = None) -> Any:
+        """TODO"""
+        import pyarrow
+        return pyarrow.array(self.data, type=typ)
+
+    def __from_arrow__(self, array: Any) -> ExtensionArray:
+        """TODO"""
+        return self._from_sequence(array)
+
+    def isna(self) -> np.ndarray[Any, np.dtype[np.bool_]]:
+        """A 1-D array indicating if each value is missing.
+
+        Returns
+        -------
+        numpy.ndarray or pandas.api.extensions.ExtensionArray
+            In most cases, this should return a NumPy ndarray. For exceptional cases
+            like ``SparseArray``, where returning an ndarray would be expensive, an
+            ExtensionArray may be returned.
+
+        Notes
+        -----
+        If returning an ExtensionArray, then
+
+        * ``na_values._is_boolean`` should be True
+        * `na_values` should implement :func:`ExtensionArray._reduce`
+        * ``na_values.any`` and ``na_values.all`` should be implemented
+
+        Examples
+        --------
+        >>> arr = pd.array([1, 2, np.nan, np.nan])
+        >>> arr.isna()
+        array([False, False,  True,  True])
+        """
+        return pd.isna(self.data)
+
+    def take(
+        self,
+        indices: Iterable[int],  # type: ignore
+        *,
+        allow_fill: bool = False,
+        fill_value: Any | None = None
+    ) -> SyntheticArray:
+        """Take elements from an array.
+
+        Parameters
+        ----------
+        indices : sequence of int or one-dimensional np.ndarray of int
+            Indices to be taken.
+        allow_fill : bool, default False
+            How to handle negative values in `indices`.
+
+            * False: negative values in `indices` indicate positional indices
+              from the right (the default). This is similar to
+              :func:`numpy.take`.
+
+            * True: negative values in `indices` indicate
+              missing values. These values are set to `fill_value`. Any other
+              other negative values raise a ``ValueError``.
+
+        fill_value : any, optional
+            Fill value to use for NA-indices when `allow_fill` is True.
+            This may be ``None``, in which case the default NA value for
+            the type, ``self.dtype.na_value``, is used.
+
+            For many ExtensionArrays, there will be two representations of
+            `fill_value`: a user-facing "boxed" scalar, and a low-level
+            physical NA value. `fill_value` should be the user-facing version,
+            and the implementation should handle translating that to the
+            physical version for processing the take if necessary.
+
+        Returns
+        -------
+        ExtensionArray
+            An ExtensionArray containing the extracted elements.
+
+        Raises
+        ------
+        IndexError
+            When the indices are out of bounds for the array.
+        ValueError
+            When `indices` contains negative values other than ``-1``
+            and `allow_fill` is True.
+
+        See Also
+        --------
+        numpy.take : Take elements from an array along an axis.
+        api.extensions.take : Take elements from an array.
+
+        Notes
+        -----
+        ExtensionArray.take is called by ``Series.__getitem__``, ``.loc``,
+        ``iloc``, when `indices` is a sequence of values. Additionally,
+        it's called by :meth:`Series.reindex`, or any other method
+        that causes realignment, with a `fill_value`.
+
+        Examples
+        --------
+        Here's an example implementation, which relies on casting the
+        extension array to object dtype. This uses the helper method
+        :func:`pandas.api.extensions.take`.
+
+        .. code-block:: python
+
+           def take(self, indices, allow_fill=False, fill_value=None):
+               from pandas.core.algorithms import take
+
+               # If the ExtensionArray is backed by an ndarray, then
+               # just pass that here instead of coercing to object.
+               data = self.astype(object)
+
+               if allow_fill and fill_value is None:
+                   fill_value = self.dtype.na_value
+
+               # fill value should always be translated from the scalar
+               # type for the array, to the physical storage type for
+               # the data, before passing to take.
+
+               result = take(data, indices, fill_value=fill_value,
+                             allow_fill=allow_fill)
+               return self._from_sequence(result, dtype=self.dtype)
+        """
+        if allow_fill and fill_value is None:
+            fill_value = self.dtype.na_value
+
+        result = pd.core.algorithms.take(
+            self.data,
+            indices,
+            fill_value=fill_value,
+            allow_fill=allow_fill
+        )
+        return type(self)(result, dtype=self.dtype)
+
+    def copy(self) -> SyntheticArray:
+        """Return a copy of the array.
+
+        Returns
+        -------
+        ExtensionArray
+            Copy of the array.
+
+        Examples
+        --------
+        >>> arr = pd.array([1, 2, 3])
+        >>> arr2 = arr.copy()
+        >>> arr[0] = 2
+        >>> arr2
+        <IntegerArray>
+        [1, 2, 3]
+        Length: 3, dtype: Int64
+        """
+        return type(self)(self.data.copy())
+
+    # TODO: interpolate()?  This could get complicated, though
+
+    def unique(self) -> ExtensionArray:
+        """Compute the ExtensionArray of unique values.
+
+        Returns
+        -------
+        ExtensionArray
+            The unique values in this array.
+
+        Examples
+        --------
+        >>> arr = pd.array([1, 2, 3, 1, 2, 3])
+        >>> arr.unique()
+        <IntegerArray>
+        [1, 2, 3]
+        Length: 3, dtype: Int64
+        """
+        return type(self)(pd.unique(self.data), dtype=self.dtype)
+
+    def _values_for_factorize(self) -> tuple[np.ndarray[Any, np.dtype[np.object_]], Any]:
+        """Return an array and missing value suitable for factorization.
+
+        Returns
+        -------
+        values : ndarray
+            An array suitable for factorization. This should maintain order and be a
+            supported dtype (Float64, Int64, UInt64, String, Object).  By default, the
+            extension array is cast to object dtype.
+        na_value : object
+            The value in `values` to consider missing. This will be treated as NA in
+            the factorization routines, so it will be coded as `-1` and not included
+            in `uniques`. By default, ``np.nan`` is used.
+
+        Notes
+        -----
+        The values returned by this method are also used in
+        :func:`pandas.util.hash_pandas_object`. If needed, this can be overridden in
+        the ``self._hash_pandas_object()`` method.
+
+        Examples
+        --------
+        >>> pd.array([1, 2, 3])._values_for_factorize()
+        (array([1, 2, 3], dtype=object), nan)
+        """
+        return self.data, self.dtype.na_value
+
+    def _values_for_argsort(self) -> np.ndarray[Any, np.dtype[np.object_]]:
+        """Return values for sorting.
+
+        Returns
+        -------
+        ndarray
+            The transformed values should maintain the ordering between values within
+            the array.
+
+        See Also
+        --------
+        ExtensionArray.argsort : Return the indices that would sort this array.
+
+        Notes
+        -----
+        The caller is responsible for *not* modifying these values in-place, so it is
+        safe for implementers to give views on ``self``.
+
+        Functions that use this (e.g. ``ExtensionArray.argsort``) should ignore
+        entries with missing values in the original array (according to
+        ``self.isna()``). This means that the corresponding entries in the returned
+        array don't need to be modified to sort correctly.
+
+        Examples
+        --------
+        In most cases, this is the underlying Numpy array of the ``ExtensionArray``:
+
+        >>> arr = pd.array([1, 2, 3])
+        >>> arr._values_for_argsort()
+        array([1, 2, 3])
+        """
+        # NOTE: this is used in `ExtensionArray.argsort/argmin/argmax`
+        return self.data
+
+    def searchsorted(
+        self,
+        value: Iterable[Any],
+        side: str = "left",
+        sorter: np.ndarray[Any, np.dtype[Any]] | None = None,
+    ) -> npt.NDArray[np.intp] | np.intp:
+        """
+        Find indices where elements should be inserted to maintain order.
+
+        Find the indices into a sorted array `self` (a) such that, if the
+        corresponding elements in `value` were inserted before the indices,
+        the order of `self` would be preserved.
+
+        Assuming that `self` is sorted:
+
+        ======  ================================
+        `side`  returned index `i` satisfies
+        ======  ================================
+        left    ``self[i-1] < value <= self[i]``
+        right   ``self[i-1] <= value < self[i]``
+        ======  ================================
+
+        Parameters
+        ----------
+        value : array-like, list or scalar
+            Value(s) to insert into `self`.
+        side : {'left', 'right'}, optional
+            If 'left', the index of the first suitable location found is given.
+            If 'right', return the last such index.  If there is no suitable
+            index, return either 0 or N (where N is the length of `self`).
+        sorter : 1-D array-like, optional
+            Optional array of integer indices that sort array a into ascending
+            order. They are typically the result of argsort.
+
+        Returns
+        -------
+        array of ints or int
+            If value is array-like, array of insertion points.
+            If value is scalar, a single integer.
+
+        See Also
+        --------
+        numpy.searchsorted : Similar method from NumPy.
+
+        Examples
+        --------
+        >>> arr = pd.array([1, 2, 3, 5])
+        >>> arr.searchsorted([4])
+        array([3])
+        """
+        # Note: the base tests provided by pandas only test the basics.
+        # We do not test
+        # 1. Values outside the range of the `data_for_sorting` fixture
+        # 2. Values between the values in the `data_for_sorting` fixture
+        # 3. Missing values.
+        if isinstance(value, ExtensionArray):
+            value = value.astype(object)
+        return self.data.searchsorted(value, side=side, sorter=sorter)
+
+    def _accumulate(
+        self,
+        name: str,
+        *,
+        skipna: bool = True,
+        **kwargs: Any
+    ) -> ExtensionArray:
+        """Return an ExtensionArray performing an accumulation operation.
+
+        The underlying data type might change.
+
+        Parameters
+        ----------
+        name : str
+            Name of the function, supported values are:
+            - cummin
+            - cummax
+            - cumsum
+            - cumprod
+        skipna : bool, default True
+            If True, skip NA values.
+        **kwargs
+            Additional keyword arguments passed to the accumulation function.
+            Currently, there is no supported kwarg.
+
+        Returns
+        -------
+        array
+
+        Raises
+        ------
+        NotImplementedError : subclass does not define accumulations
+
+        Examples
+        --------
+        >>> arr = pd.array([1, 2, 3])
+        >>> arr._accumulate(name='cumsum')
+        <IntegerArray>
+        [1, 3, 6]
+        Length: 3, dtype: Int64
+        """
+        if skipna:
+            nans = self.isna()  # if no NA's, skipna is irrelevant
+            if nans.any():
+                return self[~nans]._accumulate(  # type: ignore
+                    name, skipna=False, **kwargs
+                )
+
+        meth = getattr(self.data, name, None)
+        if meth is None:
+            raise TypeError(
+                f"'{type(self).__name__}' with dtype {self.dtype} does not support "
+                f"accumulation '{name}'"
+            )
+
+        return meth(axis=0, **kwargs)
+
+    def _reduce(
+        self,
+        name: str,
+        skipna: bool = True,
+        keepdims: bool = False,
+        **kwargs: Any
+    ) -> Any:
+        """Return a scalar result of performing the reduction operation.
+
+        Parameters
+        ----------
+        name : str
+            Name of the function, supported values are:
+            { any, all, min, max, sum, mean, median, prod, std, var, sem, kurt, skew }.
+        skipna : bool, default True
+            If True, skip NaN values.
+        keepdims : bool, default False
+            If False, a scalar is returned.
+            If True, the result has dimension with size one along the reduced axis.
+
+            .. versionadded:: 2.1
+
+               This parameter is not required in the _reduce signature to keep backward
+               compatibility, but will become required in the future. If the parameter
+               is not found in the method signature, a FutureWarning will be emitted.
+        **kwargs
+            Additional keyword arguments passed to the reduction function.
+            Currently, `ddof` is the only supported kwarg.
+
+        Returns
+        -------
+        scalar
+
+        Raises
+        ------
+        TypeError : subclass does not define reductions
+
+        Examples
+        --------
+        >>> pd.array([1, 2, 3])._reduce("min")
+        1
+        """
+        if skipna:
+            nans = self.isna()  # if no NA's, skipna is irrelevant
+            if nans.any():
+                return self[~nans]._reduce(  # type: ignore
+                    name, skipna=False, keepdims=keepdims, **kwargs
+                )
+
+        meth = getattr(self.data, name, None)
+        if meth is None:
+            raise TypeError(
+                f"'{type(self).__name__}' with dtype {self.dtype} does not support "
+                f"reduction '{name}'"
+            )
+
+        return meth(axis=0, keepdims=keepdims, **kwargs)
+
+    ##############################
+    ####    CUSTOMIZATIONS    ####
+    ##############################
+
+    # NOTE: these are not defined in the base ExtensionArray class, but are
+    # called in several pandas operations.
+
+    def round(self, *args: Any, **kwargs: Any) -> ExtensionArray:
+        """Default round implementation.
+
+        Parameters
+        ----------
+        *args: Any
+            Passed through to ``np.round``.
+        **kwargs: Any
+            Passed through to ``np.round``.
+
+        Returns
+        -------
+        ExtensionArray
+            A new ExtensionArray of the same type with rounded values.
+
+        Notes
+        -----
+        round() does not work as expected unless we implement this shim method.
+        """
+        return type(self)(self.data.round(*args, **kwargs))
+
+    def value_counts(self, dropna: bool = True) -> pd.Series[Any]:
+        """Returns a Series containing counts of each unique value.
+
+        Parameters
+        ----------
+        dropna : bool, default True
+            Don't include counts of missing values.
+
+        Returns
+        -------
+        counts : Series
+            The count of each unique value in the array.
+
+        See Also
+        --------
+        Series.value_counts
+
+        Notes
+        -----
+        count() does not work as expected unless we implement this shim method.
+        """
+        # disregard nans to begin with
+        nans = self.isna()
+        counts = Counter(self.data[~nans])  # pylint: disable=invalid-unary-operand-type
+        result = pd.Series(  # type: ignore
+            counts.values(),
+            index=pd.Index(list(counts.keys()), dtype=self.dtype),
+            dtype="Int64"
+        )
+        if dropna:
+            return result
+
+        # if including nans, count mask
+        nans = pd.Series(
+            [nans.sum()],
+            index=pd.Index([self.dtype.na_value], dtype=self.dtype)
+        )
+        result = pd.concat([result, nans])  # TODO: axis is wrong?
+        return result
+
     ###############################
     ####    UNARY OPERATORS    ####
     ###############################
 
-    def __abs__(self) -> SyntheticArray:
+    def __abs__(self) -> ExtensionArray:
         return _rectify(abs(self.data), self._bertrand_type)
 
-    def __neg__(self) -> SyntheticArray:
-        # NOTE: typical negation gives nonsensical answers for boolean object arrays:
-        # >>> ~np.array([True, False, True], dtype=object)
-        # array([-2, -1, -2], dtype=object)
+    def __neg__(self) -> ExtensionArray:
         if self.dtype._is_boolean:
-            return self.__invert__()
-
-        # TODO: negating a boolean array yields integers, not booleans
-
+            raise TypeError("Unary `-` not supported for boolean arrays")
         return _rectify(-self.data, self._bertrand_type)
 
-    def __pos__(self) -> SyntheticArray:
+    def __pos__(self) -> ExtensionArray:
+        if self.dtype._is_boolean:
+            raise TypeError("Unary `+` not supported for boolean arrays")
         return _rectify(+self.data, self._bertrand_type)
 
-    def __invert__(self) -> SyntheticArray:
-        # NOTE: typical inversion gives nonsensical answers for boolean object arrays:
-        # >>> ~np.array([True, False, True], dtype=object)
-        # array([-2, -1, -2], dtype=object)
+    def __invert__(self) -> ExtensionArray:
         if self.dtype._is_boolean:
-            return self.__xor__(True)  # corrects for the above
+            # NOTE: typical inversion gives nonsensical answers for bool object arrays:
+            # >>> ~np.array([True, False, True], dtype=object)
+            # array([-2, -1, -2], dtype=object)
+            return self.__xor__(True)
 
         return _rectify(~self.data, self._bertrand_type)
+
+    ####################################
+    ####    COMPARISON OPERATORS    ####
+    ####################################
+
+    def __lt__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
+            return NotImplemented
+        return self.data < other
+
+    def __le__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
+            return NotImplemented
+        return self.data <= other
+
+    def __eq__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:  # type: ignore
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
+            return NotImplemented
+        return self.data == other
+
+    def __ne__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:  # type: ignore
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
+            return NotImplemented
+        return self.data != other
+
+    def __gt__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
+            return NotImplemented
+        return self.data > other
+
+    def __ge__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
+            return NotImplemented
+        return self.data >= other
 
     ################################
     ####    BINARY OPERATORS    ####
     ################################
 
-    # NOTE: pandas recommends that we do not handle the series, index, or dataframe
-    # cases ourselves.  Instead, we should return NotImplemented, which causes pandas
-    # to unbox a pandas array from the other operand and try again.
-
     def __and__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(self.data & np.asarray(other), self._bertrand_type)
 
     def __rand__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(np.asarray(other) & self.data, self._bertrand_type)
 
     def __iand__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         self.data &= np.asarray(other)
         return _rectify(self.data, self._bertrand_type)
 
     def __or__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
-        return _rectify(self.data & np.asarray(other), self._bertrand_type)
+        return _rectify(self.data | np.asarray(other), self._bertrand_type)
 
     def __ror__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(np.asarray(other) | self.data, self._bertrand_type)
 
     def __ior__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         self.data |= np.asarray(other)
         return _rectify(self.data, self._bertrand_type)
 
     def __xor__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
-        return _rectify(self.data & np.asarray(other), self._bertrand_type)
+        return _rectify(self.data ^ np.asarray(other), self._bertrand_type)
 
     def __rxor__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(np.asarray(other) ^ self.data, self._bertrand_type)
 
     def __ixor__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         self.data ^= np.asarray(other)
         return _rectify(self.data, self._bertrand_type)
 
     def __rshift__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
-        return _rectify(self.data & np.asarray(other), self._bertrand_type)
+        return _rectify(self.data >> np.asarray(other), self._bertrand_type)
 
     def __rrshift__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(np.asarray(other) >> self.data, self._bertrand_type)
 
     def __irshift__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         self.data >>= np.asarray(other)
         return _rectify(self.data, self._bertrand_type)
 
     def __lshift__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
-        return _rectify(self.data & np.asarray(other), self._bertrand_type)
+        return _rectify(self.data << np.asarray(other), self._bertrand_type)
 
     def __rlshift__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(np.asarray(other) << self.data, self._bertrand_type)
 
     def __ilshift__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         self.data <<= np.asarray(other)
         return _rectify(self.data, self._bertrand_type)
 
@@ -1738,257 +2176,189 @@ class SyntheticArray(ExtensionArray):
     ##############################
 
     def __add__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(self.data + np.asarray(other), self._bertrand_type)
 
     def __radd__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(np.asarray(other) + self.data, self._bertrand_type)
 
     def __iadd__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         self.data += np.asarray(other)
         return _rectify(self.data, self._bertrand_type)
 
     def __sub__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(self.data - np.asarray(other), self._bertrand_type)
 
     def __rsub__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(np.asarray(other) - self.data, self._bertrand_type)
 
     def __isub__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         self.data -= np.asarray(other)
         return _rectify(self.data, self._bertrand_type)
 
     def __mul__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(self.data * np.asarray(other), self._bertrand_type)
 
     def __rmul__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(np.asarray(other) * self.data, self._bertrand_type)
 
     def __imul__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         self.data *= np.asarray(other)
         return _rectify(self.data, self._bertrand_type)
 
     def __matmul__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(self.data @ np.asarray(other), self._bertrand_type)
 
     def __rmatmul__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(np.asarray(other) @ self.data, self._bertrand_type)
 
     def __imatmul__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         self.data @= np.asarray(other)
         return _rectify(self.data, self._bertrand_type)
 
     def __truediv__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(self.data / np.asarray(other), self._bertrand_type)
 
     def __rtruediv__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(np.asarray(other) / self.data, self._bertrand_type)
 
     def __itruediv__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         self.data /= np.asarray(other)
         return _rectify(self.data, self._bertrand_type)
 
     def __floordiv__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(self.data // np.asarray(other), self._bertrand_type)
 
     def __rfloordiv__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(np.asarray(other) // self.data, self._bertrand_type)
 
     def __ifloordiv__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         self.data //= np.asarray(other)
         return _rectify(self.data, self._bertrand_type)
 
     def __mod__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(self.data % np.asarray(other), self._bertrand_type)
 
     def __rmod__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(np.asarray(other) % self.data, self._bertrand_type)
 
     def __imod__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         self.data %= np.asarray(other)
         return _rectify(self.data, self._bertrand_type)
 
-    def __divmod__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+    def __divmod__(self, other: Any) -> tuple[ExtensionArray, ExtensionArray]:
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
+        div, mod = divmod(self.data, np.asarray(other))  # type: ignore
+        return _rectify(div, self._bertrand_type), _rectify(mod, self._bertrand_type)
 
-        return _rectify(divmod(self.data, np.asarray(other)), self._bertrand_type)
-
-    def __rdivmod__(self, other: Any) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+    def __rdivmod__(self, other: Any) -> tuple[ExtensionArray, ExtensionArray]:
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
-        return _rectify(divmod(np.asarray(other), self.data), self._bertrand_type)
+        div, mod = divmod(np.asarray(other), self.data)  # type: ignore
+        return _rectify(div, self._bertrand_type), _rectify(mod, self._bertrand_type)
 
     def __pow__(self, other: Any, mod: Any | None = None) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(pow(self.data, np.asarray(other), mod), self._bertrand_type)
 
     def __rpow__(self, other: Any, mod: Any | None = None) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         return _rectify(pow(np.asarray(other), self.data, mod), self._bertrand_type)
 
     def __ipow__(self, other: Any, mod: Any | None = None) -> ExtensionArray:
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame)):  # type: ignore
             return NotImplemented
-
         self.data **= np.asarray(other)
         return _rectify(self.data, self._bertrand_type)
-
-    ####################################
-    ####    COMPARISON OPERATORS    ####
-    ####################################
-
-    def __lt__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:
-        if isinstance(other, (ABCSeries, ABCIndex)):
-            return NotImplemented
-
-        return self.data < other
-
-    def __le__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:
-        if isinstance(other, (ABCSeries, ABCIndex)):
-            return NotImplemented
-
-        return self.data <= other
-
-    def __eq__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:
-        if isinstance(other, (ABCSeries, ABCIndex)):
-            return NotImplemented
-
-        return self.data == other
-
-    def __ne__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:
-        if isinstance(other, (ABCSeries, ABCIndex)):
-            return NotImplemented
-
-        return self.data != other
-
-    def __gt__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:
-        if isinstance(other, (ABCSeries, ABCIndex)):
-            return NotImplemented
-
-        return self.data > other
-
-    def __ge__(self, other: Any) -> np.ndarray[Any, np.dtype[np.bool_]]:
-        if isinstance(other, (ABCSeries, ABCIndex)):
-            return NotImplemented
-
-        return self.data >= other
 
 
 def synthesize_dtype(typ: TypeMeta) -> SyntheticDtype:
     """TODO"""
-    # hack - allows us to use the same name for the global and local classes
-    global SyntheticDtype
-    _SyntheticDtype = SyntheticDtype
+    # pylint: disable=protected-access, missing-class-docstring
+
+    def _check_boolean(cls: type[SyntheticDtype]) -> bool:
+        from ..boolean import Bool
+        return issubclass(cls._bertrand_type, Bool)  # type: ignore
 
     @register_extension_dtype
-    class SyntheticDtype(_SyntheticDtype):
-        """TODO"""
+    class Dtype(SyntheticDtype):
 
         _bertrand_type = typ
         name = repr(typ)
         type = typ.scalar
         kind = "O"
-        _is_boolean = issubclass(typ, Bool)  # TODO: this creates a potential circular reference
-        _is_numeric = typ.is_numeric  # TODO: mark this in types
+        _is_boolean = TypeProperty(_check_boolean)
+        _is_numeric = typ.is_numeric
         _can_hold_na = typ.is_nullable
 
         @classmethod
         def construct_array_type(cls) -> type[SyntheticArray]:
             """TODO"""
-            # hack - allows us to use the same name for the global and local classes
-            global SyntheticArray
-            _SyntheticArray = SyntheticArray
 
-            class SyntheticArray(_SyntheticArray):
+            class Array(SyntheticArray):
 
-                def __init__(self, *args: Any, **kwargs: Any) -> None:
-                    self._bertrand_type = typ
-                    super().__init__(*args, **kwargs)
+                _bertrand_type = typ
 
-            SyntheticArray.__doc__ = (
+            Array.__doc__ = (
                 f"An abstract data type, automatically generated to store\n"
                 f"{repr(typ)} objects."
             )
-            return SyntheticArray
+            return Array
 
-    SyntheticDtype.__doc__ = (
+    Dtype.__doc__ = (
         f"An abstract data type, automatically generated to store {typ.scalar}\n"
         f"objects."
     )
-    return SyntheticDtype()
+    return Dtype()
 
 
 def _rectify(
     arr: np.ndarray[Any, np.dtype[Any]],
-    orig_dtype: SyntheticDtype
+    orig_dtype: TypeMeta
 ) -> ExtensionArray:
     """Rectify the result of a math operation to the detected type of the
     first element.
@@ -2034,7 +2404,7 @@ def _rectify(
     if isinstance(dtype, ExtensionDtype):
         array_type = dtype.construct_array_type()
     else:
-        array_type = PandasArray
+        array_type = NumpyExtensionArray
 
     # construct output array
     return array_type._from_sequence(arr, dtype=dtype, copy=False)
@@ -2266,7 +2636,14 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         return Object[target]
 
     if isinstance(target, PyUnionType):
-        return Union.from_types(LinkedSet(resolve(t) for t in target.__args__))
+        flattened = LinkedSet()
+        for typ in target.__args__:
+            t = resolve(typ)
+            if isinstance(t, UnionMeta):
+                flattened.update(t)
+            else:
+                flattened.add(t)
+        return Union.from_types(flattened)
 
     if isinstance(target, np.dtype):
         if target.fields:
@@ -2276,8 +2653,8 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         return _resolve_dtype(target)
 
     if isinstance(target, pd.api.extensions.ExtensionDtype):
-        # if isinstance(target, SyntheticDtype):
-        #     return target._bertrand_type
+        if isinstance(target, SyntheticDtype):
+            return target._bertrand_type  # pylint: disable=protected-access
         return _resolve_dtype(target)
 
     if isinstance(target, str):
@@ -2689,12 +3066,13 @@ def _detect_dtype(data: Any, drop_na: bool) -> META:
     if dtype == np.dtype(object):  # ambiguous - loop through elementwise
         return _detect_elementwise(data)
 
-    # if isinstance(dtype, SyntheticDtype):
-    #     typ = dtype._bertrand_type
-    # else:
-    typ = REGISTRY.dtypes.get(type(dtype), None)
-    if typ is None:
-        raise TypeError(f"unrecognized dtype -> {repr(dtype)}")
+    typ: TypeMeta | DecoratorMeta
+    if isinstance(dtype, SyntheticDtype):
+        typ = dtype._bertrand_type  # pylint: disable=protected-access
+    else:
+        typ = REGISTRY.dtypes.get(type(dtype), None)  # type: ignore
+        if typ is None:
+            raise TypeError(f"unrecognized dtype -> {repr(dtype)}")
 
     if typ._defines_from_dtype:  # pylint: disable=protected-access
         result = typ.from_dtype(dtype)
@@ -7632,6 +8010,8 @@ class ConcreteBuilder(TypeBuilder):
             typ._default = typ  # type: ignore
         if typ._nullable is None and self.fields.get("is_nullable", False):
             typ._nullable = typ
+        if typ._fields["dtype"] is None:
+            typ._fields["dtype"] = synthesize_dtype(typ)
 
         parent = self.parent
         if self.parent is not Base:

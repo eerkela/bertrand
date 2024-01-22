@@ -2,9 +2,6 @@
 type system.
 """
 import decimal
-from sys import getsizeof
-
-import numpy as np
 
 from .base import Type
 
@@ -24,6 +21,4 @@ class PythonDecimal(Decimal, backend="python"):
 
     aliases = {decimal.Decimal}
     scalar = decimal.Decimal
-    dtype = np.dtype(object)  # TODO: synthesize dtype
-    itemsize = getsizeof(decimal.Decimal(0))
     missing = decimal.Decimal("nan")

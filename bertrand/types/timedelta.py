@@ -3,7 +3,6 @@ type system.
 """
 import datetime
 import re
-from sys import getsizeof
 
 import numpy as np
 import pandas as pd
@@ -44,8 +43,6 @@ class PythonTimedelta(Timedelta, backend="python"):
 
     aliases = {datetime.timedelta, "pytimedelta", "datetime.timedelta"}
     scalar = datetime.timedelta
-    dtype = np.dtype(object)  # TODO: synthesize dtype
-    itemsize = getsizeof(datetime.timedelta(0))
     # max = time.pytimedelta_to_ns(datetime.timedelta.max)
     # min = time.pytimedelta_to_ns(datetime.timedelta.min)
     missing = pd.NaT

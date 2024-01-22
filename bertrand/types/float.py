@@ -1,8 +1,6 @@
 """This module contains all the prepackaged float types for the ``pdcast``
 type system.
 """
-from sys import getsizeof
-
 import numpy as np
 
 from .base import Type, TypeMeta
@@ -55,8 +53,6 @@ class PythonFloat(Float, backend="python"):
 
     aliases = {float}
     scalar = float
-    dtype = np.dtype(object)  # TODO: synthesize dtype
-    itemsize = getsizeof(1.0)
     missing = np.nan
 
     @property
