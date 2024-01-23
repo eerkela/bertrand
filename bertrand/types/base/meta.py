@@ -1301,18 +1301,10 @@ class SyntheticArray(ExtensionArray):
         # NOTE: this does NOT coerce inputs; that's handled by cast() directly.  This
         # means it is not necessarily safe to pass in arbitrary values to this
         # constructor - the input should always be passed through cast() first.
-        if not hasattr(self, "_bertrand_type"):
-            raise NotImplementedError(
-                "synthetic dtypes cannot be instantiated directly - use "
-                "synthesize_dtype() instead"
-            )
-
         if copy:
-            self.data = np.array(values, dtype=object)
+            self.data = self._data = self._items = np.array(values, dtype=object)
         else:
-            self.data = np.asarray(values, dtype=object)
-
-        self._data = self._items = self.data
+            self.data = self._data = self._items = np.asarray(values, dtype=object)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.data, name)
@@ -1704,7 +1696,41 @@ class SyntheticArray(ExtensionArray):
         """
         return type(self)(self.data.copy())
 
-    # TODO: interpolate()?  This could get complicated, though
+    # TODO: support as many interpolation methods as possible
+
+    def interpolate(
+        self,
+        *,
+        method: str,
+        axis: int,
+        index: pd.Index[Any],
+        limit: int,
+        limit_direction: str,
+        limit_area: str | None,
+        copy: bool,
+        **kwargs: Any,
+    ) -> ExtensionArray:
+        """See DataFrame.interpolate.__doc__.
+
+        Examples
+        --------
+        >>> arr = pd.arrays.NumpyExtensionArray(np.array([0, 1, np.nan, 3]))
+        >>> arr.interpolate(method="linear",
+        ...                 limit=3,
+        ...                 limit_direction="forward",
+        ...                 index=pd.Index([1, 2, 3, 4]),
+        ...                 fill_value=1,
+        ...                 copy=False,
+        ...                 axis=0,
+        ...                 limit_area="inside"
+        ...                 )
+        <NumpyExtensionArray>
+        [0.0, 1.0, 2.0, 3.0]
+        Length: 4, dtype: float64
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement interpolate"
+        )
 
     def unique(self) -> ExtensionArray:
         """Compute the ExtensionArray of unique values.
@@ -1885,27 +1911,97 @@ class SyntheticArray(ExtensionArray):
         [1, 3, 6]
         Length: 3, dtype: Int64
         """
-        if skipna:
-            nans = self.isna()  # if no NA's, skipna is irrelevant
-            if nans.any():
-                return self[~nans]._accumulate(  # type: ignore
-                    name, skipna=False, **kwargs
-                )
+        not_nan = pd.notna(self.data)
+        result = np.full(self.shape, self.dtype.na_value, dtype=object)
+        val: Any = None
 
-        meth = getattr(self.data, name, None)
-        if meth is None:
+        if name == "cummax":
+            if skipna:
+                for i, (x, valid) in enumerate(zip(self.data, not_nan)):
+                    if not valid:
+                        continue
+                    if val is None or x > val:
+                        val = x
+                    result[i] = val
+            else:
+                for i, (x, valid) in enumerate(zip(self.data, not_nan)):
+                    if not valid:
+                        break
+                    if val is None or x > val:
+                        val = x
+                    result[i] = val
+
+        elif name == "cummin":
+            if skipna:
+                for i, (x, valid) in enumerate(zip(self.data, not_nan)):
+                    if not valid:
+                        continue
+                    if val is None or x < val:
+                        val = x
+                    result[i] = val
+            else:
+                for i, (x, valid) in enumerate(zip(self.data, not_nan)):
+                    if not valid:
+                        break
+                    if val is None or x < val:
+                        val = x
+                    result[i] = val
+
+        elif name == "cumsum":
+            if skipna:
+                for i, (x, valid) in enumerate(zip(self.data, not_nan)):
+                    if not valid:
+                        continue
+                    if val is None:
+                        val = x
+                    else:
+                        val = val + x
+                    result[i] = val
+            else:
+                for i, (x, valid) in enumerate(zip(self.data, not_nan)):
+                    if not valid:
+                        break
+                    if val is None:
+                        val = x
+                    else:
+                        val = val + x
+                    result[i] = val
+
+        elif name == "cumprod":
+            if skipna:
+                for i, (x, valid) in enumerate(zip(self.data, not_nan)):
+                    if not valid:
+                        continue
+                    if val is None:
+                        val = x
+                    else:
+                        val = val * x
+                    result[i] = val
+            else:
+                for i, (x, valid) in enumerate(zip(self.data, not_nan)):
+                    if not valid:
+                        break
+                    if val is None:
+                        val = x
+                    else:
+                        val = val * x
+                    result[i] = val
+
+        else:
             raise TypeError(
                 f"'{type(self).__name__}' with dtype {self.dtype} does not support "
-                f"accumulation '{name}'"
+                f"reduction '{name}'"
             )
 
-        return meth(axis=0, **kwargs)
+        return _rectify(result, self._bertrand_type)  # TODO: this can be a bit more efficient if we pass in the missing values
 
     def _reduce(
         self,
         name: str,
         skipna: bool = True,
         keepdims: bool = False,
+        min_count: int = 0,
+        ddof: int = 1,
         **kwargs: Any
     ) -> Any:
         """Return a scalar result of performing the reduction operation.
@@ -1926,6 +2022,14 @@ class SyntheticArray(ExtensionArray):
                This parameter is not required in the _reduce signature to keep backward
                compatibility, but will become required in the future. If the parameter
                is not found in the method signature, a FutureWarning will be emitted.
+        min_count : int, default 0
+            The required number of valid values to perform the operation.  If fewer
+            than ``min_count`` non-NA values are present the result will be NA.  This
+            parameter is only used by ``sum()``, and is not included in the numpy
+            method of the same name.
+        ddof : int, default 1
+            Delta Degrees of Freedom. The divisor used in calculations is ``N - ddof``,
+            where ``N`` represents the number of elements. By default `ddof` is 1.
         **kwargs
             Additional keyword arguments passed to the reduction function.
             Currently, `ddof` is the only supported kwarg.
@@ -1943,28 +2047,65 @@ class SyntheticArray(ExtensionArray):
         >>> pd.array([1, 2, 3])._reduce("min")
         1
         """
-        if skipna:
-            nans = self.isna()  # if no NA's, skipna is irrelevant
-            if nans.any():
-                return self[~nans]._reduce(  # type: ignore
-                    name, skipna=False, keepdims=keepdims, **kwargs
-                )
+        if keepdims:
+            return np.array([
+                self._reduce(name, skipna=skipna, min_count=min_count, **kwargs)
+            ])
 
-        meth = getattr(self.data, name, None)
+        arr = self.data[pd.notna(self.data)]
+        if not skipna and arr.shape != self.shape:
+            return self.dtype.na_value
+
+        meth = getattr(arr, name, None)
         if meth is None:
+            if name == "median":
+                return np.median(arr)
+
+            n = arr.shape[0]
+            if name == "sem":
+                return np.std(arr, ddof=ddof) / np.sqrt(n)
+
+            mean = sum(arr) / n
+            if name == "kurt":
+                moment2 = None
+                moment4 = None
+                for x in arr:
+                    if moment2 is None:
+                        moment2 = (x - mean) ** 2
+                    else:
+                        moment2 = moment2 + (x - mean) ** 2
+
+                    if moment4 is None:
+                        moment4 = (x - mean) ** 4
+                    else:
+                        moment4 = moment4 + (x - mean) ** 4
+
+                corr = n * (n + 1) / (n - 1)
+                scale = (n - 1) ** 2 / ((n - 2) * (n - 3))
+                return ((moment4 / (moment2 ** 2)) * corr - 3) * scale
+
+
+            if name == "skew":
+                sigma = np.std(arr, ddof=1)
+                moment3 = sum((x - mean) ** 3 for x in arr)
+                return (moment3 / sigma ** 3) * (n / ((n - 1) * (n - 2)))
+
             raise TypeError(
                 f"'{type(self).__name__}' with dtype {self.dtype} does not support "
                 f"reduction '{name}'"
             )
 
-        return meth(axis=0, keepdims=keepdims, **kwargs)
+        if name == "sum" and arr.shape[0] < min_count:
+            return self.dtype.na_value
+
+        return meth(**kwargs)
 
     ##############################
     ####    CUSTOMIZATIONS    ####
     ##############################
 
-    # NOTE: these are not defined in the base ExtensionArray class, but are
-    # called in several pandas operations.
+    # NOTE: these are not defined in the base ExtensionArray class, but are called in
+    # several pandas operations, which will fail if they are not defined.
 
     def round(self, *args: Any, **kwargs: Any) -> ExtensionArray:
         """Default round implementation.
@@ -2006,13 +2147,13 @@ class SyntheticArray(ExtensionArray):
 
         Notes
         -----
-        count() does not work as expected unless we implement this shim method.
+        describe() does not work as expected unless we implement this shim method.
         """
         # disregard nans to begin with
         nans = self.isna()
         counts = Counter(self.data[~nans])  # pylint: disable=invalid-unary-operand-type
         result = pd.Series(  # type: ignore
-            counts.values(),
+            list(counts.values()),
             index=pd.Index(list(counts.keys()), dtype=self.dtype),
             dtype="Int64"
         )
@@ -2024,8 +2165,7 @@ class SyntheticArray(ExtensionArray):
             [nans.sum()],
             index=pd.Index([self.dtype.na_value], dtype=self.dtype)
         )
-        result = pd.concat([result, nans])  # TODO: axis is wrong?
-        return result
+        return pd.concat([result, nans], axis=0)  # type: ignore
 
     ###############################
     ####    UNARY OPERATORS    ####
@@ -2327,6 +2467,7 @@ def synthesize_dtype(typ: TypeMeta) -> SyntheticDtype:
     @register_extension_dtype
     class Dtype(SyntheticDtype):
 
+        _array_type: type[SyntheticArray] | None = None
         _bertrand_type = typ
         name = repr(typ)
         type = typ.scalar
@@ -2338,6 +2479,8 @@ def synthesize_dtype(typ: TypeMeta) -> SyntheticDtype:
         @classmethod
         def construct_array_type(cls) -> type[SyntheticArray]:
             """TODO"""
+            if cls._array_type is not None:
+                return cls._array_type
 
             class Array(SyntheticArray):
 
@@ -2347,6 +2490,7 @@ def synthesize_dtype(typ: TypeMeta) -> SyntheticDtype:
                 f"An abstract data type, automatically generated to store\n"
                 f"{repr(typ)} objects."
             )
+            cls._array_type = Array
             return Array
 
     Dtype.__doc__ = (
@@ -2382,14 +2526,14 @@ def _rectify(
     """
     # check for empty array
     if arr.shape[0] == 0:
-        return arr
+        return arr  # TODO: expect an extension array, not a raw numpy one.
 
     # find missing values
     nans = pd.isna(arr)
     idx = nans.argmin()
     if nans[idx]:  # array contains only missing values
-        # TODO
-        raise NotImplementedError()
+        from ..missing import Missing
+        return Missing.dtype.construct_array_type()._from_sequence(arr, copy=False)
 
     # get first non-missing element and detect its type
     first = arr[idx]
