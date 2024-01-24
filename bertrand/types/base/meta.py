@@ -47,7 +47,9 @@ from bertrand.structs import LinkedSet, LinkedDict
 # Because this is so hard to reproduce, however, it likely has something to do with an
 # edge case where the head or tail of the list is not correctly invalidated, or
 # something like that.
+# -> next reproduction attempt hung after 52 types.
 
+# -> seems consistent on the 23rd/52nd type in between the current print statements.
 
 
 # pylint: disable=unused-argument, using-constant-test
@@ -114,7 +116,7 @@ OBJECT_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[np.object_]]
 RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]
 
 
-DEBUG: bool = True  # if True, print a debug message whenever a new type is created
+DEBUG: bool = False  # if True, print a debug message whenever a new type is created
 
 
 ########################
@@ -6463,8 +6465,11 @@ class AbstractBuilder(TypeBuilder):
         if typ._nullable is None and self.fields.get("is_nullable", False):
             typ._nullable = typ
 
+        print(f"registering {typ}")
+
         parent = self.parent
         if parent is not Base:
+
             typ.aliases.parent = typ  # pushes aliases to global registry
             typ._children.add(typ)
             REGISTRY._types.add(typ)
@@ -6475,6 +6480,7 @@ class AbstractBuilder(TypeBuilder):
                 parent = parent.parent
                 parent._children.add(typ)
 
+        print(f"done")
         return typ
 
     def _class_getitem(self) -> None:
@@ -6700,8 +6706,11 @@ class ConcreteBuilder(TypeBuilder):
         if typ._fields["dtype"] is None:
             typ._fields["dtype"] = synthesize_dtype(typ)
 
+        print(f"registering {typ}")
+
         parent = self.parent
         if self.parent is not Base:
+
             typ.aliases.parent = typ  # pushes aliases to global registry
             typ._children.add(typ)
             REGISTRY._types.add(typ)
@@ -6712,6 +6721,7 @@ class ConcreteBuilder(TypeBuilder):
                 parent = parent.parent
                 parent._children.add(typ)
 
+        print(f"done")
         return typ
 
     def _class_getitem(self) -> None:
