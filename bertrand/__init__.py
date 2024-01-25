@@ -57,19 +57,19 @@ from .structs import LinkedList, LinkedSet, LinkedDict
 
 
 # importing * from types also masks module names, which can be troublesome
-# del array         # type: ignore
-del base          # type: ignore
-del boolean       # type: ignore
-# del categorical   # type: ignore
+del base            # type: ignore
+del boolean         # type: ignore
+del categorical     # type: ignore
 del complex
 # del datetime      # type: ignore
-del decimal       # type: ignore
+del decimal         # type: ignore
 del float
-del integer       # type: ignore
-# del object
-# del sparse        # type: ignore
-del string        # type: ignore
-del timedelta     # type: ignore
+del integer         # type: ignore
+del missing         # type: ignore
+del object
+del sparse          # type: ignore
+del string          # type: ignore
+del timedelta       # type: ignore
 
 
 __version__ = "0.5.1"  # handled by bumpver

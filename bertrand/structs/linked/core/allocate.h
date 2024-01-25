@@ -1139,19 +1139,23 @@ private:
         Line* line;
         size_t offset;
 
-        Bucket() noexcept : line(nullptr), offset(0) {}
+        inline Bucket() noexcept : line(nullptr), offset(0) {}
 
-        Bucket(Line* line, size_t offset) noexcept : line(line), offset(offset) {}
+        inline Bucket(Line* line, size_t offset) noexcept :
+            line(line), offset(offset)
+        {}
 
-        Bucket(const Bucket& other) noexcept : line(other.line), offset(other.offset) {}
+        inline Bucket(const Bucket& other) noexcept :
+            line(other.line), offset(other.offset)
+        {}
 
-        Bucket operator=(const Bucket& other) noexcept {
+        inline Bucket operator=(const Bucket& other) noexcept {
             line = other.line;
             offset = other.offset;
             return *this;
         }
 
-        operator bool() const noexcept {
+        inline operator bool() const noexcept {
             return line != nullptr;
         }
 
@@ -1159,7 +1163,7 @@ private:
             return next() != EMPTY;
         }
 
-        Node* node() const noexcept {
+        inline Node* node() const noexcept {
             return reinterpret_cast<Node*>(&line->data[sizeof(Node) * offset]);
         }
 
@@ -1199,13 +1203,13 @@ private:
     struct Table {
         Line* array;
 
-        Table() noexcept : array(nullptr) {}
+        inline Table() noexcept : array(nullptr) {}
 
-        Table(Table&& other) noexcept : array(other.array) {
+        inline Table(Table&& other) noexcept : array(other.array) {
             other.array = nullptr;
         }
 
-        Table(size_t size) {
+        inline Table(size_t size) {
             size_t n = (size + 3) / 4;
             array = reinterpret_cast<Line*>(malloc(n * sizeof(Line)));
             if (array == nullptr) {
@@ -1216,13 +1220,13 @@ private:
             }
         }
 
-        ~Table() {
+        inline ~Table() {
             if (array != nullptr) {
                 free(array);
             }
         }
 
-        Bucket operator[](size_t idx) noexcept {
+        inline Bucket operator[](size_t idx) noexcept {
             return Bucket(&array[idx / 4], idx % 4);
         }
 

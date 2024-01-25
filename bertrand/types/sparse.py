@@ -1,24 +1,12 @@
 """This module describes a ``SparseType`` object, which can be used to
 dynamically wrap other types.
 """
+from __future__ import annotations
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
-from pdcast.resolve cimport na_strings
-from pdcast.resolve import resolve_type
-from pdcast.detect import detect_type
-from pdcast.util.type_hints import array_like, dtype_like, type_specifier
-
-from .base cimport DecoratorType, CompositeType, VectorType, Type
-from .base import register
-
-
-# TODO: may need to create a special case for nullable integers, booleans
-# to use their numpy counterparts.  This avoids converting to object, but
-# forces the fill value to be pd.NA.
-# -> this can be handled in a dispatched sparsify() implementation
+from .base import EMPTY, REGISTRY, Decorator, DecoratorMeta, Empty, TypeMeta, resolve
 
 
 # TODO: SparseType works, but not in all cases.
@@ -29,138 +17,73 @@ from .base import register
 # entirely.
 
 
-@register
-class SparseType(DecoratorType):
+# TODO:
+# >>> Sparse["long[numpy] | long[pandas]"]
+# Traceback (most recent call last):
+#   File "<stdin>", line 1, in <module>
+#   File "/home/eerkela/data/bertrand/bertrand/types/base/meta.py", line 4698, in __getitem__
+#     return cls.__class_getitem__(params)
+#            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#   File "/home/eerkela/data/bertrand/bertrand/types/base/meta.py", line 7118, in wrapper
+#     return Union.from_types(LinkedSet(
+#                             ^^^^^^^^^^
+# TypeError: SparseDtype subtype must be a numpy dtype
 
-    name = "sparse"
-    aliases = {pd.SparseDtype, "sparse", "Sparse"}
 
-    def __init__(self, wrapped: VectorType = None, fill_value: Any = None):
-        super(type(self), self).__init__(wrapped, fill_value=fill_value)
+class Sparse(Decorator, cache_size=256):
+    """TODO"""
 
-    ############################
-    ####    CONSTRUCTORS    ####
-    ############################
+    aliases = {pd.SparseDtype, "sparse"}
+    _is_empty: bool = False
 
-    def from_string(
-        self,
-        wrapped: str = None,
-        fill_value: str = None
-    ) -> DecoratorType:
+
+    def __class_getitem__(
+        cls,
+        wrapped: TypeMeta | DecoratorMeta | None = None,
+        fill_value: Any | Empty = EMPTY
+    ) -> DecoratorMeta:
+        if wrapped is None:
+            raise NotImplementedError("TODO")  # TODO: should never occur
+
+        is_empty = fill_value is EMPTY
+
+        if isinstance(wrapped.unwrapped, DecoratorMeta):
+            return cls.flyweight(wrapped, fill_value, dtype=None, _is_empty=is_empty)
+
+        if is_empty:
+            fill = wrapped.missing
+        elif pd.isna(fill_value):  # type: ignore
+            fill = fill_value
+        else:
+            fill = wrapped(fill_value)
+            if len(fill) != 1:
+                raise TypeError(f"fill_value must be a scalar, not {repr(fill_value)}")
+            fill = fill[0]
+
+        dtype = pd.SparseDtype(wrapped.dtype, fill)
+        return cls.flyweight(wrapped, fill, dtype=dtype, _is_empty=is_empty)
+
+    @classmethod
+    def from_string(cls, wrapped: str, fill_value: str | Empty = EMPTY) -> DecoratorMeta:
         """Resolve a sparse specifier in the type specification mini-langauge.
         """
-        if wrapped is None:
-            return self
+        return cls[wrapped, REGISTRY.na_strings.get(fill_value, fill_value)]  # type: ignore
 
-        instance = resolve_type(wrapped)
-        parsed_fill_value = None
-
-        if fill_value is not None:
-            # TODO: use NullType aliases here?
-            if fill_value in na_strings:
-                parsed_fill_value = na_strings[fill_value]
-            else:
-                from pdcast.convert import cast
-                parsed_fill_value = cast(fill_value, instance)[0]
-
-        return self(instance, fill_value=parsed_fill_value)
-
-    def from_dtype(
-        self,
-        dtype: dtype_like,
-        array: array_like | None = None
-    ) -> Type:
+    @classmethod
+    def from_dtype(cls, dtype: pd.SparseDtype) -> DecoratorMeta:
         """Convert a pandas SparseDtype into a
         :class:`SparseType <pdcast.SparseType>` object.
         """
-        # detect type of unwrapped array
-        if array is not None:
-            # TODO: this may not work in all cases.  We can't call
-            # inverse_transform() here because densify is an @dispatch func,
-            # which calls detect_type() and causes a recursion error.
-            wrapped = detect_type(array.sparse.to_dense())
-        else:
-            wrapped = resolve_type(dtype.subtype)
+        return cls[resolve(dtype.subtype), dtype.fill_value]  # type: ignore
 
-        # broadcast across non-homogenous array
-        if isinstance(wrapped, CompositeType):
-            fill_value = dtype.fill_value
-            index = wrapped._index  # run-length encoded version of .index
-            index["value"] = np.array(
-                [self(typ, fill_value=fill_value) for typ in index["value"]]
-            )
-            return CompositeType(
-                {self(typ, fill_value=fill_value) for typ in wrapped},
-                index=index
-            )
+    @classmethod
+    def replace(cls, *args: Any, **kwargs: Any) -> DecoratorMeta:
+        """TODO"""
+        if cls._is_empty and len(args) < 2 and "fill_value" not in kwargs:
+            kwargs["fill_value"] = EMPTY
+        return super().replace(*args, **kwargs)
 
-        return self(wrapped, fill_value=dtype.fill_value)
-
-    ##################################
-    ####    DECORATOR-SPECIFIC    ####
-    ##################################
-
-    def transform(self, series: pd.Series) -> pd.Series:
-        """Convert a series into a sparse format with the given fill_value."""
-        from pdcast.convert import sparsify
-
-        return sparsify(series, fill_value=self.fill_value)
-
-    def inverse_transform(self, series: pd.Series) -> pd.Series:
+    @classmethod
+    def inverse_transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
         """Convert a sparse series into a dense format"""
-        from pdcast.convert import densify
-
-        return densify(series)
-
-    ##########################
-    ####    OVERRIDDEN    ####
-    ##########################
-
-    @property
-    def fill_value(self) -> Any:
-        """The value to mask from the array."""
-        val = self.kwargs["fill_value"]
-        if val is None:
-            val = getattr(self.wrapped, "na_value", None)
-        return val
-
-    @property
-    def dtype(self) -> pd.SparseDtype:
-        """An equivalent SparseDtype to use for arrays of this type."""
-        return pd.SparseDtype(self.wrapped.dtype, fill_value=self.fill_value)
-
-    def contains(
-        self,
-        other: type_specifier,
-    ) -> bool:
-        """Check whether the given type is contained within this type's
-        subtype hierarchy.
-        """
-        other = resolve_type(other)
-
-        # if target is composite, test each element individually
-        if isinstance(other, CompositeType):
-            return all(self.contains(typ) for typ in other)
-
-        # assert other is sparse
-        if not isinstance(other, type(self)):
-            return False
-
-        # check for naked specifier
-        if self.wrapped is None:
-            return True
-        if other.wrapped is None:
-            return False
-
-        # check for unequal fill values
-        if self.kwargs["fill_value"] is not None:
-            na_1 = pd.isna(self.fill_value)
-            na_2 = pd.isna(other.fill_value)
-            if (
-                na_1 ^ na_2 or
-                na_1 == na_2 == False and self.fill_value != other.fill_value
-            ):
-                return False
-
-        # delegate to wrapped
-        return self.wrapped.contains(other.wrapped)
+        return series.sparse.to_dense()

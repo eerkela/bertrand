@@ -1,9 +1,10 @@
 """This module defines the core of the bertrand type system, including the metaclass
 machinery, type primitives, and helper functions for detecting and resolving types.
 """
+# pylint: disable=unused-argument, using-constant-test, import-outside-toplevel
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, deque
 import inspect
 from types import MappingProxyType
 from types import UnionType as PyUnionType
@@ -50,9 +51,6 @@ from bertrand.structs import LinkedSet, LinkedDict
 # -> next reproduction attempt hung after 52 types.
 
 # -> seems consistent on the 23rd/52nd type in between the current print statements.
-
-
-# pylint: disable=unused-argument, using-constant-test
 
 
 class Empty:
@@ -117,6 +115,78 @@ RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]
 
 
 DEBUG: bool = False  # if True, print a debug message whenever a new type is created
+
+
+def get_from_calling_context(name: str, skip: int = 0) -> Any:
+    """Get an object from the calling context given its fully-qualified (dotted) name
+    as a string.
+
+    Parameters
+    ----------
+    name: str
+        The fully-qualified name of the object to retrieve.
+    skip: int, default 0
+        Skip a number of frames up the call stack before beginning the search.
+        Defaults to 0, which starts at the caller's immediate context.
+
+    Returns
+    -------
+    Any
+        The object corresponding to the specified name.
+
+    Raises
+    ------
+    AttributeError
+        If the named object cannot be found.
+
+    Notes
+    -----
+    This function avoids calling eval() and the associated security risks by traversing
+    the call stack and searching for the object in each frame's local, global, and
+    built-in namespaces.  More specifically, it searches for the first component of a
+    dotted name, and, if found, progressively resolves the remaining components by
+    calling getattr() on the previous result until the string is exhausted.  Otherwise,
+    if no match is found, it moves up to the next frame and repeats the process.
+
+    This is primarily used to extract named objects from stringified type hints when
+    `from __future__ import annotations` is enabled, or for parsing object strings in
+    the type specification mini-language.
+
+    .. note::
+
+        PEP 649 (https://peps.python.org/pep-0649/) could make this partially obsolete
+        by avoiding stringification in the first place.  Still, it can be useful for
+        backwards compatibility.
+    """
+    path = name.split(".")
+    prefix = path[0]
+    frame = inspect.currentframe()
+    if frame is not None:
+        for _ in range(skip + 1):
+            frame = frame.f_back
+            if frame is None:
+                break
+
+    while frame is not None:
+        if prefix in frame.f_locals:
+            obj = frame.f_locals[prefix]
+        elif prefix in frame.f_globals:
+            obj = frame.f_globals[prefix]
+        elif prefix in frame.f_builtins:
+            obj = frame.f_builtins[prefix]
+        else:
+            frame = frame.f_back
+            continue
+
+        for component in path[1:]:
+            try:
+                obj = getattr(obj, component)
+            except AttributeError:
+                continue  # back off to next frame
+
+        return obj
+
+    raise AttributeError(f"could not find object: {repr(name)}")
 
 
 ########################
@@ -1024,81 +1094,6 @@ class Aliases:
 REGISTRY = TypeRegistry()
 
 
-# TODO: move get_from_caller() into object.py.  It is no longer referenced in this file
-
-
-def get_from_calling_context(name: str, skip: int = 0) -> Any:
-    """Get an object from the calling context given its fully-qualified (dotted) name
-    as a string.
-
-    Parameters
-    ----------
-    name: str
-        The fully-qualified name of the object to retrieve.
-    skip: int, default 0
-        Skip a number of frames up the call stack before beginning the search.
-        Defaults to 0, which starts at the caller's immediate context.
-
-    Returns
-    -------
-    Any
-        The object corresponding to the specified name.
-
-    Raises
-    ------
-    AttributeError
-        If the named object cannot be found.
-
-    Notes
-    -----
-    This function avoids calling eval() and the associated security risks by traversing
-    the call stack and searching for the object in each frame's local, global, and
-    built-in namespaces.  More specifically, it searches for the first component of a
-    dotted name, and, if found, progressively resolves the remaining components by
-    calling getattr() on the previous result until the string is exhausted.  Otherwise,
-    if no match is found, it moves up to the next frame and repeats the process.
-
-    This is primarily used to extract named objects from stringified type hints when
-    `from __future__ import annotations` is enabled, or for parsing object strings in
-    the type specification mini-language.
-
-    .. note::
-
-        PEP 649 (https://peps.python.org/pep-0649/) could make this partially obsolete
-        by avoiding stringification in the first place.  Still, it can be useful for
-        backwards compatibility.
-    """
-    path = name.split(".")
-    prefix = path[0]
-    frame = inspect.currentframe()
-    if frame is not None:
-        for _ in range(skip + 1):
-            frame = frame.f_back
-            if frame is None:
-                break
-
-    while frame is not None:
-        if prefix in frame.f_locals:
-            obj = frame.f_locals[prefix]
-        elif prefix in frame.f_globals:
-            obj = frame.f_globals[prefix]
-        elif prefix in frame.f_builtins:
-            obj = frame.f_builtins[prefix]
-        else:
-            frame = frame.f_back
-            continue
-
-        for component in path[1:]:
-            try:
-                obj = getattr(obj, component)
-            except AttributeError:
-                continue  # back off to next frame
-
-        return obj
-
-    raise AttributeError(f"could not find object: {repr(name)}")
-
-
 #########################
 ####    RESOLVE()    ####
 #########################
@@ -1106,11 +1101,6 @@ def get_from_calling_context(name: str, skip: int = 0) -> Any:
 
 # TODO: it makes sense to modify aliases to match python syntax.  This would make it
 # trivial to parse python-style type hints.
-
-
-# TODO: register NoneType to Missing, such that int | None resolves to
-# Union[PythonInt, Missing]
-# Same with None alias, which allows parsing of type hints with None as a type
 
 
 # NOTE: string parsing currently does not support dictionaries or key-value mappings
@@ -1322,6 +1312,7 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
     if isinstance(target, type):
         if target in REGISTRY.types:
             return REGISTRY.types[target]
+        from ..object import Object
         return Object[target]
 
     if isinstance(target, PyUnionType):
@@ -1486,6 +1477,7 @@ def _process_string(match: re.Match[str]) -> META:
 
     # resolve alias to specified type
     if groups.get("sized_unicode"):  # special case for U32, U{xx} syntax
+        from ..string import String
         typ = String
     else:
         typ = REGISTRY.strings[groups["alias"]]
@@ -1536,6 +1528,137 @@ TOKEN = re.compile(rf"{INVOCATION.pattern}|{SEQUENCE.pattern}|{LITERAL.pattern}"
 ########################
 ####    DETECT()    ####
 ########################
+
+
+# TODO: there's more room for optimization if we drop the detect_type() loop
+# further into C.  This way, we can work with raw `PyObject*` and
+# `PyTypeObject*` pointers rather than the full, reference counted types, and
+# can use C/C++ data structures rather than the Python equivalents.
+
+# -> The types we store in the registry.aliases dictionary could be broken off
+# as direct `PyTypeObject*` pointers, which would be faster to look up than
+# Python type()s.  This would require a custom dictionary implementation, but
+# we already basically have one in the HashedList's ListTable.
+
+# As far as hash functions go, we might even be able to use the direct memory
+# address of the `PyTypeObject*` pointer itself.  This would just cast the
+# pointer to a `uintptr_t` and proceed as normal.  This would have 0 overhead,
+# and would cut out a call to the Python API.  In the event of a hash collision,
+# we just compare the full memory addresses and proceed as normal.
+
+# We would have to briefly cast the scalar `PyObject*` back to a Python object
+# when we pass to ScalarType.from_scalar(), but this is a small price to pay
+# for the speedup.
+
+
+# TODO: there's also potentially a way to increase the speed of flyweight
+# lookups by handling slugs as C strings.
+
+    # from libcpp.string cimport string
+    # from libcpp.functional cimport hash
+
+    # cdef string key = slug.encode()  # encode Python string to bytes, then to C string
+    # cdef hash[string] hash_func
+    # cdef unsigned long hash_value = hash_func(key)
+
+
+# ME:
+
+# Ok here's what I'm thinking.  I have a system that maps `type` objects to a
+# collection of Cython classes, which represent an abstract type system with
+# support for runtime type detection from example data.  What actually happens
+# is we are supplied a (potentially iterable) example value, and then detect
+# its type at the scalar level.  If the example is iterable, we then repeat at
+# the next index and so on.
+
+# The operation that is performed at each index goes as follows:
+
+# 1. Call `type()` on the scalar value.
+# 2. Look the type up in a dictionary, which maps the type to a corresponding
+#    extension class.
+# 3. Instantiate the class by passing the example into a special constructor
+#    for extra parsing.  Each class can override this method to extract extra
+#    data from the object at the scalar level.
+# 4. Store the constructed object in a set containing each unique value and
+#    append it to a run-length-encoded list.  If the next value maps to an
+#    identical object, then we just increment its counter and skip the set
+#    operation.
+
+# This process happens at every single index of the input iterable, so I want
+# it to be as fast as possible.  Currently, each step is implemented in a tight
+# cython loop and allows me to parse a list of 1 million python integers in
+# about 0.07 seconds on my machine.  This is a good start, but I'm trying to
+# see if I can increase performance even further by offloading more of the core
+# loop functions to cythonized C or C++.
+
+# I'm thinking about replacing my current hash table lookup with a
+# `std::unordered_map` which holds `PyTypeObject*` references directly.  These
+# map to the cython classes just like normal, but now that lookup happens
+# entirely at the C level.  I can then just use a borrowed `PyObject*`
+# reference to the example scalar, and replace the `type()` call with the
+# `Py_Type()` C function.  For point #3, I can pass the object reference back
+# to the Python space briefly by casting it to `<object>` so the special
+# constructor can manipulate it like normal.  Finally, I can record the results
+# in a `std::unordered_set` of the final objects as well as a `std::vector` of
+# `Pairs`, which would be structs containing the run-length-encoded objects and
+# their counts.  I could then cast the vector directly to a Cython typed
+# memoryview of `Pairs`, and then from there to a no-copy numpy array using
+# `np.asarray()`.  The final array would have a structured dtype with two
+# columns to represent the run-length-encoded results.  I then convert the
+# `std::unordered_set` into a normal Python `set` to represent the unique
+# results.
+
+# What do you think of this plan?
+
+
+# GPT4:
+
+# The plan to optimize your processing loop using Cython and C++ functionality
+# seems sound and could potentially lead to significant speed improvements. Let
+# me break down my thoughts on each of your steps:
+
+# 1. Replacing Python's type() call with the Py_Type() C function: This should
+# be faster as you'll be working at the C level. The benefit might not be huge,
+# but every little bit helps.
+# 2. Using std::unordered_map with PyTypeObject* keys: This should be faster
+# than Python's built-in dictionary for the same reasons, as std::unordered_map
+# is implemented in efficient, compiled C++ code. One thing to keep in mind is
+# how the hash function and comparison function for PyTypeObject* pointers are
+# implemented, as this could affect performance.
+# 3. Passing object references back to Python space: This shouldn't have much
+# impact on performance and seems like a necessary step if you need to do some
+# Python-level manipulations.
+# 4. Storing results in a std::unordered_set and std::vector: Both of these
+# data structures are typically more efficient than their Python counterparts,
+# so this should help speed things up. In particular, std::vector is known to
+# be very efficient in terms of memory usage and access times, so using it for
+# storing your pairs of objects and counts is a good choice.
+# 5. Converting std::vector to a Cython typed memoryview and then to a NumPy
+# array: This is a great way to create a no-copy array, and the conversion
+# should be relatively fast.
+# 6. Converting std::unordered_set to a Python set: This might be a bit slow
+# depending on the size of the set, but it's likely unavoidable if you need to
+# return a Python set.
+
+# Overall, I think your plan to move more of your computation to the C/C++
+# level is a good one and could significantly speed up your code. You've
+# identified some good opportunities for optimization and chosen appropriate
+# data structures and functions. Just keep in mind that you'll need to handle
+# reference counting properly when working with PyTypeObject* and PyObject*
+# pointers to avoid memory leaks or crashes.
+
+
+# casting a std::vector directly to a numpy array:
+
+# cdef struct MyStruct:
+#    PyObject* value
+#    size_t count
+
+# dtype = np.dtype([("value": object), ("count": np.int64)])
+
+# cdef vector[MyStruct] vec = ...
+# cdef MyStruct[:, :] memview = <MyStruct[:, :]>vec.data()
+# cdef np.ndarray arr = np.asarray(memview, dtype=dtype)
 
 
 def detect(data: Any, drop_na: bool = True) -> META:
@@ -1727,9 +1850,11 @@ def detect(data: Any, drop_na: bool = True) -> META:
 
             # reinsert missing values
             if hasnans and not drop_na:
-                index = np.full(missing.shape[0], Missing, dtype=object)
+                from ..missing import Missing
+                index = np.empty(missing.shape[0], dtype=object)
+                index[:] = Missing
                 index[~missing] = union.index  # pylint: disable=invalid-unary-operand-type
-                return Union.from_types(union | Missing, _rle_encode(index))
+                return Union.from_types(LinkedSet(union) | Missing, _rle_encode(index))
 
             return union
 
@@ -1738,10 +1863,12 @@ def detect(data: Any, drop_na: bool = True) -> META:
 
 def _detect_scalar(data: Any, data_type: type) -> META:
     if pd.isna(data):
+        from ..missing import Missing
         return Missing
 
     typ = REGISTRY.types.get(data_type, None)
     if typ is None:
+        from ..object import Object
         return Object[data_type]
 
     if typ._defines_from_scalar:  # pylint: disable=protected-access
@@ -1771,6 +1898,7 @@ def _detect_dtype(data: Any, drop_na: bool) -> META:
     if not drop_na:
         is_na = pd.isna(data)
         if is_na.any():
+            from ..missing import Missing
             index = np.full(is_na.shape[0], Missing, dtype=object)
             index[~is_na] = result  # pylint: disable=invalid-unary-operand-type
             return Union.from_types(LinkedSet([result, Missing]), _rle_encode(index))
@@ -1783,7 +1911,7 @@ def _detect_dtype(data: Any, drop_na: bool) -> META:
 
 
 def _detect_elementwise(data: Any) -> UnionMeta:
-    observed = LinkedSet()
+    observed: LinkedSet[TypeMeta | DecoratorMeta] = LinkedSet()
     counts = []
     count = 0
     prev: None | TypeMeta | DecoratorMeta = None
@@ -1795,6 +1923,7 @@ def _detect_elementwise(data: Any) -> UnionMeta:
         # search for a matching type in the registry
         typ = lookup.get(element_type, None)
         if typ is None:
+            from ..object import Object
             typ = Object[element_type]
         elif typ._defines_from_scalar:  # pylint: disable=protected-access
             typ = typ.from_scalar(element)
@@ -4170,7 +4299,7 @@ class TypeMeta(BaseMeta):
 
     @property
     def is_default(cls) -> bool:
-        return cls is cls._default
+        return cls.base_type is cls._default
 
     @property
     def as_default(cls) -> TypeMeta:
@@ -4374,12 +4503,12 @@ class TypeMeta(BaseMeta):
     def __call__(cls, *args: Any, **kwargs: Any) -> pd.Series[Any]:
         # TODO: Even cooler, this could just call cast() on the input, which would
         # enable lossless conversions
-        if cls is cls._default:
+        if cls.base_type is cls._default:
             return pd.Series(*args, dtype=cls.dtype, **kwargs)
         return cls.as_default(*args, **kwargs)
 
     def __getattr__(cls, name: str) -> Any:
-        if cls is not cls._default:
+        if cls.base_type is not cls._default:
             return getattr(cls.as_default, name)
 
         if name in cls._fields:
@@ -4499,7 +4628,7 @@ class TypeMeta(BaseMeta):
 @_copy_docs
 class DecoratorMeta(BaseMeta):
     """Metaclass for all bertrand type decorators (those that inherit from
-    bertrand.DecoratorType).
+    bertrand.Decorator).
 
     This metaclass is responsible for parsing the namespace of a new decorator,
     validating its configuration, and registering it in the global type registry.  It
@@ -4509,7 +4638,7 @@ class DecoratorMeta(BaseMeta):
     is an example of the Gang of Four's
     `Decorator Pattern <https://en.wikipedia.org/wiki/Decorator_pattern>`_.
 
-    See the documentation for the `DecoratorType` class for more information on how
+    See the documentation for the `Decorator` class for more information on how
     these work.
     """
     # pylint: disable=missing-return-doc, no-value-for-parameter
@@ -4629,7 +4758,7 @@ class DecoratorMeta(BaseMeta):
         return typ
 
     def replace(cls, *args: Any, **kwargs: Any) -> DecoratorMeta:
-        raise NotImplementedError()  # provided in DecoratorType
+        raise NotImplementedError()  # provided in Decorator
 
     ################################
     ####    CLASS DECORATORS    ####
@@ -4812,10 +4941,10 @@ class DecoratorMeta(BaseMeta):
         return result
 
     def transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
-        raise NotImplementedError()  # provided in DecoratorType
+        raise NotImplementedError()  # provided in Decorator
 
     def inverse_transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
-        raise NotImplementedError()  # provided in DecoratorType
+        raise NotImplementedError()  # provided in Decorator
 
     ###############################
     ####    SPECIAL METHODS    ####
@@ -4867,8 +4996,8 @@ class DecoratorMeta(BaseMeta):
             # pylint: disable=no-value-for-parameter
             return all(cls.__subclasscheck__(t) for t in typ)
 
-        # DecoratorType acts as wildcard
-        if cls is DecoratorType:
+        # Decorator acts as wildcard
+        if cls is Decorator:
             return True
 
         # base types must be compatible
@@ -5546,8 +5675,6 @@ class StructuredMeta(UnionMeta):
     ####    CONSTRUCTORS    ####
     ############################
 
-    # TODO: copy from_types docs from UnionMeta
-
     def from_types(
         cls,
         types: LinkedSet[TypeMeta | DecoratorMeta],
@@ -6018,6 +6145,9 @@ class StructuredMeta(UnionMeta):
         return f"Union[{', '.join(items)}]"
 
 
+StructuredMeta.from_types.__doc__ = UnionMeta.from_types.__doc__
+
+
 # TODO:
 # >>> Sparse[Sparse[Int, 1]]
 # Sparse[Int, <NA>]
@@ -6135,6 +6265,10 @@ def _structured_getitem(cls: StructuredMeta, key: int | slice | str) -> META:
 ########################
 ####    BUILDERS    ####
 ########################
+
+
+# TODO: Type should be registered just like any other type so that it can be resolved
+# via resolve().  This is necessary for us to use type hints as dispatch keys.
 
 
 class TypeProperty:
@@ -6503,7 +6637,7 @@ class AbstractBuilder(TypeBuilder):
                     return cls._implementations[backend][*args]
                 return cls._implementations[backend]
 
-            if cls is not cls._default:
+            if cls.base_type is not cls._default:
                 default = cls.as_default
                 if default.is_abstract:
                     return default.__class_getitem__(backend, *args)
@@ -6537,7 +6671,9 @@ class AbstractBuilder(TypeBuilder):
                 return typ.from_string(*args)
 
             if cls._default:
-                return cls.as_default.from_string(backend, *args)
+                default = cls.as_default
+                if default.is_abstract:
+                    return default.from_string(backend, *args)
 
             raise TypeError(f"{self.name} -> invalid backend: {repr(backend)}")
 
@@ -6808,7 +6944,7 @@ class ConcreteBuilder(TypeBuilder):
 
 class DecoratorBuilder(TypeBuilder):
     """A builder-style parser for a decorator type's namespace (any subclass of
-    DecoratorType).
+    Decorator).
 
     Decorator types are similar to concrete types except that they are implicitly
     parametrized to wrap around another type and modify its behavior.  They can accept
@@ -6833,9 +6969,9 @@ class DecoratorBuilder(TypeBuilder):
         namespace: dict[str, Any],
         cache_size: int | None,
     ):
-        if len(bases) != 1 or not (bases[0] is Base or bases[0] is DecoratorType):
+        if len(bases) != 1 or not (bases[0] is Base or bases[0] is Decorator):
             raise TypeError(
-                f"{name} -> decorators must inherit from bertrand.DecoratorType, not "
+                f"{name} -> decorators must inherit from bertrand.Decorator, not "
                 f"{bases}"
             )
 
@@ -6960,12 +7096,11 @@ class DecoratorBuilder(TypeBuilder):
                 *args: Any
             ) -> DecoratorMeta | UnionMeta:
                 """Unwrap tuples/unions and forward arguments to the wrapped method."""
-                if isinstance(wrapped, (TypeMeta, DecoratorMeta)):
-                    return _insort_decorator(invoke, cls, wrapped, *args)
+                parsed = resolve(wrapped)
 
-                if isinstance(wrapped, StructuredMeta):
+                if isinstance(parsed, StructuredMeta):
                     columns = {}
-                    for k, v in wrapped.items():
+                    for k, v in parsed.items():
                         if isinstance(v, UnionMeta):
                             columns[k] = Union.from_types(LinkedSet(
                                 _insort_decorator(invoke, cls, t, *args) for t in v
@@ -6975,15 +7110,12 @@ class DecoratorBuilder(TypeBuilder):
 
                     return StructuredUnion.from_columns(columns)
 
-                if isinstance(wrapped, UnionMeta):
+                if isinstance(parsed, UnionMeta):
                     return Union.from_types(LinkedSet(
-                        _insort_decorator(invoke, cls, t, *args) for t in wrapped
+                        _insort_decorator(invoke, cls, t, *args) for t in parsed
                     ))
 
-                raise TypeError(
-                    f"{self.name} -> decorators must accept another bertrand type as "
-                    f"a first argument, not {repr(wrapped)}"
-                )
+                return _insort_decorator(invoke, cls, parsed, *args)
 
             self.namespace["__class_getitem__"] = classmethod(wrapper)  # type: ignore
 
@@ -7023,12 +7155,11 @@ class DecoratorBuilder(TypeBuilder):
 
             def default(cls: DecoratorMeta, wrapped: META) -> DecoratorMeta | UnionMeta:
                 """Default to identity function."""
-                if isinstance(wrapped, (TypeMeta, DecoratorMeta)):
-                    return _insort_decorator(invoke, cls, wrapped)
+                parsed = resolve(wrapped)
 
-                if isinstance(wrapped, StructuredMeta):
+                if isinstance(parsed, StructuredMeta):
                     columns = {}
-                    for k, v in wrapped.items():
+                    for k, v in parsed.items():
                         if isinstance(v, UnionMeta):
                             columns[k] = Union.from_types(LinkedSet(
                                 _insort_decorator(invoke, cls, t) for t in v
@@ -7038,15 +7169,12 @@ class DecoratorBuilder(TypeBuilder):
 
                     return StructuredUnion.from_columns(columns)
 
-                if isinstance(wrapped, UnionMeta):
+                if isinstance(parsed, UnionMeta):
                     return Union.from_types(
-                        LinkedSet(_insort_decorator(invoke, cls, t) for t in wrapped)
+                        LinkedSet(_insort_decorator(invoke, cls, t) for t in parsed)
                     )
 
-                raise TypeError(
-                    f"{self.name} -> decorators must accept another bertrand type as "
-                    f"a first argument, not {repr(wrapped)}"
-                )
+                return _insort_decorator(invoke, cls, parsed)
 
             parameters["wrapped"] = None
             self.namespace["__class_getitem__"] = classmethod(default)  # type: ignore
@@ -7238,7 +7366,7 @@ class SyntheticDtype(ExtensionDtype):
         return None
 
     @classmethod
-    def construct_from_string(cls, string: str) -> NoReturn:
+    def construct_from_string(cls, string: str) -> NoReturn:  # pylint: disable=redundant-returns-doc
         """Construct this type from a string.
 
         This is useful mainly for data types that accept parameters.  For example, a
@@ -7280,7 +7408,7 @@ class SyntheticDtype(ExtensionDtype):
         ...             f"Cannot construct a '{cls.__name__}' from '{string}'"
         ...         )
         """
-        raise NotImplementedError(
+        raise TypeError(
             f"Cannot construct '{cls.__name__}' from string - use bertrand.resolve() "
             f"instead"
         )
@@ -8762,7 +8890,7 @@ def synthesize_dtype(typ: TypeMeta) -> DTYPE:
     -------
     SyntheticDtype
         A pandas ``ExtensionDtype`` that can be used to label arrays of the wrapped
-        type.
+        type.  This will be automatically cached and reused for subsequent calls.
 
     Notes
     -----
@@ -8808,19 +8936,29 @@ def synthesize_dtype(typ: TypeMeta) -> DTYPE:
 
     @register_extension_dtype
     class Dtype(SyntheticDtype):
+        """A unique subclass of SyntheticDtype that wraps around the provided type."""
 
         _array_type: type[SyntheticArray] | None = None
         _bertrand_type = typ
         name = repr(typ)
         type = typ.scalar
         kind = "O"
+        na_value = typ.missing
         _is_boolean = TypeProperty(_check_boolean)
         _is_numeric = typ.is_numeric
         _can_hold_na = typ.is_nullable
 
         @classmethod
         def construct_array_type(cls) -> type[SyntheticArray]:
-            """TODO"""
+            """Return a unique subclass of SyntheticArray that can store objects of
+            this type.
+
+            Returns
+            -------
+            type[SyntheticArray]
+                A unique type of SyntheticArray that is used to back series' of this
+                type.  This is automatically cached and reused for subsequent calls.
+            """
             if cls._array_type is not None:
                 return cls._array_type
 
@@ -8892,7 +9030,7 @@ def _rectify(
     else:
         array_type = NumpyExtensionArray
 
-    # construct output array
+    # pylint: disable=protected-access
     return array_type._from_sequence(arr, dtype=dtype, copy=False)
 
 
@@ -8901,20 +9039,332 @@ def _rectify(
 ###############################
 
 
-# NOTE: Type and DecoratorType are listed in separate files alongside this one to
-# allow them to be directly hosted in the documentation.
+def _check_scalar(
+    value: Any | Empty,
+    namespace: dict[str, Any],
+    processed: dict[str, Any],
+) -> type:
+    """Validate a scalar Python type provided in a bertrand type's namespace or infer
+    it from a provided dtype.
+    """
+    if "scalar" in processed:  # auto-generated in check_dtype
+        return processed["scalar"]
+
+    dtype = namespace.get("dtype", EMPTY)
+
+    if value is EMPTY:
+        if dtype is EMPTY:
+            raise TypeError("type must define at least one of 'dtype' and/or 'scalar'")
+        if not isinstance(dtype, (np.dtype, pd.api.extensions.ExtensionDtype)):
+            raise TypeError(f"dtype must be a numpy/pandas dtype, not {repr(dtype)}")
+
+        processed["dtype"] = dtype
+        return dtype.type
+
+    if not isinstance(value, type):
+        raise TypeError(f"scalar must be a Python type object, not {repr(value)}")
+
+    if dtype is EMPTY:
+        processed["dtype"] = None
+    else:
+        processed["dtype"] = dtype
+
+    return value
+
+
+def _check_dtype(
+    value: Any | Empty,
+    namespace: dict[str, Any],
+    processed: dict[str, Any]
+) -> DTYPE:
+    """Validate a numpy or pandas dtype provided in a bertrand type's namespace or
+    infer it from a provided scalar.
+    """
+    if "dtype" in processed:  # auto-generated in check_scalar
+        return processed["dtype"]
+
+    scalar = namespace.get("scalar", EMPTY)
+
+    if value is EMPTY:
+        if scalar is EMPTY:
+            raise TypeError("type must define at least one of 'dtype' and/or 'scalar'")
+        if not isinstance(scalar, type):
+            raise TypeError(f"scalar must be a Python type object, not {repr(scalar)}")
+
+        processed["scalar"] = scalar
+        return None  # causes dtype to be synthesized during build.register()
+
+    if not isinstance(value, (np.dtype, pd.api.extensions.ExtensionDtype)):
+        raise TypeError(f"dtype must be a numpy/pandas dtype, not {repr(value)}")
+
+    if scalar is EMPTY:
+        processed["scalar"] = value.type
+    else:
+        processed["scalar"] = scalar
+
+    return value
+
+
+def _check_itemsize(
+    value: Any | Empty,
+    namespace: dict[str, Any],
+    processed: dict[str, Any]
+) -> int:
+    """Validate an itemsize provided in a bertrand type's namespace."""
+    if value is EMPTY:
+        if "dtype" in namespace:
+            dtype = namespace["dtype"]
+            if dtype is None:
+                return POINTER_SIZE
+            return dtype.itemsize
+
+        if "dtype" in processed:
+            dtype = processed["dtype"]
+            if dtype is None:
+                return POINTER_SIZE
+            return dtype.itemsize
+
+    if not isinstance(value, int) or value <= 0:
+        raise TypeError(f"itemsize must be a positive integer, not {repr(value)}")
+
+    return value
+
+
+def _check_max(
+    value: Any | Empty,
+    namespace: dict[str, Any],
+    processed: dict[str, Any]
+) -> int | float:
+    """Validate a maximum value provided in a bertrand type's namespace."""
+    if "max" in processed:  # auto-generated in check_min
+        return processed["max"]
+
+    min_val = namespace.get("min", -np.inf)
+
+    if value is EMPTY:
+        processed["min"] = min_val
+        return np.inf
+
+    if not (isinstance(value, int) or isinstance(value, float) and value == np.inf):
+        raise TypeError(f"min must be an integer or infinity, not {repr(value)}")
+
+    if value < min_val:
+        raise TypeError(f"max must be greater than min: {value} < {min_val}")
+
+    processed["min"] = min_val
+    return value
+
+
+def _check_min(
+    value: Any | Empty,
+    namespace: dict[str, Any],
+    processed: dict[str, Any]
+) -> int | float:
+    """Validate a minimum value provided in a bertrand type's namespace."""
+    if "min" in processed:  # auto-generated in check_max
+        return processed["min"]
+
+    max_val = namespace.get("max", np.inf)
+
+    if value is EMPTY:
+        processed["max"] = max_val
+        return -np.inf
+
+    if not (isinstance(value, int) or isinstance(value, float) and value == -np.inf):
+        raise TypeError(f"min must be an integer or infinity, not {repr(value)}")
+
+    if value > max_val:
+        raise TypeError(f"min must be less than or equal to max: {value} > {max_val}")
+
+    processed["max"] = max_val
+    return value
+
+
+def _check_is_numeric(
+    value: Any | Empty,
+    namespace: dict[str, Any],
+    processed: dict[str, Any]
+) -> bool:
+    """Validate a numeric flag provided in a bertrand type's namespace."""
+    return False if value is EMPTY else bool(value)
+
+
+def _check_is_nullable(
+    value: Any | Empty,
+    namespace: dict[str, Any],
+    processed: dict[str, Any]
+) -> bool:
+    """Validate a nullability flag provided in a bertrand type's namespace."""
+    return True if value is EMPTY else bool(value)
+
+
+def _check_missing(
+    value: Any | Empty,
+    namespace: dict[str, Any],
+    processed: dict[str, Any]
+) -> Any:
+    """Validate a missing value provided in a bertrand type's namespace."""
+    if value is EMPTY:
+        return pd.NA
+
+    if not pd.isna(value):  # type: ignore
+        raise TypeError(f"missing value must pass a pandas.isna() check: {repr(value)}")
+
+    return value
 
 
 class Base:
-    """TODO
+    """Base class that prevents type objects from being directly instantiated.
+
+    Since metaclasses overload the ``__call__()`` operator to produce pandas objects,
+    they effectively invalidate the traditional ``__new__()`` and ``__init__()``
+    methods.  Users shouldn't notice this in practice unless they explicitly call
+    ``__new__()``, which we disable here to prevent potential confusion.
     """
 
     def __new__(cls) -> NoReturn:
         raise TypeError("bertrand types cannot be instantiated")
 
 
-class Union(Base, metaclass=UnionMeta):
+class Type(Base, metaclass=TypeMeta):
+    """Parent class for all scalar types.
+
+    Inheriting from this class triggers the metaclass machinery, which automatically
+    validates and registers the inheriting type.  As such, any class that inherits from
+    this type becomes the root of a new type hierarchy, which can be extended to create
+    tree structures of arbitrary depth.
+    """
+
+    aliases: set[str | type | DTYPE] = {"Type"}
+
+    scalar:         type            = EMPTY(_check_scalar)  # type: ignore
+    dtype:          DTYPE           = EMPTY(_check_dtype)  # type: ignore
+    itemsize:       int             = EMPTY(_check_itemsize)  # type: ignore
+    max:            int | float     = EMPTY(_check_max)  # type: ignore
+    min:            int | float     = EMPTY(_check_min)  # type: ignore
+    is_numeric:     bool            = EMPTY(_check_is_numeric)  # type: ignore
+    is_nullable:    bool            = EMPTY(_check_is_nullable)  # type: ignore
+    missing:        Any             = EMPTY(_check_missing)
+
+
+class Decorator(Base, metaclass=DecoratorMeta):
     """TODO
+    """
+
+    # pylint: disable=missing-param-doc, missing-return-doc, missing-raises-doc
+
+    @classmethod
+    def transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
+        """Base implementation of the transform() method, which is inherited by all
+        descendant types.
+        """
+        return series.astype(cls.dtype, copy=False)
+
+    @classmethod
+    def inverse_transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
+        """Base implementation of the inverse_transform() method, which is inherited by
+        all descendant types.
+        """
+        return series.astype(cls.wrapped.dtype, copy=False)
+
+    @classmethod
+    def replace(cls, *args: Any, **kwargs: Any) -> DecoratorMeta:
+        """Copied from TypeMeta."""
+        forwarded = dict(cls.params)
+        positional = deque(args)
+        n  = len(args)
+        i = 0
+        for k in forwarded:
+            if i < n:
+                i += 1
+                forwarded[k] = positional.popleft()
+            elif k in kwargs:
+                forwarded[k] = kwargs.pop(k)
+
+        if positional:
+            raise TypeError(
+                f"replace() takes at most {len(cls.params)} positional arguments but "
+                f"{n} were given"
+            )
+        if kwargs:
+            singular = len(kwargs) == 1
+            raise TypeError(
+                f"replace() got {'an ' if singular else ''}unexpected keyword argument"
+                f"{'' if singular else 's'} [{', '.join(repr(k) for k in kwargs)}]"
+            )
+
+        return cls.base_type[*forwarded.values()]
+
+
+class Union(Base, metaclass=UnionMeta):
+    """An ordered collection of unique types.
+
+    Parameters
+    ----------
+    *types : TYPESPEC | Iterable[TYPESPEC, ...]
+        Any number of bertrand type specifiers.  Nested unions will be flattened and
+        duplicate types will be removed.  Order is preserved.
+
+    See Also
+    --------
+    Type: base class for all scalar types.
+    Decorator: base class for all decorator types.
+    StructuredUnion: base class for structured dataframe types.
+
+    Notes
+    -----
+    Union types are examples of the Gang of Four's `Composite Pattern
+    <https://en.wikipedia.org/wiki/Composite_pattern>`.  They have an identical
+    interface to normal types, with the following differences:
+
+        #.  Calling a union type calls each of its member types in order, returning
+            the first result that does not raise an error.
+        #.  Navigating to another type from a union (via ``.parent``, ``.subtypes``,
+            etc.) returns a new union containing the corresponding types from each
+            of its members.
+        #.  Accessing a scalar attribute (e.g. ``.dtype``, ``.itemsize``, etc.) returns
+            a dictionary with member types as keys and the corresponding attributes
+            as values.
+        #.  Unions can be indexed like tuples, allowing integer- or slice-based access
+            to their member types.
+        #.  The `<`, `>`, `==`, etc. operators return True if and only if all member
+            types satisfy the same condition.
+
+    Examples
+    --------
+    .. doctest::
+
+        >>> Union[Bool, Int8, Float32]
+        Union[Bool, Int8, Float32]
+        >>> Union[Bool, Int8, Float32]([1, 0, 1])
+        0     True
+        1    False
+        2     True
+        dtype: bool
+        >>> Union[Bool, Int8, Float32]([1, 2, 3])
+        0    1
+        1    2
+        2    3
+        dtype: int8
+        >>> Union[Bool, Int8, Float32]([1.5, 2.5, 3.5])
+        0    1.5
+        1    2.5
+        2    3.5
+        dtype: float32
+        >>> Union[Bool, Int8, Float32].parent
+        Union[Bool, Signed, Float]
+        >>> Union[Bool, Int8, Float32].children
+        Union[Bool, NumpyBool, PandasBool, PythonBool, Int8, NumpyInt8, PandasInt8, Float32, NumpyFloat32]
+        >>> Union[Bool, Int8, Float32].dtype
+        {Bool: dtype('bool'), Int8: dtype('int8'), Float32: dtype('float32')}
+        >>> Union[Bool, Int8, Float32][1]
+        Int8
+        >>> Union[Bool, Int8, Float32][1:]
+        Union[Int8, Float32]
+        >>> Union[Bool, Int8, Float32] <= Int8
+        False
+        >>> Union[Bool, Int8, Float32] <= Int64
+        True
     """
 
     def __class_getitem__(cls, types: TYPESPEC | tuple[TYPESPEC, ...]) -> UnionMeta:
@@ -8925,152 +9375,102 @@ class Union(Base, metaclass=UnionMeta):
 
 
 class StructuredUnion(Union, metaclass=StructuredMeta):
-    """TODO
+    """A dict-like mapping of column names to bertrand types.
+
+    Parameters
+    ----------
+    *types : Mapping[str, TYPESPEC]
+        Any number of columns, which can be given as either:
+            *   dictionary of strings to type specifiers.
+            *   a sequence of ``(column, type)`` pairs.
+            *   one or more comma-separated slices of the form ``column: type, ...``,
+                e.g. ``Union["foo": Bool, "bar": Int8, "baz": Float32]``.
+            *   a single string of the form ``"column: type, ..."``, e.g.
+                ``Union["foo: Bool, bar: Int8, baz: Float32"]``.
+
+        Type specifiers can be any valid bertrand type, and will be passed through
+        :func:`resolve` before being added to the union.  Nested unions are not
+        allowed.
+
+    See Also
+    --------
+    Type: base class for all scalar types.
+    Decorator: base class for all decorator types.
+    Union: base class for union types.
+
+    Notes
+    -----
+    Structured unions are similar to normal unions, but are designed to represent the
+    type of an entire dataframe or structured array.  Like unions, they are examples
+    of the `Composite Pattern <https://en.wikipedia.org/wiki/Composite_pattern>`_, and
+    can be treated similarly to other types, with the following exceptions:
+
+        *   Calling a structured union produces a pandas dataframe with the specified
+            columns and types.
+        *   Navigating to another type from a structured union (via ``.parent``,
+            ``.subtypes``, etc.) returns a new structured union with the same columns
+            and corresponding types from each of its members.
+        *   Accessing a scalar attribute (e.g. ``.dtype``, ``.itemsize``, etc.) returns
+            a dictionary with column names as keys and attributes as values.  This can
+            potentially yield a nested dictionary if any of the types are unions.
+        *   Accessing the union's :attr:`index <UnionMeta.index>` yields a structured
+            array with the same columns as the union.
+        *   Structured unions can be indexed like dictionaries, allowing access to
+            individual columns by name.  They also support integer- or slice-based
+            indexing, which returns a new structured union containing the numbered
+            columns.
+        *   When compared with another structured union, the `<`, `>`, `==`, etc.
+            operators will be applied to each column individually, and will raise an
+            error if the right operand does not contain all of the same columns.  The
+            result will be True if and only if all columns satisfy the same condition.
+            Comparing a structured union to any other type behaves just like a normal
+            union.
+        *   Iterating over a structured union yields the flattened types in each
+            column, just like a normal union.  In order to access the column names,
+            values, or key-value pairs, use the ``.keys()``, ``.values()``, or
+            ``.items()`` proxies, respectively.
+
+    Examples
+    --------
+    .. doctest::
+
+        >>> Frame = Union["foo": Bool, "bar": Int8, "baz": Float32]
+        >>> Frame
+        Union["foo": Bool, "bar": Int8, "baz": Float32]
+        >>> Frame([1, 0, 1], [1, 2, 3], [1.5, 2.5, 3.5])
+             foo  bar  baz
+        0   True    1  1.5
+        1  False    2  2.5
+        2   True    3  3.5
+        >>> Frame([1, 0, 1], [1, 2, 3], [1.5, 2.5, 3.5])["foo"]
+        0     True
+        1    False
+        2     True
+        Name: foo, dtype: bool
+        >>> Frame([1, 0, 1], [1, 2, 3], [1.5, 2.5, 3.5])["bar"]
+        0    1
+        1    2
+        2    3
+        Name: bar, dtype: int8
+        >>> Frame([1, 0, 1], [1, 2, 3], [1.5, 2.5, 3.5])["baz"]
+        0    1.5
+        1    2.5
+        2    3.5
+        Name: baz, dtype: float32
+        >>> Frame.parent
+        Union['foo': Bool, 'bar': Signed, 'baz': Float]
+        >>> Frame.children
+        Union['foo': Bool | NumpyBool | PandasBool | PythonBool, 'bar': Int8 | NumpyInt8 | PandasInt8, 'baz': Float32 | NumpyFloat32]
+        >>> Frame.dtype
+        {'foo': dtype('bool'), 'bar': dtype('int8'), 'baz': dtype('float32')}
+        >>> Frame["foo"]
+        Bool
+        >>> Frame["bar"]
+        Int8
+        >>> Frame["baz"]
+        Float32
+        >>> Frame[1]  # TODO: should yield another structured union with column name?
+        Int8
+        >>> Frame[1:]
+        Union['bar': Int8, 'baz': Float32]
     """
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# ####################
-# ####    TEST    ####
-# ####################
-
-
-
-
-
-
-# class Categorical(DecoratorType, cache_size=256):
-#     aliases = {"categorical", pd.CategoricalDtype()}
-
-#     def __class_getitem__(
-#         cls,
-#         wrapped: TypeMeta | DecoratorMeta | None = None,
-#         levels: Iterable[Any] | Empty = EMPTY
-#     ) -> DecoratorMeta:
-#         """TODO"""
-#         if wrapped is None:
-#             raise NotImplementedError("TODO")  # should never occur
-
-#         if levels is EMPTY:
-#             slug_repr = levels
-#             dtype = pd.CategoricalDtype()  # NOTE: auto-detects levels when used
-#             patch = wrapped
-#             while not patch.is_default:
-#                 patch = patch.as_default
-#             dtype._bertrand_wrapped_type = patch  # disambiguates wrapped type
-#         else:
-#             levels = wrapped(levels)
-#             slug_repr = list(levels)
-#             dtype = pd.CategoricalDtype(levels)
-
-#         return cls.flyweight(wrapped, slug_repr, dtype=dtype, levels=levels)
-
-#     @classmethod
-#     def from_dtype(cls, dtype: pd.CategoricalDtype) -> DecoratorMeta:
-#         """TODO"""
-#         if dtype.categories is None:
-#             if hasattr(dtype, "_bertrand_wrapped_type"):  # type: ignore
-#                 return cls[dtype._bertrand_wrapped_type]
-#             return cls
-#         return cls[resolve(dtype.categories.dtype), dtype.categories]
-
-#     @classmethod
-#     def from_string(cls, wrapped: str, levels: str | Empty = EMPTY) -> DecoratorMeta:
-#         """TODO"""
-#         if levels is EMPTY:
-#             return cls[resolve(wrapped), levels]
-
-#         if levels.startswith("[") and levels.endswith("]"):
-#             stripped = levels[1:-1].strip()
-#         elif levels.startswith("(") and levels.endswith(")"):
-#             stripped = levels[1:-1].strip()
-#         else:
-#             raise TypeError(f"invalid levels: {repr(levels)}")
-
-#         breakpoint()
-#         return cls[resolve(wrapped), list(s.group() for s in TOKEN.finditer(stripped))]
-
-#     @classmethod
-#     def transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
-#         """TODO"""
-#         if cls.dtype.categories is None:
-#             dtype = pd.CategoricalDtype(cls.wrapped(series.unique()))
-#         else:
-#             dtype = cls.dtype
-#         return series.astype(dtype, copy=False)
-
-
-# class Sparse(DecoratorType, cache_size=256):
-#     aliases = {"sparse", pd.SparseDtype()}
-#     _is_empty = False
-
-#     # TODO: Sparse[Categorical] does not work
-
-#     def __class_getitem__(
-#         cls,
-#         wrapped: TypeMeta | DecoratorMeta = None,  # type: ignore
-#         fill_value: Any | Empty = EMPTY
-#     ) -> DecoratorMeta:
-#         """TODO"""
-#         # NOTE: metaclass automatically raises an error when wrapped is None.  Listing
-#         # it as such in the signature just sets the default value.
-#         is_empty = fill_value is EMPTY
-
-#         if isinstance(wrapped.unwrapped, DecoratorMeta):
-#             return cls.flyweight(wrapped, fill_value, dtype=None, _is_empty=is_empty)
-
-#         if is_empty:
-#             fill = wrapped.missing
-#         elif pd.isna(fill_value):
-#             fill = fill_value
-#         else:
-#             fill = wrapped(fill_value)
-#             if len(fill) != 1:
-#                 raise TypeError(f"fill_value must be a scalar, not {repr(fill_value)}")
-#             fill = fill[0]
-
-#         dtype = pd.SparseDtype(wrapped.dtype, fill)
-#         return cls.flyweight(wrapped, fill, dtype=dtype, _is_empty=is_empty)
-
-#     @classmethod
-#     def from_dtype(cls, dtype: pd.SparseDtype) -> DecoratorMeta:
-#         """TODO"""
-#         return cls[resolve(dtype.subtype), dtype.fill_value]
-
-#     @classmethod
-#     def from_string(cls, wrapped: str, fill_value: str | Empty = EMPTY) -> DecoratorMeta:
-#         """TODO"""
-#         return cls[resolve(wrapped), REGISTRY.na_strings.get(fill_value, fill_value)]
-
-#     @classmethod
-#     def replace(cls, *args: Any, **kwargs: Any) -> DecoratorMeta:
-#         """TODO"""
-#         if cls._is_empty and len(args) < 2 and "fill_value" not in kwargs:
-#             kwargs["fill_value"] = EMPTY
-#         return super().replace(*args, **kwargs)
-
-#     @classmethod
-#     def inverse_transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
-#         """TODO"""
-#         return series.sparse.to_dense()
-
-
-
-
-
-# if DEBUG:
-#     print("=" * 80)
-#     print(f"aliases: {REGISTRY.aliases}")
-#     print()
