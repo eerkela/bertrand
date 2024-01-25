@@ -1015,22 +1015,22 @@ to a finite neighborhood around the origin node (as set by the hop information).
 
 Because of the direct integration with the allocator array, this approach does not
 require any auxiliary data structures.  Instead, it uses 2 extra bytes per node to
-store the hopscotch offsets, which can be packed into the allocator array for maximum
-efficiency.  However, due to the requirement that node addresses remain physically
-stable over their lifetime, it is not possible to rearrange elements within the array
-as we insert items.  This means that the full hopscotch algorithm cannot be implemented
-as described in the original paper, since it attempts to consolidate elements to
-improve cache locality.  Instead, insertions into this map devolve into a linear search
-for an empty bucket, which limits the potential of the hopscotch algorithm.  As a
-result, insertions have comparable performance to a typical linear probing algorithm,
-but searches and removals will skip through the neighborhood like normal.
+store the hopscotch offsets, which are packed into the allocator array for efficiency.
+However, due to the requirement that node addresses remain physically stable over their
+lifetime, it is not possible to rearrange elements within the array as we insert items.
+This means that the full hopscotch algorithm cannot be implemented as described in the
+original paper, since it attempts to consolidate elements to improve cache locality.
+Instead, insertions into this map devolve into a linear search for an empty bucket,
+which somewhat limits the potential of the hopscotch algorithm.  As a result,
+insertions have comparable performance to a typical linear probing algorithm, but
+searches and removals will skip through the neighborhood like normal.
 
-The benefits of this algorithm are as follows.  First, it avoids the need for
+The benefits of this algorithm are threefold.  First, it avoids the need for
 tombstones, which can accumulate within the list and degrade performance.  Second, it
 allows searches to work well at high load factors, since we only need to check a
-well-defined collision chain for a conflict, and third, it does not require us to move
+well-defined collision chain for conflicts.  Third, it does not require us to move
 any elements within the array.  These properties allow us to implement a set of linked
-nodes with minimal overhead, while still maintaining as much performance as possible. */
+nodes with minimal overhead and low space/time complexity. */
 template <typename NodeType, unsigned int Flags>
 class HashAllocator : public BaseAllocator<
     HashAllocator<NodeType, Flags>, NodeType, Flags
@@ -1095,32 +1095,36 @@ private:
         "neighborhood size must leave room for EMPTY flag"
     );
 
-
-    // TODO: update this documentation to reflect compressed lines with virtual buckets
-
-
-    /* NOTE: bucket types are hidden behind template specializations to allow for both
-     * packed and unpacked representations.  Both are identical, but the packed
-     * representation is more space efficient.  It can, however, degrade performance on
-     * some systems due to unaligned memory accesses.  The unpacked representation is
-     * more performant and portable, but always wastes between 2 and 6 extra bytes per
-     * bucket.
+    /* NOTE: buckets are always stored in a packed format, which avoids any extra
+     * padding between the hop_info and data fields.  This means that hop_info is
+     * allocated as a single 64-bit integer, with 2 bytes reserved for each bucket in
+     * the group.  We can access a bucket's collisions and/or next values by bit
+     * shifting, which can get a little messy.  Additionally, since there are only a
+     * quarter as many groups as there are buckets, we have to be careful to avoid
+     * out of bounds errors when accessing the array.
      *
-     * NOTE: setting displacement=EMPTY indicates that the bucket does not have any
-     * collisions.  Otherwise, it is the distance from the current bucket (origin) to
-     * the first bucket in its collision chain.  If another value hashes to a bucket
-     * that has an EMPTY displacement, then it is guaranteed to be unique.
+     * To make these easier, we use a pair of high-level structs to represent an
+     * individual bucket and the overall table, respectively.  Indexing into the table
+     * divides the index by 4 to get the correct group, then computes the remainder and
+     * returns a Bucket object wrapping the two.  Operations on the Bucket automatically
+     * account for the offset and necessary bit shifts, so we don't have to worry about
+     * them ourselves (which can get complicated quickly).
+     * 
+     * NOTE: setting collisions=EMPTY indicates that no other values hash to the same
+     * bucket.  Otherwise, it is the distance from the current bucket (origin) to
+     * the first bucket in its collision chain.  If a value hashes to a bucket with
+     * collisions=EMPTY, then it is guaranteed to be unique.
      *
      * Setting next=EMPTY indicates that the current bucket is not occupied.  Otherwise,
-     * it is the distance to the next bucket in the chain.  If it is set to 0, then it
-     * indicates that the current bucket is at the end of its collision chain.
+     * it is the distance to the next bucket in its collision chain.  A value of 0
+     * indicates that the current bucket represents the tail of its collision chain.
      *
      * NOTE: due to the way the hopscotch algorithm works, each node is assigned to a
      * finite neighborhood of size MAX_PROBE_LENGTH.  It is possible (albeit very rare)
      * that during insertion, a linear probe can surpass this length, which causes the
      * algorithm to fail.  The probability of this is extremely low (impossible for
      * sets under 255 elements, otherwise order 10**-29 for MAX_PROBE_LENGTH=255 at 75%
-     * maximum load), but is still possible, with increasing (but still very small)
+     * maximum load), but is still possible, with increasing (albeit very small)
      * likelihood as the container size increases and/or probe length shortens.
      * Dynamic sets can work around this by simply growing to a larger table size, but
      * for fixed-size sets, it is a fatal error.
@@ -2036,10 +2040,9 @@ public:
         return false;
     }
 
-    /* Get the total amount of dynamic memory being managed by this allocator.  Hop
-    information takes 2 extra bytes per bucket (maybe padded to 4/8). */
+    /* Get the total amount of dynamic memory being managed by this allocator. */
     inline size_t nbytes() const noexcept {
-        return sizeof(Node) + ((this->capacity + 3) / 4) * sizeof(Bucket);
+        return sizeof(Node) + ((this->capacity + 3) / 4) * sizeof(Line);
     }
 
     /* Get the maximum number of elements that this allocator can support if it does
