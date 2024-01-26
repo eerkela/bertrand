@@ -124,12 +124,11 @@ template <>
 class Logger<true> {
     std::ofstream stream;
     size_t _indent_level;
-    std::string _prefix;
-    std::string _suffix;
+    std::string _language;
 
 public:
 
-    Logger() : _indent_level(0) {
+    Logger() : _indent_level(0), _language("c++     ") {
         using clock = std::chrono::system_clock;
         auto now = clock::to_time_t(clock::now());
         auto format = *std::localtime(&now);
@@ -148,12 +147,11 @@ public:
     inline void operator()(Args&&... messages) {
         if constexpr (sizeof...(messages) > 0) {
             if (stream.is_open()) {
+                stream << _language;
                 for (size_t i = 0; i < _indent_level; ++i) {
                     stream << "    ";
                 }
-                stream << _prefix;
                 (stream << ... << std::forward<Args>(messages));
-                stream << _suffix;
                 stream << std::endl;
             }
         }
@@ -177,12 +175,13 @@ public:
         return _indent_level;
     }
 
-    inline void prefix(const std::string& message) {
-        _prefix = message;
-    }
-
-    inline void suffix(const std::string& message) {
-        _suffix = message;
+    inline void language(const std::string& lang) {
+        if (lang.size() > 8) {
+            std::ostringstream msg;
+            msg << "language name must be 8 characters or less: " << lang;
+            throw std::runtime_error(msg.str());
+        }
+        _language = lang;
     }
 
 };
@@ -219,7 +218,14 @@ is needed within the constexpr branch itself. */
     if constexpr (DEBUG) { \
         LOG(__VA_ARGS__); \
     } \
-    LogGuard _log_guard_##__LINE__; \
+    LogGuard _log_guard_##__LINE__;
+#define PYINDENT_LOG(...) \
+    if constexpr (DEBUG) { \
+        LOG.language("py      "); \
+        LOG(__VA_ARGS__); \
+        LOG.language("c++     "); \
+    } \
+    LogGuard _log_guard_##__LINE__;
 
 
 }  // namespace bertrand

@@ -82,9 +82,6 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    using Base::Base;
-    using Base::operator=;
-
     LinkedList(
         std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr
@@ -129,13 +126,94 @@ public:
         }
     }
 
-    // TODO: uncommenting this causes a segfault for some reason
-    // ~LinkedList() {
-    //     if constexpr (DEBUG) {
-    //         LOG(this, " -> ~LinkedList()");
-    //         LOG.indent();
-    //     }
-    // }
+    template <typename Iterator>
+    LinkedList(
+        Iterator&& begin,
+        Iterator&& end,
+        std::optional<size_t> max_size = std::nullopt,
+        PyObject* spec = nullptr,
+        bool reverse = false
+    ) : Base(
+        [&] {
+            if constexpr (DEBUG) {
+                LOG(
+                    this, " -> LinkedList(", repr(begin), ", ", repr(end), ", ",
+                    repr(max_size), ", ", repr(spec), ", ", reverse, ")"
+                );
+                LOG.indent();
+            }
+            return begin;
+        }(),
+        end,
+        max_size,
+        spec,
+        reverse
+    ) {
+        if constexpr (DEBUG) {
+            LOG.unindent();
+        }
+    }
+
+    LinkedList(View&& view) : Base([&] {
+        if constexpr (DEBUG) {
+            LOG(this, " -> LinkedList(", repr(view), ")  # from view");
+            LOG.indent();
+        }
+        return std::move(view);
+    }()) {
+        if constexpr (DEBUG) {
+            LOG.unindent();
+        }
+    }
+
+    LinkedList(const LinkedList& other) : Base([&] {
+        if constexpr (DEBUG) {
+            LOG(this, " -> LinkedList(", &other, ")  # copy");
+            LOG.indent();
+        }
+        return other.view;
+    }()) {
+        if constexpr (DEBUG) {
+            LOG.unindent();
+        }
+    }
+
+    LinkedList(LinkedList&& other) : Base([&] {
+        if constexpr (DEBUG) {
+            LOG(this, " -> LinkedList(", &other, ")  # move");
+            LOG.indent();
+        }
+        return std::move(other.view);
+    }()) {
+        if constexpr (DEBUG) {
+            LOG.unindent();
+        }
+    }
+
+    LinkedList& operator=(const LinkedList& other) {
+        if (this == &other) {
+            return *this;
+        }
+        INDENT_LOG(this, " -> LinkedList = ", &other, "  # copy");
+        Base::operator=(other);
+        return *this;
+    }
+
+    LinkedList& operator=(LinkedList&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        INDENT_LOG(this, " -> LinkedList = ", &other, "  # move");
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    ~LinkedList() {
+        if constexpr (DEBUG) {
+            LOG(this, " -> ~");
+            LOG.indent();  // indent to be closed in Allocator::~BaseAllocator()
+        }
+    }
 
     //////////////////////////////
     ////    LIST INTERFACE    ////
@@ -376,7 +454,7 @@ public:
     template <typename Container>
     inline DynamicList operator+(const Container& other) const {
         INDENT_LOG(this, " -> LinkedList + ", repr(other));
-        return DynamicList(linked::concatenate(this->view, other));
+        return DynamicList(linked::concatenate(this->view, other));  // TODO: uses wrong constructor, should be move constructor
     }
 
     template <typename Container>
@@ -440,6 +518,7 @@ template <typename T, unsigned int Flags, typename... Ts>
 inline auto operator<<(std::ostream& stream, const LinkedList<T, Flags, Ts...>& list)
     -> std::ostream&
 {
+    INDENT_LOG(&list, " -> ostream << LinkedList");
     stream << linked::build_repr(
         list.view,
         "LinkedList",
@@ -461,6 +540,13 @@ inline auto operator*(long long other, const LinkedList<T, Flags, Ts...>& list) 
 //////////////////////////////
 ////    PYTHON WRAPPER    ////
 //////////////////////////////
+
+
+// TODO: indentation gets screwed up when performing an operation that yields another
+// LinkedList (e.g list + "xyz" or list.copy()).  The from_cpp() bit is unindented too
+// early.  Might try placing INDENT_LOG statements in lambda instead and see if that
+// does anything.
+
 
 
 /* CRTP mixin class containing the public list interface for a linked data structure. */
@@ -489,6 +575,7 @@ class PyListInterface {
 public:
 
     static PyObject* append(Derived* self, PyObject* item) {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::append(", repr(item), ")");
         return visit(self, [&item](auto& list) {
             list.append(item);
             Py_RETURN_NONE;
@@ -496,6 +583,7 @@ public:
     }
 
     static PyObject* append_left(Derived* self, PyObject* item) {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::append_left(", repr(item), ")");
         return visit(self, [&item](auto& list) {
             list.append_left(item);
             Py_RETURN_NONE;
@@ -505,17 +593,22 @@ public:
     static PyObject* insert(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         static constexpr std::string_view meth_name{"insert"};
         using bertrand::util::parse_int;
-        return visit(self, [&args, &nargs](auto& list) {
+
+        return visit(self, [&self, &args, &nargs](auto& list) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             long long index = pyargs.parse("index", parse_int);
             PyObject* item = pyargs.parse("item");
             pyargs.finalize();
+            PYINDENT_LOG(
+                self, " -> ", Derived::NAME, "::insert(", index, ", ", repr(item), ")"
+            );
             list.insert(index, item);
             Py_RETURN_NONE;
         });
     }
 
     static PyObject* extend(Derived* self, PyObject* items) {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::extend(", repr(items), ")");
         return visit(self, [&items](auto& list) {
             return unwrap_python(items, [&list](auto& other) {
                 list.extend(other);
@@ -525,6 +618,7 @@ public:
     }
 
     static PyObject* extend_left(Derived* self, PyObject* items) {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::extend_left(", repr(items), ")");
         return visit(self, [&items](auto& list) {
             return unwrap_python(items, [&list](auto& other) {
                 list.extend_left(other);
@@ -537,12 +631,17 @@ public:
         static constexpr std::string_view meth_name{"index"};
         using bertrand::util::parse_opt_int;
         using Index = std::optional<long long>;
-        return visit(self, [&args, &nargs](auto& list) {
+
+        return visit(self, [&self, &args, &nargs](auto& list) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* item = pyargs.parse("item");
             Index start = pyargs.parse("start", parse_opt_int, Index());
             Index stop = pyargs.parse("stop", parse_opt_int, Index());
             pyargs.finalize();
+            PYINDENT_LOG(
+                self, " -> ", Derived::NAME, "::index(", repr(item), ", ", repr(start),
+                ", ", repr(stop), ")"
+            );
             return PyLong_FromSize_t(list.index(item, start, stop));
         });
     }
@@ -551,17 +650,23 @@ public:
         static constexpr std::string_view meth_name{"count"};
         using bertrand::util::parse_opt_int;
         using Index = std::optional<long long>;
-        return visit(self, [&args, &nargs](auto& list) {
+
+        return visit(self, [&self, &args, &nargs](auto& list) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             PyObject* item = pyargs.parse("item");
             Index start = pyargs.parse("start", parse_opt_int, Index());
             Index stop = pyargs.parse("stop", parse_opt_int, Index());
             pyargs.finalize();
+            PYINDENT_LOG(
+                self, " -> ", Derived::NAME, "::count(", repr(item), ", ", repr(start),
+                ", ", repr(stop), ")"
+            );
             return PyLong_FromSize_t(list.count(item, start, stop));
         });
     }
 
     static PyObject* remove(Derived* self, PyObject* item) {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::remove(", repr(item), ")");
         return visit(self, [&item](auto& list) {
             list.remove(item);
             Py_RETURN_NONE;
@@ -571,15 +676,18 @@ public:
     static PyObject* pop(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         static constexpr std::string_view meth_name{"pop"};
         using bertrand::util::parse_int;
-        return visit(self, [&args, &nargs](auto& list) {
+
+        return visit(self, [&self, &args, &nargs](auto& list) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             long long index = pyargs.parse("index", parse_int, (long long)-1);
+            PYINDENT_LOG(self, " -> ", Derived::NAME, "::pop(", index, ")");
             pyargs.finalize();
             return list.pop(index);  // returns new reference
         });
     }
 
     static PyObject* clear(Derived* self, PyObject* = nullptr) {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::clear()");
         return visit(self, [](auto& list) {
             list.clear();
             Py_RETURN_NONE;
@@ -587,6 +695,7 @@ public:
     }
 
     static PyObject* copy(Derived* self, PyObject* = nullptr) {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::copy()");
         return visit(self, [](auto& list) {
             return Derived::construct(list.copy());
         });
@@ -601,17 +710,22 @@ public:
         static constexpr std::string_view meth_name{"sort"};
         using bertrand::util::none_to_null;
         using bertrand::util::is_truthy;
-        return visit(self, [&args, &nargs, &kwnames](auto& list) {
+
+        return visit(self, [&self, &args, &nargs, &kwnames](auto& list) {
             PyArgs<CallProtocol::VECTORCALL> pyargs(meth_name, args, nargs, kwnames);
             PyObject* key = pyargs.keyword("key", none_to_null, (PyObject*)nullptr);
             bool reverse = pyargs.keyword("reverse", is_truthy, false);
             pyargs.finalize();
+            PYINDENT_LOG(
+                self, " -> ", Derived::NAME, "::sort(", repr(key), ", ", reverse, ")"
+            );
             list.sort(key, reverse);
             Py_RETURN_NONE;
         });
     }
 
     static PyObject* reverse(Derived* self, PyObject* = nullptr) {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::reverse()");
         return visit(self, [](auto& list) {
             list.reverse();
             Py_RETURN_NONE;
@@ -621,22 +735,26 @@ public:
     static PyObject* rotate(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         static constexpr std::string_view meth_name{"rotate"};
         using bertrand::util::parse_int;
-        return visit(self, [&args, &nargs](auto& list) {
+
+        return visit(self, [&self, &args, &nargs](auto& list) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             long long steps = pyargs.parse("steps", parse_int, (long long)1);
             pyargs.finalize();
+            PYINDENT_LOG(self, " -> ", Derived::NAME, "::rotate(", steps, ")");
             list.rotate(steps);
             Py_RETURN_NONE;
         });
     }
 
     static int __contains__(Derived* self, PyObject* item) {
+        PYINDENT_LOG(self, " -> ", repr(item), " in ", Derived::NAME);
         return visit(self, [&item](auto& list) {
             return list.contains(item);
         }, -1);
     }
 
     static PyObject* __getitem__(Derived* self, PyObject* key) {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "[", repr(key), "]");
         return visit(self, [&key](auto& list) {
             if (PyIndex_Check(key)) {
                 long long index = bertrand::util::parse_int(key);
@@ -657,6 +775,7 @@ public:
     }
 
     static int __setitem__(Derived* self, PyObject* key, PyObject* items) {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "[", repr(key), "] = ", repr(items));
         return visit(self, [&key, &items](auto& list) {
             if (PyIndex_Check(key)) {
                 long long index = bertrand::util::parse_int(key);
@@ -689,6 +808,7 @@ public:
     }
 
     static PyObject* __add__(Derived* self, PyObject* other) {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, " + ", repr(other));
         return visit(self, [&other](auto& list) {
             return unwrap_python(other, [&list](auto& other) {
                 return Derived::construct(list + other);
@@ -697,6 +817,7 @@ public:
     }
 
     static PyObject* __iadd__(Derived* self, PyObject* other) {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, " += ", repr(other));
         return visit(self, [&self, &other](auto& list) {
             unwrap_python(other, [&list](auto& other) {
                 list += other;
@@ -706,12 +827,14 @@ public:
     }
 
     static PyObject* __mul__(Derived* self, Py_ssize_t count) {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, " * ", count);
         return visit(self, [&count](auto& list) {
             return Derived::construct(list * count);
         });
     }
 
     static PyObject* __imul__(Derived* self, Py_ssize_t count) {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, " *= ", count);
         return visit(self, [&self, &count](auto& list) {
             list *= count;
             return Py_NewRef(reinterpret_cast<PyObject*>(self));
@@ -719,25 +842,47 @@ public:
     }
 
     static PyObject* __richcompare__(Derived* self, PyObject* other, int cmp) {
-        return visit(self, [&other, &cmp](auto& list) {
-            return unwrap_python(other, [&list, &cmp](auto& other) {
+        return visit(self, [&self, &other, &cmp](auto& list) {
+            return unwrap_python(other, [&self, &list, &cmp](auto& other) {
+                if constexpr (DEBUG) {
+                    const char* op;
+                    switch (cmp) {
+                        case Py_LT: op = "<"; break;
+                        case Py_LE: op = "<="; break;
+                        case Py_EQ: op = "=="; break;
+                        case Py_NE: op = "!="; break;
+                        case Py_GE: op = ">="; break;
+                        case Py_GT: op = ">"; break;
+                        default: op = "???"; break;
+                    }
+                    LOG(self, " -> ", Derived::NAME, " ", op, " ", repr(other));
+                    LOG.indent();
+                }
+
+                PyObject* result;
                 switch (cmp) {
                     case Py_LT:
-                        return Py_NewRef(list < other ? Py_True : Py_False);
+                        result = Py_NewRef(list < other ? Py_True : Py_False); break;
                     case Py_LE:
-                        return Py_NewRef(list <= other ? Py_True : Py_False);
+                        result = Py_NewRef(list <= other ? Py_True : Py_False); break;
                     case Py_EQ:
-                        return Py_NewRef(list == other ? Py_True : Py_False);
+                        result = Py_NewRef(list == other ? Py_True : Py_False); break;
                     case Py_NE:
-                        return Py_NewRef(list != other ? Py_True : Py_False);
+                        result = Py_NewRef(list != other ? Py_True : Py_False); break;
                     case Py_GE:
-                        return Py_NewRef(list >= other ? Py_True : Py_False);
+                        result = Py_NewRef(list >= other ? Py_True : Py_False); break;
                     case Py_GT:
-                        return Py_NewRef(list > other ? Py_True : Py_False);
+                        result = Py_NewRef(list > other ? Py_True : Py_False); break;
                     default:  // should never occur
                         PyErr_SetString(PyExc_TypeError, "invalid comparison");
-                        return static_cast<PyObject*>(nullptr);
+                        result = static_cast<PyObject*>(nullptr);
+                        break;
                 }
+
+                if constexpr (DEBUG) {
+                    LOG.unindent();
+                }
+                return result;
             });
         });
     }
@@ -1103,7 +1248,7 @@ class PyLinkedList :
     /* Construct a PyLinkedList around an existing C++ LinkedList. */
     template <typename List>
     inline void from_cpp(List&& list) {
-        WRITE_LOG(&variant, " -> PyLinkedList::from_cpp(", &list, ")");
+        INDENT_LOG(this, " -> PyLinkedList::from_cpp(", &list, ")");
         new (&variant) Variant(std::forward<List>(list));
     }
 
@@ -1165,12 +1310,14 @@ class PyLinkedList :
     }
 
 public:
+    static constexpr std::string_view NAME{"PyLinkedList"};  // used in logging
 
     static int __init__(PyLinkedList* self, PyObject* args, PyObject* kwargs) {
         static constexpr std::string_view meth_name{"__init__"};
         using bertrand::util::none_to_null;
         using bertrand::util::is_truthy;
         using bertrand::util::parse_int;
+
         try {
             PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
             PyObject* iterable = pyargs.parse(
@@ -1195,6 +1342,11 @@ public:
             bool singly_linked = pyargs.parse("singly_linked", is_truthy, false);
             pyargs.finalize();
 
+            PYINDENT_LOG(
+                self, " -> PyLinkedList(", repr(iterable), ", ", repr(max_size), ", ",
+                repr(spec), ", ", reverse, ", ", singly_linked, ")"
+            );
+
             initialize(
                 self, iterable, max_size, spec, reverse, singly_linked, false
             );
@@ -1208,6 +1360,7 @@ public:
     }
 
     static PyObject* __str__(PyLinkedList* self) {
+        PYINDENT_LOG(self, " -> str()");
         return Base::visit(self, [](auto& list) {
             std::ostringstream stream;
             stream << "[";

@@ -3143,6 +3143,7 @@ class PyLinkedDict :
     }
 
 public:
+    static constexpr std::string_view NAME{"PyLinkedDict"};  // used in logging
 
     static int __init__(PyLinkedDict* self, PyObject* args, PyObject* kwargs) {
         static constexpr std::string_view meth_name{"__init__"};

@@ -237,6 +237,9 @@ public:
     /* Destroy an allocator and release its resources. */
     ~BaseAllocator() noexcept {
         Py_XDECREF(specialization);
+        if constexpr (DEBUG) {
+            LOG.unindent();  // close indent from Linked destructor
+        }
     }
 
     ////////////////////////

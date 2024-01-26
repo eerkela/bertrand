@@ -679,6 +679,12 @@ public:
         });
     }
 
+    static PyObject* lru_contains(Derived* self, PyObject* key) {
+        return visit(self, [&key](auto& set) {
+            return Py_NewRef(set.lru_contains(key) ? Py_True : Py_False);
+        });
+    }
+
     static PyObject* remove(Derived* self, PyObject* key) {
         return visit(self, [&key](auto& set) {
             set.remove(key);
@@ -690,12 +696,6 @@ public:
         return visit(self, [&key](auto& set) {
             set.discard(key);
             Py_RETURN_NONE;
-        });
-    }
-
-    static PyObject* lru_contains(Derived* self, PyObject* key) {
-        return visit(self, [&key](auto& set) {
-            return Py_NewRef(set.lru_contains(key) ? Py_True : Py_False);
         });
     }
 
@@ -1625,6 +1625,7 @@ class PyLinkedSet :
     }
 
 public:
+    static constexpr std::string_view NAME{"PyLinkedSet"};
 
     static int __init__(PyLinkedSet* self, PyObject* args, PyObject* kwargs) {
         static constexpr std::string_view meth_name{"__init__"};

@@ -30,6 +30,10 @@ without any foreknowledge of template parameters. */
 class LinkedTag {};
 
 
+// TODO: ViewType is going to have to mirror the NAME pattern from PyLinkedBase for
+// accurate data structure naming.
+
+
 /* Base class that forwards the public members of the underlying view. */
 template <typename ViewType, typename LockType>
 class LinkedBase : public LinkedTag {
@@ -299,6 +303,7 @@ public:
     PyLinkedBase& operator=(PyLinkedBase&&) = delete;
 
     inline static PyObject* SINGLY_LINKED(Derived* self, PyObject* = nullptr) noexcept {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::SINGLY_LINKED");
         return visit(self, [](auto& list) {
             using List = typename std::decay_t<decltype(list)>;
             return Py_NewRef(List::SINGLY_LINKED ? Py_True : Py_False);
@@ -306,6 +311,7 @@ public:
     }
 
     inline static PyObject* DOUBLY_LINKED(Derived* self, PyObject* = nullptr) noexcept {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::DOUBLY_LINKED");
         return visit(self, [](auto& list) {
             using List = typename std::decay_t<decltype(list)>;
             return Py_NewRef(List::DOUBLY_LINKED ? Py_True : Py_False);
@@ -313,6 +319,7 @@ public:
     }
 
     inline static PyObject* FIXED_SIZE(Derived* self, PyObject* = nullptr) noexcept {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::FIXED_SIZE");
         return visit(self, [](auto& list) {
             using List = typename std::decay_t<decltype(list)>;
             return Py_NewRef(List::FIXED_SIZE ? Py_True : Py_False);
@@ -320,6 +327,7 @@ public:
     }
 
     inline static PyObject* DYNAMIC(Derived* self, PyObject* = nullptr) noexcept {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::DYNAMIC");
         return visit(self, [](auto& list) {
             using List = typename std::decay_t<decltype(list)>;
             return Py_NewRef(List::DYNAMIC ? Py_True : Py_False);
@@ -327,6 +335,7 @@ public:
     }
 
     inline static PyObject* STRICTLY_TYPED(Derived* self, PyObject* = nullptr) noexcept {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::STRICTLY_TYPED");
         return visit(self, [](auto& list) {
             using List = typename std::decay_t<decltype(list)>;
             return Py_NewRef(List::STRICTLY_TYPED ? Py_True : Py_False);
@@ -334,6 +343,7 @@ public:
     }
 
     inline static PyObject* LOOSELY_TYPED(Derived* self, PyObject* = nullptr) noexcept {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::LOOSELY_TYPED");
         return visit(self, [](auto& list) {
             using List = typename std::decay_t<decltype(list)>;
             return Py_NewRef(List::LOOSELY_TYPED ? Py_True : Py_False);
@@ -341,6 +351,7 @@ public:
     }
 
     inline static PyObject* lock(Derived* self, PyObject* = nullptr) noexcept {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::lock")
         return visit(self, [](auto& list) {
             using Lock = typename std::decay_t<decltype(list)>::Lock;
             return bertrand::util::PyLock<Lock>::construct(list.lock);
@@ -348,12 +359,14 @@ public:
     }
 
     inline static PyObject* capacity(Derived* self, PyObject* = nullptr) noexcept {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::capacity");
         return visit(self, [](auto& list) {
             return PyLong_FromSize_t(list.capacity());
         });
     }
 
     inline static PyObject* max_size(Derived* self, PyObject* = nullptr) noexcept {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::max_size");
         return visit(self, [](auto& list) {
             std::optional<size_t> result = list.max_size();
             if (result.has_value()) {
@@ -365,12 +378,14 @@ public:
     }
 
     inline static PyObject* frozen(Derived* self, PyObject* = nullptr) noexcept {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::frozen");
         return visit(self, [](auto& list) {
             return Py_NewRef(list.frozen() ? Py_True : Py_False);
         });
     }
 
     inline static PyObject* specialization(Derived* self, PyObject* = nullptr) noexcept {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::specialization");
         return visit(self, [](auto& list) {
             PyObject* result = list.specialization();
             if (result == nullptr) {
@@ -382,6 +397,7 @@ public:
     }
 
     inline static PyObject* nbytes(Derived* self, PyObject* = nullptr) noexcept {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::nbytes");
         return visit(self, [](auto& list) {
             return PyLong_FromSize_t(list.nbytes());
         });
@@ -390,7 +406,8 @@ public:
     static PyObject* reserve(Derived* self, PyObject* const* args, Py_ssize_t nargs) {
         static constexpr std::string_view meth_name{"reserve"};
         using bertrand::util::parse_opt_int;
-        return visit(self, [&args, &nargs](auto& list) {
+
+        return visit(self, [&self, &args, &nargs](auto& list) {
             using List = typename std::decay_t<decltype(list)>;
             using Allocator = typename List::Allocator;
             using PyMemGuard = typename Allocator::PyMemGuard;
@@ -400,6 +417,8 @@ public:
                 "capacity", parse_opt_int, std::optional<long long>()
             );
             pyargs.finalize();
+
+            PYINDENT_LOG(self, " -> ", Derived::NAME, "::reserve(", repr(capacity), ")");
 
             if (capacity.value_or(0) < 0) {
                 PyErr_SetString(PyExc_ValueError, "capacity cannot be negative");
@@ -412,6 +431,7 @@ public:
     }
 
     static PyObject* defragment(Derived* self, PyObject* = nullptr) {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::defragment()");
         return visit(self, [](auto& list) {
             list.defragment();
             Py_RETURN_NONE;
@@ -419,6 +439,7 @@ public:
     }
 
     static PyObject* specialize(Derived* self, PyObject* spec) {
+        PYINDENT_LOG(self, " -> ", Derived::NAME, "::specialize(", repr(spec), ")");
         return visit(self, [&spec](auto& list) {
             using List = std::decay_t<decltype(list)>;
 
@@ -455,6 +476,7 @@ public:
     }
 
     static PyObject* __class_getitem__(PyObject* type, PyObject* spec) {
+        PYINDENT_LOG(type, " -> ", Derived::NAME, "<", repr(spec), ">");
         PyObject* heap_type = PyType_FromSpecWithBases(&Specialized::py_spec, type);
         if (heap_type == nullptr) {
             return nullptr;
@@ -468,6 +490,7 @@ public:
     }
 
     inline static Py_ssize_t __len__(Derived* self) noexcept {
+        PYINDENT_LOG(self, " -> len(", Derived::NAME, ")");
         return std::visit(
             [](auto& list) {
                 return list.size();
@@ -477,18 +500,21 @@ public:
     }
 
     inline static PyObject* __iter__(Derived* self) noexcept {
+        PYINDENT_LOG(self, " -> iter(", Derived::NAME, ")");
         return visit(self, [&self](auto& list) {
             return iter(list).python(reinterpret_cast<PyObject*>(self));
         });
     }
 
     inline static PyObject* __reversed__(Derived* self, PyObject* = nullptr) noexcept {
+        PYINDENT_LOG(self, " -> reversed(", Derived::NAME, ")");
         return visit(self, [&self](auto& list) {
             return iter(list).rpython(reinterpret_cast<PyObject*>(self));
         });
     }
 
     static PyObject* __repr__(Derived* self) {
+        PYINDENT_LOG(self, " -> repr(", Derived::NAME, ")");
         return visit(self, [](auto& list) {
             std::ostringstream stream;
             stream << list;
@@ -501,6 +527,7 @@ protected:
 
     /* Deallocate the C++ class when its Python reference count falls to zero. */
     inline static void __dealloc__(Derived* self) noexcept {
+        PYINDENT_LOG(self, " -> ~");
         PyObject_GC_UnTrack(self);
         self->~Derived();
         Derived::Type.tp_free(reinterpret_cast<PyObject*>(self));
@@ -573,6 +600,12 @@ protected:
                     reinterpret_cast<PyObject*>(Py_TYPE(self)),
                     "_specialization"  // injected by __class_getitem__()
                 );
+
+                PYINDENT_LOG(
+                    self, " -> PyLinkedList<", repr(spec), ">(", repr(iterable), ", ",
+                    repr(max_size), ", ", reverse, ", ", singly_linked, ")"
+                );
+
                 Derived::initialize(
                     self,
                     iterable,
