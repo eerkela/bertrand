@@ -7,6 +7,7 @@
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
+#include "../../util/base.h"  // DEBUG, LOG(), WRITE_LOG()
 #include "../../util/except.h"  // catch_python(), TypeError(), KeyError()
 #include "../../util/math.h"  // next_power_of_two()
 #include "../../util/name.h"  // PyName<>
@@ -17,17 +18,6 @@
 
 namespace bertrand {
 namespace linked {
-
-
-/////////////////////////
-////    CONSTANTS    ////
-/////////////////////////
-
-
-/* DEBUG=TRUE adds print statements for every memory allocation in order to help catch
-leaks.  This is a lot less elegant than using a formal logging library, but it gets the
-job done and is easier to use from a Python REPL. */
-inline constexpr bool DEBUG = false;
 
 
 ////////////////////
@@ -129,9 +119,7 @@ protected:
                 throw TypeError(msg.str());
             }
         }
-        if constexpr (DEBUG) {
-            std::cout << "    -> create: " << repr(node->value()) << "\n";
-        }
+        WRITE_LOG("create: ", repr(node->value()));
     }
 
     /* Destroy all nodes contained in the list. */
@@ -139,9 +127,7 @@ protected:
         Node* curr = head;
         while (curr != nullptr) {
             Node* next = curr->next();
-            if constexpr (DEBUG) {
-                std::cout << "    -> recycle: " << repr(curr->value()) << "\n";
-            }
+            WRITE_LOG("recycle: ", repr(curr->value()));
             curr->~Node();
             curr = next;
         }
@@ -160,9 +146,7 @@ protected:
         _frozen(false), head(nullptr), tail(nullptr), capacity(capacity), occupied(0),
         specialization(Py_XNewRef(specialization))
     {
-        if constexpr (DEBUG) {
-            std::cout << "    -> allocate: " << this->capacity << " nodes\n";
-        }
+        WRITE_LOG("allocate: ", this->capacity, " nodes");
     }
 
 public:
@@ -177,9 +161,7 @@ public:
         _frozen(other._frozen), head(nullptr), tail(nullptr), capacity(other.capacity),
         occupied(other.occupied), specialization(Py_XNewRef(other.specialization))
     {
-        if constexpr (DEBUG) {
-            std::cout << "    -> allocate: " << capacity << " nodes\n";
-        }
+        WRITE_LOG("allocate: ", this->capacity, " nodes");
     }
 
     /* Move constructor. */
@@ -212,9 +194,7 @@ public:
             head = nullptr;
             tail = nullptr;
         }
-        if constexpr (DEBUG) {
-            std::cout << "    -> deallocate: " << capacity << " nodes\n";
-        }
+        WRITE_LOG("deallocate: ", capacity, " nodes");
 
         _frozen = other._frozen;
         capacity = other.capacity;
@@ -237,9 +217,7 @@ public:
         if (head != nullptr) {
             destroy_list();
         }
-        if constexpr (DEBUG) {
-            std::cout << "    -> deallocate: " << capacity << " nodes\n";
-        }
+        WRITE_LOG("deallocate: ", capacity, " nodes");
 
         _frozen = other._frozen;
         head = other.head;
@@ -271,9 +249,7 @@ public:
 
     /* Release a node from the list. */
     void recycle(Node* node) {
-        if constexpr (DEBUG) {
-            std::cout << "    -> recycle: " << repr(node->value()) << "\n";
-        }
+        WRITE_LOG("recycle: ", repr(node->value()));
         node->~Node();
         --occupied;
     }
@@ -424,9 +400,7 @@ public:
         capacity. */
         MemGuard(Derived* allocator) noexcept : allocator(allocator) {
             allocator->_frozen = true;
-            if constexpr (DEBUG) {
-                std::cout << "FREEZE: " << allocator->capacity << " NODES\n";
-            }
+            WRITE_LOG("FREEZE: ", allocator->capacity, " NODES");
         }
 
         /* Create an inactive MemGuard for an allocator. */
@@ -435,9 +409,7 @@ public:
         /* Destroy the outermost MemGuard. */
         inline void destroy() noexcept {
             allocator->_frozen = false;
-            if constexpr (DEBUG) {
-                std::cout << "UNFREEZE: " << allocator->capacity << " NODES\n";
-            }
+            WRITE_LOG("UNFREEZE: ", allocator->capacity, " NODES");
 
             // NOTE: all allocators must implement a shrink() method
             allocator->shrink();
@@ -745,9 +717,7 @@ private:
     /* Allocate a new array of a given size and transfer the contents of the list. */
     void resize(size_t new_capacity) {
         Node* new_array = Base::malloc_nodes(new_capacity);
-        if constexpr (DEBUG) {
-            std::cout << "    -> allocate: " << new_capacity << " nodes\n";
-        }
+        WRITE_LOG("allocate: ", new_capacity, " nodes");
 
         // move nodes into new array
         auto [head, tail] = transfer<true>(new_array);
@@ -756,9 +726,7 @@ private:
 
         // replace old array
         free(array);
-        if constexpr (DEBUG) {
-            std::cout << "    -> deallocate: " << this->capacity << " nodes\n";
-        }
+        WRITE_LOG("deallocate: ", this->capacity, " nodes");
         array = new_array;
         free_list.first = nullptr;
         free_list.second = nullptr;
@@ -854,9 +822,7 @@ public:
         }
         if (array != nullptr) {
             free(array);
-            if constexpr (DEBUG) {
-                std::cout << "    -> deallocate: " << this->capacity << " nodes\n";
-            }
+            WRITE_LOG("deallocate: ", this->capacity, " nodes");
         }
     }
 
@@ -928,13 +894,9 @@ public:
             if (!this->frozen() && this->capacity > MIN_CAPACITY) {
                 this->capacity = MIN_CAPACITY;
                 free(array);
-                if constexpr (DEBUG) {
-                    std::cout << "    -> deallocate: " << this->capacity << " nodes\n";
-                }
+                WRITE_LOG("deallocate: ", this->capacity, " nodes");
                 array = Base::malloc_nodes(this->capacity);
-                if constexpr (DEBUG) {
-                    std::cout << "    -> allocate: " << this->capacity << " nodes\n";
-                }
+                WRITE_LOG("allocate: ", this->capacity, " nodes");
             }
         }
     }
@@ -1333,9 +1295,7 @@ private:
     /* Allocate a new table of a given size and transfer the contents of the list. */
     void resize(size_t new_capacity) {
         Table new_table(new_capacity);
-        if constexpr (DEBUG) {
-            std::cout << "    -> allocate: " << new_capacity << " nodes\n";
-        }
+        WRITE_LOG("allocate: ", new_capacity, " nodes");
 
         // move nodes into new table
         try {
@@ -1357,9 +1317,7 @@ private:
         // replace old table
         if (table.array != nullptr) {
             free(table.array);
-            if constexpr (DEBUG) {
-                std::cout << "    -> deallocate: " << this->capacity << " nodes\n";
-            }
+            WRITE_LOG("deallocate: ", this->capacity, " nodes");
         }
         table.array = new_table.array;
         new_table.array = nullptr;
@@ -1591,9 +1549,7 @@ private:
                     if constexpr (flags & UNLINK) {
                         unlink(node);
                     }
-                    if constexpr (DEBUG) {
-                        std::cout << "    -> recycle: " << repr(value) << "\n";
-                    }
+                    WRITE_LOG("recycle: ", repr(value));
                     if constexpr (flags & RETURN_MAPPED) {
                         using Mapped = typename Node::MappedValue;
                         Mapped mapped(std::move(node->mapped()));
@@ -1677,9 +1633,7 @@ private:
                     if constexpr (flags & UNLINK) {
                         unlink(node);
                     }
-                    if constexpr (DEBUG) {
-                        std::cout << "    -> recycle: " << repr(value) << "\n";
-                    }
+                    WRITE_LOG("recycle: ", repr(value));
                     if constexpr (flags & RETURN_MAPPED) {
                         using Mapped = typename Node::MappedValue;
                         Mapped mapped(std::move(node->mapped()));
@@ -1795,7 +1749,7 @@ public:
         }
         if constexpr (DEBUG) {
             if (table.array != nullptr) {
-                std::cout << "    -> deallocate: " << this->capacity << " nodes\n";
+                LOG("deallocate: ", this->capacity, " nodes");
             }
         }
     }
@@ -1975,13 +1929,9 @@ public:
         if constexpr (!Base::FIXED_SIZE) {
             if (!this->frozen() && this->capacity > MIN_CAPACITY) {
                 table.~Table();
-                if constexpr (DEBUG) {
-                    std::cout << "    -> deallocate: " << this->capacity << " nodes\n";
-                }
+                WRITE_LOG("deallocate: ", this->capacity, " nodes");
                 new (&table) Table(MIN_CAPACITY);
-                if constexpr (DEBUG) {
-                    std::cout << "    -> allocate: " << MIN_CAPACITY << " nodes\n";
-                }
+                WRITE_LOG("allocate: ", MIN_CAPACITY, " nodes");
                 this->capacity = MIN_CAPACITY;
                 modulo = MIN_CAPACITY - 1;
             }

@@ -53,6 +53,13 @@ from bertrand.structs import LinkedSet, LinkedDict
 # -> seems consistent on the 23rd/52nd type in between the current print statements.
 
 
+# -> Hard to track down.  Doesn't seem to always happen during registration, and
+# attempting to simply add values to a linked set don't seem to reproduce the issue.
+# What we should probably do is force from_types to convert the input into a linked
+# set.
+
+
+
 class Empty:
     """Placeholder for required fields of an abstract type.
 
@@ -104,11 +111,14 @@ def _identity(
     return value
 
 
+T = TypeVar("T")
+
+
 EMPTY: Empty = Empty(_identity)
 POINTER_SIZE: int = np.dtype(np.intp).itemsize
 META: TypeAlias = "TypeMeta | DecoratorMeta | UnionMeta | StructuredMeta"
 DTYPE: TypeAlias = np.dtype[Any] | pd.api.extensions.ExtensionDtype
-ALIAS: TypeAlias = str | type | DTYPE
+ALIAS: TypeAlias = str | type | DTYPE | PyUnionType | slice
 TYPESPEC: TypeAlias = "META | ALIAS"
 OBJECT_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[np.object_]]
 RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]
@@ -653,8 +663,7 @@ class TypeRegistry:
             A union containing the root types (those that inherit directly from
             :class:`Type`) of every hierarchy.
         """
-        result = LinkedSet(t for t in self if isinstance(t, TypeMeta) and t.is_root)
-        return Union.from_types(result)
+        return Union.from_types(t for t in self if isinstance(t, TypeMeta) and t.is_root)
 
     @property
     def leaves(self) -> UnionMeta:
@@ -667,8 +676,7 @@ class TypeRegistry:
             A union containing the concrete leaf types (those that have no children) of
             every hierarchy.
         """
-        result = LinkedSet(t for t in self if isinstance(t, TypeMeta) and t.is_leaf)
-        return Union.from_types(result)
+        return Union.from_types(t for t in self if isinstance(t, TypeMeta) and t.is_leaf)
 
     @property
     def abstract(self) -> UnionMeta:
@@ -681,8 +689,7 @@ class TypeRegistry:
             A union containing each abstract type as an unparametrized base
             type.
         """
-        result = LinkedSet(t for t in self if isinstance(t, TypeMeta) and t.is_abstract)
-        return Union.from_types(result)
+        return Union.from_types(t for t in self if isinstance(t, TypeMeta) and t.is_abstract)
 
     @property
     def backends(self) -> dict[str, UnionMeta]:
@@ -696,10 +703,10 @@ class TypeRegistry:
             the union describe the family of types that are registered under
             the backend.
         """
-        result: dict[str, LinkedSet[TypeMeta]] = {}
+        result: dict[str, list[TypeMeta]] = {}
         for typ in self:
             if isinstance(typ, TypeMeta) and typ.backend:
-                result.setdefault(typ.backend, LinkedSet()).add(typ)
+                result.setdefault(typ.backend, []).append(typ)
 
         return {k: Union.from_types(v) for k, v in result.items()}
 
@@ -1316,13 +1323,13 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         return Object[target]
 
     if isinstance(target, PyUnionType):
-        flattened = LinkedSet()
+        flattened: list[TypeMeta | DecoratorMeta] = []
         for typ in target.__args__:
             t = resolve(typ)
             if isinstance(t, UnionMeta):
-                flattened.update(t)
+                flattened.extend(t)
             else:
-                flattened.add(t)
+                flattened.append(t)
         return Union.from_types(flattened)
 
     if isinstance(target, np.dtype):
@@ -1375,14 +1382,14 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         try:
             first = next(it)
         except StopIteration:
-            return Union.from_types(LinkedSet())
+            return Union.from_types(())
 
         if isinstance(first, slice):
             slices = {first.start: resolve(first.stop)}
             for item in it:
                 if not isinstance(item, slice):
                     raise TypeError(f"expected a slice -> {repr(item)}")
-                slices[item.start] = resolve(item.stop)  # type: ignore
+                slices[item.start] = resolve(item.stop)
             return StructuredUnion.from_columns(slices)
 
         if isinstance(first, (list, tuple)):
@@ -1398,15 +1405,15 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
 
         typ = resolve(first)
         if isinstance(typ, UnionMeta):
-            flat = LinkedSet(typ)
+            flat = list(typ)
         else:
-            flat = LinkedSet([typ])
+            flat = [typ]
         for t in it:
             typ = resolve(t)
             if isinstance(typ, UnionMeta):
-                flat.update(typ)
+                flat.extend(typ)
             else:
-                flat.add(typ)
+                flat.append(typ)
 
         return Union.from_types(flat)
 
@@ -1447,9 +1454,7 @@ def _resolve_string(target: str, as_union: bool) -> META:
                 raise TypeError(f"duplicate column name -> {repr(col)}")
 
             if len(specifiers) > 1:
-                columns[col] = Union.from_types(LinkedSet(
-                    _process_string(s) for s in specifiers
-                ))
+                columns[col] = Union.from_types(_process_string(s) for s in specifiers)
             else:
                 columns[col] = _process_string(specifiers[0])
 
@@ -1854,7 +1859,7 @@ def detect(data: Any, drop_na: bool = True) -> META:
                 index = np.empty(missing.shape[0], dtype=object)
                 index[:] = Missing
                 index[~missing] = union.index  # pylint: disable=invalid-unary-operand-type
-                return Union.from_types(LinkedSet(union) | Missing, _rle_encode(index))
+                return Union.from_types(union | Missing, _rle_encode(index))
 
             return union
 
@@ -1901,13 +1906,13 @@ def _detect_dtype(data: Any, drop_na: bool) -> META:
             from ..missing import Missing
             index = np.full(is_na.shape[0], Missing, dtype=object)
             index[~is_na] = result  # pylint: disable=invalid-unary-operand-type
-            return Union.from_types(LinkedSet([result, Missing]), _rle_encode(index))
+            return Union.from_types([result, Missing], _rle_encode(index))
 
     index = np.array(
         [(result, len(data))],
         dtype=[("value", object), ("count", np.intp)]
     )
-    return Union.from_types(LinkedSet([result]), index)
+    return Union.from_types([result], index)
 
 
 def _detect_elementwise(data: Any) -> UnionMeta:
@@ -1981,7 +1986,6 @@ def _rle_decode(arr: RLE_ARRAY) -> OBJECT_ARRAY:
 ###########################
 
 
-T = TypeVar("T")
 UNION_RETURN = Mapping["TypeMeta | DecoratorMeta", T]
 STRUCTURED_RETURN = Mapping[str, T | UNION_RETURN[T]]
 META_RETURN = PyUnion[T, UNION_RETURN[T], STRUCTURED_RETURN[T]]
@@ -3760,7 +3764,7 @@ class BaseMeta(type):
             >>> _.collapse()
             Union[Int8]
         """
-        return Union.from_types(LinkedSet([cls]))
+        return Union.from_types([cls])
 
     def sorted(
         cls,
@@ -3798,7 +3802,7 @@ class BaseMeta(type):
             >>> Union[Int16, Int32, Int8].sorted(key=lambda t: t.itemsize)
             Union[Int8, Int16, Int32]
         """
-        return Union.from_types(LinkedSet([cls]))
+        return Union.from_types([cls])
 
     def issubset(
         cls,
@@ -4056,7 +4060,7 @@ class BaseMeta(type):
             result.update(typ)
             return Union.from_types(result)
 
-        return Union.from_types(LinkedSet((cls, typ)))
+        return Union.from_types((cls, typ))
 
     def __ror__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:  # type: ignore
         try:
@@ -4072,7 +4076,7 @@ class BaseMeta(type):
         except TypeError:
             return NotImplemented
 
-        return Union.from_types(LinkedSet((cls,))) & typ
+        return Union.from_types((cls,)) & typ
 
     def __rand__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
         try:
@@ -4088,7 +4092,7 @@ class BaseMeta(type):
         except TypeError:
             return NotImplemented
 
-        return Union.from_types(LinkedSet((cls,))) - typ
+        return Union.from_types((cls,)) - typ
 
     def __rsub__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
         try:
@@ -4104,7 +4108,7 @@ class BaseMeta(type):
         except TypeError:
             return NotImplemented
 
-        return Union.from_types(LinkedSet((cls,))) ^ typ
+        return Union.from_types((cls,)) ^ typ
 
     def __rxor__(cls, other: TYPESPEC | Iterable[TYPESPEC]) -> UnionMeta:
         try:
@@ -4204,22 +4208,27 @@ class TypeMeta(BaseMeta):
         backend: str = "",
         cache_size: int | None = None,
     ) -> TypeMeta:
+        print(f"building {name}")
         if not backend:
             abstract = AbstractBuilder(name, bases, namespace, cache_size)
-            return abstract.parse().fill().register(BaseMeta.__new__(
+            result = abstract.parse().fill().register(type.__new__(
                 mcs,
                 abstract.name,
                 (abstract.parent,),
                 abstract.namespace
             ))
+            print(f"done")
+            return result
 
         concrete = ConcreteBuilder(name, bases, namespace, backend, cache_size)
-        return concrete.parse().fill().register(BaseMeta.__new__(
+        result = concrete.parse().fill().register(type.__new__(
             mcs,
             concrete.name,
             (concrete.parent,),
             concrete.namespace
         ))
+        print(f"done")
+        return result
 
     def __getitem__(cls, params: Any | tuple[Any, ...]) -> TypeMeta:
         if isinstance(params, tuple):
@@ -4264,7 +4273,7 @@ class TypeMeta(BaseMeta):
 
     def flyweight(cls, *args: Any, **kwargs: Any) -> TypeMeta:
         slug = f"{cls.__name__}[{', '.join(repr(a) for a in args)}]"
-        typ = cls._flyweights.lru_get(slug, None)
+        typ: TypeMeta | None = cls._flyweights.lru_get(slug, None)
 
         if typ is None:
             if len(args) != len(cls._params):
@@ -4273,7 +4282,7 @@ class TypeMeta(BaseMeta):
                     f"{len(args)}"
                 )
 
-            typ = BaseMeta.__new__(
+            typ = type.__new__(
                 TypeMeta,
                 cls.__name__,
                 (cls,),
@@ -4420,7 +4429,7 @@ class TypeMeta(BaseMeta):
 
     @property
     def implementations(cls) -> UnionMeta:
-        return Union.from_types(LinkedSet(cls._implementations.values()))
+        return Union.from_types(cls._implementations.values())
 
     @property
     def children(cls) -> UnionMeta:
@@ -4432,7 +4441,7 @@ class TypeMeta(BaseMeta):
 
     @property
     def leaves(cls) -> UnionMeta:
-        return Union.from_types(LinkedSet(t for t in cls._children if t.is_leaf))
+        return Union.from_types(t for t in cls._children if t.is_leaf)
 
     @property
     def larger(cls) -> UnionMeta:
@@ -4480,7 +4489,7 @@ class TypeMeta(BaseMeta):
 
     @property
     def decorators(cls) -> UnionMeta:
-        return Union.from_types(LinkedSet())
+        return Union.from_types(())
 
     @property
     def wrapped(cls) -> TypeMeta:
@@ -4680,13 +4689,16 @@ class DecoratorMeta(BaseMeta):
         namespace: dict[str, Any],
         cache_size: int | None = None,
     ) -> DecoratorMeta:
+        print(f"building {name}")
         build = DecoratorBuilder(name, bases, namespace, cache_size)
-        return build.parse().fill().register(BaseMeta.__new__(
+        result = build.parse().fill().register(type.__new__(
             mcs,
             build.name,
             (build.parent,),
             build.namespace
         ))
+        print(f"done")
+        return result
 
     def __getitem__(cls, params: Any | tuple[Any, ...]) -> DecoratorMeta:
         if isinstance(params, tuple):
@@ -4731,7 +4743,7 @@ class DecoratorMeta(BaseMeta):
 
     def flyweight(cls, *args: Any, **kwargs: Any) -> DecoratorMeta:
         slug = f"{cls.__name__}[{', '.join(repr(a) for a in args)}]"
-        typ = cls._flyweights.lru_get(slug, None)
+        typ: DecoratorMeta | None = cls._flyweights.lru_get(slug, None)
 
         if typ is None:
             if len(args) != len(cls._params):
@@ -4740,7 +4752,7 @@ class DecoratorMeta(BaseMeta):
                     f"{len(args)}"
                 )
 
-            typ = BaseMeta.__new__(
+            typ = type.__new__(
                 DecoratorMeta,
                 cls.__name__,
                 (cls,),
@@ -4864,25 +4876,19 @@ class DecoratorMeta(BaseMeta):
     def subtypes(cls) -> UnionMeta:
         if not cls.is_flyweight:
             raise _no_attribute(cls, "subtypes")
-        return Union.from_types(LinkedSet(
-            cls.replace(t) for t in cls.wrapped.subtypes
-        ))
+        return Union.from_types(cls.replace(t) for t in cls.wrapped.subtypes)
 
     @property
     def implementations(cls) -> UnionMeta:
         if not cls.is_flyweight:
             raise _no_attribute(cls, "implementations")
-        return Union.from_types(LinkedSet(
-            cls.replace(t) for t in cls.wrapped.implementations
-        ))
+        return Union.from_types(cls.replace(t) for t in cls.wrapped.implementations)
 
     @property
     def children(cls) -> UnionMeta:
         if not cls.is_flyweight:
             raise _no_attribute(cls, "children")
-        return Union.from_types(LinkedSet(
-            cls.replace(t) for t in cls.wrapped.children
-        ))
+        return Union.from_types(cls.replace(t) for t in cls.wrapped.children)
 
     @property
     def is_leaf(cls) -> bool:
@@ -4892,25 +4898,19 @@ class DecoratorMeta(BaseMeta):
     def leaves(cls) -> UnionMeta:
         if not cls.is_flyweight:
             raise _no_attribute(cls, "leaves")
-        return Union.from_types(LinkedSet(
-            cls.replace(t) for t in cls.wrapped.leaves
-        ))
+        return Union.from_types(cls.replace(t) for t in cls.wrapped.leaves)
 
     @property
     def larger(cls) -> UnionMeta:
         if not cls.is_flyweight:
             raise _no_attribute(cls, "larger")
-        return Union.from_types(LinkedSet(
-            cls.replace(t) for t in cls.wrapped.larger
-        ))
+        return Union.from_types(cls.replace(t) for t in cls.wrapped.larger)
 
     @property
     def smaller(cls) -> UnionMeta:
         if not cls.is_flyweight:
             raise _no_attribute(cls, "smaller")
-        return Union.from_types(LinkedSet(
-            cls.replace(t) for t in cls.wrapped.smaller
-        ))
+        return Union.from_types(cls.replace(t) for t in cls.wrapped.smaller)
 
     ##########################
     ####    DECORATORS    ####
@@ -5181,7 +5181,7 @@ class UnionMeta(BaseMeta):
 
     def from_types(
         cls,
-        types: LinkedSet[TypeMeta | DecoratorMeta],
+        types: Iterable[TypeMeta | DecoratorMeta],
         index: RLE_ARRAY | None = None
     ) -> UnionMeta:
         """Construct a union from a set of types.
@@ -5217,8 +5217,8 @@ class UnionMeta(BaseMeta):
                 raise TypeError("union members must be bertrand types")
             hash_val = (hash_val * 31 + hash(t)) % (2**63 - 1)
 
-        return BaseMeta.__new__(UnionMeta, cls.__name__, (cls,), {
-            "_types": types,
+        return type.__new__(UnionMeta, cls.__name__, (cls,), {
+            "_types": LinkedSet(types),
             "_hash": hash_val,
             "_index": index,
             "__class_getitem__": _union_getitem
@@ -5249,7 +5249,7 @@ class UnionMeta(BaseMeta):
 
     @property
     def base_type(cls) -> UnionMeta:
-        return cls.from_types(LinkedSet(t.base_type for t in cls))
+        return cls.from_types(t.base_type for t in cls)
 
     @property
     def cache_size(cls) -> UNION_RETURN[int | None]:
@@ -5263,7 +5263,7 @@ class UnionMeta(BaseMeta):
         raise _no_attribute(cls, "flyweight")
 
     def replace(cls, *args: Any, **kwargs: Any) -> UnionMeta:
-        return cls.from_types(LinkedSet(t.replace(*args, **kwargs) for t in cls))
+        return cls.from_types(t.replace(*args, **kwargs) for t in cls)
 
     ################################
     ####    CLASS DECORATORS    ####
@@ -5275,11 +5275,11 @@ class UnionMeta(BaseMeta):
 
     @property
     def as_default(cls) -> UnionMeta:
-        return cls.from_types(LinkedSet(t.as_default for t in cls))
+        return cls.from_types(t.as_default for t in cls)
 
     @property
     def as_nullable(cls) -> UnionMeta:
-        return cls.from_types(LinkedSet(t.as_nullable for t in cls))
+        return cls.from_types(t.as_nullable for t in cls)
 
     def default(cls, other: TypeMeta) -> NoReturn:
         raise _no_attribute(cls, "default")
@@ -5349,11 +5349,11 @@ class UnionMeta(BaseMeta):
 
     @property
     def root(cls) -> UnionMeta:
-        return cls.from_types(LinkedSet(t.root for t in cls))
+        return cls.from_types(t.root for t in cls)
 
     @property
     def parent(cls) -> UnionMeta:
-        return cls.from_types(LinkedSet(t.parent for t in cls))
+        return cls.from_types(t.parent for t in cls)
 
     @property
     def subtypes(cls) -> UnionMeta:
@@ -5418,11 +5418,11 @@ class UnionMeta(BaseMeta):
 
     @property
     def wrapped(cls) -> UnionMeta:
-        return cls.from_types(LinkedSet(t.wrapped for t in cls))
+        return cls.from_types(t.wrapped for t in cls)
 
     @property
     def unwrapped(cls) -> UnionMeta:
-        return cls.from_types(LinkedSet(t.unwrapped for t in cls))
+        return cls.from_types(t.unwrapped for t in cls)
 
     def transform(cls, series: pd.Series[Any]) -> pd.Series[Any]:
         for t in cls:
@@ -5724,7 +5724,7 @@ class StructuredMeta(UnionMeta):
                 raise TypeError("column values must be bertrand types")
             hash_val = (hash_val * 31 + hash(k) + hash(v)) % (2**63 - 1)
 
-        return BaseMeta.__new__(StructuredMeta, cls.__name__, (cls,), {
+        return type.__new__(StructuredMeta, cls.__name__, (cls,), {
             "_columns": columns,
             "_types": flattened,
             "_hash": hash_val,
@@ -6599,8 +6599,6 @@ class AbstractBuilder(TypeBuilder):
         if typ._nullable is None and self.fields.get("is_nullable", False):
             typ._nullable = typ
 
-        print(f"registering {typ}")
-
         parent = self.parent
         if parent is not Base:
 
@@ -6614,7 +6612,6 @@ class AbstractBuilder(TypeBuilder):
                 parent = parent.parent
                 parent._children.add(typ)
 
-        print(f"done")
         return typ
 
     def _class_getitem(self) -> None:
@@ -6842,8 +6839,6 @@ class ConcreteBuilder(TypeBuilder):
         if typ._fields["dtype"] is None:
             typ._fields["dtype"] = synthesize_dtype(typ)
 
-        print(f"registering {typ}")
-
         parent = self.parent
         if self.parent is not Base:
 
@@ -6857,7 +6852,6 @@ class ConcreteBuilder(TypeBuilder):
                 parent = parent.parent
                 parent._children.add(typ)
 
-        print(f"done")
         return typ
 
     def _class_getitem(self) -> None:
@@ -7102,18 +7096,18 @@ class DecoratorBuilder(TypeBuilder):
                     columns = {}
                     for k, v in parsed.items():
                         if isinstance(v, UnionMeta):
-                            columns[k] = Union.from_types(LinkedSet(
+                            columns[k] = Union.from_types(
                                 _insort_decorator(invoke, cls, t, *args) for t in v
-                            ))
+                            )
                         else:
                             columns[k] = _insort_decorator(invoke, cls, v, *args)
 
                     return StructuredUnion.from_columns(columns)
 
                 if isinstance(parsed, UnionMeta):
-                    return Union.from_types(LinkedSet(
+                    return Union.from_types(
                         _insort_decorator(invoke, cls, t, *args) for t in parsed
-                    ))
+                    )
 
                 return _insort_decorator(invoke, cls, parsed, *args)
 
@@ -7161,9 +7155,9 @@ class DecoratorBuilder(TypeBuilder):
                     columns = {}
                     for k, v in parsed.items():
                         if isinstance(v, UnionMeta):
-                            columns[k] = Union.from_types(LinkedSet(
+                            columns[k] = Union.from_types(
                                 _insort_decorator(invoke, cls, t) for t in v
-                            ))
+                            )
                         else:
                             columns[k] = _insort_decorator(invoke, cls, v)
 
@@ -7171,7 +7165,7 @@ class DecoratorBuilder(TypeBuilder):
 
                 if isinstance(parsed, UnionMeta):
                     return Union.from_types(
-                        LinkedSet(_insort_decorator(invoke, cls, t) for t in parsed)
+                        _insort_decorator(invoke, cls, t) for t in parsed
                     )
 
                 return _insort_decorator(invoke, cls, parsed)
@@ -9371,7 +9365,7 @@ class Union(Base, metaclass=UnionMeta):
         typ = resolve(types)
         if isinstance(typ, UnionMeta):
             return typ
-        return cls.from_types(LinkedSet((typ,)))
+        return cls.from_types((typ,))
 
 
 class StructuredUnion(Union, metaclass=StructuredMeta):

@@ -28,7 +28,6 @@
 #     domain-specific mini-language for referring to types.
 # """
 # # pylint: disable=undefined-variable, redefined-builtin
-# from .types import *
 # from .convert import (
 #     cast, categorize, decategorize, densify, sparsify, to_boolean, to_integer,
 #     to_float, to_complex, to_decimal, to_datetime, to_timedelta, to_string
@@ -44,10 +43,7 @@
 # from .decorators.dispatch import (
 #     dispatch, DispatchFunc, DispatchSignature, DispatchArguments
 # )
-# from .resolve import resolve_type
-# from .detect import detect_type
 # from .patch.base import attach, detach
-# from .check import typecheck
 
 
 # from .decorators import attach, dispatch, introspect
