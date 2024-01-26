@@ -7,6 +7,7 @@
 #include <string_view>  // std::string_view
 #include <variant>  // std::visit
 #include "core/view.h"  // Views, Direction
+#include "../util/base.h"  // DEBUG, LOG(), INDENT_LOG()
 #include "../util/iter.h"  // iter(), IterProxy
 #include "../util/ops.h"  // PyIterator
 #include "../util/python.h"  // python::Slice

@@ -69,6 +69,11 @@ template <typename T>
 using remove_rvalue_t = typename remove_rvalue<T>::type;
 
 
+///////////////////////
+////    LOGGING    ////
+///////////////////////
+
+
 /* DEBUG=true enables logging statements across the linked data structures, which will
 be dumped to a .log file in the current working directory.  If . */
 inline constexpr bool DEBUG = true;
@@ -141,14 +146,16 @@ public:
 
     template <typename... Args>
     inline void operator()(Args&&... messages) {
-        if (stream.is_open()) {
-            for (size_t i = 0; i < _indent_level; ++i) {
-                stream << "    ";
+        if constexpr (sizeof...(messages) > 0) {
+            if (stream.is_open()) {
+                for (size_t i = 0; i < _indent_level; ++i) {
+                    stream << "    ";
+                }
+                stream << _prefix;
+                (stream << ... << std::forward<Args>(messages));
+                stream << _suffix;
+                stream << std::endl;
             }
-            stream << _prefix;
-            (stream << ... << std::forward<Args>(messages));
-            stream << _suffix;
-            stream << std::endl;
         }
     }
 
@@ -181,13 +188,38 @@ public:
 };
 
 
-Logger<DEBUG> LOG;  // global logging object
+/* Global logging object. */
+Logger<DEBUG> LOG;
 
 
-/* macro to write simple statements to the log file.  This avoids the need to place
-`if constexpr (DEBUG)` guards around every logging statement as long as no other logic
+/* An RAII guard to control nested indentation in the log file.  In the case where
+DEBUG=false, this is a no-op and will be optimized away by the compiler. */
+struct LogGuard {
+    
+    inline LogGuard() {
+        if constexpr (DEBUG) {
+            LOG.indent();
+        }
+    }
+
+    inline ~LogGuard() {
+        if constexpr (DEBUG) {
+            LOG.unindent();
+        }
+    }
+
+};
+
+
+/* macros to write simple statements to the log file.  These avoids the need to place
+`if constexpr (DEBUG)` guards around every logging statement, as long as no other logic
 is needed within the constexpr branch itself. */
 #define WRITE_LOG(...) if constexpr (DEBUG) { LOG(__VA_ARGS__); }
+#define INDENT_LOG(...) \
+    if constexpr (DEBUG) { \
+        LOG(__VA_ARGS__); \
+    } \
+    LogGuard _log_guard_##__LINE__; \
 
 
 }  // namespace bertrand

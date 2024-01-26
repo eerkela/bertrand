@@ -7,6 +7,7 @@
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
 #include "../util/args.h"  // PyArgs
+#include "../util/base.h"  // DEBUG, INDENT_LOG()
 #include "../util/except.h"  // catch_python
 #include "../util/ops.h"  // repr(), lexical comparisons
 #include "core/allocate.h"  // Config
@@ -84,6 +85,58 @@ public:
     using Base::Base;
     using Base::operator=;
 
+    LinkedList(
+        std::optional<size_t> max_size = std::nullopt,
+        PyObject* spec = nullptr
+    ) : Base(
+        [&] {
+            if constexpr (DEBUG) {
+                LOG(this, " -> LinkedList(", repr(max_size), ", ", repr(spec), ")");
+                LOG.indent();
+            }
+            return max_size;
+        }(),
+        spec
+    ) {
+        if constexpr (DEBUG) {
+            LOG.unindent();
+        }
+    }
+
+    template <typename Container>
+    LinkedList(
+        Container&& iterable,
+        std::optional<size_t> max_size = std::nullopt,
+        PyObject* spec = nullptr,
+        bool reverse = false
+    ) : Base(
+        [&] {
+            if constexpr (DEBUG) {
+                LOG(
+                    this, " -> LinkedList(", repr(iterable), ", ", repr(max_size),
+                    ", ", repr(spec), ", ", reverse, ")"
+                );
+                LOG.indent();
+            }
+            return std::forward<Container>(iterable);
+        }(),
+        max_size,
+        spec,
+        reverse
+    ) {
+        if constexpr (DEBUG) {
+            LOG.unindent();
+        }
+    }
+
+    // TODO: uncommenting this causes a segfault for some reason
+    // ~LinkedList() {
+    //     if constexpr (DEBUG) {
+    //         LOG(this, " -> ~LinkedList()");
+    //         LOG.indent();
+    //     }
+    // }
+
     //////////////////////////////
     ////    LIST INTERFACE    ////
     //////////////////////////////
@@ -109,28 +162,33 @@ public:
 
     /* Add an item to the end of the list. */
     inline void append(const Value& item) {
+        INDENT_LOG(this, " -> LinkedList::append(", repr(item), ")");
         linked::append(this->view, item);
     }
 
     /* Add an item to the beginning of the list. */
     inline void append_left(const Value& item) {
+        INDENT_LOG(this, " -> LinkedList::append_left(", repr(item), ")");
         linked::append_left(this->view, item);
     }
 
     /* Insert an item at a specified index of the list. */
     inline void insert(long long index, const Value& item) {
+        INDENT_LOG(this, " -> LinkedList::insert(", index, ", ", repr(item), ")");
         linked::insert(this->view, index, item);
     }
 
     /* Extend the list by appending elements from an iterable. */
     template <typename Container>
     inline void extend(const Container& items) {
+        INDENT_LOG(this, " -> LinkedList::extend(", repr(items), ")");
         linked::extend(this->view, items);
     }
 
     /* Extend the list by left-appending elements from an iterable. */
     template <typename Container>
     inline void extend_left(const Container& items) {
+        INDENT_LOG(this, " -> LinkedList::extend_left(", repr(items), ")");
         linked::extend_left(this->view, items);
     }
 
@@ -140,6 +198,10 @@ public:
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
+        INDENT_LOG(
+            this, " -> LinkedList::index(", repr(item), ", ", repr(start), ", ",
+            repr(stop), ")"
+        );
         return linked::index(this->view, item, start, stop);
     }
 
@@ -149,47 +211,59 @@ public:
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
+        INDENT_LOG(
+            this, " -> LinkedList::count(", repr(item), ", ", repr(start), ", ",
+            repr(stop), ")"
+        );
         return linked::count(this->view, item, start, stop);
     }
 
     /* Check if the list contains a certain item. */
     inline bool contains(const Value& item) const {
+        INDENT_LOG(this, " -> LinkedList::contains(", repr(item), ")");
         return linked::contains(this->view, item);
     }
 
     /* Remove the first occurrence of an item from the list. */
     inline void remove(const Value& item) {
+        INDENT_LOG(this, " -> LinkedList::remove(", repr(item), ")");
         linked::remove(this->view, item);
     }
 
     /* Remove an item from the list and return its value. */
     inline Value pop(long long index = -1) {
+        INDENT_LOG(this, " -> LinkedList::pop(", index, ")");
         return linked::pop(this->view, index);
     }
 
     /* Remove all elements from the list. */
     inline void clear() {
+        INDENT_LOG(this, " -> LinkedList::clear()");
         this->view.clear();
     }
 
     /* Return a shallow copy of the list. */
     inline LinkedList copy() const {
+        INDENT_LOG("LinkedList::copy()");
         return LinkedList(this->view.copy());
     }
 
     /* Sort the list in-place according to an optional key func. */
     template <typename Func = PyObject*>
     inline void sort(Func key = nullptr, bool reverse = false) {
+        INDENT_LOG(this, " -> LinkedList::sort(", repr(key), ", ", reverse, ")");
         linked::sort<linked::MergeSort>(this->view, key, reverse);
     }
 
     /* Reverse the order of elements in the list in-place. */
     inline void reverse() {
+        INDENT_LOG(this, " -> LinkedList::reverse()");
         linked::reverse(this->view);
     }
 
     /* Shift all elements in the list to the right by the specified number of steps. */
     inline void rotate(long long steps = 1) {
+        INDENT_LOG(this, " -> LinkedList::rotate(", steps, ")");
         linked::rotate(this->view, steps);
     }
 
@@ -238,12 +312,14 @@ public:
     inline auto position(long long index)
         -> linked::ElementProxy<View, Yield::KEY>
     {
+        INDENT_LOG(this, " -> LinkedList::position(", index, ")");
         return linked::position<Yield::KEY>(this->view, index);
     }
 
     inline auto position(long long index) const
         -> const linked::ElementProxy<const View, Yield::KEY>
     {
+        INDENT_LOG(this, " -> LinkedList::position(", index, ")");
         return linked::position<Yield::KEY>(this->view, index);
     }
 
@@ -251,6 +327,7 @@ public:
     inline auto slice(Args&&... args)
         -> linked::SliceProxy<View, DynamicList, Yield::KEY>
     {
+        INDENT_LOG(this, " -> LinkedList::slice(", args..., ")");
         return linked::slice<DynamicList, Yield::KEY>(
             this->view, std::forward<Args>(args)...
         );
@@ -260,6 +337,7 @@ public:
     inline auto slice(Args&&... args) const
         -> const linked::SliceProxy<const View, DynamicList, Yield::KEY>
     {
+        INDENT_LOG(this, " -> LinkedList::slice(", args..., ")");  // TODO: .get() proxy method messes up indentation
         return linked::slice<DynamicList, Yield::KEY>(
             this->view, std::forward<Args>(args)...
         );
@@ -286,60 +364,72 @@ public:
      */
 
     inline auto operator[](long long index) {
+        INDENT_LOG(this, " -> LinkedList[", index, "]");
         return position(index);
     }
 
     inline auto operator[](long long index) const {
+        INDENT_LOG(this, " -> LinkedList[", index, "]");
         return position(index);
     }
 
     template <typename Container>
     inline DynamicList operator+(const Container& other) const {
+        INDENT_LOG(this, " -> LinkedList + ", repr(other));
         return DynamicList(linked::concatenate(this->view, other));
     }
 
     template <typename Container>
     inline LinkedList& operator+=(const Container& other) {
+        INDENT_LOG(this, " -> LinkedList += ", repr(other));
         extend(other);
         return *this;
     }
 
     inline DynamicList operator*(long long other) const {
+        INDENT_LOG(this, " -> LinkedList * ", other);
         return DynamicList(linked::repeat(this->view, other));
     }
 
     inline LinkedList& operator*=(long long other) {
+        INDENT_LOG(this, " -> LinkedList *= ", other);
         linked::repeat_inplace(this->view, other);
         return *this;
     }
 
     template <typename Container>
     inline bool operator<(const Container& other) const {
+        INDENT_LOG(this, " -> LinkedList < ", repr(other));
         return lexical_lt(*this, other);
     }
 
     template <typename Container>
     inline bool operator<=(const Container& other) const {
+        INDENT_LOG(this, " -> LinkedList <= ", repr(other));
         return lexical_le(*this, other);
     }
 
     template <typename Container>
     inline bool operator==(const Container& other) const {
+        INDENT_LOG(this, " -> LinkedList == ", repr(other));
         return lexical_eq(*this, other);
     }
 
     template <typename Container>
     inline bool operator!=(const Container& other) const {
+        INDENT_LOG(this, " -> LinkedList != ", repr(other));
         return !lexical_eq(*this, other);
     }
 
     template <typename Container>
     inline bool operator>=(const Container& other) const {
+        INDENT_LOG(this, " -> LinkedList >= ", repr(other));
         return lexical_ge(*this, other);
     }
 
     template <typename Container>
     inline bool operator>(const Container& other) const {
+        INDENT_LOG(this, " -> LinkedList > ", repr(other));
         return lexical_gt(*this, other);
     }
 
@@ -363,6 +453,7 @@ inline auto operator<<(std::ostream& stream, const LinkedList<T, Flags, Ts...>& 
 
 template <typename T, unsigned int Flags, typename... Ts> 
 inline auto operator*(long long other, const LinkedList<T, Flags, Ts...>& list) {
+    INDENT_LOG(other, " * LinkedList");
     return list * other;
 }
 
@@ -549,7 +640,7 @@ public:
         return visit(self, [&key](auto& list) {
             if (PyIndex_Check(key)) {
                 long long index = bertrand::util::parse_int(key);
-                return Py_NewRef(list.position(index).get());
+                return Py_NewRef(list[index].get());
             }
 
             if (PySlice_Check(key)) {
@@ -1012,6 +1103,7 @@ class PyLinkedList :
     /* Construct a PyLinkedList around an existing C++ LinkedList. */
     template <typename List>
     inline void from_cpp(List&& list) {
+        WRITE_LOG(&variant, " -> PyLinkedList::from_cpp(", &list, ")");
         new (&variant) Variant(std::forward<List>(list));
     }
 

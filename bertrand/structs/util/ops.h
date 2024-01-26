@@ -112,6 +112,7 @@ namespace util {
     template <typename T>
     class Repr {
         enum class Use {
+            optional,
             python,
             to_string,
             stream,
@@ -119,26 +120,27 @@ namespace util {
             type_id
         };
 
-        template<typename U>
+        template <typename U>
         static auto to_string(U&& u) -> decltype(
             std::to_string(std::forward<U>(u)), std::true_type{}
         );
         static auto to_string(...) -> std::false_type;
 
-        template<typename U>
+        template <typename U>
         static auto stream(U&& u) -> decltype(
             std::declval<std::ostringstream&>() << std::forward<U>(u), std::true_type{}
         );
         static auto stream(...) -> std::false_type;
 
         static constexpr Use category = [] {
-            if constexpr (is_pyobject<T>) {
+            using U = std::remove_cv_t<std::remove_reference_t<T>>;
+            if constexpr (is_pyobject<U>) {
                 return Use::python;
-            } else if constexpr (decltype(to_string(std::declval<T>()))::value) {
+            } else if constexpr (decltype(to_string(std::declval<U>()))::value) {
                 return Use::to_string;
-            } else if constexpr (decltype(stream(std::declval<T>()))::value) {
+            } else if constexpr (decltype(stream(std::declval<U>()))::value) {
                 return Use::stream;
-            } else if constexpr (ContainerTraits<T>::forward_iterable) {
+            } else if constexpr (ContainerTraits<U>::forward_iterable) {
                 return Use::iterable;
             } else {
                 return Use::type_id;
@@ -301,7 +303,7 @@ inline std::optional<size_t> len(const T& x) {
  */
 
 
-/* Get a string representation of a Python object using PyObject_Repr(). */
+/* get repr of a Python object using PyObject_Repr(). */
 template <typename T>
 auto repr(const T& obj) -> typename util::Repr<T>::template Python<std::string> {
     PyObject* py_obj = static_cast<PyObject*>(obj);  // triggers implicit conversions
@@ -322,15 +324,14 @@ auto repr(const T& obj) -> typename util::Repr<T>::template Python<std::string> 
 }
 
 
-/* Get a string representation of a C++ object using `std::to_string()`. */
+/* Get repr of a C++ object using `std::to_string()`. */
 template <typename T>
 auto repr(const T& obj) -> typename util::Repr<T>::template ToString<std::string> {
     return std::to_string(obj);
 }
 
 
-/* Get a string representation of a C++ object by streaming it into a
-`std::ostringstream`. */
+/* Get repr of a C++ object by streaming it into a `std::ostringstream`. */
 template <typename T>
 auto repr(const T& obj) -> typename util::Repr<T>::template Streamable<std::string> {
     std::ostringstream stream;
@@ -339,8 +340,7 @@ auto repr(const T& obj) -> typename util::Repr<T>::template Streamable<std::stri
 }
 
 
-/* Get a string representation of an iterable C++ object by recursively unpacking
-it. */
+/* Get repr of an iterable C++ object by recursively unpacking it. */
 template <typename T>
 auto repr(const T& obj) -> typename util::Repr<T>::template Iterable<std::string> {
     std::ostringstream stream;
@@ -360,11 +360,21 @@ auto repr(const T& obj) -> typename util::Repr<T>::template Iterable<std::string
 }
 
 
-/* Get a string representation of an arbitrary C++ object by getting its mangled type
-name.  NOTE: this is the default implementation if no specialization can be found. */
+/* Get repr of an arbitrary C++ object by getting its mangled type name.  NOTE: this is
+the default implementation if no specialization can be found. */
 template <typename T>
 auto repr(const T& obj) -> typename util::Repr<T>::template TypeId<std::string> {
     return std::string(typeid(obj).name());
+}
+
+
+/* get repr of an optional by unwrapping it and recurring. */
+template <typename T>
+std::string repr(const std::optional<T>& obj) {
+    if (!obj.has_value()) {
+        return std::string("optional<None>");
+    }
+    return repr(obj.value());
 }
 
 

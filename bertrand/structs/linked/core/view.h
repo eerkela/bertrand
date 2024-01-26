@@ -9,6 +9,7 @@
 #include <Python.h>  // CPython API
 #include "node.h"  // Hashed<>, Mapped<>
 #include "allocate.h"  // allocators
+#include "../../util/base.h"  // DEBUG, INDENT_LOG(), WRITE_LOG()
 #include "../../util/ops.h"  // len()
 #include "../../util/python.h"  // python::Dict, python::Tuple
 
