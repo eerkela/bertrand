@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "wheel", "cython >= 3.0.0", "numpy"]
+requires = ["setuptools>=42", "wheel", "cython >= 3.0.0", "cmake>=3.18", "numpy"]
 build-backend = "setuptools.build_meta:__legacy__"
 
 [tool.setuptools.packages.find]
@@ -28,32 +28,16 @@ classifiers = [
     "Intended Audience :: Science/Research",
 ]
 keywords = [
-    "cython",
-    "numba",
     "numpy",
     "pandas",
-    "extension",
+    "data",
+    "type",
+    "typing",
     "dtype",
     "ExtensionDtype",
-    "data type",
-    "type",
-    "type check",
-    "type system",
-    "type safety",
-    "type inference",
-    "dynamic typing",
-    "static typing",
-    "strong typing",
-    "weak typing",
     "cast",
     "conversion",
-    "coercion",
-    "type cast",
-    "type conversion",
-    "type coercion",
-    "type promotion",
     "astype",
-    "compression",
     "dispatch",
     "multiple dispatch",
     "data science",
@@ -64,9 +48,6 @@ keywords = [
     "data transformation",
     "data engineering",
     "ETL",
-    "vectorization",
-    "optimization",
-    "performance tuning",
 ]
 dependencies = [
     "numpy",
@@ -84,6 +65,7 @@ dev = [
     "black",
     "bumpver",
     "cibuildwheel",
+    "cmake>=3.18",
     "cython >= 3.0.0",
     "mypy",
     "pandas-stubs",
@@ -119,18 +101,8 @@ push = true
 [tool.cibuildwheel.windows]
 before-all = "choco install visualstudio2022buildtools"  # C/C++ build tools
 
-[tool.pylint]
-ignore-patterns = [".*\\.pyi"]       # ignore type stubs
-disable = ["too-many-lines"]         # disable max line length for modules
-extension-pkg-allow-list = "bertrand"  # load Cython extensions
-load-plugins = ["pylint.extensions.docparams"]
-accept-no-param-doc = false          # force function parameters to be documented
-accept-no-return-doc = false         # force function return values to be documented
-accept-no-raise-doc = false          # force exceptions to be documented
-accept-no-yields-doc = false         # force generator yields to be documented
-output-format = "colorized"
-suggestion-mode = true
-jobs = 0
+[tool.black]
+line-length = 88
 
 [tool.mypy]
 allow_untyped_globals = false        # force globals to be typed
@@ -145,5 +117,15 @@ pretty = true                        # add source context to error messages
 color_output = true                  # colorize error messages
 error_summary = true                 # print a short summary for each error
 
-[tool.black]
-line-length = 88
+[tool.pylint]
+ignore-patterns = [".*\\.pyi"]       # ignore type stubs
+disable = ["too-many-lines"]         # disable max line length for modules
+extension-pkg-allow-list = "bertrand"  # load Cython extensions
+load-plugins = ["pylint.extensions.docparams"]
+accept-no-param-doc = false          # force function parameters to be documented
+accept-no-return-doc = false         # force function return values to be documented
+accept-no-raise-doc = false          # force exceptions to be documented
+accept-no-yields-doc = false         # force generator yields to be documented
+output-format = "colorized"
+suggestion-mode = true
+jobs = 0

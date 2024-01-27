@@ -13,9 +13,7 @@ __pycache__/
 *.c
 *.cpp
 *.so
-!pdcast/structs/linked/list.cpp
-!pdcast/structs/linked/set.cpp
-!pdcast/structs/linked/dict.cpp
+!bertrand/structs/linked.cpp
 
 # Distribution / packaging
 .Python

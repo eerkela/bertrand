@@ -75,8 +75,13 @@ using remove_rvalue_t = typename remove_rvalue<T>::type;
 
 
 /* DEBUG=true enables logging statements across the linked data structures, which will
-be dumped to a .log file in the current working directory.  If . */
-inline constexpr bool DEBUG = true;
+be dumped to a .log file in the current working directory.  */
+
+#ifdef BERTRAND_DEBUG
+    inline constexpr bool DEBUG = true;
+#else
+    inline constexpr bool DEBUG = false;
+#endif
 
 
 /* Specialization for when logging is disabled.  This raises a compile-time error if
@@ -105,11 +110,7 @@ struct Logger {
         static_assert(Enable, "logging is not enabled.");
     }
 
-    inline void prefix(const std::string& message) {
-        static_assert(Enable, "logging is not enabled.");
-    }
-
-    inline void suffix(const std::string& message) {
+    inline void language(const std::string& lang) {
         static_assert(Enable, "logging is not enabled.");
     }
 
