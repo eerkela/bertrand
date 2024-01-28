@@ -430,24 +430,48 @@ public:
         return linked::position<Yield::KEY>(this->view, index);
     }
 
-    template <typename... Args>
-    inline auto slice(Args&&... args)
-        -> linked::SliceProxy<View, DynamicList, Yield::KEY>
-    {
-        LOG_CONTEXT(this, " -> LinkedList::slice(", args..., ")");
+    // TODO: proxy methods need logging contexts in order to respect indentation, conventions
+
+    inline linked::SliceProxy<View, DynamicList, Yield::KEY> slice(
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt,
+        std::optional<long long> step = std::nullopt
+    ) {
+        LOG_CONTEXT(
+            this, " -> LinkedList::slice(", repr(start), ", ", repr(stop), ", ",
+            repr(step), ")"
+        );
         return linked::slice<DynamicList, Yield::KEY>(
-            this->view, std::forward<Args>(args)...
+            this->view, start, stop, step
         );
     }
 
-    template <typename... Args>
-    inline auto slice(Args&&... args) const
-        -> const linked::SliceProxy<const View, DynamicList, Yield::KEY>
-    {
-        LOG_CONTEXT(this, " -> LinkedList::slice(", args..., ")");  // TODO: .get() proxy method messes up indentation
-        return linked::slice<DynamicList, Yield::KEY>(
-            this->view, std::forward<Args>(args)...
+    inline linked::SliceProxy<View, DynamicList, Yield::KEY> slice(
+        PyObject* py_slice
+    ) {
+        LOG_CONTEXT(this, " -> LinkedList::slice(", repr(py_slice), ")");
+        return linked::slice<DynamicList, Yield::KEY>(this->view, py_slice);
+    }
+
+    inline const linked::SliceProxy<const View, DynamicList, Yield::KEY> slice(
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt,
+        std::optional<long long> step = std::nullopt
+    ) const {
+        LOG_CONTEXT(
+            this, " -> LinkedList::slice(", repr(start), ", ", repr(stop), ", ",
+            repr(step), ")"
         );
+        return linked::slice<DynamicList, Yield::KEY>(
+            this->view, start, stop, step
+        );
+    }
+
+    inline const linked::SliceProxy<const View, DynamicList, Yield::KEY> slice(
+        PyObject* py_slice
+    ) const {
+        LOG_CONTEXT(this, " -> LinkedList::slice(", repr(py_slice), ")");
+        return linked::slice<DynamicList, Yield::KEY>(this->view, py_slice);
     }
 
     //////////////////////////////////
@@ -1388,7 +1412,7 @@ public:
     }
 
     static PyObject* __str__(PyLinkedList* self) {
-        PYLOG_CONTEXT(self, " -> str(", NAME, ")");
+        PYLOG_CONTEXT(self, " -> str(PyLinkedList)");
         return Base::visit(self, [](auto& list) {
             std::ostringstream stream;
             stream << "[";
