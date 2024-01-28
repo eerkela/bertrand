@@ -12,11 +12,9 @@ from Cython.Build import cythonize  # type: ignore
 import numpy
 
 
-# TODO: note that users have to -I ~/.local/include to compile against bertrand.h
+# TODO: note in installation docs that users have to -I ~/.local/include to compile
+# against bertrand.h
 # g++ foo.cpp -o foo.out -I ~/.local/include -I /usr/include/python3.xx -lpython3.xx
-
-# TODO: currently, trying to import bertrand from a pure C++ file causes a segfault,
-# likely due to an uninitialized python interpreter.
 
 
 # NOTE: bertrand users environment variables to control the build process:

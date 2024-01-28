@@ -7,6 +7,7 @@
 #include <iomanip>  // std::put_time()
 #include <ios>  // std::ios::app
 #include <iostream>  // std::cerr
+#include <sstream>
 #include <string>  // std::string
 #include <type_traits>  // std::is_pointer_v<>, std::is_convertible_v<>, etc.
 #include <utility>  // std::pair, std::tuple
@@ -99,7 +100,7 @@ struct LogTag {
     static constexpr std::string_view err  {"[err]   "};
     static constexpr std::string_view ref  {"[ref]   "};
     static constexpr std::string_view mem  {"[mem]   "};
-    static constexpr std::string_view link {"[link]  "};
+    static constexpr std::string_view init {"[init]  "};
 };
 
 
@@ -107,6 +108,25 @@ struct LogTag {
 the logger is used without being guarded by an `if constexpr (DEBUG)` branch. */
 template <bool Enable>
 struct Logger {
+    std::string _dummy;
+
+    inline const std::string& language() const {
+        static_assert(Enable, "logging is not enabled.");
+        return _dummy;
+    }
+
+    inline void language(const std::string& lang) {
+        static_assert(Enable, "logging is not enabled.");
+    }
+
+    inline const std::string& address() const {
+        static_assert(Enable, "logging is not enabled.");
+        return _dummy;
+    }
+
+    inline void address(const void* addr) {
+        static_assert(Enable, "logging is not enabled.");
+    }
 
     template <typename... Args>
     inline void operator()(Args&&... messages) {
@@ -118,18 +138,6 @@ struct Logger {
     }
 
     inline void unindent() {
-        static_assert(Enable, "logging is not enabled.");
-    }
-
-    inline void reset_indent() {
-        static_assert(Enable, "logging is not enabled.");
-    }
-
-    inline void indent_level() const {
-        static_assert(Enable, "logging is not enabled.");
-    }
-
-    inline void language(const std::string& lang) {
         static_assert(Enable, "logging is not enabled.");
     }
 
@@ -145,15 +153,18 @@ class Logger<true> {
     std::ofstream stream;
     size_t _indent_level;
     std::string _language;
+    std::string _address;
+    std::string _prev_address;
 
 public:
 
-    Logger() : _indent_level(0), _language("c++     ") {
-        using clock = std::chrono::system_clock;
-        auto now = clock::to_time_t(clock::now());
-        auto format = *std::localtime(&now);
+    Logger() : _indent_level(0), _language("c++ ") {
+        using Clock = std::chrono::system_clock;
+        address(nullptr);
 
         std::ostringstream name;
+        auto now = Clock::to_time_t(Clock::now());
+        auto format = *std::localtime(&now);
         name << "debug_" << std::put_time(&format, "%Y-%m-%d_%H-%M-%S");
         name << ".log";
 
@@ -163,20 +174,49 @@ public:
         }
     }
 
-    inline void language(const std::string& lang) {
-        if (lang.size() > 8) {
+    inline const std::string& language() const {
+        return _language;
+    }
+
+    void language(const std::string& lang) {
+        if (lang.size() > 3) {
             std::ostringstream msg;
-            msg << "language name must be 8 characters or less: " << lang;
+            msg << "language name must be 3 characters or less: " << lang;
             throw std::runtime_error(msg.str());
         }
-        _language = lang + std::string(8 - lang.size(), ' ');
+        _language = lang + std::string(4 - lang.size(), ' ');
+    }
+
+    inline const std::string& address() const {
+        return _address;
+    }
+
+    void address(const void* ptr) {
+        std::ostringstream addr;
+        if (ptr == nullptr) {
+            addr << this;
+            if (_address.empty()) {
+                _address = std::string(addr.str().size() + 4, ' ');
+                _prev_address = _address;
+            } else {
+                _prev_address = _address;
+                _address = std::string(addr.str().size() + 4, ' ');
+            }
+        } else {
+            addr << ptr;
+            std::string addr_str = addr.str();
+            _prev_address = _address;
+            _address = addr_str + std::string(
+                _address.size() - addr_str.size(), ' '
+            );
+        }
     }
 
     template <typename... Args>
     inline void operator()(Args&&... messages) {
         if constexpr (sizeof...(messages) > 0) {
             if (stream.is_open()) {
-                stream << _language;
+                stream << _language << _address;
                 for (size_t i = 0; i < _indent_level; ++i) {
                     stream << "    ";
                 }
@@ -191,17 +231,10 @@ public:
     }
 
     inline void unindent() {
+        _address = _prev_address;
         if (_indent_level > 0) {
             --_indent_level;
         }
-    }
-
-    inline void reset_indent() {
-        _indent_level = 0;
-    }
-
-    inline size_t indent_level() const {
-        return _indent_level;
     }
 
 };
@@ -227,9 +260,20 @@ struct LogGuard {
 };
 
 
+// LOG(info, "hello world");
+// LOG_CONTEXT(info, this, "hello world");
+
+
 /* Macros to write simple statements to the log file.  These avoid the need to place
 `if constexpr (DEBUG)` guards around every logging statement, as long as no other logic
 is needed within the constexpr branch itself.
+
+The _CONTEXT variants are used to indent a block of logging statements and associate
+them with a particular memory address.  If the address is set to nullptr, it will
+omit the address from the log statement, which may be useful for static methods or
+other functions that aren't attached to a particular object.  These macros then produce
+an RAII-style guard in the calling context that automatically unindents the log and
+restores the previous memory address when the guard goes out of scope.
 */
 #ifdef BERTRAND_DEBUG
     #define LOG(...) \
@@ -240,12 +284,14 @@ is needed within the constexpr branch itself.
         LOGGER(__VA_ARGS__); \
         LOGGER.language("c++");
 
-    #define LOG_CONTEXT(...) \
+    #define LOG_CONTEXT(addr, ...) \
+        LOGGER.address(addr); \
         LOGGER(__VA_ARGS__); \
         LogGuard<DEBUG> _log_guard_##__LINE__;
 
-    #define PYLOG_CONTEXT(...) \
+    #define PYLOG_CONTEXT(addr, ...) \
         LOGGER.language("py"); \
+        LOGGER.address(addr); \
         LOGGER(__VA_ARGS__); \
         LOGGER.language("c++"); \
         LogGuard<DEBUG> _log_guard_##__LINE__;
@@ -253,9 +299,34 @@ is needed within the constexpr branch itself.
 #else
     #define LOG(...)
     #define PYLOG(...)
-    #define LOG_CONTEXT(...)
-    #define PYLOG_CONTEXT(...)
+    #define LOG_CONTEXT(addr, ...)
+    #define PYLOG_CONTEXT(addr, ...)
 
+#endif
+
+
+/* Logging throws an incorrect warning about uninitialized variables when logging
+constructors, so we have to insert these pragmas around the constructors to suppress
+warnings on major compilers.
+*/
+#if defined(__GNUC__) && !defined(__clang__)
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#elif defined(__clang__)
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wuninitialized"
+#elif defined(_MSC_VER)
+    #pragma warning(push)
+    #pragma warning(disable: 26494)  // VAR_USE_BEFORE_INIT
+    #pragma warning(disable: 26495)  // MEMBER_UNINIT
+#endif
+
+#if defined(__GNUC__) && !defined(__clang__)
+    #pragma GCC diagnostic pop
+#elif defined(__clang__)
+    // #pragma clang diagnostic pop
+#elif defined(_MSC_VER)
+    #pragma warning(pop)
 #endif
 
 
