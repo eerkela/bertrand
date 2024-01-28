@@ -2616,7 +2616,7 @@ These proxies support the following operations:
                 .tp_alloc = (allocfunc) PyType_GenericAlloc,
             };
 
-            if (PyType_Ready(&slots) < 0) {
+            if (Py_IsInitialized() && PyType_Ready(&slots) < 0) {
                 throw std::runtime_error("could not initialize DictProxy type");
             }
             return slots;
@@ -2763,7 +2763,7 @@ These proxies support the following operations:
                 .tp_alloc = (allocfunc) PyType_GenericAlloc,
             };
 
-            if (PyType_Ready(&slots) < 0) {
+            if (Py_IsInitialized() && PyType_Ready(&slots) < 0) {
                 throw std::runtime_error("could not initialize DictProxy type");
             }
             return slots;
@@ -2969,7 +2969,7 @@ These proxies support the following operations:
                 .tp_alloc = (allocfunc) PyType_GenericAlloc,
             };
 
-            if (PyType_Ready(&slots) < 0) {
+            if (Py_IsInitialized() && PyType_Ready(&slots) < 0) {
                 throw std::runtime_error("could not initialize DictProxy type");
             }
             return slots;

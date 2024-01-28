@@ -7,7 +7,7 @@
 #include <optional>  // std::optional
 #include <sstream>  // std::ostringstream
 #include <Python.h>  // CPython API
-#include "../../util/base.h"  // DEBUG, LOG(), WRITE_LOG()
+#include "../../util/base.h"  // DEBUG, LOG(), LOG_CONTEXT()
 #include "../../util/except.h"  // catch_python(), TypeError(), KeyError()
 #include "../../util/math.h"  // next_power_of_two()
 #include "../../util/name.h"  // PyName<>
@@ -119,7 +119,7 @@ protected:
                 throw TypeError(msg.str());
             }
         }
-        WRITE_LOG("create: ", repr(node->value()));
+        LOG("create: ", repr(node->value()));
     }
 
     /* Destroy all nodes contained in the list. */
@@ -127,7 +127,7 @@ protected:
         Node* curr = head;
         while (curr != nullptr) {
             Node* next = curr->next();
-            WRITE_LOG("recycle: ", repr(curr->value()));
+            LOG("recycle: ", repr(curr->value()));
             curr->~Node();
             curr = next;
         }
@@ -146,7 +146,7 @@ protected:
         _frozen(false), head(nullptr), tail(nullptr), capacity(capacity), occupied(0),
         specialization(Py_XNewRef(specialization))
     {
-        WRITE_LOG("allocate: ", this->capacity, " nodes");
+        LOG("allocate: ", this->capacity, " nodes");
     }
 
 public:
@@ -161,7 +161,7 @@ public:
         _frozen(other._frozen), head(nullptr), tail(nullptr), capacity(other.capacity),
         occupied(other.occupied), specialization(Py_XNewRef(other.specialization))
     {
-        WRITE_LOG("allocate: ", this->capacity, " nodes");
+        LOG("allocate: ", this->capacity, " nodes");
     }
 
     /* Move constructor. */
@@ -194,7 +194,7 @@ public:
             head = nullptr;
             tail = nullptr;
         }
-        WRITE_LOG("deallocate: ", capacity, " nodes");
+        LOG("deallocate: ", capacity, " nodes");
 
         _frozen = other._frozen;
         capacity = other.capacity;
@@ -217,7 +217,7 @@ public:
         if (head != nullptr) {
             destroy_list();
         }
-        WRITE_LOG("deallocate: ", capacity, " nodes");
+        LOG("deallocate: ", capacity, " nodes");
 
         _frozen = other._frozen;
         head = other.head;
@@ -238,7 +238,7 @@ public:
     ~BaseAllocator() noexcept {
         Py_XDECREF(specialization);
         if constexpr (DEBUG) {
-            LOG.unindent();  // close indent from Linked destructor
+            LOGGER.unindent();  // close indent from Linked destructor
         }
     }
 
@@ -252,7 +252,7 @@ public:
 
     /* Release a node from the list. */
     void recycle(Node* node) {
-        WRITE_LOG("recycle: ", repr(node->value()));
+        LOG("recycle: ", repr(node->value()));
         node->~Node();
         --occupied;
     }
@@ -403,7 +403,7 @@ public:
         capacity. */
         MemGuard(Derived* allocator) noexcept : allocator(allocator) {
             allocator->_frozen = true;
-            WRITE_LOG("FREEZE: ", allocator->capacity, " NODES");
+            LOG("FREEZE: ", allocator->capacity, " NODES");
         }
 
         /* Create an inactive MemGuard for an allocator. */
@@ -412,7 +412,7 @@ public:
         /* Destroy the outermost MemGuard. */
         inline void destroy() noexcept {
             allocator->_frozen = false;
-            WRITE_LOG("UNFREEZE: ", allocator->capacity, " NODES");
+            LOG("UNFREEZE: ", allocator->capacity, " NODES");
 
             // NOTE: all allocators must implement a shrink() method
             allocator->shrink();
@@ -606,7 +606,7 @@ bool
             };
 
             // register Python type
-            if (PyType_Ready(&slots) < 0) {
+            if (Py_IsInitialized() &&PyType_Ready(&slots) < 0) {
                 throw RuntimeError("could not initialize PyMemGuard type");
             }
             return slots;
@@ -720,7 +720,7 @@ private:
     /* Allocate a new array of a given size and transfer the contents of the list. */
     void resize(size_t new_capacity) {
         Node* new_array = Base::malloc_nodes(new_capacity);
-        WRITE_LOG("allocate: ", new_capacity, " nodes");
+        LOG("allocate: ", new_capacity, " nodes");
 
         // move nodes into new array
         auto [head, tail] = transfer<true>(new_array);
@@ -729,7 +729,7 @@ private:
 
         // replace old array
         free(array);
-        WRITE_LOG("deallocate: ", this->capacity, " nodes");
+        LOG("deallocate: ", this->capacity, " nodes");
         array = new_array;
         free_list.first = nullptr;
         free_list.second = nullptr;
@@ -825,7 +825,7 @@ public:
         }
         if (array != nullptr) {
             free(array);
-            WRITE_LOG("deallocate: ", this->capacity, " nodes");
+            LOG("deallocate: ", this->capacity, " nodes");
         }
     }
 
@@ -897,9 +897,9 @@ public:
             if (!this->frozen() && this->capacity > MIN_CAPACITY) {
                 this->capacity = MIN_CAPACITY;
                 free(array);
-                WRITE_LOG("deallocate: ", this->capacity, " nodes");
+                LOG("deallocate: ", this->capacity, " nodes");
                 array = Base::malloc_nodes(this->capacity);
-                WRITE_LOG("allocate: ", this->capacity, " nodes");
+                LOG("allocate: ", this->capacity, " nodes");
             }
         }
     }
@@ -1298,7 +1298,7 @@ private:
     /* Allocate a new table of a given size and transfer the contents of the list. */
     void resize(size_t new_capacity) {
         Table new_table(new_capacity);
-        WRITE_LOG("allocate: ", new_capacity, " nodes");
+        LOG("allocate: ", new_capacity, " nodes");
 
         // move nodes into new table
         try {
@@ -1320,7 +1320,7 @@ private:
         // replace old table
         if (table.array != nullptr) {
             free(table.array);
-            WRITE_LOG("deallocate: ", this->capacity, " nodes");
+            LOG("deallocate: ", this->capacity, " nodes");
         }
         table.array = new_table.array;
         new_table.array = nullptr;
@@ -1552,7 +1552,7 @@ private:
                     if constexpr (flags & UNLINK) {
                         unlink(node);
                     }
-                    WRITE_LOG("recycle: ", repr(value));
+                    LOG("recycle: ", repr(value));
                     if constexpr (flags & RETURN_MAPPED) {
                         using Mapped = typename Node::MappedValue;
                         Mapped mapped(std::move(node->mapped()));
@@ -1636,7 +1636,7 @@ private:
                     if constexpr (flags & UNLINK) {
                         unlink(node);
                     }
-                    WRITE_LOG("recycle: ", repr(value));
+                    LOG("recycle: ", repr(value));
                     if constexpr (flags & RETURN_MAPPED) {
                         using Mapped = typename Node::MappedValue;
                         Mapped mapped(std::move(node->mapped()));
@@ -1932,9 +1932,9 @@ public:
         if constexpr (!Base::FIXED_SIZE) {
             if (!this->frozen() && this->capacity > MIN_CAPACITY) {
                 table.~Table();
-                WRITE_LOG("deallocate: ", this->capacity, " nodes");
+                LOG("deallocate: ", this->capacity, " nodes");
                 new (&table) Table(MIN_CAPACITY);
-                WRITE_LOG("allocate: ", MIN_CAPACITY, " nodes");
+                LOG("allocate: ", MIN_CAPACITY, " nodes");
                 this->capacity = MIN_CAPACITY;
                 modulo = MIN_CAPACITY - 1;
             }

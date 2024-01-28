@@ -1023,7 +1023,7 @@ bool
                 .tp_getset = properties,
             };
 
-            if (PyType_Ready(&slots) < 0) {
+            if (Py_IsInitialized() && PyType_Ready(&slots) < 0) {
                 throw std::runtime_error("could not initialize PyThreadGuard type");
             }
             return slots;
@@ -1311,7 +1311,7 @@ Examples
             .tp_getset = properties,
         };
 
-        if (PyType_Ready(&slots) < 0) {
+        if (Py_IsInitialized() && PyType_Ready(&slots) < 0) {
             throw std::runtime_error("could not initialize PyLock type");
         }
         return slots;

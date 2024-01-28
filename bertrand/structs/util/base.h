@@ -84,6 +84,25 @@ be dumped to a .log file in the current working directory.  */
 #endif
 
 
+// TODO: use index operator to select a logging tag?
+
+// LOG["info"](...)
+// LOG["err"](...)
+
+
+
+/* Enum struct that lists the tags available for logging purposes.  One of these must
+be specified as the first argument to a logging macro, and will be inserted as a
+bracketed prefix to the beginning of the log message. */
+struct LogTag {
+    static constexpr std::string_view info {"[info]  "};
+    static constexpr std::string_view err  {"[err]   "};
+    static constexpr std::string_view ref  {"[ref]   "};
+    static constexpr std::string_view mem  {"[mem]   "};
+    static constexpr std::string_view link {"[link]  "};
+};
+
+
 /* Specialization for when logging is disabled.  This raises a compile-time error if
 the logger is used without being guarded by an `if constexpr (DEBUG)` branch. */
 template <bool Enable>
@@ -144,6 +163,15 @@ public:
         }
     }
 
+    inline void language(const std::string& lang) {
+        if (lang.size() > 8) {
+            std::ostringstream msg;
+            msg << "language name must be 8 characters or less: " << lang;
+            throw std::runtime_error(msg.str());
+        }
+        _language = lang + std::string(8 - lang.size(), ' ');
+    }
+
     template <typename... Args>
     inline void operator()(Args&&... messages) {
         if constexpr (sizeof...(messages) > 0) {
@@ -176,57 +204,59 @@ public:
         return _indent_level;
     }
 
-    inline void language(const std::string& lang) {
-        if (lang.size() > 8) {
-            std::ostringstream msg;
-            msg << "language name must be 8 characters or less: " << lang;
-            throw std::runtime_error(msg.str());
-        }
-        _language = lang;
-    }
-
 };
 
 
 /* Global logging object. */
-Logger<DEBUG> LOG;
+Logger<DEBUG> LOGGER;
 
 
 /* An RAII guard to control nested indentation in the log file.  In the case where
 DEBUG=false, this is a no-op and will be optimized away by the compiler. */
+template <bool Enable>
 struct LogGuard {
-    
+
     inline LogGuard() {
-        if constexpr (DEBUG) {
-            LOG.indent();
-        }
+        LOGGER.indent();
     }
 
     inline ~LogGuard() {
-        if constexpr (DEBUG) {
-            LOG.unindent();
-        }
+        LOGGER.unindent();
     }
 
 };
 
 
-/* macros to write simple statements to the log file.  These avoids the need to place
+/* Macros to write simple statements to the log file.  These avoid the need to place
 `if constexpr (DEBUG)` guards around every logging statement, as long as no other logic
-is needed within the constexpr branch itself. */
-#define WRITE_LOG(...) if constexpr (DEBUG) { LOG(__VA_ARGS__); }
-#define INDENT_LOG(...) \
-    if constexpr (DEBUG) { \
-        LOG(__VA_ARGS__); \
-    } \
-    LogGuard _log_guard_##__LINE__;
-#define PYINDENT_LOG(...) \
-    if constexpr (DEBUG) { \
-        LOG.language("py      "); \
-        LOG(__VA_ARGS__); \
-        LOG.language("c++     "); \
-    } \
-    LogGuard _log_guard_##__LINE__;
+is needed within the constexpr branch itself.
+*/
+#ifdef BERTRAND_DEBUG
+    #define LOG(...) \
+        LOGGER(__VA_ARGS__);
+
+    #define PYLOG(...) \
+        LOGGER.language("py"); \
+        LOGGER(__VA_ARGS__); \
+        LOGGER.language("c++");
+
+    #define LOG_CONTEXT(...) \
+        LOGGER(__VA_ARGS__); \
+        LogGuard<DEBUG> _log_guard_##__LINE__;
+
+    #define PYLOG_CONTEXT(...) \
+        LOGGER.language("py"); \
+        LOGGER(__VA_ARGS__); \
+        LOGGER.language("c++"); \
+        LogGuard<DEBUG> _log_guard_##__LINE__;
+
+#else
+    #define LOG(...)
+    #define PYLOG(...)
+    #define LOG_CONTEXT(...)
+    #define PYLOG_CONTEXT(...)
+
+#endif
 
 
 }  // namespace bertrand

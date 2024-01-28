@@ -446,7 +446,7 @@ private:
             .tp_iternext = (iternextfunc) __next__,
         };
 
-        if (PyType_Ready(&slots) < 0) {
+        if (Py_IsInitialized() && PyType_Ready(&slots) < 0) {
             throw std::runtime_error("could not initialize PyIterator type");
         }
         return slots;

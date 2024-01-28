@@ -1,4 +1,5 @@
 PYTHON = python3
+DEBUG ?= false
 HEADERS ?= false
 HEADER_PATH ?= ~/.local/include
 MAJOR ?= false
@@ -8,14 +9,14 @@ PATCH ?= false
 
 help:
 	@echo "----------------------------------------------------------------------------"
-	@echo "make install [HEADERS=false, HEADER_PATH=~/.local/include]"
+	@echo "make install [DEBUG=false, HEADERS=false, HEADER_PATH=~/.local/include]"
 	@echo "    install locally with optimizations.  Optional C++ headers are installed to HEADER_PATH"
 	@echo
-	@echo "make editable [HEADERS=false, HEADER_PATH=~/.local/include]"
+	@echo "make editable [DEBUG=false]"
 	@echo "    install locally in editable mode"
 	@echo
-	@echo "make debug [HEADERS=false, HEADER_PATH=~/.local/include]"
-	@echo "    install locally with debug symbols and logging enabled"
+	@echo "make extensions [DEBUG=false]"
+	@echo "    build C++ extensions in-place"
 	@echo
 	@echo "make release [MAJOR=false, MINOR=false, PATCH=false]"
 	@echo "    build wheels and publish to PyPI (requires one of MAJOR, MINOR, PATCH=true)"
@@ -35,15 +36,19 @@ help:
 
 
 install:
-	HEADERS=$(HEADERS) HEADER_PATH=$(HEADER_PATH) pip install .
+	DEBUG=$(DEBUG) HEADERS=$(HEADERS) HEADER_PATH=$(HEADER_PATH) pip install .
 
 
 editable:
-	HEADERS=$(HEADERS) HEADER_PATH=$(HEADER_PATH) pip install -e .[dev]
+	@if [ "$(HEADERS)" != "false" ]; then \
+		echo "Error: cannot export C++ headers for an editable install."; \
+		exit 1; \
+	fi
+	DEBUG=$(DEBUG) pip install -e .[dev]
 
 
-debug:
-	DEBUG=1 HEADERS=$(HEADERS) HEADER_PATH=$(HEADER_PATH) pip install -e .[dev]
+extensions:
+	DEBUG=$(DEBUG) python setup.py build_ext --inplace --force
 
 
 release:
