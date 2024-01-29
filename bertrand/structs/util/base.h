@@ -75,8 +75,8 @@ using remove_rvalue_t = typename remove_rvalue<T>::type;
 ///////////////////////
 
 
-/* DEBUG=true enables logging statements across the linked data structures, which will
-be dumped to a .log file in the current working directory.
+/* DEBUG=true enables global logging statements across the codebase, which will be
+dumped to a .log file in the current working directory.
 */
 #ifdef BERTRAND_DEBUG
     inline constexpr bool DEBUG = true;
@@ -89,8 +89,8 @@ be dumped to a .log file in the current working directory.
 these is always inserted as a prefix to the beginning of the log message, and encoding
 them as a struct guarantees that they remain consistent across the codebase. */
 struct LogLang {
-    static constexpr std::string_view py  {"py  "};
-    static constexpr std::string_view cpp {"c++ "};
+    static constexpr std::string_view py  {"  py"};
+    static constexpr std::string_view cpp {" c++"};
 };
 
 
@@ -98,12 +98,12 @@ struct LogLang {
 be specified as the first argument to a logging macro, and will be inserted as a
 bracketed prefix to the beginning of the log message. */
 struct LogTag {
-    static constexpr std::string_view info {"[info]  "};
-    static constexpr std::string_view err  {"[err]   "};
-    static constexpr std::string_view ref  {"[ref]   "};
-    static constexpr std::string_view mem  {"[mem]   "};
-    static constexpr std::string_view init {"[init]  "};
-    static constexpr std::string_view call {"[call]  "};
+    static constexpr std::string_view info {" [info] "};
+    static constexpr std::string_view err  {" [err]  "};
+    static constexpr std::string_view mem  {" [mem]  "};
+    static constexpr std::string_view ref  {" [ref]  "};
+    static constexpr std::string_view init {" [init] "};
+    static constexpr std::string_view call {" [call] "};
 };
 
 
@@ -154,11 +154,9 @@ struct Logger {
     }
 
     struct Guard {
-
         inline Guard(Logger& logger) {
             static_assert(Enable, "logging is not enabled.");
         }
-
     };
 
     inline Guard indent_guard() {
@@ -176,22 +174,23 @@ usually the location from which the interpreter was launched. */
 template <>
 class Logger<true> {
     using Clock = std::chrono::system_clock;
+    static constexpr std::string_view tab{"    "};
 
-    Clock::time_point _start_time;
+    Clock::time_point start_time;
     std::ofstream stream;
-    size_t _indent_level;
+    size_t indent_level;
     std::string _language;
     std::string _tag;
     std::string _address;
-    std::string _prev_address;
+    std::string prev_address;
 
 public:
 
-    Logger() : _start_time(Clock::now()), _indent_level(0), _language("c++ ") {
+    Logger() : start_time(Clock::now()), indent_level(0), _language(LogLang::cpp) {
         address(nullptr);
 
         std::ostringstream filename;
-        auto now = Clock::to_time_t(_start_time);
+        auto now = Clock::to_time_t(start_time);
         auto format = std::put_time(std::localtime(&now), "%Y-%m-%d_%H-%M-%S");
 
         filename << "debug_" << format << ".log";
@@ -213,11 +212,11 @@ public:
         return _address;
     }
 
-    void language(const std::string_view& lang) {
+    inline void language(const std::string_view& lang) {
         _language = lang;
     }
 
-    void tag(const std::string_view& tag) {
+    inline void tag(const std::string_view& tag) {
         _tag = tag;
     }
 
@@ -226,27 +225,24 @@ public:
         if (ptr == nullptr) {
             addr << this;
             if (_address.empty()) {
-                _address = std::string(addr.str().size() + 4, ' ');
-                _prev_address = _address;
+                _address = std::string(addr.str().size() + 2, ' ');
+                prev_address = _address;
             } else {
-                _prev_address = _address;
-                _address = std::string(addr.str().size() + 4, ' ');
+                prev_address = _address;
+                _address = std::string(addr.str().size() + 2, ' ');
             }
         } else {
-            addr << ptr;
-            std::string addr_str = addr.str();
-            _prev_address = _address;
-            _address = addr_str + std::string(
-                _address.size() - addr_str.size(), ' '
-            );
+            addr << "(" << ptr << ")";
+            prev_address = _address;
+            _address = addr.str();
         }
     }
 
     template <typename... Args>
-    inline void operator()(Args&&... messages) {
+    void operator()(Args&&... messages) {
         if (stream.is_open()) {
             // calculate relative timestamp
-            auto elapsed = Clock::now() - _start_time;
+            auto elapsed = Clock::now() - start_time;
             double seconds = std::chrono::duration<double>(elapsed).count();
 
             // format timestamp to fixed width
@@ -260,9 +256,9 @@ public:
             }
 
             // write log entry
-            stream << timestamp << " " << _language << _tag << _address;
-            for (size_t i = 0; i < _indent_level; ++i) {
-                stream << "    ";
+            stream << timestamp << " " <<_language << _address << _tag << tab;
+            for (size_t i = 0; i < indent_level; ++i) {
+                stream << tab;
             }
             (stream << ... << std::forward<Args>(messages));
             stream << std::endl;
@@ -270,23 +266,21 @@ public:
     }
 
     inline void indent() {
-        ++_indent_level;
+        ++indent_level;
     }
 
     inline void unindent() {
-        _address = _prev_address;
-        if (_indent_level > 0) {
-            --_indent_level;
+        _address = prev_address;
+        if (indent_level > 0) {
+            --indent_level;
         }
     }
 
     struct Guard {
         Logger& logger;
-
         inline Guard(Logger& logger) : logger(logger) {
             logger.indent();
         }
-
         inline ~Guard() {
             logger.unindent();
         }
