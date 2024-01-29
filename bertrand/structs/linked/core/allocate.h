@@ -947,7 +947,7 @@ public:
     bool shrink() {
         using bertrand::util::next_power_of_two;
 
-        if constexpr (Base::FIXED_SIZE) {
+        if constexpr (!Base::FIXED_SIZE) {
             if (!this->frozen() &&
                 this->capacity > MIN_CAPACITY &&
                 this->occupied <= this->capacity / 4

@@ -27,28 +27,30 @@ namespace linked {
 
         // otherwise, decorate each node with computed key
         using Decorated = ListView<KeyNode, Config::SINGLY_LINKED | Config::FIXED_SIZE>;
-        Decorated dec(view.size(), nullptr);
+        Decorated decorated(view.size(), nullptr);
         for (auto it = view.begin(), end = view.end(); it != end; ++it) {
-            KeyNode* node = dec.node(it.curr(), key);
-            dec.link(dec.tail(), node, nullptr);
+            KeyNode* node = decorated.node(it.curr(), key);
+            decorated.link(decorated.tail(), node, nullptr);
         }
 
-        SortPolicy::execute(dec, reverse);
+        SortPolicy::execute(decorated, reverse);
 
         // undecorate and reflect changes in original view, recycling as we go
         Node* new_head = nullptr;
         Node* new_tail = nullptr;
-        for (auto it = dec.begin(), end = dec.end(); it != end; ) {
+        for (auto it = decorated.begin(), end = decorated.end(); it != end; ) {
             Node* unwrapped = it.curr()->node();
             if (new_head == nullptr) {
                 new_head = unwrapped;
-            } else {
-                Node::link(new_tail, unwrapped, nullptr);
             }
+            Node::join(new_tail, unwrapped);
             new_tail = unwrapped;
-            dec.recycle(it.drop());  // implicitly advances iterator
+            decorated.recycle(it.drop());  // implicitly advances iterator
         }
 
+        // update head and tail of original view
+        Node::join(nullptr, new_head);
+        Node::join(new_tail, nullptr);
         view.head(new_head);
         view.tail(new_tail);
     }

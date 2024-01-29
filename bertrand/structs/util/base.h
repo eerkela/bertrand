@@ -85,13 +85,6 @@ be dumped to a .log file in the current working directory.  */
 #endif
 
 
-// TODO: use index operator to select a logging tag?
-
-// LOG["info"](...)
-// LOG["err"](...)
-
-
-
 /* Enum struct that lists the tags available for logging purposes.  One of these must
 be specified as the first argument to a logging macro, and will be inserted as a
 bracketed prefix to the beginning of the log message. */
@@ -244,8 +237,7 @@ public:
 Logger<DEBUG> LOGGER;
 
 
-/* An RAII guard to control nested indentation in the log file.  In the case where
-DEBUG=false, this is a no-op and will be optimized away by the compiler. */
+/* An RAII guard to control nested indentation in the log file. */
 template <bool Enable>
 struct LogGuard {
 
@@ -260,10 +252,6 @@ struct LogGuard {
 };
 
 
-// LOG(info, "hello world");
-// LOG_CONTEXT(info, this, "hello world");
-
-
 /* Macros to write simple statements to the log file.  These avoid the need to place
 `if constexpr (DEBUG)` guards around every logging statement, as long as no other logic
 is needed within the constexpr branch itself.
@@ -271,9 +259,9 @@ is needed within the constexpr branch itself.
 The _CONTEXT variants are used to indent a block of logging statements and associate
 them with a particular memory address.  If the address is set to nullptr, it will
 omit the address from the log statement, which may be useful for static methods or
-other functions that aren't attached to a particular object.  These macros then produce
-an RAII-style guard in the calling context that automatically unindents the log and
-restores the previous memory address when the guard goes out of scope.
+other functions that aren't attached to any particular object.  These macros then
+produce an RAII-style guard in the calling context that automatically unindents the log
+and restores the previous memory address when the guard goes out of scope.
 */
 #ifdef BERTRAND_DEBUG
     #define LOG(...) \
@@ -305,9 +293,9 @@ restores the previous memory address when the guard goes out of scope.
 #endif
 
 
-/* Logging throws an incorrect warning about uninitialized variables when logging
-constructors, so we have to insert these pragmas around the constructors to suppress
-warnings on major compilers.
+/* Logging throws an incorrect warning about an uninitialized `this` pointer when
+logging constructors, so we have to insert these pragmas around the constructors to
+suppress warnings on major compilers.
 */
 #if defined(__GNUC__) && !defined(__clang__)
     #pragma GCC diagnostic push
