@@ -94,6 +94,7 @@ struct LogTag {
     static constexpr std::string_view ref  {"[ref]   "};
     static constexpr std::string_view mem  {"[mem]   "};
     static constexpr std::string_view init {"[init]  "};
+    static constexpr std::string_view call {"[call]  "};
 };
 
 
@@ -206,10 +207,10 @@ public:
     }
 
     template <typename... Args>
-    inline void operator()(Args&&... messages) {
+    inline void operator()(const std::string_view& tag, Args&&... messages) {
         if constexpr (sizeof...(messages) > 0) {
             if (stream.is_open()) {
-                stream << _language << _address;
+                stream << _language << tag << _address;
                 for (size_t i = 0; i < _indent_level; ++i) {
                     stream << "    ";
                 }
@@ -264,31 +265,31 @@ produce an RAII-style guard in the calling context that automatically unindents 
 and restores the previous memory address when the guard goes out of scope.
 */
 #ifdef BERTRAND_DEBUG
-    #define LOG(...) \
-        LOGGER(__VA_ARGS__);
+    #define LOG(tag, ...) \
+        LOGGER(LogTag::tag, __VA_ARGS__);
 
-    #define PYLOG(...) \
+    #define PYLOG(tag, ...) \
         LOGGER.language("py"); \
-        LOGGER(__VA_ARGS__); \
+        LOGGER(LogTag::tag, __VA_ARGS__); \
         LOGGER.language("c++");
 
-    #define LOG_CONTEXT(addr, ...) \
+    #define LOG_CONTEXT(tag, addr, ...) \
         LOGGER.address(addr); \
-        LOGGER(__VA_ARGS__); \
+        LOGGER(LogTag::tag, __VA_ARGS__); \
         LogGuard<DEBUG> _log_guard_##__LINE__;
 
-    #define PYLOG_CONTEXT(addr, ...) \
+    #define PYLOG_CONTEXT(tag, addr, ...) \
         LOGGER.language("py"); \
         LOGGER.address(addr); \
-        LOGGER(__VA_ARGS__); \
+        LOGGER(LogTag::tag, __VA_ARGS__); \
         LOGGER.language("c++"); \
         LogGuard<DEBUG> _log_guard_##__LINE__;
 
 #else
-    #define LOG(...)
-    #define PYLOG(...)
-    #define LOG_CONTEXT(addr, ...)
-    #define PYLOG_CONTEXT(addr, ...)
+    #define LOG(tag, ...)
+    #define PYLOG(tag, ...)
+    #define LOG_CONTEXT(tag, addr, ...)
+    #define PYLOG_CONTEXT(tag, addr, ...)
 
 #endif
 

@@ -102,7 +102,10 @@ public:
         [&] {
             if constexpr (DEBUG) {
                 LOGGER.address(this);
-                LOGGER("LinkedList(", repr(max_size), ", ", repr(spec), ")");
+                LOGGER(
+                    LogTag::init, "LinkedList(", repr(max_size), ", ",
+                    repr(spec), ")"
+                );
                 LOGGER.indent();
             }
             return max_size;
@@ -125,8 +128,8 @@ public:
             if constexpr (DEBUG) {
                 LOGGER.address(this);
                 LOGGER(
-                    "LinkedList(", repr(iterable), ", ", repr(max_size), ", ",
-                    repr(spec), ", ", reverse, ")"
+                    LogTag::init, "LinkedList(", repr(iterable), ", ",
+                    repr(max_size), ", ", repr(spec), ", ", reverse, ")"
                 );
                 LOGGER.indent();
             }
@@ -153,7 +156,7 @@ public:
             if constexpr (DEBUG) {
                 LOGGER.address(this);
                 LOGGER(
-                    "LinkedList(", repr(begin), ", ", repr(end), ", ",
+                    LogTag::init, "LinkedList(", repr(begin), ", ", repr(end), ", ",
                     repr(max_size), ", ", repr(spec), ", ", reverse, ")"
                 );
                 LOGGER.indent();
@@ -181,8 +184,8 @@ public:
             if constexpr (DEBUG) {
                 LOGGER.address(this);
                 LOGGER(
-                    "LinkedList(", repr(init), ", ", repr(max_size), ", ",
-                    repr(spec), ", ", reverse, ")"
+                    LogTag::init, "LinkedList(", repr(init), ", ", repr(max_size),
+                    ", ", repr(spec), ", ", reverse, ")"
                 );
                 LOGGER.indent();
             }
@@ -200,7 +203,7 @@ public:
     LinkedList(View&& view) : Base([&] {
         if constexpr (DEBUG) {
             LOGGER.address(this);
-            LOGGER("LinkedList(", repr(view), ")  # from view");
+            LOGGER(LogTag::init, "LinkedList(", repr(view), ")  # from view");
             LOGGER.indent();
         }
         return std::move(view);
@@ -213,7 +216,7 @@ public:
     LinkedList(const LinkedList& other) : Base([&] {
         if constexpr (DEBUG) {
             LOGGER.address(this);
-            LOGGER("LinkedList(", &other, ")  # copy");
+            LOGGER(LogTag::init, "LinkedList(", &other, ")  # copy");
             LOGGER.indent();
         }
         return other.view;
@@ -226,7 +229,7 @@ public:
     LinkedList(LinkedList&& other) : Base([&] {
         if constexpr (DEBUG) {
             LOGGER.address(this);
-            LOGGER("LinkedList(", &other, ")  # move");
+            LOGGER(LogTag::init, "LinkedList(", &other, ")  # move");
             LOGGER.indent();
         }
         return std::move(other.view);
@@ -240,7 +243,7 @@ public:
         if (this == &other) {
             return *this;
         }
-        LOG_CONTEXT(this, "LinkedList = ", &other, "  # copy");
+        LOG_CONTEXT(init, this, "LinkedList = ", &other, "  # copy");
         Base::operator=(other);
         return *this;
     }
@@ -249,7 +252,7 @@ public:
         if (this == &other) {
             return *this;
         }
-        LOG_CONTEXT(this, "LinkedList = ", &other, "  # move");
+        LOG_CONTEXT(init, this, "LinkedList = ", &other, "  # move");
         Base::operator=(std::move(other));
         return *this;
     }
@@ -257,7 +260,7 @@ public:
     ~LinkedList() {
         if constexpr (DEBUG) {
             LOGGER.address(this);
-            LOGGER("~LinkedList");
+            LOGGER(LogTag::init, "~LinkedList");
             LOGGER.indent();  // indent to be closed in Allocator::~BaseAllocator()
         }
     }
@@ -295,33 +298,33 @@ public:
 
     /* Add an item to the end of the list. */
     inline void append(const Value& item) {
-        LOG_CONTEXT(this, "LinkedList::append(", repr(item), ")");
+        LOG_CONTEXT(call, this, "LinkedList::append(", repr(item), ")");
         linked::append(this->view, item);
     }
 
     /* Add an item to the beginning of the list. */
     inline void append_left(const Value& item) {
-        LOG_CONTEXT(this, "LinkedList::append_left(", repr(item), ")");
+        LOG_CONTEXT(call, this, "LinkedList::append_left(", repr(item), ")");
         linked::append_left(this->view, item);
     }
 
     /* Insert an item at a specified index of the list. */
     inline void insert(long long index, const Value& item) {
-        LOG_CONTEXT(this, "LinkedList::insert(", index, ", ", repr(item), ")");
+        LOG_CONTEXT(call, this, "LinkedList::insert(", index, ", ", repr(item), ")");
         linked::insert(this->view, index, item);
     }
 
     /* Extend the list by appending elements from an iterable. */
     template <typename Container>
     inline void extend(const Container& items) {
-        LOG_CONTEXT(this, "LinkedList::extend(", repr(items), ")");
+        LOG_CONTEXT(call, this, "LinkedList::extend(", repr(items), ")");
         linked::extend(this->view, items);
     }
 
     /* Extend the list by left-appending elements from an iterable. */
     template <typename Container>
     inline void extend_left(const Container& items) {
-        LOG_CONTEXT(this, "LinkedList::extend_left(", repr(items), ")");
+        LOG_CONTEXT(call, this, "LinkedList::extend_left(", repr(items), ")");
         linked::extend_left(this->view, items);
     }
 
@@ -332,7 +335,7 @@ public:
         std::optional<long long> stop = std::nullopt
     ) const {
         LOG_CONTEXT(
-            this, "LinkedList::index(", repr(item), ", ", repr(start), ", ",
+            call, this, "LinkedList::index(", repr(item), ", ", repr(start), ", ",
             repr(stop), ")"
         );
         return linked::index(this->view, item, start, stop);
@@ -345,7 +348,7 @@ public:
         std::optional<long long> stop = std::nullopt
     ) const {
         LOG_CONTEXT(
-            this, "LinkedList::count(", repr(item), ", ", repr(start), ", ",
+            call, this, "LinkedList::count(", repr(item), ", ", repr(start), ", ",
             repr(stop), ")"
         );
         return linked::count(this->view, item, start, stop);
@@ -353,50 +356,50 @@ public:
 
     /* Check if the list contains a certain item. */
     inline bool contains(const Value& item) const {
-        LOG_CONTEXT(this, "LinkedList::contains(", repr(item), ")");
+        LOG_CONTEXT(call, this, "LinkedList::contains(", repr(item), ")");
         return linked::contains(this->view, item);
     }
 
     /* Remove the first occurrence of an item from the list. */
     inline void remove(const Value& item) {
-        LOG_CONTEXT(this, "LinkedList::remove(", repr(item), ")");
+        LOG_CONTEXT(call, this, "LinkedList::remove(", repr(item), ")");
         linked::remove(this->view, item);
     }
 
     /* Remove an item from the list and return its value. */
     inline Value pop(long long index = -1) {
-        LOG_CONTEXT(this, "LinkedList::pop(", index, ")");
+        LOG_CONTEXT(call, this, "LinkedList::pop(", index, ")");
         return linked::pop(this->view, index);
     }
 
     /* Remove all elements from the list. */
     inline void clear() {
-        LOG_CONTEXT(this, "LinkedList::clear()");
+        LOG_CONTEXT(call, this, "LinkedList::clear()");
         this->view.clear();
     }
 
     /* Return a shallow copy of the list. */
     inline LinkedList copy() const {
-        LOG_CONTEXT(this, "LinkedList::copy()");
+        LOG_CONTEXT(call, this, "LinkedList::copy()");
         return LinkedList(this->view.copy());
     }
 
     /* Sort the list in-place according to an optional key func. */
     template <typename Func = PyObject*>
     inline void sort(Func key = nullptr, bool reverse = false) {
-        LOG_CONTEXT(this, "LinkedList::sort(", repr(key), ", ", reverse, ")");
+        LOG_CONTEXT(call, this, "LinkedList::sort(", repr(key), ", ", reverse, ")");
         linked::sort<linked::MergeSort>(this->view, key, reverse);
     }
 
     /* Reverse the order of elements in the list in-place. */
     inline void reverse() {
-        LOG_CONTEXT(this, "LinkedList::reverse()");
+        LOG_CONTEXT(call, this, "LinkedList::reverse()");
         linked::reverse(this->view);
     }
 
     /* Shift all elements in the list to the right by the specified number of steps. */
     inline void rotate(long long steps = 1) {
-        LOG_CONTEXT(this, "LinkedList::rotate(", steps, ")");
+        LOG_CONTEXT(call, this, "LinkedList::rotate(", steps, ")");
         linked::rotate(this->view, steps);
     }
 
@@ -445,14 +448,14 @@ public:
     inline auto position(long long index)
         -> linked::ElementProxy<View, Yield::KEY>
     {
-        LOG_CONTEXT(this, "LinkedList::position(", index, ")");
+        LOG_CONTEXT(call, this, "LinkedList::position(", index, ")");
         return linked::position<Yield::KEY>(this->view, index);
     }
 
     inline auto position(long long index) const
         -> const linked::ElementProxy<const View, Yield::KEY>
     {
-        LOG_CONTEXT(this, "LinkedList::position(", index, ")");
+        LOG_CONTEXT(call, this, "LinkedList::position(", index, ")");
         return linked::position<Yield::KEY>(this->view, index);
     }
 
@@ -464,7 +467,7 @@ public:
         std::optional<long long> step = std::nullopt
     ) {
         LOG_CONTEXT(
-            this, " -> LinkedList::slice(", repr(start), ", ", repr(stop), ", ",
+            call, this, " -> LinkedList::slice(", repr(start), ", ", repr(stop), ", ",
             repr(step), ")"
         );
         return linked::slice<DynamicList, Yield::KEY>(
@@ -475,7 +478,7 @@ public:
     inline linked::SliceProxy<View, DynamicList, Yield::KEY> slice(
         PyObject* py_slice
     ) {
-        LOG_CONTEXT(this, "LinkedList::slice(", repr(py_slice), ")");
+        LOG_CONTEXT(call, this, "LinkedList::slice(", repr(py_slice), ")");
         return linked::slice<DynamicList, Yield::KEY>(this->view, py_slice);
     }
 
@@ -485,7 +488,7 @@ public:
         std::optional<long long> step = std::nullopt
     ) const {
         LOG_CONTEXT(
-            this, "LinkedList::slice(", repr(start), ", ", repr(stop), ", ",
+            call, this, "LinkedList::slice(", repr(start), ", ", repr(stop), ", ",
             repr(step), ")"
         );
         return linked::slice<DynamicList, Yield::KEY>(
@@ -496,7 +499,7 @@ public:
     inline const linked::SliceProxy<const View, DynamicList, Yield::KEY> slice(
         PyObject* py_slice
     ) const {
-        LOG_CONTEXT(this, "LinkedList::slice(", repr(py_slice), ")");
+        LOG_CONTEXT(call, this, "LinkedList::slice(", repr(py_slice), ")");
         return linked::slice<DynamicList, Yield::KEY>(this->view, py_slice);
     }
 
@@ -521,72 +524,72 @@ public:
      */
 
     inline auto operator[](long long index) {
-        LOG_CONTEXT(this, "LinkedList[", index, "]");
+        LOG_CONTEXT(call, this, "LinkedList[", index, "]");
         return position(index);
     }
 
     inline auto operator[](long long index) const {
-        LOG_CONTEXT(this, "LinkedList[", index, "]");
+        LOG_CONTEXT(call, this, "LinkedList[", index, "]");
         return position(index);
     }
 
     template <typename Container>
     inline DynamicList operator+(const Container& other) const {
-        LOG_CONTEXT(this, "LinkedList + ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedList + ", repr(other));
         return DynamicList(linked::concatenate(this->view, other));  // TODO: uses wrong constructor, should be move constructor
     }
 
     template <typename Container>
     inline LinkedList& operator+=(const Container& other) {
-        LOG_CONTEXT(this, "LinkedList += ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedList += ", repr(other));
         extend(other);
         return *this;
     }
 
     inline DynamicList operator*(long long other) const {
-        LOG_CONTEXT(this, "LinkedList * ", other);
+        LOG_CONTEXT(call, this, "LinkedList * ", other);
         return DynamicList(linked::repeat(this->view, other));
     }
 
     inline LinkedList& operator*=(long long other) {
-        LOG_CONTEXT(this, "LinkedList *= ", other);
+        LOG_CONTEXT(call, this, "LinkedList *= ", other);
         linked::repeat_inplace(this->view, other);
         return *this;
     }
 
     template <typename Container>
     inline bool operator<(const Container& other) const {
-        LOG_CONTEXT(this, "LinkedList < ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedList < ", repr(other));
         return lexical_lt(*this, other);
     }
 
     template <typename Container>
     inline bool operator<=(const Container& other) const {
-        LOG_CONTEXT(this, "LinkedList <= ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedList <= ", repr(other));
         return lexical_le(*this, other);
     }
 
     template <typename Container>
     inline bool operator==(const Container& other) const {
-        LOG_CONTEXT(this, "LinkedList == ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedList == ", repr(other));
         return lexical_eq(*this, other);
     }
 
     template <typename Container>
     inline bool operator!=(const Container& other) const {
-        LOG_CONTEXT(this, "LinkedList != ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedList != ", repr(other));
         return !lexical_eq(*this, other);
     }
 
     template <typename Container>
     inline bool operator>=(const Container& other) const {
-        LOG_CONTEXT(this, "LinkedList >= ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedList >= ", repr(other));
         return lexical_ge(*this, other);
     }
 
     template <typename Container>
     inline bool operator>(const Container& other) const {
-        LOG_CONTEXT(this, "LinkedList > ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedList > ", repr(other));
         return lexical_gt(*this, other);
     }
 
@@ -597,7 +600,7 @@ template <typename T, unsigned int Flags, typename... Ts>
 inline auto operator<<(std::ostream& stream, const LinkedList<T, Flags, Ts...>& list)
     -> std::ostream&
 {
-    LOG_CONTEXT(&list, "ostream << LinkedList");
+    LOG_CONTEXT(call, &list, "ostream << LinkedList");
     stream << linked::build_repr(
         list.view,
         "LinkedList",
@@ -611,7 +614,7 @@ inline auto operator<<(std::ostream& stream, const LinkedList<T, Flags, Ts...>& 
 
 template <typename T, unsigned int Flags, typename... Ts> 
 inline auto operator*(long long other, const LinkedList<T, Flags, Ts...>& list) {
-    LOG_CONTEXT(&list, other, " * LinkedList");
+    LOG_CONTEXT(call, &list, other, " * LinkedList");
     return list * other;
 }
 
@@ -654,7 +657,7 @@ class PyListInterface {
 public:
 
     static PyObject* append(Derived* self, PyObject* item) {
-        PYLOG_CONTEXT(self, Derived::NAME, "::append(", repr(item), ")");
+        PYLOG_CONTEXT(call, self, Derived::NAME, "::append(", repr(item), ")");
         return visit(self, [&item](auto& list) {
             list.append(item);
             Py_RETURN_NONE;
@@ -662,7 +665,7 @@ public:
     }
 
     static PyObject* append_left(Derived* self, PyObject* item) {
-        PYLOG_CONTEXT(self, Derived::NAME, "::append_left(", repr(item), ")");
+        PYLOG_CONTEXT(call, self, Derived::NAME, "::append_left(", repr(item), ")");
         return visit(self, [&item](auto& list) {
             list.append_left(item);
             Py_RETURN_NONE;
@@ -679,7 +682,7 @@ public:
             PyObject* item = pyargs.parse("item");
             pyargs.finalize();
             PYLOG_CONTEXT(
-                self, Derived::NAME, "::insert(", index, ", ", repr(item), ")"
+                call, self, Derived::NAME, "::insert(", index, ", ", repr(item), ")"
             );
             list.insert(index, item);
             Py_RETURN_NONE;
@@ -687,7 +690,7 @@ public:
     }
 
     static PyObject* extend(Derived* self, PyObject* items) {
-        PYLOG_CONTEXT(self, Derived::NAME, "::extend(", repr(items), ")");
+        PYLOG_CONTEXT(call, self, Derived::NAME, "::extend(", repr(items), ")");
         return visit(self, [&items](auto& list) {
             return unwrap_python(items, [&list](auto& other) {
                 list.extend(other);
@@ -697,7 +700,7 @@ public:
     }
 
     static PyObject* extend_left(Derived* self, PyObject* items) {
-        PYLOG_CONTEXT(self, Derived::NAME, "::extend_left(", repr(items), ")");
+        PYLOG_CONTEXT(call, self, Derived::NAME, "::extend_left(", repr(items), ")");
         return visit(self, [&items](auto& list) {
             return unwrap_python(items, [&list](auto& other) {
                 list.extend_left(other);
@@ -718,8 +721,8 @@ public:
             Index stop = pyargs.parse("stop", parse_opt_int, Index());
             pyargs.finalize();
             PYLOG_CONTEXT(
-                self, Derived::NAME, "::index(", repr(item), ", ", repr(start), ", ",
-                repr(stop), ")"
+                call, self, Derived::NAME, "::index(", repr(item), ", ", repr(start),
+                ", ", repr(stop), ")"
             );
             return PyLong_FromSize_t(list.index(item, start, stop));
         });
@@ -737,15 +740,15 @@ public:
             Index stop = pyargs.parse("stop", parse_opt_int, Index());
             pyargs.finalize();
             PYLOG_CONTEXT(
-                self, Derived::NAME, "::count(", repr(item), ", ", repr(start), ", ",
-                repr(stop), ")"
+                call, self, Derived::NAME, "::count(", repr(item), ", ", repr(start),
+                ", ", repr(stop), ")"
             );
             return PyLong_FromSize_t(list.count(item, start, stop));
         });
     }
 
     static PyObject* remove(Derived* self, PyObject* item) {
-        PYLOG_CONTEXT(self, Derived::NAME, "::remove(", repr(item), ")");
+        PYLOG_CONTEXT(call, self, Derived::NAME, "::remove(", repr(item), ")");
         return visit(self, [&item](auto& list) {
             list.remove(item);
             Py_RETURN_NONE;
@@ -759,14 +762,14 @@ public:
         return visit(self, [&self, &args, &nargs](auto& list) {
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             long long index = pyargs.parse("index", parse_int, (long long)-1);
-            PYLOG_CONTEXT(self, Derived::NAME, "::pop(", index, ")");
+            PYLOG_CONTEXT(call, self, Derived::NAME, "::pop(", index, ")");
             pyargs.finalize();
             return list.pop(index);  // returns new reference
         });
     }
 
     static PyObject* clear(Derived* self, PyObject* = nullptr) {
-        PYLOG_CONTEXT(self, Derived::NAME, "::clear()");
+        PYLOG_CONTEXT(call, self, Derived::NAME, "::clear()");
         return visit(self, [](auto& list) {
             list.clear();
             Py_RETURN_NONE;
@@ -774,7 +777,7 @@ public:
     }
 
     static PyObject* copy(Derived* self, PyObject* = nullptr) {
-        PYLOG_CONTEXT(self, Derived::NAME, "::copy()");
+        PYLOG_CONTEXT(call, self, Derived::NAME, "::copy()");
         return visit(self, [](auto& list) {
             return Derived::construct(list.copy());
         });
@@ -796,7 +799,7 @@ public:
             bool reverse = pyargs.keyword("reverse", is_truthy, false);
             pyargs.finalize();
             PYLOG_CONTEXT(
-                self, Derived::NAME, "::sort(", repr(key), ", ", reverse, ")"
+                call, self, Derived::NAME, "::sort(", repr(key), ", ", reverse, ")"
             );
             list.sort(key, reverse);
             Py_RETURN_NONE;
@@ -804,7 +807,7 @@ public:
     }
 
     static PyObject* reverse(Derived* self, PyObject* = nullptr) {
-        PYLOG_CONTEXT(self, Derived::NAME, "::reverse()");
+        PYLOG_CONTEXT(call, self, Derived::NAME, "::reverse()");
         return visit(self, [](auto& list) {
             list.reverse();
             Py_RETURN_NONE;
@@ -819,21 +822,21 @@ public:
             PyArgs<CallProtocol::FASTCALL> pyargs(meth_name, args, nargs);
             long long steps = pyargs.parse("steps", parse_int, (long long)1);
             pyargs.finalize();
-            PYLOG_CONTEXT(self, Derived::NAME, "::rotate(", steps, ")");
+            PYLOG_CONTEXT(call, self, Derived::NAME, "::rotate(", steps, ")");
             list.rotate(steps);
             Py_RETURN_NONE;
         });
     }
 
     static int __contains__(Derived* self, PyObject* item) {
-        PYLOG_CONTEXT(self, repr(item), " in ", Derived::NAME);
+        PYLOG_CONTEXT(call, self, repr(item), " in ", Derived::NAME);
         return visit(self, [&item](auto& list) {
             return list.contains(item);
         }, -1);
     }
 
     static PyObject* __getitem__(Derived* self, PyObject* key) {
-        PYLOG_CONTEXT(self, Derived::NAME, "[", repr(key), "]");
+        PYLOG_CONTEXT(call, self, Derived::NAME, "[", repr(key), "]");
         return visit(self, [&key](auto& list) {
             if (PyIndex_Check(key)) {
                 long long index = bertrand::util::parse_int(key);
@@ -854,7 +857,7 @@ public:
     }
 
     static int __setitem__(Derived* self, PyObject* key, PyObject* items) {
-        PYLOG_CONTEXT(self, Derived::NAME, "[", repr(key), "] = ", repr(items));
+        PYLOG_CONTEXT(call, self, Derived::NAME, "[", repr(key), "] = ", repr(items));
         return visit(self, [&key, &items](auto& list) {
             if (PyIndex_Check(key)) {
                 long long index = bertrand::util::parse_int(key);
@@ -887,7 +890,7 @@ public:
     }
 
     static PyObject* __add__(Derived* self, PyObject* other) {
-        PYLOG_CONTEXT(self, Derived::NAME, " + ", repr(other));
+        PYLOG_CONTEXT(call, self, Derived::NAME, " + ", repr(other));
         return visit(self, [&other](auto& list) {
             return unwrap_python(other, [&list](auto& other) {
                 return Derived::construct(list + other);
@@ -896,7 +899,7 @@ public:
     }
 
     static PyObject* __iadd__(Derived* self, PyObject* other) {
-        PYLOG_CONTEXT(self, Derived::NAME, " += ", repr(other));
+        PYLOG_CONTEXT(call, self, Derived::NAME, " += ", repr(other));
         return visit(self, [&self, &other](auto& list) {
             unwrap_python(other, [&list](auto& other) {
                 list += other;
@@ -906,14 +909,14 @@ public:
     }
 
     static PyObject* __mul__(Derived* self, Py_ssize_t count) {
-        PYLOG_CONTEXT(self, Derived::NAME, " * ", count);
+        PYLOG_CONTEXT(call, self, Derived::NAME, " * ", count);
         return visit(self, [&count](auto& list) {
             return Derived::construct(list * count);
         });
     }
 
     static PyObject* __imul__(Derived* self, Py_ssize_t count) {
-        PYLOG_CONTEXT(self, Derived::NAME, " *= ", count);
+        PYLOG_CONTEXT(call, self, Derived::NAME, " *= ", count);
         return visit(self, [&self, &count](auto& list) {
             list *= count;
             return Py_NewRef(reinterpret_cast<PyObject*>(self));
@@ -935,7 +938,7 @@ public:
                         default: op = "???"; break;
                     }
                     LOGGER.address(self);
-                    LOGGER(self, Derived::NAME, " ", op, " ", repr(other));
+                    LOGGER(LogTag::call, self, Derived::NAME, " ", op, " ", repr(other));
                     LOGGER.indent();
                 }
 
@@ -1422,7 +1425,7 @@ public:
             pyargs.finalize();
 
             PYLOG_CONTEXT(
-                self, "PyLinkedList(", repr(iterable), ", ", repr(max_size), ", ",
+                init, self, "PyLinkedList(", repr(iterable), ", ", repr(max_size), ", ",
                 repr(spec), ", ", reverse, ", ", singly_linked, ")"
             );
 
@@ -1439,7 +1442,7 @@ public:
     }
 
     static PyObject* __str__(PyLinkedList* self) {
-        PYLOG_CONTEXT(self, "str(PyLinkedList)");
+        PYLOG_CONTEXT(call, self, "str(PyLinkedList)");
         return Base::visit(self, [](auto& list) {
             std::ostringstream stream;
             stream << "[";

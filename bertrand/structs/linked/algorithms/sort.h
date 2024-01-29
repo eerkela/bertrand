@@ -49,7 +49,6 @@ namespace linked {
         }
 
         // update head and tail of original view
-        Node::join(nullptr, new_head);
         Node::join(new_tail, nullptr);
         view.head(new_head);
         view.tail(new_tail);
