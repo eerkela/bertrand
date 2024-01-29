@@ -1406,8 +1406,6 @@ public:
         using bertrand::util::is_truthy;
         using bertrand::util::parse_int;
 
-        std::cout << "DEBUG=" << DEBUG << std::endl;
-
         try {
             PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
             PyObject* iterable = pyargs.parse(

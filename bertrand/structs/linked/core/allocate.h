@@ -81,15 +81,6 @@ protected:
     alignas(Node) mutable unsigned char _temp[sizeof(Node)];  // for internal use
     bool _frozen;
 
-    /* Allocate a contiguous block of uninitialized items with the specified size. */
-    inline static Node* malloc_nodes(size_t capacity) {
-        Node* result = static_cast<Node*>(std::malloc(capacity * sizeof(Node)));
-        if (result == nullptr) {
-            throw MemoryError();
-        }
-        return result;
-    }
-
     /* Initialize an uninitialized node for use in the list. */
     template <typename... Args>
     void init_node(Node* node, Args&&... args) {
@@ -182,7 +173,7 @@ public:
     BaseAllocator& operator=(const BaseAllocator& other) {
         if (this == &other) {
             return *this;
-        } else if (frozen) {
+        } else if (frozen()) {
             throw MemoryError(
                 "array cannot be reallocated while a MemGuard is active"
             );
@@ -270,9 +261,7 @@ public:
     /* Resize the allocator to store a specific number of nodes. */
     void reserve(size_t new_size) {
         if (new_size < occupied) {
-            throw ValueError(
-                "new capacity cannot be smaller than current size"
-            );
+            throw ValueError("new capacity cannot be smaller than current size");
         }
     }
 
@@ -693,6 +682,15 @@ private:
         }
     }
 
+    /* Allocate a contiguous block of uninitialized items with the specified size. */
+    inline static Node* malloc_nodes(size_t capacity) {
+        Node* result = static_cast<Node*>(std::malloc(capacity * sizeof(Node)));
+        if (result == nullptr) {
+            throw MemoryError();
+        }
+        return result;
+    }
+
     /* Copy/move the nodes from this allocator into the given array. */
     template <bool move>
     std::pair<Node*, Node*> transfer(Node* other) const {
@@ -722,7 +720,7 @@ private:
     /* Allocate a new array of a given size and transfer the contents of the list. */
     void resize(size_t new_capacity) {
         LOG(mem, "allocate: ", new_capacity, " nodes");
-        Node* new_array = Base::malloc_nodes(new_capacity);
+        Node* new_array = malloc_nodes(new_capacity);
 
         // move nodes into new array
         auto [head, tail] = transfer<true>(new_array);
@@ -743,14 +741,14 @@ public:
     /* Create an allocator with an optional fixed size. */
     ListAllocator(std::optional<size_t> capacity, PyObject* specialization) :
         Base(init_capacity(capacity), specialization),
-        array(Base::malloc_nodes(this->capacity)),
+        array(malloc_nodes(this->capacity)),
         free_list(std::make_pair(nullptr, nullptr))
     {}
 
     /* Copy constructor. */
     ListAllocator(const ListAllocator& other) :
         Base(other),
-        array(Base::malloc_nodes(this->capacity)),
+        array(malloc_nodes(this->capacity)),
         free_list(std::make_pair(nullptr, nullptr))
     {
         if (this->occupied) {
@@ -786,7 +784,7 @@ public:
             free(array);
         }
 
-        array = Base::malloc_nodes(this->capacity);
+        array = malloc_nodes(this->capacity);
         if (this->occupied != 0) {
             auto [head, tail] = (
                 other.template transfer<false>(array)
@@ -901,7 +899,7 @@ public:
                 LOG(mem, "deallocate: ", this->capacity, " nodes");
                 free(array);
                 LOG(mem, "allocate: ", this->capacity, " nodes");
-                array = Base::malloc_nodes(this->capacity);
+                array = malloc_nodes(this->capacity);
             }
         }
     }

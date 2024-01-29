@@ -75,6 +75,11 @@ using remove_rvalue_t = typename remove_rvalue<T>::type;
 ///////////////////////
 
 
+// TODO: If I create the log file as a separate object and then inject it into the
+// logger, then I can create multiple loggers on the same file, and I can mock it
+// during testing.
+
+
 /* DEBUG=true enables global logging statements across the codebase, which will be
 dumped to a .log file in the current working directory.
 */
