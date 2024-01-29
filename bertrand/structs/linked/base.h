@@ -73,8 +73,8 @@ public:
 
     /* Construct an empty list. */
     LinkedBase(
-        std::optional<size_t> max_size = std::nullopt,
-        PyObject* spec = nullptr
+        std::optional<size_t> max_size,
+        PyObject* spec
     ) : view(max_size, spec)
     {}
 
@@ -82,9 +82,9 @@ public:
     template <typename Container>
     LinkedBase(
         Container&& iterable,
-        std::optional<size_t> max_size = std::nullopt,
-        PyObject* spec = nullptr,
-        bool reverse = false
+        std::optional<size_t> max_size,
+        PyObject* spec,
+        bool reverse
     ) : view(std::forward<Container>(iterable), max_size, spec, reverse)
     {}
 
@@ -93,9 +93,9 @@ public:
     LinkedBase(
         Iterator&& begin,
         Iterator&& end,
-        std::optional<size_t> max_size = std::nullopt,
-        PyObject* spec = nullptr,
-        bool reverse = false
+        std::optional<size_t> max_size,
+        PyObject* spec,
+        bool reverse
     ) : view(
             std::forward<Iterator>(begin),
             std::forward<Iterator>(end),
@@ -109,9 +109,9 @@ public:
     template <typename X>
     LinkedBase(
         std::initializer_list<X> init,
-        std::optional<size_t> max_size = std::nullopt,
-        PyObject* spec = nullptr,
-        bool reverse = false
+        std::optional<size_t> max_size,
+        PyObject* spec,
+        bool reverse
     ) : view(init, max_size, spec, reverse)
     {}
 

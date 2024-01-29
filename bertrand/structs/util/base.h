@@ -7,7 +7,7 @@
 #include <iomanip>  // std::put_time()
 #include <ios>  // std::ios::app
 #include <iostream>  // std::cerr
-#include <sstream>
+#include <sstream>  // std::ostringstream
 #include <string>  // std::string
 #include <type_traits>  // std::is_pointer_v<>, std::is_convertible_v<>, etc.
 #include <utility>  // std::pair, std::tuple
@@ -76,13 +76,22 @@ using remove_rvalue_t = typename remove_rvalue<T>::type;
 
 
 /* DEBUG=true enables logging statements across the linked data structures, which will
-be dumped to a .log file in the current working directory.  */
-
+be dumped to a .log file in the current working directory.
+*/
 #ifdef BERTRAND_DEBUG
     inline constexpr bool DEBUG = true;
 #else
     inline constexpr bool DEBUG = false;
 #endif
+
+
+/* Enum struct that lists the language levels available for logging purposes.  One of
+these is always inserted as a prefix to the beginning of the log message, and encoding
+them as a struct guarantees that they remain consistent across the codebase. */
+struct LogLang {
+    static constexpr std::string_view py  {"py  "};
+    static constexpr std::string_view cpp {"c++ "};
+};
 
 
 /* Enum struct that lists the tags available for logging purposes.  One of these must
@@ -109,13 +118,22 @@ struct Logger {
         return _dummy;
     }
 
-    inline void language(const std::string& lang) {
+    inline const std::string& tag() const {
         static_assert(Enable, "logging is not enabled.");
+        return _dummy;
     }
 
     inline const std::string& address() const {
         static_assert(Enable, "logging is not enabled.");
         return _dummy;
+    }
+
+    inline void language(const std::string_view& lang) {
+        static_assert(Enable, "logging is not enabled.");
+    }
+
+    inline void tag(const std::string_view& tag) {
+        static_assert(Enable, "logging is not enabled.");
     }
 
     inline void address(const void* addr) {
@@ -135,6 +153,19 @@ struct Logger {
         static_assert(Enable, "logging is not enabled.");
     }
 
+    struct Guard {
+
+        inline Guard(Logger& logger) {
+            static_assert(Enable, "logging is not enabled.");
+        }
+
+    };
+
+    inline Guard indent_guard() {
+        static_assert(Enable, "logging is not enabled.");
+        return Guard(*this);
+    }
+
 };
 
 
@@ -144,27 +175,29 @@ then this will be the working directory of the Python interpreter itself, which 
 usually the location from which the interpreter was launched. */
 template <>
 class Logger<true> {
+    using Clock = std::chrono::system_clock;
+
+    Clock::time_point _start_time;
     std::ofstream stream;
     size_t _indent_level;
     std::string _language;
+    std::string _tag;
     std::string _address;
     std::string _prev_address;
 
 public:
 
-    Logger() : _indent_level(0), _language("c++ ") {
-        using Clock = std::chrono::system_clock;
+    Logger() : _start_time(Clock::now()), _indent_level(0), _language("c++ ") {
         address(nullptr);
 
-        std::ostringstream name;
-        auto now = Clock::to_time_t(Clock::now());
-        auto format = *std::localtime(&now);
-        name << "debug_" << std::put_time(&format, "%Y-%m-%d_%H-%M-%S");
-        name << ".log";
+        std::ostringstream filename;
+        auto now = Clock::to_time_t(_start_time);
+        auto format = std::put_time(std::localtime(&now), "%Y-%m-%d_%H-%M-%S");
 
-        stream.open(name.str(), std::ios::app);
+        filename << "debug_" << format << ".log";
+        stream.open(filename.str(), std::ios::app);
         if (!stream.is_open()) {
-            std::cerr << "failed to open log file: " << name.str() << std::endl;
+            std::cerr << "failed to open log file: " << filename.str() << std::endl;
         }
     }
 
@@ -172,17 +205,20 @@ public:
         return _language;
     }
 
-    void language(const std::string& lang) {
-        if (lang.size() > 3) {
-            std::ostringstream msg;
-            msg << "language name must be 3 characters or less: " << lang;
-            throw std::runtime_error(msg.str());
-        }
-        _language = lang + std::string(4 - lang.size(), ' ');
+    inline const std::string& tag() const {
+        return _tag;
     }
 
     inline const std::string& address() const {
         return _address;
+    }
+
+    void language(const std::string_view& lang) {
+        _language = lang;
+    }
+
+    void tag(const std::string_view& tag) {
+        _tag = tag;
     }
 
     void address(const void* ptr) {
@@ -207,16 +243,29 @@ public:
     }
 
     template <typename... Args>
-    inline void operator()(const std::string_view& tag, Args&&... messages) {
-        if constexpr (sizeof...(messages) > 0) {
-            if (stream.is_open()) {
-                stream << _language << tag << _address;
-                for (size_t i = 0; i < _indent_level; ++i) {
-                    stream << "    ";
-                }
-                (stream << ... << std::forward<Args>(messages));
-                stream << std::endl;
+    inline void operator()(Args&&... messages) {
+        if (stream.is_open()) {
+            // calculate relative timestamp
+            auto elapsed = Clock::now() - _start_time;
+            double seconds = std::chrono::duration<double>(elapsed).count();
+
+            // format timestamp to fixed width
+            std::ostringstream timestamp_stream;
+            timestamp_stream << std::fixed << std::setprecision(5) << seconds;
+            std::string timestamp = timestamp_stream.str();
+            if (timestamp.size() < 7) {
+                timestamp = timestamp + std::string(7 - timestamp.size(), ' ');
+            } else if (timestamp.size() > 7) {
+                timestamp = timestamp.substr(0, 7);
             }
+
+            // write log entry
+            stream << timestamp << " " << _language << _tag << _address;
+            for (size_t i = 0; i < _indent_level; ++i) {
+                stream << "    ";
+            }
+            (stream << ... << std::forward<Args>(messages));
+            stream << std::endl;
         }
     }
 
@@ -231,26 +280,27 @@ public:
         }
     }
 
+    struct Guard {
+        Logger& logger;
+
+        inline Guard(Logger& logger) : logger(logger) {
+            logger.indent();
+        }
+
+        inline ~Guard() {
+            logger.unindent();
+        }
+    };
+
+    inline Guard indent_guard() {
+        return Guard(*this);
+    }
+
 };
 
 
 /* Global logging object. */
 Logger<DEBUG> LOGGER;
-
-
-/* An RAII guard to control nested indentation in the log file. */
-template <bool Enable>
-struct LogGuard {
-
-    inline LogGuard() {
-        LOGGER.indent();
-    }
-
-    inline ~LogGuard() {
-        LOGGER.unindent();
-    }
-
-};
 
 
 /* Macros to write simple statements to the log file.  These avoid the need to place
@@ -265,38 +315,42 @@ produce an RAII-style guard in the calling context that automatically unindents 
 and restores the previous memory address when the guard goes out of scope.
 */
 #ifdef BERTRAND_DEBUG
-    #define LOG(tag, ...) \
-        LOGGER(LogTag::tag, __VA_ARGS__);
+    #define LOG(TAG, ...) \
+        LOGGER.tag(LogTag::TAG); \
+        LOGGER(__VA_ARGS__);
 
-    #define PYLOG(tag, ...) \
-        LOGGER.language("py"); \
-        LOGGER(LogTag::tag, __VA_ARGS__); \
-        LOGGER.language("c++");
+    #define PYLOG(TAG, ...) \
+        LOGGER.language(LogLang::py); \
+        LOGGER.tag(LogTag::TAG); \
+        LOGGER(__VA_ARGS__); \
+        LOGGER.language(LogLang::cpp);
 
-    #define LOG_CONTEXT(tag, addr, ...) \
-        LOGGER.address(addr); \
-        LOGGER(LogTag::tag, __VA_ARGS__); \
-        LogGuard<DEBUG> _log_guard_##__LINE__;
+    #define LOG_CONTEXT(TAG, ADDR, ...) \
+        LOGGER.tag(LogTag::TAG); \
+        LOGGER.address(ADDR); \
+        LOGGER(__VA_ARGS__); \
+        Logger<DEBUG>::Guard _log_guard_##__LINE__ = LOGGER.indent_guard();
 
-    #define PYLOG_CONTEXT(tag, addr, ...) \
-        LOGGER.language("py"); \
-        LOGGER.address(addr); \
-        LOGGER(LogTag::tag, __VA_ARGS__); \
-        LOGGER.language("c++"); \
-        LogGuard<DEBUG> _log_guard_##__LINE__;
+    #define PYLOG_CONTEXT(TAG, ADDR, ...) \
+        LOGGER.language(LogLang::py); \
+        LOGGER.tag(LogTag::TAG); \
+        LOGGER.address(ADDR); \
+        LOGGER(__VA_ARGS__); \
+        LOGGER.language(LogLang::cpp); \
+        Logger<DEBUG>::Guard _log_guard_##__LINE__ = LOGGER.indent_guard();
 
 #else
-    #define LOG(tag, ...)
-    #define PYLOG(tag, ...)
-    #define LOG_CONTEXT(tag, addr, ...)
-    #define PYLOG_CONTEXT(tag, addr, ...)
+    #define LOG(TAG, ...)
+    #define PYLOG(TAG, ...)
+    #define LOG_CONTEXT(TAG, ADDR, ...)
+    #define PYLOG_CONTEXT(TAG, ADDR, ...)
 
 #endif
 
 
-/* Logging throws an incorrect warning about an uninitialized `this` pointer when
-logging constructors, so we have to insert these pragmas around the constructors to
-suppress warnings on major compilers.
+/* Logging throws an incorrect warning due to uninitialized `this` pointer when logging
+constructors, so we have to insert these pragmas around the constructors to suppress
+warnings on major compilers.
 */
 #if defined(__GNUC__) && !defined(__clang__)
     #pragma GCC diagnostic push
@@ -313,7 +367,7 @@ suppress warnings on major compilers.
 #if defined(__GNUC__) && !defined(__clang__)
     #pragma GCC diagnostic pop
 #elif defined(__clang__)
-    // #pragma clang diagnostic pop
+    #pragma clang diagnostic pop
 #elif defined(_MSC_VER)
     #pragma warning(pop)
 #endif

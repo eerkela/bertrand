@@ -20,6 +20,13 @@ namespace bertrand {
 namespace util {
 
 
+/* NOTE: This module is a work in progress.  At the moment, none of the codebase is
+ * designed with multithreading in mind, but these classes should make it fairly
+ * straightforward to support it in the future.  Users should not rely on
+ * multithreading support until this notice is removed.
+ */
+
+
 ////////////////////////////////////
 ////    FORWARD DECLARATIONS    ////
 ////////////////////////////////////

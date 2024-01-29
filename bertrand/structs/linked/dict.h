@@ -134,8 +134,37 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    using Base::Base;
-    using Base::operator=;
+    #if defined(__GNUC__) && !defined(__clang__)
+        #pragma GCC diagnostic push
+        #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+    #elif defined(__clang__)
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wuninitialized"
+    #elif defined(_MSC_VER)
+        #pragma warning(push)
+        #pragma warning(disable: 26494)  // VAR_USE_BEFORE_INIT
+        #pragma warning(disable: 26495)  // MEMBER_UNINIT
+    #endif
+
+    LinkedDict(
+        std::optional<size_t> max_size = std::nullopt,
+        PyObject* spec = nullptr
+    ) : Base(
+        [&] {
+            if constexpr (DEBUG) {
+                LOGGER.tag(LogTag::init);
+                LOGGER.address(this);
+                LOGGER("LinkedDict(", repr(max_size), ", ", repr(spec), ")");
+                LOGGER.indent();
+            }
+            return max_size;
+        }(),
+        spec
+    ) {
+        if constexpr (DEBUG) {
+            LOGGER.unindent();
+        }
+    }
 
     /* Construct a dictionary from an input iterable. */
     template <typename Container>
@@ -144,7 +173,16 @@ public:
         std::optional<size_t> max_size = std::nullopt,
         PyObject* spec = nullptr,
         bool reverse = false
-    ) : Base([&iterable] {
+    ) : Base([&] {
+            if constexpr (DEBUG) {
+                LOGGER.tag(LogTag::init);
+                LOGGER.address(this);
+                LOGGER(
+                    "LinkedDict(", repr(iterable), ", ", repr(max_size), ", ",
+                    repr(spec), ", ", reverse, ")"
+                );
+                LOGGER.indent();
+            }
             if constexpr (dict_config::is_dict<Container>) {
                 return iterable.view;
             } else {
@@ -154,7 +192,150 @@ public:
         max_size,
         spec,
         reverse
-    ) {}
+    ) {
+        if constexpr (DEBUG) {
+            LOGGER.unindent();
+        }
+    }
+
+    template <typename Iterator>
+    LinkedDict(
+        Iterator&& begin,
+        Iterator&& end,
+        std::optional<size_t> max_size = std::nullopt,
+        PyObject* spec = nullptr,
+        bool reverse = false
+    ) : Base(
+        [&] {
+            if constexpr (DEBUG) {
+                LOGGER.tag(LogTag::init);
+                LOGGER.address(this);
+                LOGGER(
+                    "LinkedDict(", repr(begin), ", ", repr(end), ", ",
+                    repr(max_size), ", ", repr(spec), ", ", reverse, ")"
+                );
+                LOGGER.indent();
+            }
+            return begin;
+        }(),
+        end,
+        max_size,
+        spec,
+        reverse
+    ) {
+        if constexpr (DEBUG) {
+            LOGGER.unindent();
+        }
+    }
+
+    template <typename X>
+    LinkedDict(
+        std::initializer_list<X> init,
+        std::optional<size_t> max_size = std::nullopt,
+        PyObject* spec = nullptr,
+        bool reverse = false
+    ) : Base(
+        [&] {
+            if constexpr (DEBUG) {
+                LOGGER.tag(LogTag::init);
+                LOGGER.address(this);
+                LOGGER(
+                    "LinkedDict(", repr(init), ", ", repr(max_size), ", ",
+                    repr(spec), ", ", reverse, ")"
+                );
+                LOGGER.indent();
+            }
+            return init;
+        }(),
+        max_size,
+        spec,
+        reverse
+    ) {
+        if constexpr (DEBUG) {
+            LOGGER.unindent();
+        }
+    }
+
+    LinkedDict(View&& view) : Base([&] {
+        if constexpr (DEBUG) {
+            LOGGER.tag(LogTag::init);
+            LOGGER.address(this);
+            LOGGER("LinkedDict(", repr(view), ")  # from view");
+            LOGGER.indent();
+        }
+        return std::move(view);
+    }()) {
+        if constexpr (DEBUG) {
+            LOGGER.unindent();
+        }
+    }
+
+    LinkedDict(const LinkedDict& other) : Base([&] {
+        if constexpr (DEBUG) {
+            LOGGER.tag(LogTag::init);
+            LOGGER.address(this);
+            LOGGER("LinkedDict(", &other, ")  # copy");
+            LOGGER.indent();
+        }
+        return other.view;
+    }()) {
+        if constexpr (DEBUG) {
+            LOGGER.unindent();
+        }
+    }
+
+    LinkedDict(LinkedDict&& other) : Base([&] {
+        if constexpr (DEBUG) {
+            LOGGER.tag(LogTag::init);
+            LOGGER.address(this);
+            LOGGER("LinkedDict(", &other, ")  # move");
+            LOGGER.indent();
+        }
+        return std::move(other.view);
+    }()) {
+        if constexpr (DEBUG) {
+            LOGGER.unindent();
+        }
+    }
+
+    LinkedDict& operator=(const LinkedDict& other) {
+        if (this == &other) {
+            return *this;
+        }
+        LOG_CONTEXT(init, this, "LinkedDict = ", &other, "  # copy");
+        Base::operator=(other);
+        return *this;
+    }
+
+    LinkedDict& operator=(LinkedDict&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        LOG_CONTEXT(init, this, "LinkedDict = ", &other, "  # move");
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    ~LinkedDict() {
+        if constexpr (DEBUG) {
+            LOGGER.tag(LogTag::init);
+            LOGGER.address(this);
+            LOGGER("~LinkedDict");
+            LOGGER.indent();  // indent to be closed in Allocator::~BaseAllocator()
+        }
+    }
+
+    #if defined(__GNUC__) && !defined(__clang__)
+        #pragma GCC diagnostic pop
+    #elif defined(__clang__)
+        #pragma clang diagnostic pop
+    #elif defined(_MSC_VER)
+        #pragma warning(pop)
+    #endif
+
+    //////////////////////////////
+    ////    DICT INTERFACE    ////
+    //////////////////////////////
 
     /* Create a new dictionary from a sequence of keys and a default value. */
     template <typename Container>
@@ -164,6 +345,9 @@ public:
         std::optional<size_t> capacity = std::nullopt,
         PyObject* spec = nullptr
     ) {
+        LOG_CONTEXT(
+            init, nullptr, "LinkedDict::fromkeys(", repr(keys), ", ", repr(value), ")"
+        );
         using Allocator = typename View::Allocator;
         static constexpr unsigned int flags = (
             Allocator::EXIST_OK | Allocator::REPLACE_MAPPED | Allocator::INSERT_TAIL
@@ -175,30 +359,37 @@ public:
         return LinkedDict(std::move(view));
     }
 
-    //////////////////////////////
-    ////    DICT INTERFACE    ////
-    //////////////////////////////
-
     /* Add a key-value pair to the end of the dictionary if it is not already
     present. */
     inline void add(const Key& key, const Value& value) {
+        LOG_CONTEXT(call, this, "LinkedDict::add(", repr(key), ", ", repr(value), ")");
         linked::add(this->view, key, value);
     }
 
     /* Add a key-value pair to the beginning of the dictionary if it is not already
     present. */
     inline void add_left(const Key& key, const Value& value) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::add_left(", repr(key), ", ", repr(value), ")"
+        );
         linked::add_left(this->view, key, value);
     }
 
     /* Add a key-value pair to the front of the dictionary, evicting the last item if
     necessary and moving items that are already present. */
     inline void lru_add(const Key& key, const Value& value) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::lru_add(", repr(key), ", ", repr(value), ")"
+        );
         linked::lru_add(this->view, key, value);
     }
 
     /* Insert a key-value pair at a specific index of the dictionary. */
     inline void insert(long long index, const Key& key, const Value& value) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::insert(", index, ", ", repr(key), ", ",
+            repr(value), ")"
+        );
         linked::insert(this->view, index, key, value);
     }
 
@@ -208,6 +399,10 @@ public:
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::index(", repr(key), ", ", repr(start), ", ",
+            repr(stop), ")"
+        );
         return linked::index(this->view, key, start, stop);
     }
 
@@ -217,92 +412,127 @@ public:
         std::optional<long long> start = std::nullopt,
         std::optional<long long> stop = std::nullopt
     ) const {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::count(", repr(key), ", ", repr(start), ", ",
+            repr(stop), ")"
+        );
         return linked::count(this->view, key, start, stop);
     }
 
     /* Check if the dictionary contains a certain key. */
     inline bool contains(const Key& key) const {
+        LOG_CONTEXT(call, this, "LinkedDict::contains(", repr(key), ")");
         return linked::contains(this->view, key);
     }
 
     /* Check if the dictionary contains a certain key and move it to the front of the
     dictionary if so. */
     inline bool lru_contains(const Key& key) {
+        LOG_CONTEXT(call, this, "LinkedDict::lru_contains(", repr(key), ")");
         return linked::lru_contains(this->view, key);
     }
 
     /* Remove a key from the dictionary. */
     inline void remove(const Key& key) {
+        LOG_CONTEXT(call, this, "LinkedDict::remove(", repr(key), ")");
         linked::remove(this->view, key);
     }
 
     /* Remove a key from the dictionary if it is present. */
     inline void discard(const Key& key) {
+        LOG_CONTEXT(call, this, "LinkedDict::discard(", repr(key), ")");
         linked::discard(this->view, key);
     }
 
     /* Remove a key from the dictionary and return its value. */
     inline Value pop(const Key& key) {
+        LOG_CONTEXT(call, this, "LinkedDict::pop(", repr(key), ")");
         return linked::pop(this->view, key);
     }
 
     /* Remove a key from the dictionary and return its value, or return an optional
     default if the key is not found. */
     inline Value pop(const Key& key, const Value& default_value) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::pop(", repr(key), ", ", repr(default_value), ")"
+        );
         return linked::pop(this->view, key, default_value);
     }
 
     /* Remove and return a key, value pair from the dictionary. */
     inline std::pair<Key, Value> popitem(long long index = -1) {
+        LOG_CONTEXT(call, this, "LinkedDict::popitem(", index, ")");
         return linked::popitem(this->view, index);
     }
 
     /* Remove all elements from the dictionary. */
     inline void clear() {
+        LOG_CONTEXT(call, this, "LinkedDict::clear()");
         this->view.clear();
     }
 
     /* Look up a value in the dictionary. */
     inline Value& get(const Key& key) {
+        LOG_CONTEXT(call, this, "LinkedDict::get(", repr(key), ")");
         return linked::get(this->view, key);
     }
 
     /* Look up a value in the dictionary. */
     inline Value& get(const Key& key) const {
+        LOG_CONTEXT(call, this, "LinkedDict::get(", repr(key), ")");
         return linked::get(this->view, key);
     }
 
     /* Look up a value in the dictionary, returning a default value if it does not
     exist. */
     inline Value& get(const Key& key, Value& default_value) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::get(", repr(key), ", ", repr(default_value), ")"
+        );
         return linked::get(this->view, key, default_value);
     }
 
     /* Look up a value in the dictionary, returning a default value if it does not
     exist. */
     inline Value& get(const Key& key, Value& default_value) const {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::get(", repr(key), ", ", repr(default_value), ")"
+        );
         return linked::get(this->view, key, default_value);
     }
 
     /* Look up a value in the dictionary and move it to the front if it is found. */
     inline Value& lru_get(const Key& key) {
+        LOG_CONTEXT(call, this, "LinkedDict::lru_get(", repr(key), ")");
         return linked::lru_get(this->view, key);
     }
 
     /* Look up a value in the dictionary and move it to the front if it is found.
     Otherwise, return a default value. */
     inline Value& lru_get(const Key& key, Value& default_value) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::lru_get(", repr(key), ", ", repr(default_value),
+            ")"
+        );
         return linked::lru_get(this->view, key, default_value);
     }
 
     /* Set a value within the dictionary or insert it if it is not already present. */
     inline Value& setdefault(const Key& key, Value& default_value) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::setdefault(", repr(key), ", ",
+            repr(default_value), ")"
+        );
         return linked::setdefault(this->view, key, default_value);
     }
 
     /* Set a value within the dictionary or insert it at the front of the dictionary
     if it is not already present. */
     inline Value& setdefault_left(const Key& key, Value& default_value) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::setdefault_left(", repr(key), ", ",
+            repr(default_value), ")"
+        );
         return linked::setdefault_left(this->view, key, default_value);
     }
 
@@ -310,11 +540,16 @@ public:
     or insert it there if it is not already present.  Evicts the last element to make
     room if necessary. */
     inline Value& lru_setdefault(const Key& key, Value& default_value) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::lru_setdefault(", repr(key), ", ",
+            repr(default_value), ")"
+        );
         return linked::lru_setdefault(this->view, key, default_value);
     }
 
     /* Return a shallow copy of the dictionary. */
     inline LinkedDict copy() const {
+        LOG_CONTEXT(call, this, "LinkedDict::copy()");
         return LinkedDict(this->view.copy());
     }
 
@@ -322,23 +557,29 @@ public:
     func. */
     template <typename Func>
     inline void sort(Func key = nullptr, bool reverse=false) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::sort(", repr(key), ", ", reverse, ")"
+        );
         linked::sort<linked::MergeSort>(this->view, key, reverse);
     }
 
     /* Reverse the order of keys within the dictionary in-place. */
     inline void reverse() {
+        LOG_CONTEXT(call, this, "LinkedDict::reverse()");
         linked::reverse(this->view);
     }
 
     /* Shift all keys in the dictionary to the right by the specified number of
     steps. */
     inline void rotate(long long steps = 1) {
+        LOG_CONTEXT(call, this, "LinkedDict::rotate(", steps, ")");
         linked::rotate(this->view, steps);
     }
 
     /* Return a new dictionary with elements from this dictionary and all other
     containers. */
     inline DynamicDict union_() const {
+        LOG_CONTEXT(call, this, "LinkedDict::union()");
         return as_dynamic();
     }
 
@@ -346,6 +587,11 @@ public:
     containers. */
     template <typename First, typename... Rest>
     inline DynamicDict union_(First&& first, Rest&&... rest) const {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::union(", repr(first), ", ... (+",
+            sizeof...(Rest), "))"
+        );
+
         auto execute = [&](auto&& arg) {
             DynamicDict result = linked::union_<Yield::ITEM, false>(
                 this->view, std::forward<decltype(arg)>(arg)
@@ -366,6 +612,7 @@ public:
     /* Return a new dictionary with elements from this dictionary and all other
     containers.  Appends to the head of the dictionary rather than the tail. */
     inline DynamicDict union_left() const {
+        LOG_CONTEXT(call, this, "LinkedDict::union_left()");
         return as_dynamic();
     }
 
@@ -373,6 +620,10 @@ public:
     containers.  Appends to the head of the dictionary rather than the tail. */
     template <typename First, typename... Rest>
     inline DynamicDict union_left(First&& first, Rest&&... rest) const {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::union_left(", repr(first), ", ... (+",
+            sizeof...(Rest), "))"
+        );
         auto execute = [&](auto&& arg) {
             DynamicDict result = linked::union_<Yield::ITEM, true>(
                 this->view, std::forward<decltype(arg)>(arg)
@@ -394,6 +645,9 @@ public:
     already present. */
     template <typename... Containers>
     inline void update(Containers&&... items) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::update(... (+", sizeof...(Containers), "))"
+        );
         auto unwrap = [](auto&& arg) {
             using Arg = decltype(arg);
             if constexpr (dict_config::is_dict<Arg>) {
@@ -415,6 +669,9 @@ public:
     not already present. */
     template <typename... Containers>
     inline void update_left(Containers&&... items) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::update_left(... (+", sizeof...(Containers), "))"
+        );
         auto unwrap = [](auto&& arg) {
             using Arg = decltype(arg);
             if constexpr (dict_config::is_dict<Arg>) {
@@ -436,6 +693,9 @@ public:
     possibly evicting the tail to make room. */
     template <typename... Containers>
     inline void lru_update(Containers&&... items) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::lru_update(... (+", sizeof...(Containers), "))"
+        );
         auto unwrap = [](auto&& arg) {
             using Arg = decltype(arg);
             if constexpr (dict_config::is_dict<Arg>) {
@@ -456,6 +716,7 @@ public:
     /* Return a new dictionary with elements common to this dictionary and all other
     containers. */
     inline DynamicDict intersection() const {
+        LOG_CONTEXT(call, this, "LinkedDict::intersection()");
         return as_dynamic();
     }
 
@@ -463,6 +724,10 @@ public:
     containers. */
     template <typename First, typename... Rest>
     inline DynamicDict intersection(First&& first, Rest&&... rest) const {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::intersection(", repr(first), ", ... (+",
+            sizeof...(Rest), "))"
+        );
         auto execute = [&](auto&& arg) {
             DynamicDict result = linked::intersection<Yield::ITEM>(
                 this->view, std::forward<decltype(arg)>(arg)
@@ -483,6 +748,10 @@ public:
     /* Remove elements from a dictionary that are contained in one or more iterables. */
     template <typename... Containers>
     inline void intersection_update(Containers&&... items) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::intersection_update(... (+",
+            sizeof...(Containers), "))"
+        );
         auto unwrap = [](auto&& arg) {
             using Arg = decltype(arg);
             if constexpr (dict_config::is_dict<Arg>) {
@@ -503,6 +772,7 @@ public:
     /* Return a new dictionary with elements from this dictionary that are common to
     any other containers. */
     inline DynamicDict difference() const {
+        LOG_CONTEXT(call, this, "LinkedDict::difference()");
         return as_dynamic();
     }
 
@@ -510,6 +780,10 @@ public:
     any other containers. */
     template <typename First, typename... Rest>
     inline DynamicDict difference(First&& first, Rest&&... rest) const {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::difference(", repr(first), ", ... (+",
+            sizeof...(Rest), "))"
+        );
         auto execute = [&](auto&& arg) {
             DynamicDict result = linked::difference<Yield::ITEM>(
                 this->view, std::forward<decltype(arg)>(arg)
@@ -530,6 +804,10 @@ public:
     /* Remove elements from a dictionary that are contained in one or more iterables. */
     template <typename... Containers>
     inline void difference_update(Containers&&... items) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::difference_update(... (+",
+            sizeof...(Containers), "))"
+        );
         auto unwrap = [](auto&& arg) {
             using Arg = decltype(arg);
             if constexpr (dict_config::is_dict<Arg>) {
@@ -551,6 +829,9 @@ public:
     container, but not both. */
     template <typename Container>
     inline DynamicDict symmetric_difference(Container&& items) const {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::symmetric_difference(", repr(items), ")"
+        );
         if constexpr (dict_config::is_dict<Container>) {
             return DynamicDict(
                 linked::symmetric_difference<Yield::ITEM, false>(
@@ -571,6 +852,9 @@ public:
     tail. */
     template <typename Container>
     inline DynamicDict symmetric_difference_left(Container&& items) const {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::symmetric_difference_left(", repr(items), ")"
+        );
         if constexpr (dict_config::is_dict<Container>) {
             return DynamicDict(
                 linked::symmetric_difference<Yield::ITEM, true>(
@@ -590,6 +874,9 @@ public:
     given container, but not both. */
     template <typename Container>
     inline void symmetric_difference_update(Container&& items) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::symmetric_difference_update(", repr(items), ")"
+        );
         linked::symmetric_difference_update<false>(
             this->view, std::forward<Container>(items)
         );
@@ -600,6 +887,10 @@ public:
     the tail. */
     template <typename Container>
     inline void symmetric_difference_update_left(Container&& items) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::symmetric_difference_update_left(",
+            repr(items), ")"
+        );
         linked::symmetric_difference_update<true>(
             this->view, std::forward<Container>(items)
         );
@@ -607,21 +898,31 @@ public:
 
     /* Get the linear distance between two keys within the dictionary. */
     inline long long distance(const Key& from, const Key& to) const {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::distance(", repr(from), ", ", repr(to), ")"
+        );
         return linked::distance(this->view, from, to);
     }
 
     /* Swap the positions of two keys within the dictionary. */
     inline void swap(const Key& key1, const Key& key2) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::swap(", repr(key1), ", ", repr(key2), ")"
+        );
         linked::swap(this->view, key1, key2);
     }
 
     /* Move a key within the dictionary by the specified number of steps. */
     inline void move(const Key& key, long long steps) {
+        LOG_CONTEXT(call, this, "LinkedDict::move(", repr(key), ", ", steps, ")");
         linked::move(this->view, key, steps);
     }
 
     /* Move a key within the dictionary to a specific index. */
     inline void move_to_index(const Key& key, long long index) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::move_to_index(", repr(key), ", ", index, ")"
+        );
         linked::move_to_index(this->view, key, index);
     }
 
@@ -664,52 +965,83 @@ public:
      */
 
     inline auto keys() const -> KeysProxy<LinkedDict> {
+        LOG_CONTEXT(call, this, "LinkedDict::keys()");
         return KeysProxy<LinkedDict>(*this);
     }
 
     inline auto values() const -> ValuesProxy<LinkedDict> {
+        LOG_CONTEXT(call, this, "LinkedDict::values()");
         return ValuesProxy<LinkedDict>(*this);
     }
 
     template <bool as_pytuple = false>
     inline auto items() const -> ItemsProxy<LinkedDict, as_pytuple> {
+        LOG_CONTEXT(call, this, "LinkedDict::items()");
         return ItemsProxy<LinkedDict, as_pytuple>(*this);
     }
 
     inline auto map(const Key& key) -> linked::MapProxy<View> {
+        LOG_CONTEXT(call, this, "LinkedDict::map(", repr(key), ")");
         return linked::map(this->view, key);
     }
 
     inline auto map(const Key& key) const -> const linked::MapProxy<const View> {
+        LOG_CONTEXT(call, this, "LinkedDict::map(", repr(key), ")");
         return linked::map(this->view, key);
     }
 
     inline auto position(long long index) -> linked::ElementProxy<View, Yield::ITEM> {
+        LOG_CONTEXT(call, this, "LinkedDict::position(", index, ")");
         return linked::position<Yield::ITEM>(this->view, index);
     }
 
     inline auto position(long long index) const
         -> const linked::ElementProxy<const View, Yield::ITEM>
     {
+        LOG_CONTEXT(call, this, "LinkedDict::position(", index, ")");
         return linked::position<Yield::ITEM>(this->view, index);
     }
 
-    template <typename... Args>
-    inline auto slice(Args&&... args)
-        -> linked::SliceProxy<View, DynamicDict, Yield::ITEM>
-    {
-        return linked::slice<DynamicDict, Yield::ITEM>(
-            this->view, std::forward<Args>(args)...
+    inline linked::SliceProxy<View, DynamicDict, Yield::KEY> slice(
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt,
+        std::optional<long long> step = std::nullopt
+    ) {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::slice(", repr(start), ", ", repr(stop), ", ",
+            repr(step), ")"
+        );
+        return linked::slice<DynamicDict, Yield::KEY>(
+            this->view, start, stop, step
         );
     }
 
-    template <typename... Args>
-    inline auto slice(Args&&... args) const
-        -> const linked::SliceProxy<const View, DynamicDict, Yield::ITEM>
-    {
-        return linked::slice<DynamicDict, Yield::ITEM>(
-            this->view, std::forward<Args>(args)...
+    inline linked::SliceProxy<View, DynamicDict, Yield::KEY> slice(
+        PyObject* py_slice
+    ) {
+        LOG_CONTEXT(call, this, "LinkedDict::slice(", repr(py_slice), ")");
+        return linked::slice<DynamicDict, Yield::KEY>(this->view, py_slice);
+    }
+
+    inline const linked::SliceProxy<const View, DynamicDict, Yield::KEY> slice(
+        std::optional<long long> start = std::nullopt,
+        std::optional<long long> stop = std::nullopt,
+        std::optional<long long> step = std::nullopt
+    ) const {
+        LOG_CONTEXT(
+            call, this, "LinkedDict::slice(", repr(start), ", ", repr(stop), ", ",
+            repr(step), ")"
         );
+        return linked::slice<DynamicDict, Yield::KEY>(
+            this->view, start, stop, step
+        );
+    }
+
+    inline const linked::SliceProxy<const View, DynamicDict, Yield::KEY> slice(
+        PyObject* py_slice
+    ) const {
+        LOG_CONTEXT(call, this, "LinkedDict::slice(", repr(py_slice), ")");
+        return linked::slice<DynamicDict, Yield::KEY>(this->view, py_slice);
     }
 
     //////////////////////////////////
@@ -763,59 +1095,70 @@ public:
      */
 
     inline linked::MapProxy<View> operator[](const Key& key) {
+        LOG_CONTEXT(call, this, "LinkedDict[", repr(key), "]");
         return map(key);
     }
 
     inline const linked::MapProxy<const View> operator[](const Key& key) const {
+        LOG_CONTEXT(call, this, "LinkedDict[", repr(key), "]");
         return map(key);
     }
     
     template <typename Map>
     inline DynamicDict operator|(const Map& other) {
+        LOG_CONTEXT(call, this, "LinkedDict | ", repr(other));
         return union_(other);
     }
 
     template <typename Map>
     inline LinkedDict& operator|=(const Map& other) {
+        LOG_CONTEXT(call, this, "LinkedDict |= ", repr(other));
         update(other);
         return *this;
     }
 
     template <typename Map>
     inline DynamicDict operator-(const Map& other) {
+        LOG_CONTEXT(call, this, "LinkedDict - ", repr(other));
         return difference(other);
     }
 
     template <typename Map>
     inline LinkedDict& operator-=(const Map& other) {
+        LOG_CONTEXT(call, this, "LinkedDict -= ", repr(other));
         difference_update(other);
         return *this;
     }
 
     template <typename Map>
     inline DynamicDict operator&(const Map& other) {
+        LOG_CONTEXT(call, this, "LinkedDict & ", repr(other));
         return intersection(other);
     }
 
     template <typename Map>
     inline LinkedDict& operator&=(const Map& other) {
+        LOG_CONTEXT(call, this, "LinkedDict &= ", repr(other));
         intersection_update(other);
         return *this;
     }
 
     template <typename Map>
     inline DynamicDict operator^(const Map& other) {
+        LOG_CONTEXT(call, this, "LinkedDict ^ ", repr(other));
         return symmetric_difference(other);
     }
 
     template <typename Map>
     inline LinkedDict& operator^=(const Map& other) {
+        LOG_CONTEXT(call, this, "LinkedDict ^= ", repr(other));
         symmetric_difference_update(other);
         return *this;
     }
 
     template <typename Map>
     inline bool operator==(const Map& other) {
+        LOG_CONTEXT(call, this, "LinkedDict == ", repr(other));
         using C = std::remove_cv_t<std::remove_reference_t<Map>>;
         if constexpr (std::is_same_v<C, LinkedDict>) {
             if (this == &other) {
@@ -832,6 +1175,7 @@ public:
 
     template <typename Map>
     inline bool operator!=(const Map& other) {
+        LOG_CONTEXT(call, this, "LinkedDict != ", repr(other));
         using C = std::remove_cv_t<std::remove_reference_t<Map>>;
         if constexpr (std::is_same_v<C, LinkedDict>) {
             if (this == &other) {
@@ -853,6 +1197,7 @@ template <typename K, typename V, unsigned int Flags, typename... Ts>
 inline auto operator<<(std::ostream& stream, const LinkedDict<K, V, Flags, Ts...>& dict)
     -> std::ostream&
 {
+    LOG_CONTEXT(call, &dict, "ostream << LinkedDict");
     stream << linked::build_repr<Yield::ITEM>(
         dict.view,
         "LinkedDict",
@@ -3150,6 +3495,7 @@ public:
         using bertrand::util::parse_int;
         using bertrand::util::none_to_null;
         using bertrand::util::is_truthy;
+
         try {
             PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
             PyObject* iterable = pyargs.parse(
@@ -3198,6 +3544,7 @@ public:
         using bertrand::util::parse_int;
         using bertrand::util::none_to_null;
         using bertrand::util::is_truthy;
+
         try {
             PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);
             PyObject* keys = pyargs.parse("keys");

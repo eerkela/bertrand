@@ -16,7 +16,7 @@ help:
 	@echo "    install locally in editable mode"
 	@echo
 	@echo "make extensions [DEBUG=false]"
-	@echo "    build C++ extensions in-place"
+	@echo "    force recompilation of all C++ extensions in-place"
 	@echo
 	@echo "make release [MAJOR=false, MINOR=false, PATCH=false]"
 	@echo "    build wheels and publish to PyPI (requires one of MAJOR, MINOR, PATCH=true)"
@@ -36,7 +36,7 @@ help:
 
 
 install:
-	DEBUG=$(DEBUG) HEADERS=$(HEADERS) HEADER_PATH=$(HEADER_PATH) pip install .
+	DEBUG=$(DEBUG) HEADERS=$(HEADERS) HEADER_PATH=$(HEADER_PATH) pip install . -v
 
 
 editable:
@@ -83,6 +83,9 @@ clean:
 	@find bertrand/ -name "*.so" -type f -delete
 	@rm -rf build/
 
+#   remove build/ directory
+#	@rm -rf build/
+
 #	remove __pycache__, egg-info, .pytest_cache
 	@find . -type d -name "__pycache__" -exec rm -rf {} +
 	@find . -type f -name "*.py[co]" -delete
@@ -113,4 +116,3 @@ doctest:
 #	run doctests
 	@sphinx-build -b doctest -q docs/source/ docs/build/
 #	@pytest --doctest-glob="*.rst" README.rst docs/
-

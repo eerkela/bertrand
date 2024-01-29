@@ -101,11 +101,9 @@ public:
     ) : Base(
         [&] {
             if constexpr (DEBUG) {
+                LOGGER.tag(LogTag::init);
                 LOGGER.address(this);
-                LOGGER(
-                    LogTag::init, "LinkedList(", repr(max_size), ", ",
-                    repr(spec), ")"
-                );
+                LOGGER("LinkedList(", repr(max_size), ", ", repr(spec), ")");
                 LOGGER.indent();
             }
             return max_size;
@@ -126,10 +124,11 @@ public:
     ) : Base(
         [&] {
             if constexpr (DEBUG) {
+                LOGGER.tag(LogTag::init);
                 LOGGER.address(this);
                 LOGGER(
-                    LogTag::init, "LinkedList(", repr(iterable), ", ",
-                    repr(max_size), ", ", repr(spec), ", ", reverse, ")"
+                    "LinkedList(", repr(iterable), ", ", repr(max_size), ", ",
+                    repr(spec), ", ", reverse, ")"
                 );
                 LOGGER.indent();
             }
@@ -154,9 +153,10 @@ public:
     ) : Base(
         [&] {
             if constexpr (DEBUG) {
+                LOGGER.tag(LogTag::init);
                 LOGGER.address(this);
                 LOGGER(
-                    LogTag::init, "LinkedList(", repr(begin), ", ", repr(end), ", ",
+                    "LinkedList(", repr(begin), ", ", repr(end), ", ",
                     repr(max_size), ", ", repr(spec), ", ", reverse, ")"
                 );
                 LOGGER.indent();
@@ -182,10 +182,11 @@ public:
     ) : Base(
         [&] {
             if constexpr (DEBUG) {
+                LOGGER.tag(LogTag::init);
                 LOGGER.address(this);
                 LOGGER(
-                    LogTag::init, "LinkedList(", repr(init), ", ", repr(max_size),
-                    ", ", repr(spec), ", ", reverse, ")"
+                    "LinkedList(", repr(init), ", ", repr(max_size), ", ",
+                    repr(spec), ", ", reverse, ")"
                 );
                 LOGGER.indent();
             }
@@ -202,8 +203,9 @@ public:
 
     LinkedList(View&& view) : Base([&] {
         if constexpr (DEBUG) {
+            LOGGER.tag(LogTag::init);
             LOGGER.address(this);
-            LOGGER(LogTag::init, "LinkedList(", repr(view), ")  # from view");
+            LOGGER("LinkedList(", repr(view), ")  # from view");
             LOGGER.indent();
         }
         return std::move(view);
@@ -215,8 +217,9 @@ public:
 
     LinkedList(const LinkedList& other) : Base([&] {
         if constexpr (DEBUG) {
+            LOGGER.tag(LogTag::init);
             LOGGER.address(this);
-            LOGGER(LogTag::init, "LinkedList(", &other, ")  # copy");
+            LOGGER("LinkedList(", &other, ")  # copy");
             LOGGER.indent();
         }
         return other.view;
@@ -228,8 +231,9 @@ public:
 
     LinkedList(LinkedList&& other) : Base([&] {
         if constexpr (DEBUG) {
+            LOGGER.tag(LogTag::init);
             LOGGER.address(this);
-            LOGGER(LogTag::init, "LinkedList(", &other, ")  # move");
+            LOGGER("LinkedList(", &other, ")  # move");
             LOGGER.indent();
         }
         return std::move(other.view);
@@ -259,8 +263,9 @@ public:
 
     ~LinkedList() {
         if constexpr (DEBUG) {
+            LOGGER.tag(LogTag::init);
             LOGGER.address(this);
-            LOGGER(LogTag::init, "~LinkedList");
+            LOGGER( "~LinkedList");
             LOGGER.indent();  // indent to be closed in Allocator::~BaseAllocator()
         }
     }
@@ -268,7 +273,7 @@ public:
     #if defined(__GNUC__) && !defined(__clang__)
         #pragma GCC diagnostic pop
     #elif defined(__clang__)
-        // #pragma clang diagnostic pop
+        #pragma clang diagnostic pop
     #elif defined(_MSC_VER)
         #pragma warning(pop)
     #endif
@@ -937,8 +942,9 @@ public:
                         case Py_GT: op = ">"; break;
                         default: op = "???"; break;
                     }
+                    LOGGER.tag(LogTag::call);
                     LOGGER.address(self);
-                    LOGGER(LogTag::call, self, Derived::NAME, " ", op, " ", repr(other));
+                    LOGGER(Derived::NAME, " ", op, " ", repr(other));
                     LOGGER.indent();
                 }
 
@@ -1399,6 +1405,8 @@ public:
         using bertrand::util::none_to_null;
         using bertrand::util::is_truthy;
         using bertrand::util::parse_int;
+
+        std::cout << "DEBUG=" << DEBUG << std::endl;
 
         try {
             PyArgs<CallProtocol::KWARGS> pyargs(meth_name, args, kwargs);

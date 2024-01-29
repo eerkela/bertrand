@@ -112,11 +112,9 @@ public:
     ) : Base(
         [&] {
             if constexpr (DEBUG) {
+                LOGGER.tag(LogTag::init);
                 LOGGER.address(this);
-                LOGGER(
-                    LogTag::init, "LinkedSet(", repr(max_size), ", ", repr(spec),
-                    ")"
-                );
+                LOGGER("LinkedSet(", repr(max_size), ", ", repr(spec), ")");
                 LOGGER.indent();
             }
             return max_size;
@@ -137,10 +135,11 @@ public:
     ) : Base(
         [&] {
             if constexpr (DEBUG) {
+                LOGGER.tag(LogTag::init);
                 LOGGER.address(this);
                 LOGGER(
-                    LogTag::init, "LinkedSet(", repr(iterable), ", ",
-                    repr(max_size), ", ", repr(spec), ", ", reverse, ")"
+                    "LinkedSet(", repr(iterable), ", ", repr(max_size), ", ",
+                    repr(spec), ", ", reverse, ")"
                 );
                 LOGGER.indent();
             }
@@ -165,9 +164,10 @@ public:
     ) : Base(
         [&] {
             if constexpr (DEBUG) {
+                LOGGER.tag(LogTag::init);
                 LOGGER.address(this);
                 LOGGER(
-                    LogTag::init, "LinkedSet(", repr(begin), ", ", repr(end), ", ",
+                    "LinkedSet(", repr(begin), ", ", repr(end), ", ",
                     repr(max_size), ", ", repr(spec), ", ", reverse, ")"
                 );
                 LOGGER.indent();
@@ -193,10 +193,11 @@ public:
     ) : Base(
         [&] {
             if constexpr (DEBUG) {
+                LOGGER.tag(LogTag::init);
                 LOGGER.address(this);
                 LOGGER(
-                    LogTag::init, "LinkedSet(", repr(init), ", ", repr(max_size),
-                    ", ", repr(spec), ", ", reverse, ")"
+                    "LinkedSet(", repr(init), ", ", repr(max_size), ", ",
+                    repr(spec), ", ", reverse, ")"
                 );
                 LOGGER.indent();
             }
@@ -213,8 +214,9 @@ public:
 
     LinkedSet(View&& view) : Base([&] {
         if constexpr (DEBUG) {
+            LOGGER.tag(LogTag::init);
             LOGGER.address(this);
-            LOGGER(LogTag::init, "LinkedSet(", repr(view), ")  # from view");
+            LOGGER("LinkedSet(", repr(view), ")  # from view");
             LOGGER.indent();
         }
         return std::move(view);
@@ -226,8 +228,9 @@ public:
 
     LinkedSet(const LinkedSet& other) : Base([&] {
         if constexpr (DEBUG) {
+            LOGGER.tag(LogTag::init);
             LOGGER.address(this);
-            LOGGER(LogTag::init, "LinkedSet(", &other, ")  # copy");
+            LOGGER("LinkedSet(", &other, ")  # copy");
             LOGGER.indent();
         }
         return other.view;
@@ -239,8 +242,9 @@ public:
 
     LinkedSet(LinkedSet&& other) : Base([&] {
         if constexpr (DEBUG) {
+            LOGGER.tag(LogTag::init);
             LOGGER.address(this);
-            LOGGER(LogTag::init, "LinkedSet(", &other, ")  # move");
+            LOGGER("LinkedSet(", &other, ")  # move");
             LOGGER.indent();
         }
         return std::move(other.view);
@@ -270,8 +274,9 @@ public:
 
     ~LinkedSet() {
         if constexpr (DEBUG) {
+            LOGGER.tag(LogTag::init);
             LOGGER.address(this);
-            LOGGER(LogTag::init, "~LinkedSet");
+            LOGGER("~LinkedSet");
             LOGGER.indent();  // indent to be closed in Allocator::~BaseAllocator()
         }
     }
@@ -279,7 +284,7 @@ public:
     #if defined(__GNUC__) && !defined(__clang__)
         #pragma GCC diagnostic pop
     #elif defined(__clang__)
-        // #pragma clang diagnostic pop
+        #pragma clang diagnostic pop
     #elif defined(_MSC_VER)
         #pragma warning(pop)
     #endif
@@ -333,26 +338,26 @@ public:
 
     /* Add a key to the end of the set if it is not already present. */
     inline void add(const Key& key) {
-        LOG_CONTEXT(call, this,  "LinkedSet::add(", repr(key), ")");
+        LOG_CONTEXT(call, this, "LinkedSet::add(", repr(key), ")");
         linked::add(this->view, key);
     }
 
     /* Add a key to the beginning of the set if it is not already present. */
     inline void add_left(const Key& key) {
-        LOG_CONTEXT(call, this,  "LinkedSet::add_left(", repr(key), ")");
+        LOG_CONTEXT(call, this, "LinkedSet::add_left(", repr(key), ")");
         linked::add_left(this->view, key);
     }
 
     /* Add a key to the set if it is not already present and move it to the front of
     the set, evicting the last element to make room if necessary. */
     inline void lru_add(const Key& key) {
-        LOG_CONTEXT(call, this,  "LinkedSet::lru_add(", repr(key), ")");
+        LOG_CONTEXT(call, this, "LinkedSet::lru_add(", repr(key), ")");
         linked::lru_add(this->view, key);
     }
 
     /* Insert a key at a specific index of the set. */
     inline void insert(long long index, const Key& key) {
-        LOG_CONTEXT(call, this,  "LinkedSet::insert(", index, ", ", repr(key), ")");
+        LOG_CONTEXT(call, this, "LinkedSet::insert(", index, ", ", repr(key), ")");
         linked::insert(this->view, index, key);
     }
 
@@ -363,7 +368,7 @@ public:
         std::optional<long long> stop = std::nullopt
     ) const {
         LOG_CONTEXT(
-            call, this,  "LinkedSet::index(", repr(key), ", ", repr(start), ", ",
+            call, this, "LinkedSet::index(", repr(key), ", ", repr(start), ", ",
             repr(stop), ")"
         );
         return linked::index(this->view, key, start, stop);
@@ -376,7 +381,7 @@ public:
         std::optional<long long> stop = std::nullopt
     ) const {
         LOG_CONTEXT(
-            call, this,  "LinkedSet::count(", repr(key), ", ", repr(start), ", ",
+            call, this, "LinkedSet::count(", repr(key), ", ", repr(start), ", ",
             repr(stop), ")"
         );
         return linked::count(this->view, key, start, stop);
@@ -384,69 +389,69 @@ public:
 
     /* Check if the set contains a certain key. */
     inline bool contains(const Key& key) const {
-        LOG_CONTEXT(call, this,  "LinkedSet::contains(", repr(key), ")");
+        LOG_CONTEXT(call, this, "LinkedSet::contains(", repr(key), ")");
         return linked::contains(this->view, key);
     }
 
     /* Check if the set contains a certain key and move it to the front of the set
     if so. */
     inline bool lru_contains(const Key& key) {
-        LOG_CONTEXT(call, this,  "LinkedSet::lru_contains(", repr(key), ")");
+        LOG_CONTEXT(call, this, "LinkedSet::lru_contains(", repr(key), ")");
         return linked::lru_contains(this->view, key);
     }
 
     /* Remove a key from the set. */
     inline void remove(const Key& key) {
-        LOG_CONTEXT(call, this,  "LinkedSet::remove(", repr(key), ")");
+        LOG_CONTEXT(call, this, "LinkedSet::remove(", repr(key), ")");
         linked::remove(this->view, key);
     }
 
     /* Remove a key from the set if it is present. */
     inline void discard(const Key& key) {
-        LOG_CONTEXT(call, this,  "LinkedSet::discard(", repr(key), ")");
+        LOG_CONTEXT(call, this, "LinkedSet::discard(", repr(key), ")");
         linked::discard(this->view, key);
     }
 
     /* Remove a key from the set and return its value. */
     inline Key pop(long long index = -1) {
-        LOG_CONTEXT(call, this,  "LinkedSet::pop(", index, ")");
+        LOG_CONTEXT(call, this, "LinkedSet::pop(", index, ")");
         return linked::pop(this->view, index);
     }
 
     /* Remove all elements from the set. */
     inline void clear() {
-        LOG_CONTEXT(call, this,  "LinkedSet::clear()");
+        LOG_CONTEXT(call, this, "LinkedSet::clear()");
         this->view.clear();
     }
 
     /* Return a shallow copy of the set. */
     inline LinkedSet copy() const {
-        LOG_CONTEXT(call, this,  "LinkedSet::copy()");
+        LOG_CONTEXT(call, this, "LinkedSet::copy()");
         return LinkedSet(this->view.copy());
     }
 
     /* Sort the set in-place according to an optional key func. */
     template <typename Func>
     inline void sort(Func key = nullptr, bool reverse = false) {
-        LOG_CONTEXT(call, this,  "LinkedSet::sort(", repr(key), ", ", reverse, ")");
+        LOG_CONTEXT(call, this, "LinkedSet::sort(", repr(key), ", ", reverse, ")");
         linked::sort<linked::MergeSort>(this->view, key, reverse);
     }
 
     /* Reverse the order of elements in the set in-place. */
     inline void reverse() {
-        LOG_CONTEXT(call, this,  "LinkedSet::reverse()");
+        LOG_CONTEXT(call, this, "LinkedSet::reverse()");
         linked::reverse(this->view);
     }
 
     /* Shift all elements in the set to the right by the specified number of steps. */
     inline void rotate(long long steps = 1) {
-        LOG_CONTEXT(call, this,  "LinkedSet::rotate(", steps, ")");
+        LOG_CONTEXT(call, this, "LinkedSet::rotate(", steps, ")");
         linked::rotate(this->view, steps);
     }
 
     /* Return a new set with elements from this set and all other containers. */
     inline DynamicSet union_() const {
-        LOG_CONTEXT(call, this,  "LinkedSet::union()");
+        LOG_CONTEXT(call, this, "LinkedSet::union()");
         return as_dynamic();
     }
 
@@ -454,7 +459,7 @@ public:
     template <typename First, typename... Rest>
     inline DynamicSet union_(First&& first, Rest&&... rest) const {
         LOG_CONTEXT(
-            call, this,  "LinkedSet::union(", repr(first), ", ", "... (+",
+            call, this, "LinkedSet::union(", repr(first), ", ... (+",
             sizeof...(Rest), "))"
         );
         DynamicSet result = linked::union_<false>(
@@ -469,7 +474,7 @@ public:
     /* Return a new set with elements from this set and all other containers.  Appends
     to the head of the set rather than the tail. */
     inline DynamicSet union_left() const {
-        LOG_CONTEXT(call, this,  "LinkedSet::union_left()");
+        LOG_CONTEXT(call, this, "LinkedSet::union_left()");
         return as_dynamic();
     }
 
@@ -478,7 +483,7 @@ public:
     template <typename First, typename... Rest>
     inline DynamicSet union_left(First&& first, Rest&&... rest) const {
         LOG_CONTEXT(
-            call, this,  "LinkedSet::union_left(", repr(first), ", ", "... (+",
+            call, this, "LinkedSet::union_left(", repr(first), ", ... (+",
             sizeof...(Rest), "))"
         );
         DynamicSet result = linked::union_<true>(
@@ -495,7 +500,7 @@ public:
     template <typename... Containers>
     inline void update(Containers&&... items) {
         LOG_CONTEXT(
-            call, this,  "LinkedSet::update(... (+", sizeof...(Containers), "))"
+            call, this, "LinkedSet::update(... (+", sizeof...(Containers), "))"
         );
         (
             linked::update<false>(
@@ -510,7 +515,7 @@ public:
     template <typename... Containers>
     inline void update_left(Containers&&... items) {
         LOG_CONTEXT(
-            call, this,  "LinkedSet::update_left(... (+", sizeof...(Containers), "))"
+            call, this, "LinkedSet::update_left(... (+", sizeof...(Containers), "))"
         );
         (
             linked::update<true>(
@@ -525,7 +530,7 @@ public:
     template <typename... Containers>
     inline void lru_update(Containers&&... items) {
         LOG_CONTEXT(
-            call, this,  "LinkedSet::lru_update(... (+", sizeof...(Containers), "))"
+            call, this, "LinkedSet::lru_update(... (+", sizeof...(Containers), "))"
         );
         (
             linked::lru_update(
@@ -537,7 +542,7 @@ public:
 
     /* Return a new set with elements common to this set and all other containers. */
     inline DynamicSet intersection() const {
-        LOG_CONTEXT(call, this,  "LinkedSet::intersection()");
+        LOG_CONTEXT(call, this, "LinkedSet::intersection()");
         return as_dynamic();
     }
 
@@ -545,7 +550,7 @@ public:
     template <typename First, typename... Rest>
     inline DynamicSet intersection(First&& first, Rest&&... rest) const {
         LOG_CONTEXT(
-            call, this,  "LinkedSet::intersection(", repr(first), ", ", "... (+",
+            call, this, "LinkedSet::intersection(", repr(first), ", ... (+",
             sizeof...(Rest), "))"
         );
         DynamicSet result = linked::intersection(
@@ -561,7 +566,7 @@ public:
     template <typename... Containers>
     inline void intersection_update(Containers&&... items) {
         LOG_CONTEXT(
-            call, this,  "LinkedSet::intersection_update(... (+",
+            call, this, "LinkedSet::intersection_update(... (+",
             sizeof...(Containers), "))"
         );
         (
@@ -575,7 +580,7 @@ public:
     /* Return a new set with elements from this set that are not common to any other
     containers. */
     inline DynamicSet difference() const {
-        LOG_CONTEXT(call, this,  "LinkedSet::difference()");
+        LOG_CONTEXT(call, this, "LinkedSet::difference()");
         return as_dynamic();
     }
 
@@ -584,7 +589,7 @@ public:
     template <typename First, typename... Rest>
     inline DynamicSet difference(First&& first, Rest&&... rest) const {
         LOG_CONTEXT(
-            call, this,  "LinkedSet::difference(", repr(first), ", ", "... (+",
+            call, this, "LinkedSet::difference(", repr(first), ", ... (+",
             sizeof...(Rest), "))"
         );
         DynamicSet result = linked::difference(
@@ -600,7 +605,7 @@ public:
     template <typename... Containers>
     inline void difference_update(Containers&&... items) {
         LOG_CONTEXT(
-            call, this,  "LinkedSet::difference_update(... (+", sizeof...(Containers),
+            call, this, "LinkedSet::difference_update(... (+", sizeof...(Containers),
             "))"
         );
         (
@@ -616,7 +621,7 @@ public:
     template <typename Container>
     inline DynamicSet symmetric_difference(Container&& items) const {
         LOG_CONTEXT(
-            call, this,  "LinkedSet::symmetric_difference(", repr(items), ")"
+            call, this, "LinkedSet::symmetric_difference(", repr(items), ")"
         );
         return DynamicSet(
             linked::symmetric_difference<false>(
@@ -630,7 +635,7 @@ public:
     template <typename Container>
     inline DynamicSet symmetric_difference_left(Container&& items) const {
         LOG_CONTEXT(
-            call, this,  "LinkedSet::symmetric_difference_left(", repr(items), ")"
+            call, this, "LinkedSet::symmetric_difference_left(", repr(items), ")"
         );
         return DynamicSet(
             linked::symmetric_difference<true>(
@@ -644,7 +649,7 @@ public:
     template <typename Container>
     inline void symmetric_difference_update(Container&& items) {
         LOG_CONTEXT(
-            call, this,  "LinkedSet::symmetric_difference_update(", repr(items), ")"
+            call, this, "LinkedSet::symmetric_difference_update(", repr(items), ")"
         );
         linked::symmetric_difference_update<false>(
             this->view, std::forward<Container>(items)
@@ -656,7 +661,7 @@ public:
     template <typename Container>
     inline void symmetric_difference_update_left(Container&& items) {
         LOG_CONTEXT(
-            call, this,  "LinkedSet::symmetric_difference_update_left(", repr(items), ")"
+            call, this, "LinkedSet::symmetric_difference_update_left(", repr(items), ")"
         );
         linked::symmetric_difference_update<true>(
             this->view, std::forward<Container>(items)
@@ -666,7 +671,7 @@ public:
     /* Check whether the set has no elements in common with another container. */
     template <typename Container>
     inline bool isdisjoint(Container&& items) const {
-        LOG_CONTEXT(call, this,  "LinkedSet::isdisjoint(", repr(items), ")");
+        LOG_CONTEXT(call, this, "LinkedSet::isdisjoint(", repr(items), ")");
         return linked::isdisjoint(
             this->view, std::forward<Container>(items)
         );
@@ -675,7 +680,7 @@ public:
     /* Check whether all items within the set are also present in another container. */
     template <typename Container>
     inline bool issubset(Container&& items) const {
-        LOG_CONTEXT(call, this,  "LinkedSet::issubset(", repr(items), ")");
+        LOG_CONTEXT(call, this, "LinkedSet::issubset(", repr(items), ")");
         return linked::issubset<false>(
             this->view, std::forward<Container>(items)
         );
@@ -684,7 +689,7 @@ public:
     /* Check whether the set contains all items within another container. */
     template <typename Container>
     inline bool issuperset(Container&& items) const {
-        LOG_CONTEXT(call, this,  "LinkedSet::issuperset(", repr(items), ")");
+        LOG_CONTEXT(call, this, "LinkedSet::issuperset(", repr(items), ")");
         return linked::issuperset<false>(
             this->view, std::forward<Container>(items)
         );
@@ -692,25 +697,25 @@ public:
 
     /* Get the linear distance between two elements within the set. */
     inline long long distance(const Key& from, const Key& to) const {
-        LOG_CONTEXT(call, this,  "LinkedSet::distance(", repr(from), ", ", repr(to), ")");
+        LOG_CONTEXT(call, this, "LinkedSet::distance(", repr(from), ", ", repr(to), ")");
         return linked::distance(this->view, from, to);
     }
 
     /* Swap the positions of two elements within the set. */
     inline void swap(const Key& key1, const Key& key2) {
-        LOG_CONTEXT(call, this,  "LinkedSet::swap(", repr(key1), ", ", repr(key2), ")");
+        LOG_CONTEXT(call, this, "LinkedSet::swap(", repr(key1), ", ", repr(key2), ")");
         linked::swap(this->view, key1, key2);
     }
 
     /* Move a key within the set by the specified number of steps. */
     inline void move(const Key& key, long long steps) {
-        LOG_CONTEXT(call, this,  "LinkedSet::move(", repr(key), ", ", steps, ")");
+        LOG_CONTEXT(call, this, "LinkedSet::move(", repr(key), ", ", steps, ")");
         linked::move(this->view, key, steps);
     }
 
     /* Move a key within the set to the specified index. */
     inline void move_to_index(const Key& key, long long index) {
-        LOG_CONTEXT(call, this,  "LinkedSet::move_to_index(", repr(key), ", ", index, ")");
+        LOG_CONTEXT(call, this, "LinkedSet::move_to_index(", repr(key), ", ", index, ")");
         linked::move_to_index(this->view, key, index);
     }
 
@@ -731,14 +736,14 @@ public:
     inline auto position(long long index)
         -> linked::ElementProxy<View, Yield::KEY>
     {
-        LOG_CONTEXT(call, this,  "LinkedSet::position(", index, ")");
+        LOG_CONTEXT(call, this, "LinkedSet::position(", index, ")");
         return linked::position<Yield::KEY>(this->view, index);
     }
 
     inline auto position(long long index) const
         -> const linked::ElementProxy<const View, Yield::KEY>
     {
-        LOG_CONTEXT(call, this,  "LinkedSet::position(", index, ")");
+        LOG_CONTEXT(call, this, "LinkedSet::position(", index, ")");
         return linked::position<Yield::KEY>(this->view, index);
     }
 
@@ -808,82 +813,82 @@ public:
      */
 
     inline auto operator[](long long index) {
-        LOG_CONTEXT(call, this,  "LinkedSet[", index, "]");
+        LOG_CONTEXT(call, this, "LinkedSet[", index, "]");
         return position(index);
     }
 
     inline auto operator[](long long index) const {
-        LOG_CONTEXT(call, this,  "LinkedSet[", index, "]");
+        LOG_CONTEXT(call, this, "LinkedSet[", index, "]");
         return position(index);
     }
 
     template <typename Container>
     inline DynamicSet operator|(const Container& other) const {
-        LOG_CONTEXT(call, this,  "LinkedSet | ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedSet | ", repr(other));
         return union_(other);
     }
 
     template <typename Container>
     inline LinkedSet& operator|=(const Container& other) {
-        LOG_CONTEXT(call, this,  "LinkedSet |= ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedSet |= ", repr(other));
         update(other);
         return *this;
     }
 
     template <typename Container>
     inline DynamicSet operator-(const Container& other) const {
-        LOG_CONTEXT(call, this,  "LinkedSet - ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedSet - ", repr(other));
         return difference(other);
     }
 
     template <typename Container>
     inline LinkedSet& operator-=(const Container& other) {
-        LOG_CONTEXT(call, this,  "LinkedSet -= ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedSet -= ", repr(other));
         difference_update(other);
         return *this;
     }
 
     template <typename Container>
     inline DynamicSet operator&(const Container& other) const {
-        LOG_CONTEXT(call, this,  "LinkedSet & ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedSet & ", repr(other));
         return intersection(other);
     }
 
     template <typename Container>
     inline LinkedSet& operator&=(const Container& other) {
-        LOG_CONTEXT(call, this,  "LinkedSet &= ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedSet &= ", repr(other));
         intersection_update(other);
         return *this;
     }
 
     template <typename Container>
     inline DynamicSet operator^(const Container& other) const {
-        LOG_CONTEXT(call, this,  "LinkedSet ^ ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedSet ^ ", repr(other));
         return symmetric_difference(other);
     }
 
     template <typename Container>
     inline LinkedSet& operator^=(const Container& other) {
-        LOG_CONTEXT(call, this,  "LinkedSet ^= ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedSet ^= ", repr(other));
         symmetric_difference_update(other);
         return *this;
     }
 
     template <typename Container>
     inline bool operator<(const Container& other) const {
-        LOG_CONTEXT(call, this,  "LinkedSet < ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedSet < ", repr(other));
         return linked::issubset<true>(this->view, other);
     }
 
     template <typename Container>
     inline bool operator<=(const Container& other) const {
-        LOG_CONTEXT(call, this,  "LinkedSet <= ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedSet <= ", repr(other));
         return linked::issubset<false>(this->view, other);
     }
 
     template <typename Container>
     inline bool operator==(const Container& other) const {
-        LOG_CONTEXT(call, this,  "LinkedSet == ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedSet == ", repr(other));
         using C = std::remove_cv_t<std::remove_reference_t<Container>>;
         if constexpr (std::is_same_v<C, LinkedSet>) {
             if (this == &other) {
@@ -895,7 +900,7 @@ public:
 
     template <typename Container>
     inline bool operator!=(const Container& other) const {
-        LOG_CONTEXT(call, this,  "LinkedSet != ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedSet != ", repr(other));
         using C = std::remove_cv_t<std::remove_reference_t<Container>>;
         if constexpr (std::is_same_v<C, LinkedSet>) {
             if (this == &other) {
@@ -907,13 +912,13 @@ public:
 
     template <typename Container>
     inline bool operator>=(const Container& other) const {
-        LOG_CONTEXT(call, this,  "LinkedSet >= ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedSet >= ", repr(other));
         return linked::issuperset<false>(this->view, other);
     }
 
     template <typename Container>
     inline bool operator>(const Container& other) const {
-        LOG_CONTEXT(call, this,  "LinkedSet > ", repr(other));
+        LOG_CONTEXT(call, this, "LinkedSet > ", repr(other));
         return linked::issuperset<true>(this->view, other);
     }
 
@@ -924,7 +929,7 @@ template <typename T, unsigned int Flags, typename... Ts>
 inline auto operator<<(std::ostream& stream, const LinkedSet<T, Flags, Ts...>& set)
     -> std::ostream&
 {
-    LOG_CONTEXT(call, &set,  "ostream << LinkedSet");
+    LOG_CONTEXT(call, &set, "ostream << LinkedSet");
     stream << linked::build_repr(
         set.view,
         "LinkedSet",
@@ -1152,7 +1157,7 @@ public:
 
     static PyObject* symmetric_difference(Derived* self, PyObject* items) {
         PYLOG_CONTEXT(
-            call, self,  Derived::NAME, "::symmetric_difference(", repr(items), ")"
+            call, self, Derived::NAME, "::symmetric_difference(", repr(items), ")"
         );
         return visit(self, [&items](auto& set) {
             return unwrap_python(items, [&set](auto& other) {
@@ -1163,7 +1168,7 @@ public:
 
     static PyObject* symmetric_difference_left(Derived* self, PyObject* items) {
         PYLOG_CONTEXT(
-            call, self,  Derived::NAME, "::symmetric_difference_left(", repr(items), ")"
+            call, self, Derived::NAME, "::symmetric_difference_left(", repr(items), ")"
         );
         return visit(self, [&items](auto& set) {
             return unwrap_python(items, [&set](auto& other) {

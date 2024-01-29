@@ -4,6 +4,7 @@ machinery, type primitives, and helper functions for detecting and resolving typ
 # pylint: disable=unused-argument, using-constant-test, import-outside-toplevel
 from __future__ import annotations
 
+import builtins
 from collections import Counter, deque
 import inspect
 from types import MappingProxyType
@@ -18,25 +19,35 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 from pandas.api.extensions import register_extension_dtype
-from pandas.core.arrays import ExtensionArray, NumpyExtensionArray
+from pandas.core.arrays import ExtensionArray, NumpyExtensionArray  # type: ignore
 from pandas.core.dtypes.base import ExtensionDtype
 from pandas.core.dtypes.common import is_scalar
-from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries
+from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries  # type: ignore
 import regex as re  # alternate (PCRE-style) regex engine
 
 from bertrand.structs import LinkedSet, LinkedDict
 
 
-# NOTE: this module is kind of huge, and would ordinarily be split into multiple files.
-# However, due to the depth and complexity of metaprogramming, doing so would introduce
-# a large number of circular dependencies, and would make the code much harder to
-# read and maintain overall.  Additionally, the metaclass machinery is sensitive to the
-# order in which classes are defined, and much of the length is due to inline
-# documentation rather than actual code, so splitting it up would not necessarily make
-# it any easier to navigate.  As such, I have opted to keep everything in one place for
-# simplicity, and to copy docs wherever possible to compress the overall size.  As
-# such, this file essentially contains all of the internals of the type system itself,
-# representing a single source of truth for how it works.
+# NOTE: This module is kind of huge, and would ordinarily be split up into multiple
+# files.  However, due to the depth and complexity of metaprogramming, doing so would
+# introduce a large number of circular dependencies, and would make the code much
+# harder to maintain and read overall.  Additionally, the metaclass machinery is
+# sensitive to the order in which classes are defined, so splitting it up would mess
+# with code formatters and not necessarily make the result any easier to navigate.  As
+# such, I have opted to keep everything in one place to reduce spaghettification, and
+# allow this file to act like a single source of truth for the type system's internals.
+# If you're new to the codebase, I would suggest reading through this file in
+# sequential order starting from the top.  The comments should help guide you through
+# the code, and the docstrings provide a high-level overview of the type system's
+# architecture, which are directly mirrored in the online documentation.
+
+# For an example of how to define a new type, see the example_type.py or
+# example_decorator.py files alongside this one.  As with the docstrings, those are
+# also hosted in the online documentation in their entirety.
+
+
+# TODO: reorder this code to be more sequential and self-documenting.
+
 
 
 # TODO: occasionally get a hangup when building registry.  This is probably due to
@@ -58,6 +69,14 @@ from bertrand.structs import LinkedSet, LinkedDict
 # What we should probably do is force from_types to convert the input into a linked
 # set.
 
+
+# NOTE: seems like a python-side bug rather than C++.  Nothing shows up on the log,
+# at least as far as memory allocations/method calls go.  It's possible that there's
+# a link bug causing a circular reference somewhere, but that might be hard to track
+# down.
+# -> The best way to tackle this might be to add a logging statement to the iterator
+# class itself, and see if it's getting stuck in an infinite loop somewhere.  If we
+# print out the current node at each step, we should be able to detect a cycle.
 
 
 class Empty:
@@ -125,6 +144,8 @@ RLE_ARRAY: TypeAlias = np.ndarray[Any, np.dtype[tuple[np.object_, np.intp]]]
 
 
 DEBUG: bool = False  # if True, print a debug message whenever a new type is created
+# TODO: this should use the same logging interface as the C++ side so that all logs
+# are in the same place.  Multi-line logs are supported via constexpr DEBUG context
 
 
 def get_from_calling_context(name: str, skip: int = 0) -> Any:
@@ -1110,6 +1131,10 @@ REGISTRY = TypeRegistry()
 # trivial to parse python-style type hints.
 
 
+# TODO: see if these can be placed below the type definitions without breaking
+# anything.
+
+
 # NOTE: string parsing currently does not support dictionaries or key-value mappings
 # within Union[] operator (i.e. Union[{"foo": ...}], Union[[("foo", ...)]]).  This
 # is technically possible to implement, but would add a lot of extra complexity.
@@ -1121,16 +1146,16 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
     Parameters
     ----------
     target : TYPESPEC | Iterable[TYPESPEC]
-        A type specifier to convert.  This can be a python type, a numpy/pandas dtype,
-        a string in the type specification mini-language, a previously-normalized
-        bertrand type, or an iterable containing any of the above.  If a mapping is
-        provided, then the keys will be used as column names and the values will be
-        interpreted as type specifiers.
+        A type specifier to convert.  This can be a python type, a numpy/pandas dtype
+        object, a string in the type specification mini-language, a previously-
+        normalized bertrand type, or an iterable containing any of the above.  If a
+        mapping is provided, then the keys will be used as column names and the values
+        will be interpreted as type specifiers.
 
     Returns
     -------
     META
-        The equivalent bertrand type.
+        A normalized bertrand type.
 
     Raises
     ------
@@ -1140,6 +1165,9 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
     See Also
     --------
     detect : Detect the type of a given object or container.
+    TypeMeta.aliases : Get a mutable proxy for a type's aliases.
+    TypeRegistry.aliases :
+        Get a global dictionary mapping aliases to their corresponding types.
 
     Notes
     -----
@@ -1147,13 +1175,12 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
     to pass any of the supported type specifiers in place of a proper bertrand type.
 
     The types that are returned by this function can be customized by modifying their
-    aliases or adding special constructor methods to return parametrized outputs.  For
-    reference, the global mapping for each type can be accessed via the
-    :attr:`TypeRegistry.aliases` attribute.
+    :attr:`aliases <TypeMeta.aliases>` at runtime and/or including special constructor
+    methods to account for parametrization.
 
     Examples
     --------
-    :func:`resolve` can accept other bertrand types, in which case it will return its
+    :func:`resolve` can accept valid bertrand types, in which case it will return its
     argument unchanged.
 
     .. doctest::
@@ -1165,8 +1192,9 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         >>> resolve(Int | Float)
         Union[Int, Float]
 
-    It can also accept python types in standard syntax, in which case it will search
-    the aliases dictionary for a matching type (or types in the case of a union):
+    It can also accept python types in `PEP 484 <https://peps.python.org/pep-0484/>`_
+    syntax, in which case it will search the global :attr:`aliases <TypeRegistry.aliases>`
+    for a matching type (or types in the case of a union):
 
     .. doctest::
 
@@ -1175,8 +1203,8 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         >>> resolve(str | bool)
         Union[PythonString, PythonBool]
 
-    Numpy/pandas dtypes can be parsed similarly, with optional parametrization for
-    each type:
+    Numpy/pandas dtype objects can be parsed similarly, with optional, per-type
+    parametrization:
 
     .. doctest::
 
@@ -1189,8 +1217,9 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         >>> resolve(pd.SparseDtype(np.int64))
         Sparse[NumpyInt64, 0]
 
-    Numpy-style string specifiers are also supported, with similar semantics to numpy's
-    :func:`dtype() <numpy.dtype>` function:
+    Numpy-style string specifiers are also supported, with similar semantics to
+    :func:`numpy.dtype`.  By default, bertrand recognizes all of the existing type
+    codes used by numpy, with only a few :ref:`minor differences <TODO>`:
 
     .. doctest::
     
@@ -1201,10 +1230,10 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         >>> resolve("U32")
         SizedUnicode[32]
 
-    However, bertrand's string parsing capabilities are significantly more powerful
+    Bertrand's string parsing capabilities, however, are significantly more powerful
     than numpy's, and can be used to specify more complex types.  For instance, one can
-    pass arguments to a type's constructor by enclosing them in square brackets,
-    equivalent to normal bertrand syntax:
+    pass arbitrary arguments to a type's constructor by enclosing them in square
+    brackets, equivalent to normal bertrand syntax:
 
     .. doctest::
 
@@ -1217,20 +1246,17 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         >>> resolve("sparse[bool, False]")
         Sparse[Bool, False]
 
-    This syntax is fully generalized, and each type can define its own semantics for
-    each argument, which they can parse however they like.  Just like their bertrand
-    equivalents, abstract types will accept an optional backend specifier and forward
-    any additional arguments to that type.  What's more, the arguments can themselves
-    be nested type specifiers, which is particularly relevant for decorator types:
+    This syntax is fully generalized and directly mirrors that of the type system
+    itself, such that the two are completely interchangeable.  In fact, the arguments
+    can themselves be type specifiers, which is particularly relevant for decorator
+    types:
 
     .. doctest::
 
-        >>> resolve("Sparse[Timedelta[numpy, 10ns]]")
+        >>> resolve("Sparse[Timedelta[numpy, 10, ns]]") is Sparse[Timedelta["numpy", 10, "ns"]]
         Sparse[NumpyTimedelta64['ns', 10], NaT]
-        >>> resolve("Sparse[Categorical[String[python]]]")
-        Sparse[Categorical[PythonString], <NA>]
 
-    Similarly, multiple comma or pipe-separated types can be given to form a union:
+    Similarly, multiple comma- or pipe-separated types can be given to form a union:
 
     .. doctest::
 
@@ -1241,7 +1267,7 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         >>> resolve("Union[Int64[pandas], Categorical[string, [a, b, c]]")
         Union[PandasInt64, Categorical[String, ['a', 'b', 'c']]]
 
-    Optional column names can also be defined to create a structured union:
+    And optional column names can be specified to create a structured union:
 
     .. doctest::
 
@@ -1252,9 +1278,10 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         >>> resolve("Union[foo: categorical[string], bar: decimal]")
         Union['foo': Categorical[String, <NA>], 'bar': Decimal]
 
-    This level of string parsing allows the type system to interpret type hints in
-    several different formats, both stringified and not, with identical semantics to
-    the normal bertrand types.
+    This level of string parsing and symmetry with the type system is what allows
+    bertrand to interpret `PEP 484 <https://peps.python.org/pep-0484/>`_-style type
+    hints in a wide variety of formats, including when stringified via
+    ``from __future__ import annotations``:
 
     .. doctest::
 
@@ -1268,16 +1295,17 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         >>> resolve(foo.__annotations__["return"])
         Int64
 
-    Lastly, :func:`resolve` can also accept an iterable containing any of the above
-    type specifiers, in which case it will return a union containing each type.
+    In addition, :func:`resolve` can also accept an iterable containing any of the
+    above type specifiers, in which case it will return a union containing each type.
 
     .. doctest::
 
         >>> resolve([Decimal, float, pd.BooleanDtype(), "int32"])
         Union[Decimal, PythonFloat, PandasBool, Int32]
 
-    If the iterable is a mapping or only contains key-value pairs of length 2, then
-    the keys will be interpreted as column names in a structured union:
+    Any nested unions will be flattened during this process.  If the iterable is a
+    mapping or exclusively contains key-value pairs of length 2, then the keys will be
+    interpreted as column names in a structured union:
 
     .. doctest::
 
@@ -1286,8 +1314,8 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
         >>> resolve([("foo", complex), ("bar", Unsigned["pandas"])])
         Union['foo': PythonComplex, 'bar': PandasUInt64]
 
-    These key-value pairs can also be represented as slices, which is used internally
-    by the normal union constructor to create structured unions:
+    These pairs can also be represented as slices, which reflects the syntax used by
+    the union constructor to create structured unions:
 
     .. doctest::
 
@@ -1298,7 +1326,7 @@ def resolve(target: TYPESPEC | Iterable[TYPESPEC]) -> META:
 
     Lastly, each alias (python type, numpy/pandas dtype, or string specifier) can be
     remapped dynamically at runtime, which will automatically change the behavior of
-    :func:`resolve`:
+    this function:
 
     .. doctest::
 
@@ -7255,13 +7283,8 @@ class DecoratorBuilder(TypeBuilder):
                 )
 
 
-################################
-####    SYNTHETIC DTYPES    ####
-################################
-
-
-# NOTE: docs for these classes are (for the most part) copied directly from pandas
-# source code.  Any changes to the pandas documentation should be reflected here.
+# NOTE: docs for the following classes are (for the most part) copied directly from
+# pandas source code.  Any changes to the pandas documentation should be reflected here.
 
 
 class SyntheticDtype(ExtensionDtype):
@@ -8924,26 +8947,25 @@ def synthesize_dtype(typ: TypeMeta) -> DTYPE:
     if typ.dtype is not None:
         return typ.dtype
 
-    def _check_boolean(cls: type[SyntheticDtype]) -> bool:
+    def _is_bool(cls: type[SyntheticDtype]) -> bool:  # type: ignore
         from ..boolean import Bool
-        return issubclass(cls._bertrand_type, Bool)  # type: ignore
+        return issubclass(cls._bertrand_type, Bool)
 
     @register_extension_dtype
     class Dtype(SyntheticDtype):
-        """A unique subclass of SyntheticDtype that wraps around the provided type."""
-
+        __doc__ = f"Pandas extension dtype for series of type: {repr(typ)}"
         _array_type: type[SyntheticArray] | None = None
         _bertrand_type = typ
         name = repr(typ)
         type = typ.scalar
         kind = "O"
         na_value = typ.missing
-        _is_boolean = TypeProperty(_check_boolean)
+        _is_boolean = TypeProperty(_is_bool)
         _is_numeric = typ.is_numeric
         _can_hold_na = typ.is_nullable
 
         @classmethod
-        def construct_array_type(cls) -> type[SyntheticArray]:
+        def construct_array_type(cls) -> builtins.type[SyntheticArray]:
             """Return a unique subclass of SyntheticArray that can store objects of
             this type.
 
@@ -8957,20 +8979,15 @@ def synthesize_dtype(typ: TypeMeta) -> DTYPE:
                 return cls._array_type
 
             class Array(SyntheticArray):
-
+                __doc__ = (
+                    f"Pandas extension array for series of type: {repr(typ)} "
+                    f"(dtype: object)"
+                )
                 _bertrand_type = typ
 
-            Array.__doc__ = (
-                f"An abstract data type, automatically generated to store\n"
-                f"{repr(typ)} objects."
-            )
             cls._array_type = Array
             return Array
 
-    Dtype.__doc__ = (
-        f"An abstract data type, automatically generated to store {typ.scalar}\n"
-        f"objects."
-    )
     return Dtype()
 
 
@@ -9007,7 +9024,8 @@ def _rectify(
     idx = nans.argmin()
     if nans[idx]:  # array contains only missing values
         from ..missing import Missing
-        return Missing.dtype.construct_array_type()(arr)
+        # pylint: disable=no-member
+        return Missing.dtype.construct_array_type()(arr)  # type: ignore
 
     # get first non-missing element and detect its type
     first = arr[idx]
@@ -9025,7 +9043,7 @@ def _rectify(
         array_type = NumpyExtensionArray
 
     # pylint: disable=protected-access
-    return array_type._from_sequence(arr, dtype=dtype, copy=False)
+    return array_type._from_sequence(arr, dtype=dtype, copy=False)  # type: ignore
 
 
 ###############################
