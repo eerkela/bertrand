@@ -16,7 +16,7 @@
  * automatically logs the error message to the DEBUG log.
  *
  * reference:
- *      https://docs.python.org/3/c-api/exceptions.html?highlight=pyexc#standardwarningcategories
+ *      https://docs.python.org/3/c-api/exceptions.html#standard-exceptions
  *
  * NOTE: Python 3.12 changes the API for fetching and restoring errors, so we need to
  * use conditional compilation to support both versions.
@@ -50,8 +50,7 @@ public:
             if (exc_type == nullptr) {
                 LOG(err, "RuntimeError: ", what);
             } else {
-                PyTypeObject* type_struct = reinterpret_cast<PyTypeObject*>(exc_type);
-                LOG(err, type_struct->tp_name, ": ", what);
+                LOG(err, reinterpret_cast<PyTypeObject*>(exc_type)->tp_name, ": ", what);
             }
         }
     }
@@ -66,8 +65,7 @@ public:
             if (exc_type == nullptr) {
                 LOG(err, "RuntimeError: ", what);
             } else {
-                PyTypeObject* type_struct = reinterpret_cast<PyTypeObject*>(exc_type);
-                LOG(err, type_struct->tp_name, ": ", what);
+                LOG(err, reinterpret_cast<PyTypeObject*>(exc_type)->tp_name, ": ", what);
             }
         }
     }
@@ -82,8 +80,7 @@ public:
             if (exc_type == nullptr) {
                 LOG(err, "RuntimeError: ", what);
             } else {
-                PyTypeObject* type_struct = reinterpret_cast<PyTypeObject*>(exc_type);
-                LOG(err, type_struct->tp_name, ": ", what);
+                LOG(err, reinterpret_cast<PyTypeObject*>(exc_type)->tp_name, ": ", what);
             }
         }
     }
@@ -115,8 +112,10 @@ public:
             }
 
             if constexpr (DEBUG) {
-                PyTypeObject* type_struct = reinterpret_cast<PyTypeObject*>(exc_type);
-                PYLOG(err, type_struct->tp_name, ": ", what());
+                PYLOG(
+                    err, reinterpret_cast<PyTypeObject*>(exc_type)->tp_name, ": ",
+                    what()
+                );
             }
 
             if (exc_tb == nullptr) {
@@ -135,8 +134,10 @@ public:
             }
 
             if constexpr (DEBUG) {
-                PyTypeObject* type_struct = reinterpret_cast<PyTypeObject*>(exc_type);
-                PYLOG(err, type_struct->tp_name, ": ", what());
+                PYLOG(
+                    err, reinterpret_cast<PyTypeObject*>(exc_type)->tp_name, ": ",
+                    what()
+                );
             }
 
             if (exc_tb == nullptr) {
@@ -267,6 +268,25 @@ struct RuntimeError : public Exception {
 
     RuntimeError(const std::string_view& what, PyObject* exc_tb = nullptr) :
         Exception(what, Py_NewRef(PyExc_RuntimeError), exc_tb)
+    {}
+
+};
+
+
+struct FileNotFoundError : public Exception {
+    using Exception::Exception;
+    using Exception::operator=;
+
+    FileNotFoundError(const char* what, PyObject* exc_tb = nullptr) :
+        Exception(what, Py_NewRef(PyExc_FileNotFoundError), exc_tb)
+    {}
+
+    FileNotFoundError(const std::string& what, PyObject* exc_tb = nullptr) :
+        Exception(what, Py_NewRef(PyExc_FileNotFoundError), exc_tb)
+    {}
+
+    FileNotFoundError(const std::string_view& what, PyObject* exc_tb = nullptr) :
+        Exception(what, Py_NewRef(PyExc_FileNotFoundError), exc_tb)
     {}
 
 };
