@@ -306,7 +306,7 @@ inline std::optional<size_t> len(const T& x) {
 /* get repr of a Python object using PyObject_Repr(). */
 template <typename T>
 auto repr(const T& obj) -> typename util::Repr<T>::template Python<std::string> {
-    PyObject* py_obj = static_cast<PyObject*>(obj);  // triggers implicit conversions
+    PyObject* py_obj = static_cast<PyObject*>(obj);  // triggers explicit conversions
     if (py_obj == nullptr) {
         return std::string("NULL");
     }

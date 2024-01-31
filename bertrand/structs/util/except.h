@@ -21,7 +21,7 @@
  * NOTE: Python 3.12 changes the API for fetching and restoring errors, so we need to
  * use conditional compilation to support both versions.
  */
- #define SIMPLIFIED_PYTHON_ERRORS (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
+ #define PYTHON_SIMPLIFIED_ERROR_STATE (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
 
 
 namespace bertrand {
@@ -103,7 +103,7 @@ public:
     }
 
     void to_python() const noexcept {
-        #if SIMPLIFIED_PYTHON_ERRORS
+        #if PYTHON_SIMPLIFIED_ERROR_STATE
 
             if (exc_type == nullptr) {
                 PYLOG(err, "RuntimeError: ", what());
@@ -235,6 +235,25 @@ struct KeyError : public Exception {
 };
 
 
+struct AttributeError : public Exception {
+    using Exception::Exception;
+    using Exception::operator=;
+
+    AttributeError(const char* what, PyObject* exc_tb = nullptr) :
+        Exception(what, Py_NewRef(PyExc_AttributeError), exc_tb)
+    {}
+
+    AttributeError(const std::string& what, PyObject* exc_tb = nullptr) :
+        Exception(what, Py_NewRef(PyExc_AttributeError), exc_tb)
+    {}
+
+    AttributeError(const std::string_view& what, PyObject* exc_tb = nullptr) :
+        Exception(what, Py_NewRef(PyExc_AttributeError), exc_tb)
+    {}
+
+};
+
+
 struct IndexError : public Exception {
     using Exception::Exception;
     using Exception::operator=;
@@ -301,7 +320,7 @@ Exc catch_python() {
         "Exception type must inherit from util::Exception"
     );
 
-    #if SIMPLIFIED_PYTHON_ERRORS
+    #if PYTHON_SIMPLIFIED_ERROR_STATE
 
         PyObject* traceback = PyErr_GetRaisedException();
         if (traceback == nullptr) {
