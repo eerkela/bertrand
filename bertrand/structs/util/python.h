@@ -26,6 +26,18 @@
 // enforced, but it should be.
 
 
+
+// TODO: trunc(), floor(), ceil(), round()
+// -> use equivalently named __trunc__(), __floor__(), __ceil__() special methods,
+// which we need to retrieve ourselves.
+
+// TODO: Object should also implement doc(), which returns the docstring.
+
+// TODO: Indexing a Type object should call __class_getitem__(), if it exists.
+
+// TODO: support pickling?  __reduce__(), __reduce_ex__(), __setstate__(), __getstate__(), etc.
+
+
 /* NOTE: Python is great, but working with its C API is not.  As such, this file
  * contains a collection of wrappers around the CPython API that make it easier to work
  * with Python objects in C++.  The goal is to make the API more pythonic and less
@@ -957,7 +969,7 @@ struct Object {
     applies the templated reference protocol to the input on construction. */
     inline Object(PyObject* obj) noexcept : obj(obj) {
         if constexpr (ref == Ref::NEW) {
-            python::xincref(obj);
+            xincref();
         }
     }
 
@@ -965,8 +977,8 @@ struct Object {
     object.  Borrowed references do not modify the reference count. */
     template <Ref R>
     inline Object(const Object<R>& other) noexcept : obj(other.obj) {
-        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
-            python::xincref(obj);
+        if constexpr (ref != Ref::BORROW) {
+            xincref();
         }
     }
 
@@ -976,11 +988,11 @@ struct Object {
     template <Ref R>
     inline Object(Object<R>&& other) noexcept : obj(other.obj) {
         static_assert(
-            !(ref == Ref::BORROW && (R == Ref::NEW || R == Ref::STEAL)),
+            !(R != Ref::BORROW && ref == Ref::BORROW),
             "cannot move an owning reference into a non-owning reference"
         );
         static_assert(
-            !(ref == Ref::NEW || ref == Ref::STEAL) && R == Ref::BORROW,
+            !(R == Ref::BORROW && ref != Ref::BORROW),
             "cannot move a non-owning reference into an owning reference"
         );
         other.obj = nullptr;
@@ -996,11 +1008,16 @@ struct Object {
                 return *this;
             }
         }
-        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
-            python::xdecref(obj);
-            python::xincref(other.obj);
+        if constexpr (ref == Ref::BORROW) {
+            obj = other.obj;
+        } else {
+            // this keeps the object in a consistent state for the entire operation
+            PyObject* prev = obj;
+            obj = other.obj;
+            xincref();
+            LOG(ref, "xdecref(", prev, ")");
+            Py_XDECREF(prev);
         }
-        obj = other.obj;
         return *this;
     }
 
@@ -1011,22 +1028,27 @@ struct Object {
     template <Ref R>
     Object& operator=(Object<R>&& other) {
         static_assert(
-            !(ref == Ref::BORROW && (R == Ref::NEW || R == Ref::STEAL)),
+            !(R != Ref::BORROW && ref == Ref::BORROW),
             "cannot move an owning reference into a non-owning reference"
         );
         static_assert(
-            !(ref == Ref::NEW || ref == Ref::STEAL) && R == Ref::BORROW,
+            !(R == Ref::BORROW && ref != Ref::BORROW),
             "cannot move a non-owning reference into an owning reference"
-        )
+        );
         if constexpr (R == ref) {
             if (this == &other) {
                 return *this;
             }
         }
-        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
-            python::xdecref(obj);
+        if constexpr (ref == Ref::BORROW) {
+            obj = other.obj;
+        } else {
+            // this keeps the object in a consistent state for the entire operation
+            PyObject* prev = obj;
+            obj = other.obj;
+            LOG(ref, "xdecref(", prev, ")");
+            Py_XDECREF(prev);
         }
-        obj = other.obj;
         other.obj = nullptr;
         return *this;
     }
@@ -1034,7 +1056,7 @@ struct Object {
     /* For owning references, release the Python object on destruction.  Otherwise,
     do nothing. */
     inline ~Object() noexcept {
-        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
+        if constexpr (ref != Ref::BORROW) {
             python::xdecref(obj);
         }
     }
@@ -1145,6 +1167,10 @@ struct Object {
         Py_DECREF(string);  // ensure character buffer remains valid during conversion
         return result;
     }
+
+    // TODO: String objects are convertible to std::string_view as well as raw
+    // character buffers, in which case the buffer is stored internally in the string
+    // itself.
 
     //////////////////////////////////
     ////    REFERENCE COUNTING    ////
@@ -1303,6 +1329,7 @@ struct Object {
                 PyErr_Clear();
                 return {Py_XNewRef(default_value.obj)};
             }
+            throw catch_python();
         }
         return {result};
     }
@@ -1318,6 +1345,7 @@ struct Object {
                 PyErr_Clear();
                 return {Py_XNewRef(default_value.obj)};
             }
+            throw catch_python();
         }
         return {result};
     }
@@ -1415,7 +1443,9 @@ struct Object {
         return PyCallable_Check(obj);
     }
 
-    /* Call the object using C-style positional arguments.  Returns a new reference. */
+    /* Call the object using C-style positional arguments.  Equivalent to calling the
+    object with the given positional arguments, which will be converted according to
+    `as_object()` before being passed to the object's call operator. */
     template <typename... Args>
     Object<Ref::STEAL> operator()(Args&&... args) const {
         if constexpr (sizeof...(Args) == 0) {
@@ -1424,9 +1454,17 @@ struct Object {
                 throw catch_python();
             }
             return {result};
+        }
 
-        } else if constexpr (sizeof...(Args) == 1) {
-            PyObject* result = PyObject_CallOneArg(obj, std::forward<Args>(args)...);
+        // converts arguments into python::Objects before invoking the call protocol
+        auto convert = [](auto&& arg) {
+            return as_object(std::forward<decltype(arg)>(arg));
+        };
+
+        if constexpr (sizeof...(Args) == 1) {
+            PyObject* result = PyObject_CallOneArg(
+                obj, convert(std::forward<Args>(args))...
+            );
             if (result == nullptr) {
                 throw catch_python();
             }
@@ -1434,7 +1472,7 @@ struct Object {
 
         } else {
             PyObject* result = PyObject_CallFunctionObjArgs(
-                obj, std::forward<Args>(args)..., nullptr
+                obj, convert(std::forward<Args>(args))..., nullptr
             );
             if (result == nullptr) {
                 throw catch_python();
@@ -1443,9 +1481,9 @@ struct Object {
         }
     }
 
-    /* Call the object using Python-style positional arguments.  Returns a new
-    reference. */
-    inline Object<Ref::STEAL> call(PyObject* args) const {
+    /* Call the object using a packed tuple representing positional arguments.  Accepts
+    any object that is convertible to a Tuple. */
+    inline Object<Ref::STEAL> call(Tuple<Ref::NEW> args) const {
         PyObject* result = PyObject_CallObject(obj, args);
         if (result == nullptr) {
             throw catch_python();
@@ -1453,9 +1491,9 @@ struct Object {
         return {result};
     }
 
-    /* Call the object using Python-style positional and keyword arguments.  Returns a
-    new reference. */
-    inline Object<Ref::STEAL> call(PyObject* args, PyObject* kwargs) const {
+    /* Call the object using Python-style positional and keyword arguments.  Accepts
+    any arguments that are convertible to a Tuple and Dict, respectively. */
+    inline Object<Ref::STEAL> call(Tuple<Ref::NEW> args, Dict<Ref::NEW> kwargs) const {
         PyObject* result = PyObject_Call(obj, args, kwargs);
         if (result == nullptr) {
             throw catch_python();
@@ -1463,7 +1501,9 @@ struct Object {
         return {result};
     }
 
-    /* Call the object using Python's vectorcall protocol.  Returns a new reference. */
+    /* Call the object using Python's vectorcall protocol.  Uses specialized Python
+    syntax for optimal performance.  See the Python docs for information on how to
+    effectively use the vectorcall protocol. */
     inline Object<Ref::STEAL> call(
         PyObject* const* args,
         size_t npositional,
@@ -1474,6 +1514,60 @@ struct Object {
             throw catch_python();
         }
         return {result};
+    }
+
+    /* Call a method of the object using variadic positional arguments, which will
+    be converted into python::Objects before being passed to the method's call
+    operator. */
+    template <typename... Args>
+    Object<Ref::STEAL> call_method(const char* method, Args&&... args) const {
+        if constexpr (sizeof...(Args) == 0) {
+            PyObject* result = PyObject_CallMethodNoArgs(obj, method);
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return {result};
+        }
+
+        // converts arguments into python::Objects before invoking the call protocol
+        auto convert = [](auto&& arg) {
+            return as_object(std::forward<decltype(arg)>(arg));
+        };
+
+        if constexpr (sizeof...(Args) == 1) {
+            PyObject* result = PyObject_CallMethodOneArg(
+                obj, method, convert(std::forward<Args>(args))...
+            );
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return {result};
+
+        } else {
+            PyObject* result = PyObject_CallMethodObjArgs(
+                obj, method, convert(std::forward<Args>(args))..., nullptr
+            );
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return {result};
+        }
+    }
+
+    /* Call a method of the object using variadic positional arguments, which will
+    be converted into python::Objects before being passed to the method's call
+    operator. */
+    template <typename... Args>
+    Object<Ref::STEAL> call_method(const std::string& method, Args&&... args) const {
+        return call_method(method.c_str(), std::forward<Args>(args)...);
+    }
+
+    /* Call a method of the object using variadic positional arguments, which will
+    be converted into python::Objects before being passed to the method's call
+    operator. */
+    template <typename... Args>
+    Object<Ref::STEAL> call_method(const std::string_view& method, Args&&... args) const {
+        return call_method(method.data(), std::forward<Args>(args)...);
     }
 
     /////////////////////////
@@ -1572,20 +1666,7 @@ struct Object {
         return {iter};
     }
 
-    inline Iterator rbegin() const {
-        PyObject* attr = PyObject_GetAttrString(obj, "__reversed__");
-        if (attr == nullptr && PyErr_Occurred()) {
-            throw catch_python();
-        }
-
-        PyObject* iter = PyObject_CallNoArgs(attr);
-        Py_DECREF(attr);
-        if (iter == nullptr && PyErr_Occurred()) {
-            throw catch_python();
-        }
-        return {iter};
-    }
-
+    inline Iterator rbegin() const { return {call_method("__reversed__").unwrap()}; }
     inline Iterator cbegin() const { return begin(); }
     inline Iterator crbegin() const { return rbegin(); }
     inline Iterator end() const { return {}; }
@@ -1811,15 +1892,6 @@ struct Object {
         return static_cast<size_t>(result);
     }
 
-    /* Get the absolute value of the object.  Can throw if the object is not numeric. */
-    inline Object<Ref::STEAL> abs() const {
-        PyObject* result = PyNumber_Absolute(obj);
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return {result};
-    }
-
     inline Object<Ref::STEAL> operator+() const {
         PyObject* result = PyNumber_Positive(obj);
         if (result == nullptr) {
@@ -1842,6 +1914,33 @@ struct Object {
             throw catch_python();
         }
         return {result};
+    }
+
+    /* Get the absolute value of the object.  Can throw if the object is not numeric. */
+    inline Object<Ref::STEAL> abs() const {
+        PyObject* result = PyNumber_Absolute(obj);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return {result};
+    }
+
+    /* Round the object toward zero.  Can throw if the object does not implement the
+    __trunc__() magic method. */
+    inline Object<Ref::STEAL> trunc() const {
+        return {call_method("__trunc__").unwrap()};
+    }
+
+    /* Round the object toward negative infinity.  Can throw if the object does not
+    implement the __floor__() magic method. */
+    inline Object<Ref::STEAL> floor() const {
+        return {call_method("__floor__").unwrap()};
+    }
+
+    /* Round the object toward positive infinity.  Can throw if the object does not
+    implement the __ceil__() magic method. */
+    inline Object<Ref::STEAL> ceil() const {
+        return {call_method("__ceil__").unwrap()};
     }
 
     /* Get a string representation of a Python object.  Equivalent to Python str(). */
@@ -2622,9 +2721,266 @@ inline Object pow(Object<Ref::BORROW> obj, T&& exponent, U&& modulus) {
 }
 
 
-///////////////////////////////
-////    PRIMITIVE TYPES    ////
-///////////////////////////////
+//////////////////////////
+////    EVALUATION    ////
+//////////////////////////
+
+
+// TODO: this should just work:
+
+// static const python::Code foo(
+//     "def foo(x, y):\n"
+//     "    return x + y\n"
+// );
+
+// python::Int z = foo({
+//     {"x", 1},
+//     {"y", 2}
+// })
+
+
+// Tuple, List, Set, and Dict should all be constructable from initializer lists.
+
+
+
+
+/* Code evaluation using the C++ API is very confusing.  The following functions
+ * attempt to replicate the behavior of Python's built-in compile(), exec(), and eval()
+ * functions, but with a more C++-friendly interface.
+ *
+ * NOTE: these functions should not be used on unfiltered user input, as they trigger
+ * the execution of arbitrary Python code.  This can lead to security vulnerabilities
+ * if not handled properly.
+ */
+
+
+/* An extension of python::Object that represents a Python code object. */
+template <Ref ref = Ref::STEAL>
+class Code : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+    using Base::Base;
+    using Base::operator=;
+
+    /* Implicitly convert a PyCodeObject* into a python::Code object. */
+    Code(PyCodeObject* obj) : Base([&] {
+        if (obj == nullptr) {
+            throw ValueError("expected a code object");
+        }
+        return reinterpret_cast<PyObject*>(obj);
+    }()) {}
+
+    /* Implicitly convert a Python object into a python::Code object. */
+    Code(PyObject* obj) : Base([&] {
+        if (obj == nullptr || !PyCode_Check(obj)) {
+            throw ValueError("expected a code object");
+        }
+        return obj;
+    }()) {}
+
+    /* Parse and compile a source string into a Python code object.  The filename is
+    used in to construct the code object and may appear in tracebacks or exception
+    messages.  The mode is used to constrain the code that can be compiled, and must be
+    one of `Py_eval_input`, `Py_file_input`, or `Py_single_input` for multiline
+    strings, file contents, and single-line, REPL-style statements respectively. */
+    explicit Code(
+        const char* source,
+        const char* filename = nullptr,
+        int mode = Py_eval_input
+    ) : Base([&] {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing a Code object requires the use of Ref::STEAL to avoid memory "
+            "leaks"
+        );
+
+        if (mode != Py_file_input && mode != Py_eval_input && mode != Py_single_input) {
+            std::ostringstream msg;
+            msg << "invalid compilation mode: " << mode << " <- must be one of ";
+            msg << "Py_file_input, Py_eval_input, or Py_single_input";
+            throw ValueError(msg.str());
+        }
+
+        if (filename == nullptr) {
+            filename = "<anonymous file>";
+        }
+
+        PyObject* result = Py_CompileString(source, filename, mode);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return result;
+    }()) {}
+
+    /* See const char* overload. */
+    explicit Code(
+        const char* source,
+        const std::string& filename,
+        int mode = Py_eval_input
+    ) : Code(source, filename.c_str(), mode)
+    {}
+
+    /* See const char* overload. */
+    explicit Code(
+        const char* source,
+        const std::string_view& filename,
+        int mode = Py_eval_input
+    ) : Code(source, filename.data(), mode)
+    {}
+
+    /* See const char* overload. */
+    explicit Code(
+        const std::string& source,
+        const char* filename = nullptr,
+        int mode = Py_eval_input
+    ) : Code(source.c_str(), filename, mode)
+    {}
+
+    /* See const char* overload. */
+    explicit Code(
+        const std::string& source,
+        const std::string& filename,
+        int mode = Py_eval_input
+    ) : Code(source.c_str(), filename.c_str(), mode)
+    {}
+
+    /* See const char* overload. */
+    explicit Code(
+        const std::string_view& source,
+        const char* filename = nullptr,
+        int mode = Py_eval_input
+    ) : Code(source.data(), filename, mode)
+    {}
+
+    /* See const char* overload. */
+    explicit Code(
+        const std::string_view& source,
+        const std::string& filename,
+        int mode = Py_eval_input
+    ) : Code(source.data(), filename.c_str(), mode)
+    {}
+
+    /* See const char* overload. */
+    explicit Code(
+        const std::string_view& source,
+        const std::string_view& filename,
+        int mode = Py_eval_input
+    ) : Code(source.data(), filename.data(), mode)
+    {}
+
+    /* Implicitly convert a python::List into a PyCodeObject* pointer.  Returns a
+    borrowed reference to the wrapped code object. */
+    inline operator PyCodeObject*() const noexcept {
+        return reinterpret_cast<PyCodeObject*>(this->obj);
+    }
+
+    ////////////////////////////////
+    ////    PyCode_* METHODS    ////
+    ////////////////////////////////
+
+    /* Execute the code object with the given local and global variables. */
+    inline Object<Ref::STEAL> operator()(
+        Dict<Ref::NEW> globals,
+        Dict<Ref::NEW> locals = {}
+    ) const {
+        PyObject* result = PyEval_EvalCode(this->obj, globals, locals);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Get the name of the file from which the code was compiled. */
+    inline std::string file() const {
+        return {reinterpret_cast<PyCodeObject*>(this->obj)->co_filename};
+    }
+
+    /* Get the function's base name. */
+    inline std::string name() const {
+        return {reinterpret_cast<PyCodeObject*>(this->obj)->co_name};
+    }
+
+    /* Get the function's qualified name. */
+    inline std::string qualname() const {
+        return {reinterpret_cast<PyCodeObject*>(this->obj)->co_qualname};
+    }
+
+    /* Get the first line number of the function. */
+    inline Py_ssize_t line_number() const noexcept {
+        return reinterpret_cast<PyCodeObject*>(this->obj)->co_firstlineno;
+    }
+
+    /* Get the total number of positional arguments for the function, including
+    positional-only arguments and those with default values (but not keyword-only). */
+    inline Py_ssize_t arg_count() const noexcept {
+        return reinterpret_cast<PyCodeObject*>(this->obj)->co_argcount;
+    }
+
+    /* Get the number of positional-only arguments for the function, including those
+    with default values.  Does not include variable positional or keyword arguments. */
+    inline Py_ssize_t positional_only() const noexcept {
+        return reinterpret_cast<PyCodeObject*>(this->obj)->co_posonlyargcount;
+    }
+
+    /* Get the number of keyword-only arguments for the function, including those with
+    default values.  Does not include positional-only or variable positional/keyword
+    arguments. */
+    inline Py_ssize_t keyword_only() const noexcept {
+        return reinterpret_cast<PyCodeObject*>(this->obj)->co_kwonlyargcount;
+    }
+
+    /* Get the number of local variables used by the function (including all
+    parameters). */
+    inline Py_ssize_t n_locals() const noexcept {
+        return reinterpret_cast<PyCodeObject*>(this->obj)->co_nlocals;
+    }
+
+    /* Get a tuple containing the names of the local variables in the function,
+    starting with parameter names. */
+    inline Tuple<Ref::BORROW> locals() const {
+        return {reinterpret_cast<PyCodeObject*>(this->obj)->co_varnames};
+    }
+
+    /* Get a tuple containing the names of local variables that are referenced by
+    nested functions within this function (i.e. those that are stored in a PyCell). */
+    inline Tuple<Ref::BORROW> cellvars() const {
+        return {reinterpret_cast<PyCodeObject*>(this->obj)->co_cellvars};
+    }
+
+    /* Get a tuple containing the anmes of free variables in the function (i.e.
+    those that are not stored in a PyCell). */
+    inline Tuple<Ref::BORROW> freevars() const {
+        return {reinterpret_cast<PyCodeObject*>(this->obj)->co_freevars};
+    }
+
+    /* Get the bytecode buffer representing the sequence of instructions in the
+    function. */
+    inline const char* bytecode() const {
+        return {reinterpret_cast<PyCodeObject*>(this->obj)->co_code};
+    }
+
+    /* Get a tuple containing the literals used by the bytecode in the function. */
+    inline Tuple<Ref::BORROW> constants() const {
+        return {reinterpret_cast<PyCodeObject*>(this->obj)->co_consts};
+    }
+
+    /* Get a tuple containing the names used by the bytecode in the function. */
+    inline Tuple<Ref::BORROW> names() const {
+        return {reinterpret_cast<PyCodeObject*>(this->obj)->co_names};
+    }
+
+    /* Get the required stack space for the code object. */
+    inline Py_ssize_t stack_size() const noexcept {
+        return reinterpret_cast<PyCodeObject*>(this->obj)->co_stacksize;
+    }
+
+    /* Get an integer encoding flags for the Python interpreter. */
+    inline int flags() const noexcept {
+        return reinterpret_cast<PyCodeObject*>(this->obj)->co_flags;
+    }
+
+};
 
 
 /* An extension of python::Object that represents a bytecode execution frame. */
@@ -2649,16 +3005,16 @@ public:
         }
     }()) {}
 
-    /* Construct a Python frame from an existing CPython frame. */
-    explicit Frame(PyFrameObject* frame) : Base([&] {
+    /* Implicitly convert a PyFrameObject* into a python::Frame object. */
+    Frame(PyFrameObject* frame) : Base([&] {
         if (frame == nullptr) {
             throw TypeError("expected a frame");
         }
         return reinterpret_cast<PyObject*>(frame);
     }()) {}
 
-    /* Construct a Python frame from an existing CPython frame. */
-    explicit Frame(PyObject* obj) : Base([&] {
+    /* Implicitly convert a PyObject* into a python::Frame object. */
+    Frame(PyObject* obj) : Base([&] {
         if (obj == nullptr || !PyFrame_Check(obj)) {
             throw TypeError("expected a frame");
         }
@@ -2666,7 +3022,7 @@ public:
     }()) {}
 
     /* Implicitly convert a python::Frame into a PyFrameObject* pointer.  Returns a
-    borrowed reference. */
+    borrowed reference to the wrapped object. */
     inline operator PyFrameObject*() const noexcept {
         return reinterpret_cast<PyFrameObject*>(this->obj);
     }
@@ -2770,6 +3126,167 @@ public:
     #endif
 
 };
+
+
+/* Get the current frame's builtin namespace as a reference-counted dictionary.  Can
+throw if no frame is currently executing. */
+inline Dict<Ref::NEW> builtins() {
+    PyObject* result = PyEval_GetBuiltins();
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return Dict<Ref::NEW>(result);
+}
+
+
+/* Get the current frame's global namespace as a reference-counted dictionary.  Can
+throw if no frame is currently executing. */
+inline Dict<Ref::NEW> globals() {
+    PyObject* result = PyEval_GetGlobals();
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return Dict<Ref::NEW>(result);
+}
+
+
+/* Get the current frame's local namespace as a reference-counted dictionary.  Can
+throw if no frame is currently executing. */
+inline Dict<Ref::NEW> locals() {
+    PyObject* result = PyEval_GetLocals();
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return Dict<Ref::NEW>(result);
+}
+
+
+/* Return the name of `func` if it is a callable function, class or instance object.
+Otherwise, return type(func).__name__. */
+inline std::string func_name(PyObject* func) {
+    if (func == nullptr) {
+        throw TypeError("func_name() argument must not be null");
+    }
+    return std::string(PyEval_GetFuncName(func));
+}
+
+
+/* Return a string describing the kind of function that was passed in.  Return values
+include "()" for functions and methods, " constructor", " instance", and " object".
+When concatenated with func_name(), the result will be a description of `func`. */
+inline std::string func_kind(PyObject* func) {
+    if (func == nullptr) {
+        throw TypeError("func_kind() argument must not be null");
+    }
+    return std::string(PyEval_GetFuncDesc(func));
+}
+
+
+/* Parse and compile a source string into a Python code object.  The filename is used
+in to construct the code object and may appear in tracebacks or exception messages.
+The mode is used to constrain the code wich can be compiled, and must be one of
+`Py_eval_input`, `Py_file_input`, or `Py_single_input` for multiline strings, file
+contents, and single-line, REPL-style statements respectively. */
+template <typename... Args>
+inline Code compile(Args&&... args) {
+    return {std::forward<Args>(args)...};
+}
+
+
+/* Execute a pre-compiled Python code object. */
+inline PyObject* exec(PyObject* code, PyObject* globals, PyObject* locals) {
+    PyObject* result = PyEval_EvalCode(code, globals, locals);
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return result;
+}
+
+
+/* Execute an interpreter frame using its associated context.  The code object within
+the frame will be executed, interpreting bytecode and executing calls as needed until
+it reaches the end of its code path. */
+inline PyObject* exec(PyFrameObject* frame) {
+    PyObject* result = PyEval_EvalFrame(frame);
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return result;
+}
+
+
+/* Launch a subinterpreter to execute a python script stored in a .py file. */
+void run(const char* filename) {
+    // NOTE: Python recommends that on windows platforms, we open the file in binary
+    // mode to avoid issues with the newline character.
+    #if defined(_WIN32) || defined(_WIN64)
+        std::FILE* file = _wfopen(filename.c_str(), "rb");
+    #else
+        std::FILE* file = std::fopen(filename.c_str(), "r");
+    #endif
+
+    if (file == nullptr) {
+        std::ostringstream msg;
+        msg << "could not open file '" << filename << "'";
+        throw FileNotFoundError(msg.str());
+    }
+
+    // NOTE: PyRun_SimpleFileEx() launches an interpreter, executes the file, and then
+    // closes the file connection automatically.  It returns 0 on success and -1 on
+    // failure, with no way of recovering the original error message if one is raised.
+    if (PyRun_SimpleFileEx(file, filename.c_str(), 1)) {
+        std::ostringstream msg;
+        msg << "error occurred while running file '" << filename << "'";
+        throw RuntimeError(msg.str());
+    }
+}
+
+
+/* Launch a subinterpreter to execute a python script stored in a .py file. */
+inline void run(const std::string& filename) {
+    run(filename.c_str());
+}
+
+
+/* Launch a subinterpreter to execute a python script stored in a .py file. */
+inline void run(const std::string_view& filename) {
+    run(filename.data());
+}
+
+
+/* Evaluate an arbitrary Python statement encoded as a string. */
+inline PyObject* eval(const char* statement, PyObject* globals, PyObject* locals) {
+    PyObject* result = PyRun_String(statement, Py_eval_input, globals, locals);
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return result;
+}
+
+
+/* Evaluate an arbitrary Python statement encoded as a string. */
+inline PyObject* eval(
+    const std::string& statement,
+    PyObject* globals,
+    PyObject* locals
+) {
+    return eval(statement.c_str(), globals, locals);
+}
+
+
+/* Evaluate an arbitrary Python statement encoded as a string. */
+inline PyObject* eval(
+    const std::string_view& statement,
+    PyObject* globals,
+    PyObject* locals
+) {
+    return eval(statement.data(), globals, locals);
+}
+
+
+///////////////////////////////
+////    PRIMITIVE TYPES    ////
+///////////////////////////////
 
 
 /* An extension of python::Object that represents a Python module. */
@@ -3572,382 +4089,6 @@ public:
 };
 
 
-/* Get the current frame's builtin namespace as a reference-counted dictionary.  Can
-throw if no frame is currently executing. */
-inline Dict<Ref::NEW> builtins() {
-    PyObject* result = PyEval_GetBuiltins();
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return Dict<Ref::NEW>(result);
-}
-
-
-/* Get the current frame's global namespace as a reference-counted dictionary.  Can
-throw if no frame is currently executing. */
-inline Dict<Ref::NEW> globals() {
-    PyObject* result = PyEval_GetGlobals();
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return Dict<Ref::NEW>(result);
-}
-
-
-/* Get the current frame's local namespace as a reference-counted dictionary.  Can
-throw if no frame is currently executing. */
-inline Dict<Ref::NEW> locals() {
-    PyObject* result = PyEval_GetLocals();
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return Dict<Ref::NEW>(result);
-}
-
-
-/* Return the name of `func` if it is a callable function, class or instance object.
-Otherwise, return type(func).__name__. */
-inline std::string func_name(PyObject* func) {
-    if (func == nullptr) {
-        throw TypeError("func_name() argument must not be null");
-    }
-    return std::string(PyEval_GetFuncName(func));
-}
-
-
-/* Return a string describing the kind of function that was passed in.  Return values
-include "()" for functions and methods, " constructor", " instance", and " object".
-When concatenated with func_name(), the result will be a description of `func`. */
-inline std::string func_kind(PyObject* func) {
-    if (func == nullptr) {
-        throw TypeError("func_kind() argument must not be null");
-    }
-    return std::string(PyEval_GetFuncDesc(func));
-}
-
-
-//////////////////////////
-////    EVALUATION    ////
-//////////////////////////
-
-
-/* Code evaluation using the C++ API is very confusing.  The following functions
- * attempt to replicate the behavior of Python's built-in compile(), exec(), and eval()
- * functions, but with a more C++-friendly interface.
- *
- * NOTE: these functions should not be used on unfiltered user input, as they trigger
- * the execution of arbitrary Python code.  This can lead to security vulnerabilities
- * if not handled properly.
- */
-
-
-/* An extension of python::Object that represents a Python code object. */
-template <Ref ref = Ref::STEAL>
-class Code : public Object<ref> {
-    using Base = Object<ref>;
-
-public:
-    using Base::Base;
-    using Base::operator=;
-
-    /* Construct a Python code object from an existing CPython code object. */
-    Code(PyCodeObject* obj) : Base(reinterpret_cast<PyObject*>(obj)) {}
-
-    /* Construct a Python code object from an arbitrary Python object. */
-    Code(PyObject* obj) : Base(obj) {
-        if (!PyCode_Check(obj)) {
-            throw TypeError("expected a code object");
-        }
-    }
-
-    /* Parse and compile a source string into a Python code object.  The filename is
-    used in to construct the code object and may appear in tracebacks or exception
-    messages.  The mode is used to constrain the code wich can be compiled, and must be
-    one of `Py_eval_input`, `Py_file_input`, or `Py_single_input` for multiline
-    strings, file contents, and single-line, REPL-style statements respectively. */
-    Code(
-        const char* source,
-        const char* filename = nullptr,
-        int mode = Py_eval_input
-    ) : Base()
-    {
-        static_assert(
-            ref == Ref::STEAL,
-            "Constructing a Code object requires the use of Ref::STEAL to avoid memory "
-            "leaks"
-        );
-
-        if (filename == nullptr) {
-            filename = "<anonymous file>";
-        }
-        if (mode != Py_file_input && mode != Py_eval_input && mode != Py_single_input) {
-            std::ostringstream msg;
-            msg << "invalid compilation mode: " << mode << " <- must be one of ";
-            msg << "Py_file_input, Py_eval_input, or Py_single_input";
-            throw ValueError(msg.str());
-        }
-
-        obj = Py_CompileString(source, filename, mode);
-        if (obj == nullptr) {
-            throw catch_python();
-        }
-    }
-
-    /* See const char* overload. */
-    Code(
-        const char* source,
-        const std::string& filename,
-        int mode = Py_eval_input
-    ) : Code(source, filename.c_str(), mode)
-    {}
-
-    /* See const char* overload. */
-    Code(
-        const char* source,
-        const std::string_view& filename,
-        int mode = Py_eval_input
-    ) : Code(source, filename.data(), mode)
-    {}
-
-    /* See const char* overload. */
-    Code(
-        const std::string& source,
-        const char* filename = nullptr,
-        int mode = Py_eval_input
-    ) : Code(source.c_str(), filename, mode)
-    {}
-
-    /* See const char* overload. */
-    Code(
-        const std::string& source,
-        const std::string& filename,
-        int mode = Py_eval_input
-    ) : Code(source.c_str(), filename.c_str(), mode)
-    {}
-
-    /* See const char* overload. */
-    Code(
-        const std::string_view& source,
-        const char* filename = nullptr,
-        int mode = Py_eval_input
-    ) : Code(source.data(), filename, mode)
-    {}
-
-    /* See const char* overload. */
-    Code(
-        const std::string_view& source,
-        const std::string& filename,
-        int mode = Py_eval_input
-    ) : Code(source.data(), filename.c_str(), mode)
-    {}
-
-    /* See const char* overload. */
-    Code(
-        const std::string_view& source,
-        const std::string_view& filename,
-        int mode = Py_eval_input
-    ) : Code(source.data(), filename.data(), mode)
-    {}
-
-    /* Implicitly convert a python::List into a PyCodeObject* pointer. */
-    inline operator PyCodeObject*() const noexcept {
-        return reinterpret_cast<PyCodeObject*>(this->obj);
-    }
-
-    ////////////////////////////////
-    ////    PyCode_* METHODS    ////
-    ////////////////////////////////
-
-    /* Execute the code object with the given local and global variables. */
-    inline PyObject* operator()(PyObject* globals, PyObject* locals) const {
-        PyObject* result = PyEval_EvalCode(this->obj, globals, locals);
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return result;
-    }
-
-    /* Get the function's base name. */
-    inline std::string name() const {
-        String<Ref::BORROW> name(
-            reinterpret_cast<PyCodeObject*>(this->obj)->co_name
-        );
-        return name.str();
-    }
-
-    /* Get the function's qualified name. */
-    inline std::string qualname() const {
-        String<Ref::BORROW> qualname(
-            reinterpret_cast<PyCodeObject*>(this->obj)->co_qualname
-        );
-        return qualname.str();
-    }
-
-    /* Get the total number of positional arguments for the function, including
-    positional-only arguments and those with default values (but not keyword-only). */
-    inline size_t n_args() const noexcept {
-        return static_cast<size_t>(
-            reinterpret_cast<PyCodeObject*>(this->obj)->co_argcount
-        );
-    }
-
-    /* Get the number of positional-only arguments for the function, including those
-    with default values.  Does not include variable positional or keyword arguments. */
-    inline size_t positional_only() const noexcept {
-        return static_cast<size_t>(
-            reinterpret_cast<PyCodeObject*>(this->obj)->co_posonlyargcount
-        );
-    }
-
-    /* Get the number of keyword-only arguments for the function, including those with
-    default values.  Does not include positional-only or variable positional/keyword
-    arguments. */
-    inline size_t keyword_only() const noexcept {
-        return static_cast<size_t>(
-            reinterpret_cast<PyCodeObject*>(this->obj)->co_kwonlyargcount
-        );
-    }
-
-    /* Get the number of local variables used by the function (including all
-    parameters). */
-    inline size_t n_locals() const noexcept {
-        return static_cast<size_t>(
-            reinterpret_cast<PyCodeObject*>(this->obj)->co_nlocals
-        );
-    }
-
-    /* Get the name of the file from which the code was compiled. */
-    inline std::string file_name() const {
-        Object<Ref::BORROW> filename(
-            reinterpret_cast<PyCodeObject*>(this->obj)->co_filename
-        );
-        Py_ssize_t size;
-        const char* result = PyUnicode_AsUTF8AndSize(filename, &size);
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return {result, static_cast<size_t>(size)};
-    }
-
-    /* Get the first line number of the function. */
-    inline size_t line_number() const noexcept {
-        return static_cast<size_t>(
-            reinterpret_cast<PyCodeObject*>(this->obj)->co_firstlineno
-        );
-    }
-
-    /* Get the required stack space for the code object. */
-    inline size_t stack_size() const noexcept {
-        return static_cast<size_t>(
-            reinterpret_cast<PyCodeObject*>(this->obj)->co_stacksize
-        );
-    }
-
-};
-
-
-/* Parse and compile a source string into a Python code object.  The filename is used
-in to construct the code object and may appear in tracebacks or exception messages.
-The mode is used to constrain the code wich can be compiled, and must be one of
-`Py_eval_input`, `Py_file_input`, or `Py_single_input` for multiline strings, file
-contents, and single-line, REPL-style statements respectively. */
-template <typename... Args>
-inline Code compile(Args&&... args) {
-    return {std::forward<Args>(args)...};
-}
-
-
-/* Execute a pre-compiled Python code object. */
-inline PyObject* exec(PyObject* code, PyObject* globals, PyObject* locals) {
-    PyObject* result = PyEval_EvalCode(code, globals, locals);
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return result;
-}
-
-
-/* Execute an interpreter frame using its associated context.  The code object within
-the frame will be executed, interpreting bytecode and executing calls as needed until
-it reaches the end of its code path. */
-inline PyObject* exec(PyFrameObject* frame) {
-    PyObject* result = PyEval_EvalFrame(frame);
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return result;
-}
-
-
-/* Launch a subinterpreter to execute a python script stored in a .py file. */
-void run(const char* filename) {
-    // NOTE: Python recommends that on windows platforms, we open the file in binary
-    // mode to avoid issues with the newline character.
-    #if defined(_WIN32) || defined(_WIN64)
-        std::FILE* file = _wfopen(filename.c_str(), "rb");
-    #else
-        std::FILE* file = std::fopen(filename.c_str(), "r");
-    #endif
-
-    if (file == nullptr) {
-        std::ostringstream msg;
-        msg << "could not open file '" << filename << "'";
-        throw FileNotFoundError(msg.str());
-    }
-
-    // NOTE: PyRun_SimpleFileEx() launches an interpreter, executes the file, and then
-    // closes the file connection automatically.  It returns 0 on success and -1 on
-    // failure, with no way of recovering the original error message if one is raised.
-    if (PyRun_SimpleFileEx(file, filename.c_str(), 1)) {
-        std::ostringstream msg;
-        msg << "error occurred while running file '" << filename << "'";
-        throw RuntimeError(msg.str());
-    }
-}
-
-
-/* Launch a subinterpreter to execute a python script stored in a .py file. */
-inline void run(const std::string& filename) {
-    run(filename.c_str());
-}
-
-
-/* Launch a subinterpreter to execute a python script stored in a .py file. */
-inline void run(const std::string_view& filename) {
-    run(filename.data());
-}
-
-
-/* Evaluate an arbitrary Python statement encoded as a string. */
-inline PyObject* eval(const char* statement, PyObject* globals, PyObject* locals) {
-    PyObject* result = PyRun_String(statement, Py_eval_input, globals, locals);
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return result;
-}
-
-
-/* Evaluate an arbitrary Python statement encoded as a string. */
-inline PyObject* eval(
-    const std::string& statement,
-    PyObject* globals,
-    PyObject* locals
-) {
-    return eval(statement.c_str(), globals, locals);
-}
-
-
-/* Evaluate an arbitrary Python statement encoded as a string. */
-inline PyObject* eval(
-    const std::string_view& statement,
-    PyObject* globals,
-    PyObject* locals
-) {
-    return eval(statement.data(), globals, locals);
-}
-
-
 ///////////////////////
 ////    NUMBERS    ////
 ///////////////////////
@@ -4347,33 +4488,23 @@ public:
     }
 
     /* Construct a python::Slice around an existing CPython slice. */
-    Slice(PyObject* obj) : Base(obj) {
-        if (!PySlice_Check(obj)) {
+    Slice(PyObject* obj) : Base([&] {
+        if (obj == nullptr || !PySlice_Check(obj)) {
             throw TypeError("expected a slice");
         }
-
-        _start = PyObject_GetAttrString(obj, "start");
-        if (_start == nullptr) {
-            throw catch_python();
-        }
-        _stop = PyObject_GetAttrString(obj, "stop");
-        if (_stop == nullptr) {
-            Py_DECREF(_start);
-            throw catch_python();
-        }
-        _step = PyObject_GetAttrString(obj, "step");
-        if (_step == nullptr) {
-            Py_DECREF(_start);
-            Py_DECREF(_stop);
-            throw catch_python();
-        }
+        return obj;
+    }()) {
+        // cache start, stop, step attributes to avoid repeated lookups
+        _start = this->getattr("start").unwrap();
+        _stop = this->getattr("stop").unwrap();
+        _step = this->getattr("step").unwrap();
     }
 
     /* Copy constructor. */
     Slice(const Slice& other) :
         Base(other), _start(other._start), _stop(other._stop), _step(other._step)
     {
-        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
+        if constexpr (ref != Ref::BORROW) {
             Py_XINCREF(other._start);
             Py_XINCREF(other._stop);
             Py_XINCREF(other._step);
@@ -4396,7 +4527,7 @@ public:
             return *this;
         }
         Base::operator=(other);
-        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
+        if constexpr (ref != Ref::BORROW) {
             Py_XDECREF(_start);
             Py_XDECREF(_stop);
             Py_XDECREF(_step);
@@ -4404,7 +4535,7 @@ public:
         _start = other._start;
         _stop = other._stop;
         _step = other._step;
-        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
+        if constexpr (ref != Ref::BORROW) {
             Py_XINCREF(_start);
             Py_XINCREF(_stop);
             Py_XINCREF(_step);
@@ -4418,7 +4549,7 @@ public:
             return *this;
         }
         Base::operator=(std::move(other));
-        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
+        if constexpr (ref != Ref::BORROW) {
             Py_XDECREF(_start);
             Py_XDECREF(_stop);
             Py_XDECREF(_step);
@@ -4434,7 +4565,7 @@ public:
 
     /* Release the Python slice on destruction. */
     ~Slice() {
-        if constexpr (ref == Ref::NEW || ref == Ref::STEAL) {
+        if constexpr (ref != Ref::BORROW) {
             Py_XDECREF(_start);
             Py_XDECREF(_stop);
             Py_XDECREF(_step);
