@@ -26,12 +26,10 @@
 // enforced, but it should be.
 
 
+// TODO: All relevant constructors should be marked noexcept to encourage compiler
+// optimizations.
 
-// TODO: trunc(), floor(), ceil(), round()
-// -> use equivalently named __trunc__(), __floor__(), __ceil__() special methods,
-// which we need to retrieve ourselves.
 
-// TODO: Object should also implement doc(), which returns the docstring.
 
 // TODO: Indexing a Type object should call __class_getitem__(), if it exists.
 
@@ -766,9 +764,9 @@ Exc catch_cpp() {
 }
 
 
-//////////////////////
-////    OBJECT    ////
-//////////////////////
+///////////////////////////////////
+////    FUNDAMENTAL OBJECTS    ////
+///////////////////////////////////
 
 
 /* Convert an arbitrary C++ object to an aquivalent Python object. */
@@ -1434,6 +1432,12 @@ struct Object {
         return {result};
     }
 
+    /* Get the object's docstring, if it has one.  Equivalent to accessing
+    object.__doc__. */
+    inline String<Ref::STEAL> doc() const {
+        return {getattr("__doc__").unwrap()};
+    }
+
     /////////////////////////////
     ////    CALL PROTOCOL    ////
     /////////////////////////////
@@ -1479,41 +1483,6 @@ struct Object {
             }
             return {result};
         }
-    }
-
-    /* Call the object using a packed tuple representing positional arguments.  Accepts
-    any object that is convertible to a Tuple. */
-    inline Object<Ref::STEAL> call(Tuple<Ref::NEW> args) const {
-        PyObject* result = PyObject_CallObject(obj, args);
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return {result};
-    }
-
-    /* Call the object using Python-style positional and keyword arguments.  Accepts
-    any arguments that are convertible to a Tuple and Dict, respectively. */
-    inline Object<Ref::STEAL> call(Tuple<Ref::NEW> args, Dict<Ref::NEW> kwargs) const {
-        PyObject* result = PyObject_Call(obj, args, kwargs);
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return {result};
-    }
-
-    /* Call the object using Python's vectorcall protocol.  Uses specialized Python
-    syntax for optimal performance.  See the Python docs for information on how to
-    effectively use the vectorcall protocol. */
-    inline Object<Ref::STEAL> call(
-        PyObject* const* args,
-        size_t npositional,
-        PyObject* kwnames
-    ) const {
-        PyObject* result = PyObject_Vectorcall(obj, args, npositional, kwnames);
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return {result};
     }
 
     /* Call a method of the object using variadic positional arguments, which will
@@ -1568,6 +1537,44 @@ struct Object {
     template <typename... Args>
     Object<Ref::STEAL> call_method(const std::string_view& method, Args&&... args) const {
         return call_method(method.data(), std::forward<Args>(args)...);
+    }
+
+    /* Call the object using a packed tuple representing positional arguments.  Accepts
+    any object that is convertible to a Tuple. */
+    inline Object<Ref::STEAL> call_python(Tuple<Ref::NEW> args = {}) const {
+        PyObject* result = PyObject_CallObject(obj, args);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return {result};
+    }
+
+    /* Call the object using Python-style positional and keyword arguments.  Accepts
+    any arguments that are convertible to a Tuple and Dict, respectively. */
+    inline Object<Ref::STEAL> call_python(
+        Tuple<Ref::NEW> args,
+        Dict<Ref::NEW> kwargs
+    ) const {
+        PyObject* result = PyObject_Call(obj, args, kwargs);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return {result};
+    }
+
+    /* Call the object using Python's vectorcall protocol.  Uses specialized Python
+    syntax for optimal performance.  See the Python docs for information on how to
+    effectively use the vectorcall protocol. */
+    inline Object<Ref::STEAL> call_python(
+        PyObject* const* args,
+        size_t npositional,
+        PyObject* kwnames
+    ) const {
+        PyObject* result = PyObject_Vectorcall(obj, args, npositional, kwnames);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return {result};
     }
 
     /////////////////////////
@@ -2489,23 +2496,203 @@ struct Object {
 };
 
 
-/* Dump a string representation of the object to an output stream.  This is equivalent
-to calling repr() on the object and then streaming the result to the output stream. */
+/* An extension of python::Object that represents a Python type object. */
+template <Ref ref = Ref::STEAL>
+class Type : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+    using Base::Base;
+    using Base::operator=;
+
+    /* Default constructor.  Initializes to the base PyType_Type class. */
+    Type() : Base([&] {
+        if constexpr (ref == Ref::STEAL) {
+            return Py_NewRef(reinterpret_cast<PyObject*>(&PyType_Type));
+        } else {
+            return reinterpret_cast<PyObject*>(&PyType_Type);
+        }
+    }()) {}
+
+    /* Implicitly convert a PyTypeObject* into a python::Type. */
+    Type(PyTypeObject* type) : Base([&] {
+        if (type == nullptr) {
+            throw TypeError("expected a type");
+        }
+        return reinterpret_cast<PyObject*>(type);
+    }()) {}
+
+    /* Implicitly convert a PyObject* into a python::Type if it is a type, otherwise
+    detect the type of a Python object and wrap it as a python::Type. */
+    Type(PyObject* obj) : Base([&] {
+        if (obj == nullptr) {
+            throw TypeError("expected a type");
+        }
+        if (PyType_Check(obj)) {
+            return obj;
+        }
+        // detect type of object
+        if constexpr (ref == Ref::STEAL) {
+            return Py_NewRef(Py_TYPE(obj));  // ensure net zero reference count
+        } else {
+            return Py_TYPE(obj);
+        }
+    }()) {}
+
+    /* Dynamically create a new Python type by calling the built-in type() metaclass. */
+    explicit Type(PyObject* name, PyObject* bases, PyObject* dict) : Base([&] {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing a new dynamic Type requires the use of Ref::STEAL to "
+            "avoid memory leaks"
+        );
+        PyObject* result = PyObject_CallFunctionObjArgs(
+            reinterpret_cast<PyObject*>(&PyType_Type), name, bases, dict, nullptr
+        );
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return result;
+    }()) {}
+
+    /* Create a new heap type from a CPython PyType_Spec.  Note that this is not
+    exactly interchangeable with a standard call to the type metaclass directly, as it
+    does not invoke any of the __init__(), __new__(), __init_subclass__(), or
+    __set_name__() methods for the type or any of its bases. */
+    explicit Type(PyType_Spec* spec) : Base([&] {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing a new heap Type requires the use of Ref::STEAL to avoid "
+            "memory leaks"
+        );
+        PyObject* result = PyType_FromSpec(spec);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return result;
+    }()) {}
+
+    /* Create a new heap type from a CPython PyType_Spec and bases.  See PyType_Spec*
+    overload for more information. */
+    explicit Type(PyType_Spec* spec, PyObject* bases) : Base([&] {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing a new heap Type requires the use of Ref::STEAL to avoid "
+            "memory leaks"
+        );
+        PyObject* result = PyType_FromSpecWithBases(spec, bases);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return result;
+
+    }()) {}
+
+    #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 9)
+
+        /* Create a new heap type from a module name, CPython PyType_Spec, and bases.
+        See PyType_Spec* overload for more information. */
+        explicit Type(PyObject* module, PyType_Spec* spec, PyObject* bases) : Base([&] {
+            static_assert(
+                ref == Ref::STEAL,
+                "Constructing a new heap Type requires the use of Ref::STEAL to avoid "
+                "memory leaks"
+            );
+            PyObject* result = PyType_FromModuleAndSpec(module, spec, bases);
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return result;
+        }()) {}
+
+    #endif
+
+    #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
+
+        /* Create a new heap type from a full CPython metaclass, module name,
+        PyType_Spec and bases.  See PyType_Spec* overload for more information. */
+        explicit Type(PyTypeObject* metaclass, PyObject* module, PyType_Spec* spec, PyObject* bases) : Base([&] {
+            static_assert(
+                ref == Ref::STEAL,
+                "Constructing a new heap Type requires the use of Ref::STEAL to avoid "
+                "memory leaks"
+            );
+            PyObject* result = PyType_FromMetaClass(metaclass, module, spec, bases);
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return result;
+        }()) {}
+
+    #endif
+
+    /* Implicitly convert a python::Type into a PyTypeObject* pointer.  Returns a
+    borrowed reference. */
+    inline operator PyTypeObject*() const noexcept {
+        return reinterpret_cast<PyTypeObject*>(this->obj);
+    }
+
+    ////////////////////////////////
+    ////    PyType_* METHODS    ////
+    ////////////////////////////////
+
+    /* Finalize a type object, filling in any inherited slots.  This should be called
+    on all type objects to finish their initialization. */
+    inline static void ready(PyTypeObject* type) {
+        if (PyType_Ready(type) < 0) {
+            throw catch_python();
+        }
+    }
+
+    /* Clear the lookup cache for the type and all of its subtypes.  This method must
+    be called after any manual modification of the attributes or base classes of the
+    type. */
+    inline void clear_cache() const noexcept {
+        PyType_Modified(static_cast<PyTypeObject*>(*this));
+    }
+
+    /* Check whether this object is an actual subtype of a specified type.  This avoids
+    calling __subclasscheck__() on the parent type. */
+    inline bool is_subtype(PyTypeObject* base) const noexcept {
+        return PyType_IsSubtype(static_cast<PyTypeObject*>(*this), base);
+    }
+
+    /* Check whether a particular flag is set on the type. */
+    inline bool has_flag(int flag) const noexcept {
+        return PyType_HasFeature(static_cast<PyTypeObject*>(*this), flag);
+    }
+
+    /* Get the function pointer stored in a given slot.  The result may be null if the
+    type does not implement the requested slot, and users must cast the result to a
+    pointer of the appropriate type. */
+    inline void* slot(int id) const noexcept {
+        return PyType_GetSlot(static_cast<PyTypeObject*>(*this), id);
+    }
+
+    #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 9)
+
+        /* Get the module that the type is defined in.  Can throw if called on a static
+        type rather than a heap type (one that was created using PyType_FromModuleAndSpec()
+        or higher). */
+        inline Module<Ref::STEAL> get_module() const noexcept {
+            PyObject* result = PyType_GetModule(static_cast<PyTypeObject*>(*this));
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return {result};
+        }
+
+    #endif
+
+};
+
+
+/* Dump a string representation of an object to an output stream.  This is equivalent
+to calling repr() on the object and then streaming the result. */
 template <Ref ref>
-inline ostream& operator<<(ostream& os, const Object<ref>& obj) {
-    PyObject* string = PyObject_Repr(obj);
-    if (string == nullptr) {
-        throw catch_python();
-    }
-    Py_ssize_t size;
-    const char* result = PyUnicode_AsUTF8AndSize(string, &size);
-    if (result == nullptr) {
-        Py_DECREF(string);
-        throw catch_python();
-    }
-    os << std::string(result, static_cast<size_t>(size));
-    Py_DECREF(string);  // ensure character buffer remains valid while we stream it
-    return os;
+inline ostream& operator<<(ostream& stream, const Object<ref>& obj) {
+    stream << static_cast<std::string>(obj.repr());
+    return stream;
 }
 
 
@@ -2721,12 +2908,130 @@ inline Object pow(Object<Ref::BORROW> obj, T&& exponent, U&& modulus) {
 }
 
 
-//////////////////////////
-////    EVALUATION    ////
-//////////////////////////
+/////////////////////////////
+////    IMPORT SYSTEM    ////
+/////////////////////////////
 
 
-// TODO: this should just work:
+/* An extension of python::Object that represents a Python module. */
+template <Ref ref = Ref::STEAL>
+class Module : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+    using Base::Base;
+    using Base::operator=;
+
+    /* Create a Python module from a PyModuleDef* struct. */
+    explicit Module(PyModuleDef* def) : Base([&] {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing a new module requires the use of Ref::STEAL to avoid "
+            "memory leaks"
+        );
+        PyObject* result = PyModule_Create(def);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return result;
+    }()) {}
+
+    /* Create a Python module from a PyModuleDef* struct with an optional required API
+    version.  If the `api_version` argument does not match the version of the running
+    interpreter, a RuntimeWarning will be emitted.  Users should prefer the standard
+    PyModuleDef* constructor in almost all circumstances. */
+    explicit Module(PyModuleDef* def, int api_version) : Base([&] {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing a new module requires the use of Ref::STEAL to avoid "
+            "memory leaks"
+        );
+        PyObject* result = PyModule_Create2(def);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return result;
+    }()) {}
+
+    /* Adopt an existing CPython module or construct one with the given name. */
+    explicit Module(PyObject* obj) : Base([&] {
+        if (obj == nullptr) {
+            throw TypeError("expected a module");
+        }
+        if (PyModule_Check(obj)) {
+            return obj;
+        }
+        if (ref != Ref::STEAL) {
+            throw TypeError(
+                "Constructing a new module requires the use of Ref::STEAL to avoid "
+                "memory leaks"
+            );
+        }
+        PyObject* result = PyModule_NewObject(obj);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return result;
+    }()) {}
+
+    /* Construct a Python module with the given name. */
+    explicit Module(const char* name) : Base([&] {
+        static_assert(
+            ref == Ref::STEAL,
+            "Constructing a new module requires the use of Ref::STEAL to avoid "
+            "memory leaks"
+        );
+        PyObject* result = PyModule_New(name);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return result;
+    }()) {}
+
+    /* Construct a Python module with the given name. */
+    explicit Module(const std::string& name) : Module(name.c_str()) {}
+
+    /* Construct a Python module with the given name. */
+    explicit Module(const std::string_view& name) : Module(name.data()) {}
+
+    /* Implicitly convert a python::Module into the PyModuleDef* from which it was
+    created.  Can return null if the module wasn't created from a definition. */
+    inline operator PyModuleDef*() const noexcept {
+        return PyModule_GetDef(this->obj);
+    }
+
+    //////////////////////////////////
+    ////    PyModule_* METHODS    ////
+    //////////////////////////////////
+
+    /* Get the module's name as a C string. */
+    inline const char* name() const noexcept {
+        return PyModule_GetName(this->obj);
+    }
+
+    /* Get the module's namespace. */
+    inline Dict<Ref::STEAL> dict() const {
+        return {PyModule_GetDict(this->obj)};
+    }
+
+    /* Get the module's filename as a C string. */
+    inline const char* filename() const noexcept {
+        return PyModule_GetFilename(this->obj);
+    }
+
+};
+
+
+// TODO: include interpreter initialization?
+
+
+// TODO: python::import()
+
+
+////////////////////////////
+////    CODE OBJECTS    ////
+////////////////////////////
+
 
 // static const python::Code foo(
 //     "def foo(x, y):\n"
@@ -2737,11 +3042,6 @@ inline Object pow(Object<Ref::BORROW> obj, T&& exponent, U&& modulus) {
 //     {"x", 1},
 //     {"y", 2}
 // })
-
-
-// Tuple, List, Set, and Dict should all be constructable from initializer lists.
-
-
 
 
 /* Code evaluation using the C++ API is very confusing.  The following functions
@@ -2881,7 +3181,7 @@ public:
 
     /* Execute the code object with the given local and global variables. */
     inline Object<Ref::STEAL> operator()(
-        Dict<Ref::NEW> globals,
+        Dict<Ref::NEW> globals = {},
         Dict<Ref::NEW> locals = {}
     ) const {
         PyObject* result = PyEval_EvalCode(this->obj, globals, locals);
@@ -2994,12 +3294,12 @@ public:
 
     /* Default constructor.  Initializes to the current execution frame. */
     Frame() : Base([&] {
-        PyFrameObject* frame = PyEval_GetFrame();
+        PyObject* frame = reinterpret_cast<PyObject*>(PyEval_GetFrame());
         if (frame == nullptr) {
             throw RuntimeError("no frame is currently executing");
         }
         if constexpr (ref == Ref::STEAL) {
-            return python::newref(frame);  // ensure net zero reference count
+            return Py_NewRef(frame);  // ensure net zero reference count
         } else {
             return frame;
         }
@@ -3121,466 +3421,6 @@ public:
         not present in the frame. */
         inline Object<Ref::STEAL> get(const std::string_view& name) const {
             return get(name.data());
-        }
-
-    #endif
-
-};
-
-
-/* Get the current frame's builtin namespace as a reference-counted dictionary.  Can
-throw if no frame is currently executing. */
-inline Dict<Ref::NEW> builtins() {
-    PyObject* result = PyEval_GetBuiltins();
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return Dict<Ref::NEW>(result);
-}
-
-
-/* Get the current frame's global namespace as a reference-counted dictionary.  Can
-throw if no frame is currently executing. */
-inline Dict<Ref::NEW> globals() {
-    PyObject* result = PyEval_GetGlobals();
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return Dict<Ref::NEW>(result);
-}
-
-
-/* Get the current frame's local namespace as a reference-counted dictionary.  Can
-throw if no frame is currently executing. */
-inline Dict<Ref::NEW> locals() {
-    PyObject* result = PyEval_GetLocals();
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return Dict<Ref::NEW>(result);
-}
-
-
-/* Return the name of `func` if it is a callable function, class or instance object.
-Otherwise, return type(func).__name__. */
-inline std::string func_name(PyObject* func) {
-    if (func == nullptr) {
-        throw TypeError("func_name() argument must not be null");
-    }
-    return std::string(PyEval_GetFuncName(func));
-}
-
-
-/* Return a string describing the kind of function that was passed in.  Return values
-include "()" for functions and methods, " constructor", " instance", and " object".
-When concatenated with func_name(), the result will be a description of `func`. */
-inline std::string func_kind(PyObject* func) {
-    if (func == nullptr) {
-        throw TypeError("func_kind() argument must not be null");
-    }
-    return std::string(PyEval_GetFuncDesc(func));
-}
-
-
-/* Parse and compile a source string into a Python code object.  The filename is used
-in to construct the code object and may appear in tracebacks or exception messages.
-The mode is used to constrain the code wich can be compiled, and must be one of
-`Py_eval_input`, `Py_file_input`, or `Py_single_input` for multiline strings, file
-contents, and single-line, REPL-style statements respectively. */
-template <typename... Args>
-inline Code compile(Args&&... args) {
-    return {std::forward<Args>(args)...};
-}
-
-
-/* Execute a pre-compiled Python code object. */
-inline PyObject* exec(PyObject* code, PyObject* globals, PyObject* locals) {
-    PyObject* result = PyEval_EvalCode(code, globals, locals);
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return result;
-}
-
-
-/* Execute an interpreter frame using its associated context.  The code object within
-the frame will be executed, interpreting bytecode and executing calls as needed until
-it reaches the end of its code path. */
-inline PyObject* exec(PyFrameObject* frame) {
-    PyObject* result = PyEval_EvalFrame(frame);
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return result;
-}
-
-
-/* Launch a subinterpreter to execute a python script stored in a .py file. */
-void run(const char* filename) {
-    // NOTE: Python recommends that on windows platforms, we open the file in binary
-    // mode to avoid issues with the newline character.
-    #if defined(_WIN32) || defined(_WIN64)
-        std::FILE* file = _wfopen(filename.c_str(), "rb");
-    #else
-        std::FILE* file = std::fopen(filename.c_str(), "r");
-    #endif
-
-    if (file == nullptr) {
-        std::ostringstream msg;
-        msg << "could not open file '" << filename << "'";
-        throw FileNotFoundError(msg.str());
-    }
-
-    // NOTE: PyRun_SimpleFileEx() launches an interpreter, executes the file, and then
-    // closes the file connection automatically.  It returns 0 on success and -1 on
-    // failure, with no way of recovering the original error message if one is raised.
-    if (PyRun_SimpleFileEx(file, filename.c_str(), 1)) {
-        std::ostringstream msg;
-        msg << "error occurred while running file '" << filename << "'";
-        throw RuntimeError(msg.str());
-    }
-}
-
-
-/* Launch a subinterpreter to execute a python script stored in a .py file. */
-inline void run(const std::string& filename) {
-    run(filename.c_str());
-}
-
-
-/* Launch a subinterpreter to execute a python script stored in a .py file. */
-inline void run(const std::string_view& filename) {
-    run(filename.data());
-}
-
-
-/* Evaluate an arbitrary Python statement encoded as a string. */
-inline PyObject* eval(const char* statement, PyObject* globals, PyObject* locals) {
-    PyObject* result = PyRun_String(statement, Py_eval_input, globals, locals);
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return result;
-}
-
-
-/* Evaluate an arbitrary Python statement encoded as a string. */
-inline PyObject* eval(
-    const std::string& statement,
-    PyObject* globals,
-    PyObject* locals
-) {
-    return eval(statement.c_str(), globals, locals);
-}
-
-
-/* Evaluate an arbitrary Python statement encoded as a string. */
-inline PyObject* eval(
-    const std::string_view& statement,
-    PyObject* globals,
-    PyObject* locals
-) {
-    return eval(statement.data(), globals, locals);
-}
-
-
-///////////////////////////////
-////    PRIMITIVE TYPES    ////
-///////////////////////////////
-
-
-/* An extension of python::Object that represents a Python module. */
-template <Ref ref = Ref::STEAL>
-class Module : public Object<ref> {
-    using Base = Object<ref>;
-
-public:
-    using Base::Base;
-    using Base::operator=;
-
-    /* Create a Python module from a PyModuleDef* struct. */
-    explicit Module(PyModuleDef* def) : Base([&] {
-        static_assert(
-            ref == Ref::STEAL,
-            "Constructing a new module requires the use of Ref::STEAL to avoid "
-            "memory leaks"
-        );
-        PyObject* result = PyModule_Create(def);
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return result;
-    }()) {}
-
-    /* Create a Python module from a PyModuleDef* struct with an optional required API
-    version.  If the `api_version` argument does not match the version of the running
-    interpreter, a RuntimeWarning will be emitted.  Users should prefer the standard
-    PyModuleDef* constructor in almost all circumstances. */
-    explicit Module(PyModuleDef* def, int api_version) : Base([&] {
-        static_assert(
-            ref == Ref::STEAL,
-            "Constructing a new module requires the use of Ref::STEAL to avoid "
-            "memory leaks"
-        );
-        PyObject* result = PyModule_Create2(def);
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return result;
-    }()) {}
-
-    /* Adopt an existing CPython module or construct one with the given name. */
-    explicit Module(PyObject* obj) : Base([&] {
-        if (obj == nullptr) {
-            throw TypeError("expected a module");
-        }
-        if (PyModule_Check(obj)) {
-            return obj;
-        }
-        if (ref != Ref::STEAL) {
-            throw TypeError(
-                "Constructing a new module requires the use of Ref::STEAL to avoid "
-                "memory leaks"
-            );
-        }
-        PyObject* result = PyModule_NewObject(obj);
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return result;
-    }()) {}
-
-    /* Construct a Python module with the given name. */
-    explicit Module(const char* name) : Base([&] {
-        static_assert(
-            ref == Ref::STEAL,
-            "Constructing a new module requires the use of Ref::STEAL to avoid "
-            "memory leaks"
-        );
-        PyObject* result = PyModule_New(name);
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return result;
-    }()) {}
-
-    /* Construct a Python module with the given name. */
-    explicit Module(const std::string& name) : Module(name.c_str()) {}
-
-    /* Construct a Python module with the given name. */
-    explicit Module(const std::string_view& name) : Module(name.data()) {}
-
-    /* Implicitly convert a python::Module into the PyModuleDef* from which it was
-    created.  Can return null if the module wasn't created from a definition. */
-    inline operator PyModuleDef*() const noexcept {
-        return PyModule_GetDef(this->obj);
-    }
-
-    //////////////////////////////////
-    ////    PyModule_* METHODS    ////
-    //////////////////////////////////
-
-    /* Get the module's name as a C string. */
-    inline const char* name() const noexcept {
-        return PyModule_GetName(this->obj);
-    }
-
-    /* Get the module's namespace. */
-    inline Dict<Ref::STEAL> dict() const {
-        return {PyModule_GetDict(this->obj)};
-    }
-
-    /* Get the module's filename as a C string. */
-    inline const char* filename() const noexcept {
-        return PyModule_GetFilename(this->obj);
-    }
-
-};
-
-
-/* An extension of python::Object that represents a Python type object. */
-template <Ref ref = Ref::STEAL>
-class Type : public Object<ref> {
-    using Base = Object<ref>;
-
-public:
-    using Base::Base;
-    using Base::operator=;
-
-    /* Default constructor.  Initializes to the base PyType_Type class. */
-    Type() : Base([&] {
-        if constexpr (ref == Ref::STEAL) {
-            return python::newref(reinterpret_cast<PyObject*>(&PyType_Type));
-        } else {
-            return reinterpret_cast<PyObject*>(&PyType_Type);
-        }
-    }()) {}
-
-    /* Construct a Python type from an existing CPython type. */
-    explicit Type(PyTypeObject* type) : Base([&] {
-        if (type == nullptr) {
-            throw TypeError("expected a type");
-        }
-        return reinterpret_cast<PyObject*>(type);
-    }()) {}
-
-    /* Get the type of an arbitrary Python object. */
-    explicit Type(PyObject* obj) : Base([&] {
-        if (obj == nullptr) {
-            throw TypeError("expected a type");
-        }
-        if (PyType_Check(obj)) {
-            return obj;
-        }
-        // detect type of object
-        if constexpr (ref == Ref::STEAL) {
-            return python::newref(Py_TYPE(obj));  // ensure net zero reference count
-        } else {
-            return Py_TYPE(obj);
-        }
-    }()) {}
-
-    /* Create a new dynamic type by calling the built-in type() metaclass. */
-    Type(PyObject* name, PyObject* bases, PyObject* dict) : Base([&] {
-        static_assert(
-            ref == Ref::STEAL,
-            "Constructing a new dynamic Type requires the use of Ref::STEAL to "
-            "avoid memory leaks"
-        );
-        PyObject* result = PyObject_CallFunctionObjArgs(
-            reinterpret_cast<PyObject*>(&PyType_Type), name, bases, dict, nullptr
-        );
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return result;
-    }()) {}
-
-    /* Create a new heap type from a CPython PyType_Spec.  Note that this is not
-    exactly interchangeable with a standard call to the type metaclass directly.
-    Notably, it does not invoke any of the __init__(), __new__(), __init_subclass__(),
-    or __set_name__() methods for the type or any of its bases. */
-    Type(PyType_Spec* spec) : Base([&] {
-        static_assert(
-            ref == Ref::STEAL,
-            "Constructing a new heap Type requires the use of Ref::STEAL to avoid "
-            "memory leaks"
-        );
-        PyObject* result = PyType_FromSpec(spec);
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return result;
-    }()) {}
-
-    /* Create a new heap type from a CPython PyType_Spec and bases.  See PyType_Spec*
-    overload for more information. */
-    Type(PyType_Spec* spec, PyObject* bases) : Base([&] {
-        static_assert(
-            ref == Ref::STEAL,
-            "Constructing a new heap Type requires the use of Ref::STEAL to avoid "
-            "memory leaks"
-        );
-        PyObject* result = PyType_FromSpecWithBases(spec, bases);
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return result;
-
-    }()) {}
-
-    #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 9)
-
-        /* Create a new heap type from a module name, CPython PyType_Spec, and bases.
-        See PyType_Spec* overload for more information. */
-        Type(PyObject* module, PyType_Spec* spec, PyObject* bases) : Base([&] {
-            static_assert(
-                ref == Ref::STEAL,
-                "Constructing a new heap Type requires the use of Ref::STEAL to avoid "
-                "memory leaks"
-            );
-            PyObject* result = PyType_FromModuleAndSpec(module, spec, bases);
-            if (result == nullptr) {
-                throw catch_python();
-            }
-            return result;
-        }()) {}
-
-    #endif
-
-    #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
-
-        /* Create a new heap type from a full CPython metaclass, module name,
-        PyType_Spec and bases.  See PyType_Spec* overload for more information. */
-        Type(PyTypeObject* metaclass, PyObject* module, PyType_Spec* spec, PyObject* bases) : Base([&] {
-            static_assert(
-                ref == Ref::STEAL,
-                "Constructing a new heap Type requires the use of Ref::STEAL to avoid "
-                "memory leaks"
-            );
-            PyObject* result = PyType_FromMetaClass(metaclass, module, spec, bases);
-            if (result == nullptr) {
-                throw catch_python();
-            }
-            return result;
-        }()) {}
-
-    #endif
-
-    /* Implicitly convert a python::Type into a PyTypeObject* pointer.  Returns a
-    borrowed reference. */
-    inline operator PyTypeObject*() const noexcept {
-        return reinterpret_cast<PyTypeObject*>(this->obj);
-    }
-
-    ////////////////////////////////
-    ////    PyType_* METHODS    ////
-    ////////////////////////////////
-
-    /* Finalize a type object, filling in any inherited slots.  This should be called
-    on all type objects to finish their initialization. */
-    inline static void ready(PyTypeObject* type) {
-        if (PyType_Ready(type) < 0) {
-            throw catch_python();
-        }
-    }
-
-    /* Clear the lookup cache for the type and all of its subtypes.  This method must
-    be called after any manual modification of the attributes or base classes of the
-    type. */
-    inline void clear_cache() const noexcept {
-        PyType_Modified(static_cast<PyTypeObject*>(*this));
-    }
-
-    /* Check whether this object is an actual subtype of a specified type.  This avoids
-    calling __subclasscheck__() on the parent type. */
-    inline bool is_subtype(PyTypeObject* base) const noexcept {
-        return PyType_IsSubtype(static_cast<PyTypeObject*>(*this), base);
-    }
-
-    /* Check whether a particular flag is set on the type. */
-    inline bool has_flag(int flag) const noexcept {
-        return PyType_HasFeature(static_cast<PyTypeObject*>(*this), flag);
-    }
-
-    /* Get the function pointer stored in a given slot.  The result may be null if the
-    type does not implement the requested slot, and users must cast the result to a
-    pointer of the appropriate type. */
-    inline void* slot(int id) const noexcept {
-        return PyType_GetSlot(static_cast<PyTypeObject*>(*this), id);
-    }
-
-    #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 9)
-
-        /* Get the module that the type is defined in.  Can throw if called on a static
-        type rather than a heap type (one that was created using PyType_FromModuleAndSpec()
-        or higher). */
-        inline Module<Ref::STEAL> get_module() const noexcept {
-            PyObject* result = PyType_GetModule(static_cast<PyTypeObject*>(*this));
-            if (result == nullptr) {
-                throw catch_python();
-            }
-            return {result};
         }
 
     #endif
@@ -3931,9 +3771,6 @@ public:
 };
 
 
-// TODO: PyInstanceMethod_Type
-
-
 /* An extension of python::Object that represents a Python class method. */
 template <Ref ref = Ref::STEAL>
 class ClassMethod : public Object<ref> {
@@ -4087,6 +3924,160 @@ public:
     }
 
 };
+
+
+// TODO: descriptor (PyDescr)
+
+
+/* Get the current frame's builtin namespace as a reference-counted dictionary.  Can
+throw if no frame is currently executing. */
+inline Dict<Ref::NEW> builtins() {
+    PyObject* result = PyEval_GetBuiltins();
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return Dict<Ref::NEW>(result);
+}
+
+
+/* Get the current frame's global namespace as a reference-counted dictionary.  Can
+throw if no frame is currently executing. */
+inline Dict<Ref::NEW> globals() {
+    PyObject* result = PyEval_GetGlobals();
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return Dict<Ref::NEW>(result);
+}
+
+
+/* Get the current frame's local namespace as a reference-counted dictionary.  Can
+throw if no frame is currently executing. */
+inline Dict<Ref::NEW> locals() {
+    PyObject* result = PyEval_GetLocals();
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return Dict<Ref::NEW>(result);
+}
+
+
+/* Parse and compile a source string into a Python code object.  The filename is used
+in to construct the code object and may appear in tracebacks or exception messages.
+The mode is used to constrain the code wich can be compiled, and must be one of
+`Py_eval_input`, `Py_file_input`, or `Py_single_input` for multiline strings, file
+contents, and single-line, REPL-style statements respectively. */
+template <typename... Args>
+inline Code compile(Args&&... args) {
+    return {std::forward<Args>(args)...};
+}
+
+
+/* Execute a pre-compiled Python code object. */
+inline Object exec(
+    Code<Ref::BORROW> code,
+    Dict<Ref::NEW> globals,
+    Dict<Ref::NEW> locals
+) {
+    PyObject* result = PyEval_EvalCode(code, globals, locals);
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return result;
+}
+
+
+/* Execute an interpreter frame using its associated context.  The code object within
+the frame will be executed, interpreting bytecode and executing calls as needed until
+it reaches the end of its code path. */
+inline Object exec(Frame<Ref::BORROW> frame) {
+    PyObject* result = PyEval_EvalFrame(frame);
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return result;
+}
+
+
+/* Launch a subinterpreter to execute a python script stored in a .py file. */
+void run(const char* filename) {
+    // NOTE: Python recommends that on windows platforms, we open the file in binary
+    // mode to avoid issues with the newline character.
+    #if defined(_WIN32) || defined(_WIN64)
+        std::FILE* file = _wfopen(filename.c_str(), "rb");
+    #else
+        std::FILE* file = std::fopen(filename.c_str(), "r");
+    #endif
+
+    if (file == nullptr) {
+        std::ostringstream msg;
+        msg << "could not open file '" << filename << "'";
+        throw FileNotFoundError(msg.str());
+    }
+
+    // NOTE: PyRun_SimpleFileEx() launches an interpreter, executes the file, and then
+    // closes the file connection automatically.  It returns 0 on success and -1 on
+    // failure, with no way of recovering the original error message if one is raised.
+    if (PyRun_SimpleFileEx(file, filename.c_str(), 1)) {
+        std::ostringstream msg;
+        msg << "error occurred while running file '" << filename << "'";
+        throw RuntimeError(msg.str());
+    }
+}
+
+
+/* Launch a subinterpreter to execute a python script stored in a .py file. */
+inline void run(const std::string& filename) {
+    run(filename.c_str());
+}
+
+
+/* Launch a subinterpreter to execute a python script stored in a .py file. */
+inline void run(const std::string_view& filename) {
+    run(filename.data());
+}
+
+
+/* Evaluate an arbitrary Python statement encoded as a string. */
+inline Object eval(
+    const char* statement,
+    Dict<Ref::NEW> globals = {},
+    Dict<Ref::NEW> locals = {}
+) {
+    PyObject* result = PyRun_String(statement, Py_eval_input, globals, locals);
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return result;
+}
+
+
+/* Evaluate an arbitrary Python statement encoded as a string. */
+inline Object eval(
+    const std::string& statement,
+    Dict<Ref::NEW> globals = {},
+    Dict<Ref::NEW> locals = {}
+) {
+    PyObject* result = PyRun_String(statement.c_str(), Py_eval_input, globals, locals);
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return result;
+}
+
+
+/* Evaluate an arbitrary Python statement encoded as a string. */
+inline Object eval(
+    const std::string_view& statement,
+    Dict<Ref::NEW> globals = {},
+    Dict<Ref::NEW> locals = {}
+) {
+    PyObject* result = PyRun_String(statement.data(), Py_eval_input, globals, locals);
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return result;
+}
 
 
 ///////////////////////
@@ -4455,152 +4446,6 @@ public:
     component. */
     inline operator double() const {
         return real();
-    }
-
-};
-
-
-/* An extension of python::Object that represents a Python slice. */
-template <Ref ref = Ref::STEAL>
-class Slice : public Object<ref> {
-    using Base = Object<ref>;
-
-    PyObject* _start;
-    PyObject* _stop;
-    PyObject* _step;
-
-public:
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Construct an empty Python slice. */
-    Slice() :
-        Base(PySlice_New(nullptr, nullptr, nullptr)), _start(Py_NewRef(Py_None)),
-        _stop(Py_NewRef(Py_None)), _step(Py_NewRef(Py_None))
-    {
-        static_assert(
-            ref == Ref::NEW,
-            "Constructing an empty Slice requires the use of Ref::NEW to avoid "
-            "memory leaks"
-        );
-    }
-
-    /* Construct a python::Slice around an existing CPython slice. */
-    Slice(PyObject* obj) : Base([&] {
-        if (obj == nullptr || !PySlice_Check(obj)) {
-            throw TypeError("expected a slice");
-        }
-        return obj;
-    }()) {
-        // cache start, stop, step attributes to avoid repeated lookups
-        _start = this->getattr("start").unwrap();
-        _stop = this->getattr("stop").unwrap();
-        _step = this->getattr("step").unwrap();
-    }
-
-    /* Copy constructor. */
-    Slice(const Slice& other) :
-        Base(other), _start(other._start), _stop(other._stop), _step(other._step)
-    {
-        if constexpr (ref != Ref::BORROW) {
-            Py_XINCREF(other._start);
-            Py_XINCREF(other._stop);
-            Py_XINCREF(other._step);
-        }
-    }
-
-    /* Move constructor. */
-    Slice(Slice&& other) :
-        Base(std::move(other)), _start(other._start), _stop(other._stop),
-        _step(other._step)
-     {
-        other._start = nullptr;
-        other._stop = nullptr;
-        other._step = nullptr;
-    }
-
-    /* Copy assignment. */
-    Slice& operator=(const Slice& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(other);
-        if constexpr (ref != Ref::BORROW) {
-            Py_XDECREF(_start);
-            Py_XDECREF(_stop);
-            Py_XDECREF(_step);
-        }
-        _start = other._start;
-        _stop = other._stop;
-        _step = other._step;
-        if constexpr (ref != Ref::BORROW) {
-            Py_XINCREF(_start);
-            Py_XINCREF(_stop);
-            Py_XINCREF(_step);
-        }
-        return *this;
-    }
-
-    /* Move assignment. */
-    Slice& operator=(Slice&& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(std::move(other));
-        if constexpr (ref != Ref::BORROW) {
-            Py_XDECREF(_start);
-            Py_XDECREF(_stop);
-            Py_XDECREF(_step);
-        }
-        _start = other._start;
-        _stop = other._stop;
-        _step = other._step;
-        other._start = nullptr;
-        other._stop = nullptr;
-        other._step = nullptr;
-        return *this;
-    }
-
-    /* Release the Python slice on destruction. */
-    ~Slice() {
-        if constexpr (ref != Ref::BORROW) {
-            Py_XDECREF(_start);
-            Py_XDECREF(_stop);
-            Py_XDECREF(_step);
-        }
-    }
-
-    /////////////////////////////////
-    ////    PySlice_* METHODS    ////
-    /////////////////////////////////
-
-    /* Get the start index of the slice. */
-    inline Object<Ref::BORROW> start() const {
-        return Object<Ref::BORROW>(_start);
-    }
-
-    /* Get the stop index of the slice. */
-    inline Object<Ref::BORROW> stop() const {
-        return Object<Ref::BORROW>(_stop);
-    }
-
-    /* Get the step index of the slice. */
-    inline Object<Ref::BORROW> step() const {
-        return Object<Ref::BORROW>(_step);
-    }
-
-    /* Normalize the slice for a given sequence length, returning a 4-tuple containing
-    the start, stop, step, and number of elements included in the slice. */
-    inline auto normalize(Py_ssize_t length) const
-        -> std::tuple<Py_ssize_t, Py_ssize_t, Py_ssize_t, size_t>
-    {
-        Py_ssize_t nstart, nstop, nstep, nlength;
-        if (PySlice_GetIndicesEx(this->obj, length, &nstart, &nstop, &nstep, &nlength)) {
-            throw catch_python();
-        }
-        return std::make_tuple(nstart, nstop, nstep, nlength);
     }
 
 };
@@ -5480,81 +5325,6 @@ public:
 };
 
 
-/* A wrapper around a fast Python sequence (list or tuple) that manages reference
-counts and simplifies access. */
-template <Ref ref = Ref::STEAL>
-class FastSequence : public Object<ref> {
-    using Base = Object<ref>;
-
-public:
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Construct a PySequence from an iterable or other sequence. */
-    FastSequence(PyObject* obj) : Base(obj) {
-        if (!PyTuple_Check(obj) && !PyList_Check(obj)) {
-            throw TypeError("expected a tuple or list");
-        }
-    }
-
-    /* Copy constructor. */
-    FastSequence(const FastSequence& other) : Base(other) {}
-
-    /* Move constructor. */
-    FastSequence(FastSequence&& other) : Base(std::move(other)) {}
-
-    /* Copy assignment. */
-    FastSequence& operator=(const FastSequence& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(other);
-        return *this;
-    }
-
-    /* Move assignment. */
-    FastSequence& operator=(FastSequence&& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(std::move(other));
-        return *this;
-    }
-
-    /////////////////////////////////////////
-    ////    PySequence_Fast_* METHODS    ////
-    /////////////////////////////////////////
-
-    /* Get the size of the sequence. */
-    inline size_t size() const {
-        return static_cast<size_t>(PySequence_Fast_GET_SIZE(this->obj));
-    }
-
-    /* Get underlying PyObject* array. */
-    inline PyObject** data() const {
-        return PySequence_Fast_ITEMS(this->obj);
-    }
-
-    /* Directly get an item within the sequence without boundschecking.  Returns a
-    borrowed reference. */
-    inline PyObject* GET_ITEM(Py_ssize_t index) const {
-        return PySequence_Fast_GET_ITEM(this->obj, index);
-    }
-
-    /* Get the value at a particular index of the sequence.  Returns a borrowed
-    reference. */
-    inline PyObject* operator[](size_t index) const {
-        if (index >= size()) {
-            throw IndexError("index out of range");
-        }
-        return GET_ITEM(index);
-    }
-
-};
-
-
 /* An extension of python::Object that represents a Python unicode string. */
 template <Ref ref = Ref::STEAL>
 class String : public Object<ref> {
@@ -6005,6 +5775,237 @@ public:
 
 };
 
+
+/////////////////////
+////    OTHER    ////
+/////////////////////
+
+
+// TODO: Global objects: None, Ellipsis, NotImplemented
+
+
+/* A wrapper around a fast Python sequence (list or tuple) that manages reference
+counts and simplifies access. */
+template <Ref ref = Ref::STEAL>
+class FastSequence : public Object<ref> {
+    using Base = Object<ref>;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct a PySequence from an iterable or other sequence. */
+    FastSequence(PyObject* obj) : Base(obj) {
+        if (!PyTuple_Check(obj) && !PyList_Check(obj)) {
+            throw TypeError("expected a tuple or list");
+        }
+    }
+
+    /* Copy constructor. */
+    FastSequence(const FastSequence& other) : Base(other) {}
+
+    /* Move constructor. */
+    FastSequence(FastSequence&& other) : Base(std::move(other)) {}
+
+    /* Copy assignment. */
+    FastSequence& operator=(const FastSequence& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(other);
+        return *this;
+    }
+
+    /* Move assignment. */
+    FastSequence& operator=(FastSequence&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(std::move(other));
+        return *this;
+    }
+
+    /////////////////////////////////////////
+    ////    PySequence_Fast_* METHODS    ////
+    /////////////////////////////////////////
+
+    /* Get the size of the sequence. */
+    inline size_t size() const {
+        return static_cast<size_t>(PySequence_Fast_GET_SIZE(this->obj));
+    }
+
+    /* Get underlying PyObject* array. */
+    inline PyObject** data() const {
+        return PySequence_Fast_ITEMS(this->obj);
+    }
+
+    /* Directly get an item within the sequence without boundschecking.  Returns a
+    borrowed reference. */
+    inline PyObject* GET_ITEM(Py_ssize_t index) const {
+        return PySequence_Fast_GET_ITEM(this->obj, index);
+    }
+
+    /* Get the value at a particular index of the sequence.  Returns a borrowed
+    reference. */
+    inline PyObject* operator[](size_t index) const {
+        if (index >= size()) {
+            throw IndexError("index out of range");
+        }
+        return GET_ITEM(index);
+    }
+
+};
+
+
+/* An extension of python::Object that represents a Python slice. */
+template <Ref ref = Ref::STEAL>
+class Slice : public Object<ref> {
+    using Base = Object<ref>;
+
+    PyObject* _start;
+    PyObject* _stop;
+    PyObject* _step;
+
+public:
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Construct an empty Python slice. */
+    Slice() :
+        Base(PySlice_New(nullptr, nullptr, nullptr)), _start(Py_NewRef(Py_None)),
+        _stop(Py_NewRef(Py_None)), _step(Py_NewRef(Py_None))
+    {
+        static_assert(
+            ref == Ref::NEW,
+            "Constructing an empty Slice requires the use of Ref::NEW to avoid "
+            "memory leaks"
+        );
+    }
+
+    /* Construct a python::Slice around an existing CPython slice. */
+    Slice(PyObject* obj) : Base([&] {
+        if (obj == nullptr || !PySlice_Check(obj)) {
+            throw TypeError("expected a slice");
+        }
+        return obj;
+    }()) {
+        // cache start, stop, step attributes to avoid repeated lookups
+        _start = this->getattr("start").unwrap();
+        _stop = this->getattr("stop").unwrap();
+        _step = this->getattr("step").unwrap();
+    }
+
+    /* Copy constructor. */
+    Slice(const Slice& other) :
+        Base(other), _start(other._start), _stop(other._stop), _step(other._step)
+    {
+        if constexpr (ref != Ref::BORROW) {
+            Py_XINCREF(other._start);
+            Py_XINCREF(other._stop);
+            Py_XINCREF(other._step);
+        }
+    }
+
+    /* Move constructor. */
+    Slice(Slice&& other) :
+        Base(std::move(other)), _start(other._start), _stop(other._stop),
+        _step(other._step)
+     {
+        other._start = nullptr;
+        other._stop = nullptr;
+        other._step = nullptr;
+    }
+
+    /* Copy assignment. */
+    Slice& operator=(const Slice& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(other);
+        if constexpr (ref != Ref::BORROW) {
+            Py_XDECREF(_start);
+            Py_XDECREF(_stop);
+            Py_XDECREF(_step);
+        }
+        _start = other._start;
+        _stop = other._stop;
+        _step = other._step;
+        if constexpr (ref != Ref::BORROW) {
+            Py_XINCREF(_start);
+            Py_XINCREF(_stop);
+            Py_XINCREF(_step);
+        }
+        return *this;
+    }
+
+    /* Move assignment. */
+    Slice& operator=(Slice&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        Base::operator=(std::move(other));
+        if constexpr (ref != Ref::BORROW) {
+            Py_XDECREF(_start);
+            Py_XDECREF(_stop);
+            Py_XDECREF(_step);
+        }
+        _start = other._start;
+        _stop = other._stop;
+        _step = other._step;
+        other._start = nullptr;
+        other._stop = nullptr;
+        other._step = nullptr;
+        return *this;
+    }
+
+    /* Release the Python slice on destruction. */
+    ~Slice() {
+        if constexpr (ref != Ref::BORROW) {
+            Py_XDECREF(_start);
+            Py_XDECREF(_stop);
+            Py_XDECREF(_step);
+        }
+    }
+
+    /////////////////////////////////
+    ////    PySlice_* METHODS    ////
+    /////////////////////////////////
+
+    /* Get the start index of the slice. */
+    inline Object<Ref::BORROW> start() const {
+        return Object<Ref::BORROW>(_start);
+    }
+
+    /* Get the stop index of the slice. */
+    inline Object<Ref::BORROW> stop() const {
+        return Object<Ref::BORROW>(_stop);
+    }
+
+    /* Get the step index of the slice. */
+    inline Object<Ref::BORROW> step() const {
+        return Object<Ref::BORROW>(_step);
+    }
+
+    /* Normalize the slice for a given sequence length, returning a 4-tuple containing
+    the start, stop, step, and number of elements included in the slice. */
+    inline auto normalize(Py_ssize_t length) const
+        -> std::tuple<Py_ssize_t, Py_ssize_t, Py_ssize_t, size_t>
+    {
+        Py_ssize_t nstart, nstop, nstep, nlength;
+        if (PySlice_GetIndicesEx(this->obj, length, &nstart, &nstop, &nstep, &nlength)) {
+            throw catch_python();
+        }
+        return std::make_tuple(nstart, nstop, nstep, nlength);
+    }
+
+};
+
+
+// TODO: MemoryView, Iterators, Generators, Context managers, weak references, capsules, etc.
 
 }  // namespace python
 
