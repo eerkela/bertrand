@@ -769,6 +769,14 @@ Exc catch_cpp() {
 ///////////////////////////////////
 
 
+/* as_object() is a public helper function that is called to convert arbitrary C++
+ * objects into an equivalent python::Object by calling an implicit constructor.
+ * Overloading this function adds support for new types, and allows them to be used
+ * wherever a generic value is expected.  Note that for consistency, this function
+ * should always return an owning reference.
+ */
+
+
 /* Convert an arbitrary C++ object to an aquivalent Python object. */
 inline Object<Ref::NEW> as_object(PyObject* obj) {
     return {obj};
@@ -963,8 +971,8 @@ struct Object {
     /* Default constructor.  Initializes to a null pointer. */
     inline Object() noexcept : obj(nullptr) {}
 
-    /* Implicit conversion constructor from an unwrapped PyObject* pointer.  This
-    applies the templated reference protocol to the input on construction. */
+    /* Implicitly convert a PyObject* pointer into a python::Object, applying the
+    reference counting protocol on construction. */
     inline Object(PyObject* obj) noexcept : obj(obj) {
         if constexpr (ref == Ref::NEW) {
             xincref();
@@ -981,8 +989,7 @@ struct Object {
     }
 
     /* Move constructor.  For owning references, this transfers ownership.  Ownership
-    cannot be transferred from a borrowed reference to an owning reference or vice
-    versa. */
+    cannot be transferred from an owning reference to a borrowed one or vice versa. */
     template <Ref R>
     inline Object(Object<R>&& other) noexcept : obj(other.obj) {
         static_assert(
@@ -1020,9 +1027,8 @@ struct Object {
     }
 
     /* Move assignment operator.  For owning references, this decrements the reference
-    count of the previous value and then transfers ownership of the new value.
-    Ownership cannot be transferred from a non-owning reference to an owning one or
-    vice versa. */
+    count of the previous value and then transfers ownership of the new value. Ownership
+    cannot be transferred from an owning reference to a borrowed one or vice versa. */
     template <Ref R>
     Object& operator=(Object<R>&& other) {
         static_assert(
@@ -1055,7 +1061,7 @@ struct Object {
     do nothing. */
     inline ~Object() noexcept {
         if constexpr (ref != Ref::BORROW) {
-            python::xdecref(obj);
+            xdecref();
         }
     }
 
@@ -1066,26 +1072,26 @@ struct Object {
         return result;
     }
 
-    /* Implicitly convert a python::Object into a PyObject* pointer.  Returns a
-    borrowed reference to the python object.  This allows the Object wrapper to be
-    passed directly to Python API functions as needed. */
-    inline operator PyObject*() const noexcept {
-        return obj;
-    }
-
-    /* Dereference a python::Object to dereference the underlying PyObject* pointer. */
+    /* Dereference a python::Object to dereference the underlying PyObject struct. */
     inline PyObject operator*() const noexcept {
         return *obj;
     }
 
+    /* Implicitly convert a python::Object into a PyObject* pointer.  Does not modify
+    its reference count.  This allows the Object wrapper to be passed directly to
+    Python API functions as needed. */
+    inline operator PyObject*() const noexcept {
+        return obj;
+    }
+
     /* Implicitly convert a python::Object into a boolean, testing the underlying value
-    for truthiness. Note that if the Object wraps a null pointer, then this will always
-    evaluate false.  Use Object.obj == nullptr to disambiguate. */
+    for truthiness with the same semantics as normal Python. */
     inline operator bool() const noexcept {
-        if (obj == nullptr) {
-            return false;
+        int result = PyObject_IsTrue(obj);
+        if (result == -1) {
+            throw catch_python();
         }
-        return python::truthy(obj);
+        return result;
     }
 
     /* Implicitly convert a python::Object into a C long.  This calls the object's
@@ -1166,10 +1172,6 @@ struct Object {
         return result;
     }
 
-    // TODO: String objects are convertible to std::string_view as well as raw
-    // character buffers, in which case the buffer is stored internally in the string
-    // itself.
-
     //////////////////////////////////
     ////    REFERENCE COUNTING    ////
     //////////////////////////////////
@@ -1208,8 +1210,8 @@ struct Object {
     /////////////////////////////
 
     /* Get the type of the Python object. */
-    inline Type<Ref::STEAL> type() const {
-        return {obj};
+    inline Type<Ref::BORROW> type() const {
+        return {Py_TYPE(obj)};
     }
 
     /* Check whether the object is an instance of the given type.  This can accept
@@ -1318,14 +1320,13 @@ struct Object {
 
     /* Get an attribute from the object or return a default value if it does not exist.
     Can throw if an error originates from __getattr__() or __getattribute__(). */
-    inline Object<Ref::STEAL> getattr(
-        PyObject* attr, Object<Ref::BORROW> default_value
-    ) const {
+    template <typename T>
+    inline Object<Ref::STEAL> getattr(PyObject* attr, T&& default_value) const {
         PyObject* result = PyObject_GetAttr(obj, attr);
         if (result == nullptr) {
             if (PyErr_ExceptionMatches(PyExc_AttributeError)) {
                 PyErr_Clear();
-                return {Py_XNewRef(default_value.obj)};
+                return {as_object(std::forward<T>(default_value)).unwrap()};
             }
             throw catch_python();
         }
@@ -1334,14 +1335,13 @@ struct Object {
 
     /* Get an attribute from the object or return a default value if it does not exist.
     Can throw if an error originates from __getattr__() or __getattribute__(). */
-    inline Object<Ref::STEAL> getattr(
-        const char* attr, Object<Ref::BORROW> default_value
-    ) const {
+    template <typename T>
+    inline Object<Ref::STEAL> getattr(const char* attr, T&& default_value) const {
         PyObject* result = PyObject_GetAttrString(obj, attr);
         if (result == nullptr) {
             if (PyErr_ExceptionMatches(PyExc_AttributeError)) {
                 PyErr_Clear();
-                return {Py_XNewRef(default_value.obj)};
+                return {as_object(std::forward<T>(default_value)).unwrap()};
             }
             throw catch_python();
         }
@@ -1350,46 +1350,48 @@ struct Object {
 
     /* Get an attribute from the object or return a default value if it does not exist.
     Can throw if an error originates from __getattr__() or __getattribute__(). */
-    inline Object<Ref::STEAL> getattr(
-        const std::string& attr, Object<Ref::BORROW> default_value
-    ) const {
-        return getattr(attr.c_str(), default_value);
+    template <typename T>
+    inline Object<Ref::STEAL> getattr(const std::string& attr, T&& default_value) const {
+        return getattr(attr.c_str(), std::forward<T>(default_value));
     }
 
     /* Get an attribute from the object or return a default value if it does not exist.
     Can throw if an error originates from __getattr__() or __getattribute__(). */
-    inline Object<Ref::STEAL> getattr(
-        const std::string_view& attr, Object<Ref::BORROW> default_value
-    ) const {
-        return getattr(attr.data(), default_value);
+    template <typename T>
+    inline Object<Ref::STEAL> getattr(const std::string_view& attr, T&& default_value) const {
+        return getattr(attr.data(), std::forward<T>(default_value));
     }
 
     /* Set an attribute on the object.  Can throw if an error originates from
     __setattr__(). */
-    inline void setattr(PyObject* attr, Object<Ref::BORROW> value) {
-        if (PyObject_SetAttr(obj, attr, value.obj)) {
+    template <typename T>
+    inline void setattr(PyObject* attr, T&& value) {
+        if (PyObject_SetAttr(obj, attr, as_object(std::forward<T>(value)))) {
             throw catch_python();
         }
     }
 
     /* Set an attribute on the object.  Can throw if an error originates from
     __setattr__(). */
-    inline void setattr(const char* attr, Object<Ref::BORROW> value) {
-        if (PyObject_SetAttrString(obj, attr, value.obj)) {
+    template <typename T>
+    inline void setattr(const char* attr, T&& value) {
+        if (PyObject_SetAttrString(obj, attr, as_object(std::forward<T>(value)))) {
             throw catch_python();
         }
     }
 
     /* Set an attribute on the object.  Can throw if an error originates from
     __setattr__(). */
-    inline void setattr(const std::string& attr, Object<Ref::BORROW> value) {
-        setattr(attr.c_str(), value);
+    template <typename T>
+    inline void setattr(const std::string& attr, T&& value) {
+        setattr(attr.c_str(), std::forward<T>(value));
     }
 
     /* Set an attribute on the object.  Can throw if an error originates from
     __setattr__(). */
-    inline void setattr(const std::string_view& attr, Object<Ref::BORROW> value) {
-        setattr(attr.data(), value);
+    template <typename T>
+    inline void setattr(const std::string_view& attr, T&& value) {
+        setattr(attr.data(), std::forward<T>(value));
     }
 
     /* Delete an attribute from an object.  Can throw if an error originates from
@@ -1421,7 +1423,7 @@ struct Object {
     }
 
     /* Get a list of strings representing named attributes of the object. */
-    inline List<Ref::STEAL> dir() const {
+    inline List dir() const {
         if (obj == nullptr) {
             throw TypeError("cannot call dir() on a null object");
         }
@@ -1434,7 +1436,7 @@ struct Object {
 
     /* Get the object's docstring, if it has one.  Equivalent to accessing
     object.__doc__. */
-    inline String<Ref::STEAL> doc() const {
+    inline String doc() const {
         return {getattr("__doc__").unwrap()};
     }
 
@@ -1801,13 +1803,14 @@ struct Object {
     /* Get the next item from an iterator, or a default value if the iterator is
     exhausted.  The argument must be an iterator.  Borrows a reference to the default
     value.  Can throw if there was an error retrieving the next item. */
-    inline Object<Ref::STEAL> next(Object<Ref::BORROW> default_value) {
+    template <typename T>
+    inline Object<Ref::STEAL> next(T&& default_value) {
         PyObject* result = PyIter_Next(obj);
         if (result == nullptr) {
             if (PyErr_Occurred()) {
                 throw catch_python();
             }
-            return {Py_XNewRef(default_value.obj)};
+            return {as_object(std::forward<T>(default_value)).unwrap()};
         }
         return {result};
     }
@@ -1839,8 +1842,9 @@ struct Object {
         /* Set the item with the specified key.  Releases a reference to the previous
         value in case of an error, and then holds a reference to the new value.  Can
         throw if the object does not support the `__setitem__()` method. */
-        inline void set(Object<Ref::BORROW> value) {
-            if (PyObject_SetItem(obj, key, value)) {
+        template <typename T>
+        inline void set(T&& value) {
+            if (PyObject_SetItem(obj, key, as_object(std::forward<T>(value)))) {
                 throw catch_python();
             }
         }
@@ -1860,22 +1864,25 @@ struct Object {
         }
 
         /* Assign to an ElementProxy, allowing python-like insertion syntax. */
-        inline void operator=(Object<Ref::BORROW> value) {
-            set(value);
+        template <typename T>
+        inline void operator=(T&& value) {
+            set(std::forward<T>(value));
         }
 
     };
 
     /* Index into the object, returning a proxy that forwards to its __getitem__(),
     __setitem__(), and __delitem__() methods. */
-    inline Element operator[](PyObject* key) noexcept {
-        return {obj, key};
+    template <typename T>
+    inline Element operator[](T&& key) noexcept {
+        return {obj, as_object(std::forward<T>(key))};
     }
 
     /* Index into the object, returning a proxy that forwards to its __getitem__(),
     __setitem__(), and __delitem__() methods. */
-    inline const Element operator[](PyObject* key) const noexcept {
-        return {obj, key};
+    template <typename T>
+    inline const Element operator[](T&& key) const noexcept {
+        return {obj, as_object(std::forward<T>(key))};
     }
 
     ///////////////////////////////
@@ -1951,7 +1958,7 @@ struct Object {
     }
 
     /* Get a string representation of a Python object.  Equivalent to Python str(). */
-    inline String<Ref::STEAL> str() const {
+    inline String str() const {
         PyObject* string = PyObject_Str(obj);
         if (string == nullptr) {
             throw catch_python();
@@ -1960,7 +1967,10 @@ struct Object {
     }
 
     /* Get a string representation of a Python object.  Equivalent to Python repr(). */
-    inline String<Ref::STEAL> repr() const {
+    inline String repr() const {
+        if (obj == nullptr) {
+            return {"<null>"}
+        }
         PyObject* string = PyObject_Repr(obj);
         if (string == nullptr) {
             throw catch_python();
@@ -1970,7 +1980,7 @@ struct Object {
 
     /* Get a string representation of a Python object with non-ASCII characters escaped.
     Equivalent to Python ascii(). */
-    inline String<Ref::STEAL> ascii() const {
+    inline String ascii() const {
         PyObject* string = PyObject_ASCII(obj);
         if (string == nullptr) {
             throw catch_python();
@@ -1980,7 +1990,7 @@ struct Object {
 
     /* Convert an integer or integer-like object (one that implements __index__()) into
     a binary string representation.  Equivalent to Python bin(). */
-    inline String<Ref::STEAL> bin() const {
+    inline String bin() const {
         PyObject* string = PyNumber_ToBase(integer, 2);
         if (string == nullptr) {
             throw catch_python();
@@ -1990,7 +2000,7 @@ struct Object {
 
     /* Convert an integer or integer-like object (one that implements __index__()) into
     an octal string representation.  Equivalent to Python oct(). */
-    inline String<Ref::STEAL> oct() const {
+    inline String oct() const {
         PyObject* string = PyNumber_ToBase(integer, 8);
         if (string == nullptr) {
             throw catch_python();
@@ -2000,7 +2010,7 @@ struct Object {
 
     /* Convert an integer or integer-like object (one that implements __index__()) into
     a hexadecimal string representation.  Equivalent to Python hext(). */
-    inline String<Ref::STEAL> hex() const {
+    inline String hex() const {
         PyObject* string = PyNumber_ToBase(obj, 16);
         if (string == nullptr) {
             throw catch_python();
@@ -2010,7 +2020,7 @@ struct Object {
 
     /* Convert a Python integer into a unicode character.  Can throw if the object is
     not an integer, or if it is outside the range for a valid unicode character. */
-    inline String<Ref::STEAL> chr() const {
+    inline String chr() const {
         long long val = PyLong_AsLongLong(obj);
         if (val == -1 && PyErr_Occurred()) {
             throw catch_python();
@@ -2049,8 +2059,8 @@ struct Object {
 
     /* Apply a Python-level identity comparison to the object.  Equivalent to
     `obj is other`.  Always succeeds. */
-    inline bool is(Object<Ref::BORROW> other) const noexcept {
-        return obj == other.obj;
+    inline bool is(PyObject* other) const noexcept {
+        return obj == other;
     }
 
     /* Check whether the object contains a given value.  Equivalent to `value in obj`.
@@ -2188,7 +2198,7 @@ struct Object {
     }
 
     template <typename T>
-    inline Tuple<Ref::STEAL> divmod(T&& divisor) const {
+    inline Tuple divmod(T&& divisor) const {
         PyObject* result = PyNumber_Divmod(obj, as_object(std::forward<T>(divisor)));
         if (result == nullptr) {
             throw catch_python();
@@ -2514,96 +2524,90 @@ public:
         }
     }()) {}
 
+    /* Implicitly convert a PyObject* into a python::Type. */
+    Type(PyObject* obj) : Base([&] {
+        if (obj == nullptr || !PyType_Check(obj)) {
+            std::ostringstream msg;
+            msg << "expected a type, got " << repr(obj);
+            throw TypeError(msg.str());
+        }
+        return obj;
+    }()) {}
+
     /* Implicitly convert a PyTypeObject* into a python::Type. */
     Type(PyTypeObject* type) : Base([&] {
         if (type == nullptr) {
-            throw TypeError("expected a type");
+            std::ostringstream msg;
+            msg << "expected a type, got " << repr(obj);
+            throw TypeError(msg.str());
         }
         return reinterpret_cast<PyObject*>(type);
     }()) {}
 
-    /* Implicitly convert a PyObject* into a python::Type if it is a type, otherwise
-    detect the type of a Python object and wrap it as a python::Type. */
-    Type(PyObject* obj) : Base([&] {
-        if (obj == nullptr) {
-            throw TypeError("expected a type");
-        }
-        if (PyType_Check(obj)) {
-            return obj;
-        }
-        // detect type of object
-        if constexpr (ref == Ref::STEAL) {
-            return Py_NewRef(Py_TYPE(obj));  // ensure net zero reference count
-        } else {
-            return Py_TYPE(obj);
-        }
-    }()) {}
-
     /* Dynamically create a new Python type by calling the built-in type() metaclass. */
-    explicit Type(PyObject* name, PyObject* bases, PyObject* dict) : Base([&] {
+    explicit Type(
+        String<Ref::NEW> name,
+        Tuple<Ref::NEW> bases,
+        Dict<Ref::NEW> namespace
+    ) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing a new dynamic Type requires the use of Ref::STEAL to "
-            "avoid memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new dynamic type"
         );
-        PyObject* result = PyObject_CallFunctionObjArgs(
+        this->obj = PyObject_CallFunctionObjArgs(
             reinterpret_cast<PyObject*>(&PyType_Type), name, bases, dict, nullptr
         );
-        if (result == nullptr) {
+        if (this->obj == nullptr) {
             throw catch_python();
         }
-        return result;
-    }()) {}
+    }
 
     /* Create a new heap type from a CPython PyType_Spec.  Note that this is not
     exactly interchangeable with a standard call to the type metaclass directly, as it
     does not invoke any of the __init__(), __new__(), __init_subclass__(), or
     __set_name__() methods for the type or any of its bases. */
-    explicit Type(PyType_Spec* spec) : Base([&] {
+    explicit Type(PyType_Spec* spec) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing a new heap Type requires the use of Ref::STEAL to avoid "
-            "memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new heap type"
         );
-        PyObject* result = PyType_FromSpec(spec);
-        if (result == nullptr) {
+        this->obj = PyType_FromSpec(spec);
+        if (this->obj == nullptr) {
             throw catch_python();
         }
-        return result;
-    }()) {}
+    }
 
     /* Create a new heap type from a CPython PyType_Spec and bases.  See PyType_Spec*
     overload for more information. */
-    explicit Type(PyType_Spec* spec, PyObject* bases) : Base([&] {
+    explicit Type(PyType_Spec* spec, Tuple<Ref::NEW> bases) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing a new heap Type requires the use of Ref::STEAL to avoid "
-            "memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new heap type"
         );
-        PyObject* result = PyType_FromSpecWithBases(spec, bases);
-        if (result == nullptr) {
+        this->obj = PyType_FromSpecWithBases(spec, bases);
+        if (this->obj == nullptr) {
             throw catch_python();
         }
-        return result;
-
-    }()) {}
+    }
 
     #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 9)
 
         /* Create a new heap type from a module name, CPython PyType_Spec, and bases.
         See PyType_Spec* overload for more information. */
-        explicit Type(PyObject* module, PyType_Spec* spec, PyObject* bases) : Base([&] {
+        explicit Type(
+            Module<Ref::BORROW> module,
+            PyType_Spec* spec,
+            Tuple<Ref::NEW> bases
+        ) {
             static_assert(
-                ref == Ref::STEAL,
-                "Constructing a new heap Type requires the use of Ref::STEAL to avoid "
-                "memory leaks"
+                ref != Ref::BORROW,
+                "Cannot construct a non-owning reference to a new heap type"
             );
-            PyObject* result = PyType_FromModuleAndSpec(module, spec, bases);
-            if (result == nullptr) {
+            this->obj = PyType_FromModuleAndSpec(module, spec, bases);
+            if (this->obj == nullptr) {
                 throw catch_python();
             }
-            return result;
-        }()) {}
+        }
 
     #endif
 
@@ -2611,18 +2615,21 @@ public:
 
         /* Create a new heap type from a full CPython metaclass, module name,
         PyType_Spec and bases.  See PyType_Spec* overload for more information. */
-        explicit Type(PyTypeObject* metaclass, PyObject* module, PyType_Spec* spec, PyObject* bases) : Base([&] {
+        explicit Type(
+            Type<Ref::BORROW> metaclass,
+            Module<Ref::BORROW> module,
+            PyType_Spec* spec,
+            Tuple<Ref::NEW> bases
+        ) {
             static_assert(
-                ref == Ref::STEAL,
-                "Constructing a new heap Type requires the use of Ref::STEAL to avoid "
-                "memory leaks"
+                ref != Ref::BORROW,
+                "Cannot construct a non-owning reference to a new heap type"
             );
-            PyObject* result = PyType_FromMetaClass(metaclass, module, spec, bases);
-            if (result == nullptr) {
+            this->obj = PyType_FromMetaClass(metaclass, module, spec, bases);
+            if (this->obj == nullptr) {
                 throw catch_python();
             }
-            return result;
-        }()) {}
+        }
 
     #endif
 
@@ -2630,6 +2637,34 @@ public:
     borrowed reference. */
     inline operator PyTypeObject*() const noexcept {
         return reinterpret_cast<PyTypeObject*>(this->obj);
+    }
+
+    //////////////////////////////////
+    ////    PyTypeObject SLOTS    ////
+    //////////////////////////////////
+
+    /* Get the name of the type. */
+    inline String<Ref::BORROW> name() const noexcept {
+        return {reinterpret_cast<PyTypeObject*>(*this)->tp_name};
+    }
+
+    /* Get the base classes of the type. */
+    inline Tuple<Ref::BORROW> bases() const noexcept {
+        return {reinterpret_cast<PyTypeObject*>(*this)->tp_bases};
+    }
+
+    /* Get the base size of the type in bytes.  This is the minimum number of bytes
+    necessary to store the type, excluding any extra space required by variable-size
+    types.  If a type's size is fixed, then this is the same as `itemsize()`. */
+    inline size_t basicsize() const noexcept {
+        return reinterpret_cast<PyTypeObject*>(*this)->tp_basicsize;
+    }
+
+    /* Get the item size of the type in bytes.  For variable-length types, this is the
+    size of each element, which must be added to `basic_size()` in order to get the
+    total size.  For fixed-size types, this is the same as `basic_size()`. */
+    inline size_t itemsize() const noexcept {
+        return reinterpret_cast<PyTypeObject*>(*this)->tp_itemsize;
     }
 
     ////////////////////////////////
@@ -2655,6 +2690,11 @@ public:
     calling __subclasscheck__() on the parent type. */
     inline bool is_subtype(PyTypeObject* base) const noexcept {
         return PyType_IsSubtype(static_cast<PyTypeObject*>(*this), base);
+    }
+
+    /* Get the flags associated with this type. */
+    inline unsigned long flags() const noexcept {
+        return PyType_GetFlags(static_cast<PyTypeObject*>(*this));
     }
 
     /* Check whether a particular flag is set on the type. */
@@ -2684,6 +2724,19 @@ public:
 
     #endif
 
+    #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
+
+        /* Get the qualified name of the type */
+        inline String<Ref::STEAL> qualname() const {
+            PyObject* result = PyType_GetQualname(static_cast<PyTypeObject*>(*this));
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return {result};
+        }
+
+    #endif
+
 };
 
 
@@ -2699,6 +2752,24 @@ inline ostream& operator<<(ostream& stream, const Object<ref>& obj) {
 ////////////////////////////////////
 ////    NON-MEMBER FUNCTIONS    ////
 ////////////////////////////////////
+
+
+/* Detect the type of a Python object.  Equivalent to Python type() with a single
+argument. */
+inline Type<Ref::BORROW> type(Object<Ref::BORROW> obj) {
+    return obj.type();
+}
+
+
+/* Create a new dynamic type by calling the type() metaclass.  Equivalent to Python
+type() with 3 arguments. */
+inline Type type(
+    String<Ref::NEW> name,
+    Tuple<Ref::NEW> bases,
+    Dict<Ref::NEW> namespace
+) {
+    return {name, bases, namespace};
+}
 
 
 /* Check whether the object is an instance of the given type.  This can accept type
@@ -2804,8 +2875,9 @@ inline Object next(Object<Ref::BORROW> iter) {
 /* Get the next item from an iterator, or a default value if the iterator is exhausted.
 The argument must be an iterator.  Borrows a reference to the default value.  Can throw
 if there was an error retrieving the next item. */
-inline Object next(Object<Ref::BORROW> iter, Object<Ref::BORROW> default_value) {
-    return iter.next(default_value);
+template <typename T>
+inline Object next(Object<Ref::BORROW> iter, T&& default_value) {
+    return iter.next(std::forward<T>(default_value));
 }
 
 
@@ -2922,71 +2994,54 @@ public:
     using Base::Base;
     using Base::operator=;
 
+    /* Implicitly convert a PyObject* into a python::Module. */
+    Module(PyObject* obj) : Base([&] {
+        if (obj == nullptr || !PyModule_Check(obj)) {
+            std::ostringstream msg;
+            msg << "expected a module, got " << repr(obj);
+            throw TypeError(msg.str());
+        }
+        return obj;
+    }()) {}
+
     /* Create a Python module from a PyModuleDef* struct. */
-    explicit Module(PyModuleDef* def) : Base([&] {
+    explicit Module(PyModuleDef* def) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing a new module requires the use of Ref::STEAL to avoid "
-            "memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new module"
         );
-        PyObject* result = PyModule_Create(def);
-        if (result == nullptr) {
+        this->obj = PyModule_Create(def);
+        if (this->obj == nullptr) {
             throw catch_python();
         }
-        return result;
-    }()) {}
+    }
 
     /* Create a Python module from a PyModuleDef* struct with an optional required API
     version.  If the `api_version` argument does not match the version of the running
     interpreter, a RuntimeWarning will be emitted.  Users should prefer the standard
     PyModuleDef* constructor in almost all circumstances. */
-    explicit Module(PyModuleDef* def, int api_version) : Base([&] {
+    explicit Module(PyModuleDef* def, int api_version) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing a new module requires the use of Ref::STEAL to avoid "
-            "memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new module"
         );
-        PyObject* result = PyModule_Create2(def);
-        if (result == nullptr) {
+        this->obj = PyModule_Create2(def);
+        if (this->obj == nullptr) {
             throw catch_python();
         }
-        return result;
-    }()) {}
-
-    /* Adopt an existing CPython module or construct one with the given name. */
-    explicit Module(PyObject* obj) : Base([&] {
-        if (obj == nullptr) {
-            throw TypeError("expected a module");
-        }
-        if (PyModule_Check(obj)) {
-            return obj;
-        }
-        if (ref != Ref::STEAL) {
-            throw TypeError(
-                "Constructing a new module requires the use of Ref::STEAL to avoid "
-                "memory leaks"
-            );
-        }
-        PyObject* result = PyModule_NewObject(obj);
-        if (result == nullptr) {
-            throw catch_python();
-        }
-        return result;
-    }()) {}
+    }
 
     /* Construct a Python module with the given name. */
-    explicit Module(const char* name) : Base([&] {
+    explicit Module(const char* name) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing a new module requires the use of Ref::STEAL to avoid "
-            "memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new module"
         );
-        PyObject* result = PyModule_New(name);
-        if (result == nullptr) {
+        this->obj = PyModule_New(name);
+        if (this->obj == nullptr) {
             throw catch_python();
         }
-        return result;
-    }()) {}
+    }
 
     /* Construct a Python module with the given name. */
     explicit Module(const std::string& name) : Module(name.c_str()) {}
@@ -2995,7 +3050,7 @@ public:
     explicit Module(const std::string_view& name) : Module(name.data()) {}
 
     /* Implicitly convert a python::Module into the PyModuleDef* from which it was
-    created.  Can return null if the module wasn't created from a definition. */
+    created.  Can return null if the module wasn't created from a PyModuleDef*. */
     inline operator PyModuleDef*() const noexcept {
         return PyModule_GetDef(this->obj);
     }
@@ -3004,20 +3059,76 @@ public:
     ////    PyModule_* METHODS    ////
     //////////////////////////////////
 
-    /* Get the module's name as a C string. */
-    inline const char* name() const noexcept {
-        return PyModule_GetName(this->obj);
+    /* Get the module's filename. */
+    inline String filename() const {
+        PyObject* result = PyModule_GetFilenameObject(this->obj);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return {result};
+    }
+
+    /* Get the module's name. */
+    inline String name() const {
+        PyObject* result = PyModule_GetNameObj(this->obj);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return {result};
     }
 
     /* Get the module's namespace. */
-    inline Dict<Ref::STEAL> dict() const {
-        return {PyModule_GetDict(this->obj)};
+    inline Dict dict() const {
+        PyObject* result = PyModule_GetDict(this->obj);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return {result};
     }
 
-    /* Get the module's filename as a C string. */
-    inline const char* filename() const noexcept {
-        return PyModule_GetFilename(this->obj);
+    /* Add an object to the module under the given name. */
+    void add_object(const char* name, Object<Ref::BORROW> obj) {
+        #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 10)
+            if (PyModule_AddObjectRef(this->obj, name, obj) < 0) {
+                throw catch_python();
+            }
+
+        #else
+            obj.incref();
+            if (PyModule_AddObject(this->obj, name, obj) < 0) {
+                obj.decref();
+                throw catch_python();
+            }
+
+        #endif
     }
+
+    /* Add an object to the module under the given name. */
+    void add_object(const std::string& name, Object<Ref::BORROW> obj) {
+        add_object(name.c_str(), obj);
+    }
+
+    /* Add an object to the module under the given name. */
+    void add_object(const std::string_view& name, Object<Ref::BORROW> obj) {
+        add_object(name.data(), obj);
+    }
+
+    // TODO: PyModule_AddIntConstant
+    // TODO: PyModule_AddStringConstant
+
+    #if (Py_MAJOR_VERSION >= 3 && Py_MINOR_VERSION >= 9)
+
+    /* Add a type to the module.  The name of the type is taken from the last component
+    of `PyTypeObject.tp_name` after the final dot.  Note that this calls
+    `PyType_Ready()` internally, so users can omit that function before calling this
+    method in a module initialization function. */
+    void add_type(PyTypeObject* type) {
+        if (PyModule_AddType(this->obj, type) < 0) {
+            throw catch_python();
+        }
+    }
+
+    #endif
 
 };
 
@@ -3025,7 +3136,15 @@ public:
 // TODO: include interpreter initialization?
 
 
-// TODO: python::import()
+
+Module import(const char* name) {
+    PyObject* result = PyImport_ImportModule(name);
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return {result};
+}
+
 
 
 ////////////////////////////
@@ -3071,7 +3190,7 @@ public:
         return reinterpret_cast<PyObject*>(obj);
     }()) {}
 
-    /* Implicitly convert a Python object into a python::Code object. */
+    /* Implicitly convert a PyObject* into a python::Code object. */
     Code(PyObject* obj) : Base([&] {
         if (obj == nullptr || !PyCode_Check(obj)) {
             throw ValueError("expected a code object");
@@ -3088,11 +3207,10 @@ public:
         const char* source,
         const char* filename = nullptr,
         int mode = Py_eval_input
-    ) : Base([&] {
+    ) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing a Code object requires the use of Ref::STEAL to avoid memory "
-            "leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new code object"
         );
 
         if (mode != Py_file_input && mode != Py_eval_input && mode != Py_single_input) {
@@ -3106,12 +3224,11 @@ public:
             filename = "<anonymous file>";
         }
 
-        PyObject* result = Py_CompileString(source, filename, mode);
-        if (result == nullptr) {
+        this->obj = Py_CompileString(source, filename, mode);
+        if (this->obj == nullptr) {
             throw catch_python();
         }
-        return result;
-    }()) {}
+    }
 
     /* See const char* overload. */
     explicit Code(
@@ -3169,8 +3286,7 @@ public:
     ) : Code(source.data(), filename.data(), mode)
     {}
 
-    /* Implicitly convert a python::List into a PyCodeObject* pointer.  Returns a
-    borrowed reference to the wrapped code object. */
+    /* Implicitly convert a python::List into a PyCodeObject* pointer. */
     inline operator PyCodeObject*() const noexcept {
         return reinterpret_cast<PyCodeObject*>(this->obj);
     }
@@ -3321,8 +3437,7 @@ public:
         return obj;
     }()) {}
 
-    /* Implicitly convert a python::Frame into a PyFrameObject* pointer.  Returns a
-    borrowed reference to the wrapped object. */
+    /* Implicitly convert a python::Frame into a PyFrameObject* pointer. */
     inline operator PyFrameObject*() const noexcept {
         return reinterpret_cast<PyFrameObject*>(this->obj);
     }
@@ -3437,50 +3552,50 @@ public:
     using Base::Base;
     using Base::operator=;
 
-    /* Construct a Python function from an existing CPython function. */
-    explicit Function(PyFunctionObject* func) : Base([&] {
-        if (func == nullptr) {
-            throw TypeError("expected a function");
-        }
-        return reinterpret_cast<PyObject*>(func);
-    }()) {}
-
-    /* Construct a Python function from an existing CPython function. */
-    explicit Function(PyObject* obj) : Base([&] {
+    /* Implicitly convert a PyObject* into a python::Function. */
+    Function(PyObject* obj) : Base([&] {
         if (obj == nullptr || !PyFunction_Check(obj)) {
             throw TypeError("expected a function");
         }
         return obj;
     }()) {}
 
+    /* Implicitly convert a PyFunctionObject* into a python::Function. */
+    Function(PyFunctionObject* func) : Base([&] {
+        if (func == nullptr) {
+            throw TypeError("expected a function");
+        }
+        return reinterpret_cast<PyObject*>(func);
+    }()) {}
+
     /* Create a new Python function from a code object and a globals dictionary. */
-    Function(PyCodeObject* code, PyObject* globals) : Base([&] {
+    explicit Function(PyCodeObject* code, Dict<Ref::NEW> globals) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing a new Function requires the use of Ref::STEAL to avoid "
-            "memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new function object"
         );
-        PyObject* result = PyFunction_New(code, globals);
-        if (result == nullptr) {
+        this->obj = PyFunction_New(code, globals);
+        if (this->obj == nullptr) {
             throw catch_python();
         }
-        return result;
-    }()) {}
+    }
 
     /* Create a new Python function from a code object, globals dictionary, and a
     qualified name. */
-    Function(PyCodeObject* code, PyObject* globals, PyObject* qualname) : Base([&] {
+    explicit Function(
+        PyCodeObject* code,
+        Dict<Ref::NEW> globals,
+        String<Ref::NEW> qualname
+    ) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing a new Function requires the use of Ref::STEAL to avoid "
-            "memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new function object"
         );
-        PyObject* result = PyFunction_NewWithQualName(code, globals, qualname);
-        if (result == nullptr) {
+        this->obj = PyFunction_NewWithQualName(code, globals, qualname);
+        if (this->obj == nullptr) {
             throw catch_python();
         }
-        return result;
-    }()) {}
+    }
 
     /* Implicitly convert a python::List into a PyFunctionObject* pointer. */
     inline operator PyFunctionObject*() const noexcept {
@@ -3592,7 +3707,7 @@ public:
 
     /* Set the default values for the function's arguments.  Input must be Py_None or
     a tuple. */
-    inline void defaults(PyObject* defaults) {
+    inline void defaults(Dict<Ref::NEW> defaults) {
         if (PyFunction_SetDefaults(this->obj, defaults)) {
             throw catch_python();
         }
@@ -3611,7 +3726,7 @@ public:
 
     /* Set the annotations for the function object.  Input must be Py_None or a
     dictionary. */
-    inline void annotations(PyObject* annotations) {
+    inline void annotations(Dict<Ref::NEW> annotations) {
         if (PyFunction_SetAnnotations(this->obj, annotations)) {
             throw catch_python();
         }
@@ -3629,31 +3744,51 @@ public:
     using Base::Base;
     using Base::operator=;
 
-    /* Construct a Python method from an existing CPython method. */
-    explicit Method(PyObject* obj) : Base(obj) {
-        if (!PyMethod_Check(obj)) {
-            throw TypeError("expected a method");
+    /* Implicitly convert a PyObject* into a python::Method. */
+    Method(PyObject* obj) : Base([&] {
+        if (obj == nullptr || !PyMethod_Check(obj)) {
+            std::ostringstream msg;
+            msg << "expected a method, got " << repr(obj);
+            throw TypeError(msg.str());
+        }
+        return obj;
+    }()) {}
+
+    /* Create a new method by binding an object to a function as an implicit `self`
+    argument. */
+    explicit Method(PyObject* self, PyObject* function) {
+        static_assert(
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new method"
+        );
+        if (self == nullptr) {
+            throw TypeError("self object must not be null");
+        }
+        this->obj = PyMethod_New(function, self);
+        if (this->obj == nullptr) {
+            throw catch_python();
         }
     }
 
-    /* Construct a Python method by binding an object to a function. */
-    Method(PyObject* function, PyObject* self) :
-        Base([&] {
-            static_assert(
-                ref == Ref::STEAL,
-                "Constructing a new Method requires the use of Ref::STEAL to avoid "
-                "memory leaks"
-            );
-            if (self == nullptr) {
-                throw TypeError("expected a self object");
-            }
-            PyObject* result = PyMethod_New(function, self);
-            if (result == nullptr) {
-                throw catch_python();
-            }
-            return result;
-        }())
-    {}
+    // /* Wrap a function as a method descriptor.  When attached to a class, the
+    // descriptor passes `self` as the first argument to the function. */
+    // explicit Method(
+    //     PyTypeObject* type,
+    //     const char* name,
+    //     PyCFunction function,
+    //     int flags = METH_VARARGS | METH_KEYWORDS,
+    //     const char* doc = nullptr
+    // ) {
+    //     static_assert(
+    //         ref != Ref::BORROW,
+    //         "Cannot construct a non-owning reference to a new method"
+    //     );
+    //     PyMethodDef method = {name, function, flags, doc};
+    //     this->obj = PyDescr_NewMethod(type, &method);
+    //     if (this->obj == nullptr) {
+    //         throw catch_python();
+    //     }
+    // }
 
     //////////////////////////////////
     ////    PyMethod_* METHODS    ////
@@ -3741,7 +3876,7 @@ public:
 
     /* Set the default values for the method's arguments.  Input must be Py_None or a
     tuple. */
-    inline void defaults(PyObject* defaults) {
+    inline void defaults(Dict<Ref::NEW> defaults) {
         function().defaults(defaults);
     }
 
@@ -3764,162 +3899,7 @@ public:
 
     /* Set the annotations for the method object.  Input must be Py_None or a
     dictionary. */
-    inline void annotations(PyObject* annotations) {
-        function().annotations(annotations);
-    }
-
-};
-
-
-/* An extension of python::Object that represents a Python class method. */
-template <Ref ref = Ref::STEAL>
-class ClassMethod : public Object<ref> {
-    using Base = Object<ref>;
-
-public:
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Construct a Python class method from an existing CPython class method. */
-    ClassMethod(PyObject* obj) : Base(obj) {
-        if (!PyInstanceMethod_Check(obj)) {
-            throw TypeError("expected a class method");
-        }
-    }
-
-    /* Copy constructor. */
-    ClassMethod(const ClassMethod& other) : Base(other) {}
-
-    /* Move constructor. */
-    ClassMethod(ClassMethod&& other) : Base(std::move(other)) {}
-
-    /* Copy assignment. */
-    ClassMethod& operator=(const ClassMethod& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(other);
-        return *this;
-    }
-
-    /* Move assignment. */
-    ClassMethod& operator=(ClassMethod&& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(std::move(other));
-        return *this;
-    }
-
-    //////////////////////////////////////////
-    ////    PyInstanceMethod_* METHODS    ////
-    //////////////////////////////////////////
-
-    /* Get the function object associated with the class method. */
-    inline Function<Ref::BORROW> function() const noexcept {
-        return Function<Ref::BORROW>(PyInstanceMethod_GET_FUNCTION(this->obj));
-    }
-
-    /* Get the code object wrapped by this class method. */
-    inline Code<Ref::BORROW> code() const noexcept {
-        return function().code();
-    }
-
-    /* Get the class method's base name. */
-    inline std::string name() const {
-        return function().name();
-    }
-
-    /* Get the class method's qualified name. */
-    inline std::string qualname() const {
-        return function().qualname();
-    }
-
-    /* Get the total number of positional arguments for the class method, including
-    positional-only arguments and those with default values (but not keyword-only). */
-    inline size_t n_args() const noexcept {
-        return function().n_args();
-    }
-
-    /* Get the number of positional-only arguments for the class method, including
-    those with default values.  Does not include variable positional or keyword
-    arguments. */
-    inline size_t positional_only() const noexcept {
-        return function().positional_only();
-    }
-
-    /* Get the number of keyword-only arguments for the class method, including those
-    with default values.  Does not include positional-only or variable positional/keyword
-    arguments. */
-    inline size_t keyword_only() const noexcept {
-        return function().keyword_only();
-    }
-
-    /* Get the number of local variables used by the class method (including all
-    parameters). */
-    inline size_t n_locals() const noexcept {
-        return function().n_locals();
-    }
-
-    /* Get the name of the file from which the code was compiled. */
-    inline std::string file_name() const {
-        return function().file_name();
-    }
-
-    /* Get the first line number of the class method. */
-    inline size_t line_number() const noexcept {
-        return function().line_number();
-    }
-
-    /* Get the required stack space for the code object. */
-    inline size_t stack_size() const noexcept {
-        return function().stack_size();
-    }
-
-    /* Get the globals dictionary associated with the class method object. */
-    inline Dict<Ref::BORROW> globals() const noexcept {
-        return function().globals();
-    }
-
-    /* Get the module that the class method is defined in. */
-    inline std::optional<Object<Ref::BORROW>> module() const noexcept {
-        return function().module();
-    }
-
-    /* Get the default values for the class method's arguments. */
-    inline std::optional<Tuple<Ref::BORROW>> defaults() const noexcept {
-        return function().defaults();
-    }
-
-    /* Set the default values for the class method's arguments.  Input must be Py_None
-    or a tuple. */
-    inline void defaults(PyObject* defaults) {
-        function().defaults(defaults);
-    }
-
-    /* Get the closure associated with the class method.  This is a tuple of cell
-    objects containing data captured by the class method. */
-    inline std::optional<Tuple<Ref::BORROW>> closure() const noexcept {
-        return function().closure();
-    }
-
-    /* Set the closure associated with the class method.  Input must be Py_None or a
-    tuple. */
-    inline void closure(PyObject* closure) {
-        function().closure(closure);
-    }
-
-    /* Get the annotations for the class method object.  This is a mutable dictionary
-    or nullopt if no annotations are present. */
-    inline std::optional<Dict<Ref::BORROW>> annotations() const noexcept {
-        return function().annotations();
-    }
-
-    /* Set the annotations for the class method object.  Input must be Py_None or a
-    dictionary. */
-    inline void annotations(PyObject* annotations) {
+    inline void annotations(Dict<Ref::NEW> annotations) {
         function().annotations(annotations);
     }
 
@@ -4094,29 +4074,37 @@ public:
     using Base::Base;
     using Base::operator=;
 
-    /* Construct a Python boolean from an existing CPython boolean. */
-    explicit Bool(PyObject* obj) : Base(obj) {
-        if (!PyBool_Check(obj)) {
-            throw TypeError("expected a boolean");
+    /* Implicitly convert a PyObject* into a python::Bool if it is a boolean object. */
+    Bool(PyObject* obj) : Base([&] {
+        if (obj == nullptr || !PyBool_Check(obj)) {
+            std::ostringstream msg;
+            msg << "expected a boolean, got " << repr(obj);
+            throw TypeError(msg.str());
         }
-    }
+        return obj;
+    }()) {}
 
-    /* Construct a Python boolean from a C++ boolean. */
-    Bool(long value) : Base(PyBool_FromLong(value)) {
+    /* Implicitly convert a C++ boolean into a python::Bool. */
+    Bool(bool value) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing a Bool from a long int requires the use of Ref::STEAL to "
-            "avoid memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new boolean object"
         );
+        this->obj = PyBool_FromLong(value);
     }
 
-    /* Get the Python boolean type. */
-    static Type<Ref::NEW> type() noexcept {
-        return Type<Ref::NEW>(&PyBool_Type);
+    /* Implicitly convert a C long into a python::Bool. */
+    Bool(long value) {
+        static_assert(
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new boolean object"
+        );
+        return PyBool_FromLong(value);
     }
 
+    /* Implicitly convert a python::Bool into a C++ boolean. */
     inline operator bool() const noexcept {
-        return PyLong_AsLong(this->obj);
+        return PyObject_IsTrue(this->obj);
     }
 
 };
@@ -4131,101 +4119,105 @@ public:
     using Base::Base;
     using Base::operator=;
 
-    /* Construct a Python integer from an existing CPython integer. */
-    explicit Int(PyObject* obj) : Base(obj) {
-        if (!PyLong_Check(obj)) {
+    /* Implicitly convert a PyObject* into a python::Int. */
+    Int(PyObject* obj) : Base([&] {
+        if (obj == nullptr || !PyLong_Check(obj)) {
             throw TypeError("expected an integer");
+        }
+        return obj;
+    }()) {}
+
+    /* Implicitly construct a python::Int from a C long. */
+    Int(long value) {
+        static_assert(
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new integer object"
+        );
+        this->obj = PyLong_FromLong(value);
+        if (this->obj == nullptr) {
+            throw catch_python();
         }
     }
 
-    /* Construct a Python integer from a C long. */
-    Int(long value) : Base(PyLong_FromLong(value)) {
+    /* Implicitly construct a python::Int from a C long long. */
+    Int(long long value) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing an Int from a long requires the use of Ref::STEAL to avoid "
-            "memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new integer object"
         );
+        this->obj = PyLong_FromLongLong(value);
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
     }
 
-    /* Construct a Python integer from a C long long. */
-    Int(long long value) : Base(PyLong_FromLongLong(value)) {
+    /* Implicitly construct a python::Int from a C unsigned long. */
+    Int(unsigned long value) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing an Int from a long long requires the use of Ref::STEAL to "
-            "avoid memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new integer object"
         );
+        this->obj = PyLong_FromUnsignedLong(value);
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
     }
 
-    /* Construct a Python integer from a C unsigned long. */
-    Int(unsigned long value) : Base(PyLong_FromUnsignedLong(value)) {
+    /* Implicitly construct a python::Int from a C unsigned long long. */
+    Int(unsigned long long value) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing an Int from an unsigned long requires the use of Ref::STEAL "
-            "to avoid memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new integer object"
         );
+        this->obj = PyLong_FromUnsignedLongLong(value);
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
     }
 
-    /* Construct a Python integer from a C unsigned long long. */
-    Int(unsigned long long value) : Base(PyLong_FromUnsignedLongLong(value)) {
+    /* Implicitly construct a python::Int from a C double. */
+    Int(double value) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing an Int from an unsigned long long requires the use of "
-            "Ref::STEAL to avoid memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new integer object"
         );
+        this->obj = PyLong_FromDouble(value);
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
     }
 
-    /* Construct a Python integer from a C double. */
-    Int(double value) : Base(PyLong_FromDouble(value)) {
+    /* Convert a PyUnicode string into a python::Int with the given base. */
+    Int(PyObject* value, int base) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing an Int from a double requires the use of Ref::STEAL to "
-            "avoid memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new integer object"
         );
+        this->obj = PyLong_FromUnicodeObject(value, base);
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
     }
 
-    /* Construct a Python integer from a C string. */
-    Int(const char* value, int base) :
-        Base(PyLong_FromString(value, nullptr, base))
-    {
+    /* Implicitly construct a python::Int from a C string. */
+    Int(const char* value, int base = 0) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing an Int from a string requires the use of Ref::STEAL to "
-            "avoid memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new integer object"
         );
+        this->obj = PyLong_FromString(value, nullptr, base);
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
     }
 
-    /* Construct a Python integer from a C++ string. */
-    Int(const std::string& value, int base) :
-        Base(PyLong_FromString(value.c_str(), nullptr, base))
-    {
-        static_assert(
-            ref == Ref::STEAL,
-            "Constructing an Int from a string requires the use of Ref::STEAL to "
-            "avoid memory leaks"
-        );
-    }
+    /* Implicitly construct a python::Int from a C++ string. */
+    Int(const std::string& value, int base = 0) : Int(value.c_str(), base) {}
 
-    /* Construct a Python integer from a C++ string view. */
-    Int(const std::string_view& value, int base) :
-        Base(PyLong_FromString(value.data(), nullptr, base))
-    {
-        static_assert(
-            ref == Ref::STEAL,
-            "Constructing an Int from a string view requires the use of Ref::STEAL to "
-            "avoid memory leaks"
-        );
-    }
+    /* Implicitly construct a python::Int from a C++ string view. */
+    Int(const std::string_view& value, int base = 0) : Int(value.data(), base) {}
 
-    /* Construct a Python integer from a PyUnicode string. */
-    Int(PyObject* value, int base) : Base(PyLong_FromUnicodeObject(value, base)) {
-        static_assert(
-            ref == Ref::STEAL,
-            "Constructing an Int from a PyUnicode object requires the use of "
-            "Ref::STEAL to avoid memory leaks"
-        );
-    }
-
-    /* Implicitly convert a python::List into a PyLongObject* pointer. */
+    /* Implicitly convert a python::Int into a PyLongObject*. */
     inline operator PyLongObject*() const noexcept {
         return reinterpret_cast<PyLongObject*>(this->obj);
     }
@@ -4275,90 +4267,81 @@ class Float : public Object<ref> {
     using Base = Object<ref>;
 
 public:
+    using Base::Base;
+    using Base::operator=;
 
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Construct a Python float from an existing CPython float. */
-    Float(PyObject* obj) : Base(obj) {
-        if (!PyFloat_Check(obj)) {
+    /* Implicitly convert a PyObject* into a python::Float. */
+    Float(PyObject* obj) : Base([&] {
+        if (obj == nullptr || !PyFloat_Check(obj)) {
             throw TypeError("expected a float");
+        }
+        return obj;
+    }()) {}
+
+    /* Implicitly convert a C double into a python::Float. */
+    Float(double value) {
+        static_assert(
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new float object"
+        );
+        this->obj = PyFloat_FromDouble(value);
+        if (this->obj == nullptr) {
+            throw catch_python();
         }
     }
 
-    /* Construct a Python float from a C double. */
-    Float(double value) : Base(PyFloat_FromDouble(value)) {
+    /* Implicitly convert a C string into a python::Float. */
+    Float(const char* value) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing a Float from a double requires the use of Ref::STEAL to "
-            "avoid memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new float object"
         );
+        PyObject* string = PyUnicode_FromStringAndSize(value, value.size());
+        if (string == nullptr) {
+            throw catch_python();
+        }
+        this->obj = PyFloat_FromString(string);
+        Py_DECREF(string);
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
     }
 
-    /* Construct a Python float from a C++ string. */
-    Float(const std::string& value) : Base([&value] {
+    /* Implicitly convert a C++ string into a python::FLoat. */
+    Float(const std::string& value) {
+        static_assert(
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new float object"
+        );
         PyObject* string = PyUnicode_FromStringAndSize(value.c_str(), value.size());
         if (string == nullptr) {
             throw catch_python();
         }
-        PyObject* result = PyFloat_FromString(string);
+        this->obj = PyFloat_FromString(string);
         Py_DECREF(string);
-        return result;
-    }()) {
-        static_assert(
-            ref == Ref::STEAL,
-            "Constructing a Float from a string requires the use of Ref::STEAL to "
-            "avoid memory leaks"
-        );
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
     }
 
-    /* Construct a Python float from a C++ string view. */
-    Float(const std::string_view& value) : Base([&value] {
+    /* Implicitly convert a C++ string_view into a python::FLoat. */
+    Float(const std::string_view& value) {
+        static_assert(
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new float object"
+        );
         PyObject* string = PyUnicode_FromStringAndSize(value.data(), value.size());
         if (string == nullptr) {
             throw catch_python();
         }
-        PyObject* result = PyFloat_FromString(string);
+        this->obj = PyFloat_FromString(string);
         Py_DECREF(string);
-        return result;
-    }()) {
-        static_assert(
-            ref == Ref::STEAL,
-            "Constructing a Float from a string view requires the use of Ref::STEAL "
-            "to avoid memory leaks"
-        );
-    }
-
-    /* Copy constructor. */
-    Float(const Float& other) : Base(other) {}
-
-    /* Move constructor. */
-    Float(Float&& other) : Base(std::move(other)) {}
-
-    /* Copy assignment. */
-    Float& operator=(const Float& other) {
-        if (this == &other) {
-            return *this;
+        if (this->obj == nullptr) {
+            throw catch_python();
         }
-        Base::operator=(other);
-        return *this;
     }
 
-    /* Move assignment. */
-    Float& operator=(Float&& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(std::move(other));
-        return *this;
-    }
-
-    ///////////////////////////
-    ////    CONVERSIONS    ////
-    ///////////////////////////
-
-    /* Implicitly convert a python::List into a PyFloatObject* pointer. */
+    /* Implicitly convert a python::Float into a PyFloatObject*. */
     inline operator PyFloatObject*() const noexcept {
         return reinterpret_cast<PyFloatObject*>(this->obj);
     }
@@ -4377,59 +4360,39 @@ class Complex : public Object<ref> {
     using Base = Object<ref>;
 
 public:
+    using Base::Base;
+    using Base::operator=;
 
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Construct a Python complex number from an existing CPython complex number. */
-    Complex(PyObject* obj) : Base(obj) {
-        if (!PyComplex_Check(obj)) {
+    /* Implicitly convert a PyObject* into a python::Complex. */
+    Complex(PyObject* obj) : Base([&] {
+        if (obj == nullptr || !PyComplex_Check(obj)) {
             throw TypeError("expected a complex number");
         }
-    }
+        return obj;
+    }()) {}
 
-    /* Construct a Python complex number from separate real/imaginary components as
-    doubles. */
-    Complex(double real, double imag) : Base(PyComplex_FromDoubles(real, imag)) {
+    /* Implicitly convert a C double into a python::Complex, with an optional imaginary
+    component. */
+    Complex(double real, double imag = 0) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing a Complex from a double requires the use of Ref::STEAL to "
-            "avoid memory leaks"
+            ref == Ref::BORROW,
+            "Cannot construct a non-owning reference to a new complex number object"
         );
-    }
-
-    /* Copy constructor. */
-    Complex(const Complex& other) : Base(other) {}
-
-    /* Move constructor. */
-    Complex(Complex&& other) : Base(std::move(other)) {}
-
-    /* Copy assignment. */
-    Complex& operator=(const Complex& other) {
-        if (this == &other) {
-            return *this;
+        this->obj = PyComplex_FromDoubles(real, imag);
+        if (this->obj == nullptr) {
+            throw catch_python();
         }
-        Base::operator=(other);
-        return *this;
     }
 
-    /* Move assignment. */
-    Complex& operator=(Complex&& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(std::move(other));
-        return *this;
-    }
-
-    ///////////////////////////
-    ////    CONVERSIONS    ////
-    ///////////////////////////
-
-    /* Implicitly convert a python::List into a PyComplexObject* pointer. */
+    /* Implicitly convert a python::Complex into a PyComplexObject*. */
     inline operator PyComplexObject*() const noexcept {
         return reinterpret_cast<PyComplexObject*>(this->obj);
+    }
+
+    /* Implicitly convert a python::Complex into a C double representing the real
+    component. */
+    inline operator double() const {
+        return real();
     }
 
     /* Get the real component of the complex number as a C double. */
@@ -4442,12 +4405,6 @@ public:
         return PyComplex_ImagAsDouble(this->obj);
     }
 
-    /* Implicitly convert a python::Complex into a C double representing the real
-    component. */
-    inline operator double() const {
-        return real();
-    }
-
 };
 
 
@@ -4456,80 +4413,80 @@ public:
 //////////////////////////
 
 
+// TODO: do default constructors make sense?  In the case where you forward declare a
+// container, this causes an extra allocation.
+
+
+// TODO: bring most python methods into these classes (e.g. extend, update, etc.).
+// These just convert the input into a python object and then call the python method
+// via call_method().
+
+
 /* An extension of python::Object that represents a Python tuple. */
 template <Ref ref = Ref::STEAL>
 class Tuple : public Object<ref> {
     using Base = Object<ref>;
 
 public:
+    using Base::Base;
+    using Base::operator=;
 
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
+    /* Implicitly convert a PyObject* into a python::Tuple. */
+    Tuple(PyObject* obj) : Base([&] {
+        if (obj == nullptr || !PyTuple_Check(obj)) {
+            std::ostringstream msg;
+            msg << "expected a tuple, got " << repr(obj);
+            throw TypeError(msg.str());
+        }
+        return obj;
+    }()) {}
 
-    /* Construct an empty Python tuple with the specified size. */
-    Tuple(Py_ssize_t size) : Base(PyTuple_New(size)) {
+    /* Pack the given arguments into a python::Tuple using an initializer list. */
+    template <typename T>
+    Tuple(std::initializer_list<T> args) {
         static_assert(
-            ref == Ref::NEW,
-            "Constructing an empty Tuple requires the use of Ref::NEW to avoid "
-            "memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new tuple object"
         );
-    }
-
-    /* Construct a python::Tuple around an existing CPython tuple. */
-    Tuple(PyObject* obj) : Base(obj) {
-        if (!PyTuple_Check(obj)) {
-            throw TypeError("expected a tuple");
+        this->obj = PyTuple_New(args.size());
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
+        try {
+            size_t i = 0;
+            for (auto&& arg : args) {
+                PyObject* arg = as_object(arg).unwrap();
+                if (arg == nullptr) {
+                    throw catch_python();
+                }
+                PyTuple_SET_ITEM(this->obj, i++);
+            }
+        } catch (...) {
+            Py_DECREF(this->obj);
+            throw;
         }
     }
 
-    /* Copy constructor. */
-    Tuple(const Tuple& other) : Base(other) {}
-
-    /* Move constructor. */
-    Tuple(Tuple&& other) : Base(std::move(other)) {}
-
-    /* Copy assignment. */
-    Tuple& operator=(const Tuple& other) {
-        if (this == &other) {
-            return *this;
+    /* Construct an empty tuple of the specified size. */
+    explicit Tuple(Py_ssize_t size) {
+        static_assert(
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new tuple object"
+        );
+        this->obj = PyTuple_New(size);
+        if (this->obj == nullptr) {
+            throw catch_python();
         }
-        Base::operator=(other);
-        return *this;
     }
 
-    /* Move assignment. */
-    Tuple& operator=(Tuple&& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(std::move(other));
-        return *this;
+    /* Implicitly convert a python::Tuple into a PyTupleObject*. */
+    inline operator PyTupleObject*() const noexcept {
+        return reinterpret_cast<PyTupleObject*>(this->obj);
     }
 
     /////////////////////////////////
     ////    PyTuple_* METHODS    ////
     /////////////////////////////////
-
-    /* Implicitly convert a python::List into a PyTupleObject* pointer. */
-    inline operator PyTupleObject*() const noexcept {
-        return reinterpret_cast<PyTupleObject*>(this->obj);
-    }
-
-    /* Construct a new Python tuple containing the given objects. */
-    template <typename... Args>
-    inline static Tuple<Ref::STEAL> pack(Args&&... args) {
-        static_assert(
-            ref == Ref::STEAL,
-            "pack() must use Ref::STEAL to avoid memory leaks"
-        );
-
-        PyObject* tuple = PyTuple_Pack(sizeof...(Args), std::forward<Args>(args)...);
-        if (tuple == nullptr) {
-            throw catch_python();
-        }
-        return {tuple};
-    }
 
     /* Get the size of the tuple. */
     inline size_t size() const noexcept {
@@ -4650,59 +4607,65 @@ class List : public Object<ref> {
     using Base = Object<ref>;
 
 public:
+    using Base::Base;
+    using Base::operator=;
 
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
+    /* Implicitly convert a PyObject* to a python::List. */
+    List(PyObject* obj) : Base([&] {
+        if (obj == nullptr || !PyList_Check(obj)) {
+            std::ostringstream msg;
+            msg << "expected a list, got " << repr(obj);
+            throw TypeError(msg.str());
+        }
+        return obj;
+    }()) {}
 
-    /* Construct an empty Python list of the specified size. */
-    List(Py_ssize_t size) : Base(PyList_New(size)) {
+    /* Pack the given arguments into a python::List using an initializer list. */
+    template <typename T>
+    List(std::initializer_list<T> args) {
         static_assert(
-            ref == Ref::NEW,
-            "Constructing an empty List requires the use of Ref::NEW to avoid "
-            "memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new list object"
         );
-    }
-
-    /* Construct a python::List around an existing CPython list. */
-    List(PyObject* obj) : Base(obj) {
-        if (!PyList_Check(obj)) {
-            throw TypeError("expected a list");
+        this->obj = PyList_New(args.size());
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
+        try {
+            size_t i = 0;
+            for (auto&& arg : args) {
+                PyObject* arg = as_object(arg).unwrap();
+                if (arg == nullptr) {
+                    throw catch_python();
+                }
+                PyList_SET_ITEM(this->obj, i++, arg);
+            }
+        } catch (...) {
+            Py_DECREF(this->obj);
+            throw;
         }
     }
 
-    /* Copy constructor. */
-    List(const List& other) : Base(other) {}
-
-    /* Move constructor. */
-    List(List&& other) : Base(std::move(other)) {}
-
-    /* Copy assignment. */
-    List& operator=(const List& other) {
-        if (this == &other) {
-            return *this;
+    /* Construct an empty list of the specified size. */
+    explicit List(Py_ssize_t size) {
+        static_assert(
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new list object"
+        );
+        this->obj = PyList_New(size);
+        if (this->obj == nullptr) {
+            throw catch_python();
         }
-        Base::operator=(other);
-        return *this;
     }
 
-    /* Move assignment. */
-    List& operator=(List&& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(std::move(other));
-        return *this;
+    /* Implicitly convert a python::List into a PyListObject*. */
+    inline operator PyListObject*() const noexcept {
+        return reinterpret_cast<PyListObject*>(this->obj);
     }
 
     ////////////////////////////////
     ////    PyList_* METHODS    ////
     ////////////////////////////////
-
-    /* Implicitly convert a python::List into a PyListObject* pointer. */
-    inline operator PyListObject*() const noexcept {
-        return reinterpret_cast<PyListObject*>(this->obj);
-    }
 
     /* Get the size of the list. */
     inline size_t size() const noexcept {
@@ -4880,59 +4843,50 @@ class Set : public Object<ref> {
     using Base = Object<ref>;
 
 public:
+    using Base::Base;
+    using Base::operator=;
 
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
+    /* Implicitly convert a PyObject* into a python::Set. */
+    Set(PyObject* obj) : Base([&] {
+        if (obj == nullptr || !PyAnySet_Check(obj)) {
+            std::ostringstream msg;
+            msg << "expected a set, got " << repr(obj);
+            throw TypeError(msg.str());
+        }
+        return obj;
+    }()) {}
 
-    /* Construct an empty Python set. */
-    Set() : Base(PySet_New(nullptr)) {
+    /* Pack the given arguments into a python::Set using an initializer list. */
+    template <typename T>
+    Set(std::initializer_list<T> args) {
         static_assert(
-            ref == Ref::NEW,
-            "Constructing an empty Set requires the use of Ref::NEW to avoid "
-            "memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new set object"
         );
-    }
-
-    /* Construct a python::Set around an existing CPython set. */
-    Set(PyObject* obj) : Base(obj) {
-        if (!PyAnySet_Check(obj)) {
-            throw TypeError("expected a set");
+        this->obj = PySet_New(nullptr);
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
+        try {
+            for (auto&& arg : args) {
+                if (PySet_Add(this->obj, as_object(arg)) < 0) {
+                    throw catch_python();
+                }
+            }
+        } catch (...) {
+            Py_DECREF(this->obj);
+            throw;
         }
     }
 
-    /* Copy constructor. */
-    Set(const Set& other) : Base(other) {}
-
-    /* Move constructor. */
-    Set(Set&& other) : Base(std::move(other)) {}
-
-    /* Copy assignment. */
-    Set& operator=(const Set& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(other);
-        return *this;
-    }
-
-    /* Move assignment. */
-    Set& operator=(Set&& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(std::move(other));
-        return *this;
+    /* Implicitly convert a python::Set into a PySetObject*. */
+    inline operator PySetObject*() const noexcept {
+        return reinterpret_cast<PySetObject*>(this->obj);
     }
 
     /////////////////////////////
     ////   PySet_* METHODS   ////
     /////////////////////////////
-
-    /* Implicitly convert a python::List into a PySetObject* pointer. */
-    inline operator PySetObject*() const noexcept {
-        return reinterpret_cast<PySetObject*>(this->obj);
-    }
 
     /* Get the size of the set. */
     inline size_t size() const noexcept {
@@ -5016,59 +4970,50 @@ class Dict : public Object<ref> {
     using Base = Object<ref>;
 
 public:
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Construct an empty Python dict. */
-    Dict() : Base(PyDict_New()) {
-        static_assert(
-            ref == Ref::NEW,
-            "Constructing an empty Dict requires the use of Ref::NEW to avoid "
-            "memory leaks"
-        );
-    }
+    using Base::Base;
+    using Base::operator=;
 
     /* Construct a python::Dict around an existing CPython dict. */
-    Dict(PyObject* obj) : Base(obj) {
-        if (!PyDict_Check(obj)) {
-            throw TypeError("expected a dict");
+    Dict(PyObject* obj) : Base([&] {
+        if (obj == nullptr || !PyDict_Check(obj)) {
+            std::ostringstream msg;
+            msg << "expected a dict, got " << repr(obj);
+            throw TypeError(msg.str());
+        }
+        return obj;
+    }()) {}
+
+    /* Pack the given arguments into a python::Dict using an initializer list. */
+    template <typename K, typename V>
+    Dict(std::initializer_list<std::pair<K, V>> args) {
+        static_assert(
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new dict object"
+        );
+        this->obj = PyDict_New();
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
+        try {
+            for (auto&& [k, v] : args) {
+                if (PyDict_SetItem(this->obj, as_object(k), as_object(v))) {
+                    throw catch_python();
+                }
+            }
+        } catch (...) {
+            Py_DECREF(this->obj);
+            throw;
         }
     }
 
-    /* Copy constructor. */
-    Dict(const Dict& other) : Base(other) {}
-
-    /* Move constructor. */
-    Dict(Dict&& other) : Base(std::move(other)) {}
-
-    /* Copy assignment. */
-    Dict& operator=(const Dict& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(other);
-        return *this;
-    }
-
-    /* Move assignment. */
-    Dict& operator=(Dict&& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(std::move(other));
-        return *this;
+    /* Implicitly convert a python::Dict into a PyDictObject*. */
+    inline operator PyDictObject*() const noexcept {
+        return reinterpret_cast<PyDictObject*>(this->obj);
     }
 
     ////////////////////////////////
     ////    PyDict_* METHODS    ////
     ////////////////////////////////
-
-    /* Implicitly convert a python::List into a PyDictObject* pointer. */
-    inline operator PyDictObject*() const noexcept {
-        return reinterpret_cast<PyDictObject*>(this->obj);
-    }
 
     /* Get the size of the dict. */
     inline size_t size() const noexcept {
@@ -5331,94 +5276,110 @@ class String : public Object<ref> {
     using Base = Object<ref>;
 
 public:
+    using Base::Base;
+    using Base::operator=;
 
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
+    /* Implicitly convert a PyObject* into a python::String. */
+    String(PyObject* obj) : Base([&] {
+        if (obj == nullptr || !PyUnicode_Check(obj)) {
+            std::ostringstream msg;
+            msg << "expected a unicode string, got " << repr(obj);
+            throw TypeError(msg.str());
+        }
+        return obj;
+    }()) {}
 
-    /* Construct a Python unicode string from an existing CPython unicode string. */
-    String(PyObject* obj) : Base(obj) {
-        if (!PyUnicode_Check(obj)) {
-            throw TypeError("expected a unicode string");
+    /* Implicitly convert a C string into a python::String. */
+    String(const char* value) {
+        static_assert(
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new string object"
+        );
+        this->obj = PyUnicode_FromString(value);
+        if (this->obj == nullptr) {
+            throw catch_python();
         }
     }
 
-    /* Construct a Python unicode string from a C-style character array. */
-    String(const char* value) : Base(PyUnicode_FromString(value)) {
+    /* Implicitly convert a C++ string into a python::String. */
+    String(const std::string& value) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing a String from a C-style string requires the use of "
-            "Ref::STEAL to avoid memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new string object"
         );
+        this->obj = PyUnicode_FromStringAndSize(value.c_str(), value.size())
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
     }
 
-    /* Construct a Python unicode string from a C++ string. */
-    String(const std::string& value) : Base(PyUnicode_FromStringAndSize(
-        value.c_str(), value.size()
-    )) {
+    /* Implicitly convert a C++ string_view into a python::String. */
+    String(const std::string_view& value) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing a String from a string requires the use of Ref::STEAL to "
-            "avoid memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new string object"
         );
-    }
-
-    /* Construct a Python unicode string from a C++ string view. */
-    String(const std::string_view& value) : Base(PyUnicode_FromStringAndSize(
-        value.data(), value.size()
-    )) {
-        static_assert(
-            ref == Ref::STEAL,
-            "Constructing a String from a string view requires the use of Ref::STEAL "
-            "to avoid memory leaks"
-        );
+        this->obj = PyUnicode_FromStringAndSize(value.data(), value.size())
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
     }
 
     /* Construct a Python unicode string from a printf-style format string.  See the
     Python docs for PyUnicode_FromFormat() for more details. */
     template <typename... Args>
-    String(const char* format, Args&&... args) : Base(PyUnicode_FromFormat(
-        format, std::forward<Args>(args)...
-    )) {
+    explicit String(const char* format, Args&&... args) {
         static_assert(
-            ref == Ref::STEAL,
-            "Constructing a String from a format string requires the use of Ref::STEAL "
-            "to avoid memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new string object"
         );
+        this->obj = PyUnicode_FromFormat(format, std::forward<Args>(args)...);
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
     }
 
-    /* Copy constructor. */
-    String(const String& other) : Base(other) {}
-
-    /* Move constructor. */
-    String(String&& other) : Base(std::move(other)) {}
-
-    /* Copy assignment. */
-    String& operator=(const String& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(other);
-        return *this;
+    /* Implicitly convert a python::String into a PyUnicodeObject* pointer. */
+    inline operator PyUnicodeObject*() const noexcept {
+        return reinterpret_cast<PyUnicodeObject*>(this->obj);
     }
 
-    /* Move assignment. */
-    String& operator=(String&& other) {
-        if (this == &other) {
-            return *this;
+    /* Implicitly convert a python::String into a C++ string. */
+    inline operator std::string() const {
+        Py_ssize_t size;
+        const char* result = PyUnicode_AsUTF8AndSize(this->obj, &size);
+        if (result == nullptr) {
+            throw catch_python();
         }
-        Base::operator=(std::move(other));
-        return *this;
+        return std::string(result);
+    }
+
+    /* Implicitly convert a python::String into a C string.  Returns a pointer to an
+    internal buffer within the string itself, which may be invalidated as soon as it is
+    garbage collected. */
+    inline operator const char*() const {
+        const char* result = PyUnicode_AsUTF8(this->obj);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Implicitly convert a python::String into a C++ string view.  Returns a view into
+    an internal buffer within the string itself, which may be invalidated as soon as it
+    is garbage collected. */
+    inline operator std::string_view() const {
+        Py_ssize_t size;
+        const char* result = PyUnicode_AsUTF8AndSize(this->obj, &size);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return std::string_view(result, size);
     }
 
     ///////////////////////////////////
     ////    PyUnicode_* METHODS    ////
     ///////////////////////////////////
-
-    /* Implicitly convert a python::List into a PyUnicodeObject* pointer. */
-    inline operator PyUnicodeObject*() const noexcept {
-        return reinterpret_cast<PyUnicodeObject*>(this->obj);
-    }
 
     /* Get the underlying unicode buffer. */
     inline void* data() const noexcept {
@@ -5791,40 +5752,14 @@ class FastSequence : public Object<ref> {
     using Base = Object<ref>;
 
 public:
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
+    using Base::Base;
+    using Base::operator=;
 
     /* Construct a PySequence from an iterable or other sequence. */
     FastSequence(PyObject* obj) : Base(obj) {
         if (!PyTuple_Check(obj) && !PyList_Check(obj)) {
             throw TypeError("expected a tuple or list");
         }
-    }
-
-    /* Copy constructor. */
-    FastSequence(const FastSequence& other) : Base(other) {}
-
-    /* Move constructor. */
-    FastSequence(FastSequence&& other) : Base(std::move(other)) {}
-
-    /* Copy assignment. */
-    FastSequence& operator=(const FastSequence& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(other);
-        return *this;
-    }
-
-    /* Move assignment. */
-    FastSequence& operator=(FastSequence&& other) {
-        if (this == &other) {
-            return *this;
-        }
-        Base::operator=(std::move(other));
-        return *this;
     }
 
     /////////////////////////////////////////
@@ -5869,24 +5804,22 @@ class Slice : public Object<ref> {
     PyObject* _step;
 
 public:
+    using Base::Base;
+    using Base::operator=;
 
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Construct an empty Python slice. */
+    /* Default constructor.  Initializes to an empty slice (all Nones). */
     Slice() :
-        Base(PySlice_New(nullptr, nullptr, nullptr)), _start(Py_NewRef(Py_None)),
-        _stop(Py_NewRef(Py_None)), _step(Py_NewRef(Py_None))
+        _start(Py_NewRef(&Py_None)), _stop(Py_NewRef(&Py_None)),
+        _step(Py_NewRef(&Py_None))
     {
         static_assert(
-            ref == Ref::NEW,
-            "Constructing an empty Slice requires the use of Ref::NEW to avoid "
-            "memory leaks"
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new slice object"
         );
+        this->obj = PySlice_New(nullptr, nullptr, nullptr);
     }
 
-    /* Construct a python::Slice around an existing CPython slice. */
+    /* Implicitly convert a PyObject* into a python::Slice. */
     Slice(PyObject* obj) : Base([&] {
         if (obj == nullptr || !PySlice_Check(obj)) {
             throw TypeError("expected a slice");
