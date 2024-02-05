@@ -11,6 +11,7 @@
 #include <string_view>  // std::string_view
 #include <tuple>  // std::tuple
 #include <type_traits>  // std::enable_if_t<>
+#include <utility>  // std::pair, std::move, etc.
 #include <valarray>  // std::valarray
 #include <vector>  // std::vector
 #include <Python.h>  // CPython API
@@ -769,6 +770,19 @@ Exc catch_cpp() {
 ///////////////////////////////////
 
 
+namespace traits {
+
+    /* Check whether the templated type refers to an object or one of its subclasses. */
+    template <typename T>
+    static constexpr bool is_object = (
+        std::is_base_of_v<Object<Ref::NEW>, T> ||
+        std::is_base_of_v<Object<Ref::STEAL>, T> ||
+        std::is_base_of_v<Object<Ref::BORROW>, T>
+    );
+
+}
+
+
 /* as_object() is a public helper function that is called to convert arbitrary C++
  * objects into an equivalent python::Object by calling an implicit constructor.
  * Overloading this function adds support for new types, and allows them to be used
@@ -777,12 +791,12 @@ Exc catch_cpp() {
  */
 
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 inline Object<Ref::NEW> as_object(PyObject* obj) {
     return {obj};
 }
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 inline Type<Ref::NEW> as_object(PyTypeObject* obj) {
     return {obj};
 }
@@ -822,84 +836,90 @@ inline String<Ref::NEW> as_object(PyUnicodeObject* obj) {
     return {obj};
 }
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 inline Bool as_object(bool obj) {
     return {obj};
 }
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 inline Int as_object(long long obj) {
     return {obj};
 }
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 inline Int as_object(unsigned long long obj) {
     return {obj};
 }
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 inline Float as_object(double obj) {
     return {obj};
 }
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 inline String as_object(const char* obj) {
     return {obj};
 }
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 inline String as_object(const std::string& obj) {
     return {obj};
 }
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 inline String as_object(const std::string_view& obj) {
     return {obj};
 }
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 template <typename First, typename Second>
 inline Tuple as_object(const std::pair<First, Second>& obj) {
     return {obj};
 }
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 template <typename... Ts>
 inline Tuple as_object(const std::tuple<Ts...>& obj) {
     return {obj};
 }
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent */
+template <typename T>
+inline List as_object(const std::array<T, N>& obj) {
+    return {obj};
+}
+
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 template <typename T>
 inline List as_object(const std::vector<T>& obj) {
     return {obj};
 }
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 template <typename T>
 inline List as_object(const std::list<T>& obj) {
     return {obj};
 }
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 template <typename T>
 inline Set as_object(const std::unordered_set<T>& obj) {
     return {obj};
 }
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 template <typename T>
 inline Set as_object(const std::set<T>& obj) {
     return {obj};
 }
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 template <typename K, typename V>
 inline Dict as_object(const std::unordered_map<K, V>& obj) {
     return {obj};
 }
 
-/* Convert an arbitrary C++ object to an aquivalent Python object. */
+/* Convert an arbitrary C++ object to an equivalent Python object. */
 template <typename K, typename V>
 inline Dict as_object(const std::map<K, V>& obj) {
     return {obj};
@@ -962,6 +982,8 @@ level API calls rather than isinstance() directly.
 */
 template <Ref ref = Ref::STEAL>
 struct Object {
+    static constexpr Ref ref_policy = ref;
+
     PyObject* obj;
 
     ////////////////////////////
@@ -1820,17 +1842,21 @@ struct Object {
     ////////////////////////
 
     /* A proxy for a key used to index the object. */
-    class Element {
+    class ElementProxy {
         friend Object;
         PyObject* obj;
         PyObject* key;
 
-        Element(PyObject* obj, PyObject* key) : obj(obj), key(key) {}
+        ElementProxy(PyObject* obj, PyObject* key) : obj(obj), key(key) {}
 
     public:
 
-        /* Get the item with the specified key.  Can throw if the object does not
-        support the `__getitem__()` method. */
+        ~ElementProxy() {
+            Py_XDECREF(key);
+        }
+
+        /* Get the item with the specified key.  Can throw if an error originates from
+        the object's `__getitem__()` method. */
         inline Object<Ref::STEAL> get() const {
             PyObject* result = PyObject_GetItem(obj, key);
             if (result == nullptr) {
@@ -1841,7 +1867,7 @@ struct Object {
 
         /* Set the item with the specified key.  Releases a reference to the previous
         value in case of an error, and then holds a reference to the new value.  Can
-        throw if the object does not support the `__setitem__()` method. */
+        throw if an error originates from the object's `__setitem__()` method. */
         template <typename T>
         inline void set(T&& value) {
             if (PyObject_SetItem(obj, key, as_object(std::forward<T>(value)))) {
@@ -1850,23 +1876,24 @@ struct Object {
         }
 
         /* Delete the item with the specified key.  Releases a reference to the value.
-        Can throw if the object does not support the `__delitem__()` method. */
+        Can throw if an error originates from the object's `__delitem__()` method. */
         inline void del() {
             if (PyObject_DelItem(obj, key)) {
                 throw catch_python();
             }
         }
 
-        /* Implicitly convert an ElementProxy to the item with the given key, allowing
-        it to be assigned to an lvalue or passed as an argument to a function. */
+        /* Implicitly convert the proxy to the item with the given key, allowing it to
+        be assigned to an lvalue or passed as an argument to a function. */
         inline operator Object<Ref::STEAL>() const {
             return get();
         }
 
-        /* Assign to an ElementProxy, allowing python-like insertion syntax. */
+        /* Assign to an Element proxy, allowing python-like insertion syntax. */
         template <typename T>
-        inline void operator=(T&& value) {
+        inline ElementProxy& operator=(T&& value) {
             set(std::forward<T>(value));
+            return *this;
         }
 
     };
@@ -1874,16 +1901,19 @@ struct Object {
     /* Index into the object, returning a proxy that forwards to its __getitem__(),
     __setitem__(), and __delitem__() methods. */
     template <typename T>
-    inline Element operator[](T&& key) noexcept {
-        return {obj, as_object(std::forward<T>(key))};
+    inline ElementProxy operator[](T&& key) noexcept {
+        return {obj, as_object(std::forward<T>(key)).unwrap()};
     }
 
     /* Index into the object, returning a proxy that forwards to its __getitem__(),
     __setitem__(), and __delitem__() methods. */
     template <typename T>
-    inline const Element operator[](T&& key) const noexcept {
-        return {obj, as_object(std::forward<T>(key))};
+    inline const ElementProxy operator[](T&& key) const noexcept {
+        return {obj, as_object(std::forward<T>(key)).unwrap()};
     }
+
+    // TODO: slice()
+    // -> Note that object[Slice(1, 3, 2)] just works
 
     ///////////////////////////////
     ////    UNARY OPERATORS    ////
@@ -2211,7 +2241,7 @@ struct Object {
         PyObject* result = PyNumber_Power(
             obj,
             as_object(std::forward<T>(exponent)),
-            &Py_None
+            Py_None
         );
         if (result == nullptr) {
             throw catch_python();
@@ -2235,7 +2265,7 @@ struct Object {
     template <typename T>
     inline Object& inplace_power(T&& other) {
         PyObject* result = PyNumber_InPlacePower(
-            obj, as_object(std::forward<T>(other)), &Py_None
+            obj, as_object(std::forward<T>(other)), Py_None
         );
         if (result == nullptr) {
             throw catch_python();
@@ -2747,6 +2777,34 @@ inline ostream& operator<<(ostream& stream, const Object<ref>& obj) {
     stream << static_cast<std::string>(obj.repr());
     return stream;
 }
+
+
+//////////////////////////////
+////    GLOBAL OBJECTS    ////
+//////////////////////////////
+
+
+/* The built-in None object. */
+class NoneType : public Object<Ref::BORROW> {
+    NoneType() : Object<Ref::BORROW>(Py_None) {}
+};
+
+
+/* The built-in NotImplemented object. */
+class NotImplementedType : public Object<Ref::BORROW> {
+    NotImplementedType() : Object<Ref::BORROW>(Py_NotImplemented) {}
+};
+
+
+/* The built-in Ellipsis (...) object. */
+class EllipsisType : public Object<Ref::BORROW> {
+    EllipsisType() : Object<Ref::BORROW>(Py_Ellipsis) {}
+};
+
+
+const NoneType None;
+const NotImplementedType NotImplemented;
+const EllipsisType Ellipsis;
 
 
 ////////////////////////////////////
@@ -4413,6 +4471,25 @@ public:
 //////////////////////////
 
 
+namespace traits {
+
+    /* SFINAE trait to detect whether a type is iterable with a definite size. */
+    template <typename T, typename = void>
+    struct _is_iterable : std::false_type {};
+
+    template <typename T>
+    struct _is_iterable<T, std::void_t<
+        decltype(std::declval<T>().size()),
+        decltype(std::declval<T>().begin()),
+        decltype(std::declval<T>().end())
+    >> : std::true_type {};
+
+    template <typename T>
+    static constexpr bool is_iterable = _is_iterable<T>::value;
+
+};
+
+
 // TODO: do default constructors make sense?  In the case where you forward declare a
 // container, this causes an extra allocation.
 
@@ -4426,6 +4503,13 @@ public:
 template <Ref ref = Ref::STEAL>
 class Tuple : public Object<ref> {
     using Base = Object<ref>;
+
+    template <typename... Args, size_t... I>
+    inline std::tuple<Args...> _as_cpp_tuple(std::index_sequence<I...>) const {
+        return std::make_tuple(
+            static_cast<Args>(GET_ITEM(this->obj, I))...
+        );
+    }
 
 public:
     using Base::Base;
@@ -4455,11 +4539,72 @@ public:
         try {
             size_t i = 0;
             for (auto&& arg : args) {
-                PyObject* arg = as_object(arg).unwrap();
-                if (arg == nullptr) {
+                PyObject* conv = as_object(arg).unwrap();
+                if (conv == nullptr) {
                     throw catch_python();
                 }
-                PyTuple_SET_ITEM(this->obj, i++);
+                PyTuple_SET_ITEM(this->obj, i++, conv);  // Steals a reference to conv
+            }
+        } catch (...) {
+            Py_DECREF(this->obj);
+            throw;
+        }
+    }
+
+    /* Implicitly convert a std::pair into a python::Tuple. */
+    template <typename First, typename Second>
+    Tuple(const std::pair<First, Second>& pair) {
+        static_assert(
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new tuple object"
+        );
+        this->obj = PyTuple_Pack(
+            2,
+            as_object(pair.first),
+            as_object(pair.second)
+        );
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
+    }
+
+    /* Implicitly convert a std::tuple into a python::Tuple. */
+    template <typename... Args>
+    Tuple(const std::tuple<Args...>& args) {
+        static_assert(
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new tuple object"
+        );
+        std::apply(
+            [&](auto&&... args) {
+                this->obj = PyTuple_Pack(sizeof...(Args), as_object(args)...);
+                if (this->obj == nullptr) {
+                    throw catch_python();
+                }
+            },
+            args
+        );
+    }
+
+    /* Implicitly convert a generic iterable into a python::Tuple. */
+    template <typename T, typename = std::enable_if_t<traits::is_iterable<T>>>
+    Tuple(const T& iterable) {
+        static_assert(
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new tuple object"
+        );
+        this->obj = PyTuple_New(iterable.size());
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
+        try {
+            size_t i = 0;
+            for (auto&& item : iterable) {
+                PyObject* conv = as_object(item).unwrap();
+                if (conv == nullptr) {
+                    throw catch_python();
+                }
+                PyTuple_SET_ITEM(this->obj, i++, conv);  // Steals a reference to conv
             }
         } catch (...) {
             Py_DECREF(this->obj);
@@ -4484,13 +4629,258 @@ public:
         return reinterpret_cast<PyTupleObject*>(this->obj);
     }
 
+    /* Implicitly convert a python::Tuple into a std::pair if it is of length 2.  Note
+    that converting to std::pair<PyObject*, PyObject*> effectively takes a borrowed
+    reference on every item in the tuple, which does not modify its reference count.
+    This means that the contents of the pair can be invalidated if the tuple is garbage
+    collected before the pair falls out of scope. */
+    template <typename First, typename Second>
+    inine operator std::pair<First, Second>() const {
+        if (this->obj == nullptr) {
+            throw TypeError("cannot convert null tuple to std::pair");
+        }
+        if (len() != 2) {
+            throw ValueError("expected a tuple of length 2");
+        }
+        PyObject* f = PyTuple_GET_ITEM(this->obj, 0);
+        PyObject* s = PyTuple_GET_ITEM(this->obj, 1);
+
+        if constexpr (traits::is_object<First>) {
+            if constexpr (traits::is_object<Second>) {
+                return {First(f), Second(s)};
+            } else {
+                return {First(f), static_cast<Second>(Object<Ref::BORROW>(s))};
+            }
+        } else {
+            if constexpr (traits::is_object<Second>) {
+                return {static_cast<First>(Object<Ref::BORROW>(f)), Second(s)};
+            } else {
+                return {
+                    static_cast<First>(Object<Ref::BORROW>(f)),
+                    static_cast<Second>(Object<Ref::BORROW>(s))
+                };
+            }
+        }
+    }
+
+    /* Implicitly convert a python::Tuple into a std::tuple if it has a matching
+    length.  Note that converting to std::tuple<PyObject*, ...> effectively takes a
+    borrowed reference on every item in the tuple, which does not modify its reference
+    count.  This means that the contents of the returned std::tuple can be invalidated
+    if the python::Tuple is garbage collected before the result falls out of scope. */
+    template <typename... Args>
+    inline operator std::tuple<Args...>() const {
+        if (this->obj == nullptr) {
+            throw TypeError("cannot convert null tuple to std::tuple");
+        }
+        if (len() != sizeof...(Args)) {
+            std::ostringstream msg;
+            msg << "expected a tuple of length " << sizeof...(Args);
+            throw ValueError(msg.str());
+        }
+        if constexpr (sizeof...(Args) == 0) {
+            return {};
+        } else {
+            return _as_cpp_tuple<Args...>(std::make_index_sequence<sizeof...(Args)>);
+        }
+    }
+
+    // TODO: conversion to std::array<T, N> if the length matches
+
+
+
+
+    /* Implicitly convert a python::Tuple into a std::vector.  Note that converting to
+    std::vector<PyObject*> effectively takes a borrowed reference on every item in the
+    tuple, which does not modify its reference count.  This means that the contents of
+    the vector can be invalidated if the tuple is garbage collected before the vector
+    falls out of scope. */
+    template <typename T>
+    inline operator std::vector<T>() const {
+        if (this->obj == nullptr) {
+            throw TypeError("cannot convert null tuple to std::vector");
+        }
+        std::vector<T> result;
+        size_t size = len();
+        result.reserve(size);
+        Py_ssize_t end = static_cast<Py_ssize_t>(size);
+        for (Py_ssize_t i = 0; i < end; ++i) {
+            if constexpr (traits::is_object<T>) {
+                result.push_back(T(PyTuple_GET_ITEM(this->obj, i)));
+            } else {
+                result.push_back(static_cast<T>(GET_ITEM(this->obj, i)));
+            }
+        }
+        return result;
+    }
+
+    /* Implicitly convert a python::Tuple into a std::list.  Note that converting to
+    std::list<PyObject*> effectively takes a borrowed reference on every item in the
+    tuple, which does not modify its reference count.  This means that the contents of
+    the list can be invalidated if the tuple is garbage collected before the list
+    falls out of scope. */
+    template <typename T>
+    inline operator std::list<T>() const {
+        if (this->obj == nullptr) {
+            throw TypeError("cannot convert null tuple to std::list");
+        }
+        std::list<T> result;
+        Py_ssize_t end = static_cast<Py_ssize_t>(len());
+        for (Py_ssize_t i = 0; i < end; ++i) {
+            if constexpr (traits::is_object<T>) {
+                result.push_back(T(PyTuple_GET_ITEM(this->obj, i)));
+            } else {
+                result.push_back(static_cast<T>(GET_ITEM(this->obj, i)));
+            }
+        }
+        return result;
+    }
+
+    ////////////////////////
+    ////    INDEXING    ////
+    ////////////////////////
+
+    /* A proxy for a particular index in the tuple.  Uses lower-level API functions to
+    improve performance. */
+    class ElementProxy {
+        friend Tuple;
+        PyObject* tuple;
+        Py_ssize_t index;
+
+        ElementProxy(PyObject* tuple, Py_ssize_t index) : tuple(tuple), index(index) {}
+
+    public:
+
+        /* Get the item at this index.  Can throw if the index is out of bounds. */
+        inline Object<Ref::STEAL> get() const {
+            PyObject* result = PyTuple_GetItem(tuple, index);
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return {Py_NewRef(result)};  // PyTuple_GetItem returns a borrowed reference
+        }
+
+        /* Set the item at this index.  Can throw if the index is out of bounds. */
+        template <typename T>
+        inline void set(T&& value) {
+            if (PyTuple_SetItem(tuple, index, as_object(std::forward<T>(value))) < 0) {
+                throw catch_python();
+            };
+        }
+
+        /* Delete the item at this index.  Can throw if the index is out of bounds. */
+        inline void del() {
+            if (PySequence_DelItem(tuple, index) < 0) {
+                throw catch_python();
+            }
+        }
+
+        /* Implicitly convert the proxy into a python::Object, allowing it to be
+        assigned to an lvalue or passed as an argument to a function. */
+        inline operator Object<Ref::STEAL>() const {
+            return get();
+        }
+
+        /* Assign to the proxy, allowing python-like insertion syntax. */
+        template <typename T>
+        inline ElementProxy& operator=(T&& value) {
+            set(std::forward<T>(value));
+            return *this;
+        }
+
+    };
+
+    /* A proxy for a key used to index the object. */
+    class SliceProxy {
+        friend Tuple;
+        PyObject* obj;
+        PyObject* key;
+
+        SliceProxy(PyObject* obj, PyObject* key) : obj(obj), key(key) {}
+
+    public:
+
+        ~SliceProxy() {
+            Py_XDECREF(key);
+        }
+
+        /* Get the item with the specified key.  Can throw if an error originates from
+        the object's `__getitem__()` method. */
+        inline Tuple<Ref::STEAL> get() const {
+            PyObject* result = PyObject_GetItem(obj, key);
+            if (result == nullptr) {
+                throw catch_python();
+            }
+            return {result};
+        }
+
+        /* Set the item with the specified key.  Releases a reference to the previous
+        value in case of an error, and then holds a reference to the new value.  Can
+        throw if an error originates from the object's `__setitem__()` method. */
+        template <typename T>
+        inline void set(T&& value) {
+            if (PyObject_SetItem(obj, key, as_object(std::forward<T>(value)))) {
+                throw catch_python();
+            }
+        }
+
+        /* Delete the item with the specified key.  Releases a reference to the value.
+        Can throw if an error originates from the object's `__delitem__()` method. */
+        inline void del() {
+            if (PyObject_DelItem(obj, key)) {
+                throw catch_python();
+            }
+        }
+
+        /* Implicitly convert the proxy to the item with the given key, allowing it to
+        be assigned to an lvalue or passed as an argument to a function. */
+        inline operator Tuple() const {
+            return get();
+        }
+
+        /* Assign to a Slice proxy, allowing python-like insertion syntax. */
+        template <typename T>
+        inline SliceProxy& operator=(T&& value) {
+            set(std::forward<T>(value));
+            return *this;
+        }
+
+    };
+
+    /* Index into the tuple using an integer, returning an optimized proxy that
+    forwards to the low level `PyTuple_GetItem()` and `PyTuple_SetItem()` methods. */
+    inline ElementProxy operator[](Py_ssize_t index) {
+        return {this->obj, index};
+    }
+
+    /* Index into the tuple using an integer, returning an optimized proxy that
+    forwards to the low level `PyTuple_GetItem()` and `PyTuple_SetItem()` methods. */
+    inline const ElementProxy operator[](Py_ssize_t index) const {
+        return {this->obj, index};
+    }
+
+    /* Index into the tuple using a Slice object, returning a generalized proxy that
+    forwards to the normal `__getitem__()`, `__setitem__()`, and `__delitem__()`
+    methods. */
+    inline SliceProxy operator[](Slice<ref::NEW> slice) {
+        return {this->obj, slice.unwrap()};
+    }
+
+    /* Index into the tuple using a Slice object, returning a generalized proxy that
+    forwards to the normal `__getitem__()`, `__setitem__()`, and `__delitem__()`
+    methods. */
+    inline const SliceProxy operator[](Slice<ref::NEW> slice) const {
+        return {this->obj, slice.unwrap()};
+    }
+
     /////////////////////////////////
     ////    PyTuple_* METHODS    ////
     /////////////////////////////////
 
-    /* Get the size of the tuple. */
-    inline size_t size() const noexcept {
-        return static_cast<size_t>(PyTuple_GET_SIZE(this->obj));
+    /* Get the length of the tuple.  The object must not be null. */
+    inline size_t size() const noexcept { return len();}
+    inline size_t len() const noexcept {
+        return static_cast<size_t>(PyTuple_Get_SIZE(this->obj));
     }
 
     /* Get the underlying PyObject* array. */
@@ -4498,81 +4888,8 @@ public:
         return PySequence_Fast_ITEMS(this->obj);
     }
 
-    ////////////////////////////////////
-    ////    PySequence_* METHODS    ////
-    ////////////////////////////////////
-
-    /* Check if the tuple contains a specific item. */
-    inline bool contains(PyObject* value) const noexcept {
-        int result = PySequence_Contains(this->obj, value);
-        if (result == -1) {
-            throw catch_python();
-        }
-        return result;
-    }
-
-    /* Get the index of the first occurrence of the specified item. */
-    inline size_t index(PyObject* value) const {
-        Py_ssize_t result = PySequence_Index(this->obj, value);
-        if (result == -1) {
-            throw catch_python();
-        }
-        return static_cast<size_t>(result);
-    }
-
-    /* Count the number of occurrences of the specified item. */
-    inline size_t count(PyObject* value) const {
-        Py_ssize_t result = PySequence_Count(this->obj, value);
-        if (result == -1) {
-            throw catch_python();
-        }
-        return static_cast<size_t>(result);
-    }
-
-    ////////////////////////
-    ////    INDEXING    ////
-    ////////////////////////
-
-    /* A proxy for a key used to index the tuple. */
-    class Element {
-        PyObject* tuple;
-        Py_ssize_t index;
-
-        friend Tuple;
-
-        Element(PyObject* tuple, Py_ssize_t index) : tuple(tuple), index(index) {}
-
-    public:
-
-        /* Get the item at this index.  Returns a new reference. */
-        inline Object<Ref::STEAL> get() const {
-            PyObject* result = PyTuple_GetItem(tuple, index);
-            if (result == nullptr) {
-                throw catch_python();
-            }
-            return {result};
-        }
-
-        /* Set the item at this index.  Borrows a reference to the new value and
-        releases a previous one if a conflict occurs. */
-        inline void set(PyObject* value) {
-            if (PyTuple_SetItem(tuple, index, Py_XNewRef(value))) {
-                throw catch_python();
-            };
-        }
-
-    };
-
-    inline Element operator[](size_t index) {
-        return {this->obj, static_cast<Py_ssize_t>(index)};
-    }
-
-    inline const Element operator[](size_t index) const {
-        return {this->obj, static_cast<Py_ssize_t>(index)};
-    }
-
-    /* Directly access an item within the tuple, without bounds checking or
-    constructing a proxy. */
+    /* Directly access an item within the tuple without bounds checking or constructing
+    a proxy. */
     inline Object<Ref::BORROW> GET_ITEM(Py_ssize_t index) const {
         return Object<Ref::BORROW>(PyTuple_GET_ITEM(this->obj, index));
     }
@@ -4580,22 +4897,66 @@ public:
     /* Directly set an item within the tuple, without bounds checking or constructing a
     proxy.  Steals a reference to `value` and does not clear the previous item if one is
     present. */
+    template <typename T>
     inline void SET_ITEM(Py_ssize_t index, PyObject* value) {
         PyTuple_SET_ITEM(this->obj, index, value);
     }
 
     /* Get a new Tuple representing a slice from this Tuple. */
     inline Tuple<Ref::STEAL> get_slice(size_t start, size_t stop) const {
-        if (start > size()) {
+        if (start > len()) {
             throw IndexError("start index out of range");
         }
-        if (stop > size()) {
+        if (stop > len()) {
             throw IndexError("stop index out of range");
         }
         if (start > stop) {
             throw IndexError("start index greater than stop index");
         }
         return {PyTuple_GetSlice(this->obj, start, stop)};
+    }
+
+    //////////////////////////////
+    ////    PYTHON METHODS    ////
+    //////////////////////////////
+
+    /* Check if the tuple contains a specific item. */
+    template <typename T>
+    inline bool contains(T&& value) const noexcept {
+        int result = PySequence_Contains(
+            this->obj,
+            as_object(std::forward<T>(value))
+        );
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Get the index of the first occurrence of the specified item. */
+    template <typename T>
+    inline size_t index(T&& value) const {
+        Py_ssize_t result = PySequence_Index(
+            this->obj,
+            as_object(std::forward<T>(value))
+        );
+        if (result == -1) {
+            throw catch_python();
+        }
+        return static_cast<size_t>(result);
+    }
+
+    /* Count the number of occurrences of the specified item. */
+    template <typename T>
+    inline size_t count(T&& value) const {
+        Py_ssize_t result = PySequence_Count(
+            this->obj,
+            as_object(std::forward<T>(value))
+        );
+        if (result == -1) {
+            throw catch_python();
+        }
+        return static_cast<size_t>(result);
     }
 
 };
@@ -4634,17 +4995,44 @@ public:
         try {
             size_t i = 0;
             for (auto&& arg : args) {
-                PyObject* arg = as_object(arg).unwrap();
-                if (arg == nullptr) {
+                PyObject* conv = as_object(arg).unwrap();
+                if (conv == nullptr) {
                     throw catch_python();
                 }
-                PyList_SET_ITEM(this->obj, i++, arg);
+                PyList_SET_ITEM(this->obj, i++, conv);  // steals a reference to conv
             }
         } catch (...) {
             Py_DECREF(this->obj);
             throw;
         }
     }
+
+    /* Implicitly convert a std::pair into a python::List. */
+    template <typename First, typename Second>
+    List(const std::pair<First, Second>& pair) {
+        static_assert(
+            ref != Ref::BORROW,
+            "Cannot construct a non-owning reference to a new list object"
+        );
+        this->obj = PyList_New(2);
+        if (this->obj == nullptr) {
+            throw catch_python();
+        }
+        PyObject* f = as_object(pair.first).unwrap();
+        if (f == nullptr) {
+            Py_DECREF(this->obj);
+            throw catch_python();
+        }
+        PyObject* s = as_object(pair.second).unwrap();
+        if (s == nullptr) {
+            Py_DECREF(f);
+            Py_DECREF(this->obj);
+            throw catch_python();
+        }
+        PyList_SET_ITEM(this->obj, 0, f);  // steals a reference to f
+        PyList_SET_ITEM(this->obj, 1, s);  // steals a reference to s
+    }
+
 
     /* Construct an empty list of the specified size. */
     explicit List(Py_ssize_t size) {
@@ -4752,13 +5140,13 @@ public:
     ////////////////////////
 
     /* An assignable proxy for a particular index of the list. */
-    class Element {
+    class ElementProxy {
         PyObject* list;
         Py_ssize_t index;
 
         friend List;
 
-        Element(PyObject* list, Py_ssize_t index) : list(list), index(index) {}
+        ElementProxy(PyObject* list, Py_ssize_t index) : list(list), index(index) {}
 
     public:
 
@@ -4781,11 +5169,11 @@ public:
 
     };
 
-    inline Element operator[](size_t index) {
+    inline ElementProxy operator[](size_t index) {
         return {this->obj, static_cast<Py_ssize_t>(index)};
     }
 
-    inline const Element operator[](size_t index) const {
+    inline const ElementProxy operator[](size_t index) const {
         return {this->obj, static_cast<Py_ssize_t>(index)};
     }
 
@@ -4996,7 +5384,7 @@ public:
         }
         try {
             for (auto&& [k, v] : args) {
-                if (PyDict_SetItem(this->obj, as_object(k), as_object(v))) {
+                if (PyDict_SetItem(this->obj, as_object(k), as_object(v)) < 0) {
                     throw catch_python();
                 }
             }
@@ -5092,7 +5480,7 @@ public:
 
     /* A proxy for a key used to index the dict. */
     template <typename Key>
-    class Element {
+    class ElementProxy {
         PyObject* dict;
         Key& key;
 
@@ -5100,7 +5488,7 @@ public:
 
         /* Construct an Element proxy for the specified key.  Borrows a reference to
         the key. */
-        Element(PyObject* dict, Key& key) : dict(dict), key(key) {}
+        ElementProxy(PyObject* dict, Key& key) : dict(dict), key(key) {}
     
     public:
 
@@ -5160,19 +5548,19 @@ public:
 
     };
 
-    inline Element<PyObject*> operator[](PyObject* key) {
+    inline ElementProxy<PyObject*> operator[](PyObject* key) {
         return {this->obj, key};
     }
 
-    inline const Element<PyObject*> operator[](PyObject* key) const {
+    inline const ElementProxy<PyObject*> operator[](PyObject* key) const {
         return {this->obj, key};
     }
 
-    inline Element<const char*> operator[](const char* key) {
+    inline ElementProxy<const char*> operator[](const char* key) {
         return {this->obj, key};
     }
 
-    inline const Element<const char*> operator[](const char* key) const {
+    inline const ElementProxy<const char*> operator[](const char* key) const {
         return {this->obj, key};
     }
 
@@ -5596,13 +5984,13 @@ public:
     ////////////////////////
 
     /* A proxy for a key used to index the string. */
-    class Element {
+    class ElementProxy {
         PyObject* string;
         Py_ssize_t index;
 
         friend String;
 
-        Element(PyObject* string, Py_ssize_t index) : string(string), index(index) {}
+        ElementProxy(PyObject* string, Py_ssize_t index) : string(string), index(index) {}
 
     public:
             
@@ -5618,11 +6006,11 @@ public:
 
     };
 
-    inline Element operator[](Py_ssize_t index) {
+    inline ElementProxy operator[](Py_ssize_t index) {
         return {this->obj, static_cast<Py_ssize_t>(index)};
     }
 
-    inline const Element operator[](Py_ssize_t index) const {
+    inline const ElementProxy operator[](Py_ssize_t index) const {
         return {this->obj, static_cast<Py_ssize_t>(index)};
     }
 
@@ -5737,12 +6125,15 @@ public:
 };
 
 
+
 /////////////////////
 ////    OTHER    ////
 /////////////////////
 
 
 // TODO: Global objects: None, Ellipsis, NotImplemented
+
+
 
 
 /* A wrapper around a fast Python sequence (list or tuple) that manages reference
@@ -5809,8 +6200,8 @@ public:
 
     /* Default constructor.  Initializes to an empty slice (all Nones). */
     Slice() :
-        _start(Py_NewRef(&Py_None)), _stop(Py_NewRef(&Py_None)),
-        _step(Py_NewRef(&Py_None))
+        _start(Py_NewRef(Py_None)), _stop(Py_NewRef(Py_None)),
+        _step(Py_NewRef(Py_None))
     {
         static_assert(
             ref != Ref::BORROW,
