@@ -67,12 +67,19 @@ enum class Ref {
 };
 
 
+/* Enum to simplify iterator direction templates. */
+enum class Direction {
+    FORWARD,
+    REVERSE
+};
+
+
 ////////////////////////////////////
 ////    FORWARD DECLARATIONS    ////
 ////////////////////////////////////
 
 
-template <Ref ref>
+template <Ref ref, typename _Derived>
 struct Object;
 
 template <Ref ref>
@@ -128,10 +135,6 @@ class FastSequence;
 
 template <Ref ref>
 class String;
-
-
-struct Iterator;
-struct IteratorPair;
 
 
 //////////////////////////
@@ -980,9 +983,16 @@ specified type, which are executed at runtime.  In the case of built-in types, t
 be significantly faster than the equivalent Python code, thanks to the use of lower
 level API calls rather than isinstance() directly.
 */
-template <Ref ref = Ref::STEAL>
+template <Ref ref = Ref::STEAL, typename _Derived = void>
 struct Object {
     static constexpr Ref ref_policy = ref;
+    using Derived = std::conditional_t<std::is_same_v<_Derived, void>, Object, _Derived>;
+
+    template <Direction dir>
+    class Iterator;
+
+    template <Direction dir>
+    class IteratorPair;
 
     PyObject* obj;
 
@@ -1106,9 +1116,29 @@ struct Object {
         return obj;
     }
 
+    /* Explicitly convert a python::Object into another kind of python::Object with a
+    different reference counting protocol.  Applies the new reference counting protocol
+    to the wrapped object. */
+    template <Ref R, typename = std::enable_if_t<R != ref>>
+    inline explicit operator Object<R>() const noexcept {
+        return Object<R>(obj);
+    }
+
+    /* Implicitly convert a python::Object into a std::optional, converting null
+    pointers and objects assigned to None into std::nullopt.  Delegates to another
+    implicit conversion for the contained type. */
+    template <typename T>
+    inline operator std::optional<T>() const {
+        if (obj == nullptr || obj == Py_None) {
+            return std::nullopt;
+        } else {
+            return static_cast<T>(*this);
+        }
+    }
+
     /* Implicitly convert a python::Object into a boolean, testing the underlying value
     for truthiness with the same semantics as normal Python. */
-    inline operator bool() const noexcept {
+    inline operator bool() const {
         int result = PyObject_IsTrue(obj);
         if (result == -1) {
             throw catch_python();
@@ -1191,6 +1221,215 @@ struct Object {
         }
         result = std::string(result, static_cast<size_t>(size));
         Py_DECREF(string);  // ensure character buffer remains valid during conversion
+        return result;
+    }
+
+    /* Implicitly convert a python::Object into a std::pair.  Note that converting to
+    std::pair<PyObject*, PyObject*> effectively takes a borrowed reference on every
+    item, which does not modify the item's reference count.  This means that the
+    contents of the pair can be invalidated if the object is garbage collected before
+    the pair falls out of scope. */
+    template <typename First, typename Second>
+    inline operator std::pair<First, Second>() const {
+        if (obj == nullptr) {
+            throw TypeError("cannot convert null object to std::pair");
+        } else if (size() != 2) {
+            std::ostringstream msg;
+            msg << "cannot convert object of length " << size() << " to std::pair";
+            throw TypeError(msg.str());
+        }
+        using Iterator = typename Derived::template Iterator<Direction::FORWARD>;
+
+        Iterator it = static_cast<Derived*>(this)->begin();
+        First f = static_cast<First>(*it);
+        ++it;
+        return std::make_pair(f, static_cast<Second>(*it));
+    }
+
+private:
+
+    template <typename... Ts, size_t... I>
+    inline std::tuple<Ts...> _as_tuple(std::index_sequence<I...>) const {
+        // NOTE: using a fold expression over a comma operator forces strict
+        // left-to-right evaluation of it++, ensuring a stable order of operations.
+        // Otherwise, the order would be indeterminate in the C++ standard.
+        using Iterator = typename Derived::template Iterator<Direction::FORWARD>;
+        Iterator it = static_cast<Derived*>(this)->begin();
+        return {((void)I, static_cast<Ts>(*(it++)))...};
+    }
+
+public:
+
+    /* Implicitly convert a python::Object into a std::tuple.  Note that converting to
+    std::tuple<PyObject*, PyObject*, ...> effectively takes a borrowed reference on
+    every item, which does not modify the item's reference count.  This means that the
+    contents of the tuple can be invalidated if the object is garbage collected before
+    the tuple falls out of scope. */
+    template <typename... Ts>
+    inline operator std::tuple<Ts...>() const {
+        if (obj == nullptr) {
+            throw TypeError("cannot convert null object to std::tuple");
+        } else if (size() != sizeof...(Ts)) {
+            std::ostringstream msg;
+            msg << "cannot convert object of length " << size();
+            msg << " to std::tuple of length " << sizeof...(Ts);
+            throw TypeError(msg.str());
+        }
+
+        if constexpr (sizeof...(Ts) == 0) {
+            return {};
+        } else {
+            return _as_tuple<Ts...>(std::index_sequence_for<Ts...>{});
+        }
+    }
+
+    /* Implicitly convert a python::Object into a std::array.  Note that converting to
+    std::array<PyObject*, N> effectively takes a borrowed reference on every item,
+    which does not modify the item's reference count.  This means that the contents of
+    the array can be invalidated if the object is garbage collected before the array
+    falls out of scope. */
+    template <typename T, size_t N>
+    inline operator std::array<T, N>() const {
+        if (obj == nullptr) {
+            throw TypeError("cannot convert null object to std::array");
+        } else if (size() != N) {
+            std::ostringstream msg;
+            msg << "cannot convert object of length " << size();
+            msg << " to std::array of length " << N;
+            throw TypeError(msg.str());
+        }
+
+        std::array<T, N> result;
+        size_t i = 0;
+        for (auto&& item : *static_cast<Derived*>(this)) {
+            result[i++] = static_cast<T>(item);
+        }
+        return result;
+    }
+
+    /* Implicitly convert a python::Object into a std::vector.  Note that converting to
+    std::vector<PyObject*> effectively takes a borrowed reference on every item, which
+    does not modify its reference count.  This means that the contents of the vector
+    can be invalidated if the object is garbage collected before the vector falls out
+    of scope. */
+    template <typename T>
+    inline operator std::vector<T>() const {
+        if (obj == nullptr) {
+            throw TypeError("cannot convert null object to std::vector");
+        }
+        std::vector<T> result;
+        if (hasattr("__len__")) {
+            result.reserve(size());
+        }
+        for (auto&& item : *static_cast<Derived*>(this)) {
+            result.push_back(static_cast<T>(item));
+        }
+        return result;
+    }
+
+    /* Implicitly convert a python::Object into a std::list.  Note that converting to
+    std::list<PyObject*> effectively takes a borrowed reference on every item, which
+    does not modify its reference count.  This means that the contents of the list can
+    be invalidated if the object is garbage collected before the list falls out of
+    scope. */
+    template <typename T>
+    inline operator std::list<T>() const {
+        if (obj == nullptr) {
+            throw TypeError("cannot convert null object to std::list");
+        }
+        std::list<T> result;
+        for (auto&& item : *static_cast<Derived*>(this)) {
+            result.push_back(static_cast<T>(item));
+        }
+    }
+
+    /* Implicitly convert a python::Object into a std::deque.  Note that converting to
+    std::deque<PyObject*> effectively takes a borrowed reference on every item, which
+    does not modify its reference count.  This means that the contents of the deque can
+    be invalidated if the object is garbage collected before the deque falls out of
+    scope. */
+    template <typename T>
+    inline operator std::deque<T>() const {
+        if (obj == nullptr) {
+            throw TypeError("cannot convert null object to std::deque");
+        }
+        std::deque<T> result;
+        for (auto&& item : *static_cast<Derived*>(this)) {
+            result.push_back(static_cast<T>(item));
+        }
+    }
+
+    /* Implicitly convert a python::Object into a std::unordered_set.  Note that
+    converting to std::unordered_set<PyObject*> effectively takes a borrowed reference
+    on every item, which does not modify its reference count.  This means that the
+    contents of the set can be invalidated if the object is garbage collected before
+    the set falls out of scope. */
+    template <typename T>
+    inline operator std::unordered_set<T>() const {
+        if (obj == nullptr) {
+            throw TypeError("cannot convert null object to std::unordered_set");
+        }
+        std::unordered_set<T> result;
+        for (auto&& item : *static_cast<Derived*>(this)) {
+            result.insert(static_cast<T>(item));
+        }
+        return result;
+    }
+
+    /* Implicitly convert a python::Object into a std::set.  Note that converting to
+    std::set<PyObject*> effectively takes a borrowed reference on every item, which does
+    not modify its reference count.  This means that the contents of the set can be
+    invalidated if the object is garbage collected before the set falls out of scope. */
+    template <typename T>
+    inline operator std::set<T>() const {
+        if (obj == nullptr) {
+            throw TypeError("cannot convert null object to std::set");
+        }
+        std::set<T> result;
+        for (auto&& item : *static_cast<Derived*>(this)) {
+            result.insert(static_cast<T>(item));
+        }
+        return result;
+    }
+
+
+
+    // TODO: check for python dict and account for key-only traversal.
+
+
+
+    /* Implicitly convert a python::Object into a std::unordered_map.  Note that
+    converting to std::unordered_map<PyObject*, PyObject*> (or any permutation
+    involving PyObject*) effectively takes a borrowed reference on every key/value,
+    which does not modify their reference count.  This means that the contents of the
+    map can be invalidated if the object is garbage collected before the map falls out
+    of scope. */
+    template <typename Key, typename Value>
+    inline operator std::unordered_map<Key, Value>() const {
+        if (obj == nullptr) {
+            throw TypeError("cannot convert null object to std::unordered_map");
+        }
+        std::unordered_map<Key, Value> result;
+        for (auto&& item : *static_cast<Derived*>(this)) {
+            result.insert(static_cast<std::pair<Key, Value>>(item));
+        }
+        return result;
+    }
+
+    /* Implicitly convert a python::Object into a std::map.  Note that converting to
+    std::map<PyObject*, PyObject*> (or any permutation involving PyObject*) effectively
+    takes a borrowed reference on every key/value, which does not modify their
+    reference count.  This means that the contents of the map can be invalidated if the
+    object is garbage collected before the map falls out of scope. */
+    template <typename Key, typename Value>
+    inline operator std::map<Key, Value>() const {
+        if (obj == nullptr) {
+            throw TypeError("cannot convert null object to std::map");
+        }
+        std::map<Key, Value> result;
+        for (auto&& item : *static_cast<Derived*>(this)) {
+            result.insert(static_cast<std::pair<Key, Value>>(item));
+        }
         return result;
     }
 
@@ -1605,15 +1844,35 @@ struct Object {
     ////    ITERATION    ////
     /////////////////////////
 
+    /* NOTE: This class uses CRTP to implement the iteration protocol.  This means that
+     * subclasses are allowed to define their own iterators, which can be optimized for
+     * their specific use case.  The default implementation uses Python's generic
+     * iterator interface, which is not always the most efficient way to iterate over
+     * an object.  Tuples, for instance, can directly index a low-level memory buffer
+     * to obtain their contents, which is *much* faster than going through the python
+     * interpreter.
+     *
+     * When a subclass overrides the iteration protocol, it should define the following
+     * attributes:
+     *  1.  A nested class called `Iterator`, which is templated on the iteration
+     *      direction (either `Direction::FORWARD` or `Direction::REVERSE`).  This must
+     *      implement the dereference, pre-increment, and inequality operators, where
+     *      dereference returns a borrowed reference to the current item.
+     *  2.  `begin()` and `end()` methods that return `Iterator<Direction::FORWARD>`.
+     *  3.  `rbegin()` and `rend()` methods that return `Iterator<Direction::REVERSE>`.
+     *
+     * The other methods presented here are automatically filled in from the derived
+     * type, so subclasses do not need to implement them.
+     */
+
     /* A C++ wrapper around a Python iterator that enables it to be used in idiomatic
     C++ loops.  Dereferences to Object<Ref::BORROW>, the reference for which is managed
     internally by the iterator. */
+    template <Direction dir>
     class Iterator {
         friend Object;
         PyObject* iterator;
         PyObject* curr;
-
-        Iterator() : iterator(nullptr), curr(nullptr) {}
 
         Iterator(PyObject* it) : iterator(it), curr(nullptr) {
             curr = PyIter_Next(iterator);
@@ -1622,6 +1881,8 @@ struct Object {
                 throw catch_python();
             }
         }
+
+        Iterator() : iterator(nullptr), curr(nullptr) {}
 
     public:
         using iterator_category     = std::forward_iterator_tag;
@@ -1682,32 +1943,48 @@ struct Object {
         }
 
         /* Terminate iteration. */
-        template <typename F>
-        inline bool operator!=(const Iterator<F>& other) const {
+        inline bool operator!=(const Iterator& other) const {
             return curr != other.curr;
         }
 
     };
 
-    inline Iterator begin() const {
+    /* Initiate the sequence. */
+    inline Iterator<Direction::FORWARD> begin() const {
         PyObject* iter = PyObject_GetIter(obj);
         if (iter == nullptr) {
             throw catch_python();
         }
         return {iter};
     }
+    inline Iterator<Direction::REVERSE> rbegin() const {
+        return {call_method("__reversed__").unwrap()};
+    }
 
-    inline Iterator rbegin() const { return {call_method("__reversed__").unwrap()}; }
-    inline Iterator cbegin() const { return begin(); }
-    inline Iterator crbegin() const { return rbegin(); }
-    inline Iterator end() const { return {}; }
-    inline Iterator rend() const { return {}; }
-    inline Iterator cend() const { return end(); }
-    inline Iterator crend() const { return rend(); }
+    /* Terminate the sequence. */
+    inline Iterator<Direction::FORWARD> end() const { return {}; }
+    inline Iterator<Direction::REVERSE> rend() const { return {}; }
 
-    /* An encapsulated pair of C++ iterators that can be iterated over directly, rather
-    than requiring separate begin() and end() iterators. */
+    /* Reimplement the above methods for callers that expect cbegin(), etc. */
+    inline typename Derived::template Iterator<Direction::FORWARD> cbegin() const {
+        return static_cast<Derived*>(this)->begin();
+    }
+    inline typename Derived::template Iterator<Direction::FORWARD> cend() const {
+        return static_cast<Derived*>(this)->end();
+    }
+    inline typename Derived::template Iterator<Direction::REVERSE> crbegin() const {
+        return static_cast<Derived*>(this)->rbegin();
+    }
+    inline typename Derived::template Iterator<Direction::REVERSE> crend() const {
+        return static_cast<Derived*>(this)->rend();
+    }
+
+    /* An encapsulated pair of C++ iterators that can be traversed directly, rather
+    than requiring separate begin() and end() iterators.  These are also returned by
+    the `iter()` and `reversed()` non-member functions. */
+    template <Direction dir>
     class IteratorPair {
+        using Iterator = typename Derived::template Iterator<dir>;
         friend Object;
         Iterator _begin;
         Iterator _end;
@@ -1775,66 +2052,32 @@ struct Object {
         }
 
         /* Terminate sequence. */
+        inline bool operator!=(const Iterator& other) const {
+            return _begin != other;
+        }
+
+        /* Terminate sequence. */
         inline bool operator!=(const IteratorPair& other) const {
             return _begin != other._begin;
         }
 
     };
 
-    /* Get the length of a Python object.  Returns nullopt if the object does not
-    support the sequence protocol. */
-    inline std::optional<size_t> len() const {
-        if (!PyObject_HasAttrString(obj, "__len__")) {
-            return std::nullopt;
-        }
-        Py_ssize_t result = PyObject_Length(obj);
-        if (result == -1 && PyErr_Occurred()) {
-            throw catch_python();
-        }
-        return std::make_optional(static_cast<size_t>(result));
-    }
-
     /* Get a C++ iterator over a Python object.  Returns an iterator pair that contains
     both a begin() and end() member, any of which can be used in idiomatic C++ loops.
     Can throw if the object is not iterable. */
-    inline IteratorPair iter() const {
-        return {begin(), end()};
+    inline IteratorPair<Direction::FORWARD> iter() const {
+        Derived* self = static_cast<Derived*>(this);
+        return {self->begin(), self->end()};
     }
 
     /* Get a pair of iterators that can be used to iterate over the object in reverse.
-    Can throw if the object is not reverse iterable. */
-    inline IteratorPair reversed() const {
-        return {rbegin(), rend()};
-    }
-
-    /* Get the next item from an iterator.  The object must be an iterator.  Can throw
-    if there was an error retrieving the next item, or if there are no more items in
-    the iterator, in which case a StopIteration exception is thrown, just like in
-    Python. */
-    inline Object<Ref::STEAL> next() const {
-        PyObject* result = PyIter_Next(obj);
-        if (result == nullptr) {
-            if (PyErr_Occurred()) {
-                throw catch_python();
-            }
-            throw StopIteration();
-        }
-        return {result};
-    }
-
-    /* Get the next item from an iterator, or a default value if the iterator is
-    exhausted.  The argument must be an iterator.  Borrows a reference to the default
-    value.  Can throw if there was an error retrieving the next item. */
-    template <typename T>
-    inline Object<Ref::STEAL> next(T&& default_value) {
-        PyObject* result = PyIter_Next(obj);
-        if (result == nullptr) {
-            if (PyErr_Occurred()) {
-                throw catch_python();
-            }
-            return {as_object(std::forward<T>(default_value)).unwrap()};
-        }
-        return {result};
+    Returns an iterator pair that contains both a begin() and end() member, any of which
+    can be used in idiomatic C++ loops. Can throw if the object is not reverse
+    iterable. */
+    inline IteratorPair<Direction::FORWARD> reversed() const {
+        Derived* self = static_cast<Derived*>(this);
+        return {self->rbegin(), self->rend()};
     }
 
     ////////////////////////
@@ -1912,12 +2155,39 @@ struct Object {
         return {obj, as_object(std::forward<T>(key)).unwrap()};
     }
 
-    // TODO: slice()
-    // -> Note that object[Slice(1, 3, 2)] just works
-
     ///////////////////////////////
     ////    UNARY OPERATORS    ////
     ///////////////////////////////
+
+    /* Get the next item from an iterator.  The object must be an iterator.  Can throw
+    if there was an error retrieving the next item, or if there are no more items in
+    the iterator, in which case a StopIteration exception is thrown, just like in
+    Python. */
+    inline Object<Ref::STEAL> next() const {
+        PyObject* result = PyIter_Next(obj);
+        if (result == nullptr) {
+            if (PyErr_Occurred()) {
+                throw catch_python();
+            }
+            throw StopIteration();
+        }
+        return {result};
+    }
+
+    /* Get the next item from an iterator, or a default value if the iterator is
+    exhausted.  The argument must be an iterator.  Borrows a reference to the default
+    value.  Can throw if there was an error retrieving the next item. */
+    template <typename T>
+    inline Object<Ref::STEAL> next(T&& default_value) {
+        PyObject* result = PyIter_Next(obj);
+        if (result == nullptr) {
+            if (PyErr_Occurred()) {
+                throw catch_python();
+            }
+            return {as_object(std::forward<T>(default_value)).unwrap()};
+        }
+        return {result};
+    }
 
     /* Get the hash of the object.  Can throw if the object does not support hashing. */
     inline size_t hash() const {
@@ -1985,6 +2255,46 @@ struct Object {
     implement the __ceil__() magic method. */
     inline Object<Ref::STEAL> ceil() const {
         return {call_method("__ceil__").unwrap()};
+    }
+
+    /* Get the minimum value stored in the object.  Can throw if the object is not an
+    iterable container, or if any of its contents are not less-than comparable. */
+    inline Object<Ref::STEAL> min() const {
+        PyObject* result = nullptr;
+        for (Object<Ref::BORROW> item : *this) {
+            if (result == nullptr) {
+                result = item.obj;
+            } else {
+                int cmp = PyObject_RichCompareBool(item.obj, result, Py_LT);
+                if (cmp == -1) {
+                    throw catch_python();
+                }
+                if (cmp) {
+                    result = item.obj;
+                }
+            }
+        }
+        return {Py_XNewRef(result)};
+    }
+
+    /* Get the maximum value stored in the object.  Can throw if the object is not an
+    iterable container, or if any of its contents are not greater-than comparable. */
+    inline Object<Ref::STEAL> max() const {
+        PyObject* result = nullptr;
+        for (Object<Ref::BORROW> item : *this) {
+            if (result == nullptr) {
+                result = item.obj;
+            } else {
+                int cmp = PyObject_RichCompareBool(item.obj, result, Py_GT);
+                if (cmp == -1) {
+                    throw catch_python();
+                }
+                if (cmp) {
+                    result = item.obj;
+                }
+            }
+        }
+        return {Py_XNewRef(result)};
     }
 
     /* Get a string representation of a Python object.  Equivalent to Python str(). */
@@ -2083,25 +2393,161 @@ struct Object {
         return PyUnicode_READ_CHAR(obj, 0);
     }
 
-    ////////////////////////////////
-    ////    BINARY OPERATORS    ////
-    ////////////////////////////////
+    /////////////////////////////////
+    ////    SEQUENCE PROTOCOL    ////
+    /////////////////////////////////
+
+    /* Get the length of a Python object.  Can throw if the object does not implement
+    the `sq_length` slot of the sequence protocol. */
+    inline size_t len() const { return size(); }
+    inline size_t size() const {
+        Py_ssize_t result = PyObject_Length(obj);
+        if (result == -1 && PyErr_Occurred()) {
+            throw catch_python();
+        }
+        return static_cast<size_t>(result);
+    }
+
+    /* Check if the object contains a specific item.  Can throw if the object does not
+    implement the `sq_contains` slot of the sequence protocol, or if an error
+    originates from its `__contains__` method. */
+    template <typename T>
+    inline bool contains(T&& value) const {
+        int result = PySequence_Contains(obj, as_object(std::forward<T>(value)));
+        if (result == -1) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Count the number of occurrences of a specific item within the object.  Can
+    throw if the object does not implement the `sq_count` slot of the sequence
+    protocol. */
+    template <typename T>
+    inline Py_ssize_t count(
+        T&& value,
+        Py_ssize_t start = 0,
+        Py_ssize_t stop = -1
+    ) const {
+        if (start != 0 || stop != -1) {
+            PyObject* slice = PySequence_GetSlice(obj, start, stop);
+            if (slice == nullptr) {
+                throw catch_python();
+            }
+            Py_ssize_t result = PySequence_Count(
+                slice, as_object(std::forward<T>(value))
+            );
+            Py_DECREF(slice);
+            if (result == -1 && PyErr_Occurred()) {
+                throw catch_python();
+            }
+            return result;
+        }
+
+        Py_ssize_t result = PySequence_Count(obj, as_object(std::forward<T>(value)));
+        if (result == -1 && PyErr_Occurred()) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Get the index of the first occurrence of a specific item within the object.  Can
+    throw if the object does not implement the `sq_index` slot of the sequence
+    protocol. */
+    template <typename T>
+    inline Py_ssize_t index(
+        T&& value,
+        Py_ssize_t start = 0,
+        Py_ssize_t stop = -1
+    ) const {
+        if (start != 0 || stop != -1) {
+            PyObject* slice = PySequence_GetSlice(obj, start, stop);
+            if (slice == nullptr) {
+                throw catch_python();
+            }
+            Py_ssize_t result = PySequence_Index(
+                slice, as_object(std::forward<T>(value))
+            );
+            Py_DECREF(slice);
+            if (result == -1 && PyErr_Occurred()) {
+                throw catch_python();
+            }
+            return result;
+        }
+
+        Py_ssize_t result = PySequence_Index(obj, as_object(std::forward<T>(value)));
+        if (result == -1 && PyErr_Occurred()) {
+            throw catch_python();
+        }
+        return result;
+    }
+
+    /* Concatenate the object with another sequence.  Can throw if the object does not
+    implement the `sq_concat` slot of the sequence protocol. */
+    template <typename T>
+    inline Object<Ref::STEAL> concat(T&& other) const {
+        PyObject* result = PySequence_Concat(obj, as_object(std::forward<T>(other)));
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return {result};
+    }
+
+    /* Concatenate the object with another sequence in-place.  Can throw if the object
+    does not implement the `sq_concat` slot of the sequence protocol. */
+    template <typename T>
+    inline Object& inplace_concat(T&& other) {
+        static_assert(
+            ref != Ref::BORROW,
+            "cannot call inplace_concat() on a borrowed reference"
+        );
+        PyObject* result = PySequence_InPlaceConcat(
+            obj, as_object(std::forward<T>(other))
+        );
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        PyObject* prev = obj;
+        obj = result;
+        Py_DECREF(prev);
+        return *this;
+    }
+
+    /* Repeat the object a given number of times.  Can throw if the object does not
+    implement the `sq_repeat` slot of the sequence protocol. */
+    inline Object<Ref::STEAL> repeat(Py_ssize_t count) const {
+        PyObject* result = PySequence_Repeat(obj, count);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return {result};
+    }
+
+    /* Repeat the object a given number of times in-place.  Can throw if the object does
+    not implement the `sq_repeat` slot of the sequence protocol. */
+    inline Object& inplace_repeat(Py_ssize_t count) {
+        static_assert(
+            ref != Ref::BORROW,
+            "cannot call inplace_repeat() on a borrowed reference"
+        );
+        PyObject* result = PySequence_InPlaceRepeat(obj, count);
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        PyObject* prev = obj;
+        obj = result;
+        Py_DECREF(prev);
+        return *this;
+    }
+
+    ///////////////////////////
+    ////    COMPARISONS    ////
+    ///////////////////////////
 
     /* Apply a Python-level identity comparison to the object.  Equivalent to
     `obj is other`.  Always succeeds. */
     inline bool is(PyObject* other) const noexcept {
         return obj == other;
-    }
-
-    /* Check whether the object contains a given value.  Equivalent to `value in obj`.
-    Can throw if the object does not support the sequence protocol. */
-    template <typename T>
-    inline bool contains(T&& value) const {
-        int result = PyObject_Contains(obj, as_object(std::forward<T>(value)));
-        if (result == -1) {
-            throw catch_python();
-        }
-        return result;
     }
 
     template <typename T>
@@ -2129,7 +2575,11 @@ struct Object {
     template <typename T>
     inline bool operator==(T&& other) const {
         using U = std::decay_t<T>;
-        if constexpr (
+        if constexpr (std::is_pointer_v<U>) {
+            if (obj == other) {
+                return true;
+            }
+        } else if constexpr (
             std::is_base_of_v<Object<Ref::NEW>, U> ||
             std::is_base_of_v<Object<Ref::STEAL>, U> ||
             std::is_base_of_v<Object<Ref::BORROW>, U>
@@ -2137,10 +2587,6 @@ struct Object {
             if (obj == other.obj) {
                 return true;
             };
-        } else if constexpr (std::is_pointer_v<U>) {
-            if (obj == other) {
-                return true;
-            }
         }
 
         int result = PyObject_RichCompareBool(
@@ -2155,7 +2601,11 @@ struct Object {
     template <typename T>
     inline bool operator!=(T&& other) const {
         using U = std::decay_t<T>;
-        if constexpr (
+        if constexpr (std::is_pointer_v<U>) {
+            if (obj == other) {
+                return false;
+            }
+        } else if constexpr (
             std::is_base_of_v<Object<Ref::NEW>, U> ||
             std::is_base_of_v<Object<Ref::STEAL>, U> ||
             std::is_base_of_v<Object<Ref::BORROW>, U>
@@ -2163,10 +2613,6 @@ struct Object {
             if (obj == other.obj) {
                 return false;
             };
-        } else if constexpr (std::is_pointer_v<U>) {
-            if (obj == other) {
-                return false;
-            }
         }
 
         int result = PyObject_RichCompareBool(
@@ -2215,6 +2661,10 @@ struct Object {
 
     template <typename T>
     inline Object& inplace_floor_divide(T&& other) {
+        static_assert(
+            ref != Ref::BORROW,
+            "cannot call inplace_floor_divide() on a borrowed reference"
+        );
         PyObject* result = PyNumber_InPlaceFloorDivide(
             obj, as_object(std::forward<T>(other))
         );
@@ -2264,6 +2714,10 @@ struct Object {
 
     template <typename T>
     inline Object& inplace_power(T&& other) {
+        static_assert(
+            ref != Ref::BORROW,
+            "cannot call inplace_power() on a borrowed reference"
+        );
         PyObject* result = PyNumber_InPlacePower(
             obj, as_object(std::forward<T>(other)), Py_None
         );
@@ -2278,6 +2732,10 @@ struct Object {
 
     template <typename T, typename U>
     inline Object& inplace_power(T&& other, U&& other) {
+        static_assert(
+            ref != Ref::BORROW,
+            "cannot call inplace_power() on a borrowed reference"
+        );
         PyObject* result = PyNumber_InPlacePower(
             obj,
             as_object(std::forward<T>(other)),
@@ -2306,6 +2764,10 @@ struct Object {
 
     template <typename T>
     inline Object& inplace_matrix_multiply(T&& other) {
+        static_assert(
+            ref != Ref::BORROW,
+            "cannot call inplace_matrix_multiply() on a borrowed reference"
+        );
         PyObject* result = PyNumber_InPlaceMatrixMultiply(
             obj,
             as_object(std::forward<T>(other))
@@ -2330,6 +2792,10 @@ struct Object {
 
     template <typename T>
     inline Object& operator+=(T&& other) {
+        static_assert(
+            ref != Ref::BORROW,
+            "cannot call += on a borrowed reference"
+        );
         PyObject* result = PyNumber_InPlaceAdd(obj, as_object(std::forward<T>(other)));
         if (result == nullptr) {
             throw catch_python();
@@ -2351,6 +2817,10 @@ struct Object {
 
     template <typename T>
     inline Object& operator-=(T&& other) {
+        static_assert(
+            ref != Ref::BORROW,
+            "cannot call -= on a borrowed reference"
+        );
         PyObject* result = PyNumber_InPlaceSubtract(obj, as_object(std::forward<T>(other)));
         if (result == nullptr) {
             throw catch_python();
@@ -2372,6 +2842,10 @@ struct Object {
 
     template <typename T>
     inline Object& operator*=(T&& other) {
+        static_assert(
+            ref != Ref::BORROW,
+            "cannot call *= on a borrowed reference"
+        );
         PyObject* result = PyNumber_InPlaceMultiply(obj, as_object(std::forward<T>(other)));
         if (result == nullptr) {
             throw catch_python();
@@ -2393,6 +2867,10 @@ struct Object {
 
     template <typename T>
     inline Object& operator/=(T&& other) {
+        static_assert(
+            ref != Ref::BORROW,
+            "cannot call /= on a borrowed reference"
+        );
         PyObject* result = PyNumber_InPlaceTrueDivide(
             obj, as_object(std::forward<T>(other))
         );
@@ -2416,6 +2894,10 @@ struct Object {
 
     template <typename T>
     inline Object& operator%=(T&& other) {
+        static_assert(
+            ref != Ref::BORROW,
+            "cannot call %= on a borrowed reference"
+        );
         PyObject* result = PyNumber_InPlaceRemainder(
             obj, as_object(std::forward<T>(other))
         );
@@ -2439,7 +2921,13 @@ struct Object {
 
     template <typename T>
     inline Object& operator<<=(T&& other) {
-        PyObject* result = PyNumber_InPlaceLshift(obj, as_object(std::forward<T>(other)));
+        static_assert(
+            ref != Ref::BORROW,
+            "cannot call <<= on a borrowed reference"
+        );
+        PyObject* result = PyNumber_InPlaceLshift(
+            obj, as_object(std::forward<T>(other))
+        );
         if (result == nullptr) {
             throw catch_python();
         }
@@ -2460,7 +2948,13 @@ struct Object {
 
     template <typename T>
     inline Object& operator>>=(T&& other) {
-        PyObject* result = PyNumber_InPlaceRshift(obj, as_object(std::forward<T>(other)));
+        static_assert(
+            ref != Ref::BORROW,
+            "cannot call >>= on a borrowed reference"
+        );
+        PyObject* result = PyNumber_InPlaceRshift(
+            obj, as_object(std::forward<T>(other))
+        );
         if (result == nullptr) {
             throw catch_python();
         }
@@ -2481,7 +2975,13 @@ struct Object {
 
     template <typename T>
     inline Object& operator|=(T&& other) {
-        PyObject* result = PyNumber_InPlaceOr(obj, as_object(std::forward<T>(other)));
+        static_assert(
+            ref != Ref::BORROW,
+            "cannot call |= on a borrowed reference"
+        );
+        PyObject* result = PyNumber_InPlaceOr(
+            obj, as_object(std::forward<T>(other))
+        );
         if (result == nullptr) {
             throw catch_python();
         }
@@ -2502,7 +3002,13 @@ struct Object {
 
     template <typename T>
     inline Object& operator&=(T&& other) {
-        PyObject* result = PyNumber_InPlaceAnd(obj, as_object(std::forward<T>(other)));
+        static_assert(
+            ref != Ref::BORROW,
+            "cannot call &= on a borrowed reference"
+        );
+        PyObject* result = PyNumber_InPlaceAnd(
+            obj, as_object(std::forward<T>(other))
+        );
         if (result == nullptr) {
             throw catch_python();
         }
@@ -2523,7 +3029,13 @@ struct Object {
 
     template <typename T>
     inline Object& operator^=(T&& other) {
-        PyObject* result = PyNumber_InPlaceXor(obj, as_object(std::forward<T>(other)));
+        static_assert(
+            ref != Ref::BORROW,
+            "cannot call ^= on a borrowed reference"
+        );
+        PyObject* result = PyNumber_InPlaceXor(
+            obj, as_object(std::forward<T>(other))
+        );
         if (result == nullptr) {
             throw catch_python();
         }
@@ -2538,7 +3050,7 @@ struct Object {
 
 /* An extension of python::Object that represents a Python type object. */
 template <Ref ref = Ref::STEAL>
-class Type : public Object<ref> {
+class Type : public Object<ref, Type> {
     using Base = Object<ref>;
 
 public:
@@ -2785,19 +3297,19 @@ inline ostream& operator<<(ostream& stream, const Object<ref>& obj) {
 
 
 /* The built-in None object. */
-class NoneType : public Object<Ref::BORROW> {
+class NoneType : public Object<Ref::BORROW, NotImplementedType> {
     NoneType() : Object<Ref::BORROW>(Py_None) {}
 };
 
 
 /* The built-in NotImplemented object. */
-class NotImplementedType : public Object<Ref::BORROW> {
+class NotImplementedType : public Object<Ref::BORROW, NotImplementedType> {
     NotImplementedType() : Object<Ref::BORROW>(Py_NotImplemented) {}
 };
 
 
 /* The built-in Ellipsis (...) object. */
-class EllipsisType : public Object<Ref::BORROW> {
+class EllipsisType : public Object<Ref::BORROW, NotImplementedType> {
     EllipsisType() : Object<Ref::BORROW>(Py_Ellipsis) {}
 };
 
@@ -2951,6 +3463,20 @@ inline Object abs(Object<Ref::BORROW> obj) {
 }
 
 
+/* Get the minimum value stored in a Python object.  Can throw if the object is not
+iterable or any of its contents are not less-than comparable. */
+inline Object min(Object<Ref::BORROW> obj) {
+    return obj.min();
+}
+
+
+/* Get the maximum value stored in a Python object.  Can throw if the object is not
+iterable or any of its contents are not greater-than comparable. */
+inline Object max(Object<Ref::BORROW> obj) {
+    return obj.max();
+}
+
+
 /* Get a string representation of a Python object.  Equivalent to Python str(). */
 inline String str(Object<Ref::BORROW> obj) {
     return obj.str();
@@ -3045,7 +3571,7 @@ inline Object pow(Object<Ref::BORROW> obj, T&& exponent, U&& modulus) {
 
 /* An extension of python::Object that represents a Python module. */
 template <Ref ref = Ref::STEAL>
-class Module : public Object<ref> {
+class Module : public Object<ref, Module> {
     using Base = Object<ref>;
 
 public:
@@ -3233,7 +3759,7 @@ Module import(const char* name) {
 
 /* An extension of python::Object that represents a Python code object. */
 template <Ref ref = Ref::STEAL>
-class Code : public Object<ref> {
+class Code : public Object<ref, Code> {
     using Base = Object<ref>;
 
 public:
@@ -3459,7 +3985,7 @@ public:
 
 /* An extension of python::Object that represents a bytecode execution frame. */
 template <Ref ref = Ref::STEAL>
-class Frame : public Object<ref> {
+class Frame : public Object<ref, Frame> {
     using Base = Object<ref>;
 
 public:
@@ -3603,7 +4129,7 @@ public:
 
 /* An extension of python::Object that represents a Python function. */
 template <Ref ref = Ref::STEAL>
-class Function : public Object<ref> {
+class Function : public Object<ref, Function> {
     using Base = Object<ref>;
 
 public:
@@ -3795,7 +4321,7 @@ public:
 
 /* An extension of python::Object that represents a bound Python method. */
 template <Ref ref = Ref::STEAL>
-class Method : public Object<ref> {
+class Method : public Object<ref, Method> {
     using Base = Object<ref>;
 
 public:
@@ -4466,6 +4992,11 @@ public:
 };
 
 
+
+// TODO: datetime, timedelta, with implicit conversions to std::chrono
+
+
+
 //////////////////////////
 ////    CONTAINERS    ////
 //////////////////////////
@@ -4501,15 +5032,8 @@ namespace traits {
 
 /* An extension of python::Object that represents a Python tuple. */
 template <Ref ref = Ref::STEAL>
-class Tuple : public Object<ref> {
+class Tuple : public Object<ref, Tuple> {
     using Base = Object<ref>;
-
-    template <typename... Args, size_t... I>
-    inline std::tuple<Args...> _as_cpp_tuple(std::index_sequence<I...>) const {
-        return std::make_tuple(
-            static_cast<Args>(GET_ITEM(this->obj, I))...
-        );
-    }
 
 public:
     using Base::Base;
@@ -4629,116 +5153,115 @@ public:
         return reinterpret_cast<PyTupleObject*>(this->obj);
     }
 
-    /* Implicitly convert a python::Tuple into a std::pair if it is of length 2.  Note
-    that converting to std::pair<PyObject*, PyObject*> effectively takes a borrowed
-    reference on every item in the tuple, which does not modify its reference count.
-    This means that the contents of the pair can be invalidated if the tuple is garbage
-    collected before the pair falls out of scope. */
-    template <typename First, typename Second>
-    inine operator std::pair<First, Second>() const {
-        if (this->obj == nullptr) {
-            throw TypeError("cannot convert null tuple to std::pair");
-        }
-        if (len() != 2) {
-            throw ValueError("expected a tuple of length 2");
-        }
-        PyObject* f = PyTuple_GET_ITEM(this->obj, 0);
-        PyObject* s = PyTuple_GET_ITEM(this->obj, 1);
+    /////////////////////////////////////
+    ////    PyTuple_* API METHODS    ////
+    /////////////////////////////////////
 
-        if constexpr (traits::is_object<First>) {
-            if constexpr (traits::is_object<Second>) {
-                return {First(f), Second(s)};
-            } else {
-                return {First(f), static_cast<Second>(Object<Ref::BORROW>(s))};
-            }
-        } else {
-            if constexpr (traits::is_object<Second>) {
-                return {static_cast<First>(Object<Ref::BORROW>(f)), Second(s)};
-            } else {
-                return {
-                    static_cast<First>(Object<Ref::BORROW>(f)),
-                    static_cast<Second>(Object<Ref::BORROW>(s))
-                };
-            }
-        }
+    /* Get the length of the tuple.  The object must not be null. */
+    inline size_t len() const noexcept { return size();}
+    inline size_t size() const noexcept {
+        return static_cast<size_t>(PyTuple_Get_SIZE(this->obj));
     }
 
-    /* Implicitly convert a python::Tuple into a std::tuple if it has a matching
-    length.  Note that converting to std::tuple<PyObject*, ...> effectively takes a
-    borrowed reference on every item in the tuple, which does not modify its reference
-    count.  This means that the contents of the returned std::tuple can be invalidated
-    if the python::Tuple is garbage collected before the result falls out of scope. */
-    template <typename... Args>
-    inline operator std::tuple<Args...>() const {
-        if (this->obj == nullptr) {
-            throw TypeError("cannot convert null tuple to std::tuple");
-        }
-        if (len() != sizeof...(Args)) {
-            std::ostringstream msg;
-            msg << "expected a tuple of length " << sizeof...(Args);
-            throw ValueError(msg.str());
-        }
-        if constexpr (sizeof...(Args) == 0) {
-            return {};
-        } else {
-            return _as_cpp_tuple<Args...>(std::make_index_sequence<sizeof...(Args)>);
-        }
+    /* Get the underlying PyObject* array. */
+    inline PyObject** data() const noexcept {
+        return PySequence_Fast_ITEMS(this->obj);
     }
 
-    // TODO: conversion to std::array<T, N> if the length matches
+    /* Directly access an item within the tuple without bounds checking or constructing
+    a proxy. */
+    inline Object<Ref::BORROW> GET_ITEM(Py_ssize_t index) const {
+        return {PyTuple_GET_ITEM(this->obj, index)};
+    }
 
-
-
-
-    /* Implicitly convert a python::Tuple into a std::vector.  Note that converting to
-    std::vector<PyObject*> effectively takes a borrowed reference on every item in the
-    tuple, which does not modify its reference count.  This means that the contents of
-    the vector can be invalidated if the tuple is garbage collected before the vector
-    falls out of scope. */
+    /* Directly set an item within the tuple, without bounds checking or constructing a
+    proxy.  Steals a reference to `value` and does not clear the previous item if one is
+    present. */
     template <typename T>
-    inline operator std::vector<T>() const {
-        if (this->obj == nullptr) {
-            throw TypeError("cannot convert null tuple to std::vector");
-        }
-        std::vector<T> result;
-        size_t size = len();
-        result.reserve(size);
-        Py_ssize_t end = static_cast<Py_ssize_t>(size);
-        for (Py_ssize_t i = 0; i < end; ++i) {
-            if constexpr (traits::is_object<T>) {
-                result.push_back(T(PyTuple_GET_ITEM(this->obj, i)));
-            } else {
-                result.push_back(static_cast<T>(GET_ITEM(this->obj, i)));
-            }
-        }
-        return result;
+    inline void SET_ITEM(Py_ssize_t index, PyObject* value) {
+        PyTuple_SET_ITEM(this->obj, index, value);
     }
 
-    /* Implicitly convert a python::Tuple into a std::list.  Note that converting to
-    std::list<PyObject*> effectively takes a borrowed reference on every item in the
-    tuple, which does not modify its reference count.  This means that the contents of
-    the list can be invalidated if the tuple is garbage collected before the list
-    falls out of scope. */
-    template <typename T>
-    inline operator std::list<T>() const {
-        if (this->obj == nullptr) {
-            throw TypeError("cannot convert null tuple to std::list");
+    //////////////////////////////////
+    ////    ITERATOR INTERFACE    ////
+    //////////////////////////////////
+
+    /* An optimized iterator class that directly indexes the tuple's data array for
+    fast access. */
+    template <Direction dir>
+    class Iterator {
+    protected:
+        friend Tuple;
+        PyObject** data;
+        Py_ssize_t index;
+
+        Iterator(PyObject** data, Py_ssize_t index) : data(data), index(index) {}
+        Iterator(Py_ssize_t length) : data(nullptr), index(length) {}
+
+    public:
+        using iterator_category     = std::forward_iterator_tag;  // TODO: random_access iterator?
+        using difference_type       = std::ptrdiff_t;
+        using value_type            = Object<Ref::BORROW>;
+        using pointer               = value_type*;
+        using reference             = value_type&;
+
+        Iterator(const Iterator& other) : data(other.data), index(other.index) {}
+
+        Iterator(Iterator&& other) : data(other.data), index(other.index) {
+            other.data = nullptr;
+            other.index = 0;
         }
-        std::list<T> result;
-        Py_ssize_t end = static_cast<Py_ssize_t>(len());
-        for (Py_ssize_t i = 0; i < end; ++i) {
-            if constexpr (traits::is_object<T>) {
-                result.push_back(T(PyTuple_GET_ITEM(this->obj, i)));
-            } else {
-                result.push_back(static_cast<T>(GET_ITEM(this->obj, i)));
+
+        Iterator& operator=(const Iterator& other) {
+            if (this == &other) {
+                return *this;
             }
+            data = other.data;
+            index = other.index;
+            return *this;
         }
-        return result;
+
+        Iterator& operator=(Iterator&& other) {
+            if (this == &other) {
+                return *this;
+            }
+            data = other.data;
+            index = other.index;
+            other.data = nullptr;
+            other.index = 0;
+            return *this;
+        }
+
+        /* Get the current item. */
+        inline Object<Ref::BORROW> operator*() const {
+            return {data[index]};
+        }
+
+        /* Advance to next item. */
+        inline Iterator& operator++() {
+            if constexpr (dir == Direction::FORWARD) {
+                ++index;
+            } else {
+                --index;
+            }
+            return *this;
+        }
+
+        /* Terminate iteration. */
+        inline bool operator==(const Iterator& other) const {
+            return index == other.index;
+        }
+
     }
 
-    ////////////////////////
-    ////    INDEXING    ////
-    ////////////////////////
+    inline Iterator<Direction::FORWARD> begin() const { return {data(), 0}; }
+    inline Iterator<Direction::FORWARD> end() const { return {size()}; }
+    inline Iterator<Direction::REVERSE> rbegin() const { return {data(), size() - 1}; }
+    inline Iterator<Direction::REVERSE> rend() const { return {-1}; }
+
+    ////////////////////////////////
+    ////    OBJECT INTERFACE    ////
+    ////////////////////////////////
 
     /* A proxy for a particular index in the tuple.  Uses lower-level API functions to
     improve performance. */
@@ -4776,7 +5299,7 @@ public:
         }
 
         /* Implicitly convert the proxy into a python::Object, allowing it to be
-        assigned to an lvalue or passed as an argument to a function. */
+        assigned to an lvalue. */
         inline operator Object<Ref::STEAL>() const {
             return get();
         }
@@ -4790,7 +5313,7 @@ public:
 
     };
 
-    /* A proxy for a key used to index the object. */
+    /* A proxy for a slice used to index the object. */
     class SliceProxy {
         friend Tuple;
         PyObject* obj;
@@ -4833,8 +5356,8 @@ public:
         }
 
         /* Implicitly convert the proxy to the item with the given key, allowing it to
-        be assigned to an lvalue or passed as an argument to a function. */
-        inline operator Tuple() const {
+        be assigned to an lvalue. */
+        inline operator Tuple<Ref::STEAL>() const {
             return get();
         }
 
@@ -4873,90 +5396,28 @@ public:
         return {this->obj, slice.unwrap()};
     }
 
-    /////////////////////////////////
-    ////    PyTuple_* METHODS    ////
-    /////////////////////////////////
-
-    /* Get the length of the tuple.  The object must not be null. */
-    inline size_t size() const noexcept { return len();}
-    inline size_t len() const noexcept {
-        return static_cast<size_t>(PyTuple_Get_SIZE(this->obj));
-    }
-
-    /* Get the underlying PyObject* array. */
-    inline PyObject** data() const noexcept {
-        return PySequence_Fast_ITEMS(this->obj);
-    }
-
-    /* Directly access an item within the tuple without bounds checking or constructing
-    a proxy. */
-    inline Object<Ref::BORROW> GET_ITEM(Py_ssize_t index) const {
-        return Object<Ref::BORROW>(PyTuple_GET_ITEM(this->obj, index));
-    }
-
-    /* Directly set an item within the tuple, without bounds checking or constructing a
-    proxy.  Steals a reference to `value` and does not clear the previous item if one is
-    present. */
+    /* Concatenate the tuple with another sequence, similar to Python. */
     template <typename T>
-    inline void SET_ITEM(Py_ssize_t index, PyObject* value) {
-        PyTuple_SET_ITEM(this->obj, index, value);
+    inline Tuple<Ref::STEAL> operator+(T&& other) const {
+        return {Base::concat(std::forward<T>(other))};
     }
 
-    /* Get a new Tuple representing a slice from this Tuple. */
-    inline Tuple<Ref::STEAL> get_slice(size_t start, size_t stop) const {
-        if (start > len()) {
-            throw IndexError("start index out of range");
-        }
-        if (stop > len()) {
-            throw IndexError("stop index out of range");
-        }
-        if (start > stop) {
-            throw IndexError("start index greater than stop index");
-        }
-        return {PyTuple_GetSlice(this->obj, start, stop)};
-    }
-
-    //////////////////////////////
-    ////    PYTHON METHODS    ////
-    //////////////////////////////
-
-    /* Check if the tuple contains a specific item. */
+    /* Concatenate the tuple with another sequence in-place, similar to Python. */
     template <typename T>
-    inline bool contains(T&& value) const noexcept {
-        int result = PySequence_Contains(
-            this->obj,
-            as_object(std::forward<T>(value))
-        );
-        if (result == -1) {
-            throw catch_python();
-        }
-        return result;
+    inline Tuple& operator+=(T&& other) {
+        Base::inplace_concat(std::forward<T>(other));
+        return *this;
     }
 
-    /* Get the index of the first occurrence of the specified item. */
-    template <typename T>
-    inline size_t index(T&& value) const {
-        Py_ssize_t result = PySequence_Index(
-            this->obj,
-            as_object(std::forward<T>(value))
-        );
-        if (result == -1) {
-            throw catch_python();
-        }
-        return static_cast<size_t>(result);
+    /* Repeat the tuple the given number of times, similar to Python. */
+    inline Tuple<Ref::STEAL> operator*(Py_ssize_t count) const {
+        return {Base::repeat(count)};
     }
 
-    /* Count the number of occurrences of the specified item. */
-    template <typename T>
-    inline size_t count(T&& value) const {
-        Py_ssize_t result = PySequence_Count(
-            this->obj,
-            as_object(std::forward<T>(value))
-        );
-        if (result == -1) {
-            throw catch_python();
-        }
-        return static_cast<size_t>(result);
+    /* Repeat the tuple the given number of times in-place, similar to Python. */
+    inline Tuple& operator*=(Py_ssize_t count) {
+        Base::inplace_repeat(count);
+        return *this;
     }
 
 };
@@ -4964,7 +5425,7 @@ public:
 
 /* An extension of python::Object that represents a Python list. */
 template <Ref ref = Ref::STEAL>
-class List : public Object<ref> {
+class List : public Object<ref, List> {
     using Base = Object<ref>;
 
 public:
@@ -5227,7 +5688,7 @@ public:
 
 /* An extension of python::Object that represents a Python set. */
 template <Ref ref = Ref::STEAL>
-class Set : public Object<ref> {
+class Set : public Object<ref, Set> {
     using Base = Object<ref>;
 
 public:
@@ -5354,7 +5815,7 @@ public:
 
 /* An extension of python::Object that represents a Python dict. */
 template <Ref ref = Ref::STEAL>
-class Dict : public Object<ref> {
+class Dict : public Object<ref, Dict> {
     using Base = Object<ref>;
 
 public:
@@ -5660,7 +6121,7 @@ public:
 
 /* An extension of python::Object that represents a Python unicode string. */
 template <Ref ref = Ref::STEAL>
-class String : public Object<ref> {
+class String : public Object<ref, String> {
     using Base = Object<ref>;
 
 public:
@@ -6139,7 +6600,7 @@ public:
 /* A wrapper around a fast Python sequence (list or tuple) that manages reference
 counts and simplifies access. */
 template <Ref ref = Ref::STEAL>
-class FastSequence : public Object<ref> {
+class FastSequence : public Object<ref, FastSequence> {
     using Base = Object<ref>;
 
 public:
@@ -6187,7 +6648,7 @@ public:
 
 /* An extension of python::Object that represents a Python slice. */
 template <Ref ref = Ref::STEAL>
-class Slice : public Object<ref> {
+class Slice : public Object<ref, Slice> {
     using Base = Object<ref>;
 
     PyObject* _start;
