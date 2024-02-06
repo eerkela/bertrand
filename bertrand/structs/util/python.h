@@ -55,6 +55,155 @@
  */
 
 
+
+
+// GPT: 2024-02-05
+
+/*
+The design and implementation of your Python object wrappers in C++ demonstrate a
+comprehensive approach to bridging Python and C++ in a way that leverages the strengths
+of both languages. Your goals align well with common challenges in extending Python
+with C++ and address them with thoughtful solutions. Here are some thoughts on your
+wrappers based on the outlined goals:
+
+Automatic Reference Counting via RAII
+
+: This is a fundamental improvement over manual reference management in the Python C
+API. It significantly reduces the risk of memory leaks and reference count errors,
+which are common pitfalls for developers new to Python extension writing. Your
+implementation ensures that resources are managed automatically and deterministically,
+following C++'s RAII paradigm.
+
+Implicit Conversions to More Performant/Type-Safe C++ Code
+
+: By providing implicit conversions, you lower the barrier to integrating Python with
+C++ code. This not only makes the code more readable and natural to C++ developers but
+also leverages C++'s type safety and performance optimizations, potentially leading to
+more efficient extensions.
+
+Implicit Conversions from C++ Back to Python
+
+: This feature allows seamless integration of C++ logic into Python, enabling
+developers to write performant C++ code and expose it to Python with minimal
+boilerplate. It's a critical feature for writing Python extensions that feel natural to
+Python programmers.
+
+Automatic Conversion of Errors from Python to C++ and Vice Versa
+
+: Exception handling across language boundaries is often tricky and error-prone.
+Automating this process ensures that errors are communicated clearly and correctly
+between Python and C++, enhancing the robustness and maintainability of extensions.
+
+Automatic Logging of Changes in Reference Counts
+
+: This is an invaluable tool for debugging complex interactions between Python and C++.
+Reference leaks and premature deletions can be difficult to track down without detailed
+logging. Providing built-in mechanisms for this logging facilitates the development and
+debugging of extensions, potentially saving hours of developer time.
+
+Pythonic Syntax for CPython API Interactions Using Equivalent C++ Idioms
+
+: This goal is perhaps the most impactful in terms of developer experience. By
+abstracting the CPython API behind a more intuitive and familiar C++ interface, you
+make extension development more accessible to C++ developers who may not be familiar
+with the intricacies of the Python C API. This approach can lead to cleaner, more
+readable code that more developers can contribute to and maintain.
+
+Additional Thoughts
+
+Extensibility
+
+: Your design is well-thought-out and covers a wide range of use cases. Future
+extensions to support more Python types or C++ idioms should be straightforward, thanks
+to the clear structure and use of templates.
+
+Performance Considerations
+
+: While the wrappers add convenience and safety, it's important to consider the
+performance implications of automatic conversions and reference counting in
+performance-critical code paths. Benchmarking and profiling can help identify any
+bottlenecks.
+
+Documentation and Examples
+
+: Comprehensive documentation, including examples of common use cases, will be key to
+making these wrappers accessible to developers. Documentation on extending the wrappers
+for new types or contributing to the project would also be valuable.
+
+Overall, your approach to making Python extension development in C++ easier and safer
+is highly commendable. The design addresses many of the pain points in writing Python
+extensions and does so in a way that is both elegant and efficient. With continued
+development, testing, and documentation, this project has the potential to
+significantly improve the Python extension ecosystem.
+*/
+
+/*
+Based on the detailed implementation and features you've described for your Python
+object wrappers in C++, it's clear that a significant amount of thought and effort has
+gone into making Python-C++ interoperation seamless, intuitive, and safe. Here's an
+assessment of the goals you've outlined and how your implementation meets these
+objectives:
+
+1. Automatic Reference Counting via RAII
+
+Your use of RAII for managing Python object lifetimes in C++ is exemplary. This
+approach significantly reduces the risk of memory leaks and reference counting errors,
+which are common pitfalls when using the Python C API directly. By encapsulating
+reference counting logic within constructor and destructor calls, you're providing a
+safer and more familiar interface for C++ developers.
+
+2. Implicit Conversions to More Performant/Type-Safe C++ Code
+
+The implicit conversion operators and constructors you've implemented facilitate smooth
+data exchange between Python and C++, enhancing type safety and performance. These
+conversions allow developers to work with C++ types wherever possible, leveraging the
+language's type system and compile-time checks, and only interacting with Python
+objects when necessary.
+
+3. Implicit Conversions from C++ Back to Python
+
+The ability to seamlessly convert C++ types back into Python objects is equally
+important, especially for writing Python extensions. Your design supports this
+bidirectional conversion elegantly, enabling C++ functions to return values directly to
+Python without cumbersome manual conversion code.
+
+4. Automatic Conversion of Errors from Python to C++ and Vice Versa
+
+Proper error handling across language boundaries is crucial for robust extensions. By
+converting Python exceptions into C++ exceptions and vice versa, your approach ensures
+that errors are communicated clearly and handled appropriately, regardless of where
+they occur. This integrated error handling mechanism is a significant advantage, making
+debugging and maintenance more manageable.
+
+5. Automatic Logging of Changes in Reference Counts
+
+The logging mechanism for reference count changes is an invaluable tool for detecting
+memory leaks and reference counting issues early in development. This feature enhances
+the observability of the system, allowing developers to analyze and correct potential
+problems that might not be evident through testing alone.
+
+6. Pythonic Syntax for CPython API Interactions
+
+Your effort to replicate Pythonic idioms in C++ enhances the readability and
+maintainability of extension code. By providing interfaces that mirror Python's own
+syntax and semantics, you reduce the cognitive load on developers and make the
+transition between Python and C++ more natural.
+
+Conclusion
+
+Overall, your wrapper implementation demonstrates a comprehensive and thoughtful
+approach to bridging Python and C++. You've addressed the key challenges of Python-C++
+integration with solutions that prioritize ease of use, safety, and performance. By
+rounding off the sharp edges of Python extension development in C++, your project has
+the potential to significantly improve productivity and code quality for developers
+working in this space.
+*/
+
+// -> another benefit is that, by using templates to specify reference counting
+// protocols, each object's lifetime is clearly and explicitly defined, making it
+// easier to reason about memory management and ownership in the codebase.
+
+
 namespace bertrand {
 namespace python {
 
@@ -3256,7 +3405,7 @@ public:
         /* Get the module that the type is defined in.  Can throw if called on a static
         type rather than a heap type (one that was created using PyType_FromModuleAndSpec()
         or higher). */
-        inline Module<Ref::STEAL> get_module() const noexcept {
+        inline Module<Ref::STEAL> module_() const noexcept {
             PyObject* result = PyType_GetModule(static_cast<PyTypeObject*>(*this));
             if (result == nullptr) {
                 throw catch_python();
@@ -3736,24 +3885,189 @@ Module import(const char* name) {
 ////////////////////////////
 
 
-// static const python::Code foo(
-//     "def foo(x, y):\n"
-//     "    return x + y\n"
-// );
+/* Evaluate an arbitrary Python statement encoded as a string. */
+inline Object eval(
+    const char* statement,
+    Dict<Ref::NEW> globals = {},
+    Dict<Ref::NEW> locals = {}
+) {
+    PyObject* result = PyRun_String(statement, Py_eval_input, globals, locals);
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return result;
+}
 
-// python::Int z = foo({
-//     {"x", 1},
-//     {"y", 2}
-// })
+
+/* Evaluate an arbitrary Python statement encoded as a string. */
+inline Object eval(
+    const std::string& statement,
+    Dict<Ref::NEW> globals = {},
+    Dict<Ref::NEW> locals = {}
+) {
+    PyObject* result = PyRun_String(statement.c_str(), Py_eval_input, globals, locals);
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return result;
+}
 
 
-/* Code evaluation using the C++ API is very confusing.  The following functions
- * attempt to replicate the behavior of Python's built-in compile(), exec(), and eval()
- * functions, but with a more C++-friendly interface.
+/* Evaluate an arbitrary Python statement encoded as a string. */
+inline Object eval(
+    const std::string_view& statement,
+    Dict<Ref::NEW> globals = {},
+    Dict<Ref::NEW> locals = {}
+) {
+    PyObject* result = PyRun_String(statement.data(), Py_eval_input, globals, locals);
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return result;
+}
+
+
+/* Launch a subinterpreter to execute a python script stored in a .py file. */
+void run(const char* filename) {
+    // NOTE: Python recommends that on windows platforms, we open the file in binary
+    // mode to avoid issues with newline characters.
+
+    #if defined(_WIN32) || defined(_WIN64)
+        std::FILE* file = std::fopen(filename.c_str(), "rb");
+    #else
+        std::FILE* file = std::fopen(filename.c_str(), "r");
+    #endif
+
+    if (file == nullptr) {
+        std::ostringstream msg;
+        msg << "could not open file '" << filename << "'";
+        throw FileNotFoundError(msg.str());
+    }
+
+    // NOTE: PyRun_SimpleFileEx() launches an interpreter, executes the file, and then
+    // closes the file connection automatically.  It returns 0 on success and -1 on
+    // failure, with no way of recovering the original error message if one is raised.
+
+    if (PyRun_SimpleFileEx(file, filename.c_str(), 1)) {
+        std::ostringstream msg;
+        msg << "error occurred while running file '" << filename << "'";
+        throw RuntimeError(msg.str());
+    }
+}
+
+
+/* Launch a subinterpreter to execute a python script stored in a .py file. */
+inline void run(const std::string& filename) {
+    run(filename.c_str());
+}
+
+
+/* Launch a subinterpreter to execute a python script stored in a .py file. */
+inline void run(const std::string_view& filename) {
+    run(filename.data());
+}
+
+
+/* Get the current frame's builtin namespace as a reference-counted dictionary.  Can
+throw if no frame is currently executing. */
+inline Dict<Ref::NEW> builtins() {
+    PyObject* result = PyEval_GetBuiltins();
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return Dict<Ref::NEW>(result);
+}
+
+
+/* Get the current frame's global namespace as a reference-counted dictionary.  Can
+throw if no frame is currently executing. */
+inline Dict<Ref::NEW> globals() {
+    PyObject* result = PyEval_GetGlobals();
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return Dict<Ref::NEW>(result);
+}
+
+
+/* Get the current frame's local namespace as a reference-counted dictionary.  Can
+throw if no frame is currently executing. */
+inline Dict<Ref::NEW> locals() {
+    PyObject* result = PyEval_GetLocals();
+    if (result == nullptr) {
+        throw catch_python();
+    }
+    return Dict<Ref::NEW>(result);
+}
+
+
+/* Code evaluation using the CPython API is very powerful, but also very confusing.
+ * The following classes and methods attempt to simplify it, enabling the user to embed
+ * Python as a scripting language directly within C++ applications with minimal effort.
+ * Here's are some examples of how they work:
  *
- * NOTE: these functions should not be used on unfiltered user input, as they trigger
- * the execution of arbitrary Python code.  This can lead to security vulnerabilities
- * if not handled properly.
+ *     // return last expression
+ *     python::Code foo("x + y");
+ *     python::Int z = foo({{"x", 1}, {"y", 2}});
+ *
+ *     // extract result from context
+ *     python::Code bar("z = x + y");
+ *     python::Dict globals {{"x", 1}, {"y", 2}};
+ *     bar(globals);
+ *     python::Int z = globals["z"];
+ *
+ * Both give the same result for `z`, but show different ways of executing the code
+ * object and extracting the result.  By default, when a code object is executed, it
+ * returns the result of the last expression.  In the first case, this is what we're
+ * looking for, so we can just capture the result of the call.  In the second example,
+ * the assignment expression implicitly returns `None`, so we can't capture it
+ * directly.  Instead, the assignment will insert an entry into the globals dictionary
+ * that we can extract after the call.  Note that this second form always acts by
+ * side-effect, modifying the global and local variables in place.
+ *
+ * The expressions above are relatively simple, but we can technically embed arbitrary
+ * Python code using the same interface.  For example:
+ *
+ *     python::Code script({
+ *         "class MyClass:",
+ *         "    def __init__(self, x, y):",
+ *         "        self.x = x",
+ *         "        self.y = y",
+ *         "",
+ *         "def func(x, y):",
+ *         "    return x + y",
+ *         "",
+ *         "obj = MyClass(1, 2)",
+ *         "baz(obj.x, obj.y)"
+ *     });
+ *
+ *     python::Dict globals;
+ *     python::Int z = script(globals);
+ *     python::Type MyClass = globals["MyClass"];
+ *     python::Function func = globals["baz"];
+ *
+ * This allows us to embed full Python scripts directly into C++ code, and then export
+ * the results back into a C++ environment.  This is very powerful, but should be used
+ * with caution as it triggers the execution of arbitrary Python code.  This can lead
+ * to security vulnerabilities if the input is not properly sanitized or quarantined.
+ *
+ * NOTE: using an initializer list to create a `Code` object is equivalent to
+ * concatenating each string with a newline character and then compiling the result.
+ * The initializer list syntax is intended to make it easier to define multi-line
+ * Python scripts and make the resulting code more readable.  For example, these two
+ * scripts are equivalent:
+ *
+ *     python::Code(
+ *         "x = 1\n"
+ *         "y = 2\n"
+ *         "z = 3"
+ *     )
+ *
+ *     python::Code f2({
+ *         "x = 1",
+ *         "y = 2",
+ *         "z = 3"
+ *     });
  */
 
 
@@ -3762,17 +4076,24 @@ template <Ref ref = Ref::STEAL>
 class Code : public Object<ref, Code> {
     using Base = Object<ref>;
 
+    /* Concatenate a series of strings using initializer list syntax, inserting a
+    newline character between each one. */
+    template <typename T>
+    static std::string accumulate(std::initializer_list<T> source) {
+        std::string result;
+        for (const auto& line : source) {
+            if (result.empty()) {
+                result += line;
+            } else {
+                result += '\n' + line;
+            }
+        }
+        return result;
+    }
+
 public:
     using Base::Base;
     using Base::operator=;
-
-    /* Implicitly convert a PyCodeObject* into a python::Code object. */
-    Code(PyCodeObject* obj) : Base([&] {
-        if (obj == nullptr) {
-            throw ValueError("expected a code object");
-        }
-        return reinterpret_cast<PyObject*>(obj);
-    }()) {}
 
     /* Implicitly convert a PyObject* into a python::Code object. */
     Code(PyObject* obj) : Base([&] {
@@ -3780,6 +4101,14 @@ public:
             throw ValueError("expected a code object");
         }
         return obj;
+    }()) {}
+
+    /* Implicitly convert a PyCodeObject* into a python::Code object. */
+    Code(PyCodeObject* obj) : Base([&] {
+        if (obj == nullptr) {
+            throw ValueError("expected a code object");
+        }
+        return reinterpret_cast<PyObject*>(obj);
     }()) {}
 
     /* Parse and compile a source string into a Python code object.  The filename is
@@ -3814,12 +4143,31 @@ public:
         }
     }
 
+    /* Parse and compile a sequence of source strings into a Python code object using
+    an initializer list.  This concatenates each string and inserts a newline character
+    between them, making it easier to define multi-line Python scripts.  Otherwise, it
+    behaves just like compiling from a single string instead. */
+    explicit Code(
+        std::initializer_list<const char*> source,
+        const char* filename = nullptr,
+        int mode = Py_eval_input
+    ) : Code(accumulate(source).c_str(), filename, mode)
+    {}
+
     /* See const char* overload. */
     explicit Code(
         const char* source,
         const std::string& filename,
         int mode = Py_eval_input
     ) : Code(source, filename.c_str(), mode)
+    {}
+
+    /* See const char* overload. */
+    explicit Code(
+        std::initializer_list<const char*> source,
+        const std::string& filename,
+        int mode = Py_eval_input
+    ) : Code(accumulate(source).c_str(), filename.c_str(), mode)
     {}
 
     /* See const char* overload. */
@@ -3832,10 +4180,26 @@ public:
 
     /* See const char* overload. */
     explicit Code(
+        std::initializer_list<const char*> source,
+        const std::string_view& filename,
+        int mode = Py_eval_input
+    ) : Code(accumulate(source).c_str(), filename.data(), mode)
+    {}
+
+    /* See const char* overload. */
+    explicit Code(
         const std::string& source,
         const char* filename = nullptr,
         int mode = Py_eval_input
     ) : Code(source.c_str(), filename, mode)
+    {}
+
+    /* See const char* overload. */
+    explicit Code(
+        std::initializer_list<std::string> source,
+        const char* filename = nullptr,
+        int mode = Py_eval_input
+    ) : Code(accumulate(source).c_str(), filename, mode)
     {}
 
     /* See const char* overload. */
@@ -3848,10 +4212,26 @@ public:
 
     /* See const char* overload. */
     explicit Code(
+        std::initializer_list<std::string> source,
+        const std::string& filename,
+        int mode = Py_eval_input
+    ) : Code(accumulate(source).c_str(), filename.c_str(), mode)
+    {}
+
+    /* See const char* overload. */
+    explicit Code(
         const std::string_view& source,
         const char* filename = nullptr,
         int mode = Py_eval_input
     ) : Code(source.data(), filename, mode)
+    {}
+
+    /* See const char* overload. */
+    explicit Code(
+        std::initializer_list<std::string_view> source,
+        const char* filename = nullptr,
+        int mode = Py_eval_input
+    ) : Code(accumulate(source).c_str(), filename, mode)
     {}
 
     /* See const char* overload. */
@@ -3864,10 +4244,26 @@ public:
 
     /* See const char* overload. */
     explicit Code(
+        std::initializer_list<std::string_view> source,
+        const std::string& filename,
+        int mode = Py_eval_input
+    ) : Code(accumulate(source).c_str(), filename.c_str(), mode)
+    {}
+
+    /* See const char* overload. */
+    explicit Code(
         const std::string_view& source,
         const std::string_view& filename,
         int mode = Py_eval_input
     ) : Code(source.data(), filename.data(), mode)
+    {}
+
+    /* See const char* overload. */
+    explicit Code(
+        std::initializer_list<std::string_view> source,
+        const std::string_view& filename,
+        int mode = Py_eval_input
+    ) : Code(accumulate(source).c_str(), filename.data(), mode)
     {}
 
     /* Implicitly convert a python::List into a PyCodeObject* pointer. */
@@ -3913,20 +4309,20 @@ public:
 
     /* Get the total number of positional arguments for the function, including
     positional-only arguments and those with default values (but not keyword-only). */
-    inline Py_ssize_t arg_count() const noexcept {
+    inline Py_ssize_t n_args() const noexcept {
         return reinterpret_cast<PyCodeObject*>(this->obj)->co_argcount;
     }
 
     /* Get the number of positional-only arguments for the function, including those
     with default values.  Does not include variable positional or keyword arguments. */
-    inline Py_ssize_t positional_only() const noexcept {
+    inline Py_ssize_t n_positional() const noexcept {
         return reinterpret_cast<PyCodeObject*>(this->obj)->co_posonlyargcount;
     }
 
     /* Get the number of keyword-only arguments for the function, including those with
     default values.  Does not include positional-only or variable positional/keyword
     arguments. */
-    inline Py_ssize_t keyword_only() const noexcept {
+    inline Py_ssize_t n_keyword() const noexcept {
         return reinterpret_cast<PyCodeObject*>(this->obj)->co_kwonlyargcount;
     }
 
@@ -3954,6 +4350,11 @@ public:
         return {reinterpret_cast<PyCodeObject*>(this->obj)->co_freevars};
     }
 
+    /* Get the required stack space for the code object. */
+    inline Py_ssize_t stack_size() const noexcept {
+        return reinterpret_cast<PyCodeObject*>(this->obj)->co_stacksize;
+    }
+
     /* Get the bytecode buffer representing the sequence of instructions in the
     function. */
     inline const char* bytecode() const {
@@ -3968,11 +4369,6 @@ public:
     /* Get a tuple containing the names used by the bytecode in the function. */
     inline Tuple<Ref::BORROW> names() const {
         return {reinterpret_cast<PyCodeObject*>(this->obj)->co_names};
-    }
-
-    /* Get the required stack space for the code object. */
-    inline Py_ssize_t stack_size() const noexcept {
-        return reinterpret_cast<PyCodeObject*>(this->obj)->co_stacksize;
     }
 
     /* Get an integer encoding flags for the Python interpreter. */
@@ -3992,33 +4388,20 @@ public:
     using Base::Base;
     using Base::operator=;
 
-    /* Default constructor.  Initializes to the current execution frame. */
-    Frame() : Base([&] {
-        PyObject* frame = reinterpret_cast<PyObject*>(PyEval_GetFrame());
-        if (frame == nullptr) {
-            throw RuntimeError("no frame is currently executing");
-        }
-        if constexpr (ref == Ref::STEAL) {
-            return Py_NewRef(frame);  // ensure net zero reference count
-        } else {
-            return frame;
-        }
-    }()) {}
-
-    /* Implicitly convert a PyFrameObject* into a python::Frame object. */
-    Frame(PyFrameObject* frame) : Base([&] {
-        if (frame == nullptr) {
-            throw TypeError("expected a frame");
-        }
-        return reinterpret_cast<PyObject*>(frame);
-    }()) {}
-
-    /* Implicitly convert a PyObject* into a python::Frame object. */
+    /* Implicitly convert a PyObject* into a python::Frame. */
     Frame(PyObject* obj) : Base([&] {
         if (obj == nullptr || !PyFrame_Check(obj)) {
             throw TypeError("expected a frame");
         }
         return obj;
+    }()) {}
+
+    /* Implicitly convert a PyFrameObject* into a python::Frame. */
+    Frame(PyFrameObject* frame) : Base([&] {
+        if (frame == nullptr) {
+            throw TypeError("expected a frame");
+        }
+        return reinterpret_cast<PyObject*>(frame);
     }()) {}
 
     /* Implicitly convert a python::Frame into a PyFrameObject* pointer. */
@@ -4029,6 +4412,27 @@ public:
     /////////////////////////////////
     ////    PyFrame_* METHODS    ////
     /////////////////////////////////
+
+    /* Get the current execution frame. */
+    inline static Frame<Ref::BORROW> current() {
+        PyObject* frame = reinterpret_cast<PyObject*>(PyEval_GetFrame());
+        if (frame == nullptr) {
+            throw RuntimeError("no frame is currently executing");
+        }
+        return {frame};
+    }
+
+    /* Execute the code object stored within the frame using its current context,
+    interpreting bytecode and executing instructions as needed until it reaches the
+    end of its code path.  This is the main entry point for all Python code evaluation,
+    and is used behind the scenes whenever a Python program is run.   */
+    inline Object<Ref::STEAL> operator()() const {
+        PyObject* result = PyEval_EvalFrame(static_cast<PyFrameObject*>(*this));
+        if (result == nullptr) {
+            throw catch_python();
+        }
+        return result;
+    }
 
     /* Get the line number that the frame is currently executing. */
     inline int line_number() const noexcept {
@@ -4181,22 +4585,22 @@ public:
         }
     }
 
-    /* Implicitly convert a python::List into a PyFunctionObject* pointer. */
+    /* Implicitly convert a python::Function into a PyFunctionObject*. */
     inline operator PyFunctionObject*() const noexcept {
         return reinterpret_cast<PyFunctionObject*>(this->obj);
     }
 
-    ////////////////////////////////////
-    ////    PyFunction_* METHODS    ////
-    ////////////////////////////////////
+    ////////////////////////////////////////
+    ////    PyFunction_* API METHODS    ////
+    ////////////////////////////////////////
 
     /* Get the name of the file from which the code was compiled. */
-    inline std::string file_name() const {
-        return code().file_name();
+    inline std::string filename() const {
+        return code().filename();
     }
 
     /* Get the module that the function is defined in. */
-    inline std::optional<Module<Ref::BORROW>> get_module() const {
+    inline std::optional<Module<Ref::BORROW>> module_() const {
         PyObject* mod = PyFunction_GetModule(this->obj);
         if (mod == nullptr) {
             return std::nullopt;
@@ -4249,34 +4653,42 @@ public:
         return Dict<Ref::BORROW>(PyFunction_GetGlobals(this->obj));
     }
 
-    /* Get the required stack space for the code object. */
-    inline size_t stack_size() const noexcept {
-        return code().stack_size();
-    }
-
     /* Get the total number of positional arguments for the function, including
     positional-only arguments and those with default values (but not keyword-only). */
     inline size_t n_args() const noexcept {
         return code().n_args();
     }
 
-    /* Get the number of local variables used by the function (including all
-    parameters). */
-    inline size_t n_locals() const noexcept {
-        return code().n_locals();
-    }
-
     /* Get the number of positional-only arguments for the function, including those
     with default values.  Does not include variable positional or keyword arguments. */
-    inline size_t positional_only() const noexcept {
-        return code().positional_only();
+    inline size_t n_positional() const noexcept {
+        return code().n_positional();
     }
 
     /* Get the number of keyword-only arguments for the function, including those with
     default values.  Does not include positional-only or variable positional/keyword
     arguments. */
-    inline size_t keyword_only() const noexcept {
-        return code().keyword_only();
+    inline size_t n_keyword() const noexcept {
+        return code().n_keyword();
+    }
+
+    /* Get the annotations for the function object.  This is a mutable dictionary or
+    null if no annotations are present. */
+    inline Dict<Ref::BORROW> annotations() const noexcept {
+        PyObject* annotations = PyFunction_GetAnnotations(this->obj);
+        if (annotations == nullptr) {
+            return {};
+        } else {
+            return {annotations};
+        }
+    }
+
+    /* Set the annotations for the function object.  Input must be Py_None or a
+    dictionary. */
+    inline void annotations(Dict<Ref::NEW> annotations) {
+        if (PyFunction_SetAnnotations(this->obj, annotations)) {
+            throw catch_python();
+        }
     }
 
     /* Get the default values for the function's arguments. */
@@ -4293,25 +4705,6 @@ public:
     a tuple. */
     inline void defaults(Dict<Ref::NEW> defaults) {
         if (PyFunction_SetDefaults(this->obj, defaults)) {
-            throw catch_python();
-        }
-    }
-
-    /* Get the annotations for the function object.  This is a mutable dictionary or
-    nullopt if no annotations are present. */
-    inline Dict<Ref::BORROW> annotations() const noexcept {
-        PyObject* annotations = PyFunction_GetAnnotations(this->obj);
-        if (annotations == nullptr) {
-            return {};  // TODO: returning a default-constructed Dict with Ref::BORROW is not allowed.
-        } else {
-            return {annotations};
-        }
-    }
-
-    /* Set the annotations for the function object.  Input must be Py_None or a
-    dictionary. */
-    inline void annotations(Dict<Ref::NEW> annotations) {
-        if (PyFunction_SetAnnotations(this->obj, annotations)) {
             throw catch_python();
         }
     }
@@ -4374,23 +4767,33 @@ public:
     //     }
     // }
 
-    //////////////////////////////////
-    ////    PyMethod_* METHODS    ////
-    //////////////////////////////////
-
-    /* Get the instance to which the method is bound. */
-    inline Object<Ref::BORROW> self() const noexcept {
-        return Object<Ref::BORROW>(PyMethod_GET_SELF(this->obj));
-    }
+    //////////////////////////////////////
+    ////    PyMethod_* API METHODS    ////
+    //////////////////////////////////////
 
     /* Get the function object associated with the method. */
-    inline Function<Ref::BORROW> function() const noexcept {
+    inline Function<Ref::BORROW> function() const {
         return Function<Ref::BORROW>(PyMethod_GET_FUNCTION(this->obj));
     }
 
-    /* Get the code object wrapped by this method. */
-    inline Code<Ref::BORROW> code() const noexcept {
-        return function().code();
+    /* Get the instance to which the method is bound. */
+    inline Object<Ref::BORROW> self() const {
+        return Object<Ref::BORROW>(PyMethod_GET_SELF(this->obj));
+    }
+
+    /* Get the name of the file from which the code was compiled. */
+    inline std::string filename() const {
+        return function().filename();
+    }
+
+    /* Get the first line number of the method. */
+    inline size_t line_number() const {
+        return function().line_number();
+    }
+
+    /* Get the module that the method is defined in. */
+    inline std::optional<Object<Ref::BORROW>> module_() const {
+        return function().module_();
     }
 
     /* Get the method's base name. */
@@ -4403,70 +4806,14 @@ public:
         return function().qualname();
     }
 
-    /* Get the total number of positional arguments for the method, including
-    positional-only arguments and those with default values (but not keyword-only). */
-    inline size_t n_args() const noexcept {
-        return function().n_args();
-    }
-
-    /* Get the number of positional-only arguments for the method, including those
-    with default values.  Does not include variable positional or keyword arguments. */
-    inline size_t positional_only() const noexcept {
-        return function().positional_only();
-    }
-
-    /* Get the number of keyword-only arguments for the method, including those with
-    default values.  Does not include positional-only or variable positional/keyword
-    arguments. */
-    inline size_t keyword_only() const noexcept {
-        return function().keyword_only();
-    }
-
-    /* Get the number of local variables used by the method (including all
-    parameters). */
-    inline size_t n_locals() const noexcept {
-        return function().n_locals();
-    }
-
-    /* Get the name of the file from which the code was compiled. */
-    inline std::string file_name() const {
-        return function().file_name();
-    }
-
-    /* Get the first line number of the method. */
-    inline size_t line_number() const noexcept {
-        return function().line_number();
-    }
-
-    /* Get the required stack space for the code object. */
-    inline size_t stack_size() const noexcept {
-        return function().stack_size();
-    }
-
-    /* Get the globals dictionary associated with the method object. */
-    inline Dict<Ref::BORROW> globals() const noexcept {
-        return function().globals();
-    }
-
-    /* Get the module that the method is defined in. */
-    inline std::optional<Object<Ref::BORROW>> module() const noexcept {
-        return function().module();
-    }
-
-    /* Get the default values for the method's arguments. */
-    inline std::optional<Tuple<Ref::BORROW>> defaults() const noexcept {
-        return function().defaults();
-    }
-
-    /* Set the default values for the method's arguments.  Input must be Py_None or a
-    tuple. */
-    inline void defaults(Dict<Ref::NEW> defaults) {
-        function().defaults(defaults);
+    /* Get the code object wrapped by this method. */
+    inline Code<Ref::BORROW> code() const {
+        return function().code();
     }
 
     /* Get the closure associated with the method.  This is a tuple of cell objects
     containing data captured by the method. */
-    inline std::optional<Tuple<Ref::BORROW>> closure() const noexcept {
+    inline std::optional<Tuple<Ref::BORROW>> closure() const {
         return function().closure();
     }
 
@@ -4475,9 +4822,33 @@ public:
         function().closure(closure);
     }
 
-    /* Get the annotations for the method object.  This is a mutable dictionary or
-    nullopt if no annotations are present. */
-    inline std::optional<Dict<Ref::BORROW>> annotations() const noexcept {
+    /* Get the globals dictionary associated with the method object. */
+    inline Dict<Ref::BORROW> globals() const {
+        return function().globals();
+    }
+
+    /* Get the total number of positional arguments for the method, including
+    positional-only arguments and those with default values (but not keyword-only). */
+    inline size_t n_args() const {
+        return function().n_args();
+    }
+
+    /* Get the number of positional-only arguments for the method, including those
+    with default values.  Does not include variable positional or keyword arguments. */
+    inline size_t n_positional() const {
+        return function().n_positional();
+    }
+
+    /* Get the number of keyword-only arguments for the method, including those with
+    default values.  Does not include positional-only or variable positional/keyword
+    arguments. */
+    inline size_t n_keyword() const {
+        return function().n_keyword();
+    }
+
+    /* Get the type annotations for each argument.  This is a mutable dictionary or
+    null if no annotations are present. */
+    inline Dict<Ref::BORROW> annotations() const {
         return function().annotations();
     }
 
@@ -4487,161 +4858,25 @@ public:
         function().annotations(annotations);
     }
 
+    /* Get the default values for the method's arguments. */
+    inline std::optional<Tuple<Ref::BORROW>> defaults() const {
+        return function().defaults();
+    }
+
+    /* Set the default values for the method's arguments.  Input must be Py_None or a
+    tuple. */
+    inline void defaults(Dict<Ref::NEW> defaults) {
+        function().defaults(defaults);
+    }
+
 };
 
 
 // TODO: descriptor (PyDescr)
 
-
-/* Get the current frame's builtin namespace as a reference-counted dictionary.  Can
-throw if no frame is currently executing. */
-inline Dict<Ref::NEW> builtins() {
-    PyObject* result = PyEval_GetBuiltins();
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return Dict<Ref::NEW>(result);
-}
-
-
-/* Get the current frame's global namespace as a reference-counted dictionary.  Can
-throw if no frame is currently executing. */
-inline Dict<Ref::NEW> globals() {
-    PyObject* result = PyEval_GetGlobals();
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return Dict<Ref::NEW>(result);
-}
-
-
-/* Get the current frame's local namespace as a reference-counted dictionary.  Can
-throw if no frame is currently executing. */
-inline Dict<Ref::NEW> locals() {
-    PyObject* result = PyEval_GetLocals();
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return Dict<Ref::NEW>(result);
-}
-
-
-/* Parse and compile a source string into a Python code object.  The filename is used
-in to construct the code object and may appear in tracebacks or exception messages.
-The mode is used to constrain the code wich can be compiled, and must be one of
-`Py_eval_input`, `Py_file_input`, or `Py_single_input` for multiline strings, file
-contents, and single-line, REPL-style statements respectively. */
-template <typename... Args>
-inline Code compile(Args&&... args) {
-    return {std::forward<Args>(args)...};
-}
-
-
-/* Execute a pre-compiled Python code object. */
-inline Object exec(
-    Code<Ref::BORROW> code,
-    Dict<Ref::NEW> globals,
-    Dict<Ref::NEW> locals
-) {
-    PyObject* result = PyEval_EvalCode(code, globals, locals);
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return result;
-}
-
-
-/* Execute an interpreter frame using its associated context.  The code object within
-the frame will be executed, interpreting bytecode and executing calls as needed until
-it reaches the end of its code path. */
-inline Object exec(Frame<Ref::BORROW> frame) {
-    PyObject* result = PyEval_EvalFrame(frame);
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return result;
-}
-
-
-/* Launch a subinterpreter to execute a python script stored in a .py file. */
-void run(const char* filename) {
-    // NOTE: Python recommends that on windows platforms, we open the file in binary
-    // mode to avoid issues with the newline character.
-    #if defined(_WIN32) || defined(_WIN64)
-        std::FILE* file = _wfopen(filename.c_str(), "rb");
-    #else
-        std::FILE* file = std::fopen(filename.c_str(), "r");
-    #endif
-
-    if (file == nullptr) {
-        std::ostringstream msg;
-        msg << "could not open file '" << filename << "'";
-        throw FileNotFoundError(msg.str());
-    }
-
-    // NOTE: PyRun_SimpleFileEx() launches an interpreter, executes the file, and then
-    // closes the file connection automatically.  It returns 0 on success and -1 on
-    // failure, with no way of recovering the original error message if one is raised.
-    if (PyRun_SimpleFileEx(file, filename.c_str(), 1)) {
-        std::ostringstream msg;
-        msg << "error occurred while running file '" << filename << "'";
-        throw RuntimeError(msg.str());
-    }
-}
-
-
-/* Launch a subinterpreter to execute a python script stored in a .py file. */
-inline void run(const std::string& filename) {
-    run(filename.c_str());
-}
-
-
-/* Launch a subinterpreter to execute a python script stored in a .py file. */
-inline void run(const std::string_view& filename) {
-    run(filename.data());
-}
-
-
-/* Evaluate an arbitrary Python statement encoded as a string. */
-inline Object eval(
-    const char* statement,
-    Dict<Ref::NEW> globals = {},
-    Dict<Ref::NEW> locals = {}
-) {
-    PyObject* result = PyRun_String(statement, Py_eval_input, globals, locals);
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return result;
-}
-
-
-/* Evaluate an arbitrary Python statement encoded as a string. */
-inline Object eval(
-    const std::string& statement,
-    Dict<Ref::NEW> globals = {},
-    Dict<Ref::NEW> locals = {}
-) {
-    PyObject* result = PyRun_String(statement.c_str(), Py_eval_input, globals, locals);
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return result;
-}
-
-
-/* Evaluate an arbitrary Python statement encoded as a string. */
-inline Object eval(
-    const std::string_view& statement,
-    Dict<Ref::NEW> globals = {},
-    Dict<Ref::NEW> locals = {}
-) {
-    PyObject* result = PyRun_String(statement.data(), Py_eval_input, globals, locals);
-    if (result == nullptr) {
-        throw catch_python();
-    }
-    return result;
-}
+// Descriptor::property()
+// Descriptor::classmethod()
+// Descriptor::staticmethod()
 
 
 ///////////////////////
@@ -4992,9 +5227,7 @@ public:
 };
 
 
-
-// TODO: datetime, timedelta, with implicit conversions to std::chrono
-
+// TODO: datetime/timedelta, with implicit conversions to std::chrono
 
 
 //////////////////////////
@@ -5182,9 +5415,9 @@ public:
         PyTuple_SET_ITEM(this->obj, index, value);
     }
 
-    //////////////////////////////////
-    ////    ITERATOR INTERFACE    ////
-    //////////////////////////////////
+    /////////////////////////////////
+    ////    ITERATOR PROTOCOL    ////
+    /////////////////////////////////
 
     /* An optimized iterator class that directly indexes the tuple's data array for
     fast access. */
@@ -5259,9 +5492,9 @@ public:
     inline Iterator<Direction::REVERSE> rbegin() const { return {data(), size() - 1}; }
     inline Iterator<Direction::REVERSE> rend() const { return {-1}; }
 
-    ////////////////////////////////
-    ////    OBJECT INTERFACE    ////
-    ////////////////////////////////
+    //////////////////////////////////
+    ////    INDEXING  PROTOCOL    ////
+    //////////////////////////////////
 
     /* A proxy for a particular index in the tuple.  Uses lower-level API functions to
     improve performance. */
@@ -5395,6 +5628,10 @@ public:
     inline const SliceProxy operator[](Slice<ref::NEW> slice) const {
         return {this->obj, slice.unwrap()};
     }
+
+    /////////////////////////////////
+    ////    SEQUENCE PROTOCOL    ////
+    /////////////////////////////////
 
     /* Concatenate the tuple with another sequence, similar to Python. */
     template <typename T>
@@ -6586,15 +6823,9 @@ public:
 };
 
 
-
 /////////////////////
 ////    OTHER    ////
 /////////////////////
-
-
-// TODO: Global objects: None, Ellipsis, NotImplemented
-
-
 
 
 /* A wrapper around a fast Python sequence (list or tuple) that manages reference
