@@ -8,6 +8,7 @@
 #include "../../util/except.h"  // catch_python(), TypeError()
 #include "../../util/func.h"  // FuncTraits
 #include "../../util/ops.h"  // hash(), repr()
+#include "../../util/pybind.h"  // namespace py::
 #include "../../util/python.h"  // python::Slice, python::Function
 
 
@@ -883,9 +884,10 @@ public:
 
         // account for slice specialization
         if (PySlice_Check(specialization)) {
-            python::Slice<python::Ref::BORROW> slice(specialization);
-            if (!slice.start().is(Py_None)) {
-                int comp = PyObject_IsInstance(this->value(), slice.start());
+            py::slice slice(specialization);
+            py::object start = slice.attr("start");
+            if (start != Py_None) {
+                int comp = PyObject_IsInstance(this->value(), slice.attr("start"));
                 if (comp == -1) {
                     throw catch_python();
                 }
@@ -893,8 +895,9 @@ public:
                     return false;
                 }
             }
-            if (!slice.stop().is(Py_None)) {
-                int comp = PyObject_IsInstance(_mapped, slice.stop());
+            py::object stop = slice.attr("stop");
+            if (stop != Py_None) {
+                int comp = PyObject_IsInstance(_mapped, slice.attr("stop"));
                 if (comp == -1) {
                     throw catch_python();
                 }
@@ -903,6 +906,28 @@ public:
                 }
             }
             return true;
+
+
+            // python::Slice<python::Ref::BORROW> slice(specialization);
+            // if (!slice.start().is(Py_None)) {
+            //     int comp = PyObject_IsInstance(this->value(), slice.start());
+            //     if (comp == -1) {
+            //         throw catch_python();
+            //     }
+            //     if (!comp) {
+            //         return false;
+            //     }
+            // }
+            // if (!slice.stop().is(Py_None)) {
+            //     int comp = PyObject_IsInstance(_mapped, slice.stop());
+            //     if (comp == -1) {
+            //         throw catch_python();
+            //     }
+            //     if (!comp) {
+            //         return false;
+            //     }
+            // }
+            // return true;
         }
 
         // fall back to only checking keys

@@ -12,6 +12,7 @@
 #include "../../util/math.h"  // next_power_of_two()
 #include "../../util/name.h"  // PyName<>
 #include "../../util/ops.h"  // hash(), eq(), len(), repr()
+#include "../../util/pybind.h"  // namespace py::
 #include "../../util/python.h"  // python::Slice
 #include "node.h"  // NodeTraits
 
