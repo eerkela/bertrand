@@ -7,6 +7,7 @@
 #include <sstream>  // std::ostringstream
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>  // std::pair, std::forward, std::move, etc.
 
 #include <Python.h>
@@ -22,7 +23,6 @@
 #include <pybind11/stl_bind.h>
 
 
-
 /* NOTE: this uses slightly different syntax from normal pybind11 in order to support
  * more of the Python standard library and to replicate its semantics more closely.
  * The only real differences are that types are capitalized in order to avoid
@@ -33,15 +33,31 @@
  *
  * For example, the following pybind11 code:
  *
- *     py::list foo = py::cast<py::list>(std::vector<int>{1, 2, 3});
+ *     py::list foo = py::cast(std::vector<int>{1, 2, 3});
  *     py::int_ bar = foo.attr("pop")();
  *
  * would be written as:
  *
- *     py::List foo{1, 2, 3};
+ *     py::List foo {1, 2, 3};
  *     py::Int bar = foo.pop();
  *
  * Which is more concise and readable.
+ */
+
+
+/* TODO: at some point in the future, we could potentially support static typing for
+ * python containers:
+ *
+ *     py::List foo {1, 2, 3};
+ *     py::TypedList<int> bar = foo;
+ *
+ * List would just be a type alias for `TypedList<void>`, which would enable dynamic
+ * typing.  If specialized on a subclass of `pybind11::object`, we would apply an
+ * isinstance check whenever an item is added to the list.  If specialized on a C++
+ * type, then we could use the compiler to enable static checks.  This would add a lot
+ * of code, but it would be really awesome for cross-language type safety.  We could
+ * also potentially optimize for C++ types that are supported in the CPython API.  But
+ * again, that would create a lot of extra code.
  */
 
 
@@ -93,8 +109,8 @@ class Complex;  // done (minus operators)
 class Tuple;  // done
 class Dict;  // done
 class List;  // done
-class Args;
-class Kwargs;
+using Args = pybind11::args;
+using Kwargs = pybind11::kwargs;
 class AnySet;
 class Set;
 class FrozenSet;
@@ -118,6 +134,7 @@ using pybind11::hash;
 using pybind11::len;
 using pybind11::len_hint;
 using pybind11::repr;
+using pybind11::print;
 using pybind11::iter;
 Module import(const char* module);
 Dict locals();
@@ -136,8 +153,8 @@ List dir();
 List dir(const pybind11::handle& obj);
 bool callable(const pybind11::handle& obj);
 Iterator reversed(const pybind11::handle& obj);
-Iterator reversed(const Tuple& obj);
-Iterator reversed(const List& obj);
+template <typename T, int>
+inline Iterator reversed(const T& obj);
 Object next(const pybind11::iterator& iter);
 template <typename T>
 Object next(const pybind11::iterator& iter, T&& default_value);
@@ -191,7 +208,10 @@ using pybind11::scoped_interpreter;
 // PYBIND11_OVERRIDE_NAME
 // PYBIND11_OVERRIDE_PURE_NAME
 using pybind11::get_override;
-using pybind11::error_already_set;
+using pybind11::cpp_function;
+using pybind11::scoped_ostream_redirect;
+using pybind11::scoped_estream_redirect;
+using pybind11::add_ostream_redirect;
 
 
 // annotations
@@ -219,16 +239,88 @@ using pybind11::arg_v;
 using pybind11::kw_only;
 using pybind11::pos_only;
 
-
-// stream redirection
-using pybind11::scoped_ostream_redirect;
-using pybind11::scoped_estream_redirect;
-using pybind11::add_ostream_redirect;
+namespace detail {
+    using namespace pybind11::detail;
+}
 
 
 ///////////////////////////////
 ////    WRAPPER CLASSES    ////
 ///////////////////////////////
+
+
+// impl namespace is different from detail in order to avoid conflicts with pybind11
+namespace impl {
+
+    template <typename T>
+    static inline PyObject* convert_newref(T&& value) {
+        if constexpr (detail::is_pyobject<T>::value) {
+            PyObject* result = value.ptr();
+            if (result == nullptr) {
+                result = Py_None;
+            }
+            return Py_NewRef(result);
+        } else {
+            PyObject* result = py::cast(std::forward<T>(value)).release().ptr();
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return result;
+        }
+    }
+
+    template <typename Base, typename T>
+    using enable_for = std::enable_if_t<std::is_base_of_v<Base, T>>;
+
+    /* Item accessors may represent slices of a container, so we include them when
+    unpacking. */
+    template <typename T>
+    constexpr bool is_item_accessor = false;
+    template <>
+    constexpr bool is_item_accessor<
+        detail::accessor<detail::accessor_policies::generic_item>
+    > = true;
+
+    /* Types for which is_container is true will be unpacked when provided as a single
+    argument to another container's constructor. */
+    template <typename T, typename = void>
+    constexpr bool is_container = false;
+    template <typename T>
+    constexpr bool is_container<T, enable_for<pybind11::tuple, T>> = true;
+    template <typename T>
+    constexpr bool is_container<T, enable_for<pybind11::list, T>> = true;
+    template <typename T>
+    constexpr bool is_container<T, enable_for<pybind11::anyset, T>> = true;
+    template <typename T>
+    constexpr bool is_container<T, enable_for<pybind11::dict, T>> = true;
+    template <typename T>
+    constexpr bool is_container<T, enable_for<pybind11::str, T>> = true;
+    template <typename T>
+    constexpr bool is_container<T, enable_for<pybind11::bytes, T>> = true;
+    template <typename T>
+    constexpr bool is_container<T, enable_for<pybind11::bytearray, T>> = true;
+    template <typename T>
+    constexpr bool is_container<T, enable_for<pybind11::iterable, T>> = true;
+    template <typename T>
+    constexpr bool is_container<T, enable_for<pybind11::sequence, T>> = true;
+    template <typename T>
+    constexpr bool is_container<T, enable_for<pybind11::buffer, T>> = true;
+    template <typename T>
+    constexpr bool is_container<T, enable_for<pybind11::memoryview, T>> = true;
+    template <typename T>
+    constexpr bool is_container<T, std::enable_if_t<is_item_accessor<T>>> = true;
+
+    /* Types for which is_reverse_iterable is true will use custom reverse iterators
+    when py::reversed() is called on them.  These types must expose a ReverseIterator
+    class that implements the reverse iteration. */
+    template <typename T, typename = void>
+    constexpr bool is_reverse_iterable = false;
+    template <typename T>
+    constexpr bool is_reverse_iterable<T, enable_for<Tuple, T>> = true;
+    template <typename T>
+    constexpr bool is_reverse_iterable<T, enable_for<List, T>> = true;
+
+}
 
 
 #define IMMUTABLE_SEQUENCE_METHODS()                                                    \
@@ -245,7 +337,7 @@ using pybind11::add_ostream_redirect;
                 throw error_already_set();                                              \
             }                                                                           \
             Py_ssize_t result = PySequence_Count(                                       \
-                slice, py::cast(std::forward<T>(value)).ptr()                           \
+                slice, detail::object_or_cast(std::forward<T>(value)).ptr()             \
             );                                                                          \
             Py_DECREF(slice);                                                           \
             if (result == -1 && PyErr_Occurred()) {                                     \
@@ -254,7 +346,7 @@ using pybind11::add_ostream_redirect;
             return result;                                                              \
         }                                                                               \
         Py_ssize_t result = PySequence_Count(                                           \
-            this->ptr(), py::cast(std::forward<T>(value)).ptr()                         \
+            this->ptr(), detail::object_or_cast(std::forward<T>(value)).ptr()           \
         );                                                                              \
         if (result == -1 && PyErr_Occurred()) {                                         \
             throw error_already_set();                                                  \
@@ -275,7 +367,7 @@ using pybind11::add_ostream_redirect;
                 throw error_already_set();                                              \
             }                                                                           \
             Py_ssize_t result = PySequence_Index(                                       \
-                slice, py::cast(std::forward<T>(value)).ptr()                           \
+                slice, detail::object_or_cast(std::forward<T>(value)).ptr()             \
             );                                                                          \
             Py_DECREF(slice);                                                           \
             if (result == -1 && PyErr_Occurred()) {                                     \
@@ -284,12 +376,161 @@ using pybind11::add_ostream_redirect;
             return result;                                                              \
         }                                                                               \
         Py_ssize_t result = PySequence_Index(                                           \
-            this->ptr(), py::cast(std::forward<T>(value)).ptr()                         \
+            this->ptr(), detail::object_or_cast(std::forward<T>(value)).ptr()           \
         );                                                                              \
         if (result == -1 && PyErr_Occurred()) {                                         \
             throw error_already_set();                                                  \
         }                                                                               \
         return result;                                                                  \
+    }                                                                                   \
+
+
+#define SLICEABLE()                                                                     \
+    using Base::operator[];                                                             \
+    using SliceIndex = std::variant<long long, pybind11::none>;                         \
+                                                                                        \
+    /* Slice operator.  Accepts an initializer list that expands to a Python slice */   \
+    inline auto operator[](std::initializer_list<SliceIndex> slice) {                   \
+        if (slice.size() > 3) {                                                         \
+            throw ValueError("slices must be of the form {[start[, stop[, step]]]}");   \
+        }                                                                               \
+        size_t i = 0;                                                                   \
+        std::array<Object, 3> params {None, None, None};                                \
+        for (auto&& item : slice) {                                                     \
+            params[i++] = std::visit(                                                   \
+                [](auto&& arg) -> Object {                                              \
+                    return detail::object_or_cast(arg);                                 \
+                },                                                                      \
+                item                                                                    \
+            );                                                                          \
+        }                                                                               \
+        return Base::operator[](pybind11::slice(params[0], params[1], params[2]));      \
+    }                                                                                   \
+
+
+#define REVERSE_ITERABLE()                                                              \
+    struct ReverseIterator {                                                            \
+        using iterator_category     = std::forward_iterator_tag;                        \
+        using difference_type       = std::ptrdiff_t;                                   \
+        using value_type            = Object;                                           \
+        using pointer               = value_type*;                                      \
+        using reference             = value_type&;                                      \
+                                                                                        \
+        PyObject** array;                                                               \
+        Py_ssize_t index;                                                               \
+                                                                                        \
+        inline ReverseIterator(PyObject** array, Py_ssize_t index) :                    \
+            array(array), index(index)                                                  \
+        {}                                                                              \
+        inline ReverseIterator(Py_ssize_t index) : array(nullptr), index(index) {}      \
+        inline ReverseIterator(const ReverseIterator&) = default;                       \
+        inline ReverseIterator(ReverseIterator&&) = default;                            \
+        inline ReverseIterator& operator=(const ReverseIterator&) = default;            \
+        inline ReverseIterator& operator=(ReverseIterator&&) = default;                 \
+                                                                                        \
+        inline Object operator*() const {                                               \
+            return reinterpret_borrow<Object>(array[index]);                            \
+        }                                                                               \
+                                                                                        \
+        inline ReverseIterator& operator++() {                                          \
+            --index;                                                                    \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        inline bool operator==(const ReverseIterator& other) const {                    \
+            return index == other.index;                                                \
+        }                                                                               \
+                                                                                        \
+        inline bool operator!=(const ReverseIterator& other) const {                    \
+            return index != other.index;                                                \
+        }                                                                               \
+                                                                                        \
+    };                                                                                  \
+
+
+#define CONCATENATEABLE(container)                                                      \
+    /* Equivalent to Python `list + items` (braced initializer list). */                \
+    template <typename T>                                                               \
+    inline container concat(std::initializer_list<T> items) const {                     \
+        PyObject* result = Py##container##_New(size() + items.size());                  \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        try {                                                                           \
+            size_t i = 0;                                                               \
+            PyObject** array = data();                                                  \
+            size_t length = size();                                                     \
+            while (i < length) {                                                        \
+                Py##container##_SET_ITEM(result, i, Py_NewRef(array[i]));               \
+                ++i;                                                                    \
+            }                                                                           \
+            for (auto&& item : items) {                                                 \
+                Py##container##_SET_ITEM(                                               \
+                    result,                                                             \
+                    i++,                                                                \
+                    impl::convert_newref(std::forward<decltype(item)>(item))            \
+                );                                                                      \
+            }                                                                           \
+            return reinterpret_steal<container>(result);                                \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `list + items`. */                                          \
+    template <typename T>                                                               \
+    inline container concat(T&& items) const {                                          \
+        PyObject* result = PySequence_Concat(                                           \
+            this->ptr(),                                                                \
+            detail::object_or_cast(std::forward<T>(items)).ptr()                        \
+        );                                                                              \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        return reinterpret_steal<container>(result);                                    \
+    }                                                                                   \
+                                                                                        \
+    template <typename T>                                                               \
+    inline container operator+(T&& items) const {                                       \
+        return concat(std::forward<T>(items));                                          \
+    }                                                                                   \
+                                                                                        \
+    template <typename T>                                                               \
+    inline container operator+(std::initializer_list<T> items) const {                  \
+        return concat(items);                                                           \
+    }                                                                                   \
+
+
+#define REPEATABLE(container)                                                           \
+    /* Equivalent to Python `list * repetitions`. */                                    \
+    inline container repeat(Py_ssize_t repetitions) const {                             \
+        PyObject* result = PySequence_Repeat(this->ptr(), repetitions);                 \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        return reinterpret_steal<container>(result);                                    \
+    }                                                                                   \
+                                                                                        \
+    inline container operator*(Py_ssize_t repetitions) {                                \
+        return repeat(repetitions);                                                     \
+    }                                                                                   \
+                                                                                        \
+    friend inline container operator*(Py_ssize_t repetitions, const container& list) {  \
+        return list.repeat(repetitions);                                                \
+    }                                                                                   \
+                                                                                        \
+    inline container& operator*=(Py_ssize_t repetitions) {                              \
+        PyObject* result = PySequence_InPlaceRepeat(this->ptr(), repetitions);          \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        if (result == this->ptr()) {                                                    \
+            Py_DECREF(result);                                                          \
+        } else {                                                                        \
+            *this = reinterpret_steal<container>(result);                               \
+        }                                                                               \
+        return *this;                                                                   \
     }                                                                                   \
 
 
@@ -338,8 +579,6 @@ public:
 
     /* Construct an Int from a string. */
     explicit Int(const std::string_view& str, int base = 0) : Int(str.data(), base) {}
-
-    /* Implicitly */
 
 };
 
@@ -421,7 +660,7 @@ public:
     ////////////////////////////
 
     template <typename Policy_>
-    Complex(const ::pybind11::detail::accessor<Policy_> &a) : Complex(object(a)) {}
+    Complex(const detail::accessor<Policy_> &a) : Complex(object(a)) {}
     Complex(handle h, borrowed_t) : Base(h, borrowed_t{}) {}
     Complex(handle h, stolen_t) : Base(h, stolen_t{}) {}
     Complex(handle h, bool is_borrowed) :
@@ -549,7 +788,259 @@ public:
 
     template <typename T>
     inline Complex operator+(T&& other) const {
-        return Base::operator+(py::cast(std::forward<T>(other)));
+        return Base::operator+(detail::object_or_cast(std::forward<T>(other)));
+    }
+
+};
+
+
+/* Wrapper around pybind11::list that allows it to be directly initialized using
+std::initializer_list and enables extra C API functionality. */
+class List : public pybind11::list {
+    using Base = pybind11::list;
+
+    template <size_t... N, typename... Args>
+    inline void unpack_initializer(
+        PyObject* list,
+        std::index_sequence<N...> index,
+        Args&&... args
+    ) {
+        (
+            PyList_SET_ITEM(
+                list,
+                N,
+                impl::convert_newref(std::forward<Args>(args))
+            ),
+            ...
+        );
+    }
+
+public:
+    using Base::Base;
+    using Base::operator=;
+
+    /* Pack a sequence of heterogenously-typed inputs into a List using initializer
+    list syntax. */
+    template <
+        typename First,
+        typename... Rest,
+        std::enable_if_t<(sizeof...(Rest) > 0) || !impl::is_container<First>, int> = 0
+    >
+    explicit List(First&& first, Rest&&... rest) : Base([&] {
+        PyObject* result = PyList_New(sizeof...(Rest) + 1);
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        try {
+            unpack_initializer(
+                result,
+                std::make_index_sequence<sizeof...(Rest) + 1>(),
+                std::forward<First>(first),
+                std::forward<Rest>(rest)...
+            );
+            return reinterpret_steal<Base>(result);
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+    }()) {}
+
+    /* Pack a sequence of homogenously-typed inputs into a List using initializer list
+    syntax. */
+    template <typename T>
+    explicit List(std::initializer_list<T> args) : Base([&] {
+        PyObject* result = PyList_New(args.size());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        try {
+            size_t i = 0;
+            for (auto&& arg : args) {
+                PyList_SET_ITEM(
+                    result,
+                    i++,
+                    impl::convert_newref(std::forward<decltype(arg)>(arg))
+                );
+            }
+            return reinterpret_steal<Base>(result);
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+    }()) {}
+
+    /* Unpack a pybind11 container into a new List. */
+    template <typename T, std::enable_if_t<impl::is_container<T>, int> = 0>
+    explicit List(T&& container) : Base([&]{
+        PyObject* result = PyList_New(py::len(container));
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        try {
+            size_t i = 0;
+            for (auto&& item : container) {
+                PyList_SET_ITEM(result, i++, Py_NewRef(item.ptr()));
+            }
+            return reinterpret_steal<Base>(result);
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+    }()) {}
+
+    /* Unpack a pybind11 iterator into a new List. */
+    explicit List(pybind11::iterator&& iter) : List(iter) {}
+    explicit List(pybind11::iterator& iter) : Base([&] {
+        PyObject* result = PyList_New(0);
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        try {
+            for (auto&& item : iter) {
+                if (PyList_Append(
+                    result,
+                    detail::object_or_cast(std::forward<decltype(item)>(item)).ptr()
+                )) {
+                    throw error_already_set();
+                }
+            }
+            return reinterpret_steal<Base>(result);
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+    }()) {}
+
+    ///////////////////////////////////
+    ////    PyList* API METHODS    ////
+    ///////////////////////////////////
+
+    /* Get the size of the list. */
+    inline size_t size() const noexcept {
+        return static_cast<size_t>(PyList_GET_SIZE(this->ptr()));
+    }
+
+    /* Get the underlying PyObject* array. */
+    inline PyObject** data() const noexcept {
+        return PySequence_Fast_ITEMS(this->ptr());
+    }
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    IMMUTABLE_SEQUENCE_METHODS();  // count(), index()
+    SLICEABLE();  // operator[{}]
+    REVERSE_ITERABLE();  // ReverseIterator
+    CONCATENATEABLE(List);  // concat(), operator+()
+    REPEATABLE(List);  // repeat(), operator*(), operator*=()
+
+    template <typename T>
+    inline List& operator+=(T&& items) {
+        extend(std::forward<T>(items));
+        return *this;
+    }
+
+    template <typename T>
+    inline List& operator+=(std::initializer_list<T> items) {
+        extend(items);
+        return *this;
+    }
+
+    /* Equivalent to Python `list.append(value)`. */
+    template <typename T>
+    inline void append(T&& value) {
+        if (PyList_Append(
+            this->ptr(),
+            detail::object_or_cast(std::forward<T>(value)).ptr()
+        )) {
+            throw error_already_set();
+        }
+    }
+
+    /* Equivalent to Python `list.insert(index, value)`. */
+    template <typename T>
+    inline void insert(Py_ssize_t index, T&& value) {
+        if (PyList_Insert(
+            this->ptr(),
+            index, detail::object_or_cast(std::forward<T>(value)).ptr()
+        )) {
+            throw error_already_set();
+        }
+    }
+
+    /* Equivalent to Python `list.extend(items)`. */
+    template <typename T>
+    inline void extend(T&& items) {
+        this->attr("extend")(std::forward<T>(items));
+    }
+
+    /* Equivalent to Python `list.extend(items)`, but accepts an initializer list
+    specifying the items to append.  Note that the initializer list must be
+    homogenously typed. */
+    template <typename T>
+    inline void extend(std::initializer_list<T> items) {
+        // NOTE: this avoids an extra copy of the items
+        for (auto&& item : items) {
+            append(std::forward<decltype(item)>(item));
+        }
+    }
+
+    /* Equivalent to Python `list.copy()`. */
+    inline List copy() const {
+        PyObject* result = PyList_GetSlice(this->ptr(), 0, size());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<List>(result);
+    }
+
+    /* Equivalent to Python `list.clear()`. */
+    inline void clear() {
+        if (PyList_SetSlice(this->ptr(), 0, size(), nullptr)) {
+            throw error_already_set();
+        }
+    }
+
+    /* Equivalent to Python `list.remove(value)`. */
+    template <typename T>
+    inline void remove(T&& value) {
+        this->attr("remove")(std::forward<T>(value));
+    }
+
+    /* Equivalent to Python `list.pop([index])`. */
+    inline Object pop(Py_ssize_t index = -1) {
+        return this->attr("pop")(index);
+    }
+
+    /* Equivalent to Python `list.reverse()`. */
+    inline void reverse() {
+        if (PyList_Reverse(this->ptr())) {
+            throw error_already_set();
+        }
+    }
+
+    /* Equivalent to Python `list.sort()`. */
+    inline void sort() {
+        if (PyList_Sort(this->ptr())) {
+            throw error_already_set();
+        }
+    }
+
+    /* Equivalent to Python `list.sort(reverse=reverse)`. */
+    inline void sort(bool reverse) {
+        this->attr("sort")(py::arg("reverse") = py::Bool(reverse));
+    }
+
+    /* Equivalent to Python `list.sort(key=key[, reverse=reverse])`.  The key function
+    can be given as any C++ function-like object, but users should note that pybind11
+    has a hard time parsing generic arguments, so templates and the `auto` keyword
+    should be avoided. */
+    template <typename Func>
+    inline void sort(Func&& key, bool reverse = false) {
+        py::cpp_function func(std::forward<Func>(key));
+        py::Bool flag(reverse);
+        this->attr("sort")(py::arg("key") = func, py::arg("reverse") = flag);
     }
 
 };
@@ -564,7 +1055,27 @@ public:
     using Base::Base;
     using Base::operator=;
 
-    /* Pack the given arguments into a Tuple using an initializer list. */
+    /* Pack a sequence of heterogenously-typed inputs into a Tuple using initializer
+    list syntax. */
+    template <
+        typename First,
+        typename... Rest,
+        std::enable_if_t<(sizeof...(Rest) > 0) || !impl::is_container<First>, int> = 0
+    >
+    explicit Tuple(First&& first, Rest&&... rest) : Base([&] {
+        PyObject* result = PyTuple_Pack(
+            sizeof...(Rest) + 1,
+            detail::object_or_cast(std::forward<First>(first)).ptr(),
+            detail::object_or_cast(std::forward<Rest>(rest)).ptr()...
+        );
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Base>(result);
+    }()) {}
+
+    /* Pack a sequence of homogenously-typed inputs into a Tuple using initializer list
+    syntax. */
     template <typename T>
     explicit Tuple(std::initializer_list<T> args) : Base([&] {
         PyObject* result = PyTuple_New(args.size());
@@ -574,17 +1085,62 @@ public:
         try {
             size_t i = 0;
             for (auto&& arg : args) {
-                PyObject* conv = py::cast(std::forward<decltype(arg)>(arg)).release();
-                if (conv == nullptr) {
-                    throw error_already_set();
-                }
-                PyTuple_SET_ITEM(result, i++, conv);  // Steals a reference to conv
+                PyTuple_SET_ITEM(
+                    result,
+                    i++, 
+                    impl::convert_newref(std::forward<decltype(arg)>(arg))
+                );
             }
             return reinterpret_steal<Base>(result);
         } catch (...) {
             Py_DECREF(result);
             throw;
         }
+    }()) {}
+
+    /* Unpack a pybind11 container into a new Tuple. */
+    template <
+        typename T,
+        std::enable_if_t<
+            impl::is_container<T> && !std::is_base_of_v<pybind11::list, T>,
+            int
+        > = 0
+    >
+    explicit Tuple(T&& container) : Base([&] {
+        PyObject* result = PyTuple_New(py::len(container));
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        try {
+            size_t i = 0;
+            for (auto&& item : container) {
+                PyTuple_SET_ITEM(result, i++, Py_NewRef(item.ptr()));
+            }
+            return reinterpret_steal<Base>(result);
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+    }()) {}
+
+    /* Convert a pybind11::list into a tuple using the C API. */
+    template <typename T, std::enable_if_t<std::is_base_of_v<pybind11::list, T>, int> = 0>
+    explicit Tuple(T&& list) : Base([&] {
+        PyObject* result = PyList_AsTuple(list.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Base>(result);
+    }()) {}
+
+    /* Unpack a pybind11 iterator into a new Tuple. */
+    explicit Tuple(pybind11::iterator&& iter) : Tuple(iter) {}
+    explicit Tuple(pybind11::iterator& iter) : Base([&] {
+        PyObject* result = PyList_AsTuple(List(iter).ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Base>(result);
     }()) {}
 
     ////////////////////////////////////
@@ -621,146 +1177,29 @@ public:
     ////////////////////////////////
 
     IMMUTABLE_SEQUENCE_METHODS();  // count(), index()
+    SLICEABLE();  // operator[{}]
+    REVERSE_ITERABLE();  // ReverseIterator
+    CONCATENATEABLE(Tuple);  // concat(), operator+()
+    REPEATABLE(Tuple);  // repeat(), operator*(), operator*=()
 
-    struct ReverseIterator {
-        using iterator_category     = std::forward_iterator_tag;
-        using difference_type       = std::ptrdiff_t;
-        using value_type            = Object;
-        using pointer               = value_type*;
-        using reference             = value_type&;
+    template <typename T>
+    inline Tuple& operator+=(T&& items) {
+        *this = concat(std::forward<T>(items));
+        return *this;
+    }
 
-        PyObject** array;
-        Py_ssize_t index;
-
-        inline ReverseIterator(PyObject** array, Py_ssize_t index) :
-            array(array), index(index)
-        {}
-        inline ReverseIterator(Py_ssize_t index) : array(nullptr), index(index) {}
-        inline ReverseIterator(const ReverseIterator&) = default;
-        inline ReverseIterator(ReverseIterator&&) = default;
-        inline ReverseIterator& operator=(const ReverseIterator&) = default;
-        inline ReverseIterator& operator=(ReverseIterator&&) = default;
-
-        inline Object operator*() const {
-            return reinterpret_borrow<Object>(array[index]);
-        }
-
-        inline ReverseIterator& operator++() {
-            --index;
-            return *this;
-        }
-
-        inline bool operator==(const ReverseIterator& other) const {
-            return index == other.index;
-        }
-
-        inline bool operator!=(const ReverseIterator& other) const {
-            return index != other.index;
-        }
-
-    };
+    template <typename T>
+    inline Tuple& operator+=(std::initializer_list<T> items) {
+        *this = concat(items);
+        return *this;
+    }
 
 };
 
 
-/* Wrapper around pybind11::list that allows it to be directly initialized using
-std::initializer_list and enables extra C API functionality. */
-class List : public pybind11::list {
-    using Base = pybind11::list;
-
-public:
-    using Base::Base;
-    using Base::operator=;
-
-    /* Pack the given arguments into a List using an initializer list. */
-    template <typename T>
-    explicit List(std::initializer_list<T> args) : Base([&] {
-        PyObject* result = PyList_New(args.size());
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        try {
-            size_t i = 0;
-            for (auto&& arg : args) {
-                PyObject* conv = py::cast(std::forward<decltype(arg)>(arg)).release().ptr();
-                if (conv == nullptr) {
-                    throw error_already_set();
-                }
-                PyList_SET_ITEM(result, i++, conv);  // Steals a reference to conv
-            }
-            return reinterpret_steal<Base>(result);
-        } catch (...) {
-            Py_DECREF(result);
-            throw;
-        }
-    }()) {}
-
-    ///////////////////////////////////
-    ////    PyList* API METHODS    ////
-    ///////////////////////////////////
-
-    /* Get the size of the list. */
-    inline size_t size() const noexcept {
-        return static_cast<size_t>(PyList_GET_SIZE(this->ptr()));
-    }
-
-    /* Get the underlying PyObject* array. */
-    inline PyObject** data() const noexcept {
-        return PySequence_Fast_ITEMS(this->ptr());
-    }
-
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
-
-    IMMUTABLE_SEQUENCE_METHODS();  // count(), index()
-
-    /* Equivalent to Python `list.append(value)`. */
-    template <typename T>
-    inline void append(T&& value) {
-        if (PyList_Append(this->ptr(), py::cast(std::forward<T>(value)).ptr())) {
-            throw error_already_set();
-        }
-    }
-
-    /* Equivalent to Python `list.extend(items)`. */
+// TODO: (Tuple) -> (Args), (Dict) -> (Kwargs), (AnySet) -> (Set, FrozenSet)
 
 
-
-    /* Equivalent to Python `list.insert(index, value)`. */
-    template <typename T>
-    inline void insert(Py_ssize_t index, T&& value) {
-        if (PyList_Insert(this->ptr(), index, py::cast(std::forward<T>(value)).ptr())) {
-            throw error_already_set();
-        }
-    }
-
-    /* Equivalent to Python `list.sort()`. */
-    inline void sort() {
-        if (PyList_Sort(this->ptr())) {
-            throw error_already_set();
-        }
-    }
-
-    /* Equivalent to Python `list.reverse()`. */
-    inline void reverse() {
-        if (PyList_Reverse(this->ptr())) {
-            throw error_already_set();
-        }
-    }
-
-    /* Equivalent to Python `list.copy()`. */
-    inline List copy() const {
-        PyObject* result = PyList_GetSlice(this->ptr(), 0, size());
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return reinterpret_steal<List>(result);
-    }
-
-
-
-};
 
 
 /* Wrapper around pybind11::set that allows it to be directly initialized using
@@ -772,7 +1211,9 @@ public:
     using Base::Base;
     using Base::operator=;
 
-    /* Pack the given arguments into a Set using an initializer list. */
+    /* Pack a set of homogenously-typed inputs into a Set using initializer list
+    syntax.  This takes precedence over all other constructors if an initializer list
+    is given. */
     template <typename T>
     explicit Set(std::initializer_list<T> args) : Base([&] {
         PyObject* result = PySet_New(nullptr);
@@ -785,6 +1226,24 @@ public:
                     throw error_already_set();
                 }
             }
+            return reinterpret_steal<Base>(result);
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+    }()) {}
+
+    /* Pack a set of heterogenously-typed inputs into a Set using initializer list
+    syntax.  This is used as a fallback if an initializer list contains multiple
+    types. */
+    template <typename... Args>
+    explicit Set(Args&&... args) : Base([&] {
+        PyObject* result = PySet_New(nullptr);
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        try {
+            (PySet_Add(result, py::cast(std::forward<Args>(args)).ptr()), ...);
             return reinterpret_steal<Base>(result);
         } catch (...) {
             Py_DECREF(result);
@@ -872,7 +1331,6 @@ std::initializer_list and enables extra C API functionality. */
 class Dict : public pybind11::dict {
     using Base = pybind11::dict; 
 
-    /* A simple pair struct that is compatible with initializer list syntax. */
     struct Initializer {
         pybind11::object key;
         pybind11::object value;
@@ -889,7 +1347,8 @@ public:
     using Base::Base;
     using Base::operator=;
 
-    /* Pack the given arguments into a Dict using an initializer list. */
+    /* Pack the given arguments into a Dict using an initializer list.  This requires
+    the use of nested initializers, which can be of any type or combination of types. */
     Dict(std::initializer_list<Initializer> items) : Base([&] {
         PyObject* result = PyDict_New();
         if (result == nullptr) {
@@ -1994,10 +2453,11 @@ inline Iterator reversed(const pybind11::handle& obj) {
 }
 
 
-/* Specialization of `reversed()` for Tuple objects that uses direct array access
-rather than going through the Python API. */
-inline Iterator reversed(const Tuple& obj) {
-    using Iter = Tuple::ReverseIterator;
+/* Specialization of `reversed()` for Tuple and List objects that use direct array
+access rather than going through the Python API. */
+template <typename T, std::enable_if_t<impl::is_reverse_iterable<T>, int> = 0>
+inline Iterator reversed(const T& obj) {
+    using Iter = typename T::ReverseIterator;
     return pybind11::make_iterator(Iter(obj.data(), obj.size() - 1), Iter(-1));
 }
 
@@ -2401,6 +2861,10 @@ struct type_caster<std::complex<long double>> {
 
 
 
-#undef COMPLEX_CASTER_HACKS
 #undef IMMUTABLE_SEQUENCE_METHODS
+#undef SLICEABLE
+#undef REVERSE_ITERABLE
+#undef CONCATENATEABLE
+#undef REPEATABLE
+#undef COMPLEX_CASTER_HACKS
 #endif // PYBIND_COMMON_H
