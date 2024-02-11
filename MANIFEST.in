@@ -2,18 +2,17 @@ include pyproject.toml setup.py MANIFEST.in Makefile
 include README.rst CHANGELOG.rst LICENSE
 
 global-exclude *Zone.Identifier
-global-exclude *pyc
-recursive-exclude .env *
-recursive-exclude .venv *
+global-exclude *.pyc
 recursive-exclude env *
+recursive-exclude .env *
 recursive-exclude venv *
+recursive-exclude .venv *
 
-recursive-include pdcast *.pyx
-recursive-include pdcast *.pxd
-recursive-exclude pdcast *.c
+recursive-include bertrand *.h *.cpp *.pyx *.pxd *.pyi py.typed
+recursive-exclude bertrand *.c
 
-include docs/Makefile docs/make.bat
 recursive-include docs/source *
+include docs/Makefile docs/make.bat
 prune docs/source/generated
 
 recursive-include tests *.py

@@ -11,4 +11,5 @@ ext_modules = [
 setup(
     ext_modules=ext_modules,
     cmdclass={"build_ext": build_ext},
+    include_dirs=["bertrand/"]
 )

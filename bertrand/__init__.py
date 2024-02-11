@@ -46,26 +46,39 @@
 # from .patch.base import attach, detach
 
 
-# from .decorators import attach, dispatch, introspect
-# from .convert import cast
-from .types import *
-from .structs import LinkedList, LinkedSet, LinkedDict
+# # from .decorators import attach, dispatch, introspect
+# # from .convert import cast
+# from .types import *
+# from .structs import LinkedList, LinkedSet, LinkedDict
 
 
-# importing * from types also masks module names, which can be troublesome
-del base            # type: ignore
-del boolean         # type: ignore
-del categorical     # type: ignore
-del complex
-# del datetime      # type: ignore
-del decimal         # type: ignore
-del float
-del integer         # type: ignore
-del missing         # type: ignore
-del object
-del sparse          # type: ignore
-del string          # type: ignore
-del timedelta       # type: ignore
+# # importing * from types also masks module names, which can be troublesome
+# del base            # type: ignore
+# del boolean         # type: ignore
+# del categorical     # type: ignore
+# del complex
+# # del datetime      # type: ignore
+# del decimal         # type: ignore
+# del float
+# del integer         # type: ignore
+# del missing         # type: ignore
+# del object
+# del sparse          # type: ignore
+# del string          # type: ignore
+# del timedelta       # type: ignore
 
 
 __version__ = "0.5.1"  # handled by bumpver
+
+
+def get_include() -> str:
+    """Get the path to the include directory for this package, which is necessary to
+    make C++ headers available to the compiler.
+
+    Returns
+    -------
+    str
+        The path to the include directory for this package.
+    """
+    import os
+    return os.path.abspath(os.path.dirname(__file__))
