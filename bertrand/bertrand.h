@@ -45,12 +45,12 @@
  *
  *      #include <bertrand.h>
  *
- *      using namespace bertrand::py;  // bring pybind11 bindings into scope
- *      using namespace bertrand::np;  // bring numpy bindings into scope
+ *      namespace py = bertrand::py;  // bring pybind11 bindings into scope
+ *      namespace np = namespace bertrand::np;  // bring numpy bindings into scope
  */
 
 // #include "structs/linked.h"
-#include "bertrand/pybind.h"
+#include "bertrand/python.h"
 
 
 #endif  // BERTRAND_H
