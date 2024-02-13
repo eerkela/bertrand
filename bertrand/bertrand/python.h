@@ -92,6 +92,7 @@ using Handle = pybind11::handle;
 using Object = pybind11::object;
 using Iterator = pybind11::iterator;
 using Iterable = pybind11::iterable;
+using AnySet = pybind11::anyset;
 using NoneType = pybind11::none;
 using EllipsisType = pybind11::ellipsis;
 using WeakRef = pybind11::weakref;
@@ -101,26 +102,32 @@ using Buffer = pybind11::buffer;
 using MemoryView = pybind11::memoryview;
 using Bytes = pybind11::bytes;
 using Bytearray = pybind11::bytearray;
-class Module;
-class Type;  // done (I think?)
 class NotImplemented;  // maybe?
-class Str;  // done
 class Bool;  // done
 class Int;  // done
 class Float;  // done
 class Complex;  // done
 class Slice;  // done
-class Range;
-class Tuple;  // done
-class Dict;
+class Range;  // done
 class List;  // done
+class Tuple;  // done
 class Args;  // done
+class Set;  // done
+class FrozenSet;  // done
+class KeysView;
+class ItemsView;
+class ValuesView;
+class Dict;
 class Kwargs;
-class AnySet;
-class Set;
-class FrozenSet;
-class Function;  // allow construction from C++ lambda, function ptr.
+class MappingProxy;
+class Str;  // done
+class Module;
+class Type;  // done (I think?)
+class Function;
+class Method;
+class ClassMethod;
 class StaticMethod;
+class Property;
 
 
 // python builtins
@@ -320,10 +327,8 @@ namespace impl {
     constexpr bool is_python_container<T, std::enable_if_t<is_item_accessor<T>>> = true;
 
 
-
     // TODO: do the same thing for C++ containers?  Same basic idea, just can't use
     // API functions.
-
 
 
     /* Mixin holding operator overloads for numeric types.  For some reason, pybind11
@@ -755,19 +760,6 @@ namespace impl {
         }                                                                               \
 
 }  // namespace impl
-
-
-/* Wrapper around pybind11::module_ that does stuff (TODO). */
-class Module : public pybind11::module_ {
-    using Base = pybind11::module_;
-
-public:
-    using Base::Base;
-    using Base::operator=;
-
-    // TODO: stuff
-
-};
 
 
 /* Wrapper around pybind11::bool_ that enables math operations with C++ inputs. */
@@ -1277,8 +1269,7 @@ class Range :
     using Base = pybind11::object;
     using Compare = impl::EqualCompare<Range>;
 
-    /* Check if a PyObject* pointer represents a range object. */
-    static bool range_check(PyObject* obj) {
+    inline static bool range_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyRange_Type);
         if (result == -1) {
             throw error_already_set();
@@ -1286,8 +1277,7 @@ class Range :
         return result;
     }
 
-    /* Convert a PyObject* pointer that fails a range_check into a new range object. */
-    static PyObject* convert_to_range(PyObject* obj) {
+    inline static PyObject* convert_to_range(PyObject* obj) {
         PyObject* result = PyObject_CallOneArg((PyObject*) &PyRange_Type, obj);
         if (result == nullptr) {
             throw error_already_set();
@@ -2293,9 +2283,6 @@ class FrozenSet :
 };
 
 
-// TODO: account for add_with_errors similar to FrozenSet
-
-
 /* Wrapper around pybind11::set that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
 class Set :
@@ -2318,13 +2305,6 @@ class Set :
             this->ptr(),
             detail::object_or_cast(std::forward<T>(key)).ptr()
         )) {
-            throw error_already_set();
-        }
-    }
-
-    /* Equivalent to Python `set.clear()`. */
-    inline void clear() {
-        if (PySet_Clear(this->ptr())) {
             throw error_already_set();
         }
     }
@@ -2361,11 +2341,139 @@ class Set :
         return reinterpret_steal<Object>(result);
     }
 
+    /* Equivalent to Python `set.clear()`. */
+    inline void clear() {
+        if (PySet_Clear(this->ptr())) {
+            throw error_already_set();
+        }
+    }
+
+    /* Equivalent to Python `set.update(*others)`. */
+    template <typename... Args>
+    inline void update(Args&&... others) {
+        this->attr("update")(
+            detail::object_or_cast(std::forward<Args>(others))...
+        );
+    }
+
+    /* Equivalent to Python `set.update(<braced initializer list>)`. */
+    template <typename T>
+    inline void update(std::initializer_list<T> other) {
+        for (auto&& item : other) {
+            add(std::forward<decltype(item)>(item));
+        }
+    }
+
+    /* Equivalent to Python `set.intersection_update(*others)`. */
+    template <typename... Args>
+    inline void intersection_update(Args&&... others) {
+        this->attr("intersection_update")(
+            detail::object_or_cast(std::forward<Args>(others))...
+        );
+    }
+
+    /* Equivalent to Python `set.intersection_update(<braced initializer list>)`. */
+    template <typename T>
+    inline void intersection_update(std::initializer_list<T> other) {
+        this->attr("intersection_update")(cls(other));
+    }
+
+    /* Equivalent to Python `set.difference_update(*others)`. */
+    template <typename... Args>
+    inline void difference_update(Args&&... others) {
+        this->attr("difference_update")(
+            detail::object_or_cast(std::forward<Args>(others))...
+        );
+    }
+
+    /* Equivalent to Python `set.difference_update(<braced initializer list>)`. */
+    template <typename T>
+    inline void difference_update(std::initializer_list<T> other) {
+        for (auto&& item : other) {
+            discard(std::forward<decltype(item)>(item));
+        }
+    }
+
+    /* Equivalent to Python `set.symmetric_difference_update(other)`. */
+    template <typename T>
+    inline void symmetric_difference_update(T&& other) {
+        this->attr("symmetric_difference_update")(
+            detail::object_or_cast(std::forward<T>(other))
+        );
+    }
+
+    /* Equivalent to Python `set.symmetric_difference_update(<braced initializer list>)`. */
+    template <typename T>
+    inline void symmetric_difference_update(std::initializer_list<T> other) {
+        for (auto&& item : other) {
+            if (contains(std::forward<decltype(item)>(item))) {
+                discard(item);
+            } else {
+                add(item);
+            }
+        }
+    }
+
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
 
-    // TODO: |=, etc.
+    /* Equivalent to Python `set |= other`. */
+    template <typename T>
+    inline Set& operator|=(T&& other) {
+        update(std::forward<T>(other));
+        return *this;
+    }
+
+    /* Equivalent to Python `set |= <braced initializer list>`. */
+    template <typename T>
+    inline Set& operator|=(std::initializer_list<T> other) {
+        update(other);
+        return *this;
+    }
+
+    /* Equivalent to Python `set &= other`. */
+    template <typename T>
+    inline Set& operator&=(T&& other) {
+        intersection_update(std::forward<T>(other));
+        return *this;
+    }
+
+    /* Equivalent to Python `set &= <braced initializer list>`. */
+    template <typename T>
+    inline Set& operator&=(std::initializer_list<T> other) {
+        intersection_update(other);
+        return *this;
+    }
+
+    /* Equivalent to Python `set -= other`. */
+    template <typename T>
+    inline Set& operator-=(T&& other) {
+        difference_update(std::forward<T>(other));
+        return *this;
+    }
+
+    /* Equivalent to Python `set -= <braced initializer list>`. */
+    template <typename T>
+    inline Set& operator-=(std::initializer_list<T> other) {
+        difference_update(other);
+        return *this;
+    }
+
+    /* Equivalent to Python `set ^= other`. */
+    template <typename T>
+    inline Set& operator^=(T&& other) {
+        symmetric_difference_update(std::forward<T>(other));
+        return *this;
+    }
+
+    /* Equivalent to Python `set ^= <braced initializer list>`. */
+    template <typename T>
+    inline Set& operator^=(std::initializer_list<T> other) {
+        symmetric_difference_update(other);
+        return *this;
+    }
+
 };
 
 
@@ -2374,9 +2482,770 @@ class Set :
 
 namespace impl {
 
-    // TODO: extract dict interface so that it can be shared with py::Kwargs
+#define DICT_INTERFACE(cls)                                                             \
+    struct Initializer {                                                                \
+        Object key;                                                                     \
+        Object value;                                                                   \
+                                                                                        \
+        template <typename K, typename V>                                               \
+        Initializer(K&& key, V&& value) :                                               \
+            key(detail::object_or_cast(std::forward<K>(key))),                          \
+            value(detail::object_or_cast(std::forward<V>(value)))                       \
+        {}                                                                              \
+    };                                                                                  \
+                                                                                        \
+    static PyObject* convert_to_dict(PyObject* obj) {                                   \
+        PyObject* result = PyObject_CallOneArg((PyObject*) &PyDict_Type, obj);          \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        return result;                                                                  \
+    }                                                                                   \
+                                                                                        \
+public:                                                                                 \
+    CONSTRUCTORS(cls, PyDict_Check, convert_to_dict);                                   \
+                                                                                        \
+    /* Pack the given arguments into a dictionary using an initializer list. */         \
+    explicit cls(std::initializer_list<Initializer> items) : Base([&] {                 \
+        PyObject* result = PyDict_New();                                                \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        try {                                                                           \
+            for (auto&& item : items) {                                                 \
+                if (PyDict_SetItem(result, item.key.ptr(), item.value.ptr())) {         \
+                    throw error_already_set();                                          \
+                }                                                                       \
+            }                                                                           \
+            return reinterpret_steal<Base>(result);                                     \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
+        }                                                                               \
+    }()) {}                                                                             \
+                                                                                        \
+    /* TODO: allow construction from std::unordered_map, etc? */                        \
+                                                                                        \
+    /* Unpack a pybind11 container (not a mapping) into a new dictionary. */            \
+    template <                                                                          \
+        typename T,                                                                     \
+        std::enable_if_t<                                                               \
+            impl::is_python_container<T> && !std::is_base_of_v<pybind11::dict, T>,      \
+            int                                                                         \
+        > = 0                                                                           \
+    >                                                                                   \
+    explicit cls(T&& container) : Base([&] {                                            \
+        PyObject* result = PyDict_New();                                                \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        try {                                                                           \
+            for (const Object& item : container) {                                      \
+                if (py::len(item) != 2) {                                               \
+                    std::ostringstream msg;                                             \
+                    msg << "expected sequence of length 2 (key, value), not ";          \
+                    msg << py::len(item);                                               \
+                    throw ValueError(msg.str());                                        \
+                }                                                                       \
+                auto it = py::iter(item);                                               \
+                Object key = *it;                                                       \
+                Object value = *(++it);                                                 \
+                if (PyDict_SetItem(result, key.ptr(), value.ptr())) {                   \
+                    throw error_already_set();                                          \
+                }                                                                       \
+            }                                                                           \
+            return reinterpret_steal<Base>(result);                                     \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
+        }                                                                               \
+    }()) {}                                                                             \
+                                                                                        \
+    /* Unpack a pybind11 dictionary into a new dictionary. */                           \
+    template <                                                                          \
+        typename T,                                                                     \
+        std::enable_if_t<std::is_base_of_v<pybind11::dict, T>, int> = 0                 \
+    >                                                                                   \
+    explicit cls(T&& dict) : Base([&] {                                                 \
+        PyObject* result = PyDict_New();                                                \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        if (PyDict_Merge(this->ptr(), result, 1)) {                                     \
+            Py_DECREF(result);                                                          \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        return reinterpret_steal<Base>(result);                                         \
+    }()) {}                                                                             \
+                                                                                        \
+    /* Unpack a pybind11 iterator into a new dictionary. */                             \
+    explicit cls(pybind11::iterator&& iter) : cls(iter) {}                              \
+    explicit cls(pybind11::iterator& iter) : Base([&] {                                 \
+        PyObject* result = PyDict_New();                                                \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        try {                                                                           \
+            for (const Handle& item : iter) {                                           \
+                if (py::len(item) != 2) {                                               \
+                    std::ostringstream msg;                                             \
+                    msg << "expected sequence of length 2 (key, value), not ";          \
+                    msg << py::len(item);                                               \
+                    throw ValueError(msg.str());                                        \
+                }                                                                       \
+                auto it = py::iter(item);                                               \
+                Handle key = *it;                                                       \
+                Handle value = *(++it);                                                 \
+                if (PyDict_SetItem(result, key.ptr(), value.ptr())) {                   \
+                    throw error_already_set();                                          \
+                }                                                                       \
+            }                                                                           \
+            return reinterpret_steal<Base>(result);                                     \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
+        }                                                                               \
+    }()) {}                                                                             \
+                                                                                        \
+        /*    PyDict_ API    */                                                         \
+                                                                                        \
+    /* Get the size of the dict. */                                                     \
+    inline size_t size() const noexcept {                                               \
+        return static_cast<size_t>(PyDict_Size(this->ptr()));                           \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */       \
+    template <                                                                          \
+        typename T,                                                                     \
+        std::enable_if_t<std::is_base_of_v<pybind11::dict, T>, int> = 0                 \
+    >                                                                                   \
+    inline void merge(T&& items) {                                                      \
+        if (PyDict_Merge(                                                               \
+            this->ptr(),                                                                \
+            detail::object_or_cast(std::forward<T>(items)).ptr(),                       \
+            0                                                                           \
+        )) {                                                                            \
+            throw error_already_set();                                                  \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */       \
+    template <                                                                          \
+        typename T,                                                                     \
+        std::enable_if_t<!std::is_base_of_v<pybind11::dict, T>, int> = 0                \
+    >                                                                                   \
+    inline void merge(T&& items) {                                                      \
+        if (PyDict_MergeFromSeq2(                                                       \
+            this->ptr(),                                                                \
+            detail::object_or_cast(std::forward<T>(items)).ptr(),                       \
+            0                                                                           \
+        )) {                                                                            \
+            throw error_already_set();                                                  \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+        /*    PYTHON INTERFACE    */                                                    \
+                                                                                        \
+    /* Equivalent to Python `dict.clear()`. */                                          \
+    inline void clear() {                                                               \
+        PyDict_Clear(this->ptr());                                                      \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.copy()`. */                                           \
+    inline cls copy() const {                                                           \
+        return reinterpret_steal<cls>(PyDict_Copy(this->ptr()));                        \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.fromkeys(keys)`.  Values default to None. */          \
+    template <typename K>                                                               \
+    static inline cls fromkeys(K&& keys) {                                              \
+        PyObject* result = PyDict_New();                                                \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        try {                                                                           \
+            for (auto&& key : keys) {                                                   \
+                if (PyDict_SetItem(                                                     \
+                    result,                                                             \
+                    detail::object_or_cast(std::forward<decltype(key)>(key)).ptr(),     \
+                    Py_None                                                             \
+                )) {                                                                    \
+                    throw error_already_set();                                          \
+                }                                                                       \
+            }                                                                           \
+            return reinterpret_steal<cls>(result);                                      \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.fromkeys(<braced initializer list>)`. */              \
+    template <typename K>                                                               \
+    static inline cls fromkeys(std::initializer_list<K> keys) {                         \
+        PyObject* result = PyDict_New();                                                \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        try {                                                                           \
+            for (const K& key : keys) {                                                 \
+                if (PyDict_SetItem(                                                     \
+                    result,                                                             \
+                    detail::object_or_cast(key).ptr(),                                  \
+                    Py_None                                                             \
+                )) {                                                                    \
+                    throw error_already_set();                                          \
+                }                                                                       \
+            }                                                                           \
+            return reinterpret_steal<cls>(result);                                      \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.fromkeys(keys, value)`. */                            \
+    template <typename K, typename V>                                                   \
+    static inline cls fromkeys(K&& keys, V&& value) {                                   \
+        Object converted = detail::object_or_cast(std::forward<V>(value));              \
+        PyObject* result = PyDict_New();                                                \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        try {                                                                           \
+            for (auto&& key : keys) {                                                   \
+                if (PyDict_SetItem(                                                     \
+                    result,                                                             \
+                    detail::object_or_cast(std::forward<decltype(key)>(key)).ptr(),     \
+                    converted.ptr()                                                     \
+                )) {                                                                    \
+                    throw error_already_set();                                          \
+                }                                                                       \
+            }                                                                           \
+            return reinterpret_steal<cls>(result);                                      \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.fromkeys(<braced initializer list>, value)`. */       \
+    template <typename K, typename V>                                                   \
+    static inline cls fromkeys(std::initializer_list<K> keys, V&& value) {              \
+        Object converted = detail::object_or_cast(std::forward<V>(value));              \
+        PyObject* result = PyDict_New();                                                \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        try {                                                                           \
+            for (const K& key : keys) {                                                 \
+                if (PyDict_SetItem(                                                     \
+                    result,                                                             \
+                    detail::object_or_cast(key).ptr(),                                  \
+                    converted.ptr()                                                     \
+                )) {                                                                    \
+                    throw error_already_set();                                          \
+                }                                                                       \
+            }                                                                           \
+            return reinterpret_steal<cls>(result);                                      \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.get(key)`.  Returns None if the key is not found. */  \
+    template <typename K>                                                               \
+    inline Object get(K&& key) const {                                                  \
+        PyObject* result = PyDict_GetItemWithError(                                     \
+            this->ptr(),                                                                \
+            detail::object_or_cast(std::forward<K>(key)).ptr()                          \
+        );                                                                              \
+        if (result == nullptr) {                                                        \
+            if (PyErr_Occurred()) {                                                     \
+                throw error_already_set();                                              \
+            }                                                                           \
+            return reinterpret_borrow<Object>(Py_None);                                 \
+        }                                                                               \
+        return reinterpret_steal<Object>(result);                                       \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.get(key, default_value)`. */                          \
+    template <typename K, typename V>                                                   \
+    inline Object get(K&& key, V&& default_value) const {                               \
+        PyObject* result = PyDict_GetItemWithError(                                     \
+            this->ptr(),                                                                \
+            detail::object_or_cast(std::forward<K>(key)).ptr()                          \
+        );                                                                              \
+        if (result == nullptr) {                                                        \
+            if (PyErr_Occurred()) {                                                     \
+                throw error_already_set();                                              \
+            }                                                                           \
+            return detail::object_or_cast(std::forward<V>(default_value));              \
+        }                                                                               \
+        return reinterpret_steal<Object>(result);                                       \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.pop(key)`.  Returns None if the key is not found. */  \
+    template <typename K>                                                               \
+    inline Object pop(K&& key) {                                                        \
+        PyObject* result = PyDict_GetItemWithError(                                     \
+            this->ptr(),                                                                \
+            detail::object_or_cast(std::forward<K>(key)).ptr()                          \
+        );                                                                              \
+        if (result == nullptr) {                                                        \
+            if (PyErr_Occurred()) {                                                     \
+                throw error_already_set();                                              \
+            }                                                                           \
+            return reinterpret_borrow<Object>(Py_None);                                 \
+        }                                                                               \
+        if (PyDict_DelItem(this->ptr(), result)) {                                      \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        return reinterpret_steal<Object>(result);                                       \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.pop(key, default_value)`. */                          \
+    template <typename K, typename V>                                                   \
+    inline Object pop(K&& key, V&& default_value) {                                     \
+        PyObject* result = PyDict_GetItemWithError(                                     \
+            this->ptr(),                                                                \
+            detail::object_or_cast(std::forward<K>(key)).ptr()                          \
+        );                                                                              \
+        if (result == nullptr) {                                                        \
+            if (PyErr_Occurred()) {                                                     \
+                throw error_already_set();                                              \
+            }                                                                           \
+            return detail::object_or_cast(std::forward<V>(default_value));              \
+        }                                                                               \
+        if (PyDict_DelItem(this->ptr(), result)) {                                      \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        return reinterpret_steal<Object>(result);                                       \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.popitem()`. */                                        \
+    inline Object popitem() {                                                           \
+        return this->attr("popitem")();                                                 \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.setdefault(key)`. */                                  \
+    template <typename K>                                                               \
+    inline Object setdefault(K&& key) {                                                 \
+        PyObject* result = PyDict_SetDefault(                                           \
+            this->ptr(),                                                                \
+            detail::object_or_cast(std::forward<K>(key)).ptr(),                         \
+            Py_None                                                                     \
+        );                                                                              \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        return reinterpret_steal<Object>(result);                                       \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.setdefault(key, default_value)`. */                   \
+    template <typename K, typename V>                                                   \
+    inline Object setdefault(K&& key, V&& default_value) {                              \
+        PyObject* result = PyDict_SetDefault(                                           \
+            this->ptr(),                                                                \
+            detail::object_or_cast(std::forward<K>(key)).ptr(),                         \
+            detail::object_or_cast(std::forward<V>(default_value)).ptr()                \
+        );                                                                              \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        return reinterpret_steal<Object>(result);                                       \
+    }                                                                                   \
+                                                                                        \
+    /* TODO: overload update() to handle std::unordered_map, std::map, etc. */          \
+                                                                                        \
+    /* Equivalent to Python `dict.update()`, without an argument. */                    \
+    inline void update() {}                                                             \
+                                                                                        \
+    /* Equivalent to Python `dict.update(items)`. */                                    \
+    template <                                                                          \
+        typename T,                                                                     \
+        std::enable_if_t<std::is_base_of_v<pybind11::dict, T>, int> = 0                 \
+    >                                                                                   \
+    inline void update(T&& items) {                                                     \
+        if (PyDict_Merge(this->ptr(), items.ptr(), 1)) {                                \
+            throw error_already_set();                                                  \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.update(items)`. */                                    \
+    template <                                                                          \
+        typename T,                                                                     \
+        std::enable_if_t<!std::is_base_of_v<pybind11::dict, T>, int> = 0                \
+    >                                                                                   \
+    inline void update(T&& items) {                                                     \
+        if (PyDict_MergeFromSeq2(                                                       \
+            this->ptr(),                                                                \
+            detail::object_or_cast(std::forward<T>(items)).ptr(),                       \
+            1                                                                           \
+        )) {                                                                            \
+            throw error_already_set();                                                  \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.update(<braced initializer list>)`. */                \
+    inline void update(std::initializer_list<Initializer> items) {                      \
+        for (auto&& item : items) {                                                     \
+            if (PyDict_SetItem(this->ptr(), item.key.ptr(), item.value.ptr())) {        \
+                throw error_already_set();                                              \
+            }                                                                           \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.keys()`. */                                           \
+    inline KeysView keys() const {                                                      \
+        return this->attr("keys")();                                                    \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.values()`. */                                         \
+    inline ValuesView values() const {                                                  \
+        return this->attr("values")();                                                  \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.items()`. */                                          \
+    inline ItemsView items() const {                                                    \
+        return this->attr("items")();                                                   \
+    }                                                                                   \
+                                                                                        \
+        /*    OPERATORS    */                                                           \
+                                                                                        \
+    inline auto begin() const { return pybind11::object::begin(); }                     \
+    inline auto end() const { return pybind11::object::end(); }                         \
+                                                                                        \
+    /* Equivalent to Python `key in dict`. */                                           \
+    template <typename T>                                                               \
+    inline bool contains(T&& key) const {                                               \
+        int result = PyDict_Contains(                                                   \
+            this->ptr(),                                                                \
+            detail::object_or_cast(std::forward<T>(key)).ptr()                          \
+        );                                                                              \
+        if (result == -1) {                                                             \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        return result;                                                                  \
+    }                                                                                   \
+                                                                                        \
+    using Compare::operator==;                                                          \
+    using Compare::operator!=;                                                          \
+                                                                                        \
+    template <typename T>                                                               \
+    inline cls operator|(T&& other) const {                                             \
+        cls result = copy();                                                            \
+        result.update(std::forward<T>(other));                                          \
+        return result;                                                                  \
+    }                                                                                   \
+                                                                                        \
+    template <typename T>                                                               \
+    inline cls& operator|=(T&& other) {                                                 \
+        update(std::forward<T>(other));                                                 \
+        return *this;                                                                   \
+    }                                                                                   \
 
 }  // namespace impl
+
+
+class MappingProxy :
+    public pybind11::object,
+    public impl::EqualCompare<MappingProxy>
+{
+    using Base = pybind11::object;
+    using Compare = impl::EqualCompare<MappingProxy>;
+
+    inline static bool mappingproxy_check(PyObject* obj) {
+        int result = PyObject_IsInstance(obj, (PyObject*) &PyDictProxy_Type);
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    inline static PyObject* convert_to_mappingproxy(PyObject* obj) {
+        PyObject* result = PyDictProxy_New(obj);
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+public:
+    CONSTRUCTORS(MappingProxy, mappingproxy_check, convert_to_mappingproxy);
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    /* Equivalent to Python `mappingproxy.copy()`. */
+    inline Dict copy() const;  // out of line to avoid circular dependency.
+
+    /* Equivalent to Python `mappingproxy.get(key)`. */
+    template <typename K, typename V>
+    inline Object get(K&& key) const {
+        return this->attr("get")(std::forward<K>(key), py::None);
+    }
+
+    /* Equivalent to Python `mappingproxy.get(key, default)`. */
+    template <typename K, typename V>
+    inline Object get(K&& key, V&& default_value) const {
+        return this->attr("get")(std::forward<K>(key), std::forward<V>(default_value));
+    }
+
+    /* Equivalent to Python `mappingproxy.keys()`. */
+    inline KeysView keys() const;
+
+    /* Equivalent to Python `mappingproxy.values()`. */
+    inline ValuesView values() const;
+
+    /* Equivalent to Python `mappingproxy.items()`. */
+    inline ItemsView items() const;
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    /* Equivalent to Python `key in mappingproxy`. */
+    template <typename T>
+    inline bool contains(T&& key) const;
+
+    using Compare::operator==;
+    using Compare::operator!=;
+
+    // Operator overloads provided out of line to avoid circular dependency.
+
+};
+
+
+/* New subclass of pybind11::object representing a view into the keys of a dictionary
+object. */
+struct KeysView :
+    public pybind11::object,
+    public impl::FullCompare<KeysView>
+{
+    using Base = pybind11::object;
+    using Compare = impl::FullCompare<KeysView>;
+
+    inline static bool keys_check(PyObject* obj) {
+        int result = PyObject_IsInstance(obj, (PyObject*) &PyDictKeys_Type);
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    inline static PyObject* convert_to_keys(PyObject* obj) {
+        if (PyDict_Check(obj)) {
+            PyObject* attr = PyObject_GetAttrString(obj, "keys");
+            if (attr == nullptr) {
+                throw error_already_set();
+            }
+            PyObject* result = PyObject_CallNoArgs(attr);
+            Py_DECREF(attr);
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return result;
+        } else {
+            throw TypeError("expected a dict");
+        }
+    }
+
+public:
+    CONSTRUCTORS(KeysView, keys_check, convert_to_keys);
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    /* Equivalent to Python `dict.keys().mapping`. */
+    inline MappingProxy mapping() const {
+        return this->attr("mapping");
+    }
+
+    /* Equivalent to Python `dict.keys().isdisjoint(other)`. */
+    template <typename T>
+    inline bool isdisjoint(T&& other) const {
+        return this->attr("isdisjoint")(std::forward<T>(other)).template cast<bool>();
+    }
+
+    /* Get the length of the keys view. */
+    inline size_t size() const noexcept {
+        return static_cast<size_t>(PyObject_Length(this->ptr()));
+    }
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    /* Equivalent to `key in dict.keys()`. */
+    inline bool contains(const Handle& key) const {
+        int result = PySequence_Contains(this->ptr(), key.ptr());
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    template <typename T>
+    inline Set operator|(T&& other) const {
+        return Set(this->attr("__or__")(std::forward<T>(other)));
+    }
+
+    template <typename T>
+    inline Set operator&(T&& other) const {
+        return Set(this->attr("__and__")(std::forward<T>(other)));
+    }
+
+    template <typename T>
+    inline Set operator-(T&& other) const {
+        return Set(this->attr("__sub__")(std::forward<T>(other)));
+    }
+
+    template <typename T>
+    inline Set operator^(T&& other) const {
+        return Set(this->attr("__xor__")(std::forward<T>(other)));
+    }
+
+    using Compare::operator<;
+    using Compare::operator<=;
+    using Compare::operator==;
+    using Compare::operator!=;
+    using Compare::operator>=;
+    using Compare::operator>;
+};
+
+
+/* New subclass of pybind11::object representing a view into the values of a dictionary
+object. */
+struct ValuesView :
+    public pybind11::object,
+    public impl::FullCompare<ValuesView>
+{
+    using Base = pybind11::object;
+    using Compare = impl::FullCompare<ValuesView>;
+
+    inline static bool values_check(PyObject* obj) {
+        int result = PyObject_IsInstance(obj, (PyObject*) &PyDictValues_Type);
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    inline static PyObject* convert_to_values(PyObject* obj) {
+        if (PyDict_Check(obj)) {
+            PyObject* attr = PyObject_GetAttrString(obj, "values");
+            if (attr == nullptr) {
+                throw error_already_set();
+            }
+            PyObject* result = PyObject_CallNoArgs(attr);
+            Py_DECREF(attr);
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return result;
+        } else {
+            throw TypeError("expected a dict");
+        }
+    }
+
+public:
+    CONSTRUCTORS(ValuesView, values_check, convert_to_values);
+
+    /* Equivalent to Python `dict.values().mapping`. */
+    inline MappingProxy mapping() const {
+        return this->attr("mapping");
+    }
+
+    /* Get the length of the values view. */
+    inline size_t size() const noexcept {
+        return static_cast<size_t>(PyObject_Length(this->ptr()));
+    }
+
+    /* Equivalent to `value in dict.values()`. */
+    inline bool contains(const Handle& value) const {
+        int result = PySequence_Contains(this->ptr(), value.ptr());
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    using Compare::operator<;
+    using Compare::operator<=;
+    using Compare::operator==;
+    using Compare::operator!=;
+    using Compare::operator>=;
+    using Compare::operator>;
+};
+
+
+/* New subclass of pybind11::object representing a view into the items of a dictionary
+object. */
+struct ItemsView :
+    public pybind11::object,
+    public impl::FullCompare<ItemsView>
+{
+    using Base = pybind11::object;
+    using Compare = impl::FullCompare<ItemsView>;
+
+    inline static bool items_check(PyObject* obj) {
+        int result = PyObject_IsInstance(obj, (PyObject*) &PyDictItems_Type);
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    inline static PyObject* convert_to_items(PyObject* obj) {
+        if (PyDict_Check(obj)) {
+            PyObject* attr = PyObject_GetAttrString(obj, "items");
+            if (attr == nullptr) {
+                throw error_already_set();
+            }
+            PyObject* result = PyObject_CallNoArgs(attr);
+            Py_DECREF(attr);
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return result;
+        } else {
+            throw TypeError("expected a dict");
+        }
+    }
+
+public:
+    CONSTRUCTORS(ItemsView, items_check, convert_to_items);
+
+    /* Equivalent to Python `dict.items().mapping`. */
+    inline MappingProxy mapping() const {
+        return this->attr("mapping");
+    }
+
+    /* Get the length of the values view. */
+    inline size_t size() const noexcept {
+        return static_cast<size_t>(PyObject_Length(this->ptr()));
+    }
+
+    /* Equivalent to `value in dict.values()`. */
+    inline bool contains(const Handle& value) const {
+        int result = PySequence_Contains(this->ptr(), value.ptr());
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    using Compare::operator<;
+    using Compare::operator<=;
+    using Compare::operator==;
+    using Compare::operator!=;
+    using Compare::operator>=;
+    using Compare::operator>;
+};
 
 
 /* Wrapper around pybind11::dict that allows it to be directly initialized using
@@ -2387,370 +3256,72 @@ class Dict :
 {
     using Base = pybind11::dict;
     using Compare = impl::EqualCompare<Dict>;
-
-    struct Initializer {
-        Object key;
-        Object value;
-
-        template <typename K, typename V>
-        Initializer(K&& key, V&& value) :
-            key(detail::object_or_cast(std::forward<K>(key))),
-            value(detail::object_or_cast(std::forward<V>(value)))
-        {}
-    };
-
-    static PyObject* convert_to_dict(PyObject* obj) {
-        PyObject* result = PyObject_CallOneArg((PyObject*) &PyDict_Type, obj);
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return result;
-    }
-
-public:
-    CONSTRUCTORS(Dict, PyDict_Check, convert_to_dict);
-
-    /* Pack the given arguments into a Dict using an initializer list.  This requires
-    the use of nested initializers, which can have any combination of types. */
-    explicit Dict(std::initializer_list<Initializer> items) : Base([&] {
-        PyObject* result = PyDict_New();
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        try {
-            for (auto&& item : items) {
-                if (PyDict_SetItem(result, item.key.ptr(), item.value.ptr())) {
-                    throw error_already_set();
-                }
-            }
-            return reinterpret_steal<Base>(result);
-        } catch (...) {
-            Py_DECREF(result);
-            throw;
-        }
-    }()) {}
-
-    /* TODO: allow construction from std::unordered_map, etc? */
-
-    /* Unpack a pybind11 container (not a mapping) into a new Dict. */
-    template <
-        typename T,
-        std::enable_if_t<
-            impl::is_python_container<T> && !std::is_base_of_v<pybind11::dict, T>,
-            int
-        > = 0
-    >
-    explicit Dict(T&& container) : Base([&] {
-        PyObject* result = PyDict_New();
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        try {
-            for (const Object& item : container) {
-                if (py::len(item) != 2) {
-                    std::ostringstream msg;
-                    msg << "expected sequence of length 2 (key, value), not ";
-                    msg << py::len(item);
-                    throw ValueError(msg.str());
-                }
-                auto it = py::iter(item);
-                Object key = *it;
-                Object value = *(++it);
-                if (PyDict_SetItem(result, key.ptr(), value.ptr())) {
-                    throw error_already_set();
-                }
-            }
-            return reinterpret_steal<Base>(result);
-        } catch (...) {
-            Py_DECREF(result);
-            throw;
-        }
-    }()) {}
-
-    /* Unpack a pybind11 dictionary into a new Dict. */
-    template <
-        typename T,
-        std::enable_if_t<std::is_base_of_v<pybind11::dict, T>, int> = 0
-    >
-    explicit Dict(T&& dict) : Base([&] {
-        PyObject* result = PyDict_New();
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        // TODO: use PyDict_Merge
-        try {
-            for (auto&& [key, value] : dict) {
-                if (PyDict_SetItem(
-                    result,
-                    key.ptr(),
-                    value.ptr()
-                )) {
-                    throw error_already_set();
-                }
-            }
-            return reinterpret_steal<Base>(result);
-        } catch (...) {
-            Py_DECREF(result);
-            throw;
-        }
-    }()) {}
-
-    ////////////////////////////////////
-    ////    PyDict_* API METHODS    ////
-    ////////////////////////////////////
-
-    /* Get the size of the dict. */
-    inline size_t size() const noexcept {
-        return static_cast<size_t>(PyDict_Size(this->ptr()));
-    }
-
-    /* Equivalent to Python `dict.update(items)`, but assumes each item is a tuple of
-    length 2 (key, value).  Note that this should not be used with types that map to
-    py::Dict, as that only yields keys during iteration. */
-    template <typename T>
-    inline void update_pairs(T&& items) {
-        if (PyDict_MergeFromSeq2(
-            this->ptr(),
-            detail::object_or_cast(std::forward<T>(items)).ptr(),
-            1
-        )) {
-            throw error_already_set();
-        }
-    }
-
-    /* Equivalent to Python `dict.update(items)`, except that it does not overwrite any
-    existing keys. */
-    template <typename T>
-    inline void merge(T&& items) {
-        if (PyDict_Merge(
-            this->ptr(),
-            detail::object_or_cast(std::forward<T>(items)).ptr(),
-            0
-        )) {
-            throw error_already_set();
-        }
-    }
-
-    /* Equivalent to Python `dict.update(items)`, except that it assumes that each item
-    is a tuple of length 2 (key, value), and does not overwrite any existing keys.
-    Note that this should not be used with types that map to py::Dict, as that only
-    yields keys during iteration. */
-    template <typename T>
-    inline void merge_pairs(T&& items) {
-        if (PyDict_MergeFromSeq2(
-            this->ptr(),
-            detail::object_or_cast(std::forward<T>(items)).ptr(),
-            0
-        )) {
-            throw error_already_set();
-        }
-    }
-
-    // readonly()?  Would return a new dict that wraps around a mappingproxy object
-    // that references this dict.
-
-    //    readonly()
-    //    is_readonly()
-
-    // Or implement this using the same model as frozenset?
-    //     -> would live alongside KeysView, ValuesView, and ItemsView
-
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
-
-    /* Equivalent to Python `dict.fromkeys(keys)`.  Values default to None. */
-    template <typename K>
-    static inline Dict fromkeys(K&& keys) {
-        PyObject* result = PyDict_New();
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        try {
-            for (auto&& key : keys) {
-                if (PyDict_SetItem(
-                    result,
-                    detail::object_or_cast(std::forward<decltype(key)>(key)).ptr(),
-                    Py_None
-                )) {
-                    throw error_already_set();
-                }
-            }
-            return reinterpret_steal<Dict>(result);
-        } catch (...) {
-            Py_DECREF(result);
-            throw;
-        }
-    }
-
-    /* Equivalent to Python `dict.fromkeys(keys)`, where keys are given as an
-    initializer list. */
-    template <typename K>
-    static inline Dict fromkeys(std::initializer_list<K> keys) {
-        PyObject* result = PyDict_New();
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        try {
-            for (const K& key : keys) {
-                if (PyDict_SetItem(
-                    result,
-                    detail::object_or_cast(key).ptr(),
-                    Py_None
-                )) {
-                    throw error_already_set();
-                }
-            }
-            return reinterpret_steal<Dict>(result);
-        } catch (...) {
-            Py_DECREF(result);
-            throw;
-        }
-    }
-
-    /* Equivalent to Python `dict.fromkeys(keys, value)`. */
-    template <typename K, typename V>
-    static inline Dict fromkeys(K&& keys, V&& value) {
-        Object converted = detail::object_or_cast(std::forward<V>(value));
-        PyObject* result = PyDict_New();
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        try {
-            for (auto&& key : keys) {
-                if (PyDict_SetItem(
-                    result,
-                    detail::object_or_cast(std::forward<decltype(key)>(key)).ptr(),
-                    converted.ptr()
-                )) {
-                    throw error_already_set();
-                }
-            }
-            return reinterpret_steal<Dict>(result);
-        } catch (...) {
-            Py_DECREF(result);
-            throw;
-        }
-    }
-
-    /* Equivalent to Python `dict.fromkeys(keys, value)`, where keys are given as an
-    initializer list. */
-    template <typename K, typename V>
-    static inline Dict fromkeys(std::initializer_list<K> keys, V&& value) {
-        Object converted = detail::object_or_cast(std::forward<V>(value));
-        PyObject* result = PyDict_New();
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        try {
-            for (const K& key : keys) {
-                if (PyDict_SetItem(
-                    result,
-                    detail::object_or_cast(key).ptr(),
-                    converted.ptr()
-                )) {
-                    throw error_already_set();
-                }
-            }
-            return reinterpret_steal<Dict>(result);
-        } catch (...) {
-            Py_DECREF(result);
-            throw;
-        }
-    }
-
-    /* Equivalent to Python `dict.copy()`. */
-    inline Dict copy() const {
-        return reinterpret_steal<Dict>(PyDict_Copy(this->ptr()));
-    }
-
-    /* Equivalent to Python `dict.clear()`. */
-    inline void clear() {
-        PyDict_Clear(this->ptr());
-    }
-
-    // TODO: overload update() to handle std::unordered_map, std::map, etc.
-
-    /* Equivalent to Python `dict.update(items)`, where items are given as another
-    dictionary. */
-    template <
-        typename T,
-        std::enable_if_t<std::is_base_of_v<pybind11::dict, T>, int> = 0
-    >
-    inline void update(T&& items) {
-        if (PyDict_Merge(this->ptr(), items.ptr(), 1)) {
-            throw error_already_set();
-        }
-    }
-
-    /* Equivalent to Python `dict.update(items)`, where items are given as a sequence
-    of key-value pairs. */
-    template <
-        typename T,
-        std::enable_if_t<!std::is_base_of_v<pybind11::dict, T>, int> = 0
-    >
-    inline void update(T&& items) {
-        update_pairs(std::forward<T>(items));
-    }
-
-    /* Equivalent to Python `dict.update(items)`, where items are given as a mapping
-    initializer list. */
-    inline void update(std::initializer_list<Initializer> items) {
-        for (auto&& item : items) {
-            if (PyDict_SetItem(this->ptr(), item.key.ptr(), item.value.ptr())) {
-                throw error_already_set();
-            }
-        }
-    }
-
-    // TODO: get(), pop(), popitem()
-
-    /* Equivalent to Python `dict.setdefault(key, default_value)`. */
-    template <typename K, typename V>
-    inline Object setdefault(K&& key, V&& default_value) {
-        PyObject* result = PyDict_SetDefault(
-            this->ptr(),
-            detail::object_or_cast(std::forward<K>(key)).ptr(),
-            detail::object_or_cast(std::forward<V>(default_value)).ptr()
-        );
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return reinterpret_steal<Object>(result);
-    }
-
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    /* Equivalent to Python `key in dict`. */
-    template <typename T>
-    inline bool contains(T&& key) const {
-        int result = PyDict_Contains(
-            this->ptr(),
-            detail::object_or_cast(std::forward<T>(key)).ptr()
-        );
-        if (result == -1) {
-            throw error_already_set();
-        }
-        return result;
-    }
-
-    using Compare::operator==;
-    using Compare::operator!=;
-
-    // TODO: |, |=
-
+    DICT_INTERFACE(Dict);
 };
 
 
 /* Subclass of Dict representing keyword arguments to a Python function.  For
 compatibility with pybind11. */
-struct Kwargs : public Dict {
-    using Dict::Dict;
+struct Kwargs :
+    public pybind11::dict,
+    public impl::EqualCompare<Kwargs>
+{
+    using Base = pybind11::dict;
+    using Compare = impl::EqualCompare<Kwargs>;
+    DICT_INTERFACE(Kwargs);
 };
 
 
+/* Out of line definition for `MappingProxy.copy()`. */
+inline Dict MappingProxy::copy() const{
+    return this->attr("copy")();
+}
+
+
+/* Out of line definition for `MappingProxy.keys()`. */
+inline KeysView MappingProxy::keys() const{
+    return this->attr("keys")();
+}
+
+
+/* Out of line definition for `MappingProxy.values()`. */
+inline ValuesView MappingProxy::values() const{
+    return this->attr("values")();
+}
+
+
+/* Out of line definition for `MappingProxy.contains()`. */
+template <typename T>
+inline bool MappingProxy::contains(T&& key) const {
+    return this->keys().contains(detail::object_or_cast(std::forward<T>(key)));
+}
+
+
+template <typename T>
+inline Dict operator|(const MappingProxy& mapping, T&& other) {
+    return mapping.attr("__or__")(std::forward<T>(other));
+}
+
+
+template <typename T>
+inline Dict operator&(const MappingProxy& mapping, T&& other) {
+    return mapping.attr("__and__")(std::forward<T>(other));
+}
+
+
+template <typename T>
+inline Dict operator-(const MappingProxy& mapping, T&& other) {
+    return mapping.attr("__sub__")(std::forward<T>(other));
+}
+
+
+template <typename T>
+inline Dict operator^(const MappingProxy& mapping, T&& other) {
+    return mapping.attr("__xor__")(std::forward<T>(other));
+}
+
+
+#undef DICT_INTERFACE
 
 
 /* Wrapper around pybind11::str that enables extra C API functionality. */
@@ -3380,6 +3951,19 @@ public:
 };
 
 
+/* Wrapper around pybind11::module_ that does stuff (TODO). */
+class Module : public pybind11::module_ {
+    using Base = pybind11::module_;
+
+public:
+    using Base::Base;
+    using Base::operator=;
+
+    // TODO: stuff
+
+};
+
+
 /* Wrapper around a pybind11::type that enables extra C API functionality, such as the
 ability to create new types on the fly by calling the type() metaclass, or directly
 querying PyTypeObject* fields. */
@@ -3734,6 +4318,33 @@ public:
     using Compare::operator==;
     using Compare::operator!=;
 };
+
+
+/* Wrapper around a pybind11::Function that allows it to be constructed from a C++
+lambda or function pointer, and enables extra introspection via the C API. */
+class Function : public pybind11::function {
+    using Base = pybind11::function;
+
+public:
+
+
+
+};
+
+
+/* Wrapper around a pybind11::StaticMethod that allows it to be constructed from a
+C++ lambda or function pointer, and enables extra introspection via the C API. */
+class StaticMethod : public pybind11::staticmethod {
+    using Base = pybind11::staticmethod;
+
+public:
+
+
+
+};
+
+
+// TODO: ClassMethod, Method, Property
 
 
 /////////////////////////
@@ -4163,7 +4774,30 @@ Int ord(const pybind11::handle& obj) {
 }
 
 
-// TODO: round, sum, min, max, sorted, open, input, format, vars,
+/* Equivalent to Python `round(obj)`. */
+inline Object round(const pybind11::handle& obj) {
+    PyObject* result = PyObject_CallOneArg(
+        PyDict_GetItemString(PyEval_GetBuiltins(), "round"),
+        obj.ptr()
+    );
+    if (result == nullptr) {
+        throw error_already_set();
+    }
+    return reinterpret_steal<Object>(result);
+}
+
+
+/* Equivalent to Python `sorted(obj)`. */
+inline List sorted(const pybind11::handle& obj) {
+    PyObject* result = PyObject_CallOneArg(
+        PyDict_GetItemString(PyEval_GetBuiltins(), "sorted"),
+        obj.ptr()
+    );
+    if (result == nullptr) {
+        throw error_already_set();
+    }
+    return reinterpret_steal<List>(result);
+}
 
 
 }  // namespace py
