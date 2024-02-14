@@ -511,7 +511,7 @@ namespace impl {
         /* Slice operator.  Accepts an initializer list that expands to a Python slice
         object with generalized syntax. */
         using SliceIndex = std::variant<long long, pybind11::none>;
-        inline auto operator[](std::initializer_list<SliceIndex> slice) const {
+        inline auto operator[](const std::initializer_list<SliceIndex>& slice) const {
             if (slice.size() > 3) {
                 throw ValueError(
                     "slices must be of the form {[start[, stop[, step]]]}"
@@ -519,7 +519,7 @@ namespace impl {
             }
             size_t i = 0;
             std::array<Object, 3> params {None, None, None};
-            for (auto&& item : slice) {
+            for (const SliceIndex& item : slice) {
                 params[i++] = std::visit(
                     [](auto&& arg) -> Object {
                         return detail::object_or_cast(arg);
@@ -691,7 +691,7 @@ namespace impl {
         template <typename Policy>                                                      \
         cls(const detail::accessor<Policy> &proxy) : cls(Object(proxy)) {}              \
         template <typename T>                                                           \
-        cls& operator=(std::initializer_list<T> init) {                                 \
+        cls& operator=(const std::initializer_list<T>& init) {                          \
             Base::operator=(cls(init));                                                 \
             return *this;                                                               \
         }                                                                               \
@@ -699,6 +699,8 @@ namespace impl {
 }  // namespace impl
 
 
+/* New subclass of pybind11::object that represents Python's global NotImplemented
+type. */
 class NotImplementedType :
     public pybind11::object,
     public impl::EqualCompare<NotImplementedType>
@@ -1289,8 +1291,6 @@ public:
         return result;
     }(), stolen_t{}) {}
 
-    // TODO: conversion from/to std::ranges::range (C++20)
-
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
@@ -1511,7 +1511,7 @@ public:
     /* Equivalent to Python `list.remove(value)`. */
     template <typename T>
     inline void remove(T&& value) {
-        this->attr("remove")(std::forward<T>(value));
+        this->attr("remove")(detail::object_or_cast(std::forward<T>(value)));
     }
 
     /* Equivalent to Python `list.pop([index])`. */
@@ -1583,12 +1583,8 @@ public:
                 PyList_SET_ITEM(result, i, Py_NewRef(array[i]));
                 ++i;
             }
-            for (auto&& item : items) {
-                PyList_SET_ITEM(
-                    result,
-                    i++,
-                    impl::convert_newref(std::forward<decltype(item)>(item))
-                );
+            for (const T& item : items) {
+                PyList_SET_ITEM(result, i++, impl::convert_newref(item));
             }
             return reinterpret_steal<List>(result);
         } catch (...) {
@@ -1686,12 +1682,8 @@ public:                                                                         
         }                                                                               \
         try {                                                                           \
             size_t i = 0;                                                               \
-            for (auto&& element : contents) {                                           \
-                PyTuple_SET_ITEM(                                                       \
-                    result,                                                             \
-                    i++,                                                                \
-                    impl::convert_newref(std::forward<decltype(element)>(element))      \
-                );                                                                      \
+            for (const T& item : contents) {                                            \
+                PyTuple_SET_ITEM(result, i++, impl::convert_newref(item));              \
             }                                                                           \
             return result;                                                              \
         } catch (...) {                                                                 \
@@ -1832,12 +1824,8 @@ public:                                                                         
                 PyTuple_SET_ITEM(result, i, Py_NewRef(array[i]));                       \
                 ++i;                                                                    \
             }                                                                           \
-            for (auto&& item : items) {                                                 \
-                PyTuple_SET_ITEM(                                                       \
-                    result,                                                             \
-                    i++,                                                                \
-                    impl::convert_newref(std::forward<decltype(item)>(item))            \
-                );                                                                      \
+            for (const T& item : items) {                                               \
+                PyTuple_SET_ITEM(result, i++, impl::convert_newref(item));              \
             }                                                                           \
             return reinterpret_steal<cls>(result);                                      \
         } catch (...) {                                                                 \
@@ -1956,14 +1944,15 @@ public:                                                                         
     }(), stolen_t{}) {}                                                                 \
                                                                                         \
     /* Pack the contents of a braced initializer into a new Python set. */              \
-    cls(const std::initializer_list<Initializer>& contents) : Base([&contents] {        \
+    template <typename T>                                                               \
+    cls(const std::initializer_list<T>& contents) : Base([&contents] {                  \
         PyObject* result = Py##cls##_New(nullptr);                                      \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
         try {                                                                           \
-            for (const Initializer& element : contents) {                               \
-                if (PySet_Add(result, element.value.ptr())) {                           \
+            for (const T& element : contents) {                                         \
+                if (PySet_Add(result, detail::object_or_cast(element).ptr())) {         \
                     throw error_already_set();                                          \
                 }                                                                       \
             }                                                                           \
@@ -1975,15 +1964,14 @@ public:                                                                         
     }(), stolen_t{}) {}                                                                 \
                                                                                         \
     /* Pack the contents of a braced initializer into a new Python set. */              \
-    template <typename T>                                                               \
-    cls(const std::initializer_list<T>& contents) : Base([&contents] {                  \
+    cls(const std::initializer_list<Initializer>& contents) : Base([&contents] {        \
         PyObject* result = Py##cls##_New(nullptr);                                      \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
         try {                                                                           \
-            for (const T& element : contents) {                                         \
-                if (PySet_Add(result, detail::object_or_cast(element).ptr())) {         \
+            for (const Initializer& element : contents) {                               \
+                if (PySet_Add(result, element.value.ptr())) {                           \
                     throw error_already_set();                                          \
                 }                                                                       \
             }                                                                           \
@@ -2060,9 +2048,19 @@ public:                                                                         
                                                                                         \
     /* Equivalent to Python `set.isdisjoint(<braced initializer list>)`. */             \
     template <typename T>                                                               \
-    inline bool isdisjoint(std::initializer_list<T> other) const {                      \
-        for (auto&& item : other) {                                                     \
-            if (contains(std::forward<decltype(item)>(item))) {                         \
+    inline bool isdisjoint(const std::initializer_list<T>& other) const {               \
+        for (const T& item : other) {                                                   \
+            if (contains(item)) {                                                       \
+                return false;                                                           \
+            }                                                                           \
+        }                                                                               \
+        return true;                                                                    \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `set.isdisjoint(<braced initializer list>)`. */             \
+    inline bool isdisjoint(const std::initializer_list<Initializer>& other) const {     \
+        for (const Initializer& item : other) {                                         \
+            if (contains(item)) {                                                       \
                 return false;                                                           \
             }                                                                           \
         }                                                                               \
@@ -2079,7 +2077,12 @@ public:                                                                         
                                                                                         \
     /* Equivalent to Python `set.issubset(<braced initializer list>)`. */               \
     template <typename T>                                                               \
-    inline bool issubset(std::initializer_list<T> other) const {                        \
+    inline bool issubset(const std::initializer_list<T> other) const {                  \
+        return this->attr("issubset")(cls(other)).template cast<bool>();                \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `set.issubset(<braced initializer list>)`. */               \
+    inline bool issubset(const std::initializer_list<Initializer>& other) const {       \
         return this->attr("issubset")(cls(other)).template cast<bool>();                \
     }                                                                                   \
                                                                                         \
@@ -2100,9 +2103,19 @@ public:                                                                         
                                                                                         \
     /* Equivalent to Python `set.issuperset(<braced initializer list>)`. */             \
     template <typename T>                                                               \
-    inline bool issuperset(std::initializer_list<T> other) const {                      \
-        for (auto&& item : other) {                                                     \
-            if (!contains(std::forward<decltype(item)>(item))) {                        \
+    inline bool issuperset(const std::initializer_list<T>& other) const {               \
+        for (const T& item : other) {                                                   \
+            if (!contains(item)) {                                                      \
+                return false;                                                           \
+            }                                                                           \
+        }                                                                               \
+        return true;                                                                    \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `set.issuperset(<braced initializer list>)`. */             \
+    inline bool issuperset(const std::initializer_list<Initializer>& other) const {     \
+        for (const Initializer& item : other) {                                         \
+            if (!contains(item)) {                                                      \
                 return false;                                                           \
             }                                                                           \
         }                                                                               \
@@ -2119,17 +2132,33 @@ public:                                                                         
                                                                                         \
     /* Equivalent to Python `set.union(<braced initializer list>)`. */                  \
     template <typename T>                                                               \
-    inline cls union_(std::initializer_list<T> other) const {                           \
+    inline cls union_(const std::initializer_list<T>& other) const {                    \
         PyObject* result = Py##cls##_New(this->ptr());                                  \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
         try {                                                                           \
-            for (auto&& item : other) {                                                 \
-                if (PySet_Add(                                                          \
-                    result,                                                             \
-                    detail::object_or_cast(std::forward<decltype(item)>(item)).ptr()    \
-                )) {                                                                    \
+            for (const T& item : other) {                                               \
+                if (PySet_Add(result, detail::object_or_cast(item).ptr())) {            \
+                    throw error_already_set();                                          \
+                }                                                                       \
+            }                                                                           \
+            return reinterpret_steal<cls>(result);                                      \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `set.union(<braced initializer list>)`. */                  \
+    inline cls union_(const std::initializer_list<Initializer>& other) const {          \
+        PyObject* result = Py##cls##_New(this->ptr());                                  \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        try {                                                                           \
+            for (const Initializer& item : other) {                                     \
+                if (PySet_Add(result, item.value.ptr())) {                              \
                     throw error_already_set();                                          \
                 }                                                                       \
             }                                                                           \
@@ -2150,18 +2179,37 @@ public:                                                                         
                                                                                         \
     /* Equivalent to Python `set.intersection(<braced initializer list>)`. */           \
     template <typename T>                                                               \
-    inline cls intersection(std::initializer_list<T> other) const {                     \
+    inline cls intersection(const std::initializer_list<T>& other) const {              \
         PyObject* result = Py##cls##_New(nullptr);                                      \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
         try {                                                                           \
-            for (auto&& item : other) {                                                 \
-                Object obj = detail::object_or_cast(                                    \
-                    std::forward<decltype(item)>(item)                                  \
-                );                                                                      \
+            for (const T& item : other) {                                               \
+                Object obj = detail::object_or_cast(item);                              \
                 if (contains(obj)) {                                                    \
                     if (PySet_Add(result, obj.ptr())) {                                 \
+                        throw error_already_set();                                      \
+                    }                                                                   \
+                }                                                                       \
+            }                                                                           \
+            return reinterpret_steal<cls>(result);                                      \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `set.intersection(<braced initializer list>)`. */           \
+    inline cls intersection(const std::initializer_list<Initializer>& other) const {    \
+        PyObject* result = Py##cls##_New(nullptr);                                      \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        try {                                                                           \
+            for (const Initializer& item : other) {                                     \
+                if (contains(item.value)) {                                             \
+                    if (PySet_Add(result, item.value.ptr())) {                          \
                         throw error_already_set();                                      \
                     }                                                                   \
                 }                                                                       \
@@ -2183,17 +2231,33 @@ public:                                                                         
                                                                                         \
     /* Equivalent to Python `set.difference(<braced initializer list>)`. */             \
     template <typename T>                                                               \
-    inline cls difference(std::initializer_list<T> other) const {                       \
+    inline cls difference(const std::initializer_list<T>& other) const {                \
         PyObject* result = Py##cls##_New(this->ptr());                                  \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
         try {                                                                           \
-            for (auto&& item : other) {                                                 \
-                Object obj = detail::object_or_cast(                                    \
-                    std::forward<decltype(item)>(item)                                  \
-                );                                                                      \
-                if (PySet_Discard(result, obj.ptr()) == -1) {                           \
+            for (const T& item : other) {                                               \
+                if (PySet_Discard(result, detail::object_or_cast(item).ptr()) == -1) {  \
+                    throw error_already_set();                                          \
+                }                                                                       \
+            }                                                                           \
+            return reinterpret_steal<cls>(result);                                      \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `set.difference(<braced initializer list>)`. */             \
+    inline cls difference(const std::initializer_list<Initializer>& other) const {      \
+        PyObject* result = Py##cls##_New(this->ptr());                                  \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        try {                                                                           \
+            for (const Initializer& item : other) {                                     \
+                if (PySet_Discard(result, item.value.ptr()) == -1) {                    \
                     throw error_already_set();                                          \
                 }                                                                       \
             }                                                                           \
@@ -2214,22 +2278,47 @@ public:                                                                         
                                                                                         \
     /* Equivalent to Python `set.symmetric_difference(<braced initializer list)`. */    \
     template <typename T>                                                               \
-    inline cls symmetric_difference(std::initializer_list<T> other) const {             \
+    inline cls symmetric_difference(const std::initializer_list<T>& other) const {      \
         PyObject* result = Py##cls##_New(nullptr);                                      \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
         try {                                                                           \
-            for (auto&& item : other) {                                                 \
-                Object obj = detail::object_or_cast(                                    \
-                    std::forward<decltype(item)>(item)                                  \
-                );                                                                      \
+            for (const T& item : other) {                                               \
+                Object obj = detail::object_or_cast(item);                              \
                 if (contains(obj)) {                                                    \
                     if (PySet_Discard(result, obj.ptr()) == -1) {                       \
                         throw error_already_set();                                      \
                     }                                                                   \
                 } else {                                                                \
                     if (PySet_Add(result, obj.ptr())) {                                 \
+                        throw error_already_set();                                      \
+                    }                                                                   \
+                }                                                                       \
+            }                                                                           \
+            return reinterpret_steal<cls>(result);                                      \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `set.symmetric_difference(<braced initializer list)`. */    \
+    inline cls symmetric_difference(                                                    \
+        const std::initializer_list<Initializer>& other                                 \
+    ) const {                                                                           \
+        PyObject* result = Py##cls##_New(nullptr);                                      \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        try {                                                                           \
+            for (const Initializer& item : other) {                                     \
+                if (contains(item.value)) {                                             \
+                    if (PySet_Discard(result, item.value.ptr()) == -1) {                \
+                        throw error_already_set();                                      \
+                    }                                                                   \
+                } else {                                                                \
+                    if (PySet_Add(result, item.value.ptr())) {                          \
                         throw error_already_set();                                      \
                     }                                                                   \
                 }                                                                       \
@@ -2269,7 +2358,11 @@ public:                                                                         
     }                                                                                   \
                                                                                         \
     template <typename T>                                                               \
-    inline cls operator|(std::initializer_list<T> other) const {                        \
+    inline cls operator|(const std::initializer_list<T>& other) const {                 \
+        return union_(other);                                                           \
+    }                                                                                   \
+                                                                                        \
+    inline cls operator|(const std::initializer_list<Initializer>& other) const {       \
         return union_(other);                                                           \
     }                                                                                   \
                                                                                         \
@@ -2279,7 +2372,11 @@ public:                                                                         
     }                                                                                   \
                                                                                         \
     template <typename T>                                                               \
-    inline cls operator&(std::initializer_list<T> other) const {                        \
+    inline cls operator&(const std::initializer_list<T>& other) const {                 \
+        return intersection(other);                                                     \
+    }                                                                                   \
+                                                                                        \
+    inline cls operator&(const std::initializer_list<Initializer>& other) const {       \
         return intersection(other);                                                     \
     }                                                                                   \
                                                                                         \
@@ -2289,7 +2386,11 @@ public:                                                                         
     }                                                                                   \
                                                                                         \
     template <typename T>                                                               \
-    inline cls operator-(std::initializer_list<T> other) const {                        \
+    inline cls operator-(const std::initializer_list<T>& other) const {                 \
+        return difference(other);                                                       \
+    }                                                                                   \
+                                                                                        \
+    inline cls operator-(const std::initializer_list<Initializer>& other) const {       \
         return difference(other);                                                       \
     }                                                                                   \
                                                                                         \
@@ -2299,9 +2400,14 @@ public:                                                                         
     }                                                                                   \
                                                                                         \
     template <typename T>                                                               \
-    inline cls operator^(std::initializer_list<T> other) const {                        \
+    inline cls operator^(const std::initializer_list<T>& other) const {                 \
         return symmetric_difference(other);                                             \
     }                                                                                   \
+                                                                                        \
+    inline cls operator^(const std::initializer_list<Initializer>& other) const {       \
+        return symmetric_difference(other);                                             \
+    }                                                                                   \
+                                                                                        \
 
 }  // namespace impl
 
@@ -2324,7 +2430,12 @@ class FrozenSet :
     }
 
     template <typename T>
-    inline FrozenSet& operator|=(std::initializer_list<T> other) {
+    inline FrozenSet& operator|=(const std::initializer_list<T>& other) {
+        *this = union_(other);
+        return *this;
+    }
+
+    inline FrozenSet& operator|=(const std::initializer_list<Initializer>& other) {
         *this = union_(other);
         return *this;
     }
@@ -2336,7 +2447,12 @@ class FrozenSet :
     }
 
     template <typename T>
-    inline FrozenSet& operator&=(std::initializer_list<T> other) {
+    inline FrozenSet& operator&=(const std::initializer_list<T>& other) {
+        *this = intersection(other);
+        return *this;
+    }
+
+    inline FrozenSet& operator&=(const std::initializer_list<Initializer>& other) {
         *this = intersection(other);
         return *this;
     }
@@ -2348,7 +2464,12 @@ class FrozenSet :
     }
 
     template <typename T>
-    inline FrozenSet& operator-=(std::initializer_list<T> other) {
+    inline FrozenSet& operator-=(const std::initializer_list<T>& other) {
+        *this = difference(other);
+        return *this;
+    }
+
+    inline FrozenSet& operator-=(const std::initializer_list<Initializer>& other) {
         *this = difference(other);
         return *this;
     }
@@ -2360,7 +2481,12 @@ class FrozenSet :
     }
 
     template <typename T>
-    inline FrozenSet& operator^=(std::initializer_list<T> other) {
+    inline FrozenSet& operator^=(const std::initializer_list<T>& other) {
+        *this = symmetric_difference(other);
+        return *this;
+    }
+
+    inline FrozenSet& operator^=(const std::initializer_list<Initializer>& other) {
         *this = symmetric_difference(other);
         return *this;
     }
@@ -2443,9 +2569,16 @@ class Set :
 
     /* Equivalent to Python `set.update(<braced initializer list>)`. */
     template <typename T>
-    inline void update(std::initializer_list<T> other) {
-        for (auto&& item : other) {
-            add(std::forward<decltype(item)>(item));
+    inline void update(const std::initializer_list<T>& other) {
+        for (const T& item : other) {
+            add(item);
+        }
+    }
+
+    /* Equivalent to Python `set.update(<braced initializer list>)`. */
+    inline void update(const std::initializer_list<Initializer>& other) {
+        for (const Initializer& item : other) {
+            add(item.value);
         }
     }
 
@@ -2459,8 +2592,13 @@ class Set :
 
     /* Equivalent to Python `set.intersection_update(<braced initializer list>)`. */
     template <typename T>
-    inline void intersection_update(std::initializer_list<T> other) {
-        this->attr("intersection_update")(cls(other));
+    inline void intersection_update(const std::initializer_list<T>& other) {
+        this->attr("intersection_update")(Set(other));
+    }
+
+    /* Equivalent to Python `set.intersection_update(<braced initializer list>)`. */
+    inline void intersection_update(const std::initializer_list<Initializer>& other) {
+        this->attr("intersection_update")(Set(other));
     }
 
     /* Equivalent to Python `set.difference_update(*others)`. */
@@ -2473,9 +2611,16 @@ class Set :
 
     /* Equivalent to Python `set.difference_update(<braced initializer list>)`. */
     template <typename T>
-    inline void difference_update(std::initializer_list<T> other) {
-        for (auto&& item : other) {
-            discard(std::forward<decltype(item)>(item));
+    inline void difference_update(const std::initializer_list<T>& other) {
+        for (const T& item : other) {
+            discard(item);
+        }
+    }
+
+    /* Equivalent to Python `set.difference_update(<braced initializer list>)`. */
+    inline void difference_update(const std::initializer_list<Initializer>& other) {
+        for (const Initializer& item : other) {
+            discard(item.value);
         }
     }
 
@@ -2489,12 +2634,23 @@ class Set :
 
     /* Equivalent to Python `set.symmetric_difference_update(<braced initializer list>)`. */
     template <typename T>
-    inline void symmetric_difference_update(std::initializer_list<T> other) {
-        for (auto&& item : other) {
-            if (contains(std::forward<decltype(item)>(item))) {
+    inline void symmetric_difference_update(const std::initializer_list<T>& other) {
+        for (const T& item : other) {
+            if (contains(item)) {
                 discard(item);
             } else {
                 add(item);
+            }
+        }
+    }
+
+    /* Equivalent to Python `set.symmetric_difference_update(<braced initializer list>)`. */
+    inline void symmetric_difference_update(const std::initializer_list<Initializer>& other) {
+        for (const Initializer& item : other) {
+            if (contains(item.value)) {
+                discard(item.value);
+            } else {
+                add(item.value);
             }
         }
     }
@@ -2512,7 +2668,13 @@ class Set :
 
     /* Equivalent to Python `set |= <braced initializer list>`. */
     template <typename T>
-    inline Set& operator|=(std::initializer_list<T> other) {
+    inline Set& operator|=(const std::initializer_list<T>& other) {
+        update(other);
+        return *this;
+    }
+
+    /* Equivalent to Python `set |= <braced initializer list>`. */
+    inline Set& operator|=(const std::initializer_list<Initializer>& other) {
         update(other);
         return *this;
     }
@@ -2526,7 +2688,13 @@ class Set :
 
     /* Equivalent to Python `set &= <braced initializer list>`. */
     template <typename T>
-    inline Set& operator&=(std::initializer_list<T> other) {
+    inline Set& operator&=(const std::initializer_list<T>& other) {
+        intersection_update(other);
+        return *this;
+    }
+
+    /* Equivalent to Python `set &= <braced initializer list>`. */
+    inline Set& operator&=(const std::initializer_list<Initializer>& other) {
         intersection_update(other);
         return *this;
     }
@@ -2540,7 +2708,13 @@ class Set :
 
     /* Equivalent to Python `set -= <braced initializer list>`. */
     template <typename T>
-    inline Set& operator-=(std::initializer_list<T> other) {
+    inline Set& operator-=(const std::initializer_list<T>& other) {
+        difference_update(other);
+        return *this;
+    }
+
+    /* Equivalent to Python `set -= <braced initializer list>`. */
+    inline Set& operator-=(const std::initializer_list<Initializer>& other) {
         difference_update(other);
         return *this;
     }
@@ -2554,7 +2728,13 @@ class Set :
 
     /* Equivalent to Python `set ^= <braced initializer list>`. */
     template <typename T>
-    inline Set& operator^=(std::initializer_list<T> other) {
+    inline Set& operator^=(const std::initializer_list<T>& other) {
+        symmetric_difference_update(other);
+        return *this;
+    }
+
+    /* Equivalent to Python `set ^= <braced initializer list>`. */
+    inline Set& operator^=(const std::initializer_list<Initializer>& other) {
         symmetric_difference_update(other);
         return *this;
     }
@@ -2568,12 +2748,12 @@ class Set :
 namespace impl {
 
 #define DICT_INTERFACE(cls)                                                             \
-    struct Initializer {                                                                \
+    struct DictInit {                                                                   \
         Object key;                                                                     \
         Object value;                                                                   \
                                                                                         \
         template <typename K, typename V>                                               \
-        Initializer(K&& key, V&& value) :                                               \
+        DictInit(K&& key, V&& value) :                                                  \
             key(detail::object_or_cast(std::forward<K>(key))),                          \
             value(detail::object_or_cast(std::forward<V>(value)))                       \
         {}                                                                              \
@@ -2600,14 +2780,14 @@ public:                                                                         
     }(), stolen_t{}) {}                                                                 \
                                                                                         \
     /* Pack the given arguments into a dictionary using an initializer list. */         \
-    cls(const std::initializer_list<Initializer>& contents) : Base([&contents] {        \
+    cls(const std::initializer_list<DictInit>& contents) : Base([&contents] {           \
         PyObject* result = PyDict_New();                                                \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
         try {                                                                           \
-            for (auto&& element : contents) {                                           \
-                if (PyDict_SetItem(result, element.key.ptr(), element.value.ptr())) {   \
+            for (const DictInit& item : contents) {                                     \
+                if (PyDict_SetItem(result, item.key.ptr(), item.value.ptr())) {         \
                     throw error_already_set();                                          \
                 }                                                                       \
             }                                                                           \
@@ -2758,7 +2938,7 @@ public:                                                                         
                                                                                         \
     /* Equivalent to Python `dict.fromkeys(<braced initializer list>)`. */              \
     template <typename K>                                                               \
-    static inline cls fromkeys(std::initializer_list<K> keys) {                         \
+    static inline cls fromkeys(const std::initializer_list<K>& keys) {                  \
         PyObject* result = PyDict_New();                                                \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
@@ -2768,6 +2948,29 @@ public:                                                                         
                 if (PyDict_SetItem(                                                     \
                     result,                                                             \
                     detail::object_or_cast(key).ptr(),                                  \
+                    Py_None                                                             \
+                )) {                                                                    \
+                    throw error_already_set();                                          \
+                }                                                                       \
+            }                                                                           \
+            return reinterpret_steal<cls>(result);                                      \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.fromkeys(<braced initializer list>)`. */              \
+    inline cls fromkeys(const std::initializer_list<Initializer>& keys) {               \
+        PyObject* result = PyDict_New();                                                \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        try {                                                                           \
+            for (const Initializer& init : keys) {                                      \
+                if (PyDict_SetItem(                                                     \
+                    result,                                                             \
+                    init.value.ptr(),                                                   \
                     Py_None                                                             \
                 )) {                                                                    \
                     throw error_already_set();                                          \
@@ -2807,7 +3010,7 @@ public:                                                                         
                                                                                         \
     /* Equivalent to Python `dict.fromkeys(<braced initializer list>, value)`. */       \
     template <typename K, typename V>                                                   \
-    static inline cls fromkeys(std::initializer_list<K> keys, V&& value) {              \
+    static inline cls fromkeys(const std::initializer_list<K>& keys, V&& value) {       \
         Object converted = detail::object_or_cast(std::forward<V>(value));              \
         PyObject* result = PyDict_New();                                                \
         if (result == nullptr) {                                                        \
@@ -2818,6 +3021,31 @@ public:                                                                         
                 if (PyDict_SetItem(                                                     \
                     result,                                                             \
                     detail::object_or_cast(key).ptr(),                                  \
+                    converted.ptr()                                                     \
+                )) {                                                                    \
+                    throw error_already_set();                                          \
+                }                                                                       \
+            }                                                                           \
+            return reinterpret_steal<cls>(result);                                      \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+    /* Equivalent to Python `dict.fromkeys(<braced initializer list>, value)`. */       \
+    template <typename V>                                                               \
+    inline cls fromkeys(const std::initializer_list<Initializer>& keys, V&& value) {    \
+        Object converted = detail::object_or_cast(std::forward<V>(value));              \
+        PyObject* result = PyDict_New();                                                \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        try {                                                                           \
+            for (const Initializer& init : keys) {                                      \
+                if (PyDict_SetItem(                                                     \
+                    result,                                                             \
+                    init.value.ptr(),                                                   \
                     converted.ptr()                                                     \
                 )) {                                                                    \
                     throw error_already_set();                                          \
@@ -2933,11 +3161,6 @@ public:                                                                         
         return reinterpret_steal<Object>(result);                                       \
     }                                                                                   \
                                                                                         \
-    /* TODO: overload update() to handle std::unordered_map, std::map, etc. */          \
-                                                                                        \
-    /* Equivalent to Python `dict.update()`, without an argument. */                    \
-    inline void update() {}                                                             \
-                                                                                        \
     /* Equivalent to Python `dict.update(items)`. */                                    \
     template <                                                                          \
         typename T,                                                                     \
@@ -2955,18 +3178,30 @@ public:                                                                         
         std::enable_if_t<!std::is_base_of_v<pybind11::dict, T>, int> = 0                \
     >                                                                                   \
     inline void update(T&& items) {                                                     \
-        if (PyDict_MergeFromSeq2(                                                       \
-            this->ptr(),                                                                \
-            detail::object_or_cast(std::forward<T>(items)).ptr(),                       \
-            1                                                                           \
-        )) {                                                                            \
-            throw error_already_set();                                                  \
+        if constexpr (detail::is_pyobject<T>::value) {                                  \
+            if (PyDict_MergeFromSeq2(                                                   \
+                this->ptr(),                                                            \
+                detail::object_or_cast(std::forward<T>(items)).ptr(),                   \
+                1                                                                       \
+            )) {                                                                        \
+                throw error_already_set();                                              \
+            }                                                                           \
+        } else {                                                                        \
+            for (auto&& [k, v] : items) {                                               \
+                if (PyDict_SetItem(                                                     \
+                    this->ptr(),                                                        \
+                    detail::object_or_cast(std::forward<decltype(k)>(k)).ptr(),         \
+                    detail::object_or_cast(std::forward<decltype(v)>(v)).ptr()          \
+                )) {                                                                    \
+                    throw error_already_set();                                          \
+                }                                                                       \
+            }                                                                           \
         }                                                                               \
     }                                                                                   \
                                                                                         \
     /* Equivalent to Python `dict.update(<braced initializer list>)`. */                \
-    inline void update(std::initializer_list<Initializer> items) {                      \
-        for (auto&& item : items) {                                                     \
+    inline void update(const std::initializer_list<DictInit>& items) {                  \
+        for (const DictInit& item : items) {                                            \
             if (PyDict_SetItem(this->ptr(), item.key.ptr(), item.value.ptr())) {        \
                 throw error_already_set();                                              \
             }                                                                           \
@@ -3016,9 +3251,20 @@ public:                                                                         
         return result;                                                                  \
     }                                                                                   \
                                                                                         \
+    inline cls operator|(const std::initializer_list<DictInit>& other) const {          \
+        cls result = copy();                                                            \
+        result.update(other);                                                           \
+        return result;                                                                  \
+    }                                                                                   \
+                                                                                        \
     template <typename T>                                                               \
     inline cls& operator|=(T&& other) {                                                 \
         update(std::forward<T>(other));                                                 \
+        return *this;                                                                   \
+    }                                                                                   \
+                                                                                        \
+    inline cls& operator|=(const std::initializer_list<DictInit>& other) {              \
+        update(other);                                                                  \
         return *this;                                                                   \
     }                                                                                   \
 
@@ -3061,13 +3307,19 @@ public:
     /* Equivalent to Python `mappingproxy.get(key)`. */
     template <typename K, typename V>
     inline Object get(K&& key) const {
-        return this->attr("get")(std::forward<K>(key), py::None);
+        return this->attr("get")(
+            detail::object_or_cast(std::forward<K>(key)),
+            py::None
+        );
     }
 
     /* Equivalent to Python `mappingproxy.get(key, default)`. */
     template <typename K, typename V>
     inline Object get(K&& key, V&& default_value) const {
-        return this->attr("get")(std::forward<K>(key), std::forward<V>(default_value));
+        return this->attr("get")(
+            detail::object_or_cast(std::forward<K>(key)),
+            detail::object_or_cast(std::forward<V>(default_value))
+        );
     }
 
     /* Equivalent to Python `mappingproxy.keys()`. */
@@ -3144,7 +3396,20 @@ public:
     /* Equivalent to Python `dict.keys().isdisjoint(other)`. */
     template <typename T>
     inline bool isdisjoint(T&& other) const {
-        return this->attr("isdisjoint")(std::forward<T>(other)).template cast<bool>();
+        return this->attr("isdisjoint")(
+            detail::object_or_cast(std::forward<T>(other))
+        ).template cast<bool>();
+    }
+
+    /* Equivalent to Python `dict.keys().isdisjoint(<braced initializer list>)`. */
+    template <typename T>
+    inline bool isdisjoint(const std::initializer_list<T>& other) const {
+        return this->attr("isdisjoint")(Set(other)).template cast<bool>();
+    }
+
+    /* Equivalent to Python `dict.keys().isdisjoint(<braced initializer list>)`. */
+    inline bool isdisjoint(const std::initializer_list<Initializer>& other) const {
+        return this->attr("isdisjoint")(Set(other)).template cast<bool>();
     }
 
     /* Get the length of the keys view. */
@@ -3167,22 +3432,66 @@ public:
 
     template <typename T>
     inline Set operator|(T&& other) const {
-        return Set(this->attr("__or__")(std::forward<T>(other)));
+        return Set(this->attr("__or__")(
+            detail::object_or_cast(std::forward<T>(other))
+        ));
+    }
+
+    template <typename T>
+    inline Set operator|(const std::initializer_list<T>& other) const {
+        return Set(this->attr("__or__")(Set(other)));
+    }
+
+    inline Set operator|(const std::initializer_list<Initializer>& other) const {
+        return Set(this->attr("__or__")(Set(other)));
     }
 
     template <typename T>
     inline Set operator&(T&& other) const {
-        return Set(this->attr("__and__")(std::forward<T>(other)));
+        return Set(this->attr("__and__")(
+            detail::object_or_cast(std::forward<T>(other))
+        ));
+    }
+
+    template <typename T>
+    inline Set operator&(const std::initializer_list<T>& other) const {
+        return Set(this->attr("__and__")(Set(other)));
+    }
+
+    inline Set operator&(const std::initializer_list<Initializer>& other) const {
+        return Set(this->attr("__and__")(Set(other)));
     }
 
     template <typename T>
     inline Set operator-(T&& other) const {
-        return Set(this->attr("__sub__")(std::forward<T>(other)));
+        return Set(this->attr("__sub__")(
+            detail::object_or_cast(std::forward<T>(other))
+        ));
+    }
+
+    template <typename T>
+    inline Set operator-(const std::initializer_list<T>& other) const {
+        return Set(this->attr("__sub__")(Set(other)));
+    }
+
+    inline Set operator-(const std::initializer_list<Initializer>& other) const {
+        return Set(this->attr("__sub__")(Set(other)));
     }
 
     template <typename T>
     inline Set operator^(T&& other) const {
-        return Set(this->attr("__xor__")(std::forward<T>(other)));
+        return Set(this->attr("__xor__")(
+            detail::object_or_cast(std::forward<T>(other))
+        ));
+    }
+
+    template <typename T>
+    inline Set operator^(const std::initializer_list<T>& other) const {
+        return Set(this->attr("__xor__")(Set(other)));
+    }
+
+    inline Set operator^(const std::initializer_list<Initializer>& other) const {
+        return Set(this->attr("__xor__")(Set(other)));
     }
 
     using Compare::operator<;
@@ -3375,25 +3684,25 @@ inline bool MappingProxy::contains(T&& key) const {
 
 template <typename T>
 inline Dict operator|(const MappingProxy& mapping, T&& other) {
-    return mapping.attr("__or__")(std::forward<T>(other));
+    return mapping.attr("__or__")(detail::object_or_cast(std::forward<T>(other)));
 }
 
 
 template <typename T>
 inline Dict operator&(const MappingProxy& mapping, T&& other) {
-    return mapping.attr("__and__")(std::forward<T>(other));
+    return mapping.attr("__and__")(detail::object_or_cast(std::forward<T>(other)));
 }
 
 
 template <typename T>
 inline Dict operator-(const MappingProxy& mapping, T&& other) {
-    return mapping.attr("__sub__")(std::forward<T>(other));
+    return mapping.attr("__sub__")(detail::object_or_cast(std::forward<T>(other)));
 }
 
 
 template <typename T>
 inline Dict operator^(const MappingProxy& mapping, T&& other) {
-    return mapping.attr("__xor__")(std::forward<T>(other));
+    return mapping.attr("__xor__")(detail::object_or_cast(std::forward<T>(other)));
 }
 
 
@@ -3437,17 +3746,26 @@ public:
 
     /* Default constructor.  Initializes to empty string. */
     inline Str() : Base([] {
-        PyObject* result = PyUnicode_FromString("");
+        PyObject* result = PyUnicode_FromStringAndSize("", 0);
         if (result == nullptr) {
             throw error_already_set();
         }
         return result;
     }(), stolen_t{}) {}
 
+    /* Construct a unicode string from a null-terminated C string. */
+    inline Str(const char* string) : Base(string) {}
+
+    /* Construct a unicode string from a C++ std::string. */
+    inline Str(const std::string& string) : Base(string) {}
+
+    /* Construct a unicode string from a C++ std::string_view. */
+    inline Str(const std::string_view& string) : Base(string) {}
+
     /* Construct a unicode string from a printf-style format string.  See the python
     docs for `PyUnicode_FromFormat()` for more details.  Note that this can segfault
     if the argument types do not match the format code(s). */
-    template <typename... Args>
+    template <typename... Args, std::enable_if_t<(sizeof...(Args) > 0), int> = 0>
     explicit Str(const char* format, Args&&... args) : Base([&] {
         PyObject* result = PyUnicode_FromFormat(
             format,
@@ -3461,14 +3779,14 @@ public:
 
     /* Construct a unicode string from a printf-style format string.  See
     Str(const char*, ...) for more details. */
-    template <typename... Args>
+    template <typename... Args, std::enable_if_t<(sizeof...(Args) > 0), int> = 0>
     explicit Str(const std::string& format, Args&&... args) : Str(
         format.c_str(), std::forward<Args>(args)...
     ) {}
 
     /* Construct a unicode string from a printf-style format string.  See
     Str(const char*, ...) for more details. */
-    template <typename... Args>
+    template <typename... Args, std::enable_if_t<(sizeof...(Args) > 0), int> = 0>
     explicit Str(const std::string_view& format, Args&&... args) : Str(
         format.data(), std::forward<Args>(args)...
     ) {}
@@ -3556,9 +3874,17 @@ public:
     }
 
     /* Equivalent to Python `str.center(width)`. */
-    template <typename... Args>
-    inline Str center(Args&&... args) const {
-        return this->attr("center")(std::forward<Args>(args)...);
+    inline Str center(Py_ssize_t width) const {
+        return this->attr("center")(py::cast(width));
+    }
+
+    /* Equivalent to Python `str.center(width, fillchar)`. */
+    template <typename T>
+    inline Str center(Py_ssize_t width, T&& fillchar) const {
+        return this->attr("center")(
+            py::cast(width),
+            detail::object_or_cast(std::forward<T>(fillchar))
+        );
     }
 
     /* Equivalent to Python `str.copy()`. */
@@ -3594,9 +3920,14 @@ public:
     }
 
     /* Equivalent to Python `str.encode(encoding)`. */
-    template <typename... Args>
-    inline Bytes encode(Args&&... args) const {
-        return this->attr("encode")(std::forward<Args>(args)...);
+    inline Bytes encode(
+        const char* encoding = "utf-8",
+        const char* errors = "strict"
+    ) const {
+        return this->attr("encode")(
+            detail::object_or_cast(encoding),
+            detail::object_or_cast(errors)
+        );
     }
 
     /* Equivalent to Python `str.endswith(suffix[, start[, end]])`. */
@@ -3653,13 +3984,17 @@ public:
     /* Equivalent to Python `str.format(*args, **kwargs)`. */
     template <typename... Args>
     inline Str format(Args&&... args) const {
-        return this->attr("format")(std::forward<Args>(args)...);
+        return this->attr("format")(
+            detail::object_or_cast(std::forward<Args>(args))...
+        );
     }
 
     /* Equivalent to Python `str.format_map(mapping)`. */
     template <typename T>
     inline Str format_map(T&& mapping) const {
-        return this->attr("format_map")(std::forward<T>(mapping));
+        return this->attr("format_map")(
+            detail::object_or_cast(std::forward<T>(mapping))
+        );
     }
 
     /* Equivalent to Python `str.index(sub[, start[, end]])`. */
@@ -3769,10 +4104,31 @@ public:
         return reinterpret_steal<Str>(result);
     }
 
-    /* Equivalent to Python `str.ljust(width[, fillchar])`. */
-    template <typename... Args>
-    inline Str ljust(Args&&... args) const {
-        return this->attr("ljust")(std::forward<Args>(args)...);
+    /* Equivalent of Python `str.join(iterable)`, where iterable is given as a braced
+    initializer. */
+    template <typename T>
+    inline Str join(const std::initializer_list<T>& iterable) const {
+        return join(py::List(iterable));
+    }
+
+    /* Equivalent of Python `str.join(iterable)`, where iterable is given as a braced
+    initializer. */
+    inline Str join(const std::initializer_list<Initializer>& iterable) const {
+        return join(py::List(iterable));
+    }
+
+    /* Equivalent to Python `str.ljust(width)`. */
+    inline Str ljust(Py_ssize_t width) const {
+        return this->attr("ljust")(py::cast(width));
+    }
+
+    /* Equivalent to Python `str.ljust(width, fillchar)`. */
+    template <typename T>
+    inline Str ljust(Py_ssize_t width, T&& fillchar) const {
+        return this->attr("ljust")(
+            py::cast(width),
+            detail::object_or_cast(std::forward<T>(fillchar))
+        );
     }
 
     /* Equivalent to Python `str.lower()`. */
@@ -3780,37 +4136,71 @@ public:
         return this->attr("lower")();
     }
 
-    /* Equivalent to Python `str.lstrip([chars])`. */
-    template <typename... Args>
-    inline Str lstrip(Args&&... args) const {
-        return this->attr("lstrip")(std::forward<Args>(args)...);
+    /* Equivalent to Python `str.lstrip()`. */
+    inline Str lstrip() const {
+        return this->attr("lstrip")();
+    }
+
+    /* Equivalent to Python `str.lstrip(chars)`. */
+    template <typename T>
+    inline Str lstrip(T&& chars) const {
+        return this->attr("lstrip")(detail::object_or_cast(std::forward<T>(chars)));
     }
 
     /* Equivalent to Python (static) `str.maketrans(x)`. */
-    template <typename... Args> 
-    inline static Dict maketrans(Args&&... args) {
+    template <typename T> 
+    inline static Dict maketrans(T&& x) {
         pybind11::type cls(
             reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type))
         );
-        return cls.attr("maketrans")(std::forward<Args>(args)...);
+        return cls.attr("maketrans")(detail::object_or_cast(std::forward<T>(x)));
+    }
+
+    /* Equivalent to Python (static) `str.maketrans(x, y)`. */
+    template <typename T, typename U> 
+    inline static Dict maketrans(T&& x, U&& y) {
+        pybind11::type cls(
+            reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type))
+        );
+        return cls.attr("maketrans")(
+            detail::object_or_cast(std::forward<T>(x)),
+            detail::object_or_cast(std::forward<U>(y))
+        );
+    }
+
+    /* Equivalent to Python (static) `str.maketrans(x, y, z)`. */
+    template <typename T, typename U, typename V> 
+    inline static Dict maketrans(T&& x, U&& y, V&& z) {
+        pybind11::type cls(
+            reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type))
+        );
+        return cls.attr("maketrans")(
+            detail::object_or_cast(std::forward<T>(x)),
+            detail::object_or_cast(std::forward<U>(y)),
+            detail::object_or_cast(std::forward<V>(z))
+        );
     }
 
     /* Equivalent to Python `str.partition(sep)`. */
     template <typename T>
     inline Tuple partition(T&& sep) const {
-        return this->attr("partition")(std::forward<T>(sep));
+        return this->attr("partition")(detail::object_or_cast(std::forward<T>(sep)));
     }
 
     /* Equivalent to Python `str.removeprefix(prefix)`. */
     template <typename T>
     inline Str removeprefix(T&& prefix) const {
-        return this->attr("removeprefix")(std::forward<T>(prefix));
+        return this->attr("removeprefix")(
+            detail::object_or_cast(std::forward<T>(prefix))
+        );
     }
 
     /* Equivalent to Python `str.removesuffix(suffix)`. */
     template <typename T>
     inline Str removesuffix(T&& suffix) const {
-        return this->attr("removesuffix")(std::forward<T>(suffix));
+        return this->attr("removesuffix")(
+            detail::object_or_cast(std::forward<T>(suffix))
+        );
     }
 
     /* Equivalent to Python `str.replace(old, new[, count])`. */
@@ -3876,33 +4266,54 @@ public:
         return result;
     }
 
-    /* Equivalent to Python `str.rjust(width[, fillchar])`. */
-    template <typename... Args>
-    inline Str rjust(Args&&... args) const {
-        return this->attr("rjust")(std::forward<Args>(args)...);
+    /* Equivalent to Python `str.rjust(width)`. */
+    inline Str rjust(Py_ssize_t width) const {
+        return this->attr("rjust")(py::cast(width));
+    }
+
+    /* Equivalent to Python `str.rjust(width, fillchar)`. */
+    template <typename T>
+    inline Str rjust(Py_ssize_t width, T&& fillchar) const {
+        return this->attr("rjust")(
+            py::cast(width),
+            detail::object_or_cast(std::forward<T>(fillchar))
+        );
     }
 
     /* Equivalent to Python `str.rpartition(sep)`. */
     template <typename T>
     inline Tuple rpartition(T&& sep) const {
-        return this->attr("rpartition")(std::forward<T>(sep));
+        return this->attr("rpartition")(detail::object_or_cast(std::forward<T>(sep)));
     }
 
-    /* Equivalent to Python `str.rsplit([sep[, maxsplit]])`. */
-    template <typename... Args>
-    inline List rsplit(Args&&... args) const {
-        return this->attr("rsplit")(std::forward<Args>(args)...);
+    /* Equivalent to Python `str.rsplit()`. */
+    inline List rsplit() const {
+        return this->attr("rsplit")();
     }
 
-    /* Equivalent to Python `str.rstrip([chars])`. */
-    template <typename... Args>
-    inline Str rstrip(Args&&... args) const {
-        return this->attr("rstrip")(std::forward<Args>(args)...);
+    /* Equivalent to Python `str.rsplit(sep[, maxsplit])`. */
+    template <typename T>
+    inline List rsplit(T&& sep, Py_ssize_t maxsplit = -1) const {
+        return this->attr("rsplit")(
+            detail::object_or_cast(std::forward<T>(sep)),
+            py::cast(maxsplit)
+        );
+    }
+
+    /* Equivalent to Python `str.rstrip()`. */
+    inline Str rstrip() const {
+        return this->attr("rstrip")();
+    }
+
+    /* Equivalent to Python `str.rstrip(chars)`. */
+    template <typename T>
+    inline Str rstrip(T&& chars) const {
+        return this->attr("rstrip")(detail::object_or_cast(std::forward<T>(chars)));
     }
 
     /* Equivalent to Python `str.split()`. */
-    inline List split(PyObject* separator = nullptr, Py_ssize_t maxsplit = -1) const {
-        PyObject* result = PyUnicode_Split(this->ptr(), separator, maxsplit);
+    inline List split() const {
+        PyObject* result = PyUnicode_Split(this->ptr(), nullptr, -1);
         if (result == nullptr) {
             throw error_already_set();
         }
@@ -3952,10 +4363,15 @@ public:
         return result;
     }
 
-    /* Equivalent to Python `str.strip([chars])`. */
-    template <typename... Args>
-    inline Str strip(Args&&... args) const {
-        return this->attr("strip")(std::forward<Args>(args)...);
+    /* Equivalent to Python `str.strip()`. */
+    inline Str strip() const {
+        return this->attr("strip")();
+    }
+
+    /* Equivalent to Python `str.strip(chars)`. */
+    template <typename T>
+    inline Str strip(T&& chars) const {
+        return this->attr("strip")(detail::object_or_cast(std::forward<T>(chars)));
     }
 
     /* Equivalent to Python `str.swapcase()`. */
@@ -3971,7 +4387,7 @@ public:
     /* Equivalent to Python `str.translate(table)`. */
     template <typename T>
     inline Str translate(T&& table) const {
-        return this->attr("translate")(std::forward<T>(table));
+        return this->attr("translate")(detail::object_or_cast(std::forward<T>(table)));
     }
 
     /* Equivalent to Python `str.upper()`. */
@@ -4385,6 +4801,12 @@ public:
     // NOTE: indexing a Type object calls its __class_getitem__() method, just like
     // normal python.
 };
+
+
+
+
+
+
 
 
 namespace impl {
