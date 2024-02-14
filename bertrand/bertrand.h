@@ -43,14 +43,14 @@
  * namespace in order to avoid conflicts with other libraries.  Users may find the
  * following directives useful:
  *
- *      #include <bertrand.h>
+ *      #include <bertrand/bertrand.h>
  *
  *      namespace py = bertrand::py;  // bring pybind11 bindings into scope
  *      namespace np = namespace bertrand::np;  // bring numpy bindings into scope
  */
 
 // #include "structs/linked.h"
-#include "bertrand/python.h"
+#include "python.h"
 
 
 #endif  // BERTRAND_H

@@ -1,9 +1,10 @@
 #ifndef BERTRAND_PYBIND_H
 #define BERTRAND_PYBIND_H
 
-#include <initializer_list>
+#include <any>
 #include <chrono>
 #include <complex>
+#include <initializer_list>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -11,6 +12,7 @@
 #include <utility>
 
 #include <Python.h>
+#include <datetime.h>  // Python datetime library
 #include <pybind11/pybind11.h>
 #include <pybind11/chrono.h>
 #include <pybind11/embed.h>
@@ -21,9 +23,6 @@
 #include <pybind11/pytypes.h>
 #include <pybind11/stl.h>
 #include <pybind11/stl_bind.h>
-
-
-// TODO: reinterpret_steal<Base> should reference subclass for compiler optimizations.
 
 
 /* NOTE: this uses slightly different syntax from normal pybind11 in order to support
@@ -86,8 +85,12 @@ using ReferenceCastError = pybind11::reference_cast_error;
 using ImportError = pybind11::import_error;
 using StopIteration = pybind11::stop_iteration;
 
+// TODO: NotImplementedError, others
 
 // wrapper types
+template <typename... Args>
+using Class = pybind11::class_<Args...>;
+using Module = pybind11::module_;
 using Handle = pybind11::handle;
 using Object = pybind11::object;
 using Iterator = pybind11::iterator;
@@ -102,7 +105,7 @@ using Buffer = pybind11::buffer;
 using MemoryView = pybind11::memoryview;
 using Bytes = pybind11::bytes;
 using Bytearray = pybind11::bytearray;
-class NotImplemented;  // maybe?
+class NotImplemented;  // done
 class Bool;  // done
 class Int;  // done
 class Float;  // done
@@ -114,15 +117,14 @@ class Tuple;  // done
 class Args;  // done
 class Set;  // done
 class FrozenSet;  // done
-class KeysView;
-class ItemsView;
-class ValuesView;
-class Dict;
-class Kwargs;
-class MappingProxy;
+class KeysView;  // done
+class ItemsView;  // done
+class ValuesView;  // done
+class Dict;  // done
+class Kwargs;  // done
+class MappingProxy;  // done
 class Str;  // done
-class Module;
-class Type;  // done (I think?)
+class Type;  // done
 class Function;
 class Method;
 class ClassMethod;
@@ -148,57 +150,6 @@ using pybind11::len_hint;
 using pybind11::repr;
 using pybind11::print;
 using pybind11::iter;
-Module import(const char* module);
-Dict locals();
-Type type(const pybind11::handle& obj);
-template <typename T, typename U>
-Type type(const pybind11::str& name, T&& bases, U&& dict);
-template <typename T, typename U>
-Type type(const char* name, T&& bases, U&& dict);
-template <typename T, typename U>
-Type type(const std::string& name, T&& bases, U&& dict);
-template <typename T, typename U>
-Type type(const std::string_view& name, T&& bases, U&& dict);
-template <typename T>
-bool issubclass(const pybind11::type& derived, T&& base);
-List dir();
-List dir(const pybind11::handle& obj);
-bool callable(const pybind11::handle& obj);
-Iterator reversed(const pybind11::handle& obj);
-template <typename T, int>
-inline Iterator reversed(const T& obj);
-Object next(const pybind11::iterator& iter);
-template <typename T>
-Object next(const pybind11::iterator& iter, T&& default_value);
-Object abs(const pybind11::handle& obj);
-Object floor(const pybind11::handle& number);
-Object ceil(const pybind11::handle& number);
-Object trunc(const pybind11::handle& number);
-Str str(const pybind11::handle& obj);
-Str ascii(const pybind11::handle& obj);
-Str bin(const pybind11::handle& obj);
-Str oct(const pybind11::handle& obj);
-Str hex(const pybind11::handle& obj);
-Str chr(const pybind11::handle& obj);
-Int ord(const pybind11::handle& obj);
-template <typename T, typename U>
-Object pow(T&& base, U&& exp);
-template <typename T, typename U, typename V>
-Object pow(T&& base, U&& exp, V&& mod);
-template <typename T, typename U>
-Object inplace_pow(T&& base, U&& exp);
-template <typename T, typename U, typename V>
-Object inplace_pow(T&& base, U&& exp, V&& mod);
-template <typename T, typename U>
-Tuple divmod(T&& a, U&& b);
-template <typename T, typename U>
-Object floor_div(T&& obj, U&& divisor);
-template <typename T, typename U>
-Object inplace_floor_div(T&& obj, U&& divisor);
-template <typename T, typename U>
-Object matrix_multiply(T&& a, U&& b);
-template <typename T, typename U>
-Object inplace_matrix_multiply(T&& a, U&& b);
 
 
 // binding functions
@@ -254,6 +205,31 @@ using pybind11::pos_only;
 namespace detail = pybind11::detail;
 
 
+/* A simple struct that converts a generic C++ object into a Python equivalent in
+its constructor.  This is used in conjunction with std::initializer_list to parse
+mixed-type lists in a type-safe manner.
+
+NOTE: this incurs a small performance penalty, effectively requiring an extra loop
+over the initializer list before the function is called.  Users can avoid this by
+providing a homogenous `std::initializer_list<T>` overload alongside
+`std::iniitializer_list<Initializer>`.  This causes conversions to be deferred to
+the function body, which may be able to handle them more efficiently in a single
+loop. */
+struct Initializer {
+    Object value;
+
+    /* We disable initializer construction from pybind11::handle in order not to
+     * interfere with pybind11's reinterpret_borrow/reinterpret_steal helper functions,
+     * which use initializer lists internally.  Disabling the generic initializer list
+     * constructor whenever a handle is passed in allows reinterpret_borrow/
+     * reinterpret_steal to continue to work as expected.
+     */
+
+    template <typename T, std::enable_if_t<!std::is_same_v<pybind11::handle, std::decay_t<T>>, int> = 0>
+    Initializer(T&& value) : value(detail::object_or_cast(std::forward<T>(value))) {}
+};
+
+
 ///////////////////////////////
 ////    WRAPPER CLASSES    ////
 ///////////////////////////////
@@ -282,54 +258,12 @@ namespace impl {
         }
     }
 
-    template <typename Base, typename T>
-    using enable_for = std::enable_if_t<std::is_base_of_v<Base, T>>;
-
-    /* Types for which is_python_container is true will be unpacked when provided as a
-    single argument to another container's constructor. */
+    /* SFINAE trait that detects whether a C++ container has an STL-style `size()`
+    method. */
     template <typename T, typename = void>
-    constexpr bool is_python_container = false;
+    constexpr bool has_size = false;
     template <typename T>
-    constexpr bool is_python_container<T, enable_for<pybind11::tuple, T>> = true;
-    template <typename T>
-    constexpr bool is_python_container<T, enable_for<pybind11::list, T>> = true;
-    template <typename T>
-    constexpr bool is_python_container<T, enable_for<pybind11::anyset, T>> = true;
-    template <typename T>
-    constexpr bool is_python_container<T, enable_for<pybind11::dict, T>> = true;
-    template <typename T>
-    constexpr bool is_python_container<T, enable_for<pybind11::str, T>> = true;
-    template <typename T>
-    constexpr bool is_python_container<T, enable_for<pybind11::bytes, T>> = true;
-    template <typename T>
-    constexpr bool is_python_container<T, enable_for<pybind11::bytearray, T>> = true;
-    template <typename T>
-    constexpr bool is_python_container<T, enable_for<pybind11::iterable, T>> = true;
-    template <typename T>
-    constexpr bool is_python_container<T, enable_for<pybind11::sequence, T>> = true;
-    template <typename T>
-    constexpr bool is_python_container<T, enable_for<pybind11::buffer, T>> = true;
-    template <typename T>
-    constexpr bool is_python_container<T, enable_for<pybind11::memoryview, T>> = true;
-    template <typename T>
-    constexpr bool is_python_container<T, enable_for<Range, T>> = true;
-
-    /* Item accessors may represent slices of a container, so we include them as
-    well. */
-    template <typename T>
-    constexpr bool is_item_accessor = false;
-    template <>
-    constexpr bool is_item_accessor<
-        detail::accessor<detail::accessor_policies::generic_item>
-    > = true;
-
-    template <typename T>
-    constexpr bool is_python_container<T, std::enable_if_t<is_item_accessor<T>>> = true;
-
-
-    // TODO: do the same thing for C++ containers?  Same basic idea, just can't use
-    // API functions.
-
+    constexpr bool has_size<T, std::void_t<decltype(std::declval<T>().size())>> = true;
 
     /* Mixin holding operator overloads for numeric types.  For some reason, pybind11
     enables these operators, but does not allow implicit conversion from C++ operands,
@@ -692,8 +626,8 @@ namespace impl {
             inline ReverseIterator& operator=(const ReverseIterator&) = default;
             inline ReverseIterator& operator=(ReverseIterator&&) = default;
 
-            inline Object operator*() const {
-                return reinterpret_borrow<Object>(array[index]);
+            inline Handle operator*() const {
+                return array[index];
             }
 
             inline ReverseIterator& operator++() {
@@ -713,6 +647,9 @@ namespace impl {
 
     };
 
+    template <typename Base, typename T>
+    using enable_for = std::enable_if_t<std::is_base_of_v<Base, T>>;
+
     /* Types for which is_reverse_iterable is true will use custom reverse iterators
     when py::reversed() is called on them.  These types must expose a ReverseIterator
     class that implements the reverse iteration. */
@@ -731,9 +668,9 @@ namespace impl {
     never be passed null objects. */
     #define CONSTRUCTORS(cls, check, convert)                                           \
         using Base::operator=;                                                          \
-        cls(handle h, borrowed_t) : Base(h, borrowed_t{}) {}                            \
-        cls(handle h, stolen_t) : Base(h, stolen_t{}) {}                                \
-        cls(const pybind11::object& obj) : Base([&] {                                   \
+        cls(handle h, borrowed_t ref) : Base(h, ref) {}                                 \
+        cls(handle h, stolen_t ref) : Base(h, ref) {}                                   \
+        cls(const pybind11::object& obj) : Base([&obj] {                                \
             if (obj.ptr() == nullptr) {                                                 \
                 throw TypeError("cannot convert null object to " #cls);                 \
             } else if (check(obj.ptr())) {                                              \
@@ -742,7 +679,7 @@ namespace impl {
                 return convert(obj.ptr());                                              \
             }                                                                           \
         }(), stolen_t{}) {}                                                             \
-        cls(pybind11::object&& obj) : Base([&] {                                        \
+        cls(pybind11::object&& obj) : Base([&obj] {                                     \
             if (obj.ptr() == nullptr) {                                                 \
                 throw TypeError("cannot convert null object to " #cls);                 \
             } else if (check(obj.ptr())) {                                              \
@@ -760,6 +697,37 @@ namespace impl {
         }                                                                               \
 
 }  // namespace impl
+
+
+class NotImplementedType :
+    public pybind11::object,
+    public impl::EqualCompare<NotImplementedType>
+{
+    using Base = pybind11::object;
+    using Compare = impl::EqualCompare<NotImplementedType>;
+
+    inline static int check_not_implemented(PyObject* obj) {
+        int result = PyObject_IsInstance(obj, (PyObject*) Py_TYPE(Py_NotImplemented));
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    inline static PyObject* convert_not_implemented(PyObject* obj) {
+        throw TypeError("cannot convert object to NotImplemented");
+    }
+
+public:
+    CONSTRUCTORS(NotImplementedType, check_not_implemented, convert_not_implemented);
+    NotImplementedType() : Base(Py_NotImplemented, borrowed_t{}) {}
+
+    using Compare::operator==;
+    using Compare::operator!=;
+};
+
+
+const static NotImplementedType NotImplemented;
 
 
 /* Wrapper around pybind11::bool_ that enables math operations with C++ inputs. */
@@ -823,28 +791,32 @@ public:
     using Base::operator=;
 
     /* Construct an Int from a string with an optional base. */
-    explicit Int(const pybind11::str& str, int base = 0) : Base([&] {
+    explicit Int(const pybind11::str& str, int base = 0) : Base([&str, &base] {
         PyObject* result = PyLong_FromUnicodeObject(str.ptr(), base);
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     /* Construct an Int from a string with an optional base. */
-    explicit Int(const char* str, int base = 0) : Base([&] {
+    explicit Int(const char* str, int base = 0) : Base([&str, &base] {
         PyObject* result = PyLong_FromString(str, nullptr, base);
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     /* Construct an Int from a string with an optional base. */
-    explicit Int(const std::string& str, int base = 0) : Int(str.c_str(), base) {}
+    explicit Int(const std::string& str, int base = 0) :
+        Int(str.c_str(), base)
+    {}
 
     /* Construct an Int from a string with an optional base. */
-    explicit Int(const std::string_view& str, int base = 0) : Int(str.data(), base) {}
+    explicit Int(const std::string_view& str, int base = 0) :
+        Int(str.data(), base)
+    {}
 
     /////////////////////////
     ////    OPERATORS    ////
@@ -897,16 +869,16 @@ public:
     using Base::operator=;
 
     /* Construct a Float from a string. */
-    explicit Float(const pybind11::str& str) : Base([&] {
+    explicit Float(const pybind11::str& str) : Base([&str] {
         PyObject* result = PyFloat_FromString(str.ptr());
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     /* Construct a Float from a string. */
-    explicit Float(const char* str) : Base([&] {
+    explicit Float(const char* str) : Base([&str] {
         PyObject* string = PyUnicode_FromString(str);
         if (string == nullptr) {
             throw error_already_set();
@@ -916,11 +888,11 @@ public:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     /* Construct a Float from a string. */
-    explicit Float(const std::string& str) : Base([&] {
+    explicit Float(const std::string& str) : Base([&str] {
         PyObject* string = PyUnicode_FromStringAndSize(str.c_str(), str.size());
         if (string == nullptr) {
             throw error_already_set();
@@ -930,11 +902,11 @@ public:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     /* Construct a Float from a string. */
-    explicit Float(const std::string_view& str) : Base([&] {
+    explicit Float(const std::string_view& str) : Base([&str] {
         PyObject* string = PyUnicode_FromStringAndSize(str.data(), str.size());
         if (string == nullptr) {
             throw error_already_set();
@@ -944,8 +916,8 @@ public:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     /////////////////////////
     ////    OPERATORS    ////
@@ -1015,17 +987,17 @@ public:
     CONSTRUCTORS(Complex, PyComplex_Check, convert_to_complex);
 
     /* Default constructor.  Initializes to 0+0j. */
-    inline Complex() : Base([&] {
+    inline Complex() : Base([] {
         PyObject* result = PyComplex_FromDoubles(0.0, 0.0);
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     /* Construct a Complex number from a C++ std::complex. */
     template <typename T>
-    inline Complex(const std::complex<T>& value) : Base([&] {
+    inline Complex(const std::complex<T>& value) : Base([&value] {
         PyObject* result = PyComplex_FromDoubles(
             static_cast<double>(value.real()),
             static_cast<double>(value.imag())
@@ -1033,12 +1005,12 @@ public:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     /* Construct a Complex number from a real component as a C++ integer or float. */
     template <typename Real, std::enable_if_t<is_numeric<Real>, int> = 0>
-    inline Complex(Real real) : Base([&] {
+    inline Complex(Real real) : Base([&real] {
         PyObject* result = PyComplex_FromDoubles(
             static_cast<double>(real),
             0.0
@@ -1046,8 +1018,8 @@ public:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     /* Construct a Complex number from separate real and imaginary components as C++
     integers or floats. */
@@ -1056,7 +1028,7 @@ public:
         typename Imag,
         std::enable_if_t<is_numeric<Real> && is_numeric<Imag>, int> = 0
     >
-    inline Complex(Real real, Imag imag) : Base([&] {
+    inline Complex(Real real, Imag imag) : Base([&real, &imag] {
         PyObject* result = PyComplex_FromDoubles(
             static_cast<double>(real),
             static_cast<double>(imag)
@@ -1064,8 +1036,8 @@ public:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     /* Implicitly convert a Complex number into a C++ std::complex. */
     template <typename T>
@@ -1134,6 +1106,11 @@ public:
 };
 
 
+
+// TODO: Datetime/Timedelta/Timezone classes
+
+
+
 /* Wrapper around pybind11::slice that allows it to be instantiated with non-integer
 inputs in order to represent denormalized slices at the Python level, and provides more
 pythonic access to its members. */
@@ -1157,7 +1134,7 @@ public:
 
     /* Construct a slice from a (possibly denormalized) stop object. */
     template <typename Stop>
-    Slice(Stop&& stop) : Base([&] {
+    Slice(Stop&& stop) : Base([&stop] {
         PyObject* result = PySlice_New(
             nullptr,
             detail::object_or_cast(std::forward<Stop>(stop)).ptr(),
@@ -1166,12 +1143,12 @@ public:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     /* Construct a slice from (possibly denormalized) start and stop objects. */
     template <typename Start, typename Stop>
-    Slice(Start&& start, Stop&& stop) : Base([&] {
+    Slice(Start&& start, Stop&& stop) : Base([&start, &stop] {
         PyObject* result = PySlice_New(
             detail::object_or_cast(std::forward<Start>(start)).ptr(),
             detail::object_or_cast(std::forward<Stop>(stop)).ptr(),
@@ -1180,12 +1157,12 @@ public:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     /* Construct a slice from (possibly denormalized) start, stop, and step objects. */
     template <typename Start, typename Stop, typename Step>
-    Slice(Start&& start, Stop&& stop, Step&& step) : Base([&] {
+    Slice(Start&& start, Stop&& stop, Step&& step) : Base([&start, &stop, &step] {
         PyObject* result = PySlice_New(
             detail::object_or_cast(std::forward<Start>(start)).ptr(),
             detail::object_or_cast(std::forward<Stop>(stop)).ptr(),
@@ -1194,8 +1171,8 @@ public:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
@@ -1289,24 +1266,28 @@ public:
     CONSTRUCTORS(Range, range_check, convert_to_range);
 
     /* Construct a range from 0 to the given stop index (exclusive). */
-    explicit Range(Py_ssize_t stop) : Base([&] {
+    explicit Range(Py_ssize_t stop) : Base([&stop] {
         PyObject* range = PyDict_GetItemString(PyEval_GetBuiltins(), "range");
         PyObject* result = PyObject_CallFunction(range, "n", stop);
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     /* Construct a range from the given start and stop indices (exclusive). */
-    explicit Range(Py_ssize_t start, Py_ssize_t stop, Py_ssize_t step = 1) : Base([&] {
+    explicit Range(
+        Py_ssize_t start,
+        Py_ssize_t stop,
+        Py_ssize_t step = 1
+    ) : Base([&start, &stop, &step] {
         PyObject* range = PyDict_GetItemString(PyEval_GetBuiltins(), "range");
         PyObject* result = PyObject_CallFunction(range, "nnn", start, stop, step);
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     // TODO: conversion from/to std::ranges::range (C++20)
 
@@ -1344,22 +1325,6 @@ class List :
     using Ops = impl::SequenceOps<List>;
     using Compare = impl::FullCompare<List>;
 
-    template <size_t... N, typename... Args>
-    inline void unpack_initializer(
-        PyObject* list,
-        std::index_sequence<N...> index,
-        Args&&... args
-    ) {
-        (
-            PyList_SET_ITEM(
-                list,
-                N,
-                impl::convert_newref(std::forward<Args>(args))
-            ),
-            ...
-        );
-    }
-
     static PyObject* convert_to_list(PyObject* obj) {
         PyObject* result = PySequence_List(obj);
         if (result == nullptr) {
@@ -1371,79 +1336,91 @@ class List :
 public:
     CONSTRUCTORS(List, PyList_Check, convert_to_list);
 
-    /* Pack a sequence of heterogenously-typed inputs into a List using initializer
-    list syntax. */
-    template <
-        typename First,
-        typename... Rest,
-        std::enable_if_t<
-            (sizeof...(Rest) > 0) ||
-            !impl::is_python_container<First>,
-            int
-        > = 0
-    >
-    explicit List(First&& first, Rest&&... rest) : Base([&] {
-        PyObject* result = PyList_New(sizeof...(Rest) + 1);
+    /* Default constructor.  Initializes to an empty list. */
+    List() : Base([] {
+        PyObject* result = PyList_New(0);
         if (result == nullptr) {
             throw error_already_set();
         }
-        try {
-            unpack_initializer(
-                result,
-                std::make_index_sequence<sizeof...(Rest) + 1>(),
-                std::forward<First>(first),
-                std::forward<Rest>(rest)...
-            );
-            return reinterpret_steal<Base>(result);
-        } catch (...) {
-            Py_DECREF(result);
-            throw;
-        }
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
-    /* Pack a sequence of homogenously-typed inputs into a List using initializer list
-    syntax. */
-    template <typename T>
-    explicit List(std::initializer_list<T> args) : Base([&] {
-        PyObject* result = PyList_New(args.size());
+    /* Pack the contents of a braced initializer into a new Python list. */
+    List(const std::initializer_list<Initializer>& contents) : Base([&contents] {
+        PyObject* result = PyList_New(contents.size());
         if (result == nullptr) {
             throw error_already_set();
         }
         try {
             size_t i = 0;
-            for (auto&& arg : args) {
+            for (const Initializer& element : contents) {
                 PyList_SET_ITEM(
                     result,
                     i++,
-                    impl::convert_newref(std::forward<decltype(arg)>(arg))
+                    const_cast<Initializer&>(element).value.release().ptr()
                 );
             }
-            return reinterpret_steal<Base>(result);
+            return result;
         } catch (...) {
             Py_DECREF(result);
             throw;
         }
-    }()) {}
+    }(), stolen_t{}) {}
 
-    /* Unpack a pybind11 container into a new List. */
-    template <typename T, std::enable_if_t<impl::is_python_container<T>, int> = 0>
-    explicit List(T&& container) : Base([&]{
-        PyObject* result = PySequence_List(container.ptr());
+    /* Pack the contents of a braced initializer into a new Python list. */
+    template <typename T, std::enable_if_t<!std::is_same_v<Initializer, T>, int> = 0>
+    List(const std::initializer_list<T>& contents) : Base([&contents] {
+        PyObject* result = PyList_New(contents.size());
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
-
-    /* Unpack a pybind11 iterator into a new List. */
-    explicit List(pybind11::iterator&& iter) : List(iter) {}
-    explicit List(pybind11::iterator& iter) : Base([&] {
-        PyObject* result = PySequence_List(iter.ptr());
-        if (result == nullptr) {
-            throw error_already_set();
+        try {
+            size_t i = 0;
+            for (const T& element : contents) {
+                PyList_SET_ITEM(result, i++, impl::convert_newref(element));
+            }
+            return result;
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+    }(), stolen_t{}) {}
+
+    /* Unpack a generic container into a new List.  Equivalent to Python
+    `list(container)`, except that it also works on C++ containers. */
+    template <typename T>
+    explicit List(T&& container) : Base([&container]{
+        if constexpr (detail::is_pyobject<T>::value) {
+            PyObject* result = PySequence_List(container.ptr());
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return result;
+        } else {
+            size_t size = 0;
+            if constexpr (impl::has_size<T>) {
+                size = container.size();
+            }
+            PyObject* result = PyList_New(size);
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            try {
+                size_t i = 0;
+                for (auto&& item : container) {
+                    PyList_SET_ITEM(
+                        result,
+                        i++,
+                        impl::convert_newref(std::forward<decltype(item)>(item))
+                    );
+                }
+                return result;
+            } catch (...) {
+                Py_DECREF(result);
+                throw;
+            }
+        }
+    }(), stolen_t{}) {}
 
     ///////////////////////////////////
     ////    PyList* API METHODS    ////
@@ -1474,18 +1451,6 @@ public:
         }
     }
 
-    /* Equivalent to Python `list.insert(index, value)`. */
-    template <typename T>
-    inline void insert(Py_ssize_t index, T&& value) {
-        if (PyList_Insert(
-            this->ptr(),
-            index,
-            detail::object_or_cast(std::forward<T>(value)).ptr()
-        )) {
-            throw error_already_set();
-        }
-    }
-
     /* Equivalent to Python `list.extend(items)`. */
     template <typename T>
     inline void extend(T&& items) {
@@ -1498,14 +1463,32 @@ public:
         }
     }
 
-    /* Equivalent to Python `list.extend(items)`, but accepts an initializer list
-    specifying the items to append.  Note that the initializer list must be
-    homogenously typed. */
+    /* Equivalent to Python `list.extend(items)`, where items are given as a braced
+    initializer list. */
     template <typename T>
-    inline void extend(std::initializer_list<T> items) {
-        // NOTE: this avoids an extra copy of the items
-        for (auto&& item : items) {
-            append(std::forward<decltype(item)>(item));
+    inline void extend(const std::initializer_list<T>& items) {
+        for (const T& item : items) {
+            append(item);
+        }
+    }
+
+    /* Equivalent to Python `list.extend(items)`, where items are given as a braced
+    initializer list. */
+    inline void extend(const std::initializer_list<Initializer>& items) {
+        for (const Initializer& item : items) {
+            append(item.value);
+        }
+    }
+
+    /* Equivalent to Python `list.insert(index, value)`. */
+    template <typename T>
+    inline void insert(Py_ssize_t index, T&& value) {
+        if (PyList_Insert(
+            this->ptr(),
+            index,
+            detail::object_or_cast(std::forward<T>(value)).ptr()
+        )) {
+            throw error_already_set();
         }
     }
 
@@ -1587,15 +1570,15 @@ public:
 
     /* Overload of concat() that allows the operand to be a braced initializer list. */
     template <typename T>
-    inline List concat(std::initializer_list<T> items) const {
+    inline List concat(const std::initializer_list<T>& items) const {
         PyObject* result = PyList_New(size() + items.size());
         if (result == nullptr) {
             throw error_already_set();
         }
         try {
             size_t i = 0;
-            PyObject** array = data();
             size_t length = size();
+            PyObject** array = data();
             while (i < length) {
                 PyList_SET_ITEM(result, i, Py_NewRef(array[i]));
                 ++i;
@@ -1614,8 +1597,40 @@ public:
         }
     }
 
+    /* Overload of concat() that allows the operand to be a braced initializer list. */
+    inline List concat(const std::initializer_list<Initializer>& items) const {
+        PyObject* result = PyList_New(size() + items.size());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        try {
+            size_t i = 0;
+            size_t length = size();
+            PyObject** array = data();
+            while (i < length) {
+                PyList_SET_ITEM(result, i, Py_NewRef(array[i]));
+                ++i;
+            }
+            for (const Initializer& item : items) {
+                PyList_SET_ITEM(
+                    result,
+                    i++,
+                    const_cast<Initializer&>(item).value.release().ptr()
+                );
+            }
+            return reinterpret_steal<List>(result);
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+    }
+
     template <typename T>
-    inline List operator+(std::initializer_list<T> items) const {
+    inline List operator+(const std::initializer_list<T>& items) const {
+        return concat(items);
+    }
+
+    inline List operator+(const std::initializer_list<Initializer>& items) const {
         return concat(items);
     }
 
@@ -1626,7 +1641,12 @@ public:
     }
 
     template <typename T>
-    inline List& operator+=(std::initializer_list<T> items) {
+    inline List& operator+=(const std::initializer_list<T>& items) {
+        extend(items);
+        return *this;
+    }
+
+    inline List& operator+=(const std::initializer_list<Initializer>& items) {
         extend(items);
         return *this;
     }
@@ -1648,89 +1668,110 @@ namespace impl {
 public:                                                                                 \
     CONSTRUCTORS(cls, PyTuple_Check, convert_to_tuple);                                 \
                                                                                         \
-    /* Pack the contents of a mixed-type initializer list into a new tuple object. */   \
-    template <                                                                          \
-        typename First,                                                                 \
-        typename... Rest,                                                               \
-        std::enable_if_t<                                                               \
-            (sizeof...(Rest) > 0) ||                                                    \
-            !impl::is_python_container<First>,                                          \
-            int                                                                         \
-        > = 0                                                                           \
-    >                                                                                   \
-    explicit cls(First&& first, Rest&&... rest) : Base([&] {                            \
-        PyObject* result = PyTuple_Pack(                                                \
-            sizeof...(Rest) + 1,                                                        \
-            detail::object_or_cast(std::forward<First>(first)).ptr(),                   \
-            detail::object_or_cast(std::forward<Rest>(rest)).ptr()...                   \
-        );                                                                              \
+    /* Default constructor.  Initializes to empty tuple. */                             \
+    inline cls() : Base([] {                                                            \
+        PyObject* result = PyTuple_New(0);                                              \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
-        return reinterpret_steal<Base>(result);                                         \
-    }()) {}                                                                             \
+        return result;                                                                  \
+    }(), stolen_t{}) {}                                                                 \
                                                                                         \
-    /* Pack the contents of an initializer list into a new tuple object. */             \
+    /* Pack the contents of a braced initializer into a new Python tuple. */            \
     template <typename T>                                                               \
-    explicit cls(std::initializer_list<T> args) : Base([&] {                            \
-        PyObject* result = PyTuple_New(args.size());                                    \
+    cls(const std::initializer_list<T>& contents) : Base([&contents] {                  \
+        PyObject* result = PyTuple_New(contents.size());                                \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
         try {                                                                           \
             size_t i = 0;                                                               \
-            for (auto&& arg : args) {                                                   \
+            for (auto&& element : contents) {                                           \
                 PyTuple_SET_ITEM(                                                       \
                     result,                                                             \
                     i++,                                                                \
-                    impl::convert_newref(std::forward<decltype(arg)>(arg))              \
+                    impl::convert_newref(std::forward<decltype(element)>(element))      \
                 );                                                                      \
             }                                                                           \
-            return reinterpret_steal<Base>(result);                                     \
+            return result;                                                              \
         } catch (...) {                                                                 \
             Py_DECREF(result);                                                          \
             throw;                                                                      \
         }                                                                               \
-    }()) {}                                                                             \
+    }(), stolen_t{}) {}                                                                 \
                                                                                         \
-    /* Unpack the contents of another pybind11 container into a new tuple object. */    \
-    template <                                                                          \
-        typename T,                                                                     \
-        std::enable_if_t<                                                               \
-            impl::is_python_container<T> && !std::is_base_of_v<pybind11::list, T>,      \
-            int                                                                         \
-        > = 0                                                                           \
-    >                                                                                   \
-    explicit cls(T&& container) : Base([&] {                                            \
-        PyObject* result = PySequence_Tuple(container.ptr());                           \
+    /* Pack the contents of a braced initializer into a new Python tuple. */            \
+    cls(const std::initializer_list<Initializer>& contents) : Base([&contents] {        \
+        PyObject* result = PyTuple_New(contents.size());                                \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
-        return reinterpret_steal<Base>(result);                                         \
-    }()) {}                                                                             \
+        try {                                                                           \
+            size_t i = 0;                                                               \
+            for (const Initializer& element : contents) {                               \
+                PyTuple_SET_ITEM(                                                       \
+                    result,                                                             \
+                    i++,                                                                \
+                    const_cast<Initializer&>(element).value.release().ptr()             \
+                );                                                                      \
+            }                                                                           \
+            return result;                                                              \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
+        }                                                                               \
+    }(), stolen_t{}) {}                                                                 \
                                                                                         \
-    /* Convert a pybind11::list into a tuple directly using the C API. */               \
+    /* Unpack a pybind11::list into a new tuple directly using the C API. */            \
     template <                                                                          \
         typename T,                                                                     \
         std::enable_if_t<std::is_base_of_v<pybind11::list, T>, int> = 0                 \
     >                                                                                   \
-    explicit cls(T&& list) : Base([&] {                                                 \
+    explicit cls(T&& list) : Base([&list] {                                             \
         PyObject* result = PyList_AsTuple(list.ptr());                                  \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
-        return reinterpret_steal<Base>(result);                                         \
-    }()) {}                                                                             \
+        return result;                                                                  \
+    }(), stolen_t{}) {}                                                                 \
                                                                                         \
-    /* Unpack a pybind11 iterator into a new tuple object. */                           \
-    explicit cls(pybind11::iterator&& iter) : cls(iter) {}                              \
-    explicit cls(pybind11::iterator& iter) : Base([&] {                                 \
-        PyObject* result = PySequence_Tuple(iter.ptr());                                \
-        if (result == nullptr) {                                                        \
-            throw error_already_set();                                                  \
+    /* Unpack a generic container into a new Python tuple. */                           \
+    template <                                                                          \
+        typename T,                                                                     \
+        std::enable_if_t<!std::is_base_of_v<pybind11::list, T>, int> = 0                \
+    >                                                                                   \
+    explicit cls(T&& container) : Base([&container] {                                   \
+        if constexpr (detail::is_pyobject<T>::value) {                                  \
+            PyObject* result = PySequence_Tuple(container.ptr());                       \
+            if (result == nullptr) {                                                    \
+                throw error_already_set();                                              \
+            }                                                                           \
+            return result;                                                              \
+        } else {                                                                        \
+            size_t size = 0;                                                            \
+            if constexpr (impl::has_size<T>) {                                          \
+                size = container.size();                                                \
+            }                                                                           \
+            PyObject* result = PyTuple_New(size);                                       \
+            if (result == nullptr) {                                                    \
+                throw error_already_set();                                              \
+            }                                                                           \
+            try {                                                                       \
+                size_t i = 0;                                                           \
+                for (auto&& item : container) {                                         \
+                    PyTuple_SET_ITEM(                                                   \
+                        result,                                                         \
+                        i++,                                                            \
+                        impl::convert_newref(std::forward<decltype(item)>(item))        \
+                    );                                                                  \
+                }                                                                       \
+                return result;                                                          \
+            } catch (...) {                                                             \
+                Py_DECREF(result);                                                      \
+                throw;                                                                  \
+            }                                                                           \
         }                                                                               \
-        return reinterpret_steal<Base>(result);                                         \
-    }()) {}                                                                             \
+    }(), stolen_t{}) {}                                                                 \
                                                                                         \
         /*     PyTuple_ API     */                                                      \
                                                                                         \
@@ -1778,15 +1819,15 @@ public:                                                                         
                                                                                         \
     /* Overload of concat() that allows the operand to be a braced initializer list. */ \
     template <typename T>                                                               \
-    inline cls concat(std::initializer_list<T> items) const {                           \
+    inline cls concat(const std::initializer_list<T>& items) const {                    \
         PyObject* result = PyTuple_New(size() + items.size());                          \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
         try {                                                                           \
             size_t i = 0;                                                               \
-            PyObject** array = data();                                                  \
             size_t length = size();                                                     \
+            PyObject** array = data();                                                  \
             while (i < length) {                                                        \
                 PyTuple_SET_ITEM(result, i, Py_NewRef(array[i]));                       \
                 ++i;                                                                    \
@@ -1805,13 +1846,50 @@ public:                                                                         
         }                                                                               \
     }                                                                                   \
                                                                                         \
+    /* Overload of concat() that allows the operand to be a braced initializer list. */ \
+    inline cls concat(const std::initializer_list<Initializer>& items) const {          \
+        PyObject* result = PyTuple_New(size() + items.size());                          \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        try {                                                                           \
+            size_t i = 0;                                                               \
+            size_t length = size();                                                     \
+            PyObject** array = data();                                                  \
+            while (i < length) {                                                        \
+                PyTuple_SET_ITEM(result, i, Py_NewRef(array[i]));                       \
+                ++i;                                                                    \
+            }                                                                           \
+            for (const Initializer& item : items) {                                     \
+                PyTuple_SET_ITEM(                                                       \
+                    result,                                                             \
+                    i++,                                                                \
+                    const_cast<Initializer&>(item).value.release().ptr()                \
+                );                                                                      \
+            }                                                                           \
+            return reinterpret_steal<cls>(result);                                      \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
     template <typename T>                                                               \
-    inline cls operator+(std::initializer_list<T> items) const {                        \
+    inline cls operator+(const std::initializer_list<T>& items) const {                 \
+        return concat(items);                                                           \
+    }                                                                                   \
+                                                                                        \
+    inline cls operator+(const std::initializer_list<Initializer>& items) const {       \
         return concat(items);                                                           \
     }                                                                                   \
                                                                                         \
     template <typename T>                                                               \
-    inline cls& operator+=(std::initializer_list<T> items) {                            \
+    inline cls& operator+=(const std::initializer_list<T>& items) {                     \
+        *this = concat(items);                                                          \
+        return *this;                                                                   \
+    }                                                                                   \
+                                                                                        \
+    inline cls& operator+=(const std::initializer_list<Initializer>& items) {           \
         *this = concat(items);                                                          \
         return *this;                                                                   \
     }                                                                                   \
@@ -1855,18 +1933,7 @@ class Args :
 
 namespace impl {
 
-
 #define ANYSET_INTERFACE(cls)                                                           \
-    /* Helper function to add items from a parameter pack to the set. */                \
-    template <typename T>                                                               \
-    inline static void add_with_errors(PyObject* set, T&& item) {                       \
-        if (PySet_Add(                                                                  \
-            set,                                                                        \
-            detail::object_or_cast(std::forward<T>(item)).ptr()                         \
-        )) {                                                                            \
-            throw error_already_set();                                                  \
-        }                                                                               \
-    }                                                                                   \
                                                                                         \
     static PyObject* convert_to_set(PyObject* obj) {                                    \
         PyObject* result = Py##cls##_New(obj);                                          \
@@ -1879,68 +1946,84 @@ namespace impl {
 public:                                                                                 \
     CONSTRUCTORS(cls, Py##cls##_Check, convert_to_set);                                 \
                                                                                         \
-    /* Pack the contents of a mixed-type initializer list into a new set object. */     \
-    template <                                                                          \
-        typename First,                                                                 \
-        typename... Rest,                                                               \
-        std::enable_if_t<                                                               \
-            (sizeof...(Rest) > 0) ||                                                    \
-            !impl::is_python_container<First>,                                          \
-            int                                                                         \
-        > = 0                                                                           \
-    >                                                                                   \
-    explicit cls(First&& first, Rest&&... rest) : Base([&] {                            \
+    /* Default constructor.  Initializes to empty set. */                               \
+    inline cls() : Base([] {                                                            \
         PyObject* result = Py##cls##_New(nullptr);                                      \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
-        try {                                                                           \
-            add_with_errors(result, std::forward<First>(first));                        \
-            (add_with_errors(result, std::forward<Rest>(rest)), ...);                   \
-            return reinterpret_steal<Base>(result);                                     \
-        } catch (...) {                                                                 \
-            Py_DECREF(result);                                                          \
-            throw;                                                                      \
-        }                                                                               \
-    }()) {}                                                                             \
+        return result;                                                                  \
+    }(), stolen_t{}) {}                                                                 \
                                                                                         \
-    /* Pack the contents of an initializer list into a new set object. */               \
-    template <typename T>                                                               \
-    explicit cls(std::initializer_list<T> args) : Base([&] {                            \
+    /* Pack the contents of a braced initializer into a new Python set. */              \
+    cls(const std::initializer_list<Initializer>& contents) : Base([&contents] {        \
         PyObject* result = Py##cls##_New(nullptr);                                      \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
         try {                                                                           \
-            for (auto&& arg : args) {                                                   \
-                add_with_errors(result, std::forward<decltype(arg)>(arg));              \
+            for (const Initializer& element : contents) {                               \
+                if (PySet_Add(result, element.value.ptr())) {                           \
+                    throw error_already_set();                                          \
+                }                                                                       \
             }                                                                           \
-            return reinterpret_steal<Base>(result);                                     \
+            return result;                                                              \
         } catch (...) {                                                                 \
             Py_DECREF(result);                                                          \
             throw;                                                                      \
         }                                                                               \
-    }()) {}                                                                             \
+    }(), stolen_t{}) {}                                                                 \
                                                                                         \
-    /* Unpack the contents of another pybind11 container into a new set object. */      \
-    template <typename T, std::enable_if_t<impl::is_python_container<T>, int> = 0>      \
-    explicit cls(T&& container) : Base([&] {                                            \
-        PyObject* result = Py##cls##_New(container.ptr());                              \
+    /* Pack the contents of a braced initializer into a new Python set. */              \
+    template <typename T>                                                               \
+    cls(const std::initializer_list<T>& contents) : Base([&contents] {                  \
+        PyObject* result = Py##cls##_New(nullptr);                                      \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
-        return reinterpret_steal<Base>(result);                                         \
-    }()) {}                                                                             \
-                                                                                        \
-    /* Unpack a pybind11 iterator into a new set object. */                             \
-    explicit cls(pybind11::iterator&& iter) : cls(iter) {}                              \
-    explicit cls(pybind11::iterator& iter) : Base([&] {                                 \
-        PyObject* result = Py##cls##_New(iter.ptr());                                   \
-        if (result == nullptr) {                                                        \
-            throw error_already_set();                                                  \
+        try {                                                                           \
+            for (const T& element : contents) {                                         \
+                if (PySet_Add(result, detail::object_or_cast(element).ptr())) {         \
+                    throw error_already_set();                                          \
+                }                                                                       \
+            }                                                                           \
+            return result;                                                              \
+        } catch (...) {                                                                 \
+            Py_DECREF(result);                                                          \
+            throw;                                                                      \
         }                                                                               \
-        return reinterpret_steal<Base>(result);                                         \
-    }()) {}                                                                             \
+    }(), stolen_t{}) {}                                                                 \
+                                                                                        \
+    /* Unpack a generic container into a new Python set. */                             \
+    template <typename T>                                                               \
+    explicit cls(T&& container) : Base([&container] {                                   \
+        if constexpr (detail::is_pyobject<T>::value) {                                  \
+            PyObject* result = Py##cls##_New(container.ptr());                          \
+            if (result == nullptr) {                                                    \
+                throw error_already_set();                                              \
+            }                                                                           \
+            return result;                                                              \
+        } else {                                                                        \
+            PyObject* result = Py##cls##_New(nullptr);                                  \
+            if (result == nullptr) {                                                    \
+                throw error_already_set();                                              \
+            }                                                                           \
+            try {                                                                       \
+                for (auto&& item : container) {                                         \
+                    if (PySet_Add(                                                      \
+                        result,                                                         \
+                        detail::object_or_cast(std::forward<decltype(item)>(item)).ptr()\
+                    )) {                                                                \
+                        throw error_already_set();                                      \
+                    }                                                                   \
+                }                                                                       \
+                return result;                                                          \
+            } catch (...) {                                                             \
+                Py_DECREF(result);                                                      \
+                throw;                                                                  \
+            }                                                                           \
+        }                                                                               \
+    }(), stolen_t{}) {}                                                                 \
                                                                                         \
         /*    PySet_ API    */                                                          \
                                                                                         \
@@ -2043,10 +2126,12 @@ public:                                                                         
         }                                                                               \
         try {                                                                           \
             for (auto&& item : other) {                                                 \
-                add_with_errors(                                                        \
+                if (PySet_Add(                                                          \
                     result,                                                             \
-                    std::forward<decltype(item)>(item)                                  \
-                );                                                                      \
+                    detail::object_or_cast(std::forward<decltype(item)>(item)).ptr()    \
+                )) {                                                                    \
+                    throw error_already_set();                                          \
+                }                                                                       \
             }                                                                           \
             return reinterpret_steal<cls>(result);                                      \
         } catch (...) {                                                                 \
@@ -2505,107 +2590,94 @@ namespace impl {
 public:                                                                                 \
     CONSTRUCTORS(cls, PyDict_Check, convert_to_dict);                                   \
                                                                                         \
+    /* Default constructor.  Initializes to empty dict. */                              \
+    inline cls() : Base([] {                                                            \
+        PyObject* result = PyDict_New();                                                \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        return result;                                                                  \
+    }(), stolen_t{}) {}                                                                 \
+                                                                                        \
     /* Pack the given arguments into a dictionary using an initializer list. */         \
-    explicit cls(std::initializer_list<Initializer> items) : Base([&] {                 \
+    cls(const std::initializer_list<Initializer>& contents) : Base([&contents] {        \
         PyObject* result = PyDict_New();                                                \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
         try {                                                                           \
-            for (auto&& item : items) {                                                 \
-                if (PyDict_SetItem(result, item.key.ptr(), item.value.ptr())) {         \
+            for (auto&& element : contents) {                                           \
+                if (PyDict_SetItem(result, element.key.ptr(), element.value.ptr())) {   \
                     throw error_already_set();                                          \
                 }                                                                       \
             }                                                                           \
-            return reinterpret_steal<Base>(result);                                     \
+            return result;                                                              \
         } catch (...) {                                                                 \
             Py_DECREF(result);                                                          \
             throw;                                                                      \
         }                                                                               \
-    }()) {}                                                                             \
+    }(), stolen_t{}) {}                                                                 \
                                                                                         \
-    /* TODO: allow construction from std::unordered_map, etc? */                        \
-                                                                                        \
-    /* Unpack a pybind11 container (not a mapping) into a new dictionary. */            \
+    /* Unpack a generic container into a new dictionary. */                             \
     template <                                                                          \
         typename T,                                                                     \
-        std::enable_if_t<                                                               \
-            impl::is_python_container<T> && !std::is_base_of_v<pybind11::dict, T>,      \
-            int                                                                         \
-        > = 0                                                                           \
+        std::enable_if_t<!std::is_base_of_v<pybind11::dict, T>, int> = 0                \
     >                                                                                   \
-    explicit cls(T&& container) : Base([&] {                                            \
+    explicit cls(T&& container) : Base([&container] {                                   \
         PyObject* result = PyDict_New();                                                \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
         try {                                                                           \
-            for (const Object& item : container) {                                      \
-                if (py::len(item) != 2) {                                               \
-                    std::ostringstream msg;                                             \
-                    msg << "expected sequence of length 2 (key, value), not ";          \
-                    msg << py::len(item);                                               \
-                    throw ValueError(msg.str());                                        \
+            if constexpr (detail::is_pyobject<T>::value) {                              \
+                for (const Handle& item : container) {                                  \
+                    if (py::len(item) != 2) {                                           \
+                        std::ostringstream msg;                                         \
+                        msg << "expected sequence of length 2 (key, value), not: ";     \
+                        msg << py::repr(item);                                          \
+                        throw ValueError(msg.str());                                    \
+                    }                                                                   \
+                    auto it = py::iter(item);                                           \
+                    Object key = *it;                                                   \
+                    Object value = *(++it);                                             \
+                    if (PyDict_SetItem(result, key.ptr(), value.ptr())) {               \
+                        throw error_already_set();                                      \
+                    }                                                                   \
                 }                                                                       \
-                auto it = py::iter(item);                                               \
-                Object key = *it;                                                       \
-                Object value = *(++it);                                                 \
-                if (PyDict_SetItem(result, key.ptr(), value.ptr())) {                   \
-                    throw error_already_set();                                          \
+            } else {                                                                    \
+                for (auto&& [k, v] : container) {                                       \
+                    if (PyDict_SetItem(                                                 \
+                        result,                                                         \
+                        detail::object_or_cast(std::forward<decltype(k)>(k)).ptr(),     \
+                        detail::object_or_cast(std::forward<decltype(v)>(v)).ptr()      \
+                    )) {                                                                \
+                        throw error_already_set();                                      \
+                    }                                                                   \
                 }                                                                       \
             }                                                                           \
-            return reinterpret_steal<Base>(result);                                     \
+            return result;                                                              \
         } catch (...) {                                                                 \
             Py_DECREF(result);                                                          \
             throw;                                                                      \
         }                                                                               \
-    }()) {}                                                                             \
+    }(), stolen_t{}) {}                                                                 \
                                                                                         \
-    /* Unpack a pybind11 dictionary into a new dictionary. */                           \
+    /* Unpack a pybind11::dict into a new dictionary directly using the C API. */       \
     template <                                                                          \
         typename T,                                                                     \
         std::enable_if_t<std::is_base_of_v<pybind11::dict, T>, int> = 0                 \
     >                                                                                   \
-    explicit cls(T&& dict) : Base([&] {                                                 \
+    explicit cls(T&& dict) : Base([&dict] {                                             \
         PyObject* result = PyDict_New();                                                \
         if (result == nullptr) {                                                        \
             throw error_already_set();                                                  \
         }                                                                               \
-        if (PyDict_Merge(this->ptr(), result, 1)) {                                     \
+        if (PyDict_Merge(result, dict.ptr(), 1)) {                                      \
             Py_DECREF(result);                                                          \
             throw error_already_set();                                                  \
         }                                                                               \
-        return reinterpret_steal<Base>(result);                                         \
-    }()) {}                                                                             \
-                                                                                        \
-    /* Unpack a pybind11 iterator into a new dictionary. */                             \
-    explicit cls(pybind11::iterator&& iter) : cls(iter) {}                              \
-    explicit cls(pybind11::iterator& iter) : Base([&] {                                 \
-        PyObject* result = PyDict_New();                                                \
-        if (result == nullptr) {                                                        \
-            throw error_already_set();                                                  \
-        }                                                                               \
-        try {                                                                           \
-            for (const Handle& item : iter) {                                           \
-                if (py::len(item) != 2) {                                               \
-                    std::ostringstream msg;                                             \
-                    msg << "expected sequence of length 2 (key, value), not ";          \
-                    msg << py::len(item);                                               \
-                    throw ValueError(msg.str());                                        \
-                }                                                                       \
-                auto it = py::iter(item);                                               \
-                Handle key = *it;                                                       \
-                Handle value = *(++it);                                                 \
-                if (PyDict_SetItem(result, key.ptr(), value.ptr())) {                   \
-                    throw error_already_set();                                          \
-                }                                                                       \
-            }                                                                           \
-            return reinterpret_steal<Base>(result);                                     \
-        } catch (...) {                                                                 \
-            Py_DECREF(result);                                                          \
-            throw;                                                                      \
-        }                                                                               \
-    }()) {}                                                                             \
+        return result;                                                                  \
+    }(), stolen_t{}) {}                                                                 \
                                                                                         \
         /*    PyDict_ API    */                                                         \
                                                                                         \
@@ -2653,7 +2725,11 @@ public:                                                                         
                                                                                         \
     /* Equivalent to Python `dict.copy()`. */                                           \
     inline cls copy() const {                                                           \
-        return reinterpret_steal<cls>(PyDict_Copy(this->ptr()));                        \
+        PyObject* result = PyDict_Copy(this->ptr());                                    \
+        if (result == nullptr) {                                                        \
+            throw error_already_set();                                                  \
+        }                                                                               \
+        return reinterpret_steal<cls>(result);                                          \
     }                                                                                   \
                                                                                         \
     /* Equivalent to Python `dict.fromkeys(keys)`.  Values default to None. */          \
@@ -3263,10 +3339,10 @@ class Dict :
 /* Subclass of Dict representing keyword arguments to a Python function.  For
 compatibility with pybind11. */
 struct Kwargs :
-    public pybind11::dict,
+    public pybind11::kwargs,
     public impl::EqualCompare<Kwargs>
 {
-    using Base = pybind11::dict;
+    using Base = pybind11::kwargs;
     using Compare = impl::EqualCompare<Kwargs>;
     DICT_INTERFACE(Kwargs);
 };
@@ -3359,6 +3435,15 @@ class Str :
 public:
     CONSTRUCTORS(Str, PyUnicode_Check, convert_to_str);
 
+    /* Default constructor.  Initializes to empty string. */
+    inline Str() : Base([] {
+        PyObject* result = PyUnicode_FromString("");
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
+    }(), stolen_t{}) {}
+
     /* Construct a unicode string from a printf-style format string.  See the python
     docs for `PyUnicode_FromFormat()` for more details.  Note that this can segfault
     if the argument types do not match the format code(s). */
@@ -3371,8 +3456,8 @@ public:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     /* Construct a unicode string from a printf-style format string.  See
     Str(const char*, ...) for more details. */
@@ -3951,19 +4036,6 @@ public:
 };
 
 
-/* Wrapper around pybind11::module_ that does stuff (TODO). */
-class Module : public pybind11::module_ {
-    using Base = pybind11::module_;
-
-public:
-    using Base::Base;
-    using Base::operator=;
-
-    // TODO: stuff
-
-};
-
-
 /* Wrapper around a pybind11::type that enables extra C API functionality, such as the
 ability to create new types on the fly by calling the type() metaclass, or directly
 querying PyTypeObject* fields. */
@@ -3986,13 +4058,11 @@ public:
     ////////////////////////////
 
     /* Default constructor.  Initializes to the built-in type metaclass. */
-    Type() : Base(
-        reinterpret_borrow<Base>(reinterpret_cast<PyObject*>(&PyType_Type))
-    ) {}
+    inline Type() : Base(reinterpret_borrow<Base>((PyObject*) &PyType_Type)) {}
 
     /* Dynamically create a new Python type by calling the type() metaclass. */
     template <typename T, typename U, typename V>
-    explicit Type(T&& name, U&& bases, V&& dict) : Base([&] {
+    explicit Type(T&& name, U&& bases, V&& dict) : Base([&name, &bases, &dict] {
         PyObject* result = PyObject_CallFunctionObjArgs(
             reinterpret_cast<PyObject*>(&PyType_Type),
             detail::object_or_cast(std::forward<T>(name)).ptr(),
@@ -4003,33 +4073,31 @@ public:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
     /* Create a new heap type from a CPython PyType_Spec*.  Note that this is not
     exactly interchangeable with a standard call to the type metaclass directly, as it
     does not invoke any of the __init__(), __new__(), __init_subclass__(), or
     __set_name__() methods for the type or any of its bases. */
-    explicit Type(PyType_Spec* spec) : Base([&] {
+    explicit Type(PyType_Spec* spec) : Base([&spec] {
         PyObject* result = PyType_FromSpec(spec);
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
+        return result;
+    }(), stolen_t{}) {}
 
-    
     /* Create a new heap type from a CPython PyType_Spec and bases.  See
     Type(PyType_Spec*) for more information. */
     template <typename T>
-    explicit Type(PyType_Spec* spec, T&& bases) : Base([&] {
+    explicit Type(PyType_Spec* spec, T&& bases) : Base([&spec, &bases] {
         PyObject* result = PyType_FromSpecWithBases(spec, bases);
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Base>(result);
-    }()) {}
-
+        return result;
+    }(), stolen_t{}) {}
 
     #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 9)
 
@@ -4045,8 +4113,8 @@ public:
             if (result == nullptr) {
                 throw error_already_set();
             }
-            return reinterpret_steal<Base>(result);
-        }()) {}
+            return result;
+        }(), stolen_t{}) {}
 
     #endif
 
@@ -4065,23 +4133,51 @@ public:
             if (result == nullptr) {
                 throw error_already_set();
             }
-            return reinterpret_steal<Base>(result);
-        }()) {}
+            return result;;
+        }(), stolen_t{}) {}
 
     #endif
 
-    ///////////////////////////////////
-    ////    PyTypeObject* SLOTS    ////
-    ///////////////////////////////////
+    ///////////////////////////
+    ////    PyType_ API    ////
+    ///////////////////////////
 
     /* A proxy for the type's PyTypeObject* struct. */
     struct Slots {
         PyTypeObject* type_obj;
 
+        #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 9)
+
+            /* Get the module that the type is defined in.  Can throw if called on a
+            static type rather than a heap type (one that was created using
+            PyType_FromModuleAndSpec() or higher). */
+            inline Module module_() const noexcept {
+                PyObject* result = PyType_GetModule(type_obj);
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                return reinterpret_steal<Module>(result);
+            }
+
+        #endif
+
         /* Get type's tp_name slot. */
         inline const char* name() const noexcept {
             return type_obj->tp_name;
         }
+
+        #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
+
+            /* Get the type's qualified name. */
+            inline Str qualname() const {
+                PyObject* result = PyType_GetQualname(type_obj);
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                return reinterpret_steal<Str>(result);
+            }
+
+        #endif
 
         /* Get the type's tp_basicsize slot. */
         inline Py_ssize_t basicsize() const noexcept {
@@ -4255,10 +4351,6 @@ public:
         return {reinterpret_cast<PyTypeObject*>(this->ptr())};
     }
 
-    ///////////////////////////
-    ////    API METHODS    ////
-    ///////////////////////////
-
     /* Finalize a type object in a C++ extension, filling in any inherited slots.  This
     should be called on a raw CPython type struct to finish its initialization. */
     inline static void READY(PyTypeObject* type) {
@@ -4283,47 +4375,101 @@ public:
         );
     }
 
-    #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 9)
-
-        /* Get the module that the type is defined in.  Can throw if called on a static
-        type rather than a heap type (one that was created using PyType_FromModuleAndSpec()
-        or higher). */
-        inline Module module_() const noexcept {
-            PyObject* result = PyType_GetModule(static_cast<PyTypeObject*>(this->ptr()));
-            if (result == nullptr) {
-                throw error_already_set();
-            }
-            return reinterpret_steal<Module>(result);
-        }
-
-    #endif
-
-    #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
-
-        /* Get the qualified name of the type */
-        inline Str qualname() const {
-            PyObject* result = PyType_GetQualname(static_cast<PyTypeObject*>(this->ptr()));
-            if (result == nullptr) {
-                throw error_already_set();
-            }
-            return reinterpret_steal<Str>(result);
-        }
-
-    #endif
-
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
 
     using Compare::operator==;
     using Compare::operator!=;
+
+    // NOTE: indexing a Type object calls its __class_getitem__() method, just like
+    // normal python.
 };
+
+
+namespace impl {
+
+    // PyTypeObject* PyMethod_Type = nullptr;  // provided in Python.h
+    PyTypeObject* PyClassMethod_Type = nullptr;
+    PyTypeObject* PyStaticMethod_Type = nullptr;
+    // PyTypeObject* PyProperty_Type = nullptr;  // provided in Python.h?
+
+} // namespace impl
+
+
+// TODO: class Code?
+
+
 
 
 /* Wrapper around a pybind11::Function that allows it to be constructed from a C++
 lambda or function pointer, and enables extra introspection via the C API. */
 class Function : public pybind11::function {
     using Base = pybind11::function;
+
+public:
+    using Base::Base;
+    using Base::operator=;
+
+    template <typename Func>
+    explicit Function(Func&& func) : Base([&func] {
+        return pybind11::cpp_function(std::forward<Func>(func));
+    }()) {}
+
+    ///////////////////////////////
+    ////    PyFunction_ API    ////
+    ///////////////////////////////
+
+    // TODO: introspection tools: name(), code(), etc.
+
+    // /* Get the name of the file from which the code was compiled. */
+    // inline std::string filename() const {
+    //     return code().filename();
+    // }
+
+
+    // /* Get the first line number of the function. */
+    // inline size_t line_number() const noexcept {
+    //     return code().line_number();
+    // }
+
+    // /* Get the function's base name. */
+    // inline std::string name() const {
+    //     return code().name();
+    // }
+
+
+    // /* Get the module that the function is defined in. */
+    // inline std::optional<Module<Ref::BORROW>> module_() const {
+    //     PyObject* mod = PyFunction_GetModule(this->obj);
+    //     if (mod == nullptr) {
+    //         return std::nullopt;
+    //     } else {
+    //         return std::make_optional(Module<Ref::BORROW>(module));
+    //     }
+    // }
+
+
+
+};
+
+
+/* New subclass of pybind11::object that represents a bound method at the Python
+level. */
+class Method : public pybind11::object {
+    using Base = pybind11::object;
+
+public:
+
+
+
+};
+
+
+/* New subclass of pybind11::object that represents a bound classmethod at the Python
+level. */
+class ClassMethod : public pybind11::object {
+    using Base = pybind11::object;
 
 public:
 
@@ -4344,7 +4490,19 @@ public:
 };
 
 
-// TODO: ClassMethod, Method, Property
+/* New subclass of pybind11::object that represents a property descriptor at the
+Python level. */
+class Property : public pybind11::object {
+    using Base = pybind11::object;
+
+public:
+
+
+
+};
+
+
+// context manager type?
 
 
 /////////////////////////
@@ -4609,6 +4767,19 @@ inline Range range(Py_ssize_t start, Py_ssize_t stop, Py_ssize_t step = 1) {
 }
 
 
+/* Equivalent to Python `aiter(obj)`. */
+inline Object aiter(const pybind11::handle& obj) {
+    PyObject* result = PyObject_CallOneArg(
+        PyDict_GetItemString(PyEval_GetBuiltins(), "aiter"),
+        obj.ptr()
+    );
+    if (result == nullptr) {
+        throw error_already_set();
+    }
+    return reinterpret_steal<Object>(result);
+}
+
+
 /* Equivalent to Python `reversed(obj)`. */
 inline Iterator reversed(const pybind11::handle& obj) {
     return obj.attr("__reversed__")();
@@ -4649,6 +4820,38 @@ inline Object next(const pybind11::iterator& iter, T&& default_value) {
     }
     return reinterpret_steal<Object>(result);
 }
+
+
+/* Equivalent to Python `anext(obj)`. */
+inline Object anext(const pybind11::handle& obj) {
+    PyObject* result = PyObject_CallOneArg(
+        PyDict_GetItemString(PyEval_GetBuiltins(), "anext"),
+        obj.ptr()
+    );
+    if (result == nullptr) {
+        throw error_already_set();
+    }
+    return reinterpret_steal<Object>(result);
+}
+
+
+/* Equivalent to Python `anext(obj, default)`. */
+template <typename T>
+inline Object anext(const pybind11::handle& obj, T&& default_value) {
+    PyObject* result = PyObject_CallFunctionObjArgs(
+        PyDict_GetItemString(PyEval_GetBuiltins(), "anext"),
+        obj.ptr(),
+        detail::object_or_cast(std::forward<T>(default_value)).ptr(),
+        nullptr
+    );
+    if (result == nullptr) {
+        throw error_already_set();
+    }
+    return reinterpret_steal<Object>(result);
+}
+
+
+// TODO: any(), all(), enumerate(), etc. ?  For full coverage.
 
 
 /* Equivalent to Python `abs(obj)`. */
@@ -4804,6 +5007,10 @@ inline List sorted(const pybind11::handle& obj) {
 }  // namespace bertrand
 
 
+// TODO: implement type casters for range, MappingProxy, KeysView, ValuesView,
+// ItemsView, Method, ClassMethod, StaticMethod, Property
+
+
 // type casters for custom pybind11 types
 namespace pybind11 {
 namespace detail {
@@ -4843,7 +5050,6 @@ struct type_caster<bertrand::py::Complex> {
     }
 
 };
-
 
 /* NOTE: pybind11 already implements a type caster for the generic std::complex<T>, so
 we can't override it directly.  However, we can specialize it at a lower level to

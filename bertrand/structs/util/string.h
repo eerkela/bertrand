@@ -9,11 +9,6 @@
 #include <utility>  // std::pair, std::index_sequence, std::make_index_sequence
 
 
-/* NOTE: This file contains utilities for working with C++ and Python strings for
- * debugging, error reporting, type naming, and compile-time string manipulations.
- */
-
-
 namespace bertrand {
 namespace util {
 
@@ -33,21 +28,20 @@ inline static constexpr std::string_view EMPTY_STRING_VIEW {"", 0};
 /* Compile-time string manipulations.
 
 NOTE: using this class requires a shift in thinking from runtime string manipulation.
-First of all, the class is purely static, and cannot be instantiated anywhere in code.
-Second, its methods are implemented as static constexpr members, which means that they
-do not need to be invoked at runtime.  They accept arguments via constexpr template
-parameters, which may need to be forward declared before use.  For example, consider
-the following:
+First of all, the class is purely static, and cannot be instantiated.  Second, its
+methods are implemented as static constexpr members, which means that they do not need
+to be invoked at runtime.  They accept arguments via template parameters, which may
+need to be forward declared before use.  For example, consider the following:
 
     static constexpr std::string_view foo{"foo"};
     static constexpr std::string_view bar{"bar"};
     static constexpr std::string_view sep{"."};
     std::cout << String<sep>::join<foo, bar>;  // yields "foo.bar"
 
-This is functionally similar to the equivalent Python `".".join(["foo", "bar"])`, but
-evaluated entirely at compile-time.  The use of angle brackets to invoke the join
-method clearly differentiates these operations from their runtime counterparts, and
-prevents confusion between the two.
+This is similar to the equivalent Python `".".join(["foo", "bar"])`, but evaluated
+entirely at compile-time.  The use of angle brackets to invoke the join method clearly
+differentiates these operations from their runtime counterparts, and prevents confusion
+between the two.
 
 Operations that do not accept any arguments can be invoked by providing empty angle
 brackets, similar to an empty function signature.  For example:

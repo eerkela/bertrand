@@ -80,5 +80,6 @@ def get_include() -> str:
     str
         The path to the include directory for this package.
     """
-    import os
-    return os.path.abspath(os.path.dirname(__file__))
+    from pathlib import Path
+    return str(Path(__file__).absolute().parent.parent)
+
