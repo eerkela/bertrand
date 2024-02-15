@@ -58,7 +58,7 @@ dependencies = [
     "regex",
     "tzlocal",
 ]
-requires-python = ">=3.7"
+requires-python = ">=3.9"
 
 [project.optional-dependencies]
 dev = [

@@ -5,10 +5,12 @@
 #include <chrono>
 #include <complex>
 #include <initializer_list>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 
 #include <Python.h>
@@ -1106,11 +1108,6 @@ public:
     using Ops::operator|=;
     using Ops::operator^=;
 };
-
-
-
-// TODO: Datetime/Timedelta/Timezone classes
-
 
 
 /* Wrapper around pybind11::slice that allows it to be instantiated with non-integer
@@ -5085,7 +5082,7 @@ inline Object inplace_matrix_multiply(T&& a, U&& b) {
 
 /* Equivalent to Python `import module` */
 inline Module import(const char* module) {
-    return pybind11::module_::import(module);
+    return std::move(pybind11::module_::import(module));
 }
 
 
@@ -5423,6 +5420,427 @@ inline List sorted(const pybind11::handle& obj) {
     }
     return reinterpret_steal<List>(result);
 }
+
+
+////////////////////////
+////    DATETIME    ////
+////////////////////////
+
+
+/* Import Python's datetime API at the C level. */
+static const bool DATETIME_IMPORTED = []() -> bool {
+    if (Py_IsInitialized()) {
+        PyDateTime_IMPORT;
+    }
+    return PyDateTimeAPI != nullptr;
+}();
+
+
+/* Import Python's zoneinfo package. */
+static const Handle zoneinfo = []() -> Handle {
+    if (Py_IsInitialized()) {
+        return py::import("zoneinfo");
+    }
+    return nullptr;
+}();
+
+
+/* Extract the ZoneInfo type for use in type checks. */
+static const Handle PyZoneInfo_Type = []() -> Handle {
+    if (zoneinfo.ptr() != nullptr) {
+        return zoneinfo.attr("ZoneInfo");
+    }
+    return nullptr;
+}();
+
+
+/* Import 3rd party tzlocal package to get system's local timezone.  NOTE: this is
+installed alongside bertrand as a dependency. */
+static const Handle tzlocal = []() -> Handle {
+    if (Py_IsInitialized()) {
+        return py::import("tzlocal");
+    }
+    return nullptr;
+}();
+
+
+/* Import 3rd party dateutil.parser module to parse strings.  NOTE: this is installed
+alongside bertrand as a dependency. */
+static const Handle dateutil_parser = []() -> Handle {
+    if (Py_IsInitialized()) {
+        return py::import("dateutil.parser");
+    }
+    return nullptr;
+}();
+
+
+
+/*
+['__class__', '__delattr__', '__dir__', '__doc__', '__eq__', '__format__', '__ge__',
+'__getattribute__', '__getstate__', '__gt__', '__hash__', '__init__',
+'__init_subclass__', '__le__', '__lt__', '__ne__', '__new__', '__reduce__',
+'__reduce_ex__', '__repr__', '__setattr__', '__sizeof__', '__str__',
+'__subclasshook__', '_unpickle', 'clear_cache', 'dst', 'from_file', 'fromutc', 'key',
+'no_cache', 'tzname', 'utcoffset']
+*/
+
+
+/* New subclass of pybind11::object that represents a zoneinfo.ZoneInfo timezone at the
+Python level. */
+class Timezone :
+    public pybind11::object
+{
+    using Base = pybind11::object;
+
+    static bool check_zoneinfo(PyObject* obj) {
+        if (PyZoneInfo_Type.ptr() == nullptr) {
+            throw TypeError("zoneinfo module not available");
+        }
+        return PyObject_IsInstance(obj, PyZoneInfo_Type.ptr());
+    }
+
+    static PyObject* convert_to_zoneinfo(PyObject* obj) {
+        if (PyZoneInfo_Type.ptr() == nullptr) {
+            throw TypeError("zoneinfo module not available");
+        }
+        PyObject* result = PyObject_CallOneArg(PyZoneInfo_Type.ptr(), obj);
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    static void assert_zoneinfo_imported() {
+        if (tzlocal.ptr() == nullptr) {
+            throw TypeError("tzlocal module not available");
+        }
+    }
+
+public:
+    CONSTRUCTORS(Timezone, PyTZInfo_Check, convert_to_zoneinfo);
+
+    /* Default constructor.  Initializes to the system's local timezone. */
+    inline Timezone() : Base([] {
+        assert_zoneinfo_imported();
+        return tzlocal.attr("get_localzone")().release();
+    }(), stolen_t{}) {}
+
+    /* Construct a timezone from an IANA-recognized timezone specifier. */
+    inline Timezone(const char* name) : Base([&name] {
+        assert_zoneinfo_imported();
+        return zoneinfo.attr("ZoneInfo")(py::cast(name)).release();
+    }(), stolen_t{}) {}
+
+    // TODO: construct from timedelta, etc.
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    /* Get a set of all recognized timezone identifiers. */
+    inline static Set avilable() {
+        assert_zoneinfo_imported();
+        return zoneinfo.attr("available_timezones")();
+    }
+
+};
+
+
+/*
+['__add__', '__class__', '__delattr__', '__dir__', '__doc__', '__eq__', '__format__',
+'__ge__', '__getattribute__', '__getstate__', '__gt__', '__hash__', '__init__',
+'__init_subclass__', '__le__', '__lt__', '__ne__', '__new__', '__radd__', '__reduce__',
+'__reduce_ex__', '__repr__', '__rsub__', '__setattr__', '__sizeof__', '__str__',
+'__sub__', '__subclasshook__', 'astimezone', 'combine', 'ctime', 'date', 'day', 'dst',
+'fold', 'fromisocalendar', 'fromisoformat', 'fromordinal', 'fromtimestamp', 'hour',
+'isocalendar', 'isoformat', 'isoweekday', 'max', 'microsecond', 'min', 'minute',
+'month', 'now', 'replace', 'resolution', 'second', 'strftime', 'strptime', 'time',
+'timestamp', 'timetuple', 'timetz', 'today', 'toordinal', 'tzinfo', 'tzname',
+'utcfromtimestamp', 'utcnow', 'utcoffset', 'utctimetuple', 'weekday', 'year']
+*/
+
+
+static const std::unordered_map<std::string, double> DATETIME_UNITS {
+    {"W", 7 * 24 * 60 * 60},
+    {"D", 24 * 60 * 60},
+    {"h", 60 * 60},
+    {"m", 60},
+    {"s", 1},
+    {"ms", 1e-3},
+    {"us", 1e-6},
+    {"ns", 1e-9}
+};
+
+
+/* New subclass of pybind11::object that represents a datetime.datetime object at the
+Python level. */
+class Datetime :
+    public pybind11::object,
+    public impl::FullCompare<Datetime>
+{
+    using Base = pybind11::object;
+    using Compare = impl::FullCompare<Datetime>;
+
+    static PyObject* astimezone(PyObject* obj, PyObject* tz) {
+        PyObject* func = PyObject_GetAttrString(obj, "astimezone");
+        if (func == nullptr) {
+            throw error_already_set();
+        }
+        PyObject* result = PyObject_CallOneArg(func, tz);
+        Py_DECREF(func);
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    static PyObject* convert_to_datetime(PyObject* obj) {
+        throw TypeError("cannot convert object to datetime.datetime");
+    }
+
+public:
+    CONSTRUCTORS(Datetime, PyDateTime_Check, convert_to_datetime);
+
+    /* Default constructor.  Initializes to the current system time with local
+    timezone. */
+    inline Datetime() : Base([] {
+        PyObject* func = PyObject_GetAttrString(
+            reinterpret_cast<PyObject*>(PyDateTimeAPI->DateTimeType),
+            "now"
+        );
+        if (func == nullptr) {
+            throw error_already_set();
+        }
+        PyObject* result = PyObject_CallOneArg(func, Timezone().ptr());
+        Py_DECREF(func);
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
+    }(), stolen_t{}) {}
+
+    /* Construct a Python datetime object from a dateutil-parseable string and optional
+    timezone.  If the string contains its own timezone information (a GMT offset, for
+    example), then it will be converted from its current timezone to the specified one.
+    Otherwise, it will be localized directly. */
+    Datetime(
+        Str string,
+        std::optional<Timezone> tz = std::nullopt,
+        bool fuzzy = false,
+        bool dayfirst = false,
+        bool yearfirst = false
+    ) : Base([&] {
+        Object result = dateutil_parser.attr("parse")(
+            string,
+            py::arg("fuzzy") = fuzzy,
+            py::arg("dayfirst") = dayfirst,
+            py::arg("yearfirst") = yearfirst
+        );
+        if (tz.has_value()) {
+            if (result.attr("tzinfo").is_none()) {
+                Object replace = result.attr("replace");
+                return replace(py::arg("tzinfo") = tz.value()).release().ptr();
+            }
+            return astimezone(result.ptr(), tz.value().ptr());
+        }
+        return result.release().ptr();
+    }(), stolen_t{}) {}
+
+    /* Overload for string literals that forwards to the dateutil constructor. */
+    template <typename... Args>
+    Datetime(const char* string, Args&&... args) : Datetime(
+        Str(string), std::forward<Args>(args)...
+    ) {}
+
+    /* Construct a Python datetime object using an offset from a given epoch.  If the
+    epoch is not specified, it defaults to the current system time, with the proper
+    timezone.  If the epoch has timezone information, the resulting datetime will be
+    localized to that timezone, otherwise it will be assumed to be UTC. */
+    template <
+        typename T,
+        std::enable_if_t<std::is_integral_v<T> || std::is_floating_point_v<T>, int> = 0
+    >
+    explicit Datetime(T offset, Str units = "s", Datetime since = "1970-01-01 00:00:00+0000") : Base([&] {
+        try {
+            offset *= DATETIME_UNITS.at(units.cast<std::string>());
+        } catch (...) {
+            std::ostringstream msg;
+            msg << "invalid units: '" << units.cast<std::string>() << "'";
+            throw ValueError(msg.str());
+        }
+
+        std::optional<Timezone> tz = since.timezone();
+        if (!tz.has_value()) {
+            since.localize("UTC");
+            tz = since.timezone();
+        }
+
+        PyObject* func = PyObject_GetAttrString(
+            reinterpret_cast<PyObject*>(PyDateTimeAPI->DateTimeType),
+            "fromtimestamp"
+        );
+        if (func == nullptr) {
+            throw error_already_set();
+        }
+        PyObject* result = PyObject_CallFunctionObjArgs(
+            func,
+            py::cast(since.timestamp() + offset).ptr(),
+            tz.value().ptr(),
+            nullptr
+        );
+        Py_DECREF(func);
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
+    }(), stolen_t{}) {}
+
+    /* Construct a Python datetime object from a numeric date and time. */
+    explicit Datetime(
+        int year,
+        int month,
+        int day,
+        int hour = 0,
+        int minute = 0,
+        int second = 0,
+        int microsecond = 0,
+        std::optional<Timezone> tz = std::nullopt
+    ) : Base([&] {
+        PyObject* result = PyDateTime_FromDateAndTime(
+            year, month, day, hour, minute, second, microsecond
+        );
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        if (tz.has_value()) {
+            return astimezone(result, tz.value().ptr());
+        }
+        return result;
+    }(), stolen_t{}) {}
+
+    /* Construct a Python datetime object from a numeric date and time, where the
+    time is given in fractional seconds. */
+    explicit Datetime(
+        int year,
+        int month,
+        int day,
+        int hour,
+        int minute,
+        double second,
+        std::optional<Timezone> tz = std::nullopt
+    ) : Base([&] {
+        int int_seconds = static_cast<int>(second);
+        PyObject* result = PyDateTime_FromDateAndTime(
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            int_seconds,
+            static_cast<int>((second - int_seconds) * 1e6)
+        );
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        if (tz.has_value()) {
+            return astimezone(result, tz.value().ptr());
+        }
+        return result;
+    }(), stolen_t{}) {}
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    /* Get the year. */
+    inline int year() const noexcept {
+        return PyDateTime_GET_YEAR(this->ptr());
+    }
+
+    /* Get the month. */
+    inline int month() const noexcept {
+        return PyDateTime_GET_MONTH(this->ptr());
+    }
+
+    /* Get the day. */
+    inline int day() const noexcept {
+        return PyDateTime_GET_DAY(this->ptr());
+    }
+
+    /* Get the hour. */
+    inline int hour() const noexcept {
+        return PyDateTime_DATE_GET_HOUR(this->ptr());
+    }
+
+    /* Get the minute. */
+    inline int minute() const noexcept {
+        return PyDateTime_DATE_GET_MINUTE(this->ptr());
+    }
+
+    /* Get the second. */
+    inline int second() const noexcept {
+        return PyDateTime_DATE_GET_SECOND(this->ptr());
+    }
+
+    /* Get the microsecond. */
+    inline int microsecond() const noexcept {
+        return PyDateTime_DATE_GET_MICROSECOND(this->ptr());
+    }
+
+    /* Get the number of seconds from the UTC epoch as a double. */
+    inline double timestamp() const noexcept {
+        return this->attr("timestamp")().cast<double>();
+    }
+
+    /* Get the number of microseconds from the UTC epoch as an integer. */
+    inline long long abs_timestamp() const noexcept {
+        long long seconds = this->attr("timestamp")().cast<double>();
+        return seconds * 1e6 + this->microsecond();
+    }
+
+    /* Get the timezone associated with this datetime or nullopt if the datetime is
+    naive. */
+    inline std::optional<Timezone> timezone() const {
+        PyObject* tz = PyObject_GetAttrString(this->ptr(), "tzinfo");
+        if (tz == nullptr) {
+            throw error_already_set();
+        }
+        if (tz == Py_None) {
+            Py_DECREF(tz);
+            return std::nullopt;
+        }
+        return Timezone(reinterpret_steal<Object>(tz));
+    }
+
+    /* Localize the datetime to a particular timezone.  If the datetime was originally
+    naive, then this will interpret it in the target timezone.  If it has previous
+    timezone information, then it will be converted to the new timezone.  Passing
+    nullopt to this method strips the datetime of its timezone, making it naive. */
+    inline void localize(std::optional<Timezone> tz) {
+        if (!tz.has_value()) {
+            if (!this->attr("tzinfo").is_none()) {
+                *this = this->attr("replace")(py::arg("tzinfo") = None);
+            }
+        } else if (this->attr("tzinfo").is_none()) {
+            *this = this->attr("replace")(py::arg("tzinfo") = tz.value());
+        } else {
+            PyObject* result = astimezone(this->ptr(), tz.value().ptr());
+            *this = reinterpret_steal<Datetime>(result);
+        }
+    }
+
+};
+
+
+
+
+
+
+
+
+
+
+
 
 
 }  // namespace py
