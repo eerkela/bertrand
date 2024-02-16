@@ -132,6 +132,11 @@ class Method;
 class ClassMethod;
 class StaticMethod;
 class Property;
+class Timedelta;  // done
+class Timezone;  // done
+class Date;
+class Time;
+class Datetime;
 
 
 // python builtins
@@ -239,6 +244,11 @@ struct Initializer {
 
 // impl namespace is different from detail in order to avoid conflicts with pybind11
 namespace impl {
+
+    template <typename T>
+    static constexpr bool is_integer_or_float = (
+        std::is_integral_v<T> || std::is_floating_point_v<T>
+    );
 
     /* Convert an arbitrary Python/C++ value into a pybind11 object and then return a
     new reference.  This is used in the constructors of list and tuple objects, whose
@@ -968,11 +978,6 @@ class Complex :
     using Ops = impl::NumericOps<Complex>;
     using Compare = impl::FullCompare<Complex>;
 
-    template <typename T>
-    static constexpr bool is_numeric = (
-        std::is_integral_v<T> || std::is_floating_point_v<T>
-    );
-
     static PyObject* convert_to_complex(PyObject* obj) {
         Py_complex complex_struct = PyComplex_AsCComplex(obj);
         if (complex_struct.real == -1.0 && PyErr_Occurred()) {
@@ -1013,7 +1018,7 @@ public:
     }(), stolen_t{}) {}
 
     /* Construct a Complex number from a real component as a C++ integer or float. */
-    template <typename Real, std::enable_if_t<is_numeric<Real>, int> = 0>
+    template <typename Real, std::enable_if_t<impl::is_integer_or_float<Real>, int> = 0>
     inline Complex(Real real) : Base([&real] {
         PyObject* result = PyComplex_FromDoubles(
             static_cast<double>(real),
@@ -1030,7 +1035,11 @@ public:
     template <
         typename Real,
         typename Imag,
-        std::enable_if_t<is_numeric<Real> && is_numeric<Imag>, int> = 0
+        std::enable_if_t<
+            impl::is_integer_or_float<Real> &&
+            impl::is_integer_or_float<Imag>,
+            int
+        > = 0
     >
     inline Complex(Real real, Imag imag) : Base([&real, &imag] {
         PyObject* result = PyComplex_FromDoubles(
@@ -5427,93 +5436,507 @@ inline List sorted(const pybind11::handle& obj) {
 ////////////////////////
 
 
-/* Import Python's datetime API at the C level. */
-static const bool DATETIME_IMPORTED = []() -> bool {
-    if (Py_IsInitialized()) {
-        PyDateTime_IMPORT;
-    }
-    return PyDateTimeAPI != nullptr;
-}();
+namespace impl {
+
+    /* Import Python's datetime API at the C level. */
+    static const bool DATETIME_IMPORTED = []() -> bool {
+        if (Py_IsInitialized()) {
+            PyDateTime_IMPORT;
+        }
+        return PyDateTimeAPI != nullptr;
+    }();
+
+    /* Extract the datetime.date type into a pybind11 handle. */
+    static const Handle PyDate_Type = []() -> Handle {
+        if (DATETIME_IMPORTED) {
+            return Handle(reinterpret_cast<PyObject*>(PyDateTimeAPI->DateType));
+        }
+        return nullptr;
+    }();
+
+    /* Extract the datetime.time type into a pybind11 handle. */
+    static const Handle PyTime_Type = []() -> Handle {
+        if (DATETIME_IMPORTED) {
+            return Handle(reinterpret_cast<PyObject*>(PyDateTimeAPI->TimeType));
+        }
+        return nullptr;
+    }();
+
+    /* Extract the datetime.datetime type into a pybind11 handle. */
+    static const Handle PyDateTime_Type = []() -> Handle {
+        if (DATETIME_IMPORTED) {
+            return Handle(reinterpret_cast<PyObject*>(PyDateTimeAPI->DateTimeType));
+        }
+        return nullptr;
+    }();
+
+    /* Extract the datetime.timedelta type into a pybind11 handle. */
+    static const Handle PyDelta_Type = []() -> Handle {
+        if (DATETIME_IMPORTED) {
+            return Handle(reinterpret_cast<PyObject*>(PyDateTimeAPI->DeltaType));
+        }
+        return nullptr;
+    }();
+
+    /* Extract the datetime.tzinfo type into a pybind11 handle. */
+    static const Handle PyTZInfo_Type = []() -> Handle {
+        if (DATETIME_IMPORTED) {
+            return Handle(reinterpret_cast<PyObject*>(PyDateTimeAPI->TZInfoType));
+        }
+        return nullptr;
+    }();
+
+    /* Import Python's zoneinfo package. */
+    static const Handle zoneinfo = []() -> Handle {
+        if (Py_IsInitialized()) {
+            return py::import("zoneinfo");
+        }
+        return nullptr;
+    }();
+
+    /* Extract the ZoneInfo type for use in type checks. */
+    static const Handle PyZoneInfo_Type = []() -> Handle {
+        if (zoneinfo.ptr() != nullptr) {
+            return zoneinfo.attr("ZoneInfo");
+        }
+        return nullptr;
+    }();
+
+    /* Import 3rd party tzlocal package to get system's local timezone.  NOTE: this is
+    installed alongside bertrand as a dependency. */
+    static const Handle tzlocal = []() -> Handle {
+        if (Py_IsInitialized()) {
+            return py::import("tzlocal");
+        }
+        return nullptr;
+    }();
+
+    /* Import 3rd party dateutil.parser module to parse strings.  NOTE: this is installed
+    alongside bertrand as a dependency. */
+    static const Handle dateutil_parser = []() -> Handle {
+        if (Py_IsInitialized()) {
+            return py::import("dateutil.parser");
+        }
+        return nullptr;
+    }();
+
+    /* Enumerated tag struct holding numeric conversions for datetime and timedelta
+    types. */
+    class Units {
+        struct UnitTag {};
+
+        template <typename From>
+        class Unit : public UnitTag {
+        protected:
+
+            inline static PyObject* timedelta_from_DSU(int d, int s, int us) {
+                PyObject* result = PyDelta_FromDSU(d, s, us);
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                return result;
+            }
+
+        public:
+
+            /* Convert from this unit to the target unit, given as a tag struct.  Units
+            can override this method to account for irregular unit lengths. */
+            template <typename To>
+            static constexpr double convert(double value, const To&) {
+                if constexpr (std::is_same_v<From, To>) {
+                    return value;
+                } else {
+                    return value * (From::scale / To::scale);
+                }
+            }
+
+        };
+
+        struct Nanoseconds : public Unit<Nanoseconds> {
+            static constexpr long long scale = 1;
+
+            template <typename T>
+            static PyObject* to_timedelta(T value) {
+                int d = value / Days::scale;
+                int s = value / Seconds::scale;
+                int us = value / Microseconds::scale;
+                return Unit::timedelta_from_DSU(d, s, us);
+            }
+
+        };
+
+        struct Microseconds : public Unit<Microseconds> {
+            static constexpr long long scale = 1000;
+
+            template <typename T>
+            static PyObject* to_timedelta(T value) {
+                int d = value / (Days::scale / scale);
+                int s = value / (Seconds::scale / scale);
+                int us = value;
+                return Unit::timedelta_from_DSU(d, s, us);
+            }
+
+        };
+
+        struct Milliseconds : public Unit<Milliseconds> {
+            static constexpr long long scale = 1000 * Microseconds::scale;
+
+            template <typename T>
+            static PyObject* to_timedelta(T value) {
+                int d = value / (Days::scale / scale);
+                int s = value / (Seconds::scale / scale);
+                value -= s * (Seconds::scale / scale);
+                value *= scale / Microseconds::scale;
+                int us = value;
+                return Unit::timedelta_from_DSU(d, s, us);
+            }
+        };
+
+        struct Seconds : public Unit<Seconds> {
+            static constexpr long long scale = 1000 * Milliseconds::scale;
+
+            template <typename T>
+            static PyObject* to_timedelta(T value) {
+                int d = value / (Days::scale / scale);
+                int s = value;
+                value -= s;
+                value *= scale / Microseconds::scale;
+                int us = value;
+                return Unit::timedelta_from_DSU(d, s, us);
+            }
+        };
+
+        struct Minutes : public Unit<Minutes> {
+            static constexpr long long scale = 60 * Seconds::scale;
+
+            template <typename T>
+            static PyObject* to_timedelta(T value) {
+                int d = value / (Days::scale / scale);
+                value -= d * (Days::scale / scale);
+                value *= scale / Seconds::scale;
+                int s = value;
+                value -= s;
+                value *= Seconds::scale / Microseconds::scale;
+                int us = value;
+                return Unit::timedelta_from_DSU(d, s, us);
+            }
+
+        };
+
+        struct Hours : public Unit<Hours> {
+            static constexpr long long scale = 60 * Minutes::scale;
+
+            template <typename T>
+            static PyObject* to_timedelta(T value) {
+                int d = value / (Days::scale / scale);
+                value -= d * (Days::scale / scale);
+                value *= scale / Seconds::scale;
+                int s = value;
+                value -= s;
+                value *= Seconds::scale / Microseconds::scale;
+                int us = value;
+                return Unit::timedelta_from_DSU(d, s, us);
+            }
+
+        };
+
+        struct Days : public Unit<Days> {
+            static constexpr long long scale = 24 * Hours::scale;
+
+            template <typename T>
+            static PyObject* to_timedelta(T value) {
+                int d = value;
+                value -= d;
+                value *= scale / Seconds::scale;
+                int s = value;
+                value -= s;
+                value *= Seconds::scale / Microseconds::scale;
+                int us = value;
+                return Unit::timedelta_from_DSU(d, s, us);
+            }
+
+        };
+
+        struct Weeks : public Unit<Weeks> {
+            static constexpr long long scale = 7 * Days::scale;
+
+            template <typename T>
+            static PyObject* to_timedelta(T value) {
+                value *= scale / Days::scale;
+                int d = value;
+                value -= d;
+                value *= Days::scale / Seconds::scale;
+                int s = value;
+                value -= s;
+                value *= Seconds::scale / Microseconds::scale;
+                int us = value;
+                return Unit::timedelta_from_DSU(d, s, us);
+            }
+
+        };
+
+    public:
+        static constexpr Weeks W{};
+        static constexpr Days D{};
+        static constexpr Hours h{};
+        static constexpr Minutes m{};
+        static constexpr Seconds s{};
+        static constexpr Milliseconds ms{};
+        static constexpr Microseconds us{};
+        static constexpr Nanoseconds ns{};
+
+        template <typename T>
+        static constexpr bool is_unit = std::is_base_of_v<UnitTag, T>;
+    };
+
+}  // namespace impl
 
 
-/* Import Python's zoneinfo package. */
-static const Handle zoneinfo = []() -> Handle {
-    if (Py_IsInitialized()) {
-        return py::import("zoneinfo");
-    }
-    return nullptr;
-}();
-
-
-/* Extract the ZoneInfo type for use in type checks. */
-static const Handle PyZoneInfo_Type = []() -> Handle {
-    if (zoneinfo.ptr() != nullptr) {
-        return zoneinfo.attr("ZoneInfo");
-    }
-    return nullptr;
-}();
-
-
-/* Import 3rd party tzlocal package to get system's local timezone.  NOTE: this is
-installed alongside bertrand as a dependency. */
-static const Handle tzlocal = []() -> Handle {
-    if (Py_IsInitialized()) {
-        return py::import("tzlocal");
-    }
-    return nullptr;
-}();
-
-
-/* Import 3rd party dateutil.parser module to parse strings.  NOTE: this is installed
-alongside bertrand as a dependency. */
-static const Handle dateutil_parser = []() -> Handle {
-    if (Py_IsInitialized()) {
-        return py::import("dateutil.parser");
-    }
-    return nullptr;
-}();
-
-
-
-/*
-['__class__', '__delattr__', '__dir__', '__doc__', '__eq__', '__format__', '__ge__',
-'__getattribute__', '__getstate__', '__gt__', '__hash__', '__init__',
-'__init_subclass__', '__le__', '__lt__', '__ne__', '__new__', '__reduce__',
-'__reduce_ex__', '__repr__', '__setattr__', '__sizeof__', '__str__',
-'__subclasshook__', '_unpickle', 'clear_cache', 'dst', 'from_file', 'fromutc', 'key',
-'no_cache', 'tzname', 'utcoffset']
-*/
-
-
-/* New subclass of pybind11::object that represents a zoneinfo.ZoneInfo timezone at the
+/* New subclass of pybind11::object that represents a datetime.timedelta object at the
 Python level. */
-class Timezone :
-    public pybind11::object
+class Timedelta :
+    public pybind11::object,
+    public impl::FullCompare<Timedelta>
 {
     using Base = pybind11::object;
+    using Compare = impl::FullCompare<Timedelta>;
 
-    static bool check_zoneinfo(PyObject* obj) {
-        if (PyZoneInfo_Type.ptr() == nullptr) {
-            throw TypeError("zoneinfo module not available");
-        }
-        return PyObject_IsInstance(obj, PyZoneInfo_Type.ptr());
+    static PyObject* convert_to_timedelta(PyObject* obj) {
+        throw TypeError("cannot convert object to datetime.timedelta");
     }
 
-    static PyObject* convert_to_zoneinfo(PyObject* obj) {
-        if (PyZoneInfo_Type.ptr() == nullptr) {
-            throw TypeError("zoneinfo module not available");
-        }
-        PyObject* result = PyObject_CallOneArg(PyZoneInfo_Type.ptr(), obj);
+public:
+    using Units = impl::Units;
+    CONSTRUCTORS(Timedelta, PyDelta_Check, convert_to_timedelta);
+
+    /* Default constructor.  Initializes to an empty delta. */
+    inline Timedelta() : Base([] {
+        PyObject* result = PyObject_CallNoArgs(impl::PyDelta_Type.ptr());
         if (result == nullptr) {
             throw error_already_set();
         }
         return result;
+    }(), stolen_t{}) {}
+
+    /* Construct a timedelta from a given number of arbitrary units. */
+    template <
+        typename T,
+        typename Unit,
+        std::enable_if_t<impl::is_integer_or_float<T>, int> = 0
+    >
+    explicit Timedelta(
+        T offset,
+        const Unit& unit = Units::s
+    ) : Base([&offset, &unit] {
+        static_assert(
+            Units::is_unit<Unit>,
+            "unit must be one of py::Timedelta::Units::W, ::D, ::h, ::m, ::s, ::ms, "
+            "::us, or ::ns"
+        );
+        return unit.to_timedelta(offset);
+    }(), stolen_t{}) {}
+
+    /* Construct a timedelta from a given number of days, seconds, and microseconds. */
+    inline explicit Timedelta(int days, int seconds, int microseconds) : Base([&] {
+        PyObject* result = PyDelta_FromDSU(days, seconds, microseconds);
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
+    }(), stolen_t{}) {}
+
+    // TODO: Construct a timedelta from a string representation.
+    // -> Enable this with calendar utilities
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    /* Get the minimum possible timedelta. */
+    inline static const Timedelta& min() {
+        static Timedelta min(impl::PyDelta_Type.attr("min"), stolen_t{});
+        return min;
     }
 
-    static void assert_zoneinfo_imported() {
-        if (tzlocal.ptr() == nullptr) {
-            throw TypeError("tzlocal module not available");
+    /* Get the maximum possible timedelta. */
+    inline static const Timedelta& max() {
+        static Timedelta max(impl::PyDelta_Type.attr("max"), stolen_t{});
+        return max;
+    }
+
+    /* Get the smallest possible timedelta. */
+    inline static const Timedelta& resolution() {
+        static Timedelta resolution(impl::PyDelta_Type.attr("resolution"), stolen_t{});
+        return resolution;
+    }
+
+    /* Get the number of days in the timedelta. */
+    inline int days() const {
+        return PyDateTime_DELTA_GET_DAYS(this->ptr());
+    }
+
+    /* Get the number of seconds in the timedelta. */
+    inline int seconds() const {
+        return PyDateTime_DELTA_GET_SECONDS(this->ptr());
+    }
+
+    /* Get the number of microseconds in the timedelta. */
+    inline int microseconds() const {
+        return PyDateTime_DELTA_GET_MICROSECONDS(this->ptr());
+    }
+
+    /* Get the total number of seconds in the timedelta. */
+    inline double total_seconds() const {
+        double result = days() * (24 * 60 * 60);
+        result += seconds();
+        result += microseconds() * 1e-6;
+        return result;
+    }
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    using Compare::operator<;
+    using Compare::operator<=;
+    using Compare::operator==;
+    using Compare::operator!=;
+    using Compare::operator>=;
+    using Compare::operator>;
+
+    /* Equivalent to Python `timedelta + timedelta`. */
+    inline Timedelta operator+(const Timedelta& other) const {
+        PyObject* result = PyNumber_Add(this->ptr(), other.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
         }
+        return reinterpret_steal<Timedelta>(result);
+    }
+
+    /* Equivalent to Python `timedelta - timedelta`. */
+    inline Timedelta operator-(const Timedelta& other) const {
+        PyObject* result = PyNumber_Subtract(this->ptr(), other.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Timedelta>(result);
+    }
+
+    /* Equivalent to Python `timedelta * number`. */
+    template <typename T, std::enable_if_t<impl::is_integer_or_float<T>, int> = 0>
+    inline Timedelta operator*(T number) const {
+        PyObject* result = PyNumber_Multiply(
+            this->ptr(),
+            detail::object_or_cast(number).ptr()
+        );
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Timedelta>(result);
+    }
+
+    /* Equivalent to Python `number * timedelta`. */
+    template <typename T, std::enable_if_t<impl::is_integer_or_float<T>, int> = 0>
+    inline friend Timedelta operator*(T number, const Timedelta& delta) {
+        PyObject* result = PyNumber_Multiply(
+            detail::object_or_cast(number).ptr(),
+            delta.ptr()
+        );
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Timedelta>(result);
+    }
+
+    /* Equivalent to Python `timedelta / timedelta`. */
+    inline Float operator/(const Timedelta& other) const {
+        PyObject* result = PyNumber_TrueDivide(this->ptr(), other.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Float>(result);
+    }
+
+    /* Equivalent to Python `timedelta / float` or `timedelta // int`. */
+    template <typename T, std::enable_if_t<impl::is_integer_or_float<T>, int> = 0>
+    inline Timedelta operator/(T number) const {
+        if constexpr (std::is_integral_v<T>) {
+            PyObject* result = PyNumber_FloorDivide(
+                this->ptr(),
+                detail::object_or_cast(number).ptr()
+            );
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return reinterpret_steal<Timedelta>(result);
+        } else {
+            PyObject* result = PyNumber_TrueDivide(
+                this->ptr(),
+                detail::object_or_cast(number).ptr()
+            );
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return reinterpret_steal<Timedelta>(result);
+        }
+    }
+
+    /* Equivalent to Python `timedelta % timedelta`. */
+    inline Timedelta operator%(const Timedelta& other) const {
+        PyObject* result = PyNumber_Remainder(this->ptr(), other.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Timedelta>(result);
+    }
+
+    /* Equivalent to Python `+timedelta`. */
+    inline Timedelta operator+() const {
+        PyObject* result = PyNumber_Positive(this->ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Timedelta>(result);
+    }
+
+    /* Equivalent to Python `-timedelta`. */
+    inline Timedelta operator-() const {
+        PyObject* result = PyNumber_Negative(this->ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Timedelta>(result);
+    }
+
+};
+
+
+/* New subclass of pybind11::object that represents a datetime.tzinfo object at the
+Python level. */
+class Timezone :
+    public pybind11::object,
+    public impl::EqualCompare<Timezone>
+{
+    using Base = pybind11::object;
+    using Compare = impl::EqualCompare<Timezone>;
+
+    static PyObject* convert_to_zoneinfo(PyObject* obj) {
+        if (PyDelta_Check(obj)) {
+            PyObject* result = PyTimeZone_FromOffset(obj);
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return result;
+        }
+
+        if (impl::PyZoneInfo_Type.ptr() == nullptr) {
+            throw TypeError("zoneinfo module not available");
+        }
+        PyObject* result = PyObject_CallOneArg(impl::PyZoneInfo_Type.ptr(), obj);
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
     }
 
 public:
@@ -5521,37 +5944,112 @@ public:
 
     /* Default constructor.  Initializes to the system's local timezone. */
     inline Timezone() : Base([] {
-        assert_zoneinfo_imported();
-        return tzlocal.attr("get_localzone")().release();
+        if (impl::tzlocal.ptr() == nullptr) {
+            throw TypeError("tzlocal module not available");
+        }
+        return impl::tzlocal.attr("get_localzone")().release();
     }(), stolen_t{}) {}
 
     /* Construct a timezone from an IANA-recognized timezone specifier. */
-    inline Timezone(const char* name) : Base([&name] {
-        assert_zoneinfo_imported();
-        return zoneinfo.attr("ZoneInfo")(py::cast(name)).release();
+    inline Timezone(Str name) : Base([&name] {
+        if (impl::zoneinfo.ptr() == nullptr) {
+            throw TypeError("zoneinfo module not available");
+        }
+        return impl::zoneinfo.attr("ZoneInfo")(name).release();
     }(), stolen_t{}) {}
 
-    // TODO: construct from timedelta, etc.
+    /* Explicit overload for string literals that forwards to ZoneInfo constructor. */
+    inline Timezone(const char* name) : Timezone(Str(name)) {}
+
+    /* Construct a timezone from a manual timedelta UTC offset. */
+    inline explicit Timezone(const Timedelta& offset) : Base([&offset] {
+        PyObject* result = PyTimeZone_FromOffset(offset.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
+    }(), stolen_t{}) {}
+
+    /* Construct a timezone from a manual timedelta UTC offset and name. */
+    inline explicit Timezone(const Timedelta& offset, Str name) : Base([&offset, &name] {
+        PyObject* result = PyTimeZone_FromOffsetAndName(offset.ptr(), name.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
+    }(), stolen_t{}) {}
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
-    /* Get a set of all recognized timezone identifiers. */
-    inline static Set avilable() {
-        assert_zoneinfo_imported();
-        return zoneinfo.attr("available_timezones")();
+    /* Get the UTC timezone singleton. */
+    inline static const Timezone& UTC() {
+        static Timezone utc(PyDateTime_TimeZone_UTC, borrowed_t{});
+        return utc;
     }
+
+    /* Get a set of all recognized timezone identifiers. */
+    inline static Set AVAILABLE() {
+        if (impl::zoneinfo.ptr() == nullptr) {
+            throw TypeError("zoneinfo module not available");
+        }
+        return impl::zoneinfo.attr("available_timezones")();
+    }
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    using Compare::operator==;
+    using Compare::operator!=;
+};
+
+
+/* New subclass of pybind11::object that represents a datetime.date object at the
+Python level. */
+class Date :
+    public pybind11::object,
+    public impl::FullCompare<Date>
+{
+    using Base = pybind11::object;
+    using Compare = impl::FullCompare<Date>;
+
+    static PyObject* convert_to_date(PyObject* obj) {
+        throw TypeError("cannot convert object to datetime.date");
+    }
+
+public:
+    CONSTRUCTORS(Date, PyDate_Check, convert_to_date);
+
+
+
+};
+
+
+/* New subclass of pybind11::object that represents a datetime.time object at the
+Python level. */
+class Time :
+    public pybind11::object,
+    public impl::FullCompare<Time>
+{
+    using Base = pybind11::object;
+    using Compare = impl::FullCompare<Time>;
+
+    static PyObject* convert_to_time(PyObject* obj) {
+        throw TypeError("cannot convert object to datetime.time");
+    }
+
+public:
+    CONSTRUCTORS(Time, PyTime_Check, convert_to_time);
+
+
 
 };
 
 
 /*
-['__add__', '__class__', '__delattr__', '__dir__', '__doc__', '__eq__', '__format__',
-'__ge__', '__getattribute__', '__getstate__', '__gt__', '__hash__', '__init__',
-'__init_subclass__', '__le__', '__lt__', '__ne__', '__new__', '__radd__', '__reduce__',
-'__reduce_ex__', '__repr__', '__rsub__', '__setattr__', '__sizeof__', '__str__',
-'__sub__', '__subclasshook__', 'astimezone', 'combine', 'ctime', 'date', 'day', 'dst',
+['astimezone', 'combine', 'ctime', 'date', 'day', 'dst',
 'fold', 'fromisocalendar', 'fromisoformat', 'fromordinal', 'fromtimestamp', 'hour',
 'isocalendar', 'isoformat', 'isoweekday', 'max', 'microsecond', 'min', 'minute',
 'month', 'now', 'replace', 'resolution', 'second', 'strftime', 'strptime', 'time',
@@ -5560,16 +6058,9 @@ public:
 */
 
 
-static const std::unordered_map<std::string, double> DATETIME_UNITS {
-    {"W", 7 * 24 * 60 * 60},
-    {"D", 24 * 60 * 60},
-    {"h", 60 * 60},
-    {"m", 60},
-    {"s", 1},
-    {"ms", 1e-3},
-    {"us", 1e-6},
-    {"ns", 1e-9}
-};
+// TODO: include a fast_init() method that takes in timestamps/timezones by reference
+// and initializes the object directly, rather than using the normal constructor.  This
+// is what's called during vectorized loops.
 
 
 /* New subclass of pybind11::object that represents a datetime.datetime object at the
@@ -5599,19 +6090,17 @@ class Datetime :
     }
 
 public:
+    using Units = impl::Units;
     CONSTRUCTORS(Datetime, PyDateTime_Check, convert_to_datetime);
 
     /* Default constructor.  Initializes to the current system time with local
     timezone. */
     inline Datetime() : Base([] {
-        PyObject* func = PyObject_GetAttrString(
-            reinterpret_cast<PyObject*>(PyDateTimeAPI->DateTimeType),
-            "now"
-        );
+        PyObject* func = PyObject_GetAttrString(impl::PyDateTime_Type.ptr(), "now");
         if (func == nullptr) {
             throw error_already_set();
         }
-        PyObject* result = PyObject_CallOneArg(func, Timezone().ptr());
+        PyObject* result = PyObject_CallOneArg(func, Timezone::UTC().ptr());
         Py_DECREF(func);
         if (result == nullptr) {
             throw error_already_set();
@@ -5630,7 +6119,7 @@ public:
         bool dayfirst = false,
         bool yearfirst = false
     ) : Base([&] {
-        Object result = dateutil_parser.attr("parse")(
+        Object result = impl::dateutil_parser.attr("parse")(
             string,
             py::arg("fuzzy") = fuzzy,
             py::arg("dayfirst") = dayfirst,
@@ -5658,16 +6147,19 @@ public:
     localized to that timezone, otherwise it will be assumed to be UTC. */
     template <
         typename T,
-        std::enable_if_t<std::is_integral_v<T> || std::is_floating_point_v<T>, int> = 0
+        typename Unit,
+        std::enable_if_t<impl::is_integer_or_float<T>, int> = 0
     >
-    explicit Datetime(T offset, Str units = "s", Datetime since = "1970-01-01 00:00:00+0000") : Base([&] {
-        try {
-            offset *= DATETIME_UNITS.at(units.cast<std::string>());
-        } catch (...) {
-            std::ostringstream msg;
-            msg << "invalid units: '" << units.cast<std::string>() << "'";
-            throw ValueError(msg.str());
-        }
+    explicit Datetime(
+        T offset,
+        const Unit& unit = Units::s,
+        Datetime since = UTC()
+    ) : Base([&offset, &unit, &since] {
+        static_assert(
+            Units::is_unit<Unit>,
+            "unit must be one of py::Datetime::Units::W, ::D, ::h, ::m, ::s, ::ms, "
+            "::us, ::ns"
+        );
 
         std::optional<Timezone> tz = since.timezone();
         if (!tz.has_value()) {
@@ -5676,15 +6168,14 @@ public:
         }
 
         PyObject* func = PyObject_GetAttrString(
-            reinterpret_cast<PyObject*>(PyDateTimeAPI->DateTimeType),
-            "fromtimestamp"
+            impl::PyDateTime_Type.ptr(), "fromtimestamp"
         );
         if (func == nullptr) {
             throw error_already_set();
         }
         PyObject* result = PyObject_CallFunctionObjArgs(
             func,
-            py::cast(since.timestamp() + offset).ptr(),
+            py::cast(since.timestamp() + unit.convert(offset, Units::s)).ptr(),
             tz.value().ptr(),
             nullptr
         );
@@ -5713,7 +6204,8 @@ public:
             throw error_already_set();
         }
         if (tz.has_value()) {
-            return astimezone(result, tz.value().ptr());
+            Object replace = Handle(result).attr("replace");
+            return replace(py::arg("tzinfo") = tz.value()).release().ptr();
         }
         return result;
     }(), stolen_t{}) {}
@@ -5743,14 +6235,39 @@ public:
             throw error_already_set();
         }
         if (tz.has_value()) {
-            return astimezone(result, tz.value().ptr());
+            Object replace = Handle(result).attr("replace");
+            return replace(py::arg("tzinfo") = tz.value()).release().ptr();
         }
         return result;
     }(), stolen_t{}) {}
 
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
+    /////////////////////////
+    ////    INTERFACE    ////
+    /////////////////////////
+
+    /* Get the minimum possible datetime. */
+    inline static const Datetime& min() {
+        static Datetime min(impl::PyDateTime_Type.attr("min"), stolen_t{});
+        return min;
+    }
+
+    /* Get the maximum possible datetime. */
+    inline static const Datetime& max() {
+        static Datetime max(impl::PyDateTime_Type.attr("max"), stolen_t{});
+        return max;
+    }
+
+    /* Get the smallest possible datetime. */
+    inline static const Datetime& resolution() {
+        static Datetime resolution(impl::PyDateTime_Type.attr("resolution"), stolen_t{});
+        return resolution;
+    }
+
+    /* Get a reference to the datetime singleton describing the UTC epoch. */
+    inline static const Datetime& UTC() {
+        static Datetime epoch(1970, 1, 1, 0, 0, 0, 0, Timezone::UTC());
+        return epoch;
+    }
 
     /* Get the year. */
     inline int year() const noexcept {
@@ -5809,7 +6326,7 @@ public:
             Py_DECREF(tz);
             return std::nullopt;
         }
-        return Timezone(reinterpret_steal<Object>(tz));
+        return reinterpret_steal<Timezone>(tz);
     }
 
     /* Localize the datetime to a particular timezone.  If the datetime was originally
@@ -5817,16 +6334,91 @@ public:
     timezone information, then it will be converted to the new timezone.  Passing
     nullopt to this method strips the datetime of its timezone, making it naive. */
     inline void localize(std::optional<Timezone> tz) {
+        // strip tzinfo
         if (!tz.has_value()) {
             if (!this->attr("tzinfo").is_none()) {
                 *this = this->attr("replace")(py::arg("tzinfo") = None);
             }
-        } else if (this->attr("tzinfo").is_none()) {
-            *this = this->attr("replace")(py::arg("tzinfo") = tz.value());
-        } else {
-            PyObject* result = astimezone(this->ptr(), tz.value().ptr());
-            *this = reinterpret_steal<Datetime>(result);
+            return;
         }
+
+        // directly localize
+        if (this->attr("tzinfo").is_none()) {
+            *this = this->attr("replace")(py::arg("tzinfo") = tz.value());
+            return;
+        }
+
+        // convert timezone
+        PyObject* result = astimezone(this->ptr(), tz.value().ptr());
+        *this = reinterpret_steal<Datetime>(result);
+    }
+
+    // toordinal, utctimetuple, timetuple, tzname, dst, utcoffset, replace, fold, date,
+    // time, timetz
+
+    /* Return the day of the week as an integer, where Monday is 0 and Sunday is 6. */
+    inline int weekday() const noexcept {
+        return this->attr("weekday")().cast<int>();
+    }
+
+    /* Return the day of the week as an integer, where Monday is 1 and Sunday is 7. */
+    inline int isoweekday() const noexcept {
+        return this->attr("isoweekday")().cast<int>();
+    }
+
+    /* Return the ISO year and week number as a tuple. */
+    inline std::tuple<int, int, int> isocalendar() const {
+        return this->attr("isocalendar")().cast<std::tuple<int, int, int>>();
+    }
+
+    // /* Return the ISO 8601 formatted string representation of the datetime. */
+    // inline Str isoformat() const {  // TODO: sep + timespec
+    //     return this->attr("isoformat")().cast<Str>();
+    // }
+
+    /* Return a ctime string representation. */
+    inline Str ctime() const {
+        return this->attr("ctime")();
+    }
+
+    /* Return a formatted string representation of the datetime. */
+    inline Str strftime(Str format) const {
+        return this->attr("strftime")(format);
+    }
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    using Compare::operator<;
+    using Compare::operator<=;
+    using Compare::operator==;
+    using Compare::operator!=;
+    using Compare::operator>=;
+    using Compare::operator>;
+
+    inline Datetime operator+(const Timedelta& other) const {
+        PyObject* result = PyObject_CallMethod(this->ptr(), "__add__", "O", other.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Datetime>(result);
+    }
+
+    inline Datetime operator-(const Timedelta& other) const {
+        PyObject* result = PyObject_CallMethod(this->ptr(), "__sub__", "O", other.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Datetime>(result);
+    }
+
+    inline Timedelta operator-(const Datetime& other) const {
+        PyObject* result = PyObject_CallMethod(this->ptr(), "__sub__", "O", other.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Timedelta>(result);
     }
 
 };
