@@ -51,6 +51,7 @@
 
 // #include "structs/linked.h"
 #include "python.h"
+#include "regex.h"
 
 
 #endif  // BERTRAND_H

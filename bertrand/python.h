@@ -1,7 +1,6 @@
 #ifndef BERTRAND_PYBIND_H
 #define BERTRAND_PYBIND_H
 
-#include <any>
 #include <chrono>
 #include <complex>
 #include <initializer_list>
@@ -10,7 +9,6 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
-#include <unordered_map>
 #include <utility>
 
 #include <Python.h>
@@ -25,6 +23,8 @@
 #include <pybind11/pytypes.h>
 #include <pybind11/stl.h>
 #include <pybind11/stl_bind.h>
+
+#include "regex.h"
 
 
 /* NOTE: this uses slightly different syntax from normal pybind11 in order to support
@@ -244,11 +244,6 @@ struct Initializer {
 
 // impl namespace is different from detail in order to avoid conflicts with pybind11
 namespace impl {
-
-    template <typename T>
-    static constexpr bool is_integer_or_float = (
-        std::is_integral_v<T> || std::is_floating_point_v<T>
-    );
 
     /* Convert an arbitrary Python/C++ value into a pybind11 object and then return a
     new reference.  This is used in the constructors of list and tuple objects, whose
@@ -1018,7 +1013,7 @@ public:
     }(), stolen_t{}) {}
 
     /* Construct a Complex number from a real component as a C++ integer or float. */
-    template <typename Real, std::enable_if_t<impl::is_integer_or_float<Real>, int> = 0>
+    template <typename Real, std::enable_if_t<std::is_arithmetic_v<Real>, int> = 0>
     inline Complex(Real real) : Base([&real] {
         PyObject* result = PyComplex_FromDoubles(
             static_cast<double>(real),
@@ -1035,11 +1030,7 @@ public:
     template <
         typename Real,
         typename Imag,
-        std::enable_if_t<
-            impl::is_integer_or_float<Real> &&
-            impl::is_integer_or_float<Imag>,
-            int
-        > = 0
+        std::enable_if_t<std::is_arithmetic_v<Real> && std::is_arithmetic_v<Imag>, int> = 0
     >
     inline Complex(Real real, Imag imag) : Base([&real, &imag] {
         PyObject* result = PyComplex_FromDoubles(
@@ -5520,10 +5511,20 @@ namespace impl {
         return nullptr;
     }();
 
-    /* Enumerated tag struct holding numeric conversions for datetime and timedelta
-    types. */
-    class Units {
+    /* Enumerated tags holding numeric conversions for datetime and timedelta types. */
+    class TimeUnits {
+        friend class py::Timedelta;
         struct UnitTag {};
+
+        template <typename T, typename U>
+        using enable_cpp = std::enable_if_t<std::is_arithmetic_v<T>, U>;
+
+        template <typename T, typename U>
+        using enable_py = std::enable_if_t<
+            std::is_base_of_v<pybind11::int_, T> ||
+            std::is_base_of_v<pybind11::float_, T>,
+            U
+        >;
 
         template <typename From>
         class Unit : public UnitTag {
@@ -5541,12 +5542,12 @@ namespace impl {
 
             /* Convert from this unit to the target unit, given as a tag struct.  Units
             can override this method to account for irregular unit lengths. */
-            template <typename To>
-            static constexpr double convert(double value, const To&) {
+            template <typename T, typename To>
+            static constexpr T convert(T value, const To&) {
                 if constexpr (std::is_same_v<From, To>) {
                     return value;
                 } else {
-                    return value * (From::scale / To::scale);
+                    return value * (static_cast<double>(From::scale) / To::scale);
                 }
             }
 
@@ -5556,11 +5557,28 @@ namespace impl {
             static constexpr long long scale = 1;
 
             template <typename T>
-            static PyObject* to_timedelta(T value) {
+            static enable_cpp<T, PyObject*> to_timedelta(T value) {
                 int d = value / Days::scale;
                 int s = value / Seconds::scale;
                 int us = value / Microseconds::scale;
                 return Unit::timedelta_from_DSU(d, s, us);
+            }
+
+            template <typename T>
+            static enable_py<T, PyObject*> to_timedelta(const T& value) {
+                static const Int zero(0);
+                static const Int factor(1000);
+                PyObject* result = PyObject_CallFunctionObjArgs(
+                    impl::PyDelta_Type.ptr(),
+                    zero.ptr(),
+                    zero.ptr(),
+                    (value / factor).ptr(),
+                    nullptr
+                );
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                return result;
             }
 
         };
@@ -5569,11 +5587,27 @@ namespace impl {
             static constexpr long long scale = 1000;
 
             template <typename T>
-            static PyObject* to_timedelta(T value) {
+            static enable_cpp<T, PyObject*> to_timedelta(T value) {
                 int d = value / (Days::scale / scale);
                 int s = value / (Seconds::scale / scale);
                 int us = value;
                 return Unit::timedelta_from_DSU(d, s, us);
+            }
+
+            template <typename T>
+            static enable_py<T, PyObject*> to_timedelta(const T& value) {
+                static const Int zero(0);
+                PyObject* result = PyObject_CallFunctionObjArgs(
+                    impl::PyDelta_Type.ptr(),
+                    zero.ptr(),
+                    zero.ptr(),
+                    value.ptr(),
+                    nullptr
+                );
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                return result;
             }
 
         };
@@ -5582,7 +5616,7 @@ namespace impl {
             static constexpr long long scale = 1000 * Microseconds::scale;
 
             template <typename T>
-            static PyObject* to_timedelta(T value) {
+            static enable_cpp<T, PyObject*> to_timedelta(T value) {
                 int d = value / (Days::scale / scale);
                 int s = value / (Seconds::scale / scale);
                 value -= s * (Seconds::scale / scale);
@@ -5590,13 +5624,30 @@ namespace impl {
                 int us = value;
                 return Unit::timedelta_from_DSU(d, s, us);
             }
+
+            template <typename T>
+            static enable_py<T, PyObject*> to_timedelta(const T& value) {
+                static const Int zero(0);
+                static const Int factor(1000);
+                PyObject* result = PyObject_CallFunctionObjArgs(
+                    impl::PyDelta_Type.ptr(),
+                    zero.ptr(),
+                    (value / factor).ptr(),
+                    nullptr
+                );
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                return result;
+            }
+
         };
 
         struct Seconds : public Unit<Seconds> {
             static constexpr long long scale = 1000 * Milliseconds::scale;
 
             template <typename T>
-            static PyObject* to_timedelta(T value) {
+            static enable_cpp<T, PyObject*> to_timedelta(T value) {
                 int d = value / (Days::scale / scale);
                 int s = value;
                 value -= s;
@@ -5604,13 +5655,29 @@ namespace impl {
                 int us = value;
                 return Unit::timedelta_from_DSU(d, s, us);
             }
+
+            template <typename T>
+            static enable_py<T, PyObject*> to_timedelta(const T& value) {
+                static const Int zero(0);
+                PyObject* result = PyObject_CallFunctionObjArgs(
+                    impl::PyDelta_Type.ptr(),
+                    zero.ptr(),
+                    value.ptr(),
+                    nullptr
+                );
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                return result;
+            }
+
         };
 
         struct Minutes : public Unit<Minutes> {
             static constexpr long long scale = 60 * Seconds::scale;
 
             template <typename T>
-            static PyObject* to_timedelta(T value) {
+            static enable_cpp<T, PyObject*> to_timedelta(T value) {
                 int d = value / (Days::scale / scale);
                 value -= d * (Days::scale / scale);
                 value *= scale / Seconds::scale;
@@ -5619,6 +5686,22 @@ namespace impl {
                 value *= Seconds::scale / Microseconds::scale;
                 int us = value;
                 return Unit::timedelta_from_DSU(d, s, us);
+            }
+
+            template <typename T>
+            static enable_py<T, PyObject*> to_timedelta(const T& value) {
+                static const Int zero(0);
+                static const Int factor(60);
+                PyObject* result = PyObject_CallFunctionObjArgs(
+                    impl::PyDelta_Type.ptr(),
+                    zero.ptr(),
+                    (value * factor).ptr(),
+                    nullptr
+                );
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                return result;
             }
 
         };
@@ -5627,7 +5710,7 @@ namespace impl {
             static constexpr long long scale = 60 * Minutes::scale;
 
             template <typename T>
-            static PyObject* to_timedelta(T value) {
+            static enable_cpp<T, PyObject*> to_timedelta(T value) {
                 int d = value / (Days::scale / scale);
                 value -= d * (Days::scale / scale);
                 value *= scale / Seconds::scale;
@@ -5638,13 +5721,27 @@ namespace impl {
                 return Unit::timedelta_from_DSU(d, s, us);
             }
 
+            template <typename T>
+            static enable_py<T, PyObject*> to_timedelta(const T& value) {
+                static const Int zero(0);
+                static const Int factor(24);
+                PyObject* result = PyObject_CallOneArg(
+                    impl::PyDelta_Type.ptr(),
+                    (value / factor).ptr()
+                );
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                return result;
+            }
+
         };
 
         struct Days : public Unit<Days> {
             static constexpr long long scale = 24 * Hours::scale;
 
             template <typename T>
-            static PyObject* to_timedelta(T value) {
+            static enable_cpp<T, PyObject*> to_timedelta(T value) {
                 int d = value;
                 value -= d;
                 value *= scale / Seconds::scale;
@@ -5655,13 +5752,26 @@ namespace impl {
                 return Unit::timedelta_from_DSU(d, s, us);
             }
 
+            template <typename T>
+            static enable_py<T, PyObject*> to_timedelta(const T& value) {
+                static const Int zero(0);
+                PyObject* result = PyObject_CallOneArg(
+                    impl::PyDelta_Type.ptr(),
+                    value.ptr()
+                );
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                return result;
+            }
+
         };
 
         struct Weeks : public Unit<Weeks> {
             static constexpr long long scale = 7 * Days::scale;
 
             template <typename T>
-            static PyObject* to_timedelta(T value) {
+            static enable_cpp<T, PyObject*> to_timedelta(T value) {
                 value *= scale / Days::scale;
                 int d = value;
                 value -= d;
@@ -5673,9 +5783,91 @@ namespace impl {
                 return Unit::timedelta_from_DSU(d, s, us);
             }
 
+            template <typename T>
+            static enable_py<T, PyObject*> to_timedelta(const T& value) {
+                static const Int zero(0);
+                static const Int factor(7);
+                PyObject* result = PyObject_CallOneArg(
+                    impl::PyDelta_Type.ptr(),
+                    (value * factor).ptr()
+                );
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                return result;
+            }
+
+        };
+
+        struct Months : public Unit<Months> {
+            // defining a month as 365.2425 / 12 = 30.436875 days.
+            static constexpr long long scale = 30 * Days::scale + 37746000000000;
+
+            template <typename T>
+            static enable_cpp<T, PyObject*> to_timedelta(T value) {
+                double temp = value * 30.436875; 
+                int d = temp;
+                temp -= d;
+                temp *= Days::scale / Seconds::scale;
+                int s = temp;
+                temp -= s;
+                temp *= Seconds::scale / Microseconds::scale;
+                int us = temp;
+                return Unit::timedelta_from_DSU(d, s, us);
+            }
+
+            template <typename T>
+            static enable_py<T, PyObject*> to_timedelta(const T& value) {
+                static const Int zero(0);
+                static const Float factor(30.436875);
+                PyObject* result = PyObject_CallOneArg(
+                    impl::PyDelta_Type.ptr(),
+                    (value * factor).ptr()
+                );
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                return result;
+            }
+
+        };
+
+        struct Years : public Unit<Years> {
+            // defining a year as 365.2425 days (proleptic Gregorian calendar)
+            static constexpr long long scale = 365 * Days::scale + 20952000000000;
+
+            template <typename T>
+            static enable_cpp<T, PyObject*> to_timedelta(T value) {
+                double temp = value * 365.2425; 
+                int d = temp;
+                temp -= d;
+                temp *= Days::scale / Seconds::scale;
+                int s = temp;
+                temp -= s;
+                temp *= Seconds::scale / Microseconds::scale;
+                int us = temp;
+                return Unit::timedelta_from_DSU(d, s, us);
+            }
+
+            template <typename T>
+            static enable_py<T, PyObject*> to_timedelta(const T& value) {
+                static const Int zero(0);
+                static const Float factor(365.2425);
+                PyObject* result = PyObject_CallOneArg(
+                    impl::PyDelta_Type.ptr(),
+                    (value * factor).ptr()
+                );
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                return result;
+            }
+
         };
 
     public:
+        static constexpr Years Y{};
+        static constexpr Months M{};
         static constexpr Weeks W{};
         static constexpr Days D{};
         static constexpr Hours h{};
@@ -5688,6 +5880,96 @@ namespace impl {
         template <typename T>
         static constexpr bool is_unit = std::is_base_of_v<UnitTag, T>;
     };
+
+    /* A collection of regular expressions for parsing timedelta strings given in
+    either abbreviated natural text ("1h22m", "1 hour, 22 minutes", "1.2 seconds" etc.)
+    or ISO clock format ("01:22:00", "1:22", "00:01:22:00.000"), with precision up to
+    years and months and down to nanoseconds. */
+    class TimeParser {
+        // capture groups for natural text
+        static constexpr std::string_view Y{
+            R"((?P<Y>[\d.]+)(y(ear|r)?s?))"
+        };
+        static constexpr std::string_view M{
+            R"((?P<M>[\d.]+)((month|mnth|mth|mo)s?))"
+        };
+        static constexpr std::string_view W{
+            R"((?P<W>[\d.]+)(w(eek|k)?s?))"
+        };
+        static constexpr std::string_view D{
+            R"((?P<D>[\d.]+)(d(ay|y)?s?))"
+        };
+        static constexpr std::string_view h{
+            R"((?P<h>[\d.]+)(h(our|r)?s?))"
+        };
+        static constexpr std::string_view m{
+            R"((?P<m>[\d.]+)(minutes?|mins?|m(?!s)))"
+        };
+        static constexpr std::string_view s{
+            R"((?P<s>[\d.]+)(s(econd|ec)?s?))"
+        };
+        static constexpr std::string_view ms{
+            R"((?P<ms>[\d.]+)((millisecond|millisec|msec|mil)s?|ms))"
+        };
+        static constexpr std::string_view us{
+            R"((?P<us>[\d.]+)((microsecond|microsec|micro)s?|u(sec)?s?))"
+        };
+        static constexpr std::string_view ns{
+            R"((?P<ns>[\d.]+)(n(anosecond|anosec|ano|second|sec)s?))"
+        };
+
+        // capture groups for clock format
+        static constexpr std::string_view day_clock{
+            R"((?P<D>\d+):(?P<h>\d{1,2}):(?P<m>\d{1,2}):(?P<s>\d{1,2}(\.\d+)?))"
+        };
+        static constexpr std::string_view hour_clock{
+            R"((?P<h>\d+):(?P<m>\d{1,2}):(?P<s>\d{1,2}(\.\d+)?))"
+        };
+        static constexpr std::string_view minute_clock{
+            R"((?P<m>\d{1,2}):(?P<s>\d{1,2}(\.\d+)?))"
+        };
+        static constexpr std::string_view second_clock{
+            R"(:(?P<s>\d{1,2}(\.\d+)?))"
+        };
+
+        static std::string opt(const std::string_view& pattern) {
+            return "(" + std::string(pattern) + "[,/]?)?";
+        }
+
+        static typename bertrand::Regex::Match match(const char* string) {
+            static const bertrand::Regex abbrev(
+                "^(?P<sign>[+-])?" + opt(Y) + opt(M) + opt(W) + opt(D) + opt(h) +
+                opt(m) + opt(s) + opt(ms) + opt(us) + opt(ns) + "$"
+            );
+            static const bertrand::Regex hclock(
+                "^(?P<sign>[+-])?" + opt(W) + opt(D) + std::string(hour_clock) + "$"
+            );
+            static const bertrand::Regex dclock(
+                "^(?P<sign>[+-])?" + std::string(day_clock) + "$"
+            );
+            static const bertrand::Regex mclock(
+                "^(?P<sign>[+-])?" + std::string(minute_clock) + "$"
+            );
+            static const bertrand::Regex sclock(
+                "^(?P<sign>[+-])?" + std::string(second_clock) + "$"
+            );
+
+
+            // TODO: test them all against the given string
+
+
+            return {};
+        };
+
+
+    public:
+
+
+
+    };
+
+
+
 
 }  // namespace impl
 
@@ -5706,37 +5988,13 @@ class Timedelta :
     }
 
 public:
-    using Units = impl::Units;
     CONSTRUCTORS(Timedelta, PyDelta_Check, convert_to_timedelta);
+    using Units = impl::TimeUnits;
 
     /* Default constructor.  Initializes to an empty delta. */
-    inline Timedelta() : Base([] {
-        PyObject* result = PyObject_CallNoArgs(impl::PyDelta_Type.ptr());
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return result;
-    }(), stolen_t{}) {}
+    inline Timedelta() : Timedelta(0, 0, 0) {}
 
-    /* Construct a timedelta from a given number of arbitrary units. */
-    template <
-        typename T,
-        typename Unit,
-        std::enable_if_t<impl::is_integer_or_float<T>, int> = 0
-    >
-    explicit Timedelta(
-        T offset,
-        const Unit& unit = Units::s
-    ) : Base([&offset, &unit] {
-        static_assert(
-            Units::is_unit<Unit>,
-            "unit must be one of py::Timedelta::Units::W, ::D, ::h, ::m, ::s, ::ms, "
-            "::us, or ::ns"
-        );
-        return unit.to_timedelta(offset);
-    }(), stolen_t{}) {}
-
-    /* Construct a timedelta from a given number of days, seconds, and microseconds. */
+    /* Construct a Python timedelta from a number of days, seconds, and microseconds. */
     inline explicit Timedelta(int days, int seconds, int microseconds) : Base([&] {
         PyObject* result = PyDelta_FromDSU(days, seconds, microseconds);
         if (result == nullptr) {
@@ -5745,12 +6003,54 @@ public:
         return result;
     }(), stolen_t{}) {}
 
-    // TODO: Construct a timedelta from a string representation.
-    // -> Enable this with calendar utilities
+    /* Construct a Python timedelta from a number of arbitrary units. */
+    template <typename T, typename Unit, Units::enable_cpp<T, int> = 0>
+    inline explicit Timedelta(T offset, const Unit& = Units::s) : Base([&offset] {
+        static_assert(
+            Units::is_unit<Unit>,
+            "unit must be one of py::Timedelta::Units::Y, ::M, ::W, ::D, ::h, ::m, "
+            "::s, ::ms, ::us, or ::ns"
+        );
+        return Unit::to_timedelta(offset);
+    }(), stolen_t{}) {}
 
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
+    /* Construct a timedelta from a number of units, where the number is given as a
+    python integer or float. */
+    template <typename T, typename Unit, Units::enable_py<T, int> = 0>
+    inline explicit Timedelta(const T& offset, const Unit& = Units::s) : Base([&offset] {
+        static_assert(
+            Units::is_unit<Unit>,
+            "unit must be one of py::Timedelta::Units::Y, ::M, ::W, ::D, ::h, ::m, "
+            "::s, ::ms, ::us, or ::ns"
+        );
+        return Unit::to_timedelta(offset);
+    }(), stolen_t{}) {}
+
+
+
+
+
+    // // TODO: rebuild this using PCRE when that's worked in
+
+
+    // /* Construct a timedelta from a string representation.
+
+    // NOTE: This matches both abbreviated ("1h22m", "1 hour, 22 minutes", etc.) and
+    // clock format ("01:22:00", "1:22", "00:01:22:00") strings, with precision up to
+    // years and months and down to microseconds.
+    // */
+    // inline explicit Timedelta(const char* string) : Base([&string] {
+
+
+    // }(), stolen_t{}) {}
+
+
+
+
+
+    //////////////////////
+    ////    STATIC    ////
+    //////////////////////
 
     /* Get the minimum possible timedelta. */
     inline static const Timedelta& min() {
@@ -5764,11 +6064,15 @@ public:
         return max;
     }
 
-    /* Get the smallest possible timedelta. */
+    /* Get the smallest representable timedelta. */
     inline static const Timedelta& resolution() {
         static Timedelta resolution(impl::PyDelta_Type.attr("resolution"), stolen_t{});
         return resolution;
     }
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
 
     /* Get the number of days in the timedelta. */
     inline int days() const {
@@ -5785,12 +6089,22 @@ public:
         return PyDateTime_DELTA_GET_MICROSECONDS(this->ptr());
     }
 
-    /* Get the total number of seconds in the timedelta. */
+    /* Get the total number of seconds in the timedelta as a double. */
     inline double total_seconds() const {
         double result = days() * (24 * 60 * 60);
         result += seconds();
         result += microseconds() * 1e-6;
         return result;
+    }
+
+    /* Get the total number of microseconds in the timedelta as an integer.  Note: this
+    can overflow if the timedelta is very large (>290,000 years). */
+    inline long long total_microseconds() const {
+        return (
+            (Units::Days::scale / 1000) * days() +
+            (Units::Seconds::scale / 1000) * seconds() +
+            microseconds()
+        );
     }
 
     /////////////////////////
@@ -5823,7 +6137,7 @@ public:
     }
 
     /* Equivalent to Python `timedelta * number`. */
-    template <typename T, std::enable_if_t<impl::is_integer_or_float<T>, int> = 0>
+    template <typename T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
     inline Timedelta operator*(T number) const {
         PyObject* result = PyNumber_Multiply(
             this->ptr(),
@@ -5836,7 +6150,7 @@ public:
     }
 
     /* Equivalent to Python `number * timedelta`. */
-    template <typename T, std::enable_if_t<impl::is_integer_or_float<T>, int> = 0>
+    template <typename T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
     inline friend Timedelta operator*(T number, const Timedelta& delta) {
         PyObject* result = PyNumber_Multiply(
             detail::object_or_cast(number).ptr(),
@@ -5858,7 +6172,7 @@ public:
     }
 
     /* Equivalent to Python `timedelta / float` or `timedelta // int`. */
-    template <typename T, std::enable_if_t<impl::is_integer_or_float<T>, int> = 0>
+    template <typename T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
     inline Timedelta operator/(T number) const {
         if constexpr (std::is_integral_v<T>) {
             PyObject* result = PyNumber_FloorDivide(
@@ -6090,7 +6404,7 @@ class Datetime :
     }
 
 public:
-    using Units = impl::Units;
+    using Units = impl::TimeUnits;
     CONSTRUCTORS(Datetime, PyDateTime_Check, convert_to_datetime);
 
     /* Default constructor.  Initializes to the current system time with local
@@ -6148,7 +6462,7 @@ public:
     template <
         typename T,
         typename Unit,
-        std::enable_if_t<impl::is_integer_or_float<T>, int> = 0
+        std::enable_if_t<std::is_arithmetic_v<T>, int> = 0
     >
     explicit Datetime(
         T offset,
