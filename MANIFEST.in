@@ -1,17 +1,10 @@
 include pyproject.toml setup.py MANIFEST.in Makefile
 include README.rst CHANGELOG.rst LICENSE
 
-global-exclude *Zone.Identifier
-global-exclude *.pyc
-recursive-exclude env *
-recursive-exclude .env *
-recursive-exclude venv *
-recursive-exclude .venv *
-
 recursive-include bertrand *.h *.cpp *.pyx *.pxd *.pyi py.typed
 recursive-exclude bertrand *.c
 
-recursive-include bertrand/regex *
+recursive-include third_party/pcre2-10.43.tar.gz
 
 recursive-include docs/source *
 include docs/Makefile docs/make.bat
@@ -19,3 +12,9 @@ prune docs/source/generated
 
 recursive-include tests *.py
 prune *__pycache__*
+
+global-exclude *Zone.Identifier *.pyc
+recursive-exclude env *
+recursive-exclude .env *
+recursive-exclude venv *
+recursive-exclude .venv *

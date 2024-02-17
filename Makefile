@@ -78,6 +78,9 @@ clean:
 	@rm -f $(HEADER_PATH)/bertrand.h
 	@rm -rf $(HEADER_PATH)/bertrand
 
+#	remove extracted PCRE2 source
+	@rm -rf third_party/pcre2-10.43/
+
 #	remove compiled cython artifacts installed in-place
 	@find bertrand/ -name "*.c" -type f -delete
 	@find bertrand/ -name "*.so" -type f -delete

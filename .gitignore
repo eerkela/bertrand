@@ -15,6 +15,10 @@ __pycache__/
 *.so
 !bertrand/structs/linked.cpp
 
+# Third-party libraries
+third_party/*
+!third_party/*.tar.gz
+
 # Distribution / packaging
 .Python
 build/
