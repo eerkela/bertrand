@@ -5886,90 +5886,256 @@ namespace impl {
     or ISO clock format ("01:22:00", "1:22", "00:01:22:00.000"), with precision up to
     years and months and down to nanoseconds. */
     class TimeParser {
+        using Regex = bertrand::Regex;
+
         // capture groups for natural text
-        static constexpr std::string_view Y{
+        static constexpr std::string_view td_Y{
             R"((?P<Y>[\d.]+)(y(ear|r)?s?))"
         };
-        static constexpr std::string_view M{
+        static constexpr std::string_view td_M{
             R"((?P<M>[\d.]+)((month|mnth|mth|mo)s?))"
         };
-        static constexpr std::string_view W{
+        static constexpr std::string_view td_W{
             R"((?P<W>[\d.]+)(w(eek|k)?s?))"
         };
-        static constexpr std::string_view D{
+        static constexpr std::string_view td_D{
             R"((?P<D>[\d.]+)(d(ay|y)?s?))"
         };
-        static constexpr std::string_view h{
+        static constexpr std::string_view td_h{
             R"((?P<h>[\d.]+)(h(our|r)?s?))"
         };
-        static constexpr std::string_view m{
+        static constexpr std::string_view td_m{
             R"((?P<m>[\d.]+)(minutes?|mins?|m(?!s)))"
         };
-        static constexpr std::string_view s{
+        static constexpr std::string_view td_s{
             R"((?P<s>[\d.]+)(s(econd|ec)?s?))"
         };
-        static constexpr std::string_view ms{
+        static constexpr std::string_view td_ms{
             R"((?P<ms>[\d.]+)((millisecond|millisec|msec|mil)s?|ms))"
         };
-        static constexpr std::string_view us{
+        static constexpr std::string_view td_us{
             R"((?P<us>[\d.]+)((microsecond|microsec|micro)s?|u(sec)?s?))"
         };
-        static constexpr std::string_view ns{
+        static constexpr std::string_view td_ns{
             R"((?P<ns>[\d.]+)(n(anosecond|anosec|ano|second|sec)s?))"
         };
 
         // capture groups for clock format
-        static constexpr std::string_view day_clock{
+        static constexpr std::string_view td_day_clock{
             R"((?P<D>\d+):(?P<h>\d{1,2}):(?P<m>\d{1,2}):(?P<s>\d{1,2}(\.\d+)?))"
         };
-        static constexpr std::string_view hour_clock{
+        static constexpr std::string_view td_hour_clock{
             R"((?P<h>\d+):(?P<m>\d{1,2}):(?P<s>\d{1,2}(\.\d+)?))"
         };
-        static constexpr std::string_view minute_clock{
+        static constexpr std::string_view td_minute_clock{
             R"((?P<m>\d{1,2}):(?P<s>\d{1,2}(\.\d+)?))"
         };
-        static constexpr std::string_view second_clock{
+        static constexpr std::string_view td_second_clock{
             R"(:(?P<s>\d{1,2}(\.\d+)?))"
         };
 
-        static std::string opt(const std::string_view& pattern) {
-            return "(" + std::string(pattern) + "[,/]?)?";
+        // match an optional, comma-separated pattern
+        static std::string opt(const std::string_view& pat) {
+            return "(" + std::string(pat) + "[,/]?)?";
         }
 
-        static typename bertrand::Regex::Match match(const char* string) {
-            static const bertrand::Regex abbrev(
-                "^(?P<sign>[+-])?" + opt(Y) + opt(M) + opt(W) + opt(D) + opt(h) +
-                opt(m) + opt(s) + opt(ms) + opt(us) + opt(ns) + "$"
-            );
-            static const bertrand::Regex hclock(
-                "^(?P<sign>[+-])?" + opt(W) + opt(D) + std::string(hour_clock) + "$"
-            );
-            static const bertrand::Regex dclock(
-                "^(?P<sign>[+-])?" + std::string(day_clock) + "$"
-            );
-            static const bertrand::Regex mclock(
-                "^(?P<sign>[+-])?" + std::string(minute_clock) + "$"
-            );
-            static const bertrand::Regex sclock(
-                "^(?P<sign>[+-])?" + std::string(second_clock) + "$"
-            );
-
-
-            // TODO: test them all against the given string
-
-
-            return {};
-        };
-
+        // compilation flags for regular expressions
+        static constexpr uint32_t flags = Regex::IGNORE_CASE | Regex::JIT;
 
     public:
+        enum class TimedeltaPattern {
+            ABBREV,
+            HCLOCK,
+            DCLOCK,
+            MCLOCK,
+            SCLOCK
+        };
 
+        /* Match a timedelta string against all regular expressions and return a pair
+        containing the first result and a tag indicating the kind of pattern that was
+        matched.  All patterns populate the same capture groups, whose labels match the
+        units listed in impl::TimeUnits. */
+        static auto match_timedelta(const std::string& string)
+            -> std::pair<Regex::Match, TimedeltaPattern>
+        {
+            static const Regex abbrev(
+                "^(?P<sign>[+-])?" + opt(td_Y) + opt(td_M) + opt(td_W) +
+                opt(td_D) + opt(td_h) + opt(td_m) + opt(td_s) +
+                opt(td_ms) + opt(td_us) + opt(td_ns) + "$",
+                flags
+            );
+            static const Regex hclock(
+                "^(?P<sign>[+-])?" + opt(td_W) + opt(td_D) +
+                std::string(td_hour_clock) + "$",
+                flags
+            );
+            static const Regex dclock(
+                "^(?P<sign>[+-])?" + std::string(td_day_clock) + "$",
+                flags
+            );
+            static const Regex mclock(
+                "^(?P<sign>[+-])?" + std::string(td_minute_clock) + "$",
+                flags
+            );
+            static const Regex sclock(
+                "^(?P<sign>[+-])?" + std::string(td_second_clock) + "$",
+                flags
+            );
 
+            // remove whitespace from the string before matching
+            static const Regex whitespace(R"(\s+)", flags);
+            std::string stripped(whitespace.sub("", string));
+
+            Regex::Match result = abbrev.match(stripped);
+            if (result) {
+                return {std::move(result), TimedeltaPattern::ABBREV};
+            }
+
+            result = hclock.match(stripped);
+            if (result) {
+                return {std::move(result), TimedeltaPattern::HCLOCK};
+            }
+
+            result = dclock.match(stripped);
+            if (result) {
+                return {std::move(result), TimedeltaPattern::DCLOCK};
+            }
+
+            result = mclock.match(stripped);
+            if (result) {
+                return {std::move(result), TimedeltaPattern::MCLOCK};
+            }
+
+            return {sclock.match(stripped), TimedeltaPattern::SCLOCK};
+        };
+
+        /* Convert a timedelta string into a datetime.timedelta object. */
+        static PyObject* to_timedelta(const std::string& string, bool as_hours = false) {
+            using OptStr = std::optional<std::string>;
+
+            auto [match, pattern] = match_timedelta(string);
+            if (!match) {
+                throw ValueError("could not parse timedelta string: '" + string + "'");
+            }
+
+            int sign = 1;
+            if (OptStr sign_str = match["sign"]) {
+                if (sign_str.value() == "-") {
+                    sign = -1;
+                }
+            }
+
+            // set DSU values based on the pattern
+            double A = 0, B = 0, C = 0;
+            switch (pattern) {
+                case (TimedeltaPattern::ABBREV):
+                    if (OptStr O = match["Y"]) {
+                        A += TimeUnits::Y.convert(std::stod(*O), TimeUnits::D) * sign;
+                    }
+                    if (OptStr O = match["M"]) {
+                        A += TimeUnits::M.convert(std::stod(*O), TimeUnits::D) * sign;
+                    }
+                    if (OptStr O = match["W"]) {
+                        A += TimeUnits::W.convert(std::stod(*O), TimeUnits::D) * sign;
+                    }
+                    if (OptStr O = match["D"]) {
+                        A += TimeUnits::D.convert(std::stod(*O), TimeUnits::D) * sign;
+                    }
+                    if (OptStr O = match["h"]) {
+                        B += TimeUnits::h.convert(std::stod(*O), TimeUnits::s) * sign;
+                    }
+                    if (OptStr O = match["m"]) {
+                        B += TimeUnits::m.convert(std::stod(*O), TimeUnits::s) * sign;
+                    }
+                    if (OptStr O = match["s"]) {
+                        B += TimeUnits::s.convert(std::stod(*O), TimeUnits::s) * sign;
+                    }
+                    if (OptStr O = match["ms"]) {
+                        C += TimeUnits::ms.convert(std::stod(*O), TimeUnits::us) * sign;
+                    }
+                    if (OptStr O = match["us"]) {
+                        C += TimeUnits::us.convert(std::stod(*O), TimeUnits::us) * sign;
+                    }
+                    if (OptStr O = match["ns"]) {
+                        C += TimeUnits::ns.convert(std::stod(*O), TimeUnits::us) * sign;
+                    }
+                    break;
+                case (TimedeltaPattern::HCLOCK):
+                    if (OptStr O = match["W"]) {
+                        A += TimeUnits::W.convert(std::stod(*O), TimeUnits::D) * sign;
+                    }
+                    if (OptStr O = match["D"]) {
+                        A += TimeUnits::D.convert(std::stod(*O), TimeUnits::D) * sign;
+                    }
+                    if (OptStr O = match["h"]) {
+                        B += TimeUnits::h.convert(std::stod(*O), TimeUnits::s) * sign;
+                    }
+                    if (OptStr O = match["m"]) {
+                        B += TimeUnits::m.convert(std::stod(*O), TimeUnits::s) * sign;
+                    }
+                    if (OptStr O = match["s"]) {
+                        B += TimeUnits::s.convert(std::stod(*O), TimeUnits::s) * sign;
+                    }
+                    break;
+                case (TimedeltaPattern::DCLOCK):
+                    if (OptStr O = match["D"]) {
+                        A += TimeUnits::D.convert(std::stod(*O), TimeUnits::D) * sign;
+                    }
+                    if (OptStr O = match["h"]) {
+                        B += TimeUnits::h.convert(std::stod(*O), TimeUnits::s) * sign;
+                    }
+                    if (OptStr O = match["m"]) {
+                        B += TimeUnits::m.convert(std::stod(*O), TimeUnits::s) * sign;
+                    }
+                    if (OptStr O = match["s"]) {
+                        B += TimeUnits::s.convert(std::stod(*O), TimeUnits::s) * sign;
+                    }
+                    break;
+                case (TimedeltaPattern::MCLOCK):
+                    // strings of the form "1:22" are ambiguous.  Do they represent
+                    // hours and minutes or minutes and seconds?  By default, we assume
+                    // the latter, but if `as_hours=true`, we reverse that assumption
+                    if (as_hours) {
+                        if (OptStr O = match["m"]) {
+                            B += TimeUnits::h.convert(std::stod(*O), TimeUnits::s) * sign;
+                        }
+                        if (OptStr O = match["s"]) {
+                            B += TimeUnits::m.convert(std::stod(*O), TimeUnits::s) * sign;
+                        }
+                    } else {
+                        if (OptStr O = match["m"]) {
+                            B += TimeUnits::m.convert(std::stod(*O), TimeUnits::s) * sign;
+                        }
+                        if (OptStr O = match["s"]) {
+                            B += TimeUnits::s.convert(std::stod(*O), TimeUnits::s) * sign;
+                        }
+                    }
+                    break;
+                case (TimedeltaPattern::SCLOCK):
+                    if (OptStr O = match["s"]) {
+                        B += TimeUnits::s.convert(std::stod(*O), TimeUnits::s) * sign;
+                    }
+                    break;
+                default:
+                    throw ValueError("unrecognized timedelta pattern");
+            }
+
+            // demote fractional units to the next lower unit
+            int d = A;
+            B += TimeUnits::D.convert(A - d, TimeUnits::s);
+            int s = B;
+            C += TimeUnits::s.convert(B - s, TimeUnits::us);
+            int us = C;
+
+            // create a new timedelta object
+            PyObject* result = PyDelta_FromDSU(d, s, us);
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return result;
+        }
 
     };
-
-
-
 
 }  // namespace impl
 
@@ -6026,27 +6192,38 @@ public:
         return Unit::to_timedelta(offset);
     }(), stolen_t{}) {}
 
+    /* Construct a timedelta from a string representation.  NOTE: This matches both
+    abbreviated ("1h22m", "1 hour, 22 minutes", etc.) and clock format ("01:22:00",
+    "1:22", "00:01:22:00") strings, with precision up to years and months and down to
+    microseconds. */
+    inline explicit Timedelta(
+        const char* string,
+        bool as_hours = false
+    ) : Base([&string, &as_hours] {
+        return impl::TimeParser::to_timedelta(string, as_hours);
+    }(), stolen_t{}) {}
 
+    /* Construct a timedelta from a string representation.  NOTE: This matches both
+    abbreviated ("1h22m", "1 hour, 22 minutes", etc.) and clock format ("01:22:00",
+    "1:22", "00:01:22:00") strings, with precision up to years and months and down to
+    microseconds. */
+    inline explicit Timedelta(
+        const std::string& string,
+        bool as_hours = false
+    ) : Base([&string, &as_hours] {
+        return impl::TimeParser::to_timedelta(string, as_hours);
+    }(), stolen_t{}) {}
 
-
-
-    // // TODO: rebuild this using PCRE when that's worked in
-
-
-    // /* Construct a timedelta from a string representation.
-
-    // NOTE: This matches both abbreviated ("1h22m", "1 hour, 22 minutes", etc.) and
-    // clock format ("01:22:00", "1:22", "00:01:22:00") strings, with precision up to
-    // years and months and down to microseconds.
-    // */
-    // inline explicit Timedelta(const char* string) : Base([&string] {
-
-
-    // }(), stolen_t{}) {}
-
-
-
-
+    /* Construct a timedelta from a string representation.  NOTE: This matches both
+    abbreviated ("1h22m", "1 hour, 22 minutes", etc.) and clock format ("01:22:00",
+    "1:22", "00:01:22:00") strings, with precision up to years and months and down to
+    microseconds. */
+    inline explicit Timedelta(
+        const std::string_view& string,
+        bool as_hours = false
+    ) : Base([&string, &as_hours] {
+        return impl::TimeParser::to_timedelta(std::string(string), as_hours);
+    }(), stolen_t{}) {}
 
     //////////////////////
     ////    STATIC    ////

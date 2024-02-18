@@ -92,8 +92,7 @@ public:
         DEFAULT = 0,
         JIT = PCRE2_JIT_COMPLETE,  // hard compile the pattern for JIT execution
         NO_UTF_CHECK = PCRE2_NO_UTF_CHECK,  // disable UTF-8 validity check (faster)
-        IGNORE_CASE = PCRE2_CASELESS,
-        IGNORE_WHITESPACE = PCRE2_EXTENDED
+        IGNORE_CASE = PCRE2_CASELESS
     };
 
     /* Compile the pattern into a PCRE2 regular expression. */
@@ -276,10 +275,31 @@ public:
             other.match = nullptr;
         }
 
+        /* Move assignment operator. */
+        Match& operator=(Match&& other) noexcept {
+            if (this == &other) {
+                return *this;
+            }
+
+            code = other.code;
+            subject = std::move(other.subject);
+            ovector = other.ovector;
+            _count = other._count;
+            owns_match = other.owns_match;
+
+            pcre2_match_data* temp = match;
+            match = other.match;
+            other.match = nullptr;
+            if (temp != nullptr) {
+                pcre2_match_data_free(temp);
+            }
+
+            return *this;
+        }
+
         /* Copy constructor/assignment operators deleted for simplicity. */
         Match(const Match&) = delete;
         Match operator=(const Match&) = delete;
-        Match operator=(Match&&) = delete;
 
         ~Match() noexcept {
             if (owns_match && match != nullptr) {
