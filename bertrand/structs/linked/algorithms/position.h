@@ -15,17 +15,17 @@ namespace linked {
 
 
     size_t normalize_index(long long index, size_t size, bool truncate) {
-        // wraparound
-        bool lt_zero = index < 0;
-        if (lt_zero) {
+        if (index < 0) {
             index += size;
-            lt_zero = index < 0;
-        }
-
-        // boundscheck
-        if (lt_zero || index >= static_cast<long long>(size)) {
+            if (index < 0) {
+                if (truncate) {
+                    return 0;
+                }
+                throw IndexError("list index out of range");
+            }
+        } else if (index >= static_cast<long long>(size)) {
             if (truncate) {
-                return lt_zero ? 0 : size - 1;
+                return size - 1;
             }
             throw IndexError("list index out of range");
         }

@@ -10,11 +10,6 @@ from setuptools import Extension, setup  # type: ignore
 from pybind11.setup_helpers import Pybind11Extension, build_ext
 
 
-# TODO: Should distribute with pcre packed into a tarball excluded from git repo,
-# and then unpack and build it during the build process.
-
-
-
 TRUTHY = {
     "1", "true", "t", "yes", "y", "ok", "sure", "yep", "yap", "yup", "yeah", "indeed",
     "aye", "roger", "absolutely", "certainly", "definitely", "positively", "positive",
