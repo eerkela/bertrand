@@ -56,4 +56,7 @@ public:
 }  // namespace bertrand
 
 
+BERTRAND_STD_HASH(bertrand::py::Bool)
+
+
 #endif  // BERTRAND_PYTHON_BOOL_H

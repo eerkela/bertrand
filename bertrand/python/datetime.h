@@ -7,10 +7,10 @@
 #include <datetime.h>  // Python datetime library
 #include <pybind11/chrono.h>
 
-#include "../regex.h"
 #include "common.h"
 #include "int.h"
 #include "float.h"
+#include "regex.h"
 #include "str.h"
 
 
@@ -477,7 +477,6 @@ namespace impl {
     or ISO clock format ("01:22:00", "1:22", "00:01:22:00.000"), with precision up to
     years and months and down to nanoseconds. */
     class TimeParser {
-        using Regex = bertrand::Regex;
 
         // capture groups for natural text
         static constexpr std::string_view td_Y{
@@ -1544,6 +1543,13 @@ public:
 
 }  // namespace py
 }  // namespace bertrand
+
+
+BERTRAND_STD_HASH(bertrand::py::Timedelta)
+BERTRAND_STD_HASH(bertrand::py::Timezone)
+BERTRAND_STD_HASH(bertrand::py::Date)
+BERTRAND_STD_HASH(bertrand::py::Time)
+BERTRAND_STD_HASH(bertrand::py::Datetime)
 
 
 #endif  // BERTRAND_PYTHON_DATETIME_H

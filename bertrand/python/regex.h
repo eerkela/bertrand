@@ -15,17 +15,28 @@
 #define PCRE2_CODE_UNIT_WIDTH 8  // for UTF8/ASCII strings
 #include "pcre2.h"
 
+#include "common.h"
+
+
+// TODO: all methods should except Python strings as well.
+
 
 namespace bertrand {
+namespace py {
 
 
-/* A thin wrapper around a compiled PCRE2 regular expression that provides a more
-user-friendly, pythonic interface.  Some differences exist, including (but not limited
-to):
-    - There are no `search()` or `fullmatch()` methods.  Instead, the default behavior
-      of `Regex::match()` is equivalent to Python's `search()`, returning the first
-      match found in the target string.  To replicate Python's `match()` method, users
-      should prepend the pattern with `^`.  To replicate Python's `fullmatch()` method,
+/* A thin wrapper around a compiled PCRE2 regular expression that provides a Pythonic
+interface for matching and searching strings.
+
+This class is designed as a direct replacement for Python's `re.Pattern` objects, but
+is implemented using PCRE2 for full C++ compatibility.  This makes it possible to
+parse both Python and C++ strings interchangeably with the same syntax, which is
+broadly similar to Python's `re` module.  Some differences exist, including (but not
+limited to):
+    - The absence of the `search()` or `fullmatch()` methods.  Instead, the default
+      behavior of `Regex::match()` is equivalent to Python's `search()` method,
+      returning the first match found in the target string.  To replicate Python's
+      `match()`, users should prepend the pattern with `^`.  To replicate `fullmatch()`,
       users should also append the pattern with `$`.
     - There is no `escape()` or `expand()` methods, as PCRE2 does not provide
       equivalent functions.
@@ -36,7 +47,8 @@ to):
 
 Other than these differences, the `Regex` class should be familiar to anyone who has
 used Python's `re` module.  PCRE2 has nearly identical syntax and supports all the same
-features, plus additional ones like JIT compliation and recursive patterns.
+features, as well as powerful additions like JIT compliation, partial matching, and
+recursive patterns.
 
 PCRE2 reference:
 https://www.pcre.org/current/doc/html/index.html
@@ -44,7 +56,7 @@ https://www.pcre.org/current/doc/html/index.html
 class Regex {
     std::string _pattern;
     uint32_t _flags;
-    pcre2_code* code = nullptr;
+    pcre2_code* code;
 
     static bool normalize_indices(long long size, long long& start, long long& stop) {
         if (start < 0) {
@@ -86,6 +98,7 @@ class Regex {
     }
 
 public:
+    class Iterator;
 
     /* Enumerated bitset describing compilation flags for PCRE2 regular expressions. */
     enum : uint32_t {
@@ -97,7 +110,9 @@ public:
 
     /* Compile the pattern into a PCRE2 regular expression. */
     template <typename T>
-    Regex(const T& pattern, uint32_t flags = DEFAULT) : _pattern(pattern), _flags(flags) {
+    Regex(const T& pattern, uint32_t flags = DEFAULT) :
+        _pattern(pattern), _flags(flags), code(nullptr)
+    {
         int err;
         PCRE2_SIZE err_offset;
 
@@ -229,7 +244,7 @@ public:
     /* A match object allowing easy access to capture groups and match information. */
     class Match {
         friend Regex;
-        friend class Iterator;
+        friend Iterator;
         pcre2_code* code;
         pcre2_match_data* match;
         std::string subject;
@@ -534,17 +549,17 @@ public:
         /* Iterator over the non-empty capture groups that were found in the subject
         string.  Yields pairs where the first value is the group index and the second
         is the matching substring. */
-        class Iterator {
+        class GroupIter {
             friend Match;
             const Match& match;
             size_t index;
             size_t count;
 
-            Iterator(const Match& match, size_t index) :
+            GroupIter(const Match& match, size_t index) :
                 match(match), index(index), count(match.count())
             {}
 
-            Iterator(const Match& match) :
+            GroupIter(const Match& match) :
                 match(match), index(match.count()), count(index)
             {}
 
@@ -555,8 +570,8 @@ public:
             using pointer               = value_type*;
             using reference             = value_type&;
 
-            Iterator(const Iterator&) = default;
-            Iterator(Iterator&&) = default;
+            GroupIter(const GroupIter&) = default;
+            GroupIter(GroupIter&&) = default;
 
             /* Dereference to access the current capture group. */
             inline std::pair<size_t, std::string> operator*() const {
@@ -564,7 +579,7 @@ public:
             }
 
             /* Increment to advance to the next non-empty capture group. */
-            inline Iterator& operator++() {
+            inline GroupIter& operator++() {
                 while (!match[++index].has_value() && index < count) {
                     // skip empty capture groups
                 }
@@ -572,22 +587,22 @@ public:
             }
 
             /* Equality comparison to terminate the sequence. */
-            inline bool operator==(const Iterator& other) const noexcept {
+            inline bool operator==(const GroupIter& other) const noexcept {
                 return index == other.index;
             }
 
             /* Inequality comparison to terminate the sequence. */
-            inline bool operator!=(const Iterator& other) const noexcept {
+            inline bool operator!=(const GroupIter& other) const noexcept {
                 return index != other.index;
             }
 
         };
 
-        Iterator begin() const noexcept {
+        GroupIter begin() const noexcept {
             return {*this, 0};
         }
 
-        Iterator end() const noexcept {
+        GroupIter end() const noexcept {
             return {*this};
         }
 
@@ -609,6 +624,34 @@ public:
                 // result.push_back(group(item));
             }
             return result;
+        }
+
+        /* Dump a string representation of a match object to an output stream. */
+        friend std::ostream& operator<<(std::ostream& stream, const Match& match) {
+            if (!match) {
+                stream << "<No Match>";
+                return stream;
+            }
+
+            std::optional<std::pair<size_t, size_t>> span = match.span();
+            if (!span.has_value()) {
+                stream << "<Match span=(), groups=()>";
+                return stream;
+            }
+
+            stream << "<Match span=(" << span->first << ", " << span->second << "), groups=(";
+            auto it = match.begin();
+            auto end = match.end();
+            if (it != end) {
+                stream << (*it).second;
+                ++it;
+                while (it != end) {
+                    stream << ", " << (*it).second;
+                    ++it;
+                }
+            }
+            stream << ")>";
+            return stream;
         }
 
     };
@@ -1082,46 +1125,20 @@ public:
         }
     }
 
+    /* Dump a string representation of a Regex object to an output stream. */
+    friend std::ostream& operator<<(std::ostream& stream, const Regex& regex) {
+        stream << "<Regex: " << regex.pattern() << ">";
+        return stream;
+    }
+
 };
 
 
-/* Dump a string representation of a Regex object to an output stream. */
-std::ostream& operator<<(std::ostream& stream, const Regex& regex) {
-    stream << "<Regex: " << regex.pattern() << ">";
-    return stream;
-}
-
-
-/* Dump a string representation of a match object to an output stream. */
-std::ostream& operator<<(std::ostream& stream, const Regex::Match& match) {
-    if (!match) {
-        stream << "<No Match>";
-        return stream;
-    }
-
-    std::optional<std::pair<size_t, size_t>> span = match.span();
-    if (!span.has_value()) {
-        stream << "<Match span=(), groups=()>";
-        return stream;
-    }
-
-    stream << "<Match span=(" << span->first << ", " << span->second << "), groups=(";
-    auto it = match.begin();
-    auto end = match.end();
-    if (it != end) {
-        stream << (*it).second;
-        ++it;
-        while (it != end) {
-            stream << ", " << (*it).second;
-            ++it;
-        }
-    }
-    stream << ")>";
-    return stream;
-}
-
-
+}  // namespace py
 }  // namespace bertrand
+
+
+// TODO: cast Regex to Python re.Pattern?
 
 
 #endif  // BERTRAND_REGEX_H

@@ -1,6 +1,7 @@
-#ifndef BERTRAND_PYTHON_CORE_H
-#define BERTRAND_PYTHON_CORE_H
+#ifndef BERTRAND_PYTHON_COMMON_H
+#define BERTRAND_PYTHON_COMMON_H
 
+#include <algorithm>
 #include <initializer_list>
 #include <optional>
 #include <sstream>
@@ -21,49 +22,6 @@
 #include <pybind11/stl_bind.h>
 
 
-
-// TODO: Decimal?
-
-
-
-/* NOTE: this uses slightly different syntax from normal pybind11 in order to support
- * more of the Python standard library and to replicate its semantics more closely.
- * The only real differences are that types are capitalized in order to avoid
- * extraneous underscores and conflicts with non-member functions of the same name, and
- * they implement the same interface as the Python types they represent, without
- * requiring `attr()` syntax.  Containers can also be directly constructed using
- * initializer lists, and a wider variety of global methods are supported.
- *
- * For example, the following pybind11 code:
- *
- *     py::list foo = py::cast(std::vector<int>{1, 2, 3});
- *     py::int_ bar = foo.attr("pop")();
- *
- * would be written as:
- *
- *     py::List foo {1, 2, 3};
- *     py::Int bar = foo.pop();
- *
- * Which is more concise and readable.
- */
-
-
-/* TODO: at some point in the future, we could potentially support static typing for
- * python containers:
- *
- *     py::List foo {1, 2, 3};
- *     py::TypedList<int> bar = foo;
- *
- * List would just be a type alias for `TypedList<void>`, which would enable dynamic
- * typing.  If specialized on a subclass of `pybind11::object`, we would apply an
- * isinstance check whenever an item is added to the list.  If specialized on a C++
- * type, then we could use the compiler to enable static checks.  This would add a lot
- * of code, but it would be really awesome for cross-language type safety.  We could
- * also potentially optimize for C++ types that are supported in the CPython API.  But
- * again, that would create a lot of extra code.
- */
-
-
 using namespace pybind11::literals;
 namespace bertrand {
 namespace py {
@@ -74,94 +32,21 @@ namespace py {
 /////////////////////////////////////////
 
 
-// exceptions
-using pybind11::error_already_set;
-using TypeError = pybind11::type_error;
-using ValueError = pybind11::value_error;
-using KeyError = pybind11::key_error;
-using IndexError = pybind11::index_error;
-using BufferError = pybind11::buffer_error;
-using CastError = pybind11::cast_error;
-using ReferenceCastError = pybind11::reference_cast_error;
-using ImportError = pybind11::import_error;
-using StopIteration = pybind11::stop_iteration;
-
-// TODO: NotImplementedError, others
-
-// wrapper types
-template <typename... Args>
-using Class = pybind11::class_<Args...>;
-using Module = pybind11::module_;
-using Handle = pybind11::handle;
-using Object = pybind11::object;
-using Iterator = pybind11::iterator;
-using Iterable = pybind11::iterable;
-using NoneType = pybind11::none;
-using EllipsisType = pybind11::ellipsis;
-using WeakRef = pybind11::weakref;
-using Capsule = pybind11::capsule;
-using Sequence = pybind11::sequence;
-using Buffer = pybind11::buffer;
-using MemoryView = pybind11::memoryview;
-using Bytes = pybind11::bytes;
-using Bytearray = pybind11::bytearray;
-class NotImplemented;  // done
-class Bool;  // done
-class Int;  // done
-class Float;  // done
-class Complex;  // done
-class Slice;  // done
-class Range;  // done
-class List;  // done
-class Tuple;  // done
-class Set;  // done
-class FrozenSet;  // done
-class KeysView;  // done
-class ItemsView;  // done
-class ValuesView;  // done
-class Dict;  // done
-class MappingProxy;  // done
-class Str;  // done
-class Type;  // done
-class Function;
-class Method;
-class ClassMethod;
-class StaticMethod;
-class Property;
-class Timedelta;  // done
-class Timezone;  // done
-class Date;
-class Time;
-class Datetime;
-
-
-// python builtins
-const static NoneType None;
-const static EllipsisType Ellipsis;
-using pybind11::globals;
-using pybind11::exec;
-using pybind11::eval;
-using pybind11::eval_file;
-using pybind11::isinstance;
-using pybind11::hasattr;
-using pybind11::delattr;
-using pybind11::getattr;
-using pybind11::setattr;
-using pybind11::hash;
-using pybind11::len;
-using pybind11::len_hint;
-using pybind11::repr;
-using pybind11::print;
-using pybind11::iter;
+/* Pybind11 has rich support for converting between Python and C++ types, calling
+ * Python functions from C++ (and vice versa), and exposing C++ types to Python.  We
+ * don't change any of this behavior, meaning extensions should work with pybind11 as
+ * expected.
+ *
+ * Pybind11 documentation:
+ *     https://pybind11.readthedocs.io/en/stable/
+ */
 
 
 // binding functions
-// PYBIND11_MODULE                      <- macros don't respect namespaces
-// PYBIND11_EMBEDDED_MODULE
-using pybind11::implicitly_convertible;
 using pybind11::cast;
 using pybind11::reinterpret_borrow;
 using pybind11::reinterpret_steal;
+using pybind11::implicitly_convertible;
 using pybind11::args_are_all_keyword_or_ds;
 using pybind11::make_tuple;
 using pybind11::make_iterator;
@@ -169,6 +54,8 @@ using pybind11::make_key_iterator;
 using pybind11::make_value_iterator;
 using pybind11::initialize_interpreter;
 using pybind11::scoped_interpreter;
+// PYBIND11_MODULE                      <- macros don't respect namespaces
+// PYBIND11_EMBEDDED_MODULE
 // PYBIND11_OVERRIDE
 // PYBIND11_OVERRIDE_PURE
 // PYBIND11_OVERRIDE_NAME
@@ -213,18 +100,183 @@ namespace detail = pybind11::detail;
 //////////////////////////
 
 
+/* Pybind11 exposes some, but not all of the built-in Python errors.  We expand them
+ * here so that users never reach for an error that doesn't exist, and we replicate the
+ * standard error hierarchy so that users can use identical semantics to normal Python.
+ *
+ * CPython exception types:
+ *      https://docs.python.org/3/c-api/exceptions.html#standard-exceptions
+ *
+ * Hierarchy:
+ *      https://docs.python.org/3/library/exceptions.html#exception-hierarchy
+ */
 
 
+// These exceptions have no python equivalent
+using pybind11::error_already_set;
+using Exception = pybind11::builtin_exception;
+using CastError = pybind11::cast_error;
+using ReferenceCastError = pybind11::reference_cast_error;
 
 
+#define PYTHON_EXCEPTION(base, cls, exc)                                                \
+    class PYBIND11_EXPORT_EXCEPTION cls : public base {                                 \
+    public:                                                                             \
+        using base::base;                                                               \
+        cls() : cls("") {}                                                              \
+        void set_error() const override { PyErr_SetString(exc, what()); }               \
+    };                                                                                  \
 
 
-///////////////////////
-////    HELPERS    ////
-///////////////////////
+PYTHON_EXCEPTION(Exception, ArithmeticError, PyExc_ArithmeticError)
+    PYTHON_EXCEPTION(ArithmeticError, FloatingPointError, PyExc_OverflowError)
+    PYTHON_EXCEPTION(ArithmeticError, OverflowError, PyExc_OverflowError)
+    PYTHON_EXCEPTION(ArithmeticError, ZeroDivisionError, PyExc_ZeroDivisionError)
+PYTHON_EXCEPTION(Exception, AssertionError, PyExc_AssertionError)
+PYTHON_EXCEPTION(Exception, AttributeError, PyExc_AttributeError)
+PYTHON_EXCEPTION(Exception, BufferError, PyExc_BufferError)
+PYTHON_EXCEPTION(Exception, EOFError, PyExc_EOFError)
+PYTHON_EXCEPTION(Exception, ImportError, PyExc_ImportError)
+    PYTHON_EXCEPTION(ImportError, ModuleNotFoundError, PyExc_ModuleNotFoundError)
+PYTHON_EXCEPTION(Exception, LookupError, PyExc_LookupError)
+    PYTHON_EXCEPTION(LookupError, IndexError, PyExc_IndexError)
+    PYTHON_EXCEPTION(LookupError, KeyError, PyExc_KeyError)
+PYTHON_EXCEPTION(Exception, MemoryError, PyExc_MemoryError)
+PYTHON_EXCEPTION(Exception, NameError, PyExc_NameError)
+    PYTHON_EXCEPTION(NameError, UnboundLocalError, PyExc_UnboundLocalError)
+PYTHON_EXCEPTION(Exception, OSError, PyExc_OSError)
+    PYTHON_EXCEPTION(OSError, BlockingIOError, PyExc_BlockingIOError)
+    PYTHON_EXCEPTION(OSError, ChildProcessError, PyExc_ChildProcessError)
+    PYTHON_EXCEPTION(OSError, ConnectionError, PyExc_ConnectionError)
+        PYTHON_EXCEPTION(ConnectionError, BrokenPipeError, PyExc_BrokenPipeError)
+        PYTHON_EXCEPTION(ConnectionError, ConnectionAbortedError, PyExc_ConnectionAbortedError)
+        PYTHON_EXCEPTION(ConnectionError, ConnectionRefusedError, PyExc_ConnectionRefusedError)
+        PYTHON_EXCEPTION(ConnectionError, ConnectionResetError, PyExc_ConnectionResetError)
+    PYTHON_EXCEPTION(OSError, FileExistsError, PyExc_FileExistsError)
+    PYTHON_EXCEPTION(OSError, FileNotFoundError, PyExc_FileNotFoundError)
+    PYTHON_EXCEPTION(OSError, InterruptedError, PyExc_InterruptedError)
+    PYTHON_EXCEPTION(OSError, IsADirectoryError, PyExc_IsADirectoryError)
+    PYTHON_EXCEPTION(OSError, NotADirectoryError, PyExc_NotADirectoryError)
+    PYTHON_EXCEPTION(OSError, PermissionError, PyExc_PermissionError)
+    PYTHON_EXCEPTION(OSError, ProcessLookupError, PyExc_ProcessLookupError)
+    PYTHON_EXCEPTION(OSError, TimeoutError, PyExc_TimeoutError)
+PYTHON_EXCEPTION(Exception, ReferenceError, PyExc_ReferenceError)
+PYTHON_EXCEPTION(Exception, RuntimeError, PyExc_RuntimeError)
+    PYTHON_EXCEPTION(RuntimeError, NotImplementedError, PyExc_NotImplementedError)
+    PYTHON_EXCEPTION(RuntimeError, RecursionError, PyExc_RecursionError)
+PYTHON_EXCEPTION(Exception, StopAsyncIteration, PyExc_StopAsyncIteration)
+PYTHON_EXCEPTION(Exception, StopIteration, PyExc_StopIteration)
+PYTHON_EXCEPTION(Exception, SyntaxError, PyExc_SyntaxError)
+    PYTHON_EXCEPTION(SyntaxError, IndentationError, PyExc_IndentationError)
+        PYTHON_EXCEPTION(IndentationError, TabError, PyExc_TabError)
+PYTHON_EXCEPTION(Exception, SystemError, PyExc_SystemError)
+PYTHON_EXCEPTION(Exception, TypeError, PyExc_TypeError)
+PYTHON_EXCEPTION(Exception, ValueError, PyExc_ValueError)
+    PYTHON_EXCEPTION(ValueError, UnicodeError, PyExc_UnicodeError)
+        PYTHON_EXCEPTION(UnicodeError, UnicodeDecodeError, PyExc_UnicodeDecodeError)
+        PYTHON_EXCEPTION(UnicodeError, UnicodeEncodeError, PyExc_UnicodeEncodeError)
+        PYTHON_EXCEPTION(UnicodeError, UnicodeTranslateError, PyExc_UnicodeTranslateError)
 
 
-// impl namespace is different from detail in order to avoid conflicts with pybind11
+#undef PYTHON_EXCEPTION
+
+
+///////////////////////////////
+////    WRAPPER CLASSES    ////
+///////////////////////////////
+
+
+/* Pybind11's wrapper classes cover most of the Python standard library, but not all of
+ * it, and not with the same syntax.  They're also all given in lowercase C++ style,
+ * which can cause ambiguities with native C++ types (e.g. pybind11::int_) and
+ * non-member functions of the same name.  As such, we provide our own set of wrappers
+ * that extend the pybind11 types and provide a more pythonic interface, backed by
+ * optimized API calls.  These wrappers are designed to be used with nearly identical
+ * semantics to the Python types they represent, making them more intuitive and easier
+ * to use from C++.  They should be largely self-documenting.  For questions, refer to
+ * the Python documentation first and then the source code for the types themselves,
+ * which are provided in named header files within this directory.
+ *
+ * The final syntax is very similar to standard pybind11.  For example, the following
+ * pybind11 code:
+ *
+ *    py::list foo = py::cast(std::vector<int>{1, 2, 3});
+ *    py::int_ bar = foo.attr("pop")();
+ *
+ * Would be written as:
+ *
+ *    py::List foo {1, 2, 3};
+ *    py::Int bar = foo.pop();
+ *
+ * Which closely mimics Python:
+ *
+ *    foo = [1, 2, 3]
+ *    bar = foo.pop()
+ *
+ * Note that the initializer list syntax is standardized for all container types, as
+ * well as any function/method that expects a sequence.  This gives a direct equivalent
+ * to Python's tuple, list, set, and dict literals, which can be expressed as:
+ *
+ *     py::Tuple{1, "a", true};                     // (1, "a", True)
+ *     py::List{1, "a", true};                      // [1, 2, 3]
+ *     py::Set{1, "a", true};                       // {1, 2, 3}
+ *     py::Dict{{1, 3.0}, {"a", 2}, {true, "x"}};   // {1: 3.0, "a": 2, True: "x"}
+ *
+ * Note also that these initializer lists can be of any type, including mixed types.
+ *
+ * Built-in Python types:
+ *    https://docs.python.org/3/library/stdtypes.html
+ */
+
+
+// wrapper types
+template <typename... Args>
+using Class = pybind11::class_<Args...>;
+using Module = pybind11::module_;
+using Handle = pybind11::handle;
+using Object = pybind11::object;
+using NoneType = pybind11::none;
+using EllipsisType = pybind11::ellipsis;
+using Iterator = pybind11::iterator;
+using WeakRef = pybind11::weakref;
+using Capsule = pybind11::capsule;
+using Buffer = pybind11::buffer;
+using MemoryView = pybind11::memoryview;
+using Bytes = pybind11::bytes;
+using Bytearray = pybind11::bytearray;
+class NotImplementedType;  // done
+class Bool;  // done
+class Int;  // done
+class Float;  // done
+class Complex;  // done
+class Slice;  // done
+class Range;  // done
+class List;  // done
+class Tuple;  // done
+class Set;  // done
+class FrozenSet;  // done
+class KeysView;  // done
+class ItemsView;  // done
+class ValuesView;  // done
+class Dict;  // done
+class MappingProxy;  // done
+class Str;  // done
+class Type;  // done
+class Function;
+class Method;
+class ClassMethod;
+class StaticMethod;
+class Property;
+class Timedelta;  // done
+class Timezone;  // done
+class Date;
+class Time;
+class Datetime;
+
+const static NoneType None;
+const static EllipsisType Ellipsis;
+
+
 namespace impl {
 
     /* A simple struct that converts a generic C++ object into a Python equivalent in
@@ -273,13 +325,6 @@ namespace impl {
             return result;
         }
     }
-
-    /* SFINAE trait that detects whether a C++ container has an STL-style `size()`
-    method. */
-    template <typename T, typename = void>
-    constexpr bool has_size = false;
-    template <typename T>
-    constexpr bool has_size<T, std::void_t<decltype(std::declval<T>().size())>> = true;
 
     /* Mixin holding operator overloads for numeric types.  For some reason, pybind11
     enables these operators, but does not allow implicit conversion from C++ operands,
@@ -715,8 +760,6 @@ namespace impl {
 }  // namespace impl
 
 
-/* New subclass of pybind11::object that represents Python's global NotImplemented
-type. */
 class NotImplementedType :
     public pybind11::object,
     public impl::EqualCompare<NotImplementedType>
@@ -748,29 +791,175 @@ public:
 const static NotImplementedType NotImplemented;
 
 
+/* TODO: at some point in the future, we could potentially support static typing for
+ * python containers:
+ *
+ *     py::List foo {1, 2, 3};
+ *     py::TypedList<int> bar = foo;
+ *
+ * List would just be a type alias for `TypedList<void>`, which would enable dynamic
+ * typing.  If specialized on a subclass of `pybind11::object`, we would apply an
+ * isinstance check whenever an item is added to the list.  If specialized on a C++
+ * type, then we could use the compiler to enable static checks.  This would add a lot
+ * of code, but it would be really awesome for cross-language type safety.  We could
+ * also potentially optimize for C++ types that are supported in the CPython API.  But
+ * again, that would create a lot of extra code.
+ */
+
+
 ////////////////////////////////
 ////    GLOBAL FUNCTIONS    ////
 ////////////////////////////////
 
 
-/* Equivalent to Python `import module` */
-inline Module import(const char* module) {
-    return std::move(pybind11::module_::import(module));
-}
+/* Similarly, pybind11 exposes a fair number of built-in Python functions, but not all.
+ * This can cause confusion when users try to port Python code to C++, only to find that
+ * they need to do some arcane trickery to get simple things like `range()` to work as
+ * expected.  As such, we provide our own set of global functions that exactly replicate
+ * the Python builtins, and can be used with identical semantics.
+ *
+ * Built-in Python functions:
+ *      https://docs.python.org/3/library/functions.html
+ *
+ * NOTE: many of these functions are overloaded to work with both Python and C++ types
+ * interchangeably, which makes it possible to mix and match Python and C++ types in a
+ * single expression.  Here's a list of built-in functions that support this:
+ *
+ *  py::hash() - delegates to std::hash for all types, which is overloaded to redirect
+ *      to Python __hash__ if it exists.  Unhashable types will raise a compile-time
+ *      error.
+ *
+ *  py::len() - returns either Python len() or C++ size() for containers that have it,
+ *      or std::nullopt for types that don't.
+ *
+ *  py::iter() - either returns Python __iter__() or generates a new Python iterator
+ *      from a C++ container's begin() and end() methods.  Passing an rvalue raises a
+ *      compile-time error.
+ *
+ *  py::reversed() - either returns Python __reversed__() or generates a new Python
+ *      iterator from a C++ container's rbegin() and rend() methods.  Passing an rvalue
+ *      raises a compile-time error.
+ *
+ *  py::callable<Args...>() - for Python objects, checks callable(obj) and then
+ *      optionally inspects the signature and ensures a match.  For C++ objects,
+ *      delegates to std::is_invocable_v<Args...>.
+ *
+ *          NOTE: currently, python callables are only checked for the number of
+ *          arguments, not their types.  It might be possible to add type safety in the
+ *          future, but there are many blockers before that can happen.
+ *
+ *  py::str() - delegates to std::to_string() and the stream insertion operator (<<)
+ *      for C++ types that support it.  Otherwise, attempts to convert to a Python type
+ *      and then calls str() on it.
+ *  
+ *  py::repr() - similar to py::str(), except that it calls Python repr() rather than
+ *      str(), and adds a fallback to typeid().name() if all else fails.
+ *
+ *  ... As well as all math operators (e.g. abs(), pow(), truediv(), etc.) which are
+ *  generic and can be used with any combination of Python and C++ types.
+ */
 
 
-/* Equivalent to Python `issubclass(derived, base)`. */
-template <typename T>
-inline bool issubclass(const pybind11::type& derived, T&& base) {
-    int result = PyObject_IsSubclass(
-        derived.ptr(),
-        detail::object_or_cast(std::forward<T>(base)).ptr()
-    );
-    if (result == -1) {
-        throw error_already_set();
-    }
-    return result;
-}
+namespace impl {
+
+    /* SFINAE struct allows py::iter() to work on both python and C++ types. */
+    template <typename T, typename = void>
+    static constexpr bool use_pybind11_iter = false;
+    template <typename T>
+    static constexpr bool use_pybind11_iter<
+        T,
+        std::void_t<decltype(pybind11::iter(std::declval<T>()))>
+    > = true;
+
+    /* SFINAE struct allows py::hash() to raise informative error messages for
+    unhashable types. */
+    template <typename T, typename = void>
+    static constexpr bool has_std_hash = false;
+    template <typename T>
+    static constexpr bool has_std_hash<T, std::void_t<decltype(std::hash<T>{})>> = true;
+
+    /* SFINAE trait that detects whether a C++ container has an STL-style `size()`
+    method. */
+    template <typename T, typename = void>
+    constexpr bool has_size = false;
+    template <typename T>
+    constexpr bool has_size<T, std::void_t<decltype(std::declval<T>().size())>> = true;
+
+    /* SFINAE trait that detects whether std::to_string is invocable with a particular
+    type. */
+    template <typename T, typename = void>
+    constexpr bool has_to_string = false;
+    template <typename T>
+    constexpr bool has_to_string<
+        T,
+        std::void_t<decltype(std::to_string(std::declval<T>()))>
+    > = true;
+
+    /* SFINAE trait that detects whether the given type overloads the stream insertion
+    operator (<<) for string representation. */
+    template <typename T, typename = void>
+    constexpr bool has_stream_insertion = false;
+    template <typename T>
+    constexpr bool has_stream_insertion<
+        T,
+        std::void_t<decltype(std::declval<std::ostream&>() << std::declval<T>())>
+    > = true;
+
+}  // namespace impl
+
+
+// not implemented
+// enumerate() - use a standard range variable
+// filter() - not implemented for now due to technical challenges
+// help() - not applicable for compiled C++ code
+// input() - causes Python interpreter to hang, which brings problems in compiled C++
+// map() - not implemented for now due to technical challenges
+// open() - not implemented for now - use C++ alternatives
+// zip() - use C++ iterators directly.
+
+
+// Superceded by class wrappers
+// bool()           -> py::Bool
+// bytearray()      -> py::Bytearray
+// bytes()          -> py::Bytes
+// classmethod()    -> py::ClassMethod
+// compile()        -> py::Code
+// complex()        -> py::Complex
+// dict()           -> py::Dict
+// float()          -> py::Float
+// frozenset()      -> py::FrozenSet
+// int()            -> py::Int
+// list()           -> py::List
+// memoryview()     -> py::MemoryView
+// object()         -> py::Object
+// property()       -> py::Property
+// range()          -> py::Range
+// set()            -> py::Set
+// slice()          -> py::Slice
+// staticmethod()   -> py::StaticMethod
+// str()            -> py::Str
+// tuple()          -> py::Tuple
+// type()           -> py::Type
+
+
+// Python-only (no C++ support)
+Dict builtins();
+using pybind11::delattr;
+List dir();
+List dir(const pybind11::handle&);
+using pybind11::eval;
+using pybind11::eval_file;
+using pybind11::exec;
+using pybind11::getattr;
+using pybind11::globals;
+using pybind11::hasattr;
+using pybind11::isinstance;
+Dict locals();
+using pybind11::len_hint;
+using pybind11::print;
+using pybind11::setattr;
+Dict vars();
+Dict vars(const pybind11::handle&);
 
 
 /* Equivalent to Python `aiter(obj)`. */
@@ -781,48 +970,6 @@ inline Object aiter(const pybind11::handle& obj) {
     );
     if (result == nullptr) {
         throw error_already_set();
-    }
-    return reinterpret_steal<Object>(result);
-}
-
-
-/* Equivalent to Python `reversed(obj)`. */
-inline Iterator reversed(const pybind11::handle& obj) {
-    return obj.attr("__reversed__")();
-}
-
-
-/* Specialization of `reversed()` for Tuple and List objects that use direct array
-access rather than going through the Python API. */
-template <typename T, std::enable_if_t<impl::is_reverse_iterable<T>, int> = 0>
-inline Iterator reversed(const T& obj) {
-    using Iter = typename T::ReverseIterator;
-    return pybind11::make_iterator(Iter(obj.data(), obj.size() - 1), Iter(-1));
-}
-
-
-/* Equivalent to Python `next(obj)`. */
-inline Object next(const pybind11::iterator& iter) {
-    PyObject* result = PyIter_Next(iter.ptr());
-    if (result == nullptr) {
-        if (PyErr_Occurred()) {
-            throw error_already_set();
-        }
-        throw StopIteration();
-    }
-    return reinterpret_steal<Object>(result);
-}
-
-
-/* Equivalent to Python `next(obj, default)`. */
-template <typename T>
-inline Object next(const pybind11::iterator& iter, T&& default_value) {
-    PyObject* result = PyIter_Next(iter.ptr());
-    if (result == nullptr) {
-        if (PyErr_Occurred()) {
-            throw error_already_set();
-        }
-        return detail::object_or_cast(std::forward<T>(default_value));
     }
     return reinterpret_steal<Object>(result);
 }
@@ -857,11 +1004,384 @@ inline Object anext(const pybind11::handle& obj, T&& default_value) {
 }
 
 
-// TODO: any(), all(), enumerate(), etc. ?  For full coverage.
+/* Equivalent to Python `import module` */
+inline Module import(const char* module) {
+    return std::move(pybind11::module_::import(module));
+}
+
+
+/* Equivalent to Python `issubclass(derived, base)`. */
+template <typename T>
+inline bool issubclass(const pybind11::type& derived, T&& base) {
+    int result = PyObject_IsSubclass(
+        derived.ptr(),
+        detail::object_or_cast(std::forward<T>(base)).ptr()
+    );
+    if (result == -1) {
+        throw error_already_set();
+    }
+    return result;
+}
+
+
+/* Equivalent to Python `next(obj)`. */
+inline Object next(const pybind11::iterator& iter) {
+    PyObject* result = PyIter_Next(iter.ptr());
+    if (result == nullptr) {
+        if (PyErr_Occurred()) {
+            throw error_already_set();
+        }
+        throw StopIteration();
+    }
+    return reinterpret_steal<Object>(result);
+}
+
+
+/* Equivalent to Python `next(obj, default)`. */
+template <typename T>
+inline Object next(const pybind11::iterator& iter, T&& default_value) {
+    PyObject* result = PyIter_Next(iter.ptr());
+    if (result == nullptr) {
+        if (PyErr_Occurred()) {
+            throw error_already_set();
+        }
+        return detail::object_or_cast(std::forward<T>(default_value));
+    }
+    return reinterpret_steal<Object>(result);
+}
+
+
+// TODO: super()
+
+
+// interoperable with C++
+template <typename T>
+auto abs(T&&);
+Str ascii(const pybind11::handle&);  // TODO: accept py::Str and return std::string.
+Str bin(const pybind11::handle&);
+bool callable(const pybind11::handle&);  // TODO: make generic (check signature using templates?)
+template <typename T, typename U>
+auto cdiv(T&&, U&&);
+template <typename T, typename U>
+auto cdivmod(T&&, U&&);
+Str chr(const pybind11::handle&);
+template <typename T, typename U>
+auto cmod(T&&, U&&);
+template <typename T, typename U>
+auto divmod(T&&, U&&);
+template <typename T, typename U>
+auto floordiv(T&&, U&&);
+std::string format(const Str&, const Str&);  // TODO: delegate to py::Str?
+Str hex(const pybind11::handle&);
+template <typename T, typename U>
+auto inplace_cdiv(T&&, U&&);
+template <typename T, typename U>
+auto inplace_cmod(T&&, U&&);
+template <typename T, typename U>
+auto inplace_floordiv(T&&, U&&);
+template <typename T, typename U>
+auto inplace_matmul(T&&, U&&);
+template <typename T, typename U>
+auto inplace_mod(T&&, U&&);
+template <typename T, typename U>
+auto inplace_pow(T&&, U&&);
+template <typename T, typename U, typename V>
+auto inplace_pow(T&&, U&&, V&&);
+template <typename T, typename U>
+auto inplace_truediv(T&&, U&&);
+template <typename T, typename U>
+auto matmul(T&&, U&&);
+template <typename T, typename U>
+auto mod(T&&, U&&);
+Str oct(const pybind11::handle&);  // TODO: make compatible with C++?
+Int ord(const pybind11::handle&);  // TODO: make compatible with C++?
+template <typename T, typename U>
+auto pow(T&&, U&&);
+template <typename T, typename U, typename V>
+auto pow(T&&, U&&, V&&);
+template <typename T>
+auto round(T&&);  // TODO: implement with optional ndigits/algorithm tags
+List sorted(const pybind11::handle&);  // TODO: accept C++ containers and return std::vector?
+template <typename T, typename U>
+auto truediv(T&&, U&&);
+
+
+/* Equivalent to Python `all(obj)`, except that it also works on iterable C++
+containers. */
+template <typename T>
+inline bool all(T&& obj) {
+    return std::all_of(
+        obj.begin(),
+        obj.end(),
+        [](auto&& item) {
+            if constexpr (detail::is_pyobject<std::decay_t<decltype(item)>>::value) {
+                return item.template cast<bool>();
+            } else {
+                return static_cast<bool>(item);
+            }
+        }
+    );
+}
+
+
+/* Equivalent to Python `any(obj)`, except that it also works on iterable C++
+containers. */
+template <typename T>
+inline bool any(T&& obj) {
+    return std::any_of(
+        obj.begin(),
+        obj.end(),
+        [](auto&& item) {
+            if constexpr (detail::is_pyobject<std::decay_t<decltype(item)>>::value) {
+                return item.template cast<bool>();
+            } else {
+                return static_cast<bool>(item);
+            }
+        }
+    );
+}
+
+
+/* Equivalent to Python `hash(obj)`, but also accepts C++ types and converts hash not
+implemented errors into compile-time errors. */
+template <typename T>
+inline size_t hash(T&& obj) {
+    static_assert(
+        impl::has_std_hash<std::decay_t<T>>,
+        "hash() is not supported for this type.  Did you forget to overload std::hash?"
+    );
+    return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
+}
+
+
+/* Equivalent to Python `id(obj)`, but also works with C++ values.  Returns an object's
+actual memory address casted to an integer. */
+template <typename T>
+size_t id(T&& obj) {
+    using U = std::decay_t<T>;
+
+    if constexpr (std::is_pointer_v<U>) {
+        return reinterpret_cast<size_t>(obj);
+
+    } else if constexpr (detail::is_pyobject<U>::value) {
+        return reinterpret_cast<size_t>(obj.ptr());
+
+    } else {
+        return reinterpret_cast<size_t>(&obj);
+    }
+}
+
+
+/* Equivalent to Python `iter(obj)` except that it can also accept C++ containers and
+generate Python iterators over them.  Note that C++ types as rvalues are not allowed,
+and will trigger a compiler error. */
+template <typename T>
+inline Iterator iter(T&& obj) {
+    if constexpr (impl::use_pybind11_iter<T>) {
+        return pybind11::iter(std::forward<T>(obj));
+    } else {
+        static_assert(
+            !std::is_rvalue_reference_v<decltype(obj)>,
+            "passing an rvalue reference to py::iter() is unsafe"
+        );
+        return pybind11::make_iterator(obj.begin(), obj.end());
+    }
+}
+
+
+/* Equivalent to Python `len(obj)`, but also accepts C++ types implementing a .size()
+method.  Returns nullopt if the size could not be determined. */
+template <typename T>
+inline std::optional<size_t> len(T&& obj) {
+    if constexpr (detail::is_pyobject<T>::value) {
+        try {
+            return pybind11::len(std::forward<T>(obj));
+        } catch (...) {
+            return std::nullopt;
+        }
+    } else if constexpr (impl::has_size<std::decay_t<T>>) {
+        return obj.size();
+    } else {
+        return std::nullopt;
+    }
+}
+
+
+/* Equivalent to Python `max(obj)`, but also works on iterable C++ containers. */
+template <typename T>
+inline auto max(T&& obj) {
+    return *std::max_element(obj.begin(), obj.end());
+}
+
+
+/* Equivalent to Python `min(obj)`, but also works on iterable C++ containers. */
+template <typename T>
+inline auto min(T&& obj) {
+    return *std::min_element(obj.begin(), obj.end());
+}
+
+
+/* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
+represent C++ types using std::to_string or the stream insertion operator (<<).  If all
+else fails, falls back to typeid().name(). */
+template <typename T>
+inline std::string repr(T&& obj) {
+    using U = std::decay_t<T>;
+
+    if constexpr (impl::has_to_string<U>) {
+        return std::to_string(std::forward<T>(obj));
+
+    } else if constexpr (impl::has_stream_insertion<U>) {
+        std::ostringstream stream;
+        stream << std::forward<T>(obj);
+        return stream.str();
+
+    } else {
+        try {
+            return pybind11::repr(std::forward<T>(obj)).template cast<std::string>();
+        } catch (...) {
+            return typeid(U).name();
+        }
+    }
+}
+
+
+/* Equivalent to Python `reversed(obj)` except that it can also accept C++ containers
+and generate Python iterators over them.  Note that C++ types as rvalues are not
+allowed, and will trigger a compiler error. */
+template <typename T>
+inline Iterator reversed(T&& obj) {
+    if constexpr (detail::is_pyobject<T>::value) {
+        return obj.attr("__reversed__")();
+    } else {
+        static_assert(
+            !std::is_rvalue_reference_v<decltype(obj)>,
+            "passing an rvalue reference to py::reversed() is unsafe"
+        );
+        return pybind11::make_iterator(obj.rbegin(), obj.rend());
+    }
+}
+
+
+/* Specialization of `reversed()` for Tuple and List objects that use direct array
+access rather than going through the Python API. */
+template <typename T, std::enable_if_t<impl::is_reverse_iterable<T>, int> = 0>
+inline Iterator reversed(const T& obj) {
+    using Iter = typename T::ReverseIterator;
+    return pybind11::make_iterator(Iter(obj.data(), obj.size() - 1), Iter(-1));
+}
+
+
+/* Equivalent to Python `sum(obj)`, but also works on C++ containers. */
+template <typename T>
+inline auto sum(T&& obj) {
+    return std::accumulate(obj.begin(), obj.end(), T{});
+}
 
 
 }  // namespace py
 }  // namespace bertrand
+
+
+/* NOTE: for compatibility with C++, py::hash() always delegates to std::hash, which
+ * can be specialized for any type.  This allows pybind11 types to be used as keys in
+ * std::unordered_map/std::unordered_set just like any other C++ type, and means that
+ * we can catch non-hashable types at compile time rather than runtime.  The downside
+ * is that we need to specialize std::hash for every pybind11 type that is hashable at
+ * the python level, which is a bit cumbersome.  To facilitate this, the
+ * BERTRAND_STD_HASH() macro should be invoked for every pybind11 type that can be
+ * hashed.  This just delegates to pybind11::hash, which invokes Python's __hash__
+ * special method like normal.
+ *
+ * NOTE: BERTRAND_STD_HASH() should always be invoked in the global namespace, and it
+ * cannot be used if the type accepts template parameters.
+ */
+
+
+namespace std {
+
+    template <typename... Args>
+    struct hash<bertrand::py::Class<Args...>> {
+        size_t operator()(const bertrand::py::Class<Args...>& obj) const {
+            return pybind11::hash(obj);
+        }
+    };
+
+}
+
+
+#define BERTRAND_STD_HASH(cls)                                                          \
+namespace std {                                                                         \
+    template <>                                                                         \
+    struct hash<cls> {                                                                  \
+        size_t operator()(const cls& obj) const {                                       \
+            return pybind11::hash(obj);                                                 \
+        }                                                                               \
+    };                                                                                  \
+}                                                                                       \
+
+
+BERTRAND_STD_HASH(bertrand::py::Module)
+BERTRAND_STD_HASH(bertrand::py::Handle)
+BERTRAND_STD_HASH(bertrand::py::Object)
+BERTRAND_STD_HASH(bertrand::py::NoneType)
+BERTRAND_STD_HASH(bertrand::py::EllipsisType)
+BERTRAND_STD_HASH(bertrand::py::Iterator)
+BERTRAND_STD_HASH(bertrand::py::WeakRef)
+BERTRAND_STD_HASH(bertrand::py::Capsule)
+BERTRAND_STD_HASH(bertrand::py::Buffer)
+BERTRAND_STD_HASH(bertrand::py::MemoryView)
+BERTRAND_STD_HASH(bertrand::py::Bytes)
+BERTRAND_STD_HASH(bertrand::py::Bytearray)
+BERTRAND_STD_HASH(bertrand::py::NotImplementedType)
+
+
+/* pybind11 doesn't carry over python semantics for equality comparisons, so in order
+ * to use raw pybind11 types (not our custom wrappers) in std::unordered_map and
+ * std::unordered_set, we need to specialize std::equal_to for each type.  This should
+ * not be necessary for any derived types, as they should use Python semantics by
+ * default.
+ */
+
+
+namespace std {
+
+    template <typename... Args>
+    struct equal_to<bertrand::py::Class<Args...>> {
+        bool operator()(
+            const bertrand::py::Class<Args...>& a,
+            const bertrand::py::Class<Args...>& b
+        ) const {
+            return a.equal(b);
+        }
+    };
+
+}
+
+
+#define BERTRAND_STD_EQUAL_TO(cls)                                                      \
+namespace std {                                                                         \
+    template <>                                                                         \
+    struct equal_to<cls> {                                                              \
+        bool operator()(const cls& a, const cls& b) const {                             \
+            return a.equal(b);                                                          \
+        }                                                                               \
+    };                                                                                  \
+}                                                                                       \
+
+
+BERTRAND_STD_EQUAL_TO(bertrand::py::Module)
+BERTRAND_STD_EQUAL_TO(bertrand::py::Handle)
+BERTRAND_STD_EQUAL_TO(bertrand::py::Object)
+BERTRAND_STD_EQUAL_TO(bertrand::py::NoneType)
+BERTRAND_STD_EQUAL_TO(bertrand::py::EllipsisType)
+BERTRAND_STD_EQUAL_TO(bertrand::py::Iterator)
+BERTRAND_STD_EQUAL_TO(bertrand::py::WeakRef)
+BERTRAND_STD_EQUAL_TO(bertrand::py::Capsule)
+BERTRAND_STD_EQUAL_TO(bertrand::py::Buffer)
+BERTRAND_STD_EQUAL_TO(bertrand::py::MemoryView)
+BERTRAND_STD_EQUAL_TO(bertrand::py::Bytes)
+BERTRAND_STD_EQUAL_TO(bertrand::py::Bytearray)
 
 
 // TODO: implement type casters for range, MappingProxy, KeysView, ValuesView,
@@ -871,4 +1391,4 @@ inline Object anext(const pybind11::handle& obj, T&& default_value) {
 // #undef CONSTRUCTORS  // TODO: uncommenting this makes it impossible to use the
 // CONSTRUCTORS macro in other classes.  Probably 
 
-#endif // BERTRAND_PYTHON_CORE_H
+#endif // BERTRAND_PYTHON_COMMON_H

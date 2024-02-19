@@ -362,42 +362,11 @@ public:
 };
 
 
-/* Equivalent to Python `type(obj)`. */
-inline Type type(const pybind11::handle& obj) {
-    return pybind11::type::of(obj);
-}
-
-
-/* Equivalent to Python `type(name, bases, namespace)`. */
-template <typename T, typename U>
-inline Type type(const pybind11::str& name, T&& bases, U&& dict) {
-    return {name, std::forward<T>(bases), std::forward<U>(dict)};
-}
-
-
-/* Equivalent to Python `type(name, bases, namespace)`. */
-template <typename T, typename U>
-inline Type type(const char* name, T&& bases, U&& dict) {
-    return {name, std::forward<T>(bases), std::forward<U>(dict)};
-}
-
-
-/* Equivalent to Python `type(name, bases, namespace)`. */
-template <typename T, typename U>
-inline Type type(const std::string& name, T&& bases, U&& dict) {
-    return {name, std::forward<T>(bases), std::forward<U>(dict)};
-}
-
-
-/* Equivalent to Python `type(name, bases, namespace)`. */
-template <typename T, typename U>
-inline Type type(const std::string_view& name, T&& bases, U&& dict) {
-    return {name, std::forward<T>(bases), std::forward<U>(dict)};
-}
-
-
 }  // namespace python
 }  // namespace bertrand
+
+
+BERTRAND_STD_HASH(bertrand::py::Type)
 
 
 #endif  // BERTRAND_PYTHON_TYPE_H

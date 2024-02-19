@@ -852,4 +852,27 @@ Int ord(const pybind11::handle& obj) {
 }  // namespace bertrand
 
 
+namespace std {
+
+    template <>
+    struct hash<bertrand::py::Str> {
+        size_t operator()(const bertrand::py::Str& str) const {
+            // ASCII string special case (taken directly from CPython source)
+            // see: cpython/objects/setobject.c  -> set_contains_key()
+            Py_ssize_t result;
+            if (!PyUnicode_CheckExact(str.ptr()) ||
+                (result = _PyASCIIObject_CAST(str.ptr())->hash) == -1
+            ) {
+                result = PyObject_Hash(str.ptr());  // fall back to PyObject_Hash()
+                if (result == -1 && PyErr_Occurred()) {
+                    throw bertrand::py::error_already_set();
+                }
+            }
+            return static_cast<size_t>(result);
+        }
+    };
+
+}
+
+
 #endif  // BERTRAND_PYTHON_STRING_H

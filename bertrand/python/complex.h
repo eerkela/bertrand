@@ -161,7 +161,6 @@ public:
 }  // namespace python
 
 
-// type casters for custom pybind11 types
 namespace pybind11 {
 namespace detail {
 
@@ -249,6 +248,9 @@ COMPLEX_CASTER(long double);
 
 } // namespace detail
 } // namespace pybind11
+
+
+BERTRAND_STD_HASH(bertrand::py::Complex);
 
 
 #endif  // BERTRAND_PYTHON_COMPLEX_H

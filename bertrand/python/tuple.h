@@ -256,4 +256,7 @@ public:
 }  // namespace bertrand
 
 
+BERTRAND_STD_HASH(bertrand::py::Tuple)
+
+
 #endif  // BERTRAND_PYTHON_TUPLE_H

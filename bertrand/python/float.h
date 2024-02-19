@@ -109,9 +109,11 @@ public:
 };
 
 
-
 }  // namespace python
 }  // namespace bertrand
+
+
+BERTRAND_STD_HASH(bertrand::py::Float)
 
 
 #endif  // BERTRAND_PYTHON_FLOAT_H

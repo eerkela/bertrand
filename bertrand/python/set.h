@@ -617,7 +617,7 @@ class Set :
         if (result == -1) {
             throw error_already_set();
         } else if (result == 0) {
-            throw KeyError(repr(obj).cast<std::string>());
+            throw KeyError(repr(obj));
         }
     }
 
@@ -836,6 +836,9 @@ class Set :
 
 }  // namespace python
 }  // namespace bertrand
+
+
+BERTRAND_STD_HASH(bertrand::py::FrozenSet)
 
 
 #endif  // BERTRAND_PYTHON_SET_H

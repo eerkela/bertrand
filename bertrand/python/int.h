@@ -90,4 +90,7 @@ public:
 }  // namespace bertrand
 
 
+BERTRAND_STD_HASH(bertrand::py::Int)
+
+
 #endif  // BERTRAND_PYTHON_INT_H
