@@ -1,6 +1,10 @@
 #ifndef BERTRAND_PYTHON_FUNC_H
 #define BERTRAND_PYTHON_FUNC_H
 
+#include <limits>
+#include <sstream>
+#include <string>
+
 #include "common.h"
 
 
@@ -9,26 +13,14 @@ namespace bertrand {
 namespace py {
 
 
-namespace impl {
+/* A new subclass of pybind11::object that represents a compiled Python code object,
+enabling seamless embedding of Python as a scripting language within C++.
 
-    // PyTypeObject* PyMethod_Type = nullptr;  // provided in Python.h
-    PyTypeObject* PyClassMethod_Type = nullptr;
-    PyTypeObject* PyStaticMethod_Type = nullptr;
-    // PyTypeObject* PyProperty_Type = nullptr;  // provided in Python.h?
+This class is extremely powerful, and is best explained by example:
 
-} // namespace impl
-
-
-
-/* A new subclass of pybind11::object that represents a compiled Python code object, as
-returned by the built-in `compile()` function.
-
-This class allows seamless embedding of Python as a scripting language within C++.  It
-is extremely powerful, and is best explained by example:
-
-    py::Code script(R"(
-    import numpy as np
-    print(np.arange(10))
+    static py::Code script(R"(
+        import numpy as np
+        print(np.arange(10))
     )");
 
     script();  // prints [0 1 2 3 4 5 6 7 8 9]
@@ -38,11 +30,13 @@ script is stateless, and can be executed without context.  Most of the time, thi
 be the case, and data will need to be passed into the script to populate its namespace.
 For instance:
 
-    py::Code script(R"(
-    print("Hello, " + name + "!")  # name is not defined in this context
-    )");
+    static py::Code script = R"(
+        print("Hello, " + name + "!")  # name is not defined in this context
+    )"_python;
 
-If we try to execute this script without a context, we'll get an error:
+Note the user-defined `_python` literal used to create the script.  This is equivalent
+to calling the `Code` constructor, but is more convenient and readable.  If we try to
+execute this script without a context, we'll get an error:
 
     script();  // raises NameError: name 'name' is not defined
 
@@ -54,40 +48,77 @@ This uses any of the ordinary py::Dict constructors, which can take arbitrary C+
 as long as a corresponding Python type exists, making it possible to seamlessly pass
 data from C++ to Python.
 
+If we want to do the opposite and pass data from Python back to C++, we can use the
+return value of the script, which is a dictionary containing the script's namespace
+after it has been executed.  For instance:
+
+    static py::Code script = R"(
+        x = 1
+        y = 2
+        z = 3
+    )"_python;
+
+    py::Dict context = script();
+    py::print(context);  // prints {"x": 1, "y": 2, "z": 3}
+
+We can combine these features to create a two-way data pipeline between C++ and Python:
+
+    static py::Code script = R"(
+        def func(x, y):
+            return x + y
+
+        z = func(a, b)
+    )"_python;
+
+    py::Int z = script({{"a", 1}, {"b", 2}})["z"];
+    py::print(z);  // prints 3
+
+Which seamlessly marries the two.  In this example, data originates in C++, passes
+through python for processing, and then returns smoothly to C++ with automatic error
+handling, reference counting, and type conversions at all times.
+
 In the previous example, the dictionary exists only for the duration of the script's
 execution, and is discarded immediately afterwards.  However, it is also possible to
 pass a mutable reference to an external dictionary, which will be updated in-place
-during the script's execution.  This is useful for inspecting the state of the script
-after it has been executed, and for passing data back from Python to C++.  For example:
+during the script's execution.  This allows multiple scripts to be chained using a
+shared context, without ever leaving the Python interpreter.  For instance:
 
-    py::Code script(R"(
-    x = 1
-    y = 2
-    z = 3
-    )");
+    static py::Code script1 = R"(
+        x = 1
+        y = 2
+    )"_python;
+
+    static py::Code script2 = R"(
+        z = x + y
+        del x, y
+    )"_python;
 
     py::Dict context;
-    script(context);
-    py::print(context);  // prints {"x": 1, "y": 2, "z": 3}
+    script1(context);
+    script2(context);
+    py::print(context);  // prints {"z": 3}
 
-Users can then extract the values from the dictionary and use them in C++ as needed,
-possibly converting them back into C++ types.  For example:
+Users can, of course, inspect or modify the context between script executions, either
+to extract results or pass new data into the next script.  This makes it possible to
+create complex, mixed-language workflows that are fully integrated and seamless in
+both directions.
 
-    int x = context["x"].cast<int>();
-
-    int func(int y, int z) {
-        return y + z;
+    int func(int x, int y) {
+        return x + y;
     }
 
-    int result = func(context["y"].cast<int>(), context["z"].cast<int>());
+    assert( context["z"] == func(context["x"].cast<int>(), context["y"].cast<int>()) );
 
-This makes it possible to not only pass C++ values into Python, but to also do the
-inverse and extract Python values back into C++.  This is a powerful feature that
-allows Python to be used as an inline scripting language in any C++ application, with
-full native compatibility in both directions.  The contents of the script are evaluated
-just like an ordinary Python file, so there are no restrictions on what can be done
-inside it.  This includes importing modules, defining classes and functions to be
-exported back to C++, interacting with third-party libraries, and so on. */
+This is a powerful feature that allows Python to be used as an inline scripting
+language in any C++ application, with full native compatibility in both directions.
+The script is evaluated just like an ordinary Python file, and there are no
+restrictions on what can be done inside it.  This includes importing modules, defining
+classes and functions to be exported back to C++, interacting with the file system,
+third-party libraries, client code, etc.  Similarly, it is executed just like normal
+Python, and should not suffer any significant performance penalties beyond the cost of
+inserting or extracting items from the context for use in C++.  For all intents and
+purposes, it is a native, on-demand Python interpreter usable from anywhere in a C++
+codebase. */
 class Code :
     public pybind11::object,
     public impl::EqualCompare<Code>
@@ -99,24 +130,59 @@ class Code :
         throw TypeError("cannot convert to code object");
     }
 
-public:
-    CONSTRUCTORS(Code, PyCode_Check, convert_to_code);
+    template <typename T>
+    static PyObject* compile(const T& text) {
+        std::string line;
+        std::string parsed;
+        std::istringstream stream(text);
+        size_t min_indent = std::numeric_limits<size_t>::max();
 
-    /* Parse and compile a source string into a Python code object. */
-    explicit Code(const char* source) : Base([&source] {
+        // find minimum indentation
+        while (std::getline(stream, line)) {
+            if (line.empty()) {
+                continue;
+            }
+            size_t indent = line.find_first_not_of(" \t");
+            if (indent != std::string::npos) {
+                min_indent = std::min(min_indent, indent);
+            }
+        }
+
+        // dedent if necessary
+        if (min_indent != std::numeric_limits<size_t>::max()) {
+            std::string temp;
+            std::istringstream stream2(text);
+            while (std::getline(stream2, line)) {
+                if (line.empty() || line.find_first_not_of(" \t") == std::string::npos) {
+                    temp += '\n';
+                } else {
+                    temp += line.substr(min_indent) + '\n';
+                }
+            }
+            parsed = temp;
+        } else {
+            parsed = text;
+        }
+
         PyObject* result = Py_CompileString(
-            source,
-            "<embedded C++ file>",
+            parsed.c_str(),
+            "<embedded C++ script>",
             Py_file_input
         );
         if (result == nullptr) {
             throw error_already_set();
         }
         return result;
-    }(), stolen_t{}) {}
+    }
+
+public:
+    CONSTRUCTORS(Code, PyCode_Check, convert_to_code);
 
     /* Parse and compile a source string into a Python code object. */
-    explicit Code(const std::string& source) : Code(source.c_str()) {}
+    explicit Code(const char* source) : Base(compile(source), stolen_t{}) {}
+
+    /* Parse and compile a source string into a Python code object. */
+    explicit Code(const std::string& source) : Base(compile(source), stolen_t{}) {}
 
     /* Parse and compile a source string into a Python code object. */
     explicit Code(const std::string_view& source) : Code(source.data()) {}
@@ -126,42 +192,29 @@ public:
     ////////////////////////////////
 
     /* Execute the code object without context. */
-    inline void operator()() const {
+    inline Dict operator()() const {
         Dict context;
         PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
         if (result == nullptr) {
             throw error_already_set();
         }
         Py_DECREF(result);  // always None
+        return context;
     }
 
     /* Execute the code object with the given context. */
-    inline void operator()(Dict& context) const {
+    inline Dict& operator()(Dict& context) const {
         PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
         if (result == nullptr) {
             throw error_already_set();
         }
         Py_DECREF(result);  // always None
+        return context;
     }
 
     /* Execute the code object with the given context. */
-    inline void operator()(Dict&& context) const {
+    inline Dict operator()(Dict&& context) const {
         return (*this)(context);
-    }
-
-    /* Execute the code object with the given context, given as separate global and
-    local namespaces. */
-    inline void operator()(Dict& globals, Dict& locals) const {
-        PyObject* result = PyEval_EvalCode(this->ptr(), globals.ptr(), locals.ptr());
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        Py_DECREF(result);  // always None
-    }
-
-    /* Execute the code object with the given context. */
-    inline void operator()(Dict&& globals, Dict&& locals) const {
-        return (*this)(globals, locals);
     }
 
     /////////////////////
@@ -280,19 +333,173 @@ public:
 };
 
 
+/* A new subclass of pybind11::object that represents a Python interpreter frame, which
+can be used to introspect its current state. */
+class Frame :
+    public pybind11::object,
+    public impl::EqualCompare<Frame>
+{
+    using Base = pybind11::object;
+    using Compare = impl::EqualCompare<Frame>;
 
+    inline PyFrameObject* as_frame() const {
+        return reinterpret_cast<PyFrameObject*>(this->ptr());
+    }
 
+    static PyObject* convert_to_frame(PyObject* obj) {
+        throw TypeError("cannot convert to py::Frame");
+    }
 
+public:
+    CONSTRUCTORS(Frame, PyFrame_Check, convert_to_frame);
 
+    /* Default constructor.  Initializes to the current execution frame. */
+    inline Frame() : Base([] {
+        PyFrameObject* result = PyEval_GetFrame();
+        if (result == nullptr) {
+            throw RuntimeError("no frame is currently executing");
+        }
+        return reinterpret_cast<PyObject*>(result);
+    }(), stolen_t{}) {}
 
+    /* Skip backward a number of frames on construction. */
+    explicit Frame(size_t skip) : Base([&skip] {
+        PyFrameObject* result = PyEval_GetFrame();
+        if (result == nullptr) {
+            throw RuntimeError("no frame is currently executing");
+        }
+        for (size_t i = 0; i < skip; ++i) {
+            result = PyFrame_GetBack(result);
+            if (result == nullptr) {
+                throw IndexError("frame index out of range");
+            }
+        }
+        return reinterpret_cast<PyObject*>(result);
+    }(), stolen_t{}) {}
 
+    /////////////////////////////////
+    ////    PyFrame_* METHODS    ////
+    /////////////////////////////////
 
+    /* Get the next outer frame from this one. */
+    inline Frame back() const {
+        PyFrameObject* result = PyFrame_GetBack(as_frame());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Frame>(reinterpret_cast<PyObject*>(result));
+    }
 
+    /* Get the code object associated with this frame. */
+    inline Code code() const {
+        return reinterpret_steal<Code>(
+            reinterpret_cast<PyObject*>(PyFrame_GetCode(as_frame()))  // never null
+        );
+    }
 
+    /* Get the line number that the frame is currently executing. */
+    inline int line_number() const noexcept {
+        return PyFrame_GetLineNumber(as_frame());
+    }
 
+    /* Execute the code object stored within the frame using its current context.  This
+    is the main entry point for the Python interpreter, and is used behind the scenes
+    whenever a program is run. */
+    inline Object operator()() const {
+        PyObject* result = PyEval_EvalFrame(as_frame());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Object>(result);
+    }
 
+    #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
 
+        /* Get the frame's builtin namespace. */
+        inline Dict builtins() const {
+            return reinterpret_steal<Dict>(PyFrame_GetBuiltins(as_frame()));
+        }
 
+        /* Get the frame's globals namespace. */
+        inline Dict globals() const {
+            PyObject* result = PyFrame_GetGlobals(as_frame());
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return reinterpret_steal<Dict>(result);
+        }
+
+        /* Get the frame's locals namespace. */
+        inline Dict locals() const {
+            PyObject* result = PyFrame_GetLocals(as_frame());
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return reinterpret_steal<Dict>(result);
+        }
+
+        /* Get the generator, coroutine, or async generator that owns this frame, or
+        nullopt if this frame is not owned by a generator. */
+        inline std::optional<Object> generator() const {
+            PyObject* result = PyFrame_GetGenerator(as_frame());
+            if (result == nullptr) {
+                return std::nullopt;
+            } else {
+                return std::make_optional(reinterpret_steal<Object>(result));
+            }
+        }
+
+        /* Get the "precise instruction" of the frame object, which is an index into
+        the bytecode of the last instruction executed by the frame's code object. */
+        inline int last_instruction() const noexcept {
+            return PyFrame_GetLasti(as_frame());
+        }
+
+    #endif
+
+    #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
+
+        /* Get a named variable from the frame's context.  Can raise if the variable is
+        not present in the frame. */
+        inline Object get(PyObject* name) const {
+            PyObject* result = PyFrame_GetVar(as_frame(), name);
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return reinterpret_steal<Object>(result);
+        }
+
+        /* Get a named variable from the frame's context.  Can raise if the variable is
+        not present in the frame. */
+        inline Object get(const char* name) const {
+            PyObject* result = PyFrame_GetVarString(as_frame(), name);
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return reinterpret_steal<Object>(result);
+        }
+
+        /* Get a named variable from the frame's context.  Can raise if the variable is
+        not present in the frame. */
+        inline Object get(const std::string& name) const {
+            return get(name.c_str());
+        }
+
+        /* Get a named variable from the frame's context.  Can raise if the variable is
+        not present in the frame. */
+        inline Object get(const std::string_view& name) const {
+            return get(name.data());
+        }
+
+    #endif
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    using Compare::operator==;
+    using Compare::operator!=;
+};
 
 
 /* Wrapper around a pybind11::Function that allows it to be constructed from a C++
@@ -300,9 +507,12 @@ lambda or function pointer, and enables extra introspection via the C API. */
 class Function : public pybind11::function {
     using Base = pybind11::function;
 
+    static PyObject* convert_to_function(PyObject* obj) {
+        throw TypeError("cannot convert to function object");
+    }
+
 public:
-    using Base::Base;
-    using Base::operator=;
+    CONSTRUCTORS(Function, PyFunction_Check, convert_to_function);
 
     template <typename Func>
     explicit Function(Func&& func) : Base([&func] {
@@ -313,61 +523,194 @@ public:
     ////    PyFunction_ API    ////
     ///////////////////////////////
 
-    // TODO: introspection tools: name(), code(), etc.
+    /* Get the module in which this function was defined. */
+    inline Module module_() const {
+        PyObject* result = PyFunction_GetModule(this->ptr());
+        if (result == nullptr) {
+            throw TypeError("function has no module");
+        }
+        return reinterpret_borrow<Module>(result);
+    }
 
-    // /* Get the name of the file from which the code was compiled. */
-    // inline std::string filename() const {
-    //     return code().filename();
-    // }
+    /* Get the code object that is executed when this function is called. */
+    inline Code code() const {
+        PyObject* result = PyFunction_GetCode(this->ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_borrow<Code>(result);
+    }
 
+    /* Get the name of the file from which the code was compiled. */
+    inline std::string filename() const {
+        return code().slots().filename();
+    }
 
-    // /* Get the first line number of the function. */
-    // inline size_t line_number() const noexcept {
-    //     return code().line_number();
-    // }
+    /* Get the first line number of the function. */
+    inline size_t line_number() const {
+        return code().slots().line_number();
+    }
 
-    // /* Get the function's base name. */
-    // inline std::string name() const {
-    //     return code().name();
-    // }
+    /* Get the function's base name. */
+    inline std::string name() const {
+        return code().slots().name();
+    }
 
+    /* Get the function's qualified name. */
+    inline std::string qualname() const {
+        return code().slots().qualname();
+    }
 
-    // /* Get the module that the function is defined in. */
-    // inline std::optional<Module<Ref::BORROW>> module_() const {
-    //     PyObject* mod = PyFunction_GetModule(this->obj);
-    //     if (mod == nullptr) {
-    //         return std::nullopt;
-    //     } else {
-    //         return std::make_optional(Module<Ref::BORROW>(module));
-    //     }
-    // }
+    /* Get the closure associated with the function.  This is a Tuple of cell objects
+    containing data captured by the function. */
+    inline Tuple closure() const {
+        PyObject* result = PyFunction_GetClosure(this->ptr());
+        if (result == nullptr) {
+            return {};
+        }
+        return reinterpret_borrow<Tuple>(result);
+    }
 
+    /* Set the closure associated with the function.  The input must be a Tuple or
+    nullopt. */
+    inline void closure(std::optional<Tuple> closure) {
+        if (PyFunction_SetClosure(this->ptr(), closure.value_or(None).ptr())) {
+            throw error_already_set();
+        }
+    }
 
+    /* Get the type annotations for the function.  This is returned as a mutable
+    dictionary that can be written to in order to change the annotations. */
+    inline Dict annotations() const {
+        PyObject* result = PyFunction_GetAnnotations(this->ptr());
+        if (result == nullptr) {
+            return {};
+        }
+        return reinterpret_borrow<Dict>(result);
+    }
+
+    /* Set the type annotations for the function.  The input must be a Dict or
+    nullopt. */
+    inline void annotations(std::optional<Dict> annotations) {
+        if (PyFunction_SetAnnotations(this->ptr(), annotations.value_or(None).ptr())) {
+            throw error_already_set();
+        }
+    }
+
+    /* Get the default values for the function.  This is a Tuple of values for the
+    function's parameters. */
+    inline Tuple defaults() const {
+        PyObject* result = PyFunction_GetDefaults(this->ptr());
+        if (result == nullptr) {
+            return {};
+        }
+        return reinterpret_borrow<Tuple>(result);
+    }
+
+    /* Set the default values for the function.  The input must be a Tuple or
+    nullopt. */
+    inline void defaults(std::optional<Tuple> defaults) {
+        if (PyFunction_SetDefaults(this->ptr(), defaults.value_or(None).ptr())) {
+            throw error_already_set();
+        }
+    }
+
+    /* Get the globals dictionary associated with the function object. */
+    inline Dict globals() const {
+        PyObject* result = PyFunction_GetGlobals(this->ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_borrow<Dict>(result);
+    }
+
+    /* Get the total number of positional or keyword arguments for the function,
+    including positional-only parameters and excluding keyword-only parameters. */
+    inline size_t n_args() const noexcept {
+        return code().slots().n_args();
+    }
+
+    /* Get the number of positional-only arguments for the function.  Does not include
+    variable positional or keyword arguments. */
+    inline size_t n_positional() const noexcept {
+        return code().slots().n_positional();
+    }
+
+    /* Get the number of keyword-only arguments for the function.  Does not include
+    positional-only or variable positional/keyword arguments. */
+    inline size_t n_keyword() const noexcept {
+        return code().slots().n_keyword();
+    }
 
 };
 
 
-/* New subclass of pybind11::object that represents a bound method at the Python
-level. */
-class Method : public pybind11::object {
-    using Base = pybind11::object;
-
-public:
 
 
+namespace impl {
 
-};
+    PyTypeObject* PyMethodDescr_Type;
+    PyTypeObject* PyClassMethodDescr_Type;
+    PyTypeObject* PyStaticMethod_Type = nullptr;
+    PyTypeObject* PyProperty_Type = nullptr;  // provided in Python.h?
+
+}
+
+
+// TODO: turns out we do need to implement a py::Method class, because assigning a
+// function to a class does not automatically invoke Python's descriptor protocol at
+// the C++ level.
 
 
 /* New subclass of pybind11::object that represents a bound classmethod at the Python
 level. */
-class ClassMethod : public pybind11::object {
+class ClassMethod :
+    public pybind11::object,
+    public impl::EqualCompare<ClassMethod>
+{
     using Base = pybind11::object;
+    using Compare = impl::EqualCompare<ClassMethod>;
+
+    inline static bool check_classmethod(PyObject* obj) {
+        int result = PyObject_IsInstance(
+            obj,
+            reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type)
+        );
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    inline static PyObject* convert_to_classmethod(PyObject* obj) {
+        throw TypeError("cannot convert to py::ClassMethod");
+    }
 
 public:
+    CONSTRUCTORS(ClassMethod, check_classmethod, convert_to_classmethod);
 
+    /* Wrap an existing Python function as a classmethod descriptor. */
+    ClassMethod(const Function& func) : Base([&func] {
+        PyObject* result = PyClassMethod_New(func.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
+    }(), stolen_t{}) {}
 
+    /* Convert a C++ function into a classmethod descriptor. */
+    template <
+        typename T,
+        std::enable_if_t<!std::is_base_of_v<Function, std::decay_t<T>>, int> = 0
+    >
+    ClassMethod(T&& func) : ClassMethod(Function(std::forward<T>(func))) {}
 
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    using Compare::operator==;
+    using Compare::operator!=;
 };
 
 
@@ -403,6 +746,12 @@ inline bool callable(const pybind11::handle& obj) {
 
 }  // namespace python
 }  // namespace bertrand
+
+
+/* User-defined literal to make embedding python scripts as easy as possible */
+inline bertrand::py::Code operator"" _python(const char* source, size_t) {
+    return bertrand::py::Code(source);
+}
 
 
 #endif  // BERTRAND_PYTHON_FUNC_H

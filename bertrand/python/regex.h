@@ -18,11 +18,30 @@
 #include "common.h"
 
 
-// TODO: all methods should except Python strings as well.
+// TODO: all methods should accept Python strings as well.
 
 
 namespace bertrand {
 namespace py {
+
+
+namespace impl {
+
+    static const Handle re = []() -> Handle {
+        if (Py_IsInitialized()) {
+            return py::import("re");
+        }
+        return nullptr;
+    }();
+
+    static const Handle PyRegexPattern_Type = []() -> Handle {
+        if (re.ptr() != nullptr) {
+            return re.attr("Pattern");
+        }
+        return nullptr;
+    }();
+
+}
 
 
 /* A thin wrapper around a compiled PCRE2 regular expression that provides a Pythonic
@@ -107,6 +126,11 @@ public:
         NO_UTF_CHECK = PCRE2_NO_UTF_CHECK,  // disable UTF-8 validity check (faster)
         IGNORE_CASE = PCRE2_CASELESS
     };
+
+    /* Default constructor.  Yields a null pattern, which should not be used in
+    matching.  This constructor exists only to make the Regex class trivially
+    constructable, which is a requirement for pybind11 type casters. */
+    Regex() : _pattern(), _flags(0), code(nullptr) {}
 
     /* Compile the pattern into a PCRE2 regular expression. */
     template <typename T>
@@ -1138,7 +1162,51 @@ public:
 }  // namespace bertrand
 
 
-// TODO: cast Regex to Python re.Pattern?
+
+// TODO: This class should use actual pybind11 bindings to expose a symmetric interface
+// to Python, which should allow us to preserve the flags and semantics when the regex
+// run from a Python context.
+
+
+
+/* Convert Python re.Pattern objects into py::Regex instances when passing them to
+Python. */
+namespace pybind11 {
+namespace detail {
+
+
+template <>
+struct type_caster<bertrand::py::Regex> {
+    PYBIND11_TYPE_CASTER(bertrand::py::Regex, _("Regex"));
+
+    /* Convert a Python re.Pattern into a py::Regex instance. */
+    bool load(handle src, bool convert) {
+        int check = PyObject_IsInstance(
+            src.ptr(),
+            bertrand::py::impl::PyRegexPattern_Type.ptr()
+        );
+        if (check == -1) {
+            throw error_already_set();
+        } else if (check == 0) {
+            return false;
+        }
+
+        // create a new Regex instance from the pattern.  Note that this resets any
+        // flags that were set on the pattern.
+        value = bertrand::py::Regex(src.attr("pattern").cast<std::string>());
+        return true;
+    }
+
+    /* Convert a py::Regex instance into a Python re.Pattern. */
+    static handle cast(const bertrand::py::Regex& src, return_value_policy, handle) {
+        return bertrand::py::impl::re.attr("compile")(src.pattern()).release();
+    }
+
+};
+
+
+}  // namespace detail
+}  // namespace pybind11
 
 
 #endif  // BERTRAND_REGEX_H

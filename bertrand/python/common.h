@@ -262,6 +262,8 @@ class Dict;  // done
 class MappingProxy;  // done
 class Str;  // done
 class Type;  // done
+class Code;  // done
+class Frame;  // done
 class Function;
 class Method;
 class ClassMethod;

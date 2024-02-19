@@ -452,8 +452,8 @@ public:
                         throw ValueError(msg.str());
                     }
                     auto it = py::iter(item);
-                    Object key = *it;
-                    Object value = *(++it);
+                    Handle key = *it;
+                    Handle value = *(++it);
                     if (PyDict_SetItem(result, key.ptr(), value.ptr())) {
                         throw error_already_set();
                     }
@@ -986,8 +986,6 @@ inline Dict vars() {
 inline Dict vars(const pybind11::handle& object) {
     return object.attr("__dict__");
 }
-
-
 
 
 }  // namespace python

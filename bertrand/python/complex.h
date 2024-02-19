@@ -168,7 +168,7 @@ template <>
 struct type_caster<bertrand::py::Complex> {
     PYBIND11_TYPE_CASTER(bertrand::py::Complex, _("Complex"));
 
-    /* Convert a Python object into a Complex value. */
+    /* Convert a Python object into a py::Complex value. */
     bool load(handle src, bool convert) {
         if (PyComplex_Check(src.ptr())) {
             value = reinterpret_borrow<bertrand::py::Complex>(src.ptr());
