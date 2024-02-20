@@ -2,8 +2,10 @@
 #define BERTRAND_PYTHON_FUNC_H
 
 #include <limits>
+#include <ostream>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 
 #include "common.h"
 #include "dict.h"
@@ -14,12 +16,25 @@ namespace bertrand {
 namespace py {
 
 
+namespace impl {
+
+    // NOTE: storing code objects as static variables is dangerous, as the Python
+    // interpreter may be already destroyed by the time the code object's destructor
+    // is called, which causes a segfault.  There is a workaround, but it required us
+    // to maintain a global set of living code objects and clean them up manually
+    // just before Python exits.  This is what the LIVING_CODE_OBJECTS set is for.
+    std::unordered_set<Code*> LIVING_CODE_OBJECTS;
+    static void clean_up_living_code_objects();
+
+}
+
+
 /* A new subclass of pybind11::object that represents a compiled Python code object,
 enabling seamless embedding of Python as a scripting language within C++.
 
 This class is extremely powerful, and is best explained by example:
 
-    py::Code script(R"(
+    static py::Code script(R"(
         import numpy as np
         print(np.arange(10))
     )");
@@ -31,7 +46,7 @@ script is stateless, and can be executed without context.  Most of the time, thi
 be the case, and data will need to be passed into the script to populate its namespace.
 For instance:
 
-    py::Code script = R"(
+    static py::Code script = R"(
         print("Hello, " + name + "!")  # name is not defined in this context
     )"_python;
 
@@ -45,51 +60,49 @@ We can solve this by building a dictionary and passing it into the script:
 
     script({{"name", "world"}});  // prints Hello, world!
 
-This uses any of the ordinary py::Dict constructors, which can take arbitrary C++ input
-as long as a corresponding Python type exists, making it possible to seamlessly pass
+This uses any of the ordinary py::Dict constructor, which can take arbitrary C++ values
+as long as there is a corresponding pybind11 type, making it possible to seamlessly pass
 data from C++ to Python.
 
-If we want to do the opposite and pass data from Python back to C++, we can use the
+If we want to do the opposite and extract data from Python back to C++, we can use the
 return value of the script, which is a dictionary containing the script's namespace
 after it has been executed.  For instance:
 
-    py::Code script = R"(
+    py::Dict context = R"(
         x = 1
         y = 2
         z = 3
-    )"_python;
+    )"_python();
 
-    py::Dict context = script();
     py::print(context);  // prints {"x": 1, "y": 2, "z": 3}
 
 We can combine these features to create a two-way data pipeline between C++ and Python:
 
-    py::Code script = R"(
+    py::Int z = R"(
         def func(x, y):
             return x + y
 
         z = func(a, b)
-    )"_python;
+    )"_python({{"a", 1}, {"b", 2}})["z"];
 
-    py::Int z = script({{"a", 1}, {"b", 2}})["z"];
     py::print(z);  // prints 3
 
 Which seamlessly marries the two.  In this example, data originates in C++, passes
 through python for processing, and then returns smoothly to C++ with automatic error
-handling, reference counting, and type conversions at all times.
+handling, reference counting, and type-safe conversions at each step.
 
-In the previous example, the dictionary exists only for the duration of the script's
-execution, and is discarded immediately afterwards.  However, it is also possible to
-pass a mutable reference to an external dictionary, which will be updated in-place
-during the script's execution.  This allows multiple scripts to be chained using a
-shared context, without ever leaving the Python interpreter.  For instance:
+In the previous example, the input dictionary exists only for the duration of the
+script's execution, and is discarded immediately afterwards.  However, it is also
+possible to pass a mutable reference to an external dictionary, which will be updated
+in-place during the script's execution.  This allows multiple scripts to be chained
+using a shared context, without ever leaving the Python interpreter.  For instance:
 
-    py::Code script1 = R"(
+    static py::Code script1 = R"(
         x = 1
         y = 2
     )"_python;
 
-    py::Code script2 = R"(
+    static py::Code script2 = R"(
         z = x + y
         del x, y
     )"_python;
@@ -99,16 +112,25 @@ shared context, without ever leaving the Python interpreter.  For instance:
     script2(context);
     py::print(context);  // prints {"z": 3}
 
-Users can, of course, inspect or modify the context between script executions, either
-to extract results or pass new data into the next script.  This makes it possible to
-create complex, mixed-language workflows that are fully integrated and seamless in
-both directions.
+Users can, of course, inspect or modify the context between scripts, either to extract
+results or pass new data into the next script.  This makes it possible to create
+complex, mixed-language workflows that are fully integrated and seamless in both
+directions.
 
-    int func(int x, int y) {
-        return x + y;
-    }
+    py::Dict context = R"(
+        spam = 0
+        eggs = 1
+    )"_python();
 
-    assert( context["z"] == func(context["x"].cast<int>(), context["y"].cast<int>()) );
+    context["ham"] = std::vector<int>{1, 1, 2, 3, 5, 8, 13, 21, 34, 55};
+
+    std::vector<int> fibonacci = R"(
+        result = []
+        for x in ham:
+            spam, eggs = (spam + eggs, spam)
+            assert(x == spam)
+            result.append(eggs)
+    )"_python(context)["result"].cast<std::vector<int>>();
 
 This is a powerful feature that allows Python to be used as an inline scripting
 language in any C++ application, with full native compatibility in both directions.
@@ -116,16 +138,31 @@ The script is evaluated just like an ordinary Python file, and there are no
 restrictions on what can be done inside it.  This includes importing modules, defining
 classes and functions to be exported back to C++, interacting with the file system,
 third-party libraries, client code, etc.  Similarly, it is executed just like normal
-Python, and should not suffer any significant performance penalties beyond the cost of
-inserting or extracting items from the context for use in C++.  For all intents and
-purposes, it is a native, on-demand Python interpreter usable from anywhere in a C++
-codebase. */
-class Code :
-    public pybind11::object,
-    public impl::EqualCompare<Code>
-{
-    using Base = pybind11::object;
+Python, and should not suffer any significant performance penalties beyond copying data
+into or out of the context.  This is especially true for static code objects, which are
+compiled once and then cached for repeated use.
+
+    static py::Code script = R"(
+        print(x)
+    )"_python;
+
+    script({{"x", "hello"}});
+    script({{"x", "from"}});
+    script({{"x", "the"}});
+    script({{"x", "other"}});
+    script({{"x", "side"}});
+*/
+class Code : public impl::EqualCompare<Code> {
+    using Base = pybind11::handle;
     using Compare = impl::EqualCompare<Code>;
+
+    /* NOTE: we can't directly inherit from pybind11::object because that causes memory
+    access errors when code objects are stored as static variables.  Since that is the
+    intended use case, we provide a workaround using Python's `atexit` module. */
+    friend void impl::clean_up_living_code_objects();
+    friend class Frame;
+    friend class Function;
+    PyObject* m_ptr;
 
     static PyObject* convert_to_code(PyObject* obj) {
         throw TypeError("cannot convert to code object");
@@ -176,17 +213,69 @@ class Code :
         return result;
     }
 
+    explicit Code(PyObject* ptr) : m_ptr(ptr) {
+        impl::LIVING_CODE_OBJECTS.insert(this);
+    }
+
 public:
-    CONSTRUCTORS(Code, PyCode_Check, convert_to_code);
 
     /* Parse and compile a source string into a Python code object. */
-    explicit Code(const char* source) : Base(compile(source), stolen_t{}) {}
+    explicit Code(const char* source) : m_ptr(compile(source)) {
+        impl::LIVING_CODE_OBJECTS.insert(this);
+    }
 
     /* Parse and compile a source string into a Python code object. */
-    explicit Code(const std::string& source) : Base(compile(source), stolen_t{}) {}
+    explicit Code(const std::string& source) : m_ptr(compile(source)) {
+        impl::LIVING_CODE_OBJECTS.insert(this);
+    }
 
     /* Parse and compile a source string into a Python code object. */
     explicit Code(const std::string_view& source) : Code(source.data()) {}
+
+    /* Copy constructor. */
+    Code(const Code& other) : m_ptr(other.m_ptr) {
+        Py_XINCREF(m_ptr);
+        impl::LIVING_CODE_OBJECTS.insert(this);
+    }
+
+    /* Move constructor. */
+    Code(Code&& other) : m_ptr(other.m_ptr) {
+        other.m_ptr = nullptr;
+        impl::LIVING_CODE_OBJECTS.erase(&other);
+        impl::LIVING_CODE_OBJECTS.insert(this);
+    }
+
+    /* Copy assignment operator. */
+    Code& operator=(const Code& other) {
+        if (this != &other) {
+            PyObject* temp = m_ptr;
+            Py_XINCREF(m_ptr);
+            m_ptr = other.m_ptr;
+            Py_XDECREF(temp);
+        }
+        return *this;
+    }
+
+    /* Move assignment operator. */
+    Code& operator=(Code&& other) {
+        if (this != &other) {
+            PyObject* temp = m_ptr;
+            m_ptr = other.m_ptr;
+            other.m_ptr = nullptr;
+            Py_XDECREF(temp);
+        }
+        return *this;
+    }
+
+    /* Destructor.  Note that we can't use Py_XDECREF() here because it causes memory
+    access errors when code objects are stored as static variables.  */
+    ~Code() {
+        impl::LIVING_CODE_OBJECTS.erase(this);
+        if (m_ptr != nullptr) {
+            Py_DECREF(m_ptr);
+            m_ptr = nullptr;
+        }
+    }
 
     ////////////////////////////////
     ////    PyCode_* METHODS    ////
@@ -216,6 +305,10 @@ public:
     /* Execute the code object with the given context. */
     inline Dict operator()(Dict&& context) const {
         return (*this)(context);
+    }
+
+    inline PyObject* ptr() const {
+        return m_ptr;
     }
 
     /////////////////////
@@ -286,7 +379,7 @@ public:
         //     return reinterpret_borrow<Tuple>(code_obj->co_cellvars);
         // }
 
-        // /* Get a tuple containing the anmes of free variables in the function (i.e.
+        // /* Get a tuple containing the names of free variables in the function (i.e.
         // those that are not stored in a PyCell). */
         // inline Tuple freevars() const {
         //     return reinterpret_borrow<Tuple>(code_obj->co_freevars);
@@ -331,7 +424,21 @@ public:
 
     using Compare::operator==;
     using Compare::operator!=;
+
+    inline operator bool() const noexcept {
+        return m_ptr != nullptr;
+    }
 };
+
+
+inline std::ostream& operator<<(std::ostream& os, const Code& code) {
+    PyObject* result = PyObject_Repr(code.ptr());
+    if (result == nullptr) {
+        throw error_already_set();
+    }
+    os << py::cast(result);
+    return os;
+}
 
 
 /* A new subclass of pybind11::object that represents a Python interpreter frame, which
@@ -393,9 +500,8 @@ public:
 
     /* Get the code object associated with this frame. */
     inline Code code() const {
-        return reinterpret_steal<Code>(
-            reinterpret_cast<PyObject*>(PyFrame_GetCode(as_frame()))  // never null
-        );
+        // PyFrame_GetCode() is never null
+        return Code(reinterpret_cast<PyObject*>(PyFrame_GetCode(as_frame())));
     }
 
     /* Get the line number that the frame is currently executing. */
@@ -546,7 +652,7 @@ public:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_borrow<Code>(result);
+        return Code(result);
     }
 
     /* Get the name of the file from which the code was compiled. */
@@ -839,6 +945,43 @@ inline bool callable(const pybind11::handle& obj) {
 inline bertrand::py::Code operator"" _python(const char* source, size_t size) {
     return bertrand::py::Code(std::string_view(source, size));
 }
+
+
+namespace bertrand{
+namespace py{
+namespace impl {
+
+    /* Custom atexit method that avoids conflicts with the Python interpreter when
+    py::Code objects are stored as static variables.  This is always invoked
+    immediately before Python exits, ensuring that all code objects are properly
+    freed without causing memory access errors. */
+    static void clean_up_living_code_objects() {
+        for (Code* code : impl::LIVING_CODE_OBJECTS) {
+            code->~Code();
+        }
+    }
+
+    /* Register the atexit function from a Python context.  NOTE: we can't use
+    Py_AtExit() here because it actually gets executed AFTER the python interpreter
+    has already started finalizing.  If we register the cleanup function from a Python
+    context, however, then we can guarantee that the Python interpreter is valid while
+    we clean up each object.  This is convoluted, but it works. */
+    static const bool CLEAN_UP_LIVING_CODE_OBJECTS = []() {
+        if (Py_IsInitialized()) {
+            R"(
+                import atexit
+                atexit.register(CLEANUP)
+            )"_python({{"CLEANUP", py::Function(clean_up_living_code_objects)}});
+            return true;
+        }
+        return false;
+    }();
+
+}
+}
+}
+
+
 
 
 #endif  // BERTRAND_PYTHON_FUNC_H

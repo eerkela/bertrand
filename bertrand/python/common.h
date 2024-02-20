@@ -732,28 +732,7 @@ namespace impl {
     never be passed null objects. */
     #define CONSTRUCTORS(cls, check, convert)                                           \
         using Base::operator=;                                                          \
-        cls(handle h, borrowed_t ref) : Base(h, ref) {}                                 \
-        cls(handle h, stolen_t ref) : Base(h, ref) {}                                   \
-        cls(const pybind11::object& obj) : Base([&obj] {                                \
-            if (obj.ptr() == nullptr) {                                                 \
-                throw TypeError("cannot convert null object to " #cls);                 \
-            } else if (check(obj.ptr())) {                                              \
-                return obj.inc_ref().ptr();                                             \
-            } else {                                                                    \
-                return convert(obj.ptr());                                              \
-            }                                                                           \
-        }(), stolen_t{}) {}                                                             \
-        cls(pybind11::object&& obj) : Base([&obj] {                                     \
-            if (obj.ptr() == nullptr) {                                                 \
-                throw TypeError("cannot convert null object to " #cls);                 \
-            } else if (check(obj.ptr())) {                                              \
-                return obj.release().ptr();                                             \
-            } else {                                                                    \
-                return convert(obj.ptr());                                              \
-            }                                                                           \
-        }(), stolen_t{}) {}                                                             \
-        template <typename Policy>                                                      \
-        cls(const detail::accessor<Policy> &proxy) : cls(Object(proxy)) {}              \
+        PYBIND11_OBJECT_CVT(cls, Base, check, convert);                                 \
         template <typename T>                                                           \
         cls& operator=(const std::initializer_list<T>& init) {                          \
             Base::operator=(cls(init));                                                 \
