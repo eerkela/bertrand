@@ -19,7 +19,7 @@ enabling seamless embedding of Python as a scripting language within C++.
 
 This class is extremely powerful, and is best explained by example:
 
-    static py::Code script(R"(
+    py::Code script(R"(
         import numpy as np
         print(np.arange(10))
     )");
@@ -31,7 +31,7 @@ script is stateless, and can be executed without context.  Most of the time, thi
 be the case, and data will need to be passed into the script to populate its namespace.
 For instance:
 
-    static py::Code script = R"(
+    py::Code script = R"(
         print("Hello, " + name + "!")  # name is not defined in this context
     )"_python;
 
@@ -53,7 +53,7 @@ If we want to do the opposite and pass data from Python back to C++, we can use 
 return value of the script, which is a dictionary containing the script's namespace
 after it has been executed.  For instance:
 
-    static py::Code script = R"(
+    py::Code script = R"(
         x = 1
         y = 2
         z = 3
@@ -64,7 +64,7 @@ after it has been executed.  For instance:
 
 We can combine these features to create a two-way data pipeline between C++ and Python:
 
-    static py::Code script = R"(
+    py::Code script = R"(
         def func(x, y):
             return x + y
 
@@ -84,12 +84,12 @@ pass a mutable reference to an external dictionary, which will be updated in-pla
 during the script's execution.  This allows multiple scripts to be chained using a
 shared context, without ever leaving the Python interpreter.  For instance:
 
-    static py::Code script1 = R"(
+    py::Code script1 = R"(
         x = 1
         y = 2
     )"_python;
 
-    static py::Code script2 = R"(
+    py::Code script2 = R"(
         z = x + y
         del x, y
     )"_python;

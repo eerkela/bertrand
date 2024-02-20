@@ -244,36 +244,37 @@ using Buffer = pybind11::buffer;
 using MemoryView = pybind11::memoryview;
 using Bytes = pybind11::bytes;
 using Bytearray = pybind11::bytearray;
-class NotImplementedType;  // done
-class Bool;  // done
-class Int;  // done
-class Float;  // done
-class Complex;  // done
-class Slice;  // done
-class Range;  // done
-class List;  // done
-class Tuple;  // done
-class Set;  // done
-class FrozenSet;  // done
-class KeysView;  // done
-class ItemsView;  // done
-class ValuesView;  // done
-class Dict;  // done
-class MappingProxy;  // done
-class Str;  // done
-class Type;  // done
-class Code;  // done
-class Frame;  // done
-class Function;  // done
-class Method;  // done
-class ClassMethod;  // done
-class StaticMethod;  // done
-class Property;  // done
-class Timedelta;  // done
-class Timezone;  // done
+class NotImplementedType;
+class Bool;
+class Int;
+class Float;
+class Complex;
+class Slice;
+class Range;
+class List;
+class Tuple;
+class Set;
+class FrozenSet;
+class KeysView;
+class ItemsView;
+class ValuesView;
+class Dict;
+class MappingProxy;
+class Str;
+class Type;
+class Code;
+class Frame;
+class Function;
+class Method;
+class ClassMethod;
+class StaticMethod;
+class Property;
+class Timedelta;
+class Timezone;
 class Date;
 class Time;
 class Datetime;
+class Regex;
 
 const static NoneType None;
 const static EllipsisType Ellipsis;
