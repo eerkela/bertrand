@@ -264,11 +264,11 @@ class Str;  // done
 class Type;  // done
 class Code;  // done
 class Frame;  // done
-class Function;
-class Method;
-class ClassMethod;
-class StaticMethod;
-class Property;
+class Function;  // done
+class Method;  // done
+class ClassMethod;  // done
+class StaticMethod;  // done
+class Property;  // done
 class Timedelta;  // done
 class Timezone;  // done
 class Date;

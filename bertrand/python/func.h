@@ -6,7 +6,8 @@
 #include <string>
 
 #include "common.h"
-
+#include "dict.h"
+#include "str.h"
 
 
 namespace bertrand {
@@ -504,8 +505,12 @@ public:
 
 /* Wrapper around a pybind11::Function that allows it to be constructed from a C++
 lambda or function pointer, and enables extra introspection via the C API. */
-class Function : public pybind11::function {
+class Function :
+    public pybind11::function,
+    public impl::EqualCompare<Function>
+{
     using Base = pybind11::function;
+    using Compare = impl::EqualCompare<Function>;
 
     static PyObject* convert_to_function(PyObject* obj) {
         throw TypeError("cannot convert to function object");
@@ -514,10 +519,13 @@ class Function : public pybind11::function {
 public:
     CONSTRUCTORS(Function, PyFunction_Check, convert_to_function);
 
-    template <typename Func>
-    explicit Function(Func&& func) : Base([&func] {
-        return pybind11::cpp_function(std::forward<Func>(func));
-    }()) {}
+    template <
+        typename Func,
+        std::enable_if_t<!std::is_base_of_v<pybind11::handle, std::decay_t<Func>>, int> = 0
+    >
+    Function(Func&& func) : Base([&func] {
+        return pybind11::cpp_function(std::forward<Func>(func)).release();
+    }(), stolen_t{}) {}
 
     ///////////////////////////////
     ////    PyFunction_ API    ////
@@ -642,24 +650,43 @@ public:
         return code().slots().n_keyword();
     }
 
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    using Compare::operator==;
+    using Compare::operator!=;
 };
 
 
+/* New subclass of pybind11::object that represents a bound method at the Python
+level. */
+class Method :
+    public pybind11::object,
+    public impl::EqualCompare<Method>
+{
+    using Base = pybind11::object;
+    using Compare = impl::EqualCompare<Method>;
 
+    inline static PyObject* convert_to_method(PyObject* obj) {
+        throw TypeError("cannot convert to py::Method");
+    }
 
-namespace impl {
+public:
+    CONSTRUCTORS(Method, PyInstanceMethod_Check, convert_to_method);
 
-    PyTypeObject* PyMethodDescr_Type;
-    PyTypeObject* PyClassMethodDescr_Type;
-    PyTypeObject* PyStaticMethod_Type = nullptr;
-    PyTypeObject* PyProperty_Type = nullptr;  // provided in Python.h?
+    /* Wrap an existing Python function as a method descriptor. */
+    Method(Function func) : Base([&func] {
+        PyObject* result = PyInstanceMethod_New(func.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
+    }(), stolen_t{}) {}
 
-}
-
-
-// TODO: turns out we do need to implement a py::Method class, because assigning a
-// function to a class does not automatically invoke Python's descriptor protocol at
-// the C++ level.
+    using Compare::operator==;
+    using Compare::operator!=;
+};
 
 
 /* New subclass of pybind11::object that represents a bound classmethod at the Python
@@ -690,24 +717,13 @@ public:
     CONSTRUCTORS(ClassMethod, check_classmethod, convert_to_classmethod);
 
     /* Wrap an existing Python function as a classmethod descriptor. */
-    ClassMethod(const Function& func) : Base([&func] {
+    ClassMethod(Function func) : Base([&func] {
         PyObject* result = PyClassMethod_New(func.ptr());
         if (result == nullptr) {
             throw error_already_set();
         }
         return result;
     }(), stolen_t{}) {}
-
-    /* Convert a C++ function into a classmethod descriptor. */
-    template <
-        typename T,
-        std::enable_if_t<!std::is_base_of_v<Function, std::decay_t<T>>, int> = 0
-    >
-    ClassMethod(T&& func) : ClassMethod(Function(std::forward<T>(func))) {}
-
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
 
     using Compare::operator==;
     using Compare::operator!=;
@@ -716,25 +732,96 @@ public:
 
 /* Wrapper around a pybind11::StaticMethod that allows it to be constructed from a
 C++ lambda or function pointer, and enables extra introspection via the C API. */
-class StaticMethod : public pybind11::staticmethod {
+class StaticMethod :
+    public pybind11::staticmethod,
+    public impl::EqualCompare<StaticMethod>
+{
     using Base = pybind11::staticmethod;
+    using Compare = impl::EqualCompare<StaticMethod>;
+
+    static bool check_staticmethod(PyObject* obj) {
+        int result = PyObject_IsInstance(
+            obj,
+            reinterpret_cast<PyObject*>(&PyStaticMethod_Type)
+        );
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    static PyObject* convert_to_staticmethod(PyObject* obj) {
+        throw TypeError("cannot convert to staticmethod object");
+    }
 
 public:
+    CONSTRUCTORS(StaticMethod, check_staticmethod, convert_to_staticmethod);
 
+    /* Wrap an existing Python function as a staticmethod descriptor. */
+    StaticMethod(Function func) : Base([&func] {
+        PyObject* result = PyStaticMethod_New(func.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
+    }(), stolen_t{}) {}
 
-
+    using Compare::operator==;
+    using Compare::operator!=;
 };
+
+
+namespace impl {
+
+    static const Handle PyProperty = []() -> Handle {
+        return reinterpret_cast<PyObject*>(&PyProperty_Type);
+    }();
+
+}
 
 
 /* New subclass of pybind11::object that represents a property descriptor at the
 Python level. */
-class Property : public pybind11::object {
+class Property :
+    public pybind11::object,
+    public impl::EqualCompare<Property>
+{
     using Base = pybind11::object;
+    using Compare = impl::EqualCompare<Property>;
+
+    inline static bool check_property(PyObject* obj) {
+        int result = PyObject_IsInstance(obj, impl::PyProperty.ptr());
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    inline static PyObject* convert_to_property(PyObject* obj) {
+        throw TypeError("cannot convert to py::Property");
+    }
 
 public:
+    CONSTRUCTORS(Property, check_property, convert_to_property);
 
+    /* Wrap an existing Python function as a getter in a property descriptor. */
+    Property(Function getter) : Base([&getter] {
+        return impl::PyProperty(getter).release();
+    }(), stolen_t{}) {}
 
+    /* Wrap existing Python functions as getter and setter in a property descriptor. */
+    Property(Function getter, Function setter) : Base([&getter, &setter] {
+        return impl::PyProperty(getter, setter).release();
+    }(), stolen_t{}) {}
 
+    /* Wrap existing Python functions as getter, setter, and deleter in a property
+    descriptor. */
+    Property(Function getter, Function setter, Function deleter) : Base([&] {
+        return impl::PyProperty(getter, setter, deleter).release();
+    }(), stolen_t{}) {}
+
+    using Compare::operator==;
+    using Compare::operator!=;
 };
 
 
@@ -749,8 +836,8 @@ inline bool callable(const pybind11::handle& obj) {
 
 
 /* User-defined literal to make embedding python scripts as easy as possible */
-inline bertrand::py::Code operator"" _python(const char* source, size_t) {
-    return bertrand::py::Code(source);
+inline bertrand::py::Code operator"" _python(const char* source, size_t size) {
+    return bertrand::py::Code(std::string_view(source, size));
 }
 
 
