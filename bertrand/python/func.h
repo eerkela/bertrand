@@ -5,11 +5,13 @@
 #include <ostream>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <unordered_set>
 
 #include "common.h"
 #include "dict.h"
 #include "str.h"
+#include "tuple.h"
 
 
 namespace bertrand {
@@ -315,7 +317,7 @@ public:
     ////    SLOTS    ////
     /////////////////////
 
-    /* A proxy for the code object's PyCodeObject* struct. */
+    /* A proxy for inspecting the code object's PyCodeObject* slots. */
     struct Slots {
         PyCodeObject* code_obj;
 
@@ -340,8 +342,8 @@ public:
         }
 
         /* Get the total number of positional arguments for the function, including
-        positional-only arguments and those with default values (but not
-        keyword-only). */
+        positional-only arguments and those with default values (but not variable
+        or keyword-only arguments). */
         inline Py_ssize_t n_args() const noexcept {
             return code_obj->co_argcount;
         }
@@ -428,17 +430,17 @@ public:
     inline operator bool() const noexcept {
         return m_ptr != nullptr;
     }
-};
 
-
-inline std::ostream& operator<<(std::ostream& os, const Code& code) {
-    PyObject* result = PyObject_Repr(code.ptr());
-    if (result == nullptr) {
-        throw error_already_set();
+    inline friend std::ostream& operator<<(std::ostream& os, const Code& code) {
+        PyObject* result = PyObject_Repr(code.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        os << py::cast(result);
+        return os;
     }
-    os << py::cast(result);
-    return os;
-}
+
+};
 
 
 /* A new subclass of pybind11::object that represents a Python interpreter frame, which
@@ -650,7 +652,7 @@ public:
     inline Code code() const {
         PyObject* result = PyFunction_GetCode(this->ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            throw RuntimeError("function does not have a code object");
         }
         return Code(result);
     }
@@ -740,19 +742,19 @@ public:
 
     /* Get the total number of positional or keyword arguments for the function,
     including positional-only parameters and excluding keyword-only parameters. */
-    inline size_t n_args() const noexcept {
+    inline size_t n_args() const {
         return code().slots().n_args();
     }
 
     /* Get the number of positional-only arguments for the function.  Does not include
     variable positional or keyword arguments. */
-    inline size_t n_positional() const noexcept {
+    inline size_t n_positional() const {
         return code().slots().n_positional();
     }
 
     /* Get the number of keyword-only arguments for the function.  Does not include
     positional-only or variable positional/keyword arguments. */
-    inline size_t n_keyword() const noexcept {
+    inline size_t n_keyword() const {
         return code().slots().n_keyword();
     }
 
@@ -931,9 +933,127 @@ public:
 };
 
 
-/* Equivalent to Python `callable(obj)`. */
-inline bool callable(const pybind11::handle& obj) {
-    return PyCallable_Check(obj.ptr());
+namespace impl {
+
+    /* A tag struct containing SFINAE information information about a C++ or python
+    function pointer that was passed to `py::callable()`.  The tag is implicitly
+    convertible to a boolean, maintaining traditional Python `py::callable()` syntax
+    alongside extended C++ using template parameters and function pointers. */
+    template <typename Func, typename... Args>
+    class CallTraits {
+        const Func& func;
+
+        struct NoReturn {};
+
+        template <typename T, typename = void>
+        struct Check {
+            using type = NoReturn;
+        };
+
+        template <typename T>
+        struct Check<
+            T,
+            std::void_t<decltype(std::declval<T>()(std::declval<Args>()...))>
+        > {
+            using type = decltype(std::declval<T>()(std::declval<Args>()...));
+        };
+
+        template <typename T, typename = void>
+        struct OverloadsCallable : std::false_type {};
+        template <typename T>
+        struct OverloadsCallable<T, std::void_t<decltype(T::operator())>> :
+            std::true_type
+        {};
+
+        template <typename T>
+        static constexpr bool is_callable_any = std::disjunction_v<
+            std::is_function<std::remove_pointer_t<T>>,
+            std::is_member_function_pointer<std::decay_t<T>>,
+            OverloadsCallable<std::decay_t<T>>
+        >;
+
+    public:
+        constexpr CallTraits(const Func& func) : func(func) {}
+
+        using Return = typename Check<Func>::type;
+        static constexpr bool invalid = std::is_same_v<Return, NoReturn>;
+
+        template <
+            typename T = Func,
+            std::enable_if_t<!detail::is_pyobject<T>::value, int> = 0
+        >
+        inline constexpr operator bool() const {
+            if constexpr (sizeof...(Args) == 0) {
+                return is_callable_any<Func>;
+            } else {
+                return std::is_invocable_v<Func, Args...>;
+            }
+        }
+
+        template <
+            typename T = Func,
+            std::enable_if_t<detail::is_pyobject<T>::value, int> = 0
+        >
+        inline operator bool() const {
+            if constexpr (sizeof...(Args) == 0) {
+                return PyCallable_Check(func.ptr());
+            } else if constexpr(std::is_same_v<Return, NoReturn>) {
+                return false;
+            } else {
+                Function f(func);
+                if ((f.n_args() - f.defaults().size()) != sizeof...(Args)) {
+                    return false;
+                }
+                return true;
+            }
+        }
+
+        friend std::ostream& operator<<(std::ostream& os, const CallTraits& traits) {
+            if (traits) {
+                os << "True";
+            } else {
+                os << "False";
+            }
+            return os;
+        }
+
+    };
+
+}
+
+
+/* Equivalent to Python `callable(obj)`, except that it supports extended C++ syntax to
+allow compatibility with C++, checking against particular argument types.
+
+Here's how this function can be used:
+
+    if (py::callable(func)) {
+        // func is a Python or C++ callable with any number of arguments.  This is
+        // identical to the original Python `callable()` function.
+    }
+
+    if (py::callable<int, int>(func)) {
+        // func is a C++ callable that can take two integers, or a Python callable
+        // where each argument is convertible to a Python object, and the function
+        // accepts at least two positional arguments after accounting for default
+        // values.  Note that variable positional arguments are not accounted for, only
+        // basic positional or positional-only arguments.
+    }
+
+    // gets the return type of the function, or an internal NoReturn placeholder if the
+    // function is not callable with the given arguments.
+    using Return = typename decltype(py::callable<int, int>(func))::Return;
+
+    if constexpr (decltype(py::callable<int, int>(func))::invalid) {
+        // used to disambiguate the `using Return = ...` line in the NoReturn case
+    }
+
+Various permutations of these examples are possible, allowing users to dynamically
+dispatch to different functions based on their signature.
+*/
+template <typename... Args, typename Func>
+inline constexpr auto callable(const Func& func) {
+    return impl::CallTraits<Func, Args...>{func};
 }
 
 
@@ -980,8 +1100,6 @@ namespace impl {
 }
 }
 }
-
-
 
 
 #endif  // BERTRAND_PYTHON_FUNC_H

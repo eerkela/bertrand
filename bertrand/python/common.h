@@ -1041,7 +1041,8 @@ template <typename T>
 auto abs(T&&);
 Str ascii(const pybind11::handle&);  // TODO: accept py::Str and return std::string.
 Str bin(const pybind11::handle&);
-bool callable(const pybind11::handle&);  // TODO: make generic (check signature using templates?)
+template <typename... Args, typename Func>
+constexpr auto callable(const Func&);
 template <typename T, typename U>
 auto cdiv(T&&, U&&);
 template <typename T, typename U>
