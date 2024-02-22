@@ -11,14 +11,11 @@ namespace py {
 /* Wrapper around pybind11::list that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
 class List :
-    public pybind11::list,
+    public Object,
+    public impl::Ops<List>,
     public impl::SequenceOps<List>,
-    public impl::FullCompare<List>,
     public impl::ReverseIterable<List>
 {
-    using Base = pybind11::list;
-    using Ops = impl::SequenceOps<List>;
-    using Compare = impl::FullCompare<List>;
 
     static PyObject* convert_to_list(PyObject* obj) {
         PyObject* result = PySequence_List(obj);
@@ -30,94 +27,88 @@ class List :
 
 public:
     static py::Type Type;
-
-    CONSTRUCTORS(List, PyList_Check, convert_to_list);
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, List, PyList_Check, convert_to_list);
 
     /* Default constructor.  Initializes to an empty list. */
-    List() : Base([] {
-        PyObject* result = PyList_New(0);
-        if (result == nullptr) {
+    List() {
+        m_ptr = PyList_New(0);
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
     /* Pack the contents of a braced initializer into a new Python list. */
-    List(const std::initializer_list<impl::Initializer>& contents) : Base([&contents] {
-        PyObject* result = PyList_New(contents.size());
-        if (result == nullptr) {
+    List(const std::initializer_list<impl::Initializer>& contents) {
+        m_ptr = PyList_New(contents.size());
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
         try {
             size_t i = 0;
             for (const impl::Initializer& element : contents) {
                 PyList_SET_ITEM(
-                    result,
+                    m_ptr,
                     i++,
                     const_cast<impl::Initializer&>(element).value.release().ptr()
                 );
             }
-            return result;
         } catch (...) {
-            Py_DECREF(result);
+            Py_DECREF(m_ptr);
             throw;
         }
-    }(), stolen_t{}) {}
+    }
 
     /* Pack the contents of a braced initializer into a new Python list. */
     template <typename T, std::enable_if_t<!std::is_same_v<impl::Initializer, T>, int> = 0>
-    List(const std::initializer_list<T>& contents) : Base([&contents] {
-        PyObject* result = PyList_New(contents.size());
-        if (result == nullptr) {
+    List(const std::initializer_list<T>& contents) {
+        m_ptr = PyList_New(contents.size());
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
         try {
             size_t i = 0;
             for (const T& element : contents) {
-                PyList_SET_ITEM(result, i++, impl::convert_newref(element));
+                PyList_SET_ITEM(m_ptr, i++, impl::convert_newref(element));
             }
-            return result;
         } catch (...) {
-            Py_DECREF(result);
+            Py_DECREF(m_ptr);
             throw;
         }
-    }(), stolen_t{}) {}
+    }
 
     /* Unpack a generic container into a new List.  Equivalent to Python
     `list(container)`, except that it also works on C++ containers. */
     template <typename T>
-    explicit List(T&& container) : Base([&container]{
+    explicit List(T&& container) {
         if constexpr (detail::is_pyobject<T>::value) {
-            PyObject* result = PySequence_List(container.ptr());
-            if (result == nullptr) {
+            m_ptr = PySequence_List(container.ptr());
+            if (m_ptr == nullptr) {
                 throw error_already_set();
             }
-            return result;
         } else {
             size_t size = 0;
             if constexpr (impl::has_size<T>) {
                 size = container.size();
             }
-            PyObject* result = PyList_New(size);
-            if (result == nullptr) {
+            m_ptr = PyList_New(size);
+            if (m_ptr == nullptr) {
                 throw error_already_set();
             }
             try {
                 size_t i = 0;
                 for (auto&& item : container) {
                     PyList_SET_ITEM(
-                        result,
+                        m_ptr,
                         i++,
                         impl::convert_newref(std::forward<decltype(item)>(item))
                     );
                 }
-                return result;
             } catch (...) {
-                Py_DECREF(result);
+                Py_DECREF(m_ptr);
                 throw;
             }
         }
-    }(), stolen_t{}) {}
+    }
 
     ///////////////////////////////////
     ////    PyList* API METHODS    ////
@@ -126,6 +117,11 @@ public:
     /* Get the size of the list. */
     inline size_t size() const noexcept {
         return static_cast<size_t>(PyList_GET_SIZE(this->ptr()));
+    }
+
+    /* Check if the list is empty. */
+    inline bool empty() const noexcept {
+        return size() == 0;
     }
 
     /* Get the underlying PyObject* array. */
@@ -250,20 +246,36 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    using Base::operator[];
-    using Ops::operator[];
+    detail::list_accessor operator[](size_t index) const {
+        return {*this, index};
+    }
 
-    using Compare::operator<;
-    using Compare::operator<=;
-    using Compare::operator==;
-    using Compare::operator!=;
-    using Compare::operator>;
-    using Compare::operator>=;
+    template <typename T, std::enable_if_t<detail::is_pyobject<T>::value, int> = 0>
+    detail::item_accessor operator[](T&& index) const {
+        return Object::operator[](std::forward<T>(index));
+    }
 
-    using Ops::concat;
-    using Ops::operator+;
-    using Ops::operator*;
-    using Ops::operator*=;
+    detail::list_iterator begin() const {
+        return {*this, 0};
+    }
+
+    detail::list_iterator end() const {
+        return {*this, PyList_GET_SIZE(this->ptr())};
+    }
+
+    using impl::Ops<List>::operator<;
+    using impl::Ops<List>::operator<=;
+    using impl::Ops<List>::operator==;
+    using impl::Ops<List>::operator!=;
+    using impl::Ops<List>::operator>;
+    using impl::Ops<List>::operator>=;
+
+    using Object::operator[];
+    using impl::SequenceOps<List>::operator[];
+    using impl::SequenceOps<List>::concat;
+    using impl::SequenceOps<List>::operator+;
+    using impl::SequenceOps<List>::operator*;
+    using impl::SequenceOps<List>::operator*=;
 
     /* Overload of concat() that allows the operand to be a braced initializer list. */
     template <typename T>

@@ -234,9 +234,8 @@ template <typename... Args>
 using Class = pybind11::class_<Args...>;
 using Module = pybind11::module_;
 using Handle = pybind11::handle;
-using Object = pybind11::object;
-using NoneType = pybind11::none;
-using EllipsisType = pybind11::ellipsis;
+using NoneType = pybind11::none;  // TODO: lower into Object subclasses
+using EllipsisType = pybind11::ellipsis;  // TODO: lower into Object subclasses
 using Iterator = pybind11::iterator;
 using WeakRef = pybind11::weakref;
 using Capsule = pybind11::capsule;
@@ -244,6 +243,7 @@ using Buffer = pybind11::buffer;
 using MemoryView = pybind11::memoryview;
 using Bytes = pybind11::bytes;
 using Bytearray = pybind11::bytearray;
+class Object;
 class NotImplementedType;
 class Bool;
 class Int;
@@ -277,151 +277,271 @@ class Datetime;
 class Regex;
 
 
+namespace impl {
+
+    #define COMPARISON_OPERATOR(op, endpoint, Derived)                                  \
+        template <typename T>                                                           \
+        inline bool op(T&& other) const {                                               \
+            int result = PyObject_RichCompareBool(                                      \
+                static_cast<const Derived*>(this)->ptr(),                               \
+                detail::object_or_cast(std::forward<T>(other)).ptr(),                   \
+                endpoint                                                                \
+            );                                                                          \
+            if (result == -1) {                                                         \
+                throw error_already_set();                                              \
+            }                                                                           \
+            return result;                                                              \
+        }                                                                               \
+
+    #define REVERSE_COMPARISON(op, endpoint, Derived)                                   \
+        template <                                                                      \
+            typename T,                                                                 \
+            std::enable_if_t<!std::is_base_of_v<Object, std::decay_t<T>>, int> = 0      \
+        >                                                                               \
+        inline friend bool op(T&& other, const Derived& self) {                         \
+            int result = PyObject_RichCompareBool(                                      \
+                detail::object_or_cast(std::forward<T>(other)).ptr(),                   \
+                self.ptr(),                                                             \
+                endpoint                                                                \
+            );                                                                          \
+            if (result == -1) {                                                         \
+                throw error_already_set();                                              \
+            }                                                                           \
+            return result;                                                              \
+        }                                                                               \
+
+    #define BINARY_OPERATOR(op, endpoint, Derived)                                      \
+        template <typename T>                                                           \
+        inline Object op(T&& other) const {                                             \
+            PyObject* result = endpoint(                                                \
+                static_cast<const Derived*>(this)->ptr(),                               \
+                detail::object_or_cast(std::forward<T>(other)).ptr()                    \
+            );                                                                          \
+            if (result == nullptr) {                                                    \
+                throw error_already_set();                                              \
+            }                                                                           \
+            return reinterpret_steal<Object>(result);                                   \
+        }                                                                               \
+
+    #define REVERSE_OPERATOR(op, endpoint, Derived)                                     \
+        template <                                                                      \
+            typename T,                                                                 \
+            std::enable_if_t<!std::is_base_of_v<Object, std::decay_t<T>>, int> = 0      \
+        >                                                                               \
+        inline friend Object op(T&& other, const Derived& self) {                       \
+            PyObject* result = endpoint(                                                \
+                detail::object_or_cast(std::forward<T>(other)).ptr(),                   \
+                self.ptr()                                                              \
+            );                                                                          \
+            if (result == nullptr) {                                                    \
+                throw error_already_set();                                              \
+            }                                                                           \
+            return reinterpret_steal<Object>(result);                                   \
+        }                                                                               \
+
+}
+
+
+struct Object : public pybind11::object {
+    static py::Type Type;
+    using pybind11::object::object;
+    using pybind11::object::operator=;
+
+    Object(const pybind11::object& o) : pybind11::object(o) {}
+    Object(pybind11::object&& o) : pybind11::object(std::move(o)) {}
+
+    template <typename Policy>
+    Object(const ::pybind11::detail::accessor<Policy> &a) :
+        pybind11::object(pybind11::object(a))
+    {}
+
+    template <typename T>
+    inline explicit operator T() const {
+        return this->template cast<T>();
+    }
+
+    /* pybind11 exposes generalized operator overloads for python operands, but does
+    * not allow mixed Python/C++ inputs.  For ease of use, we enable them here, along
+    * with reverse operators and in-place equivalents.
+    */
+
+    #define INPLACE_OPERATOR(op, endpoint)                                              \
+        template <typename T>                                                           \
+        inline Object& op(T&& other) {                                                  \
+            pybind11::object o = detail::object_or_cast(std::forward<T>(other));        \
+            PyObject* result = endpoint(this->ptr(), o.ptr());                          \
+            if (result == nullptr) {                                                    \
+                throw error_already_set();                                              \
+            }                                                                           \
+            if (result == this->ptr()) {                                                \
+                Py_DECREF(result);                                                      \
+            } else {                                                                    \
+                *this = reinterpret_steal<Object>(result);                              \
+            }                                                                           \
+            return *this;                                                               \
+        }                                                                               \
+
+    COMPARISON_OPERATOR(operator<, Py_LT, Object);
+    COMPARISON_OPERATOR(operator<=, Py_LE, Object);
+    COMPARISON_OPERATOR(operator==, Py_EQ, Object);
+    COMPARISON_OPERATOR(operator!=, Py_NE, Object);
+    COMPARISON_OPERATOR(operator>, Py_GT, Object);
+    COMPARISON_OPERATOR(operator>=, Py_GE, Object);
+    REVERSE_COMPARISON(operator<, Py_GT, Object);
+    REVERSE_COMPARISON(operator<=, Py_GE, Object);
+    REVERSE_COMPARISON(operator==, Py_EQ, Object);
+    REVERSE_COMPARISON(operator!=, Py_NE, Object);
+    REVERSE_COMPARISON(operator>, Py_LT, Object);
+    REVERSE_COMPARISON(operator>=, Py_LE, Object);
+    BINARY_OPERATOR(operator+, PyNumber_Add, Object);
+    BINARY_OPERATOR(operator-, PyNumber_Subtract, Object);
+    BINARY_OPERATOR(operator*, PyNumber_Multiply, Object);
+    BINARY_OPERATOR(operator/, PyNumber_TrueDivide, Object);
+    BINARY_OPERATOR(operator%, PyNumber_Remainder, Object);
+    BINARY_OPERATOR(operator<<, PyNumber_Lshift, Object);
+    BINARY_OPERATOR(operator>>, PyNumber_Rshift, Object);
+    BINARY_OPERATOR(operator&, PyNumber_And, Object);
+    BINARY_OPERATOR(operator|, PyNumber_Or, Object);
+    BINARY_OPERATOR(operator^, PyNumber_Xor, Object);
+    REVERSE_OPERATOR(operator+, PyNumber_Add, Object);
+    REVERSE_OPERATOR(operator-, PyNumber_Subtract, Object);
+    REVERSE_OPERATOR(operator*, PyNumber_Multiply, Object);
+    REVERSE_OPERATOR(operator/, PyNumber_TrueDivide, Object);
+    REVERSE_OPERATOR(operator%, PyNumber_Remainder, Object);
+    REVERSE_OPERATOR(operator<<, PyNumber_Lshift, Object);
+    REVERSE_OPERATOR(operator>>, PyNumber_Rshift, Object);
+    REVERSE_OPERATOR(operator&, PyNumber_And, Object);
+    REVERSE_OPERATOR(operator|, PyNumber_Or, Object);
+    REVERSE_OPERATOR(operator^, PyNumber_Xor, Object);
+    INPLACE_OPERATOR(operator+=, PyNumber_InPlaceAdd);
+    INPLACE_OPERATOR(operator-=, PyNumber_InPlaceSubtract);
+    INPLACE_OPERATOR(operator*=, PyNumber_InPlaceMultiply);
+    INPLACE_OPERATOR(operator/=, PyNumber_InPlaceTrueDivide);
+    INPLACE_OPERATOR(operator%=, PyNumber_InPlaceRemainder);
+    INPLACE_OPERATOR(operator<<=, PyNumber_InPlaceLshift);
+    INPLACE_OPERATOR(operator>>=, PyNumber_InPlaceRshift);
+    INPLACE_OPERATOR(operator&=, PyNumber_InPlaceAnd);
+    INPLACE_OPERATOR(operator|=, PyNumber_InPlaceOr);
+    INPLACE_OPERATOR(operator^=, PyNumber_InPlaceXor);
+
+    #undef INPLACE_OPERATOR
+};
+
+
 const static NoneType None;
 const static EllipsisType Ellipsis;
 
 
 namespace impl {
 
-    /* A simple struct that converts a generic C++ object into a Python equivalent in
-    its constructor.  This is used in conjunction with std::initializer_list to parse
-    mixed-type lists in a type-safe manner.
-
-    NOTE: this incurs a small performance penalty, effectively requiring an extra loop
-    over the initializer list before the function is called.  Users can avoid this by
-    providing a homogenous `std::initializer_list<T>` overload alongside
-    `std::iniitializer_list<Initializer>`.  This causes conversions to be deferred to
-    the function body, which may be able to handle them more efficiently in a single
-    loop. */
-    struct Initializer {
-        Object value;
-
-        /* We disable initializer construction from pybind11::handle in order not to
-        * interfere with pybind11's reinterpret_borrow/reinterpret_steal helper functions,
-        * which use initializer lists internally.  Disabling the generic initializer list
-        * constructor whenever a handle is passed in allows reinterpret_borrow/
-        * reinterpret_steal to continue to work as expected.
-        */
-
-        template <
-            typename T,
-            std::enable_if_t<!std::is_same_v<pybind11::handle, std::decay_t<T>>, int> = 0
-        >
-        Initializer(T&& value) : value(detail::object_or_cast(std::forward<T>(value))) {}
-    };
-
-    /* Convert an arbitrary Python/C++ value into a pybind11 object and then return a
-    new reference.  This is used in the constructors of list and tuple objects, whose
-    SET_ITEM() functions steal a reference.  Converts null pointers into Python None. */
-    template <typename T>
-    static inline PyObject* convert_newref(T&& value) {
-        if constexpr (detail::is_pyobject<T>::value) {
-            PyObject* result = value.ptr();
-            if (result == nullptr) {
-                result = Py_None;
-            }
-            return Py_NewRef(result);
-        } else {
-            PyObject* result = py::cast(std::forward<T>(value)).release().ptr();
-            if (result == nullptr) {
-                throw error_already_set();
-            }
-            return result;
-        }
-    }
-
-    /* Mixin holding operator overloads for numeric types.  For some reason, pybind11
-    enables these operators, but does not allow implicit conversion from C++ operands,
-    so we override them here. */
+    /* A mixin that adds type-safe in-place operators.  These will throw a CastError
+    if an in-place operator modifies the type of its left operand. */
     template <typename Derived>
-    struct NumericOps {
-
-        #define BINARY_OPERATOR(op, endpoint)                                           \
-            template <typename T>                                                       \
-            inline Object op(T&& other) const {                                         \
-                PyObject* result = PyNumber_##endpoint(                                 \
-                    static_cast<const Derived*>(this)->ptr(),                           \
-                    detail::object_or_cast(std::forward<T>(other)).ptr()                \
-                );                                                                      \
-                if (result == nullptr) {                                                \
-                    throw error_already_set();                                          \
-                }                                                                       \
-                return reinterpret_steal<Object>(result);                               \
-            }                                                                           \
-
-        #define REVERSE_OPERATOR(op, endpoint)                                          \
-            template <                                                                  \
-                typename T,                                                             \
-                std::enable_if_t<                                                       \
-                    !std::is_base_of_v<Derived, std::decay_t<T>>,                       \
-                    int                                                                 \
-                > = 0                                                                   \
-            >                                                                           \
-            inline friend Object op(T&& other, const Derived& self) {                   \
-                PyObject* result = PyNumber_##endpoint(                                 \
-                    detail::object_or_cast(std::forward<T>(other)).ptr(),               \
-                    self.ptr()                                                          \
-                );                                                                      \
-                if (result == nullptr) {                                                \
-                    throw error_already_set();                                          \
-                }                                                                       \
-                return reinterpret_steal<Object>(result);                               \
-            }                                                                           \
+    struct Ops {
 
         #define INPLACE_OPERATOR(op, endpoint)                                          \
             template <typename T>                                                       \
-            inline Object& op(T&& other) {                                              \
-                Derived* self = static_cast<const Derived*>(this);                      \
-                PyObject* result = PyNumber_InPlace##endpoint(                          \
-                    self->ptr(),                                                        \
-                    detail::object_or_cast(std::forward<T>(other)).ptr()                \
-                );                                                                      \
+            inline Derived& op(T&& other) {                                             \
+                Derived* self = static_cast<Derived*>(this);                            \
+                pybind11::object o = detail::object_or_cast(std::forward<T>(other));    \
+                PyObject* result = endpoint(self->ptr(), o.ptr());                      \
                 if (result == nullptr) {                                                \
                     throw error_already_set();                                          \
                 }                                                                       \
                 if (result == self->ptr()) {                                            \
                     Py_DECREF(result);                                                  \
+                } else if (!Derived::check_(result)) {                                  \
+                    pybind11::str otype = pybind11::repr(pybind11::type::of(o));        \
+                    pybind11::str rtype = pybind11::repr(pybind11::type::of(result));   \
+                    std::ostringstream msg;                                             \
+                    msg << "applying " << #op << " to operands of type (";              \
+                    msg << pybind11::repr(pybind11::type::of(*self)) << ", " << otype;  \
+                    msg << ") gave result of type " << rtype;                           \
+                    throw CastError(msg.str());                                         \
                 } else {                                                                \
-                    *this = reinterpret_steal<Object>(result);                          \
+                    *self = reinterpret_steal<Derived>(result);                         \
                 }                                                                       \
-                return *this;                                                           \
+                return *self;                                                           \
             }                                                                           \
 
-        BINARY_OPERATOR(operator+, Add);
-        BINARY_OPERATOR(operator-, Subtract);
-        BINARY_OPERATOR(operator*, Multiply);
-        BINARY_OPERATOR(operator/, TrueDivide);
-        BINARY_OPERATOR(operator%, Remainder);
-        BINARY_OPERATOR(operator<<, Lshift);
-        BINARY_OPERATOR(operator>>, Rshift);
-        BINARY_OPERATOR(operator&, And);
-        BINARY_OPERATOR(operator|, Or);
-        BINARY_OPERATOR(operator^, Xor);
-        REVERSE_OPERATOR(operator+, Add);
-        REVERSE_OPERATOR(operator-, Subtract);
-        REVERSE_OPERATOR(operator*, Multiply);
-        REVERSE_OPERATOR(operator/, TrueDivide);
-        REVERSE_OPERATOR(operator%, Remainder);
-        REVERSE_OPERATOR(operator<<, Lshift);
-        REVERSE_OPERATOR(operator>>, Rshift);
-        REVERSE_OPERATOR(operator&, And);
-        REVERSE_OPERATOR(operator|, Or);
-        REVERSE_OPERATOR(operator^, Xor);
-        INPLACE_OPERATOR(operator+=, Add);
-        INPLACE_OPERATOR(operator-=, Subtract);
-        INPLACE_OPERATOR(operator*=, Multiply);
-        INPLACE_OPERATOR(operator/=, TrueDivide);
-        INPLACE_OPERATOR(operator%=, Remainder);
-        INPLACE_OPERATOR(operator<<=, Lshift);
-        INPLACE_OPERATOR(operator>>=, Rshift);
-        INPLACE_OPERATOR(operator&=, And);
-        INPLACE_OPERATOR(operator|=, Or);
-        INPLACE_OPERATOR(operator^=, Xor);
+        COMPARISON_OPERATOR(operator<, Py_LT, Derived);
+        COMPARISON_OPERATOR(operator<=, Py_LE, Derived);
+        COMPARISON_OPERATOR(operator==, Py_EQ, Derived);
+        COMPARISON_OPERATOR(operator!=, Py_NE, Derived);
+        COMPARISON_OPERATOR(operator>, Py_GT, Derived);
+        COMPARISON_OPERATOR(operator>=, Py_GE, Derived);
+        REVERSE_COMPARISON(operator<, Py_GT, Derived);
+        REVERSE_COMPARISON(operator<=, Py_GE, Derived);
+        REVERSE_COMPARISON(operator==, Py_EQ, Derived);
+        REVERSE_COMPARISON(operator!=, Py_NE, Derived);
+        REVERSE_COMPARISON(operator>, Py_LT, Derived);
+        REVERSE_COMPARISON(operator>=, Py_LE, Derived);
+        BINARY_OPERATOR(operator+, PyNumber_Add, Derived);
+        BINARY_OPERATOR(operator-, PyNumber_Subtract, Derived);
+        BINARY_OPERATOR(operator*, PyNumber_Multiply, Derived);
+        BINARY_OPERATOR(operator/, PyNumber_TrueDivide, Derived);
+        BINARY_OPERATOR(operator%, PyNumber_Remainder, Derived);
+        BINARY_OPERATOR(operator<<, PyNumber_Lshift, Derived);
+        BINARY_OPERATOR(operator>>, PyNumber_Rshift, Derived);
+        BINARY_OPERATOR(operator&, PyNumber_And, Derived);
+        BINARY_OPERATOR(operator|, PyNumber_Or, Derived);
+        BINARY_OPERATOR(operator^, PyNumber_Xor, Derived);
+        REVERSE_OPERATOR(operator+, PyNumber_Add, Derived);
+        REVERSE_OPERATOR(operator-, PyNumber_Subtract, Derived);
+        REVERSE_OPERATOR(operator*, PyNumber_Multiply, Derived);
+        REVERSE_OPERATOR(operator/, PyNumber_TrueDivide, Derived);
+        REVERSE_OPERATOR(operator%, PyNumber_Remainder, Derived);
+        REVERSE_OPERATOR(operator<<, PyNumber_Lshift, Derived);
+        REVERSE_OPERATOR(operator>>, PyNumber_Rshift, Derived);
+        REVERSE_OPERATOR(operator&, PyNumber_And, Derived);
+        REVERSE_OPERATOR(operator|, PyNumber_Or, Derived);
+        REVERSE_OPERATOR(operator^, PyNumber_Xor, Derived);
+        INPLACE_OPERATOR(operator+=, PyNumber_InPlaceAdd);
+        INPLACE_OPERATOR(operator-=, PyNumber_InPlaceSubtract);
+        INPLACE_OPERATOR(operator*=, PyNumber_InPlaceMultiply);
+        INPLACE_OPERATOR(operator/=, PyNumber_InPlaceTrueDivide);
+        INPLACE_OPERATOR(operator%=, PyNumber_InPlaceRemainder);
+        INPLACE_OPERATOR(operator<<=, PyNumber_InPlaceLshift);
+        INPLACE_OPERATOR(operator>>=, PyNumber_InPlaceRshift);
+        INPLACE_OPERATOR(operator&=, PyNumber_InPlaceAnd);
+        INPLACE_OPERATOR(operator|=, PyNumber_InPlaceOr);
+        INPLACE_OPERATOR(operator^=, PyNumber_InPlaceXor);
 
-        #undef BINARY_OPERATOR
-        #undef REVERSE_OPERATOR
         #undef INPLACE_OPERATOR
     };
+
+    #undef COMPARISON_OPERATOR
+    #undef REVERSE_COMPARISON
+    #undef BINARY_OPERATOR
+    #undef REVERSE_OPERATOR
+
+    #define BERTRAND_PYTHON_OPERATORS(Mixin)                                            \
+        using Mixin::operator<;                                                         \
+        using Mixin::operator<=;                                                        \
+        using Mixin::operator==;                                                        \
+        using Mixin::operator!=;                                                        \
+        using Mixin::operator>=;                                                        \
+        using Mixin::operator>;                                                         \
+        using Mixin::operator+;                                                         \
+        using Mixin::operator-;                                                         \
+        using Mixin::operator*;                                                         \
+        using Mixin::operator/;                                                         \
+        using Mixin::operator%;                                                         \
+        using Mixin::operator<<;                                                        \
+        using Mixin::operator>>;                                                        \
+        using Mixin::operator&;                                                         \
+        using Mixin::operator|;                                                         \
+        using Mixin::operator^;                                                         \
+        using Mixin::operator+=;                                                        \
+        using Mixin::operator-=;                                                        \
+        using Mixin::operator*=;                                                        \
+        using Mixin::operator/=;                                                        \
+        using Mixin::operator%=;                                                        \
+        using Mixin::operator<<=;                                                       \
+        using Mixin::operator>>=;                                                       \
+        using Mixin::operator&=;                                                        \
+        using Mixin::operator|=;                                                        \
+        using Mixin::operator^=;                                                        \
 
     /* Mixin holding operator overloads for types implementing the sequence protocol,
     which makes them both concatenatable and repeatable. */
@@ -599,72 +719,6 @@ namespace impl {
 
     };
 
-    #define COMPARISON_OPERATOR(op, endpoint)                                           \
-        template <typename T>                                                           \
-        inline bool op(T&& other) const {                                               \
-            int result = PyObject_RichCompareBool(                                      \
-                static_cast<const Derived*>(this)->ptr(),                               \
-                detail::object_or_cast(std::forward<T>(other)).ptr(),                   \
-                endpoint                                                                \
-            );                                                                          \
-            if (result == -1) {                                                         \
-                throw error_already_set();                                              \
-            }                                                                           \
-            return result;                                                              \
-        }                                                                               \
-
-    #define REVERSE_COMPARISON(op, endpoint)                                            \
-        template <                                                                      \
-            typename T,                                                                 \
-            std::enable_if_t<                                                           \
-                !std::is_base_of_v<Derived, std::decay_t<T>>,                           \
-                int                                                                     \
-            > = 0                                                                       \
-        >                                                                               \
-        inline friend bool op(T&& other, const Derived& self) {                         \
-            int result = PyObject_RichCompareBool(                                      \
-                detail::object_or_cast(std::forward<T>(other)).ptr(),                   \
-                self.ptr(),                                                             \
-                endpoint                                                                \
-            );                                                                          \
-            if (result == -1) {                                                         \
-                throw error_already_set();                                              \
-            }                                                                           \
-            return result;                                                              \
-        }                                                                               \
-
-    /* Mixin holding equality comparisons that always fall back to PyObject_RichCompare.
-    This resolves the asymmetry between pybind11's `==`/`!=` operators and the Python
-    equivalents. */
-    template <typename Derived>
-    struct EqualCompare {
-        COMPARISON_OPERATOR(operator==, Py_EQ);
-        COMPARISON_OPERATOR(operator!=, Py_NE);
-        REVERSE_COMPARISON(operator==, Py_EQ);
-        REVERSE_COMPARISON(operator!=, Py_NE);
-    };
-
-    /* Mixin holding a full suite of comparison operators that always fall back to
-    PyObject_RichCompare. */
-    template <typename Derived>
-    struct FullCompare {
-        COMPARISON_OPERATOR(operator<, Py_LT);
-        COMPARISON_OPERATOR(operator<=, Py_LE);
-        COMPARISON_OPERATOR(operator==, Py_EQ);
-        COMPARISON_OPERATOR(operator!=, Py_NE);
-        COMPARISON_OPERATOR(operator>, Py_GT);
-        COMPARISON_OPERATOR(operator>=, Py_GE);
-        REVERSE_COMPARISON(operator<, Py_GT);
-        REVERSE_COMPARISON(operator<=, Py_GE);
-        REVERSE_COMPARISON(operator==, Py_EQ);
-        REVERSE_COMPARISON(operator!=, Py_NE);
-        REVERSE_COMPARISON(operator>, Py_LT);
-        REVERSE_COMPARISON(operator>=, Py_LE);
-    };
-
-    #undef COMPARISON_OPERATOR
-    #undef REVERSE_COMPARISON
-
     /* Mixin holding an optimized reverse iterator for data structures that allow
     direct access to the underlying array.  This avoids the overhead of going through
     the Python interpreter to obtain a reverse iterator, and brings it up to parity
@@ -712,6 +766,53 @@ namespace impl {
 
     };
 
+    /* A simple struct that converts a generic C++ object into a Python equivalent in
+    its constructor.  This is used in conjunction with std::initializer_list to parse
+    mixed-type lists in a type-safe manner.
+
+    NOTE: this incurs a small performance penalty, effectively requiring an extra loop
+    over the initializer list before the function is called.  Users can avoid this by
+    providing a homogenous `std::initializer_list<T>` overload alongside
+    `std::iniitializer_list<Initializer>`.  This causes conversions to be deferred to
+    the function body, which may be able to handle them more efficiently in a single
+    loop. */
+    struct Initializer {
+        Object value;
+
+        /* We disable initializer construction from pybind11::handle in order not to
+        * interfere with pybind11's reinterpret_borrow/reinterpret_steal helper functions,
+        * which use initializer lists internally.  Disabling the generic initializer list
+        * constructor whenever a handle is passed in allows reinterpret_borrow/
+        * reinterpret_steal to continue to work as expected.
+        */
+
+        template <
+            typename T,
+            std::enable_if_t<!std::is_same_v<pybind11::handle, std::decay_t<T>>, int> = 0
+        >
+        Initializer(T&& value) : value(detail::object_or_cast(std::forward<T>(value))) {}
+    };
+
+    /* Convert an arbitrary Python/C++ value into a pybind11 object and then return a
+    new reference.  This is used in the constructors of list and tuple objects, whose
+    SET_ITEM() functions steal a reference.  Converts null pointers into Python None. */
+    template <typename T>
+    static inline PyObject* convert_newref(T&& value) {
+        if constexpr (detail::is_pyobject<T>::value) {
+            PyObject* result = value.ptr();
+            if (result == nullptr) {
+                result = Py_None;
+            }
+            return Py_NewRef(result);
+        } else {
+            PyObject* result = py::cast(std::forward<T>(value)).release().ptr();
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return result;
+        }
+    }
+
     template <typename Base, typename T>
     using enable_for = std::enable_if_t<std::is_base_of_v<Base, T>>;
 
@@ -731,13 +832,30 @@ namespace impl {
     function will be called if it fails that check.  Both should operate on raw
     PyObject* pointers, and convert() should always return a new reference.  They will
     never be passed null objects. */
-    #define CONSTRUCTORS(cls, check, convert)                                           \
-        using Base::operator=;                                                          \
-        PYBIND11_OBJECT_CVT(cls, Base, check, convert);                                 \
+    #define BERTRAND_PYTHON_CONSTRUCTORS(parent, cls, check, convert)                   \
+        PYBIND11_OBJECT_CVT(cls, parent, check, convert);                               \
+        using parent::operator=;                                                        \
         template <typename T>                                                           \
         cls& operator=(const std::initializer_list<T>& init) {                          \
-            Base::operator=(cls(init));                                                 \
+            parent::operator=(cls(init));                                               \
             return *this;                                                               \
+        }                                                                               \
+        cls& operator=(const pybind11::object& obj) {                                   \
+            if (check_(obj.ptr())) {                                                    \
+                parent::operator=(reinterpret_borrow<cls>(obj.ptr()));                  \
+            } else {                                                                    \
+                std::ostringstream msg;                                                 \
+                msg << "cannot convert " << pybind11::repr(pybind11::type::of(obj));    \
+                msg << " to " << #cls;                                                  \
+                throw CastError(msg.str());                                             \
+            }                                                                           \
+            return *this;                                                               \
+        }                                                                               \
+        inline cls* operator&() {                                                       \
+            return this;                                                                \
+        }                                                                               \
+        inline const cls* operator&() const {                                           \
+            return this;                                                                \
         }                                                                               \
 
 }  // namespace impl
@@ -745,12 +863,7 @@ namespace impl {
 
 /* New subclass of pybind11::object that represents Python's global NotImplemented
 object. */
-class NotImplementedType :
-    public pybind11::object,
-    public impl::EqualCompare<NotImplementedType>
-{
-    using Base = pybind11::object;
-    using Compare = impl::EqualCompare<NotImplementedType>;
+class NotImplementedType : public Object, public impl::Ops<NotImplementedType> {
 
     inline static int check_not_implemented(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) Py_TYPE(Py_NotImplemented));
@@ -765,11 +878,18 @@ class NotImplementedType :
     }
 
 public:
-    CONSTRUCTORS(NotImplementedType, check_not_implemented, convert_not_implemented);
-    NotImplementedType() : Base(Py_NotImplemented, borrowed_t{}) {}
+    static py::Type Type;
+    BERTRAND_PYTHON_CONSTRUCTORS(
+        Object,
+        NotImplementedType,
+        check_not_implemented,
+        convert_not_implemented
+    );
 
-    using Compare::operator==;
-    using Compare::operator!=;
+    NotImplementedType() : Object(Py_NotImplemented, borrowed_t{}) {}
+
+    using impl::Ops<NotImplementedType>::operator==;
+    using impl::Ops<NotImplementedType>::operator!=;
 };
 
 
@@ -1371,8 +1491,5 @@ BERTRAND_STD_EQUAL_TO(bertrand::py::Bytearray)
 // TODO: implement type casters for range, MappingProxy, KeysView, ValuesView,
 // ItemsView, Method, ClassMethod, StaticMethod, Property
 
-
-// #undef CONSTRUCTORS  // TODO: uncommenting this makes it impossible to use the
-// CONSTRUCTORS macro in other classes.  Probably 
 
 #endif // BERTRAND_PYTHON_COMMON_H

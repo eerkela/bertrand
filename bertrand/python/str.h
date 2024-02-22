@@ -14,14 +14,7 @@ namespace py {
 
 
 /* Wrapper around pybind11::str that enables extra C API functionality. */
-class Str :
-    public pybind11::str,
-    public impl::SequenceOps<Str>,
-    public impl::FullCompare<Str>
-{
-    using Base = pybind11::str;
-    using Ops = impl::SequenceOps<Str>;
-    using Compare = impl::FullCompare<Str>;
+class Str : public Object, public impl::Ops<Str>, public impl::SequenceOps<Str> {
 
     template <typename T>
     inline auto to_format_string(T&& arg) -> decltype(auto) {
@@ -47,41 +40,67 @@ class Str :
 
 public:
     static py::Type Type;
-
-    CONSTRUCTORS(Str, PyUnicode_Check, convert_to_str);
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, Str, PyUnicode_Check, convert_to_str);
 
     /* Default constructor.  Initializes to empty string. */
-    inline Str() : Base([] {
-        PyObject* result = PyUnicode_FromStringAndSize("", 0);
-        if (result == nullptr) {
+    Str() : Object(PyUnicode_FromStringAndSize("", 0), stolen_t{}) {
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
+
+    /* Get a string representation of an object using Python `str(obj)`. */
+    Str(const pybind11::handle& obj) : Object(PyObject_Str(obj.ptr()), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
 
     /* Construct a unicode string from a null-terminated C string. */
-    inline Str(const char* string) : Base(string) {}
+    Str(const char* string) : Object(PyUnicode_FromString(string), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
 
     /* Construct a unicode string from a C++ std::string. */
-    inline Str(const std::string& string) : Base(string) {}
+    Str(const std::string& string) :
+        Object(PyUnicode_FromStringAndSize(string.c_str(), string.size()), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
 
     /* Construct a unicode string from a C++ std::string_view. */
-    inline Str(const std::string_view& string) : Base(string) {}
+    Str(const std::string_view& string) :
+        Object(PyUnicode_FromStringAndSize(string.data(), string.size()), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    /* Construct a unicode string from a Python bytes object. */
+    Str(const pybind11::bytes& bytes) : Object(PyObject_Str(bytes.ptr()), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
 
     /* Construct a unicode string from a printf-style format string.  See the python
     docs for `PyUnicode_FromFormat()` for more details.  Note that this can segfault
     if the argument types do not match the format code(s). */
     template <typename... Args, std::enable_if_t<(sizeof...(Args) > 0), int> = 0>
-    explicit Str(const char* format, Args&&... args) : Base([&] {
-        PyObject* result = PyUnicode_FromFormat(
+    explicit Str(const char* format, Args&&... args) {
+        m_ptr = PyUnicode_FromFormat(
             format,
             to_format_string(std::forward<Args>(args))...
         );
-        if (result == nullptr) {
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
     /* Construct a unicode string from a printf-style format string.  See
     Str(const char*, ...) for more details. */
@@ -99,10 +118,32 @@ public:
 
     /* Construct a unicode string from a printf-style format string.  See
     Str(const char*, ...) for more details. */
-    template <typename... Args, std::enable_if_t<(sizeof...(Args) > 0), int> = 0>
-    explicit Str(const pybind11::str& format, Args&&... args) : Str(
+    template <
+        typename T,
+        typename... Args,
+        std::enable_if_t<(
+            (std::is_base_of_v<Str, T> || std::is_base_of_v<pybind11::str, T>) &&
+            sizeof...(Args) > 0),
+            int
+        > = 0
+    >
+    explicit Str(const T& format, Args&&... args) : Str(
         format.template cast<std::string>(), std::forward<Args>(args)...
     ) {}
+
+    /* Implicitly convert a Python string into a C++ string. */
+    inline operator std::string() const {
+        Object temp = reinterpret_steal<Object>(PyUnicode_AsUTF8String(this->ptr()));
+        if (temp.ptr() == nullptr) {
+            throw error_already_set();
+        }
+        char* result;
+        Py_ssize_t length;
+        if (PyBytes_AsStringAndSize(temp.ptr(), &result, &length) != 0) {
+            throw error_already_set();
+        }
+        return std::string(result, length);
+    }
 
     ///////////////////////////////////
     ////    PyUnicode_* METHODS    ////
@@ -116,6 +157,11 @@ public:
     /* Get the length of the string in unicode code points. */
     inline size_t size() const noexcept {
         return static_cast<size_t>(PyUnicode_GET_LENGTH(this->ptr()));
+    }
+
+    /* Check if the string is empty. */
+    inline bool empty() const noexcept {
+        return size() == 0;
     }
 
     /* Get the kind of the string, indicating the size of the unicode points stored
@@ -739,19 +785,18 @@ public:
         return reinterpret_steal<Str>(result);
     }
 
-    using Base::operator[];
-    using Ops::operator[];
+    using impl::Ops<Str>::operator<;
+    using impl::Ops<Str>::operator<=;
+    using impl::Ops<Str>::operator==;
+    using impl::Ops<Str>::operator!=;
+    using impl::Ops<Str>::operator>=;
+    using impl::Ops<Str>::operator>;
 
-    using Compare::operator<;
-    using Compare::operator<=;
-    using Compare::operator==;
-    using Compare::operator!=;
-    using Compare::operator>=;
-    using Compare::operator>;
-
-    using Ops::operator+;
-    using Ops::operator*;
-    using Ops::operator*=;
+    using Object::operator[];
+    using impl::SequenceOps<Str>::operator[];
+    using impl::SequenceOps<Str>::operator+;
+    using impl::SequenceOps<Str>::operator*;
+    using impl::SequenceOps<Str>::operator*=;
 
     template <typename T>
     inline Str& operator+=(T&& other) {
@@ -760,16 +805,6 @@ public:
     }
 
 };
-
-
-/* Equivalent to Python str(). */
-inline Str str(const pybind11::handle& obj) {
-    PyObject* string = PyObject_Str(obj.ptr());
-    if (string == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Str>(string);
-}
 
 
 /* Equivalent to Python `ascii(obj)`.  Like `repr()`, but returns an ASCII-encoded

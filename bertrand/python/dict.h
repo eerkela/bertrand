@@ -3,6 +3,7 @@
 
 #include "common.h"
 #include "set.h"
+#include <ostream>
 
 
 namespace bertrand {
@@ -11,12 +12,7 @@ namespace py {
 
 /* New subclass of pybind11::object representing a read-only proxy for a Python
 dictionary or other mapping. */
-class MappingProxy :
-    public pybind11::object,
-    public impl::EqualCompare<MappingProxy>
-{
-    using Base = pybind11::object;
-    using Compare = impl::EqualCompare<MappingProxy>;
+class MappingProxy : public Object, public impl::Ops<MappingProxy> {
 
     inline static bool mappingproxy_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictProxy_Type);
@@ -36,12 +32,26 @@ class MappingProxy :
 
 public:
     static py::Type Type;
-
-    CONSTRUCTORS(MappingProxy, mappingproxy_check, convert_to_mappingproxy);
+    BERTRAND_PYTHON_CONSTRUCTORS(
+        Object,
+        MappingProxy,
+        mappingproxy_check,
+        convert_to_mappingproxy
+    )
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
+
+    /* Get the length of the dictionary. */
+    inline size_t size() const noexcept {
+        return static_cast<size_t>(PyObject_Length(this->ptr()));
+    }
+
+    /* Check if the dictionary is empty. */
+    inline bool empty() const noexcept {
+        return size() == 0;
+    }
 
     /* Equivalent to Python `mappingproxy.copy()`. */
     inline Dict copy() const;  // out of line to avoid circular dependency.
@@ -81,8 +91,10 @@ public:
     template <typename T>
     inline bool contains(T&& key) const;
 
-    using Compare::operator==;
-    using Compare::operator!=;
+    using impl::Ops<MappingProxy>::operator==;
+    using impl::Ops<MappingProxy>::operator!=;
+    using impl::Ops<MappingProxy>::operator&;
+    using impl::Ops<MappingProxy>::operator<<;
 
     // Operator overloads provided out of line to avoid circular dependency.
 
@@ -91,12 +103,7 @@ public:
 
 /* New subclass of pybind11::object representing a view into the keys of a dictionary
 object. */
-struct KeysView :
-    public pybind11::object,
-    public impl::FullCompare<KeysView>
-{
-    using Base = pybind11::object;
-    using Compare = impl::FullCompare<KeysView>;
+class KeysView : public Object, public impl::Ops<KeysView> {
 
     inline static bool keys_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictKeys_Type);
@@ -125,12 +132,17 @@ struct KeysView :
 
 public:
     static py::Type Type;
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, KeysView, keys_check, convert_to_keys)
 
-    CONSTRUCTORS(KeysView, keys_check, convert_to_keys);
+    /* Get the number of keys. */
+    inline size_t size() const noexcept {
+        return static_cast<size_t>(PyObject_Length(this->ptr()));
+    }
 
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
+    /* Check if the keys are empty. */
+    inline bool empty() const noexcept {
+        return size() == 0;
+    }
 
     /* Equivalent to Python `dict.keys().mapping`. */
     inline MappingProxy mapping() const {
@@ -154,11 +166,6 @@ public:
     /* Equivalent to Python `dict.keys().isdisjoint(<braced initializer list>)`. */
     inline bool isdisjoint(const std::initializer_list<impl::Initializer>& other) const {
         return this->attr("isdisjoint")(Set(other)).template cast<bool>();
-    }
-
-    /* Get the length of the keys view. */
-    inline size_t size() const noexcept {
-        return static_cast<size_t>(PyObject_Length(this->ptr()));
     }
 
     /////////////////////////
@@ -238,23 +245,18 @@ public:
         return Set(this->attr("__xor__")(Set(other)));
     }
 
-    using Compare::operator<;
-    using Compare::operator<=;
-    using Compare::operator==;
-    using Compare::operator!=;
-    using Compare::operator>=;
-    using Compare::operator>;
+    using impl::Ops<KeysView>::operator<;
+    using impl::Ops<KeysView>::operator<=;
+    using impl::Ops<KeysView>::operator==;
+    using impl::Ops<KeysView>::operator!=;
+    using impl::Ops<KeysView>::operator>=;
+    using impl::Ops<KeysView>::operator>;
 };
 
 
 /* New subclass of pybind11::object representing a view into the values of a dictionary
 object. */
-struct ValuesView :
-    public pybind11::object,
-    public impl::FullCompare<ValuesView>
-{
-    using Base = pybind11::object;
-    using Compare = impl::FullCompare<ValuesView>;
+class ValuesView : public Object, public impl::Ops<ValuesView> {
 
     inline static bool values_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictValues_Type);
@@ -283,17 +285,21 @@ struct ValuesView :
 
 public:
     static py::Type Type;
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, ValuesView, values_check, convert_to_values)
 
-    CONSTRUCTORS(ValuesView, values_check, convert_to_values);
+    /* Get the number of values. */
+    inline size_t size() const noexcept {
+        return static_cast<size_t>(PyObject_Length(this->ptr()));
+    }
+
+    /* Check if the values are empty. */
+    inline bool empty() const noexcept {
+        return size() == 0;
+    }
 
     /* Equivalent to Python `dict.values().mapping`. */
     inline MappingProxy mapping() const {
         return this->attr("mapping");
-    }
-
-    /* Get the length of the values view. */
-    inline size_t size() const noexcept {
-        return static_cast<size_t>(PyObject_Length(this->ptr()));
     }
 
     /* Equivalent to `value in dict.values()`. */
@@ -305,23 +311,18 @@ public:
         return result;
     }
 
-    using Compare::operator<;
-    using Compare::operator<=;
-    using Compare::operator==;
-    using Compare::operator!=;
-    using Compare::operator>=;
-    using Compare::operator>;
+    using impl::Ops<ValuesView>::operator<;
+    using impl::Ops<ValuesView>::operator<=;
+    using impl::Ops<ValuesView>::operator==;
+    using impl::Ops<ValuesView>::operator!=;
+    using impl::Ops<ValuesView>::operator>=;
+    using impl::Ops<ValuesView>::operator>;
 };
 
 
 /* New subclass of pybind11::object representing a view into the items of a dictionary
 object. */
-struct ItemsView :
-    public pybind11::object,
-    public impl::FullCompare<ItemsView>
-{
-    using Base = pybind11::object;
-    using Compare = impl::FullCompare<ItemsView>;
+struct ItemsView : public Object, public impl::Ops<ItemsView> {
 
     inline static bool items_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictItems_Type);
@@ -350,17 +351,21 @@ struct ItemsView :
 
 public:
     static py::Type Type;
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, ItemsView, items_check, convert_to_items)
 
-    CONSTRUCTORS(ItemsView, items_check, convert_to_items);
+    /* Get the number of items. */
+    inline size_t size() const noexcept {
+        return static_cast<size_t>(PyObject_Length(this->ptr()));
+    }
+
+    /* Check if the items are empty. */
+    inline bool empty() const noexcept {
+        return size() == 0;
+    }
 
     /* Equivalent to Python `dict.items().mapping`. */
     inline MappingProxy mapping() const {
         return this->attr("mapping");
-    }
-
-    /* Get the length of the values view. */
-    inline size_t size() const noexcept {
-        return static_cast<size_t>(PyObject_Length(this->ptr()));
     }
 
     /* Equivalent to `value in dict.values()`. */
@@ -372,23 +377,18 @@ public:
         return result;
     }
 
-    using Compare::operator<;
-    using Compare::operator<=;
-    using Compare::operator==;
-    using Compare::operator!=;
-    using Compare::operator>=;
-    using Compare::operator>;
+    using impl::Ops<ItemsView>::operator<;
+    using impl::Ops<ItemsView>::operator<=;
+    using impl::Ops<ItemsView>::operator==;
+    using impl::Ops<ItemsView>::operator!=;
+    using impl::Ops<ItemsView>::operator>=;
+    using impl::Ops<ItemsView>::operator>;
 };
 
 
 /* Wrapper around pybind11::dict that allows it to be directly initialized using
 std::initializer_list and enables extra C API functionality. */
-class Dict :
-    public pybind11::dict,
-    public impl::EqualCompare<Dict>
-{
-    using Base = pybind11::dict;
-    using Compare = impl::EqualCompare<Dict>;
+class Dict : public Object, public impl::Ops<Dict> {
 
     struct DictInit {
         Object key;
@@ -409,47 +409,45 @@ class Dict :
         return result;
     }
 
+    template <typename T>
+    static constexpr bool is_dictlike = (
+        std::is_base_of_v<Dict, T> || std::is_base_of_v<pybind11::dict, T>
+    );
+
 public:
     static py::Type Type;
-
-    CONSTRUCTORS(Dict, PyDict_Check, convert_to_dict);
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, Dict, PyDict_Check, convert_to_dict);
 
     /* Default constructor.  Initializes to empty dict. */
-    inline Dict() : Base([] {
-        PyObject* result = PyDict_New();
-        if (result == nullptr) {
+    inline Dict() : Object(PyDict_New(), stolen_t{}) {
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
     /* Pack the given arguments into a dictionary using an initializer list. */
-    Dict(const std::initializer_list<DictInit>& contents) : Base([&contents] {
-        PyObject* result = PyDict_New();
-        if (result == nullptr) {
+    Dict(const std::initializer_list<DictInit>& contents) {
+        m_ptr = PyDict_New();
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
         try {
             for (const DictInit& item : contents) {
-                if (PyDict_SetItem(result, item.key.ptr(), item.value.ptr())) {
+                if (PyDict_SetItem(m_ptr, item.key.ptr(), item.value.ptr())) {
                     throw error_already_set();
                 }
             }
-            return result;
         } catch (...) {
-            Py_DECREF(result);
+            Py_DECREF(m_ptr);
             throw;
         }
-    }(), stolen_t{}) {}
+    }
 
     /* Unpack a generic container into a new dictionary. */
-    template <
-        typename T,
-        std::enable_if_t<!std::is_base_of_v<pybind11::dict, T>, int> = 0
-    >
-    explicit Dict(T&& container) : Base([&container] {
-        PyObject* result = PyDict_New();
-        if (result == nullptr) {
+    template <typename T, std::enable_if_t<!is_dictlike<T>, int> = 0>
+    explicit Dict(T&& container) {
+        m_ptr = PyDict_New();
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
         try {
@@ -464,14 +462,14 @@ public:
                     auto it = py::iter(item);
                     Handle key = *it;
                     Handle value = *(++it);
-                    if (PyDict_SetItem(result, key.ptr(), value.ptr())) {
+                    if (PyDict_SetItem(m_ptr, key.ptr(), value.ptr())) {
                         throw error_already_set();
                     }
                 }
             } else {
                 for (auto&& [k, v] : container) {
                     if (PyDict_SetItem(
-                        result,
+                        m_ptr,
                         detail::object_or_cast(std::forward<decltype(k)>(k)).ptr(),
                         detail::object_or_cast(std::forward<decltype(v)>(v)).ptr()
                     )) {
@@ -479,42 +477,52 @@ public:
                     }
                 }
             }
-            return result;
         } catch (...) {
-            Py_DECREF(result);
+            Py_DECREF(m_ptr);
             throw;
         }
-    }(), stolen_t{}) {}
+    }
 
     /* Unpack a pybind11::dict into a new dictionary directly using the C API. */
-    template <
-        typename T,
-        std::enable_if_t<std::is_base_of_v<pybind11::dict, T>, int> = 0
-    >
-    explicit Dict(T&& dict) : Base([&dict] {
-        PyObject* result = PyDict_New();
-        if (result == nullptr) {
+    template <typename T, std::enable_if_t<is_dictlike<T>, int> = 0>
+    explicit Dict(T&& dict) {
+        m_ptr = PyDict_New();
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        if (PyDict_Merge(result, dict.ptr(), 1)) {
-            Py_DECREF(result);
+        if (PyDict_Merge(m_ptr, dict.ptr(), 1)) {
+            Py_DECREF(m_ptr);
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
-        /*    PyDict_ API    */
+    /* Construct a dictionary using optional keyword arguments, following pybind11
+    syntax. */
+    template <
+        typename... Args,
+        typename = std::enable_if_t<pybind11::args_are_all_keyword_or_ds<Args...>()>,
+        typename collector = detail::deferred_t<detail::unpacking_collector<>, Args...>
+    >
+    explicit Dict(Args&&... args) :
+        Dict(collector(std::forward<Args>(args)...).kwargs())
+    {}
+
+    ///////////////////////////
+    ////    PyDict_ API    ////
+    ///////////////////////////
 
     /* Get the size of the dict. */
     inline size_t size() const noexcept {
         return static_cast<size_t>(PyDict_Size(this->ptr()));
     }
 
+    /* Check if the dict is empty. */
+    inline bool empty() const noexcept {
+        return size() == 0;
+    }
+
     /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
-    template <
-        typename T,
-        std::enable_if_t<std::is_base_of_v<pybind11::dict, T>, int> = 0
-    >
+    template <typename T, std::enable_if_t<is_dictlike<T>, int> = 0>
     inline void merge(T&& items) {
         if (PyDict_Merge(
             this->ptr(),
@@ -526,10 +534,7 @@ public:
     }
 
     /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
-    template <
-        typename T,
-        std::enable_if_t<!std::is_base_of_v<pybind11::dict, T>, int> = 0
-    >
+    template <typename T, std::enable_if_t<!is_dictlike<T>, int> = 0>
     inline void merge(T&& items) {
         if (PyDict_MergeFromSeq2(
             this->ptr(),
@@ -540,7 +545,9 @@ public:
         }
     }
 
-        /*    PYTHON INTERFACE    */
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
 
     /* Equivalent to Python `dict.clear()`. */
     inline void clear() { 
@@ -806,10 +813,7 @@ public:
     }
 
     /* Equivalent to Python `dict.update(items)`. */
-    template <
-        typename T,
-        std::enable_if_t<std::is_base_of_v<pybind11::dict, T>, int> = 0
-    >
+    template <typename T, std::enable_if_t<is_dictlike<T>, int> = 0>
     inline void update(T&& items) {
         if (PyDict_Merge(this->ptr(), items.ptr(), 1)) {
             throw error_already_set();
@@ -817,10 +821,7 @@ public:
     }
 
     /* Equivalent to Python `dict.update(items)`. */
-    template <
-        typename T,
-        std::enable_if_t<!std::is_base_of_v<pybind11::dict, T>, int> = 0
-    >
+    template <typename T, std::enable_if_t<!is_dictlike<T>, int> = 0>
     inline void update(T&& items) {
         if constexpr (detail::is_pyobject<T>::value) {
             if (PyDict_MergeFromSeq2(
@@ -867,10 +868,12 @@ public:
         return this->attr("items")();
     }
 
-        /*    OPERATORS    */
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
 
-    inline auto begin() const { return pybind11::object::begin(); }
-    inline auto end() const { return pybind11::object::end(); }
+    inline auto begin() const { return Object::begin(); }
+    inline auto end() const { return Object::end(); }
 
     /* Equivalent to Python `key in dict`. */
     template <typename T>
@@ -885,8 +888,8 @@ public:
         return result;
     }
 
-    using Compare::operator==;
-    using Compare::operator!=;
+    using impl::Ops<Dict>::operator==;
+    using impl::Ops<Dict>::operator!=;
 
     template <typename T>
     inline Dict operator|(T&& other) const {
@@ -915,48 +918,37 @@ public:
 };
 
 
-/* Out of line definition for `MappingProxy.copy()`. */
 inline Dict MappingProxy::copy() const{
     return this->attr("copy")();
 }
 
-
-/* Out of line definition for `MappingProxy.keys()`. */
 inline KeysView MappingProxy::keys() const{
     return this->attr("keys")();
 }
 
-
-/* Out of line definition for `MappingProxy.values()`. */
 inline ValuesView MappingProxy::values() const{
     return this->attr("values")();
 }
 
-
-/* Out of line definition for `MappingProxy.contains()`. */
 template <typename T>
 inline bool MappingProxy::contains(T&& key) const {
     return this->keys().contains(detail::object_or_cast(std::forward<T>(key)));
 }
-
 
 template <typename T>
 inline Dict operator|(const MappingProxy& mapping, T&& other) {
     return mapping.attr("__or__")(detail::object_or_cast(std::forward<T>(other)));
 }
 
-
 template <typename T>
 inline Dict operator&(const MappingProxy& mapping, T&& other) {
     return mapping.attr("__and__")(detail::object_or_cast(std::forward<T>(other)));
 }
 
-
 template <typename T>
 inline Dict operator-(const MappingProxy& mapping, T&& other) {
     return mapping.attr("__sub__")(detail::object_or_cast(std::forward<T>(other)));
 }
-
 
 template <typename T>
 inline Dict operator^(const MappingProxy& mapping, T&& other) {

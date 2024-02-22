@@ -9,48 +9,36 @@ namespace py {
 
 
 /* Wrapper around pybind11::bool_ that enables math operations with C++ inputs. */
-class Bool :
-    public pybind11::bool_,
-    public impl::NumericOps<Bool>,
-    public impl::FullCompare<Bool>
-{
-    using Base = pybind11::bool_;
-    using Ops = impl::NumericOps<Bool>;
-    using Compare = impl::FullCompare<Bool>;
+class Bool : public Object, public impl::Ops<Bool> {
+
+    static PyObject* convert_to_bool(PyObject* obj) {
+        int result = PyObject_IsTrue(obj);
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return Py_NewRef(result ? Py_True : Py_False);
+    }
 
 public:
     static py::Type Type;
+    BERTRAND_PYTHON_OPERATORS(impl::Ops<Bool>)
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, Bool, PyBool_Check, convert_to_bool)
 
-    using Base::Base;
-    using Base::operator=;
+    /* Default constructor.  Initializes to False. */
+    Bool() : Object(Py_False, borrowed_t{}) {}
 
-    using Compare::operator<;
-    using Compare::operator<=;
-    using Compare::operator==;
-    using Compare::operator!=;
-    using Compare::operator>;
-    using Compare::operator>=;
+    /* Construct from a C++ bool. */
+    Bool(bool value) : Object(value ? Py_True : Py_False, borrowed_t{}) {}
 
-    using Ops::operator+;
-    using Ops::operator-;
-    using Ops::operator*;
-    using Ops::operator/;
-    using Ops::operator%;
-    using Ops::operator<<;
-    using Ops::operator>>;
-    using Ops::operator&;
-    using Ops::operator|;
-    using Ops::operator^;
-    using Ops::operator+=;
-    using Ops::operator-=;
-    using Ops::operator*=;
-    using Ops::operator/=;
-    using Ops::operator%=;
-    using Ops::operator<<=;
-    using Ops::operator>>=;
-    using Ops::operator&=;
-    using Ops::operator|=;
-    using Ops::operator^=;
+    /* Implicitly convert to a C++ bool. */
+    inline operator bool() const {
+        int result = PyObject_IsTrue(this->ptr());
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
 };
 
 

@@ -22,93 +22,92 @@ namespace impl {
                                                                                         \
 public:                                                                                 \
     static py::Type Type;                                                               \
-                                                                                        \
-    CONSTRUCTORS(cls, Py##cls##_Check, convert_to_set);                                 \
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, cls, Py##cls##_Check, convert_to_set);         \
                                                                                         \
     /* Default constructor.  Initializes to empty set. */                               \
-    inline cls() : Base([] {                                                            \
-        PyObject* result = Py##cls##_New(nullptr);                                      \
-        if (result == nullptr) {                                                        \
+    inline cls() {                                                                      \
+        m_ptr = Py##cls##_New(nullptr);                                                 \
+        if (m_ptr == nullptr) {                                                         \
             throw error_already_set();                                                  \
         }                                                                               \
-        return result;                                                                  \
-    }(), stolen_t{}) {}                                                                 \
+    }                                                                                   \
                                                                                         \
     /* Pack the contents of a braced initializer into a new Python set. */              \
     template <typename T>                                                               \
-    cls(const std::initializer_list<T>& contents) : Base([&contents] {                  \
-        PyObject* result = Py##cls##_New(nullptr);                                      \
-        if (result == nullptr) {                                                        \
+    cls(const std::initializer_list<T>& contents) {                                     \
+        m_ptr = Py##cls##_New(nullptr);                                                 \
+        if (m_ptr == nullptr) {                                                         \
             throw error_already_set();                                                  \
         }                                                                               \
         try {                                                                           \
             for (const T& element : contents) {                                         \
-                if (PySet_Add(result, detail::object_or_cast(element).ptr())) {         \
+                if (PySet_Add(m_ptr, detail::object_or_cast(element).ptr())) {          \
                     throw error_already_set();                                          \
                 }                                                                       \
             }                                                                           \
-            return result;                                                              \
         } catch (...) {                                                                 \
-            Py_DECREF(result);                                                          \
+            Py_DECREF(m_ptr);                                                           \
             throw;                                                                      \
         }                                                                               \
-    }(), stolen_t{}) {}                                                                 \
+    }                                                                                   \
                                                                                         \
     /* Pack the contents of a braced initializer into a new Python set. */              \
-    cls(const std::initializer_list<impl::Initializer>& contents) : Base([&contents] {  \
-        PyObject* result = Py##cls##_New(nullptr);                                      \
-        if (result == nullptr) {                                                        \
+    cls(const std::initializer_list<impl::Initializer>& contents) {                     \
+        m_ptr = Py##cls##_New(nullptr);                                                 \
+        if (m_ptr == nullptr) {                                                         \
             throw error_already_set();                                                  \
         }                                                                               \
         try {                                                                           \
             for (const impl::Initializer& element : contents) {                         \
-                if (PySet_Add(result, element.value.ptr())) {                           \
+                if (PySet_Add(m_ptr, element.value.ptr())) {                            \
                     throw error_already_set();                                          \
                 }                                                                       \
             }                                                                           \
-            return result;                                                              \
         } catch (...) {                                                                 \
-            Py_DECREF(result);                                                          \
+            Py_DECREF(m_ptr);                                                           \
             throw;                                                                      \
         }                                                                               \
-    }(), stolen_t{}) {}                                                                 \
+    }                                                                                   \
                                                                                         \
     /* Unpack a generic container into a new Python set. */                             \
     template <typename T>                                                               \
-    explicit cls(T&& container) : Base([&container] {                                   \
+    explicit cls(T&& container) {                                                       \
         if constexpr (detail::is_pyobject<T>::value) {                                  \
-            PyObject* result = Py##cls##_New(container.ptr());                          \
-            if (result == nullptr) {                                                    \
+            m_ptr = Py##cls##_New(container.ptr());                                     \
+            if (m_ptr == nullptr) {                                                     \
                 throw error_already_set();                                              \
             }                                                                           \
-            return result;                                                              \
         } else {                                                                        \
-            PyObject* result = Py##cls##_New(nullptr);                                  \
-            if (result == nullptr) {                                                    \
+            m_ptr = Py##cls##_New(nullptr);                                             \
+            if (m_ptr == nullptr) {                                                     \
                 throw error_already_set();                                              \
             }                                                                           \
             try {                                                                       \
                 for (auto&& item : container) {                                         \
                     if (PySet_Add(                                                      \
-                        result,                                                         \
+                        m_ptr,                                                          \
                         detail::object_or_cast(std::forward<decltype(item)>(item)).ptr()\
                     )) {                                                                \
                         throw error_already_set();                                      \
                     }                                                                   \
                 }                                                                       \
-                return result;                                                          \
             } catch (...) {                                                             \
-                Py_DECREF(result);                                                      \
+                Py_DECREF(m_ptr);                                                       \
                 throw;                                                                  \
             }                                                                           \
         }                                                                               \
-    }(), stolen_t{}) {}                                                                 \
+    }                                                                                   \
                                                                                         \
         /*    PySet_ API    */                                                          \
                                                                                         \
     /* Get the size of the set. */                                                      \
     inline size_t size() const noexcept {                                               \
         return static_cast<size_t>(PySet_GET_SIZE(this->ptr()));                        \
+    }                                                                                   \
+                                                                                        \
+    /* Cehcek if the set is empty. */                                                   \
+    inline bool empty() const noexcept {                                                \
+        return size() == 0;                                                             \
     }                                                                                   \
                                                                                         \
         /*    PYTHON INTERFACE    */                                                    \
@@ -436,12 +435,12 @@ public:                                                                         
         return result;                                                                  \
     }                                                                                   \
                                                                                         \
-    using Compare::operator<;                                                           \
-    using Compare::operator<=;                                                          \
-    using Compare::operator==;                                                          \
-    using Compare::operator!=;                                                          \
-    using Compare::operator>=;                                                          \
-    using Compare::operator>;                                                           \
+    using impl::Ops<cls>::operator<;                                                    \
+    using impl::Ops<cls>::operator<=;                                                   \
+    using impl::Ops<cls>::operator==;                                                   \
+    using impl::Ops<cls>::operator!=;                                                   \
+    using impl::Ops<cls>::operator>=;                                                   \
+    using impl::Ops<cls>::operator>;                                                    \
                                                                                         \
     template <typename T>                                                               \
     inline cls operator|(T&& other) const {                                             \
@@ -505,13 +504,7 @@ public:                                                                         
 
 /* Wrapper around pybind11::frozenset that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
-class FrozenSet :
-    public pybind11::frozenset,
-    public impl::FullCompare<FrozenSet>
-{
-    using Base = pybind11::frozenset;
-    using Compare = impl::FullCompare<FrozenSet>;
-
+class FrozenSet : public Object, public impl::Ops<FrozenSet> {
     ANYSET_INTERFACE(FrozenSet);
 
     template <typename T>
@@ -587,13 +580,7 @@ class FrozenSet :
 
 /* Wrapper around pybind11::set that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
-class Set :
-    public pybind11::set,
-    public impl::FullCompare<Set>
-{
-    using Base = pybind11::set;
-    using Compare = impl::FullCompare<Set>;
-
+class Set : public Object, public impl::Ops<Set> {
     ANYSET_INTERFACE(Set);
 
     ////////////////////////////////

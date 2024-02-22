@@ -1,6 +1,9 @@
 #ifndef BERTRAND_PYTHON_MATH_H
 #define BERTRAND_PYTHON_MATH_H
 
+#include <cmath>
+#include <type_traits>
+
 #include "common.h"
 #include "tuple.h"
 
@@ -14,102 +17,57 @@ namespace py {
 //////////////////////////////
 
 
-/* C++ has no `**` operator, so `pow()` must be used instead. */
+/* C++ has no `**` operator, so `pow()` must be used instead.
+ */
 
 
 /* Equivalent to Python `base ** exp` (exponentiation). */
-template <typename T, typename U>
-inline Object pow(T&& base, U&& exp) {
-    PyObject* result = PyNumber_Power(
-        detail::object_or_cast(std::forward<T>(base)).ptr(),
-        detail::object_or_cast(std::forward<U>(exp)).ptr(),
-        Py_None
-    );
-    if (result == nullptr) {
-        throw error_already_set();
+template <typename L, typename R>
+auto pow(L&& base, R&& exp) {
+    if constexpr (
+        detail::is_pyobject<std::decay_t<L>>::value ||
+        detail::is_pyobject<std::decay_t<R>>::value
+    ) {
+        PyObject* result = PyNumber_Power(
+            detail::object_or_cast(std::forward<L>(base)).ptr(),
+            detail::object_or_cast(std::forward<R>(exp)).ptr(),
+            Py_None
+        );
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Object>(result);
+    } else {
+        return std::pow(base, exp);
     }
-    return reinterpret_steal<Object>(result);
-}
-
-
-/* Equivalent to Python `base **= exp` (in-place exponentiation). */
-template <typename T, typename U>
-inline Object inplace_pow(T&& base, U&& exp) {
-    PyObject* result = PyNumber_InPlacePower(
-        detail::object_or_cast(std::forward<T>(base)).ptr(),
-        detail::object_or_cast(std::forward<U>(exp)).ptr(),
-        Py_None
-    );
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Object>(result);
 }
 
 
 /* Equivalent to Python `pow(base, exp, mod)`. */
-template <typename T, typename U, typename V>
-inline Object pow(T&& base, U&& exp, V&& mod) {
+template <typename L, typename R, typename E>
+auto pow(L&& base, R&& exp, E&& mod) {
+    // if constexpr (
+    //     detail::is_pyobject<std::decay_t<L>>::value ||
+    //     detail::is_pyobject<std::decay_t<R>>::value ||
+    //     detail::is_pyobject<std::decay_t<E>>::value
+    // ) {
+    //     PyObject* result = PyNumber_Power(
+    //         detail::object_or_cast(std::forward<L>(base)).ptr(),
+    //         detail::object_or_cast(std::forward<R>(exp)).ptr(),
+    //         detail::object_or_cast(std::forward<E>(mod)).ptr()
+    //     );
+    //     if (result == nullptr) {
+    //         throw error_already_set();
+    //     }
+    //     return reinterpret_steal<Object>(result);
+    // } else {
+    //     return std::pow(base, exp);
+    // }
+
     PyObject* result = PyNumber_Power(
-        detail::object_or_cast(std::forward<T>(base)).ptr(),
-        detail::object_or_cast(std::forward<U>(exp)).ptr(),
-        detail::object_or_cast(std::forward<V>(mod)).ptr()
-    );
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Object>(result);
-}
-
-
-/* In-place modular exponentation.  Not reachable in Python, but implemented here for
-completeness. */
-template <typename T, typename U, typename V>
-inline Object inplace_pow(T&& base, U&& exp, V&& mod) {
-    PyObject* result = PyNumber_InPlacePower(
-        detail::object_or_cast(std::forward<T>(base)).ptr(),
-        detail::object_or_cast(std::forward<U>(exp)).ptr(),
-        detail::object_or_cast(std::forward<V>(mod)).ptr()
-    );
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Object>(result);
-}
-
-
-// TODO: sqrt(), log()
-
-
-/////////////////////////////////////
-////    MATRIX MULTIPLICATION    ////
-/////////////////////////////////////
-
-
-/* Python has recently added the `@` operator for matrix multiplication.  This is not
- * commonly used and has no C++ equivalent, but we expose it here for completeness. */
-
-
-/* Equivalent to Python `a @ b` (matrix multiplication). */
-template <typename T, typename U>
-inline Object matmul(T&& a, U&& b) {
-    PyObject* result = PyNumber_MatrixMultiply(
-        detail::object_or_cast(std::forward<T>(a)).ptr(),
-        detail::object_or_cast(std::forward<U>(b)).ptr()
-    );
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Object>(result);
-}
-
-
-/* Equivalent to Python `a @= b` (in-place matrix multiplication). */
-template <typename T, typename U>
-inline Object inplace_matmul(T&& a, U&& b) {
-    PyObject* result = PyNumber_InPlaceMatrixMultiply(
-        detail::object_or_cast(std::forward<T>(a)).ptr(),
-        detail::object_or_cast(std::forward<U>(b)).ptr()
+        detail::object_or_cast(std::forward<L>(base)).ptr(),
+        detail::object_or_cast(std::forward<R>(exp)).ptr(),
+        detail::object_or_cast(std::forward<E>(mod)).ptr()
     );
     if (result == nullptr) {
         throw error_already_set();
@@ -131,45 +89,104 @@ inline Object inplace_matmul(T&& a, U&& b) {
  * this by explicitly specifying the behavior of these operators.  Here's a summary:
  *
  *  truediv(): Equivalent to Python `a / b` (true division).  This is identical to
- *      the standard `/`, except that it coerces C++ integers to doubles before
+ *      the standard `/`, except that it coerces C++ integers into doubles before
  *      performing the division, matching Python's behavior.
  *  floordiv(): Equivalent to Python `a // b` (floor division).  C++ does not have an
  *      equivalent operator, and its `/` operator always rounds towards zero rather
- *      than negative infinity like in Python.  This function always rounds towards
- *      negative infinity, and converts doubles into integers before applying the
- *      division.
- *  c_div(): Equivalent to C++ `a / b` (C++ division).  Rather than making C++ act like
+ *      than negative infinity like in Python.
+ *  cdiv(): Equivalent to C++ `a / b` (C++ division).  Rather than making C++ act like
  *      Python, this function does the opposite.  Python integers will be truncated
  *      towards zero, without affecting any other types.
  */
 
 
-/* Equivalent to Python `a // b` (floor division). */
-template <typename T, typename U>
-inline Object floordiv(T&& obj, U&& divisor) {
-    PyObject* result = PyNumber_FloorDivide(
-        detail::object_or_cast(std::forward<T>(obj)).ptr(),
-        detail::object_or_cast(std::forward<U>(divisor)).ptr()
-    );
-    if (result == nullptr) {
-        throw error_already_set();
+/* Equivalent to Python `a / b` (true division) for both Python and C++ types. */
+template <typename L, typename R>
+auto truediv(L&& numerator, R&& denominator) {
+    if constexpr (std::is_integral_v<L> && std::is_integral_v<R>) {
+        return static_cast<double>(numerator) / denominator;
+    } else {
+        return numerator / denominator;
     }
-    return reinterpret_steal<Object>(result);
 }
 
 
-/* Equivalent to Python `a //= b` (in-place floor division). */
-template <typename T, typename U>
-inline Object inplace_floordiv(T&& obj, U&& divisor) {
-    PyObject* result = PyNumber_InPlaceFloorDivide(
-        detail::object_or_cast(std::forward<T>(obj)).ptr(),
-        detail::object_or_cast(std::forward<U>(divisor)).ptr()
-    );
-    if (result == nullptr) {
-        throw error_already_set();
+/* Equivalent to Python `a // b` (floor division) for both Python and C++ types. */
+template <typename L, typename R>
+auto floordiv(L&& numerator, R&& denominator) {
+    if constexpr (
+        detail::is_pyobject<std::decay_t<L>>::value ||
+        detail::is_pyobject<std::decay_t<R>>::value
+    ) {
+        PyObject* result = PyNumber_FloorDivide(
+            detail::object_or_cast(std::forward<L>(numerator)).ptr(),
+            detail::object_or_cast(std::forward<R>(denominator)).ptr()
+        );
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Object>(result);
+    } else {
+        if (denominator == 0) {
+            throw ZeroDivisionError("division by zero");
+        }
+        auto result = numerator / denominator;
+        if constexpr (
+            std::is_integral_v<std::decay_t<L>> &&
+            std::is_integral_v<std::decay_t<R>>
+        ) {
+            return result - (result < 0 && numerator % denominator != 0);
+        } else {
+            return std::floor(result);
+        }
     }
-    return reinterpret_steal<Object>(result);
 }
+
+
+/* Equivalent to C `a / b` (truncated division) for both Python and C++ types. */
+template <typename L, typename R>
+auto cdiv(L&& numerator, R&& denominator) {
+    if constexpr (detail::is_pyobject<std::decay_t<L>>::value) {
+        if (PyLong_Check(numerator.ptr())) {
+            Object other = detail::object_or_cast(denominator);
+            if (PyLong_Check(other.ptr())) {
+                PyObject* temp = PyNumber_FloorDivide(numerator.ptr(), other.ptr());
+                if (temp == nullptr) {
+                    throw error_already_set();
+                }
+                Int result = reinterpret_steal<Int>(temp);
+                if (result < 0) {
+                    Int a = reinterpret_borrow<Int>(numerator.ptr());
+                    Int b = reinterpret_borrow<Int>(other.ptr());
+                    result += Int(a - (result * b)) != 0;
+                }
+                return reinterpret_steal<Object>(result.release());
+            }
+        }
+    } else if constexpr (detail::is_pyobject<std::decay_t<R>>::value) {
+        if (PyLong_Check(denominator.ptr())) {
+            Object other = detail::object_or_cast(numerator);
+            if (PyLong_Check(other.ptr())) {
+                PyObject* temp = PyNumber_FloorDivide(other.ptr(), denominator.ptr());
+                if (temp == nullptr) {
+                    throw error_already_set();
+                }
+                Int result = reinterpret_steal<Int>(temp);
+                if (result < 0) {
+                    Int a = reinterpret_borrow<Int>(other.ptr());
+                    Int b = reinterpret_borrow<Int>(denominator.ptr());
+                    result += Int(a - (result * b)) != 0;
+                }
+                return reinterpret_steal<Object>(result.release());
+            }
+        }
+    }
+
+    return numerator / denominator;
+}
+
+
+// TODO: mod(), cmod(), divmod(), cdivmod()
 
 
 //////////////////////
@@ -192,13 +209,15 @@ inline Object inplace_floordiv(T&& obj, U&& divisor) {
  */
 
 
+// TODO: divmod should return a std::pair rather than python tuple.
+
 
 /* Equivalent to Python `divmod(a, b)`. */
-template <typename T, typename U>
-inline Tuple divmod(T&& a, U&& b) {
+template <typename L, typename R>
+inline Tuple divmod(L&& a, R&& b) {
     PyObject* result = PyNumber_Divmod(
-        detail::object_or_cast(std::forward<T>(a)).ptr(),
-        detail::object_or_cast(std::forward<U>(b)).ptr()
+        detail::object_or_cast(std::forward<L>(a)).ptr(),
+        detail::object_or_cast(std::forward<R>(b)).ptr()
     );
     if (result == nullptr) {
         throw error_already_set();

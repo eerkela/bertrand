@@ -15,82 +15,68 @@ namespace py {
 /* Wrapper around a pybind11::type that enables extra C API functionality, such as the
 ability to create new types on the fly by calling the type() metaclass, or directly
 querying PyTypeObject* fields. */
-class Type :
-    public pybind11::type,
-    public impl::EqualCompare<Type>
-{
-    using Base = pybind11::type;
-    using Compare = impl::EqualCompare<Type>;
+class Type : public Object, public impl::Ops<Type> {
 
     static PyObject* convert_to_type(PyObject* obj) {
         return Py_NewRef(reinterpret_cast<PyObject*>(Py_TYPE(obj)));
     }
 
 public:
-    CONSTRUCTORS(Type, PyType_Check, convert_to_type);
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, Type, PyType_Check, convert_to_type);
 
     /* Default constructor.  Initializes to the built-in type metaclass. */
-    inline Type() : Base(reinterpret_borrow<Base>((PyObject*) &PyType_Type)) {}
+    inline Type() : Object((PyObject*) &PyType_Type, borrowed_t{}) {}
 
     /* Dynamically create a new Python type by calling the type() metaclass. */
     template <typename T, typename U, typename V>
-    explicit Type(T&& name, U&& bases, V&& dict) : Base([&name, &bases, &dict] {
-        PyObject* result = PyObject_CallFunctionObjArgs(
+    explicit Type(T&& name, U&& bases, V&& dict) {
+        m_ptr = PyObject_CallFunctionObjArgs(
             reinterpret_cast<PyObject*>(&PyType_Type),
             detail::object_or_cast(std::forward<T>(name)).ptr(),
             detail::object_or_cast(std::forward<U>(bases)).ptr(),
             detail::object_or_cast(std::forward<V>(dict)).ptr(),
             nullptr
         );
-        if (result == nullptr) {
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
     /* Create a new heap type from a CPython PyType_Spec*.  Note that this is not
     exactly interchangeable with a standard call to the type metaclass directly, as it
     does not invoke any of the __init__(), __new__(), __init_subclass__(), or
     __set_name__() methods for the type or any of its bases. */
-    explicit Type(PyType_Spec* spec) : Base([&spec] {
-        PyObject* result = PyType_FromSpec(spec);
-        if (result == nullptr) {
+    explicit Type(PyType_Spec* spec) : Object(PyType_FromSpec(spec), stolen_t{}) {
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
     /* Create a new heap type from a CPython PyType_Spec and bases.  See
     Type(PyType_Spec*) for more information. */
     template <typename T>
-    explicit Type(PyType_Spec* spec, T&& bases) : Base([&spec, &bases] {
-        PyObject* result = PyType_FromSpecWithBases(spec, bases);
-        if (result == nullptr) {
+    explicit Type(PyType_Spec* spec, T&& bases) {
+        m_ptr = PyType_FromSpecWithBases(spec, bases);
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
     #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 9)
 
         /* Create a new heap type from a module name, CPython PyType_Spec, and bases.
         See Type(PyType_Spec*) for more information. */
         template <typename T, typename U>
-        explicit Type(T&& module, PyType_Spec* spec, U&& bases) : Base([&] {
-            PyObject* result = PyType_FromModuleAndSpec(
+        explicit Type(T&& module, PyType_Spec* spec, U&& bases) {
+            m_ptr = PyType_FromModuleAndSpec(
                 detail::object_or_cast(std::forward<T>(module)).ptr(),
                 spec,
                 detail::object_or_cast(std::forward<U>(bases)).ptr()
             );
-            if (result == nullptr) {
+            if (m_ptr == nullptr) {
                 throw error_already_set();
             }
-            return result;
-        }(), stolen_t{}) {}
+        }
 
     #endif
 
@@ -99,18 +85,17 @@ public:
         /* Create a new heap type from a full CPython metaclass, module name,
         PyType_Spec and bases.  See Type(PyType_Spec*) for more information. */
         template <typename T, typename U, typename V>
-        explicit Type(T&& metaclass, U&& module, PyType_Spec* spec, V&& bases) : Base([&] {
-            PyObject* result = PyType_FromMetaClass(
+        explicit Type(T&& metaclass, U&& module, PyType_Spec* spec, V&& bases) {
+            m_ptr = PyType_FromMetaClass(
                 detail::object_or_cast(std::forward<T>(metaclass)).ptr(),
                 detail::object_or_cast(std::forward<U>(module)).ptr(),
                 spec,
                 detail::object_or_cast(std::forward<V>(bases)).ptr()
             );
-            if (result == nullptr) {
+            if (m_ptr == nullptr) {
                 throw error_already_set();
             }
-            return result;;
-        }(), stolen_t{}) {}
+        }
 
     #endif
 
@@ -355,8 +340,8 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    using Compare::operator==;
-    using Compare::operator!=;
+    using impl::Ops<Type>::operator==;
+    using impl::Ops<Type>::operator!=;
 
     // NOTE: indexing a Type object calls its __class_getitem__() method, just like
     // normal python.
@@ -364,14 +349,7 @@ public:
 
 
 /* New subclass of pybind11::object that represents Python's built-in super() type. */
-class Super :
-    public pybind11::object,
-    public impl::NumericOps<Super>,
-    public impl::FullCompare<Super>
-{
-    using Base = pybind11::object;
-    using Ops = impl::NumericOps<Super>;
-    using Compare = impl::FullCompare<Super>;
+class Super : public Object, public impl::Ops<Super> {
 
     inline static int check_super(PyObject* obj) {
         int result = PyObject_IsInstance(obj, reinterpret_cast<PyObject*>(&PySuper_Type));
@@ -386,77 +364,63 @@ class Super :
     }
 
 public:
-    CONSTRUCTORS(Super, check_super, convert_super);
+    static py::Type Type;
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, Super, check_super, convert_super);
 
     /* Default constructor.  Equivalent to Python `super()` with no arguments, which
     uses the calling context's inheritance hierarchy. */
-    Super() : Base([] {
-        PyObject* result = PyObject_CallNoArgs(reinterpret_cast<PyObject*>(&PySuper_Type));
-        if (result == nullptr) {
+    Super() {
+        m_ptr = PyObject_CallNoArgs(reinterpret_cast<PyObject*>(&PySuper_Type));
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
     /* Explicit constructor.  Equivalent to Python `super(type, self)` with 2
     arguments. */
-    explicit Super(
-        const pybind11::type& type,
-        const pybind11::handle& self
-    ) : Base([&type, &self] {
-        PyObject* result = PyObject_CallFunctionObjArgs(
+    explicit Super(const pybind11::type& type, const pybind11::handle& self) {
+        m_ptr = PyObject_CallFunctionObjArgs(
             reinterpret_cast<PyObject*>(&PySuper_Type),
             type.ptr(),
             self.ptr(),
             nullptr
         );
-        if (result == nullptr) {
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
+
+    /* Explicit constructor.  Equivalent to Python `super(type, self)` with 2
+    arguments. */
+    explicit Super(const py::Type& type, const pybind11::handle& self) {
+        m_ptr = PyObject_CallFunctionObjArgs(
+            reinterpret_cast<PyObject*>(&PySuper_Type),
+            type.ptr(),
+            self.ptr(),
+            nullptr
+        );
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
 
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
 
-    using Compare::operator<;
-    using Compare::operator<=;
-    using Compare::operator==;
-    using Compare::operator!=;
-    using Compare::operator>=;
-    using Compare::operator>;
-
-    using Ops::operator+;
-    using Ops::operator+=;
-    using Ops::operator-;
-    using Ops::operator-=;
-    using Ops::operator*;
-    using Ops::operator*=;
-    using Ops::operator/;
-    using Ops::operator/=;
-    using Ops::operator%;
-    using Ops::operator%=;
-    using Ops::operator<<;
-    using Ops::operator<<=;
-    using Ops::operator>>;
-    using Ops::operator>>=;
-    using Ops::operator&;
-    using Ops::operator&=;
-    using Ops::operator|;
-    using Ops::operator|=;
-    using Ops::operator^;
-    using Ops::operator^=;
+    BERTRAND_PYTHON_OPERATORS(impl::Ops<Super>)
 };
 
 
 // TODO: Regex and Decimal types?
 
 
-/* Every Python type has a static `type` member that gives access to the Python type
-object associated with that class. */
+/* Every Python type has a static `Type` member that gives access to the Python type
+object associated with instances of that class. */
+Type Object::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
 Type Bool::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyBool_Type));
 Type Int::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyLong_Type));
+Type Float::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFloat_Type));
 Type Complex::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyComplex_Type));
 Type Slice::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PySlice_Type));
 Type Range::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyRange_Type));

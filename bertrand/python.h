@@ -15,9 +15,9 @@
 #include "python/dict.h"
 #include "python/str.h"
 #include "python/func.h"
-#include "python/type.h"
-#include "python/math.h"
 #include "python/datetime.h"
+#include "python/math.h"
+#include "python/type.h"
 
 
 #endif  // BERTRAND_PYTHON_H

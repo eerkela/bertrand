@@ -154,17 +154,13 @@ compiled once and then cached for repeated use.
     script({{"x", "other"}});
     script({{"x", "side"}});
 */
-class Code : public impl::EqualCompare<Code> {
-    using Base = pybind11::handle;
-    using Compare = impl::EqualCompare<Code>;
-
+class Code : public Handle, public impl::Ops<Code> {
     /* NOTE: we can't directly inherit from pybind11::object because that causes memory
     access errors when code objects are stored as static variables.  Since that is the
     intended use case, we provide a workaround using Python's `atexit` module. */
     friend void impl::clean_up_living_code_objects();
     friend class Frame;
     friend class Function;
-    PyObject* m_ptr;
 
     template <typename T>
     static PyObject* compile(const T& text) {
@@ -211,20 +207,23 @@ class Code : public impl::EqualCompare<Code> {
         return result;
     }
 
-    explicit Code(PyObject* ptr) : m_ptr(ptr) {
+    explicit Code(PyObject* ptr) : Handle(ptr) {
         impl::LIVING_CODE_OBJECTS.insert(this);
     }
 
 public:
     static py::Type Type;
 
+    /* Default constructor deleted to avoid confusion + possibility of nulls. */
+    Code() = delete;
+
     /* Parse and compile a source string into a Python code object. */
-    explicit Code(const char* source) : m_ptr(compile(source)) {
+    explicit Code(const char* source) : Handle(compile(source)) {
         impl::LIVING_CODE_OBJECTS.insert(this);
     }
 
     /* Parse and compile a source string into a Python code object. */
-    explicit Code(const std::string& source) : m_ptr(compile(source)) {
+    explicit Code(const std::string& source) : Handle(compile(source)) {
         impl::LIVING_CODE_OBJECTS.insert(this);
     }
 
@@ -232,13 +231,13 @@ public:
     explicit Code(const std::string_view& source) : Code(source.data()) {}
 
     /* Copy constructor. */
-    Code(const Code& other) : m_ptr(other.m_ptr) {
+    Code(const Code& other) : Handle(other.m_ptr) {
         Py_XINCREF(m_ptr);
         impl::LIVING_CODE_OBJECTS.insert(this);
     }
 
     /* Move constructor. */
-    Code(Code&& other) : m_ptr(other.m_ptr) {
+    Code(Code&& other) : Handle(other.m_ptr) {
         other.m_ptr = nullptr;
         impl::LIVING_CODE_OBJECTS.erase(&other);
         impl::LIVING_CODE_OBJECTS.insert(this);
@@ -269,8 +268,8 @@ public:
     /* Destructor.  Note that we can't use Py_XDECREF() here because it causes memory
     access errors when code objects are stored as static variables.  */
     ~Code() {
-        impl::LIVING_CODE_OBJECTS.erase(this);
         if (m_ptr != nullptr) {
+            impl::LIVING_CODE_OBJECTS.erase(this);
             Py_DECREF(m_ptr);
             m_ptr = nullptr;
         }
@@ -304,10 +303,6 @@ public:
     /* Execute the code object with the given context. */
     inline Dict operator()(Dict&& context) const {
         return (*this)(context);
-    }
-
-    inline PyObject* ptr() const {
-        return m_ptr;
     }
 
     /////////////////////
@@ -421,8 +416,16 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    using Compare::operator==;
-    using Compare::operator!=;
+    using impl::Ops<Code>::operator==;
+    using impl::Ops<Code>::operator!=;
+
+    inline const Code* operator&() const noexcept {
+        return this;
+    }
+
+    inline Code* operator&() noexcept {
+        return this;
+    }
 
     inline operator bool() const noexcept {
         return m_ptr != nullptr;
@@ -433,8 +436,7 @@ public:
         if (result == nullptr) {
             throw error_already_set();
         }
-        os << py::cast(result);
-        return os;
+        return os << py::cast(result);
     }
 
 };
@@ -442,12 +444,7 @@ public:
 
 /* A new subclass of pybind11::object that represents a Python interpreter frame, which
 can be used to introspect its current state. */
-class Frame :
-    public pybind11::object,
-    public impl::EqualCompare<Frame>
-{
-    using Base = pybind11::object;
-    using Compare = impl::EqualCompare<Frame>;
+class Frame : public Object, public impl::Ops<Frame> {
 
     inline PyFrameObject* as_frame() const {
         return reinterpret_cast<PyFrameObject*>(this->ptr());
@@ -459,32 +456,29 @@ class Frame :
 
 public:
     static py::Type Type;
-
-    CONSTRUCTORS(Frame, PyFrame_Check, convert_to_frame);
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, Frame, PyFrame_Check, convert_to_frame);
 
     /* Default constructor.  Initializes to the current execution frame. */
-    inline Frame() : Base([] {
-        PyFrameObject* result = PyEval_GetFrame();
-        if (result == nullptr) {
+    inline Frame() : Object(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{}) {
+        if (m_ptr == nullptr) {
             throw RuntimeError("no frame is currently executing");
         }
-        return reinterpret_cast<PyObject*>(result);
-    }(), stolen_t{}) {}
+    }
 
     /* Skip backward a number of frames on construction. */
-    explicit Frame(size_t skip) : Base([&skip] {
-        PyFrameObject* result = PyEval_GetFrame();
-        if (result == nullptr) {
+    explicit Frame(size_t skip) :
+        Object(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
             throw RuntimeError("no frame is currently executing");
         }
         for (size_t i = 0; i < skip; ++i) {
-            result = PyFrame_GetBack(result);
-            if (result == nullptr) {
+            m_ptr = reinterpret_cast<PyObject*>(PyFrame_GetBack(as_frame()));
+            if (m_ptr == nullptr) {
                 throw IndexError("frame index out of range");
             }
         }
-        return reinterpret_cast<PyObject*>(result);
-    }(), stolen_t{}) {}
+    }
 
     /////////////////////////////////
     ////    PyFrame_* METHODS    ////
@@ -605,19 +599,14 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    using Compare::operator==;
-    using Compare::operator!=;
+    using impl::Ops<Frame>::operator==;
+    using impl::Ops<Frame>::operator!=;
 };
 
 
 /* Wrapper around a pybind11::Function that allows it to be constructed from a C++
 lambda or function pointer, and enables extra introspection via the C API. */
-class Function :
-    public pybind11::function,
-    public impl::EqualCompare<Function>
-{
-    using Base = pybind11::function;
-    using Compare = impl::EqualCompare<Function>;
+class Function : public Object, public impl::Ops<Function> {
 
     static PyObject* convert_to_function(PyObject* obj) {
         throw TypeError("cannot convert to function object");
@@ -625,16 +614,19 @@ class Function :
 
 public:
     static py::Type Type;
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, Function, PyFunction_Check, convert_to_function);
 
-    CONSTRUCTORS(Function, PyFunction_Check, convert_to_function);
+    /* Default constructor deleted to avoid confusion + possibility of nulls. */
+    Function() = delete;
 
+    /* Construct a new function from a C++ lambda or function pointer. */
     template <
         typename Func,
         std::enable_if_t<!std::is_base_of_v<pybind11::handle, std::decay_t<Func>>, int> = 0
     >
-    Function(Func&& func) : Base([&func] {
-        return pybind11::cpp_function(std::forward<Func>(func)).release();
-    }(), stolen_t{}) {}
+    Function(Func&& func) :
+        Object(pybind11::cpp_function(std::forward<Func>(func)).release(), stolen_t{})
+    {}
 
     ///////////////////////////////
     ////    PyFunction_ API    ////
@@ -763,19 +755,14 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    using Compare::operator==;
-    using Compare::operator!=;
+    using impl::Ops<Function>::operator==;
+    using impl::Ops<Function>::operator!=;
 };
 
 
 /* New subclass of pybind11::object that represents a bound method at the Python
 level. */
-class Method :
-    public pybind11::object,
-    public impl::EqualCompare<Method>
-{
-    using Base = pybind11::object;
-    using Compare = impl::EqualCompare<Method>;
+class Method : public Object, public impl::Ops<Method> {
 
     inline static PyObject* convert_to_method(PyObject* obj) {
         throw TypeError("cannot convert to py::Method");
@@ -783,31 +770,31 @@ class Method :
 
 public:
     static py::Type Type;
+    BERTRAND_PYTHON_CONSTRUCTORS(
+        Object,
+        Method,
+        PyInstanceMethod_Check,
+        convert_to_method
+    )
 
-    CONSTRUCTORS(Method, PyInstanceMethod_Check, convert_to_method);
+    /* Default constructor deleted to avoid confusion + possibility of nulls. */
+    Method() = delete;
 
     /* Wrap an existing Python function as a method descriptor. */
-    Method(Function func) : Base([&func] {
-        PyObject* result = PyInstanceMethod_New(func.ptr());
-        if (result == nullptr) {
+    Method(Function func) : Object(PyInstanceMethod_New(func.ptr()), stolen_t{}) {
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
-    using Compare::operator==;
-    using Compare::operator!=;
+    using impl::Ops<Method>::operator==;
+    using impl::Ops<Method>::operator!=;
 };
 
 
 /* New subclass of pybind11::object that represents a bound classmethod at the Python
 level. */
-class ClassMethod :
-    public pybind11::object,
-    public impl::EqualCompare<ClassMethod>
-{
-    using Base = pybind11::object;
-    using Compare = impl::EqualCompare<ClassMethod>;
+class ClassMethod : public Object, public impl::Ops<ClassMethod> {
 
     inline static bool check_classmethod(PyObject* obj) {
         int result = PyObject_IsInstance(
@@ -826,31 +813,31 @@ class ClassMethod :
 
 public:
     static py::Type Type;
+    BERTRAND_PYTHON_CONSTRUCTORS(
+        Object,
+        ClassMethod,
+        check_classmethod,
+        convert_to_classmethod
+    )
 
-    CONSTRUCTORS(ClassMethod, check_classmethod, convert_to_classmethod);
+    /* Default constructor deleted to avoid confusion + possibility of nulls. */
+    ClassMethod() = delete;
 
     /* Wrap an existing Python function as a classmethod descriptor. */
-    ClassMethod(Function func) : Base([&func] {
-        PyObject* result = PyClassMethod_New(func.ptr());
-        if (result == nullptr) {
+    ClassMethod(Function func) : Object(PyClassMethod_New(func.ptr()), stolen_t{}) {
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
-    using Compare::operator==;
-    using Compare::operator!=;
+    using impl::Ops<ClassMethod>::operator==;
+    using impl::Ops<ClassMethod>::operator!=;
 };
 
 
 /* Wrapper around a pybind11::StaticMethod that allows it to be constructed from a
 C++ lambda or function pointer, and enables extra introspection via the C API. */
-class StaticMethod :
-    public pybind11::staticmethod,
-    public impl::EqualCompare<StaticMethod>
-{
-    using Base = pybind11::staticmethod;
-    using Compare = impl::EqualCompare<StaticMethod>;
+class StaticMethod : public Object, public impl::Ops<StaticMethod> {
 
     static bool check_staticmethod(PyObject* obj) {
         int result = PyObject_IsInstance(
@@ -869,20 +856,25 @@ class StaticMethod :
 
 public:
     static py::Type Type;
+    BERTRAND_PYTHON_CONSTRUCTORS(
+        Object,
+        StaticMethod,
+        check_staticmethod,
+        convert_to_staticmethod
+    );
 
-    CONSTRUCTORS(StaticMethod, check_staticmethod, convert_to_staticmethod);
+    /* Default constructor deleted to avoid confusion + possibility of nulls. */
+    StaticMethod() = delete;
 
     /* Wrap an existing Python function as a staticmethod descriptor. */
-    StaticMethod(Function func) : Base([&func] {
-        PyObject* result = PyStaticMethod_New(func.ptr());
-        if (result == nullptr) {
+    StaticMethod(Function func) : Object(PyStaticMethod_New(func.ptr()), stolen_t{}) {
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
-    using Compare::operator==;
-    using Compare::operator!=;
+    using impl::Ops<StaticMethod>::operator==;
+    using impl::Ops<StaticMethod>::operator!=;
 };
 
 
@@ -897,12 +889,7 @@ namespace impl {
 
 /* New subclass of pybind11::object that represents a property descriptor at the
 Python level. */
-class Property :
-    public pybind11::object,
-    public impl::EqualCompare<Property>
-{
-    using Base = pybind11::object;
-    using Compare = impl::EqualCompare<Property>;
+class Property : public Object, public impl::Ops<Property> {
 
     inline static bool check_property(PyObject* obj) {
         int result = PyObject_IsInstance(obj, impl::PyProperty.ptr());
@@ -918,27 +905,27 @@ class Property :
 
 public:
     static py::Type Type;
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, Property, check_property, convert_to_property);
 
-    CONSTRUCTORS(Property, check_property, convert_to_property);
+    /* Default constructor deleted to avoid confusion + possibility of nulls. */
+    Property() = delete;
 
     /* Wrap an existing Python function as a getter in a property descriptor. */
-    Property(Function getter) : Base([&getter] {
-        return impl::PyProperty(getter).release();
-    }(), stolen_t{}) {}
+    Property(Function getter) : Object(impl::PyProperty(getter).release(), stolen_t{}) {}
 
     /* Wrap existing Python functions as getter and setter in a property descriptor. */
-    Property(Function getter, Function setter) : Base([&getter, &setter] {
-        return impl::PyProperty(getter, setter).release();
-    }(), stolen_t{}) {}
+    Property(Function getter, Function setter) :
+        Object(impl::PyProperty(getter, setter).release(), stolen_t{})
+    {}
 
     /* Wrap existing Python functions as getter, setter, and deleter in a property
     descriptor. */
-    Property(Function getter, Function setter, Function deleter) : Base([&] {
-        return impl::PyProperty(getter, setter, deleter).release();
-    }(), stolen_t{}) {}
+    Property(Function getter, Function setter, Function deleter) :
+        Object(impl::PyProperty(getter, setter, deleter).release(), stolen_t{})
+    {}
 
-    using Compare::operator==;
-    using Compare::operator!=;
+    using impl::Ops<Property>::operator==;
+    using impl::Ops<Property>::operator!=;
 };
 
 
@@ -1086,7 +1073,8 @@ namespace impl {
     freed without causing memory access errors. */
     static void clean_up_living_code_objects() {
         for (Code* code : impl::LIVING_CODE_OBJECTS) {
-            code->~Code();
+            Py_XDECREF(code->m_ptr);
+            code->m_ptr = nullptr;
         }
     }
 

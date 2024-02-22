@@ -11,14 +11,7 @@ namespace py {
 
 /* New subclass of pybind11::object that represents a complex number at the Python
 level. */
-class Complex :
-    public pybind11::object,
-    public impl::NumericOps<Complex>,
-    public impl::FullCompare<Complex>
-{
-    using Base = pybind11::object;
-    using Ops = impl::NumericOps<Complex>;
-    using Compare = impl::FullCompare<Complex>;
+class Complex : public Object, public impl::Ops<Complex> {
 
     static PyObject* convert_to_complex(PyObject* obj) {
         Py_complex complex_struct = PyComplex_AsCComplex(obj);
@@ -36,21 +29,15 @@ class Complex :
 
 public:
     static py::Type Type;
-
-    CONSTRUCTORS(Complex, PyComplex_Check, convert_to_complex);
+    BERTRAND_PYTHON_OPERATORS(impl::Ops<Complex>)
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, Complex, PyComplex_Check, convert_to_complex)
 
     /* Default constructor.  Initializes to 0+0j. */
-    inline Complex() : Base([] {
-        PyObject* result = PyComplex_FromDoubles(0.0, 0.0);
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return result;
-    }(), stolen_t{}) {}
+    Complex() : Object(PyComplex_FromDoubles(0.0, 0.0), stolen_t{}) {}
 
     /* Construct a Complex number from a C++ std::complex. */
     template <typename T>
-    inline Complex(const std::complex<T>& value) : Base([&value] {
+    Complex(const std::complex<T>& value) : Object([&value] {
         PyObject* result = PyComplex_FromDoubles(
             static_cast<double>(value.real()),
             static_cast<double>(value.imag())
@@ -63,16 +50,12 @@ public:
 
     /* Construct a Complex number from a real component as a C++ integer or float. */
     template <typename Real, std::enable_if_t<std::is_arithmetic_v<Real>, int> = 0>
-    inline Complex(Real real) : Base([&real] {
-        PyObject* result = PyComplex_FromDoubles(
-            static_cast<double>(real),
-            0.0
-        );
-        if (result == nullptr) {
+    Complex(Real real) {
+        m_ptr = PyComplex_FromDoubles(static_cast<double>(real), 0.0);
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
     /* Construct a Complex number from separate real and imaginary components as C++
     integers or floats. */
@@ -81,16 +64,12 @@ public:
         typename Imag,
         std::enable_if_t<std::is_arithmetic_v<Real> && std::is_arithmetic_v<Imag>, int> = 0
     >
-    inline Complex(Real real, Imag imag) : Base([&real, &imag] {
-        PyObject* result = PyComplex_FromDoubles(
-            static_cast<double>(real),
-            static_cast<double>(imag)
-        );
-        if (result == nullptr) {
+    Complex(Real real, Imag imag) {
+        m_ptr = PyComplex_FromDoubles(static_cast<double>(real), static_cast<double>(imag));
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
     /* Implicitly convert a Complex number into a C++ std::complex. */
     template <typename T>
@@ -125,37 +104,6 @@ public:
         return {complex_struct.real, -complex_struct.imag};
     }
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    using Compare::operator<;
-    using Compare::operator<=;
-    using Compare::operator==;
-    using Compare::operator!=;
-    using Compare::operator>;
-    using Compare::operator>=;
-
-    using Ops::operator+;
-    using Ops::operator-;
-    using Ops::operator*;
-    using Ops::operator/;
-    using Ops::operator%;
-    using Ops::operator<<;
-    using Ops::operator>>;
-    using Ops::operator&;
-    using Ops::operator|;
-    using Ops::operator^;
-    using Ops::operator+=;
-    using Ops::operator-=;
-    using Ops::operator*=;
-    using Ops::operator/=;
-    using Ops::operator%=;
-    using Ops::operator<<=;
-    using Ops::operator>>=;
-    using Ops::operator&=;
-    using Ops::operator|=;
-    using Ops::operator^=;
 };
 
 

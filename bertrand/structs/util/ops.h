@@ -152,88 +152,10 @@ bool lexical_gt(const LHS& lhs, const RHS& rhs) {
 }
 
 
-/* Apply a `/` operation between any combination of C++ or Python objects,
-with C++ semantics. */
-template <typename LHS, typename RHS>
-auto divide(const LHS& lhs, const RHS& rhs) {
-    auto execute = [](auto a, auto b) {
-        if constexpr (is_pyobject<decltype(a)> && is_pyobject<decltype(b)>) {
-            // NOTE: C++ division operator truncates integers toward zero, whereas Python
-            // returns a float.
-            if (PyLong_Check(a) && PyLong_Check(b)) {
 
-                // try converting to long long and dividing directly
-                auto happy_path = [&a, &b]() {
-                    long long x = PyLong_AsLongLong(a);
-                    if (x == -1 && PyErr_Occurred()) {
-                        return nullptr;  // fall back
-                    }
-                    long long y = PyLong_AsLongLong(b);
-                    if (y == 0) {
-                        throw std::runtime_error("division by zero");
-                    } else if (y == -1 && PyErr_Occurred()) {
-                        return nullptr;  // fall back
-                    }
-                    return PyLong_FromLongLong(x / y);  // new reference
-                };
 
-                // attempt happy path
-                PyObject* result = happy_path();
-                if (result != nullptr) {
-                    return result;  // new reference
-                }
 
-                // happy path overflows - fall back to Python API
-                PyErr_Clear();
-                result = PyNumber_FloorDivide(a, b);
-                if (result == nullptr) {
-                    throw catch_python();
-                }
 
-                // if result < 0, check remainder != 0 and correct
-                try {
-                    if (lt(result, 0)) {
-                        PyObject* remainder = PyNumber_Remainder(a, b);
-                        if (remainder == nullptr) {
-                            throw catch_python();
-                        }
-                        try {
-                            bool nonzero = ne(remainder, 0);
-                            if (nonzero) {
-                                PyObject* corrected = plus(result, 1);
-                                Py_DECREF(remainder);
-                                Py_DECREF(result);
-                                return corrected;
-                            }
-                        } catch (...) {
-                            Py_DECREF(remainder);
-                            throw;
-                        }
-                    }
-                } catch (...) {
-                    Py_DECREF(result);
-                    throw;
-                }
-
-                // no correction needed
-                return result;  // new reference
-
-            // Otherwise, both operators have the same semantics
-            } else {
-                PyObject* result = PyNumber_TrueDivide(a, b);
-                if (result == nullptr) {
-                    throw catch_python();
-                }
-                return result;  // new reference
-            }
-
-        } else {
-            return a / b;
-        }
-    };
-
-    return util::allow_mixed_args(execute, lhs, rhs);
-}
 
 
 /* Apply a `%` operation between any combination of C++ or Python objects,

@@ -11,12 +11,7 @@ namespace py {
 /* Wrapper around pybind11::slice that allows it to be instantiated with non-integer
 inputs in order to represent denormalized slices at the Python level, and provides more
 pythonic access to its members. */
-class Slice :
-    public pybind11::slice,
-    public impl::FullCompare<Slice>
-{
-    using Base = pybind11::slice;
-    using Compare = impl::FullCompare<Slice>;
+class Slice : public Object, public impl::Ops<Slice> {
 
     static PyObject* convert_to_slice(PyObject* obj) {
         PyObject* result = PySlice_New(nullptr, obj, nullptr);
@@ -28,50 +23,49 @@ class Slice :
 
 public:
     static py::Type Type;
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, Slice, PySlice_Check, convert_to_slice);
 
-    CONSTRUCTORS(Slice, PySlice_Check, convert_to_slice);
+    /* Default constructor.  Initializes to all Nones. */
+    Slice() : Object(PySlice_New(nullptr, nullptr, nullptr), stolen_t{}) {}
 
     /* Construct a slice from a (possibly denormalized) stop object. */
     template <typename Stop>
-    Slice(Stop&& stop) : Base([&stop] {
-        PyObject* result = PySlice_New(
+    Slice(Stop&& stop) {
+        m_ptr = PySlice_New(
             nullptr,
             detail::object_or_cast(std::forward<Stop>(stop)).ptr(),
             nullptr
         );
-        if (result == nullptr) {
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
     /* Construct a slice from (possibly denormalized) start and stop objects. */
     template <typename Start, typename Stop>
-    Slice(Start&& start, Stop&& stop) : Base([&start, &stop] {
-        PyObject* result = PySlice_New(
+    Slice(Start&& start, Stop&& stop) {
+        m_ptr = PySlice_New(
             detail::object_or_cast(std::forward<Start>(start)).ptr(),
             detail::object_or_cast(std::forward<Stop>(stop)).ptr(),
             nullptr
         );
-        if (result == nullptr) {
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
     /* Construct a slice from (possibly denormalized) start, stop, and step objects. */
     template <typename Start, typename Stop, typename Step>
-    Slice(Start&& start, Stop&& stop, Step&& step) : Base([&start, &stop, &step] {
-        PyObject* result = PySlice_New(
+    Slice(Start&& start, Stop&& stop, Step&& step) {
+        m_ptr = PySlice_New(
             detail::object_or_cast(std::forward<Start>(start)).ptr(),
             detail::object_or_cast(std::forward<Stop>(stop)).ptr(),
             detail::object_or_cast(std::forward<Step>(step)).ptr()
         );
-        if (result == nullptr) {
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
@@ -127,12 +121,12 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    using Compare::operator<;
-    using Compare::operator<=;
-    using Compare::operator==;
-    using Compare::operator!=;
-    using Compare::operator>;
-    using Compare::operator>=;
+    using impl::Ops<Slice>::operator<;
+    using impl::Ops<Slice>::operator<=;
+    using impl::Ops<Slice>::operator==;
+    using impl::Ops<Slice>::operator!=;
+    using impl::Ops<Slice>::operator>=;
+    using impl::Ops<Slice>::operator>;
 };
 
 

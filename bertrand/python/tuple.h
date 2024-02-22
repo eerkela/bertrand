@@ -11,14 +11,11 @@ namespace py {
 /* Wrapper around pybind11::tuple that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
 class Tuple :
-    public pybind11::tuple,
+    public Object,
+    public impl::Ops<Tuple>,
     public impl::SequenceOps<Tuple>,
-    public impl::FullCompare<Tuple>,
     public impl::ReverseIterable<Tuple>
 {
-    using Base = pybind11::tuple;
-    using Ops = impl::SequenceOps<Tuple>;
-    using Compare = impl::FullCompare<Tuple>;
 
     static PyObject* convert_to_tuple(PyObject* obj) {
         PyObject* result = PySequence_Tuple(obj);
@@ -30,115 +27,121 @@ class Tuple :
 
 public:
     static py::Type Type;
-
-    CONSTRUCTORS(Tuple, PyTuple_Check, convert_to_tuple);
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, Tuple, PyTuple_Check, convert_to_tuple)
 
     /* Default constructor.  Initializes to empty tuple. */
-    inline Tuple() : Base([] {
-        PyObject* result = PyTuple_New(0);
-        if (result == nullptr) {
+    inline Tuple() {
+        m_ptr = PyTuple_New(0);
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
     /* Pack the contents of a braced initializer into a new Python tuple. */
     template <typename T>
-    Tuple(const std::initializer_list<T>& contents) : Base([&contents] {
-        PyObject* result = PyTuple_New(contents.size());
-        if (result == nullptr) {
+    Tuple(const std::initializer_list<T>& contents) {
+        m_ptr = PyTuple_New(contents.size());
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
         try {
             size_t i = 0;
             for (const T& item : contents) {
-                PyTuple_SET_ITEM(result, i++, impl::convert_newref(item));
+                PyTuple_SET_ITEM(m_ptr, i++, impl::convert_newref(item));
             }
-            return result;
         } catch (...) {
-            Py_DECREF(result);
+            Py_DECREF(m_ptr);
             throw;
         }
-    }(), stolen_t{}) {}
+    }
 
     /* Pack the contents of a braced initializer into a new Python tuple. */
-    Tuple(const std::initializer_list<impl::Initializer>& contents) : Base([&contents] {
-        PyObject* result = PyTuple_New(contents.size());
-        if (result == nullptr) {
+    Tuple(const std::initializer_list<impl::Initializer>& contents) {
+        m_ptr = PyTuple_New(contents.size());
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
         try {
             size_t i = 0;
             for (const impl::Initializer& element : contents) {
                 PyTuple_SET_ITEM(
-                    result,
+                    m_ptr,
                     i++,
                     const_cast<impl::Initializer&>(element).value.release().ptr()
                 );
             }
-            return result;
         } catch (...) {
-            Py_DECREF(result);
+            Py_DECREF(m_ptr);
             throw;
         }
-    }(), stolen_t{}) {}
+    }
 
     /* Unpack a pybind11::list into a new tuple directly using the C API. */
     template <
         typename T,
-        std::enable_if_t<std::is_base_of_v<pybind11::list, T>, int> = 0
+        std::enable_if_t<
+            std::is_base_of_v<pybind11::list, T> || std::is_base_of_v<py::List, T>,
+            int
+        > = 0
     >
-    explicit Tuple(T&& list) : Base([&list] {
-        PyObject* result = PyList_AsTuple(list.ptr());
-        if (result == nullptr) {
+    explicit Tuple(T&& list) {
+        m_ptr = PyList_AsTuple(list.ptr());
+        if (m_ptr == nullptr) {
             throw error_already_set();
         }
-        return result;
-    }(), stolen_t{}) {}
+    }
 
     /* Unpack a generic container into a new Python tuple. */
     template <
         typename T,
-        std::enable_if_t<!std::is_base_of_v<pybind11::list, T>, int> = 0
+        std::enable_if_t<
+            !std::is_base_of_v<pybind11::list, T> || !std::is_base_of_v<py::List, T>,
+            int
+        > = 0
     >
-    explicit Tuple(T&& container) : Base([&container] {
+    explicit Tuple(T&& container) {
         if constexpr (detail::is_pyobject<T>::value) {
-            PyObject* result = PySequence_Tuple(container.ptr());
-            if (result == nullptr) {
+            m_ptr = PySequence_Tuple(container.ptr());
+            if (m_ptr == nullptr) {
                 throw error_already_set();
             }
-            return result;
         } else {
             size_t size = 0;
             if constexpr (impl::has_size<T>) {
                 size = container.size();
             }
-            PyObject* result = PyTuple_New(size);
-            if (result == nullptr) {
+            m_ptr = PyTuple_New(size);
+            if (m_ptr == nullptr) {
                 throw error_already_set();
             }
             try {
                 size_t i = 0;
                 for (auto&& item : container) {
                     PyTuple_SET_ITEM(
-                        result,
+                        m_ptr,
                         i++,
                         impl::convert_newref(std::forward<decltype(item)>(item))
                     );
                 }
-                return result;
             } catch (...) {
-                Py_DECREF(result);
+                Py_DECREF(m_ptr);
                 throw;
             }
         }
-    }(), stolen_t{}) {}
+    }
 
-        /*     PyTuple_ API     */
+    ////////////////////////////
+    ////    PyTuple_ API    ////
+    ////////////////////////////
 
     /* Get the size of the tuple. */
     inline size_t size() const noexcept {
         return PyTuple_GET_SIZE(this->ptr());
+    }
+
+    /* Check if the tuple is empty. */
+    inline bool empty() const noexcept {
+        return size() == 0;
     }
 
     /* Get the underlying PyObject* array. */
@@ -160,23 +163,41 @@ public:
         PyTuple_SET_ITEM(this->ptr(), index, value);
     }
 
-        /*    OPERATORS    */
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
 
-    using Base::operator[];
-    using Ops::operator[];
+    detail::tuple_accessor operator[](size_t index) const {
+        return {*this, index};
+    }
 
-    using Compare::operator<;
-    using Compare::operator<=;
-    using Compare::operator==;
-    using Compare::operator!=;
-    using Compare::operator>;
-    using Compare::operator>=;
+    template <typename T, std::enable_if_t<detail::is_pyobject<T>::value, int> = 0>
+    detail::item_accessor operator[](T&& index) const {
+        return Object::operator[](std::forward<T>(index));
+    }
 
-    using Ops::concat;
-    using Ops::operator+;
-    using Ops::operator+=;
-    using Ops::operator*;
-    using Ops::operator*=;
+    detail::tuple_iterator begin() const {
+        return {*this, 0};
+    }
+
+    detail::tuple_iterator end() const {
+        return {*this, PyTuple_GET_SIZE(this->ptr())};
+    }
+
+    using impl::Ops<Tuple>::operator<;
+    using impl::Ops<Tuple>::operator<=;
+    using impl::Ops<Tuple>::operator==;
+    using impl::Ops<Tuple>::operator!=;
+    using impl::Ops<Tuple>::operator>;
+    using impl::Ops<Tuple>::operator>=;
+
+    using Object::operator[];
+    using impl::SequenceOps<Tuple>::operator[];
+    using impl::SequenceOps<Tuple>::concat;
+    using impl::SequenceOps<Tuple>::operator+;
+    using impl::SequenceOps<Tuple>::operator+=;
+    using impl::SequenceOps<Tuple>::operator*;
+    using impl::SequenceOps<Tuple>::operator*=;
 
     /* Overload of concat() that allows the operand to be a braced initializer list. */
     template <typename T>
