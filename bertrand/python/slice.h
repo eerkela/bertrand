@@ -27,6 +27,8 @@ class Slice :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(Slice, PySlice_Check, convert_to_slice);
 
     /* Construct a slice from a (possibly denormalized) stop object. */

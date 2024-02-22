@@ -31,7 +31,7 @@ namespace impl {
     /* Extract the datetime.date type into a pybind11 handle. */
     static const Handle PyDate_Type = []() -> Handle {
         if (DATETIME_IMPORTED) {
-            return Handle(reinterpret_cast<PyObject*>(PyDateTimeAPI->DateType));
+            return reinterpret_cast<PyObject*>(PyDateTimeAPI->DateType);
         }
         return nullptr;
     }();
@@ -39,7 +39,7 @@ namespace impl {
     /* Extract the datetime.time type into a pybind11 handle. */
     static const Handle PyTime_Type = []() -> Handle {
         if (DATETIME_IMPORTED) {
-            return Handle(reinterpret_cast<PyObject*>(PyDateTimeAPI->TimeType));
+            return reinterpret_cast<PyObject*>(PyDateTimeAPI->TimeType);
         }
         return nullptr;
     }();
@@ -47,7 +47,7 @@ namespace impl {
     /* Extract the datetime.datetime type into a pybind11 handle. */
     static const Handle PyDateTime_Type = []() -> Handle {
         if (DATETIME_IMPORTED) {
-            return Handle(reinterpret_cast<PyObject*>(PyDateTimeAPI->DateTimeType));
+            return reinterpret_cast<PyObject*>(PyDateTimeAPI->DateTimeType);
         }
         return nullptr;
     }();
@@ -55,7 +55,7 @@ namespace impl {
     /* Extract the datetime.timedelta type into a pybind11 handle. */
     static const Handle PyDelta_Type = []() -> Handle {
         if (DATETIME_IMPORTED) {
-            return Handle(reinterpret_cast<PyObject*>(PyDateTimeAPI->DeltaType));
+            return reinterpret_cast<PyObject*>(PyDateTimeAPI->DeltaType);
         }
         return nullptr;
     }();
@@ -63,7 +63,7 @@ namespace impl {
     /* Extract the datetime.tzinfo type into a pybind11 handle. */
     static const Handle PyTZInfo_Type = []() -> Handle {
         if (DATETIME_IMPORTED) {
-            return Handle(reinterpret_cast<PyObject*>(PyDateTimeAPI->TZInfoType));
+            return reinterpret_cast<PyObject*>(PyDateTimeAPI->TZInfoType);
         }
         return nullptr;
     }();
@@ -751,8 +751,10 @@ class Timedelta :
     }
 
 public:
-    CONSTRUCTORS(Timedelta, PyDelta_Check, convert_to_timedelta);
+    static py::Type Type;
     using Units = impl::TimeUnits;
+
+    CONSTRUCTORS(Timedelta, PyDelta_Check, convert_to_timedelta);
 
     /* Default constructor.  Initializes to an empty delta. */
     inline Timedelta() : Timedelta(0, 0, 0) {}
@@ -1028,6 +1030,8 @@ class Timezone :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(Timezone, PyTZInfo_Check, convert_to_zoneinfo);
 
     /* Default constructor.  Initializes to the system's local timezone. */
@@ -1108,8 +1112,10 @@ class Date :
     }
 
 public:
-    CONSTRUCTORS(Date, PyDate_Check, convert_to_date);
+    static py::Type Type;
     using Units = impl::TimeUnits;
+
+    CONSTRUCTORS(Date, PyDate_Check, convert_to_date);
 
     /* Default constructor.  Initializes to the current system date. */
     inline Date() : Base([] {
@@ -1308,8 +1314,10 @@ class Time :
     }
 
 public:
-    CONSTRUCTORS(Time, PyTime_Check, convert_to_time);
+    static py::Type Type;
     using Units = impl::TimeUnits;
+
+    CONSTRUCTORS(Time, PyTime_Check, convert_to_time);
 
     /* Default constructor.  Initializes to the current system time, in its local
     timezone. */
@@ -1545,7 +1553,9 @@ class Datetime :
     }
 
 public:
+    static py::Type Type;
     using Units = impl::TimeUnits;
+
     CONSTRUCTORS(Datetime, PyDateTime_Check, convert_to_datetime);
 
     /* Default constructor.  Initializes to the current system time with local

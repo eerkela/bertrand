@@ -21,6 +21,8 @@ namespace impl {
     }                                                                                   \
                                                                                         \
 public:                                                                                 \
+    static py::Type Type;                                                               \
+                                                                                        \
     CONSTRUCTORS(cls, Py##cls##_Check, convert_to_set);                                 \
                                                                                         \
     /* Default constructor.  Initializes to empty set. */                               \

@@ -35,6 +35,8 @@ class Complex :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(Complex, PyComplex_Check, convert_to_complex);
 
     /* Default constructor.  Initializes to 0+0j. */

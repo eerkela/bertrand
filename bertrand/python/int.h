@@ -21,6 +21,8 @@ class Int :
     using Compare = impl::FullCompare<Int>;
 
 public:
+    static py::Type Type;
+
     using Base::Base;
     using Base::operator=;
 
@@ -64,24 +66,24 @@ public:
     using Compare::operator>=;
 
     using Ops::operator+;
-    using Ops::operator-;
-    using Ops::operator*;
-    using Ops::operator/;
-    using Ops::operator%;
-    using Ops::operator<<;
-    using Ops::operator>>;
-    using Ops::operator&;
-    using Ops::operator|;
-    using Ops::operator^;
     using Ops::operator+=;
+    using Ops::operator-;
     using Ops::operator-=;
+    using Ops::operator*;
     using Ops::operator*=;
+    using Ops::operator/;
     using Ops::operator/=;
+    using Ops::operator%;
     using Ops::operator%=;
+    using Ops::operator<<;
     using Ops::operator<<=;
+    using Ops::operator>>;
     using Ops::operator>>=;
+    using Ops::operator&;
     using Ops::operator&=;
+    using Ops::operator|;
     using Ops::operator|=;
+    using Ops::operator^;
     using Ops::operator^=;
 };
 

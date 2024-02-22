@@ -35,6 +35,8 @@ class MappingProxy :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(MappingProxy, mappingproxy_check, convert_to_mappingproxy);
 
     ////////////////////////////////
@@ -122,6 +124,8 @@ struct KeysView :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(KeysView, keys_check, convert_to_keys);
 
     ////////////////////////////////
@@ -278,6 +282,8 @@ struct ValuesView :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(ValuesView, values_check, convert_to_values);
 
     /* Equivalent to Python `dict.values().mapping`. */
@@ -343,6 +349,8 @@ struct ItemsView :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(ItemsView, items_check, convert_to_items);
 
     /* Equivalent to Python `dict.items().mapping`. */
@@ -402,6 +410,8 @@ class Dict :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(Dict, PyDict_Check, convert_to_dict);
 
     /* Default constructor.  Initializes to empty dict. */

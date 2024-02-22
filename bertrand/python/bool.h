@@ -19,6 +19,8 @@ class Bool :
     using Compare = impl::FullCompare<Bool>;
 
 public:
+    static py::Type Type;
+
     using Base::Base;
     using Base::operator=;
 

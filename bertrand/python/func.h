@@ -20,11 +20,11 @@ namespace py {
 
 namespace impl {
 
-    // NOTE: storing code objects as static variables is dangerous, as the Python
-    // interpreter may be already destroyed by the time the code object's destructor
-    // is called, which causes a segfault.  There is a workaround, but it required us
-    // to maintain a global set of living code objects and clean them up manually
-    // just before Python exits.  This is what the LIVING_CODE_OBJECTS set is for.
+    /* NOTE: storing code objects as static variables is dangerous since the Python
+    interpreter may be already destroyed by the time the code object's destructor is
+    called, which causes a segfault.  There is a workaround, but it requires us to
+    maintain a global set of living code objects and clean them up manually just before
+    Python exits. */
     std::unordered_set<Code*> LIVING_CODE_OBJECTS;
     static void clean_up_living_code_objects();
 
@@ -166,10 +166,6 @@ class Code : public impl::EqualCompare<Code> {
     friend class Function;
     PyObject* m_ptr;
 
-    static PyObject* convert_to_code(PyObject* obj) {
-        throw TypeError("cannot convert to code object");
-    }
-
     template <typename T>
     static PyObject* compile(const T& text) {
         std::string line;
@@ -220,6 +216,7 @@ class Code : public impl::EqualCompare<Code> {
     }
 
 public:
+    static py::Type Type;
 
     /* Parse and compile a source string into a Python code object. */
     explicit Code(const char* source) : m_ptr(compile(source)) {
@@ -461,6 +458,8 @@ class Frame :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(Frame, PyFrame_Check, convert_to_frame);
 
     /* Default constructor.  Initializes to the current execution frame. */
@@ -625,6 +624,8 @@ class Function :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(Function, PyFunction_Check, convert_to_function);
 
     template <
@@ -781,6 +782,8 @@ class Method :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(Method, PyInstanceMethod_Check, convert_to_method);
 
     /* Wrap an existing Python function as a method descriptor. */
@@ -822,6 +825,8 @@ class ClassMethod :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(ClassMethod, check_classmethod, convert_to_classmethod);
 
     /* Wrap an existing Python function as a classmethod descriptor. */
@@ -863,6 +868,8 @@ class StaticMethod :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(StaticMethod, check_staticmethod, convert_to_staticmethod);
 
     /* Wrap an existing Python function as a staticmethod descriptor. */
@@ -910,6 +917,8 @@ class Property :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(Property, check_property, convert_to_property);
 
     /* Wrap an existing Python function as a getter in a property descriptor. */

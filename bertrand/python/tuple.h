@@ -29,6 +29,8 @@ class Tuple :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(Tuple, PyTuple_Check, convert_to_tuple);
 
     /* Default constructor.  Initializes to empty tuple. */

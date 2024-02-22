@@ -276,6 +276,7 @@ class Time;
 class Datetime;
 class Regex;
 
+
 const static NoneType None;
 const static EllipsisType Ellipsis;
 
@@ -742,6 +743,8 @@ namespace impl {
 }  // namespace impl
 
 
+/* New subclass of pybind11::object that represents Python's global NotImplemented
+object. */
 class NotImplementedType :
     public pybind11::object,
     public impl::EqualCompare<NotImplementedType>
@@ -920,6 +923,7 @@ namespace impl {
 // slice()          -> py::Slice
 // staticmethod()   -> py::StaticMethod
 // str()            -> py::Str
+// super()          -> py::Super
 // tuple()          -> py::Tuple
 // type()           -> py::Type
 
@@ -1031,9 +1035,6 @@ inline Object next(const pybind11::iterator& iter, T&& default_value) {
     }
     return reinterpret_steal<Object>(result);
 }
-
-
-// TODO: super()
 
 
 // interoperable with C++
@@ -1206,7 +1207,7 @@ inline auto min(T&& obj) {
 
 /* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
 represent C++ types using std::to_string or the stream insertion operator (<<).  If all
-else fails, falls back to typeid().name(). */
+else fails, falls back to typeid(obj).name(). */
 template <typename T>
 inline std::string repr(T&& obj) {
     using U = std::decay_t<T>;
@@ -1223,7 +1224,7 @@ inline std::string repr(T&& obj) {
         try {
             return pybind11::repr(std::forward<T>(obj)).template cast<std::string>();
         } catch (...) {
-            return typeid(U).name();
+            return typeid(obj).name();
         }
     }
 }

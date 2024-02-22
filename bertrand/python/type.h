@@ -2,6 +2,7 @@
 #define BERTRAND_PYTHON_TYPE_H
 
 #include "common.h"
+#include "datetime.h"
 #include "tuple.h"
 #include "set.h"
 #include "dict.h"
@@ -360,6 +361,157 @@ public:
     // NOTE: indexing a Type object calls its __class_getitem__() method, just like
     // normal python.
 };
+
+
+/* New subclass of pybind11::object that represents Python's built-in super() type. */
+class Super :
+    public pybind11::object,
+    public impl::NumericOps<Super>,
+    public impl::FullCompare<Super>
+{
+    using Base = pybind11::object;
+    using Ops = impl::NumericOps<Super>;
+    using Compare = impl::FullCompare<Super>;
+
+    inline static int check_super(PyObject* obj) {
+        int result = PyObject_IsInstance(obj, reinterpret_cast<PyObject*>(&PySuper_Type));
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    inline static PyObject* convert_super(PyObject* obj) {
+        throw TypeError("cannot convert to py::Super");
+    }
+
+public:
+    CONSTRUCTORS(Super, check_super, convert_super);
+
+    /* Default constructor.  Equivalent to Python `super()` with no arguments, which
+    uses the calling context's inheritance hierarchy. */
+    Super() : Base([] {
+        PyObject* result = PyObject_CallNoArgs(reinterpret_cast<PyObject*>(&PySuper_Type));
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
+    }(), stolen_t{}) {}
+
+    /* Explicit constructor.  Equivalent to Python `super(type, self)` with 2
+    arguments. */
+    explicit Super(
+        const pybind11::type& type,
+        const pybind11::handle& self
+    ) : Base([&type, &self] {
+        PyObject* result = PyObject_CallFunctionObjArgs(
+            reinterpret_cast<PyObject*>(&PySuper_Type),
+            type.ptr(),
+            self.ptr(),
+            nullptr
+        );
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
+    }(), stolen_t{}) {}
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    using Compare::operator<;
+    using Compare::operator<=;
+    using Compare::operator==;
+    using Compare::operator!=;
+    using Compare::operator>=;
+    using Compare::operator>;
+
+    using Ops::operator+;
+    using Ops::operator+=;
+    using Ops::operator-;
+    using Ops::operator-=;
+    using Ops::operator*;
+    using Ops::operator*=;
+    using Ops::operator/;
+    using Ops::operator/=;
+    using Ops::operator%;
+    using Ops::operator%=;
+    using Ops::operator<<;
+    using Ops::operator<<=;
+    using Ops::operator>>;
+    using Ops::operator>>=;
+    using Ops::operator&;
+    using Ops::operator&=;
+    using Ops::operator|;
+    using Ops::operator|=;
+    using Ops::operator^;
+    using Ops::operator^=;
+};
+
+
+// TODO: Regex and Decimal types?
+
+
+/* Every Python type has a static `type` member that gives access to the Python type
+object associated with that class. */
+Type Bool::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyBool_Type));
+Type Int::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyLong_Type));
+Type Complex::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyComplex_Type));
+Type Slice::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PySlice_Type));
+Type Range::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyRange_Type));
+Type List::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyList_Type));
+Type Tuple::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyTuple_Type));
+Type Set::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PySet_Type));
+Type FrozenSet::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFrozenSet_Type));
+Type Dict::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDict_Type));
+Type MappingProxy::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictProxy_Type));
+Type KeysView::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictKeys_Type));
+Type ValuesView::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictValues_Type));
+Type ItemsView::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictItems_Type));
+Type Str::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type));
+Type Code::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyCode_Type));
+Type Frame::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFrame_Type));
+Type Function::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFunction_Type));
+Type Method::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyInstanceMethod_Type));
+Type ClassMethod::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type));
+Type StaticMethod::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyStaticMethod_Type));
+Type Property::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyProperty_Type));
+Type Timedelta::Type = [] {
+    if (impl::DATETIME_IMPORTED) {
+        return reinterpret_borrow<py::Type>(impl::PyDelta_Type.ptr());
+    } else {
+        return py::Type();
+    }
+}();
+Type Timezone::Type = [] {
+    if (impl::DATETIME_IMPORTED) {
+        return reinterpret_borrow<py::Type>(impl::PyTZInfo_Type.ptr());
+    } else {
+        return py::Type();
+    }
+}();
+Type Date::Type = [] {
+    if (impl::DATETIME_IMPORTED) {
+        return reinterpret_borrow<py::Type>(impl::PyDate_Type.ptr());
+    } else {
+        return py::Type();
+    }
+}();
+Type Time::Type = [] {
+    if (impl::DATETIME_IMPORTED) {
+        return reinterpret_borrow<py::Type>(impl::PyTime_Type.ptr());
+    } else {
+        return py::Type();
+    }
+}();
+Type Datetime::Type = [] {
+    if (impl::DATETIME_IMPORTED) {
+        return reinterpret_borrow<py::Type>(impl::PyDateTime_Type.ptr());
+    } else {
+        return py::Type();
+    }
+}();
 
 
 }  // namespace python

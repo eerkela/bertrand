@@ -46,6 +46,8 @@ class Str :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(Str, PyUnicode_Check, convert_to_str);
 
     /* Default constructor.  Initializes to empty string. */
@@ -454,8 +456,12 @@ public:
     /* Equivalent to Python (static) `str.maketrans(x)`. */
     template <typename T> 
     inline static Dict maketrans(T&& x) {
+        PyObject* result = PyObject_CallOneArg(
+            detail::object_or_cast(std::forward<T>(x)).ptr()
+        );
+
         pybind11::type cls(
-            reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type))
+            reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type))
         );
         return cls.attr("maketrans")(detail::object_or_cast(std::forward<T>(x)));
     }
@@ -464,7 +470,7 @@ public:
     template <typename T, typename U> 
     inline static Dict maketrans(T&& x, U&& y) {
         pybind11::type cls(
-            reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type))
+            reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type))
         );
         return cls.attr("maketrans")(
             detail::object_or_cast(std::forward<T>(x)),
@@ -476,7 +482,7 @@ public:
     template <typename T, typename U, typename V> 
     inline static Dict maketrans(T&& x, U&& y, V&& z) {
         pybind11::type cls(
-            reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type))
+            reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type))
         );
         return cls.attr("maketrans")(
             detail::object_or_cast(std::forward<T>(x)),

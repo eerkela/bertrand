@@ -34,6 +34,8 @@ class Range :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(Range, range_check, convert_to_range);
 
     /* Construct a range from 0 to the given stop index (exclusive). */

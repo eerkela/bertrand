@@ -29,6 +29,8 @@ class List :
     }
 
 public:
+    static py::Type Type;
+
     CONSTRUCTORS(List, PyList_Check, convert_to_list);
 
     /* Default constructor.  Initializes to an empty list. */
@@ -347,15 +349,36 @@ public:
 
 /* Equivalent to Python `sorted(obj)`. */
 inline List sorted(const pybind11::handle& obj) {
-    PyObject* result = PyObject_CallOneArg(
-        PyDict_GetItemString(PyEval_GetBuiltins(), "sorted"),
-        obj.ptr()
-    );
-    if (result == nullptr) {
+    PyObject* endpoint = PyDict_GetItemString(PyEval_GetBuiltins(), "sorted");
+    if (endpoint == nullptr) {
         throw error_already_set();
     }
-    return reinterpret_steal<List>(result);
+    Object call = reinterpret_steal<Object>(endpoint);
+    return call(obj);
 }
+
+
+/* Equivalent to Python `sorted(obj, key=key, reverse=reverse)`. */
+template <typename Func>
+inline List sorted(const pybind11::handle& obj, Func&& key, bool reverse = false) {
+    PyObject* endpoint = PyDict_GetItemString(PyEval_GetBuiltins(), "sorted");
+    if (endpoint == nullptr) {
+        throw error_already_set();
+    }
+    Object call = reinterpret_steal<Object>(endpoint);
+    return call(
+        obj,
+        py::arg("key") = pybind11::cpp_function(std::forward<Func>(key)),
+        py::arg("reverse") = reverse
+    );
+}
+
+
+
+// TODO: sorted() for C++ types
+
+
+
 
 
 /* Equivalent to Python `dir()` with no arguments.  Returns a list of names in the
