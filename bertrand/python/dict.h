@@ -93,8 +93,6 @@ public:
 
     using impl::Ops<MappingProxy>::operator==;
     using impl::Ops<MappingProxy>::operator!=;
-    using impl::Ops<MappingProxy>::operator&;
-    using impl::Ops<MappingProxy>::operator<<;
 
     // Operator overloads provided out of line to avoid circular dependency.
 
@@ -938,21 +936,6 @@ inline bool MappingProxy::contains(T&& key) const {
 template <typename T>
 inline Dict operator|(const MappingProxy& mapping, T&& other) {
     return mapping.attr("__or__")(detail::object_or_cast(std::forward<T>(other)));
-}
-
-template <typename T>
-inline Dict operator&(const MappingProxy& mapping, T&& other) {
-    return mapping.attr("__and__")(detail::object_or_cast(std::forward<T>(other)));
-}
-
-template <typename T>
-inline Dict operator-(const MappingProxy& mapping, T&& other) {
-    return mapping.attr("__sub__")(detail::object_or_cast(std::forward<T>(other)));
-}
-
-template <typename T>
-inline Dict operator^(const MappingProxy& mapping, T&& other) {
-    return mapping.attr("__xor__")(detail::object_or_cast(std::forward<T>(other)));
 }
 
 

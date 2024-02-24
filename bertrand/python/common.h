@@ -274,12 +274,12 @@ class Timezone;
 class Date;
 class Time;
 class Datetime;
-class Regex;
+class Regex;  // incorporate more fully (write pybind11 bindings so that it can be passed into Python scripts)
 
 
 namespace impl {
 
-    #define COMPARISON_OPERATOR(op, endpoint, Derived)                                  \
+    #define COMPARISON_OPERATOR(Derived, op, endpoint)                                  \
         template <typename T>                                                           \
         inline bool op(T&& other) const {                                               \
             int result = PyObject_RichCompareBool(                                      \
@@ -293,7 +293,7 @@ namespace impl {
             return result;                                                              \
         }                                                                               \
 
-    #define REVERSE_COMPARISON(op, endpoint, Derived)                                   \
+    #define REVERSE_COMPARISON(Derived, op, endpoint)                                   \
         template <                                                                      \
             typename T,                                                                 \
             std::enable_if_t<!std::is_base_of_v<Object, std::decay_t<T>>, int> = 0      \
@@ -310,7 +310,7 @@ namespace impl {
             return result;                                                              \
         }                                                                               \
 
-    #define BINARY_OPERATOR(op, endpoint, Derived)                                      \
+    #define BINARY_OPERATOR(Derived, op, endpoint)                                      \
         template <typename T>                                                           \
         inline Object op(T&& other) const {                                             \
             PyObject* result = endpoint(                                                \
@@ -323,7 +323,7 @@ namespace impl {
             return reinterpret_steal<Object>(result);                                   \
         }                                                                               \
 
-    #define REVERSE_OPERATOR(op, endpoint, Derived)                                     \
+    #define REVERSE_OPERATOR(Derived, op, endpoint)                                     \
         template <                                                                      \
             typename T,                                                                 \
             std::enable_if_t<!std::is_base_of_v<Object, std::decay_t<T>>, int> = 0      \
@@ -381,38 +381,38 @@ struct Object : public pybind11::object {
             return *this;                                                               \
         }                                                                               \
 
-    COMPARISON_OPERATOR(operator<, Py_LT, Object);
-    COMPARISON_OPERATOR(operator<=, Py_LE, Object);
-    COMPARISON_OPERATOR(operator==, Py_EQ, Object);
-    COMPARISON_OPERATOR(operator!=, Py_NE, Object);
-    COMPARISON_OPERATOR(operator>, Py_GT, Object);
-    COMPARISON_OPERATOR(operator>=, Py_GE, Object);
-    REVERSE_COMPARISON(operator<, Py_GT, Object);
-    REVERSE_COMPARISON(operator<=, Py_GE, Object);
-    REVERSE_COMPARISON(operator==, Py_EQ, Object);
-    REVERSE_COMPARISON(operator!=, Py_NE, Object);
-    REVERSE_COMPARISON(operator>, Py_LT, Object);
-    REVERSE_COMPARISON(operator>=, Py_LE, Object);
-    BINARY_OPERATOR(operator+, PyNumber_Add, Object);
-    BINARY_OPERATOR(operator-, PyNumber_Subtract, Object);
-    BINARY_OPERATOR(operator*, PyNumber_Multiply, Object);
-    BINARY_OPERATOR(operator/, PyNumber_TrueDivide, Object);
-    BINARY_OPERATOR(operator%, PyNumber_Remainder, Object);
-    BINARY_OPERATOR(operator<<, PyNumber_Lshift, Object);
-    BINARY_OPERATOR(operator>>, PyNumber_Rshift, Object);
-    BINARY_OPERATOR(operator&, PyNumber_And, Object);
-    BINARY_OPERATOR(operator|, PyNumber_Or, Object);
-    BINARY_OPERATOR(operator^, PyNumber_Xor, Object);
-    REVERSE_OPERATOR(operator+, PyNumber_Add, Object);
-    REVERSE_OPERATOR(operator-, PyNumber_Subtract, Object);
-    REVERSE_OPERATOR(operator*, PyNumber_Multiply, Object);
-    REVERSE_OPERATOR(operator/, PyNumber_TrueDivide, Object);
-    REVERSE_OPERATOR(operator%, PyNumber_Remainder, Object);
-    REVERSE_OPERATOR(operator<<, PyNumber_Lshift, Object);
-    REVERSE_OPERATOR(operator>>, PyNumber_Rshift, Object);
-    REVERSE_OPERATOR(operator&, PyNumber_And, Object);
-    REVERSE_OPERATOR(operator|, PyNumber_Or, Object);
-    REVERSE_OPERATOR(operator^, PyNumber_Xor, Object);
+    COMPARISON_OPERATOR(Object, operator<, Py_LT);
+    COMPARISON_OPERATOR(Object, operator<=, Py_LE);
+    COMPARISON_OPERATOR(Object, operator==, Py_EQ);
+    COMPARISON_OPERATOR(Object, operator!=, Py_NE);
+    COMPARISON_OPERATOR(Object, operator>, Py_GT);
+    COMPARISON_OPERATOR(Object, operator>=, Py_GE);
+    REVERSE_COMPARISON(Object, operator<, Py_GT);
+    REVERSE_COMPARISON(Object, operator<=, Py_GE);
+    REVERSE_COMPARISON(Object, operator==, Py_EQ);
+    REVERSE_COMPARISON(Object, operator!=, Py_NE);
+    REVERSE_COMPARISON(Object, operator>, Py_LT);
+    REVERSE_COMPARISON(Object, operator>=, Py_LE);
+    BINARY_OPERATOR(Object, operator+, PyNumber_Add);
+    BINARY_OPERATOR(Object, operator-, PyNumber_Subtract);
+    BINARY_OPERATOR(Object, operator*, PyNumber_Multiply);
+    BINARY_OPERATOR(Object, operator/, PyNumber_TrueDivide);
+    BINARY_OPERATOR(Object, operator%, PyNumber_Remainder);
+    BINARY_OPERATOR(Object, operator<<, PyNumber_Lshift);
+    BINARY_OPERATOR(Object, operator>>, PyNumber_Rshift);
+    BINARY_OPERATOR(Object, operator&, PyNumber_And);
+    BINARY_OPERATOR(Object, operator|, PyNumber_Or);
+    BINARY_OPERATOR(Object, operator^, PyNumber_Xor);
+    REVERSE_OPERATOR(Object, operator+, PyNumber_Add);
+    REVERSE_OPERATOR(Object, operator-, PyNumber_Subtract);
+    REVERSE_OPERATOR(Object, operator*, PyNumber_Multiply);
+    REVERSE_OPERATOR(Object, operator/, PyNumber_TrueDivide);
+    REVERSE_OPERATOR(Object, operator%, PyNumber_Remainder);
+    REVERSE_OPERATOR(Object, operator<<, PyNumber_Lshift);
+    REVERSE_OPERATOR(Object, operator>>, PyNumber_Rshift);
+    REVERSE_OPERATOR(Object, operator&, PyNumber_And);
+    REVERSE_OPERATOR(Object, operator|, PyNumber_Or);
+    REVERSE_OPERATOR(Object, operator^, PyNumber_Xor);
     INPLACE_OPERATOR(operator+=, PyNumber_InPlaceAdd);
     INPLACE_OPERATOR(operator-=, PyNumber_InPlaceSubtract);
     INPLACE_OPERATOR(operator*=, PyNumber_InPlaceMultiply);
@@ -464,38 +464,38 @@ namespace impl {
                 return *self;                                                           \
             }                                                                           \
 
-        COMPARISON_OPERATOR(operator<, Py_LT, Derived);
-        COMPARISON_OPERATOR(operator<=, Py_LE, Derived);
-        COMPARISON_OPERATOR(operator==, Py_EQ, Derived);
-        COMPARISON_OPERATOR(operator!=, Py_NE, Derived);
-        COMPARISON_OPERATOR(operator>, Py_GT, Derived);
-        COMPARISON_OPERATOR(operator>=, Py_GE, Derived);
-        REVERSE_COMPARISON(operator<, Py_GT, Derived);
-        REVERSE_COMPARISON(operator<=, Py_GE, Derived);
-        REVERSE_COMPARISON(operator==, Py_EQ, Derived);
-        REVERSE_COMPARISON(operator!=, Py_NE, Derived);
-        REVERSE_COMPARISON(operator>, Py_LT, Derived);
-        REVERSE_COMPARISON(operator>=, Py_LE, Derived);
-        BINARY_OPERATOR(operator+, PyNumber_Add, Derived);
-        BINARY_OPERATOR(operator-, PyNumber_Subtract, Derived);
-        BINARY_OPERATOR(operator*, PyNumber_Multiply, Derived);
-        BINARY_OPERATOR(operator/, PyNumber_TrueDivide, Derived);
-        BINARY_OPERATOR(operator%, PyNumber_Remainder, Derived);
-        BINARY_OPERATOR(operator<<, PyNumber_Lshift, Derived);
-        BINARY_OPERATOR(operator>>, PyNumber_Rshift, Derived);
-        BINARY_OPERATOR(operator&, PyNumber_And, Derived);
-        BINARY_OPERATOR(operator|, PyNumber_Or, Derived);
-        BINARY_OPERATOR(operator^, PyNumber_Xor, Derived);
-        REVERSE_OPERATOR(operator+, PyNumber_Add, Derived);
-        REVERSE_OPERATOR(operator-, PyNumber_Subtract, Derived);
-        REVERSE_OPERATOR(operator*, PyNumber_Multiply, Derived);
-        REVERSE_OPERATOR(operator/, PyNumber_TrueDivide, Derived);
-        REVERSE_OPERATOR(operator%, PyNumber_Remainder, Derived);
-        REVERSE_OPERATOR(operator<<, PyNumber_Lshift, Derived);
-        REVERSE_OPERATOR(operator>>, PyNumber_Rshift, Derived);
-        REVERSE_OPERATOR(operator&, PyNumber_And, Derived);
-        REVERSE_OPERATOR(operator|, PyNumber_Or, Derived);
-        REVERSE_OPERATOR(operator^, PyNumber_Xor, Derived);
+        COMPARISON_OPERATOR(Derived, operator<, Py_LT);
+        COMPARISON_OPERATOR(Derived, operator<=, Py_LE);
+        COMPARISON_OPERATOR(Derived, operator==, Py_EQ);
+        COMPARISON_OPERATOR(Derived, operator!=, Py_NE);
+        COMPARISON_OPERATOR(Derived, operator>, Py_GT);
+        COMPARISON_OPERATOR(Derived, operator>=, Py_GE);
+        REVERSE_COMPARISON(Derived, operator<, Py_GT);
+        REVERSE_COMPARISON(Derived, operator<=, Py_GE);
+        REVERSE_COMPARISON(Derived, operator==, Py_EQ);
+        REVERSE_COMPARISON(Derived, operator!=, Py_NE);
+        REVERSE_COMPARISON(Derived, operator>, Py_LT);
+        REVERSE_COMPARISON(Derived, operator>=, Py_LE);
+        BINARY_OPERATOR(Derived, operator+, PyNumber_Add);
+        BINARY_OPERATOR(Derived, operator-, PyNumber_Subtract);
+        BINARY_OPERATOR(Derived, operator*, PyNumber_Multiply);
+        BINARY_OPERATOR(Derived, operator/, PyNumber_TrueDivide);
+        BINARY_OPERATOR(Derived, operator%, PyNumber_Remainder);
+        BINARY_OPERATOR(Derived, operator<<, PyNumber_Lshift);
+        BINARY_OPERATOR(Derived, operator>>, PyNumber_Rshift);
+        BINARY_OPERATOR(Derived, operator&, PyNumber_And);
+        BINARY_OPERATOR(Derived, operator|, PyNumber_Or);
+        BINARY_OPERATOR(Derived, operator^, PyNumber_Xor);
+        REVERSE_OPERATOR(Derived, operator+, PyNumber_Add);
+        REVERSE_OPERATOR(Derived, operator-, PyNumber_Subtract);
+        REVERSE_OPERATOR(Derived, operator*, PyNumber_Multiply);
+        REVERSE_OPERATOR(Derived, operator/, PyNumber_TrueDivide);
+        REVERSE_OPERATOR(Derived, operator%, PyNumber_Remainder);
+        REVERSE_OPERATOR(Derived, operator<<, PyNumber_Lshift);
+        REVERSE_OPERATOR(Derived, operator>>, PyNumber_Rshift);
+        REVERSE_OPERATOR(Derived, operator&, PyNumber_And);
+        REVERSE_OPERATOR(Derived, operator|, PyNumber_Or);
+        REVERSE_OPERATOR(Derived, operator^, PyNumber_Xor);
         INPLACE_OPERATOR(operator+=, PyNumber_InPlaceAdd);
         INPLACE_OPERATOR(operator-=, PyNumber_InPlaceSubtract);
         INPLACE_OPERATOR(operator*=, PyNumber_InPlaceMultiply);
