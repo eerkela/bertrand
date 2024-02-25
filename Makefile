@@ -110,6 +110,7 @@ doc:
 # 	rebuild
 	@cd docs/ && $(MAKE) html
 
+
 test:
 #	recompile C++ tests using CMake, then invoke pytest in root directory to run both
 #   C++ and Python tests using pytest-cpp
@@ -118,10 +119,11 @@ test:
 	mkdir -p test/build; \
 	cd test/build; \
 	cmake .. -DCMAKE_CXX_FLAGS=-fPIC > /dev/null; \
-	make -s; \
+	make -s -j8; \
 	cd ../..; \
 	pytest; \
 	}
+
 
 doctest:
 #	validate URL links in documentation

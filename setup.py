@@ -149,9 +149,14 @@ class BuildExt(build_ext):
         # compile Python extensions
         super().run()
 
-        # compile the test library
+        # save compiler flags to test/ so that we can use the same configuration when
+        # building the test suite
         cwd = cwd.parent / "test"
-        self.compile_tests(cwd)
+        with (cwd / ".compile_flags").open("w") as file:
+            file.write(" ".join(
+                self.compiler.compiler_so[1:] +  # remove the compiler name
+                ["-fvisibility=hidden", "-g0"]  # these are added by Pybind11Extension
+            ))
 
 
 EXTENSIONS = [

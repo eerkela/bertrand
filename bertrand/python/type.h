@@ -417,59 +417,59 @@ public:
 
 /* Every Python type has a static `Type` member that gives access to the Python type
 object associated with instances of that class. */
-Type Object::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
-Type Bool::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyBool_Type));
-Type Int::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyLong_Type));
-Type Float::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFloat_Type));
-Type Complex::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyComplex_Type));
-Type Slice::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PySlice_Type));
-Type Range::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyRange_Type));
-Type List::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyList_Type));
-Type Tuple::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyTuple_Type));
-Type Set::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PySet_Type));
-Type FrozenSet::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFrozenSet_Type));
-Type Dict::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDict_Type));
-Type MappingProxy::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictProxy_Type));
-Type KeysView::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictKeys_Type));
-Type ValuesView::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictValues_Type));
-Type ItemsView::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictItems_Type));
-Type Str::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type));
-Type Code::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyCode_Type));
-Type Frame::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFrame_Type));
-Type Function::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFunction_Type));
-Type Method::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyInstanceMethod_Type));
-Type ClassMethod::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type));
-Type StaticMethod::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyStaticMethod_Type));
-Type Property::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyProperty_Type));
-Type Timedelta::Type = [] {
+inline Type Object::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
+inline Type Bool::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyBool_Type));
+inline Type Int::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyLong_Type));
+inline Type Float::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFloat_Type));
+inline Type Complex::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyComplex_Type));
+inline Type Slice::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PySlice_Type));
+inline Type Range::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyRange_Type));
+inline Type List::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyList_Type));
+inline Type Tuple::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyTuple_Type));
+inline Type Set::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PySet_Type));
+inline Type FrozenSet::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFrozenSet_Type));
+inline Type Dict::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDict_Type));
+inline Type MappingProxy::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictProxy_Type));
+inline Type KeysView::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictKeys_Type));
+inline Type ValuesView::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictValues_Type));
+inline Type ItemsView::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictItems_Type));
+inline Type Str::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type));
+inline Type Code::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyCode_Type));
+inline Type Frame::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFrame_Type));
+inline Type Function::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFunction_Type));
+inline Type Method::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyInstanceMethod_Type));
+inline Type ClassMethod::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type));
+inline Type StaticMethod::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyStaticMethod_Type));
+inline Type Property::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyProperty_Type));
+inline Type Timedelta::Type = [] {
     if (impl::DATETIME_IMPORTED) {
         return reinterpret_borrow<py::Type>(impl::PyDelta_Type.ptr());
     } else {
         return py::Type();
     }
 }();
-Type Timezone::Type = [] {
+inline Type Timezone::Type = [] {
     if (impl::DATETIME_IMPORTED) {
         return reinterpret_borrow<py::Type>(impl::PyTZInfo_Type.ptr());
     } else {
         return py::Type();
     }
 }();
-Type Date::Type = [] {
+inline Type Date::Type = [] {
     if (impl::DATETIME_IMPORTED) {
         return reinterpret_borrow<py::Type>(impl::PyDate_Type.ptr());
     } else {
         return py::Type();
     }
 }();
-Type Time::Type = [] {
+inline Type Time::Type = [] {
     if (impl::DATETIME_IMPORTED) {
         return reinterpret_borrow<py::Type>(impl::PyTime_Type.ptr());
     } else {
         return py::Type();
     }
 }();
-Type Datetime::Type = [] {
+inline Type Datetime::Type = [] {
     if (impl::DATETIME_IMPORTED) {
         return reinterpret_borrow<py::Type>(impl::PyDateTime_Type.ptr());
     } else {

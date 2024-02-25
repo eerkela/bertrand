@@ -738,7 +738,7 @@ inline auto div(const L& l, const R& r, const Mode& mode = Round::TRUE) {
 
 /* Compute the remainder of a division according to the specified rounding rule. */
 template <typename L, typename R, typename Mode>
-auto mod(const L& l, const R& r, const Mode& mode = Round::TRUE) {
+auto mod(const L& l, const R& r, const Mode& mode = Round::FLOOR) {
     static_assert(
         Round::is_valid<Mode>,
         "rounding mode must be one of Round::TRUE, ::C, ::FLOOR, ::CEILING, ::DOWN, "
@@ -751,7 +751,7 @@ auto mod(const L& l, const R& r, const Mode& mode = Round::TRUE) {
 /* Get the quotient and remainder of a division at the same time, using the specified
 rounding rule. */
 template <typename L, typename R, typename Mode>
-auto divmod(const L& l, const R& r, const Mode& mode = Round::TRUE) {
+auto divmod(const L& l, const R& r, const Mode& mode = Round::FLOOR) {
     static_assert(
         Round::is_valid<Mode>,
         "rounding mode must be one of Round::TRUE, ::C, ::FLOOR, ::CEILING, ::DOWN, "
@@ -763,14 +763,14 @@ auto divmod(const L& l, const R& r, const Mode& mode = Round::TRUE) {
 
 /* Equivalent to Python `base ** exp` (exponentiation). */
 template <typename L, typename R>
-auto pow(L&& base, R&& exp) {
+auto pow(const L& base, const R& exp) {
     if constexpr (
-        detail::is_pyobject<std::decay_t<L>>::value ||
-        detail::is_pyobject<std::decay_t<R>>::value
+        detail::is_pyobject<L>::value ||
+        detail::is_pyobject<R>::value
     ) {
         PyObject* result = PyNumber_Power(
-            detail::object_or_cast(std::forward<L>(base)).ptr(),
-            detail::object_or_cast(std::forward<R>(exp)).ptr(),
+            detail::object_or_cast(base).ptr(),
+            detail::object_or_cast(exp).ptr(),
             Py_None
         );
         if (result == nullptr) {
@@ -785,33 +785,30 @@ auto pow(L&& base, R&& exp) {
 
 /* Equivalent to Python `pow(base, exp, mod)`. */
 template <typename L, typename R, typename E>
-auto pow(L&& base, R&& exp, E&& mod) {
-    using A = std::decay_t<L>;
-    using B = std::decay_t<R>;
-    using C = std::decay_t<E>;
+auto pow(const L& base, const R& exp, const E& mod) {
     static_assert(
-        (std::is_integral_v<A> || detail::is_pyobject<A>::value) &&
-        (std::is_integral_v<B> || detail::is_pyobject<B>::value) &&
-        (std::is_integral_v<C> || detail::is_pyobject<C>::value),
+        (std::is_integral_v<L> || detail::is_pyobject<L>::value) &&
+        (std::is_integral_v<R> || detail::is_pyobject<R>::value) &&
+        (std::is_integral_v<E> || detail::is_pyobject<E>::value),
         "pow() 3rd argument not allowed unless all arguments are integers"
     );
 
     if constexpr (
-        detail::is_pyobject<A>::value ||
-        detail::is_pyobject<B>::value ||
-        detail::is_pyobject<C>::value
+        detail::is_pyobject<L>::value ||
+        detail::is_pyobject<R>::value ||
+        detail::is_pyobject<E>::value
     ) {
         PyObject* result = PyNumber_Power(
-            detail::object_or_cast(std::forward<L>(base)).ptr(),
-            detail::object_or_cast(std::forward<R>(exp)).ptr(),
-            detail::object_or_cast(std::forward<E>(mod)).ptr()
+            detail::object_or_cast(base).ptr(),
+            detail::object_or_cast(exp).ptr(),
+            detail::object_or_cast(mod).ptr()
         );
         if (result == nullptr) {
             throw error_already_set();
         }
         return reinterpret_steal<Object>(result);
     } else {
-        std::common_type_t<A, B, C> result = 1;
+        std::common_type_t<L, R, E> result = 1;
         base = py::mod(base, mod);
         while (exp > 0) {
             if (exp % 2) {
@@ -835,6 +832,9 @@ auto round(const T& n, int digits = 0, const Mode& mode = Round::HALF_EVEN) {
         "::HALF_FLOOR, ::HALF_CEILING, ::HALF_DOWN, ::HALF_UP, or ::HALF_EVEN"
     );
 
+    // TODO: mitigate precision loss when scaling
+    // -> if digits < 0, fall back to div?
+
     // integer rounding only has an effect if digits are negative
     if constexpr (std::is_integral_v<T>) {
         if (digits >= 0) {
@@ -842,26 +842,25 @@ auto round(const T& n, int digits = 0, const Mode& mode = Round::HALF_EVEN) {
         } else {
             return div(n, static_cast<T>(pow(10, digits)), mode);
         }
-    }
 
-    // repeat for python integers as runtime check
-    if constexpr (detail::is_pyobject<T>::value) {
-        // TODO: uncomment this when div methods are finished
+    // same for Python integers
+    } else if constexpr (detail::is_pyobject<T>::value) {
+        // // TODO: uncomment this when all tags have a functional div() method
         // if (PyLong_Check(n.ptr())) {
         //     if (digits >= 0) {
         //         return reinterpret_borrow<Object>(n.ptr());
         //     } else {
         //         return div(n, Int(static_cast<long long>(pow(10, digits))), mode);
         //     }
+        // } else {
+            double scale = std::pow(10, digits);
+            return Mode::round(n * scale) / scale;
         // }
+
+    } else {
+        double scale = std::pow(10, digits);
+        return Mode::round(n * scale) / scale;
     }
-
-    // TODO: mitigate precision loss when scaling
-    // -> if digits < 0, fall back to div?
-
-    // tag method never needs to consider integers
-    double scale = std::pow(10, digits);
-    return Mode::round(n * scale) / scale;
 }
 
 

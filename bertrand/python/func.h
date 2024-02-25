@@ -25,7 +25,7 @@ namespace impl {
     called, which causes a segfault.  There is a workaround, but it requires us to
     maintain a global set of living code objects and clean them up manually just before
     Python exits. */
-    std::unordered_set<Code*> LIVING_CODE_OBJECTS;
+    inline static std::unordered_set<Code*> LIVING_CODE_OBJECTS;
     static void clean_up_living_code_objects();
 
 }

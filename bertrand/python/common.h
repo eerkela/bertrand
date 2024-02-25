@@ -351,6 +351,9 @@ namespace impl {
 }
 
 
+/* A revised pybind11::object interface that allows explicit conversion to any C++ type
+as well as cross-language math operators, which can convert C++ inputs into Python
+objects before calling the CPython API. */
 struct Object : public pybind11::object {
     static py::Type Type;
     using pybind11::object::object;
@@ -1176,29 +1179,29 @@ inline Object next(const pybind11::iterator& iter, T&& default_value) {
 
 // interoperable with C++
 template <typename T>
-auto abs(T&&);
-Str ascii(const pybind11::handle&);  // TODO: accept py::Str and return std::string.
-Str bin(const pybind11::handle&);
+inline auto abs(T&&);
+inline Str ascii(const pybind11::handle&);  // TODO: accept py::Str and return std::string.
+inline Str bin(const pybind11::handle&);
 template <typename... Args, typename Func>
-constexpr auto callable(const Func&);
-Str chr(const pybind11::handle&);
+inline constexpr auto callable(const Func&);
+inline Str chr(const pybind11::handle&);
 // template <typename L, typename R, typename Mode>
-// auto div(const L&, const R&, const Mode&);
+// inline auto div(const L&, const R&, const Mode&);
 // template <typename L, typename R, typename Mode>
-// auto divmod(const L&, const R&, const Mode&);
-std::string format(const Str&, const Str&);  // TODO: delegate to py::Str?
-Str hex(const pybind11::handle&);
+// inline auto divmod(const L&, const R&, const Mode&);
+inline std::string format(const Str&, const Str&);  // TODO: delegate to py::Str?
+inline Str hex(const pybind11::handle&);
 // template <typename L, typename R, typename Mode>
-// auto mod(const L&, const R&, const Mode&);
-Str oct(const pybind11::handle&);  // TODO: make compatible with C++?
-Int ord(const pybind11::handle&);  // TODO: make compatible with C++?
-template <typename T, typename U>
-auto pow(T&&, U&&);
-template <typename T, typename U, typename V>
-auto pow(T&&, U&&, V&&);
+// inline auto mod(const L&, const R&, const Mode&);
+inline Str oct(const pybind11::handle&);  // TODO: make compatible with C++?
+inline Int ord(const pybind11::handle&);  // TODO: make compatible with C++?
+// template <typename L, typename R>
+// inline auto pow(const L&, const R&);
+// template <typename L, typename R, typename E>
+// inline auto pow(const L&, const R&, const E&);
 // template <typename T, typename Mode>
-// auto round(const T&, int, const Mode&);
-List sorted(const pybind11::handle&);  // TODO: accept C++ containers and return std::vector?
+// inline auto round(const T&, int, const Mode&);
+inline List sorted(const pybind11::handle&);  // TODO: accept C++ containers and return std::vector?
 
 
 /* Equivalent to Python `all(obj)`, except that it also works on iterable C++

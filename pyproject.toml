@@ -137,3 +137,4 @@ testpaths = [
     "test",         # Python tests
     "test/build",   # C++ tests
 ]
+# cpp_harness = valgrind --tool=memcheck
