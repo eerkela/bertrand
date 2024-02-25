@@ -271,7 +271,6 @@ public:
     using impl::Ops<List>::operator>=;
 
     using Object::operator[];
-    using impl::SequenceOps<List>::operator[];
     using impl::SequenceOps<List>::concat;
     using impl::SequenceOps<List>::operator+;
     using impl::SequenceOps<List>::operator*;

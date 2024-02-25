@@ -686,26 +686,29 @@ public:
  *
  *  1.  C++ has no `**` exponentiation operator, so `std::pow()` is typically used
  *      instead.  Rather than overload a standard method, a separate `py::pow()`
- *      function is provided, which is consistent with both Python and C++.
+ *      function is provided, which is consistent with both Python and C++ inputs.
  *  2.  Similarly, C++ has no `//` floor division operator, as it has entirely
- *      different division semantics to Python.  The `py::floordiv()` function is
- *      provided to account for this, and consistently applies Python semantics to both
- *      Python and C++ types.
- *  3.  C++ uses C-style division for the `/` operator, which differs from Python in
- *      its handling of integers.  In Python, `/` represents *true* division, which can
- *      return a float when dividing two integers.  In contrast, C++ truncates the
- *      result towards zero, which can cause compatibility issues when mixing Python
- *      and C++ code.  The `py::truediv()` and `py::cdiv()` functions are designed to
- *      account for this, and always apply the respective language's semantics to both
- *      Python and C++ inputs.
- *  4.  Because of the above, the `%` operator also has different semantics in both
+ *      different division semantics to Python.  Worse still, C++ uses C-style division
+ *      for the `/` operator, which differs from Python in its handling of integers.
+ *      In Python, `/` represents *true* division, which can return a float when
+ *      dividing two integers.  In contrast, C++ truncates the result towards zero,
+ *      which can cause compatibility issues when mixing Python and C++ code.  The
+ *      py::div() function exists to standardize this by applying a customizable
+ *      rounding strategy to both Python and C++ inputs.  This goes beyond just
+ *      consolidating the syntax - the rounding strategies are significantly more
+ *      comprehensive, and can be used to implement more than just true or floor
+ *      division.
+ *  3.  Because of the above, the `%` operator also has different semantics in both
  *      languages.  This amounts to a sign difference when one of the operands is
  *      negative, in order to satisfy the invariant `a == (a / b) * b + (a % b)`).  The
- *      `py::mod()` and `py::cmod()` functions force the respective language's semantics
- *      to be used for both Python and C++ inputs.
- *  5.  The `py::divmod()` and `py::cdivmod()` functions are provided for completeness,
- *      and combine the results of `py::floordiv()` and `py::mod()` or `py::cdiv()` and
- *      `py::cmod()`, respectively.
+ *      `py::mod()` function provides a consistent implementation for both languages,
+ *      and also allows for the same rounding strategies as `py::div()`.
+ *  4.  The `py::divmod()` function is provided for completeness and slightly increased
+ *      performance as long as both results are needed.
+ *  5.  The `py::round()` function hooks into the same rounding strategies as
+ *      `py::div()`, `py::mod()`, and `py::divmod()`, and applies them in a consistent
+ *      manner to both Python and C++ inputs.  It is fully generic, and massively
+ *      simplifies the syntax for rounding numbers in both languages.
  */
 
 
@@ -862,25 +865,6 @@ auto round(const T& n, int digits = 0, const Mode& mode = Round::HALF_EVEN) {
         return Mode::round(n * scale) / scale;
     }
 }
-
-
-///////////////////////////////
-////    UNARY OPERATORS    ////
-///////////////////////////////
-
-
-/* Below is a selection of unary operators that don't fit in the standard Python/C++
- * operator set.  The implementations that are provided here work equally well with
- * inputs from both languages, and consistently apply the same behavior in both cases.
- *
- * NOTE: Unlike Python, the round() function accepts an optional third parameter, which
- * specifies the rounding strategy to use.  This allows it to be used in place of the
- * floor()/ceil()/trunc() functions, which consolidates some of the syntax.
- */
-
-
-
-
 
 
 }  // namespace py

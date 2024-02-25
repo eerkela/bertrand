@@ -360,7 +360,7 @@ class Super : public Object, public impl::Ops<Super> {
     }
 
     inline static PyObject* convert_super(PyObject* obj) {
-        throw TypeError("cannot convert to py::Super");
+        throw Object::noconvert<Super>(obj);
     }
 
 public:

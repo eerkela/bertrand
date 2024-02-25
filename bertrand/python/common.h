@@ -43,7 +43,7 @@ namespace py {
 
 
 // binding functions
-using pybind11::cast;
+// using pybind11::cast;
 using pybind11::reinterpret_borrow;
 using pybind11::reinterpret_steal;
 using pybind11::implicitly_convertible;
@@ -354,22 +354,126 @@ namespace impl {
 /* A revised pybind11::object interface that allows explicit conversion to any C++ type
 as well as cross-language math operators, which can convert C++ inputs into Python
 objects before calling the CPython API. */
-struct Object : public pybind11::object {
+class Object : public pybind11::object {
+    using Base = pybind11::object;
+
+protected:
+    using SliceIndex = std::variant<long long, pybind11::none>;
+
+    template <typename Derived>
+    static TypeError noconvert(PyObject* obj) {
+        pybind11::type source = pybind11::type::of(obj);
+        pybind11::type dest = Derived::Type;
+        const char* source_name = reinterpret_cast<PyTypeObject*>(source.ptr())->tp_name;
+        const char* dest_name = reinterpret_cast<PyTypeObject*>(dest.ptr())->tp_name;
+
+        std::ostringstream msg;
+        msg << "could not construct '" << dest_name << "' from object of type '";
+        msg << source_name << "'";
+        return TypeError(msg.str());
+    }
+
+public:
     static py::Type Type;
-    using pybind11::object::object;
-    using pybind11::object::operator=;
 
-    Object(const pybind11::object& o) : pybind11::object(o) {}
-    Object(pybind11::object&& o) : pybind11::object(std::move(o)) {}
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
 
+    using Base::Base;
+    using Base::operator=;
+
+    /* Default constructor.  Initializes to None. */
+    Object() : Base(pybind11::none()) {}
+
+    /* Adopt an existing object with proper reference counting. */
+    Object(const pybind11::object& o) : Base(o) {}
+    Object(pybind11::object&& o) : Base(std::move(o)) {}
+
+    /* Convert an accessor proxy into a new object. */
     template <typename Policy>
     Object(const ::pybind11::detail::accessor<Policy> &a) :
-        pybind11::object(pybind11::object(a))
+        Base(pybind11::object(a))
     {}
 
+    /* Convert any C++ value into an arbitrary python object and wrap the result. */
+    template <typename T, std::enable_if_t<!detail::is_pyobject<T>::value, int> = 0>
+    Object(T&& value) :
+        Base(pybind11::cast(std::forward<T>(value)).release(), stolen_t{})
+    {}
+
+    /* Assign an arbitrary value to the object wrapper. */
+    template <typename T, std::enable_if_t<!detail::is_pyobject<T>::value, int> = 0>
+    Object& operator=(T&& value) {
+        Base::operator=(Object(std::forward<T>(value)));
+        return *this;
+    }
+
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
+
+    /* Implicitly convert an Object into a bool.  Equivalent to Python `bool(obj)`. */
+    inline operator bool() const {
+        int result = PyObject_IsTrue(this->ptr());
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    /* Explicitly cast to a string representation.  Equivalent to Python `str(obj)`. */
+    inline explicit operator std::string() const {
+        PyObject* str = PyObject_Str(this->ptr());
+        if (str == nullptr) {
+            throw error_already_set();
+        }
+        Py_ssize_t size;
+        const char* data = PyUnicode_AsUTF8AndSize(str, &size);
+        Py_DECREF(str);
+        if (data == nullptr) {
+            throw error_already_set();
+        }
+        return std::string(data, size);
+    }
+
+    /* Explicitly cast to any other type.  Uses pybind11 to search for a conversion. */
     template <typename T>
     inline explicit operator T() const {
-        return this->template cast<T>();
+        return Base::cast<T>();
+    }
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    /* Bertrand uses a generalized slice syntax for all sequence types, using an
+     * initializer list to represent the slice.  This is equivalent to Python's
+     * `obj[start:stop:step]` syntax, and is directly converted to it in the backend.
+     * This allows arbitrary Objects to be sliced as if they were sequences, and
+     * throws compilation errors if the slice is not composed of integers or None.
+     */
+
+    using Base::operator[];
+
+    auto operator[](const std::initializer_list<SliceIndex>& slice) const {
+        if (slice.size() > 3) {
+            throw ValueError(
+                "slices must be of the form {[start[, stop[, step]]]}"
+            );
+        }
+        pybind11::none None;
+        size_t i = 0;
+        std::array<Object, 3> params {None, None, None};
+        for (const SliceIndex& item : slice) {
+            params[i++] = std::visit(
+                [](auto&& arg) -> Object {
+                    return detail::object_or_cast(arg);
+                },
+                item
+            );
+        }
+        return this->operator[](pybind11::slice(params[0], params[1], params[2]));
     }
 
     /* pybind11 exposes generalized operator overloads for python operands, but does
@@ -440,6 +544,20 @@ struct Object : public pybind11::object {
     INPLACE_OPERATOR(operator^=, PyNumber_InPlaceXor);
 
     #undef INPLACE_OPERATOR
+
+    inline Object* operator&() {
+        return this;
+    }
+
+    inline const Object* operator&() const {
+        return this;
+    }
+
+    inline friend std::ostream& operator<<(std::ostream& os, const Object& obj) {
+        os << static_cast<std::string>(obj);
+        return os;
+    }
+
 };
 
 
@@ -448,6 +566,33 @@ const static EllipsisType Ellipsis;
 
 
 namespace impl {
+
+    /* A simple struct that converts a generic C++ object into a Python equivalent in
+    its constructor.  This is used in conjunction with std::initializer_list to parse
+    mixed-type lists in a type-safe manner.
+
+    NOTE: this incurs a small performance penalty, effectively requiring an extra loop
+    over the initializer list before the function is called.  Users can avoid this by
+    providing a homogenous `std::initializer_list<T>` overload alongside
+    `std::iniitializer_list<Initializer>`.  This causes conversions to be deferred to
+    the function body, which may be able to handle them more efficiently in a single
+    loop. */
+    struct Initializer {
+        Object value;
+
+        /* We disable initializer construction from pybind11::handle in order not to
+        * interfere with pybind11's reinterpret_borrow/reinterpret_steal helper functions,
+        * which use initializer lists internally.  Disabling the generic initializer list
+        * constructor whenever a handle is passed in allows reinterpret_borrow/
+        * reinterpret_steal to continue to work as expected.
+        */
+
+        template <
+            typename T,
+            std::enable_if_t<!std::is_same_v<pybind11::handle, std::decay_t<T>>, int> = 0
+        >
+        Initializer(T&& value) : value(detail::object_or_cast(std::forward<T>(value))) {}
+    };
 
     /* A mixin that adds type-safe in-place operators.  These will throw a CastError
     if an in-place operator modifies the type of its left operand. */
@@ -713,30 +858,6 @@ namespace impl {
             return *self;
         }
 
-        /* Slice operator.  Accepts an initializer list that expands to a Python slice
-        object with generalized syntax. */
-        using SliceIndex = std::variant<long long, pybind11::none>;
-        inline auto operator[](const std::initializer_list<SliceIndex>& slice) const {
-            if (slice.size() > 3) {
-                throw ValueError(
-                    "slices must be of the form {[start[, stop[, step]]]}"
-                );
-            }
-            size_t i = 0;
-            std::array<Object, 3> params {None, None, None};
-            for (const SliceIndex& item : slice) {
-                params[i++] = std::visit(
-                    [](auto&& arg) -> Object {
-                        return detail::object_or_cast(arg);
-                    },
-                    item
-                );
-            }
-            return static_cast<const Derived*>(this)->operator[](
-                pybind11::slice(params[0], params[1], params[2])
-            );
-        }
-
     };
 
     /* Mixin holding an optimized reverse iterator for data structures that allow
@@ -786,33 +907,6 @@ namespace impl {
 
     };
 
-    /* A simple struct that converts a generic C++ object into a Python equivalent in
-    its constructor.  This is used in conjunction with std::initializer_list to parse
-    mixed-type lists in a type-safe manner.
-
-    NOTE: this incurs a small performance penalty, effectively requiring an extra loop
-    over the initializer list before the function is called.  Users can avoid this by
-    providing a homogenous `std::initializer_list<T>` overload alongside
-    `std::iniitializer_list<Initializer>`.  This causes conversions to be deferred to
-    the function body, which may be able to handle them more efficiently in a single
-    loop. */
-    struct Initializer {
-        Object value;
-
-        /* We disable initializer construction from pybind11::handle in order not to
-        * interfere with pybind11's reinterpret_borrow/reinterpret_steal helper functions,
-        * which use initializer lists internally.  Disabling the generic initializer list
-        * constructor whenever a handle is passed in allows reinterpret_borrow/
-        * reinterpret_steal to continue to work as expected.
-        */
-
-        template <
-            typename T,
-            std::enable_if_t<!std::is_same_v<pybind11::handle, std::decay_t<T>>, int> = 0
-        >
-        Initializer(T&& value) : value(detail::object_or_cast(std::forward<T>(value))) {}
-    };
-
     /* Convert an arbitrary Python/C++ value into a pybind11 object and then return a
     new reference.  This is used in the constructors of list and tuple objects, whose
     SET_ITEM() functions steal a reference.  Converts null pointers into Python None. */
@@ -825,7 +919,7 @@ namespace impl {
             }
             return Py_NewRef(result);
         } else {
-            PyObject* result = py::cast(std::forward<T>(value)).release().ptr();
+            PyObject* result = pybind11::cast(std::forward<T>(value)).release().ptr();
             if (result == nullptr) {
                 throw error_already_set();
             }
@@ -855,11 +949,6 @@ namespace impl {
     #define BERTRAND_PYTHON_CONSTRUCTORS(parent, cls, check, convert)                   \
         PYBIND11_OBJECT_CVT(cls, parent, check, convert);                               \
         using parent::operator=;                                                        \
-        template <typename T>                                                           \
-        cls& operator=(const std::initializer_list<T>& init) {                          \
-            parent::operator=(cls(init));                                               \
-            return *this;                                                               \
-        }                                                                               \
         cls& operator=(const pybind11::object& obj) {                                   \
             if (check_(obj.ptr())) {                                                    \
                 parent::operator=(reinterpret_borrow<cls>(obj.ptr()));                  \
@@ -869,6 +958,16 @@ namespace impl {
                 msg << " to " << #cls;                                                  \
                 throw CastError(msg.str());                                             \
             }                                                                           \
+            return *this;                                                               \
+        }                                                                               \
+        template <typename T, std::enable_if_t<!detail::is_pyobject<T>::value, int> = 0>\
+        cls& operator=(T&& value) {                                                     \
+            parent::operator=(cls(std::forward<T>(value)));                             \
+            return *this;                                                               \
+        }                                                                               \
+        template <typename T>                                                           \
+        cls& operator=(const std::initializer_list<T>& init) {                          \
+            parent::operator=(cls(init));                                               \
             return *this;                                                               \
         }                                                                               \
         inline cls* operator&() {                                                       \
@@ -1009,6 +1108,13 @@ namespace impl {
     constexpr bool has_size = false;
     template <typename T>
     constexpr bool has_size<T, std::void_t<decltype(std::declval<T>().size())>> = true;
+
+    template <typename T, typename = void>
+    static constexpr bool has_empty = false;
+    template <typename T>
+    static constexpr bool has_empty<
+        T, std::void_t<decltype(std::declval<T>().empty())>
+    > = true;
 
     /* SFINAE trait that detects whether std::to_string is invocable with a particular
     type. */
@@ -1208,17 +1314,9 @@ inline List sorted(const pybind11::handle&);  // TODO: accept C++ containers and
 containers. */
 template <typename T>
 inline bool all(T&& obj) {
-    return std::all_of(
-        obj.begin(),
-        obj.end(),
-        [](auto&& item) {
-            if constexpr (detail::is_pyobject<std::decay_t<decltype(item)>>::value) {
-                return item.template cast<bool>();
-            } else {
-                return static_cast<bool>(item);
-            }
-        }
-    );
+    return std::all_of(obj.begin(), obj.end(), [](auto&& item) {
+        return static_cast<bool>(item);
+    });
 }
 
 
@@ -1226,17 +1324,9 @@ inline bool all(T&& obj) {
 containers. */
 template <typename T>
 inline bool any(T&& obj) {
-    return std::any_of(
-        obj.begin(),
-        obj.end(),
-        [](auto&& item) {
-            if constexpr (detail::is_pyobject<std::decay_t<decltype(item)>>::value) {
-                return item.template cast<bool>();
-            } else {
-                return static_cast<bool>(item);
-            }
-        }
-    );
+    return std::any_of(obj.begin(), obj.end(), [](auto&& item) {
+        return static_cast<bool>(item);
+    });
 }
 
 

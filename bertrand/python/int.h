@@ -49,14 +49,14 @@ struct Int : public Object, public impl::Ops<Int> {
     }
 
     /* Construct an Int from a string with an optional base. */
-    explicit Int(const std::string& str, int base = 0) :
-        Int(str.c_str(), base)
-    {}
+    explicit Int(const std::string& str, int base = 0) : Int(str.c_str(), base) {}
 
     /* Construct an Int from a string with an optional base. */
-    explicit Int(const std::string_view& str, int base = 0) :
-        Int(str.data(), base)
-    {}
+    explicit Int(const std::string_view& str, int base = 0) : Int(str.data(), base) {}
+
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
 
     /* Implicitly convert a Python int into a C++ integer. */
     template <typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
@@ -82,25 +82,29 @@ struct Int : public Object, public impl::Ops<Int> {
         return Object::operator T();
     }
 
-    template <typename T>
-    inline Int& operator/=(const T& other) {
-        Object obj = detail::object_or_cast(other);
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
 
-        if (PyLong_Check(obj.ptr())) {
-            PyObject* temp = PyNumber_FloorDivide(this->ptr(), obj.ptr());
-            if (temp == nullptr) {
-                throw error_already_set();
-            }
-            Int result = reinterpret_steal<Int>(temp);
-            if (result < 0) {
-                result += Int(*this - (result * reinterpret_borrow<Int>(obj.ptr()))) != 0;
-            }
-            *this = result;
-            return *this;
-        }
+    // template <typename T>
+    // inline Int& operator/=(const T& other) {
+    //     Object obj = detail::object_or_cast(other);
 
-        return impl::Ops<Int>::operator/=(obj);
-    }
+    //     if (PyLong_Check(obj.ptr())) {
+    //         PyObject* temp = PyNumber_FloorDivide(this->ptr(), obj.ptr());
+    //         if (temp == nullptr) {
+    //             throw error_already_set();
+    //         }
+    //         Int result = reinterpret_steal<Int>(temp);
+    //         if (result < 0) {
+    //             result += Int(*this - (result * reinterpret_borrow<Int>(obj.ptr()))) != 0;
+    //         }
+    //         *this = result;
+    //         return *this;
+    //     }
+
+    //     return impl::Ops<Int>::operator/=(obj);
+    // }
 
 };
 

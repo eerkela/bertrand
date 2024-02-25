@@ -30,14 +30,27 @@ public:
     /* Construct from a C++ bool. */
     Bool(bool value) : Object(value ? Py_True : Py_False, borrowed_t{}) {}
 
-    /* Implicitly convert to a C++ bool. */
-    inline operator bool() const {
-        int result = PyObject_IsTrue(this->ptr());
-        if (result == -1) {
-            throw error_already_set();
-        }
-        return result;
-    }
+    /* Construct from an integer or floating point value. */
+    template <typename T, std::enable_if_t<std::is_arithmetic<T>::value, int> = 0>
+    explicit Bool(T value) : Bool(value != 0) {}
+
+    /* Construct from any object that implements a `.size()` method. */
+    template <typename T, std::enable_if_t<impl::has_size<T>, int> = 0>
+    explicit Bool(const T& obj) : Bool(obj.size() > 0) {}
+
+    /* Construct from any object that implements an `.empty()` method. */
+    template <
+        typename T,
+        std::enable_if_t<!impl::has_size<T> && impl::has_empty<T>, int> = 0
+    >
+    explicit Bool(const T& obj) : Bool(!obj.empty()) {}
+
+    /* Construct from a string literal. */
+    explicit Bool(const char* str) : Bool(std::string(str)) {}
+
+    /* Construct from a std::tuple. */
+    template <typename... Args>
+    explicit Bool(const std::tuple<Args...>& obj) : Bool(sizeof...(Args) > 0) {}
 
 };
 

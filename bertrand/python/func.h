@@ -432,11 +432,12 @@ public:
     }
 
     inline friend std::ostream& operator<<(std::ostream& os, const Code& code) {
-        PyObject* result = PyObject_Repr(code.ptr());
+        PyObject* result = PyObject_Str(code.ptr());
         if (result == nullptr) {
             throw error_already_set();
         }
-        return os << py::cast(result);
+        os << reinterpret_steal<Str>(result);
+        return os;
     }
 
 };
@@ -451,7 +452,7 @@ class Frame : public Object, public impl::Ops<Frame> {
     }
 
     static PyObject* convert_to_frame(PyObject* obj) {
-        throw TypeError("cannot convert to py::Frame");
+        throw Object::noconvert<Frame>(obj);
     }
 
 public:
@@ -609,7 +610,7 @@ lambda or function pointer, and enables extra introspection via the C API. */
 class Function : public Object, public impl::Ops<Function> {
 
     static PyObject* convert_to_function(PyObject* obj) {
-        throw TypeError("cannot convert to function object");
+        throw Object::noconvert<Function>(obj);
     }
 
 public:
@@ -765,7 +766,7 @@ level. */
 class Method : public Object, public impl::Ops<Method> {
 
     inline static PyObject* convert_to_method(PyObject* obj) {
-        throw TypeError("cannot convert to py::Method");
+        throw Object::noconvert<Method>(obj);
     }
 
 public:
@@ -808,7 +809,7 @@ class ClassMethod : public Object, public impl::Ops<ClassMethod> {
     }
 
     inline static PyObject* convert_to_classmethod(PyObject* obj) {
-        throw TypeError("cannot convert to py::ClassMethod");
+        throw Object::noconvert<ClassMethod>(obj);
     }
 
 public:
@@ -851,7 +852,7 @@ class StaticMethod : public Object, public impl::Ops<StaticMethod> {
     }
 
     static PyObject* convert_to_staticmethod(PyObject* obj) {
-        throw TypeError("cannot convert to staticmethod object");
+        throw Object::noconvert<StaticMethod>(obj);
     }
 
 public:
@@ -900,7 +901,7 @@ class Property : public Object, public impl::Ops<Property> {
     }
 
     inline static PyObject* convert_to_property(PyObject* obj) {
-        throw TypeError("cannot convert to py::Property");
+        throw Object::noconvert<Property>(obj);
     }
 
 public:

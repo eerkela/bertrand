@@ -1,7 +1,5 @@
 PYTHON = python3
 DEBUG ?= false
-HEADERS ?= false
-HEADER_PATH ?= ~/.local/include
 MAJOR ?= false
 MINOR ?= false
 PATCH ?= false
@@ -11,8 +9,8 @@ PATCH ?= false
 
 help:
 	@echo "----------------------------------------------------------------------------"
-	@echo "make install [DEBUG=false, HEADERS=false, HEADER_PATH=~/.local/include]"
-	@echo "    install locally with optimizations.  Optional C++ headers are installed to HEADER_PATH"
+	@echo "make install [DEBUG=false]"
+	@echo "    install locally in user site-packages"
 	@echo
 	@echo "make editable [DEBUG=false]"
 	@echo "    install locally in editable mode"
@@ -23,7 +21,7 @@ help:
 	@echo "make release [MAJOR=false, MINOR=false, PATCH=false]"
 	@echo "    build wheels and publish to PyPI (requires one of MAJOR, MINOR, PATCH=true)"
 	@echo
-	@echo "make clean [HEADER_PATH=~/.local/include]"
+	@echo "make clean"
 	@echo "    uninstall and remove all build files, including C++ headers"
 	@echo
 	@echo "make doc"
@@ -38,14 +36,10 @@ help:
 
 
 install:
-	DEBUG=$(DEBUG) HEADERS=$(HEADERS) HEADER_PATH=$(HEADER_PATH) pip install . -v
+	DEBUG=$(DEBUG) pip install .
 
 
 editable:
-	@if [ "$(HEADERS)" != "false" ]; then \
-		echo "Error: cannot export C++ headers for an editable install."; \
-		exit 1; \
-	fi
 	DEBUG=$(DEBUG) pip install -e .[dev]
 
 
@@ -76,30 +70,22 @@ clean:
 #   uninstall python package
 	@pip uninstall -y bertrand
 
-#   remove C++ headers from include directory
-	@rm -f $(HEADER_PATH)/bertrand.h
-	@rm -rf $(HEADER_PATH)/bertrand
-
-#	remove extracted PCRE2 source
-	@rm -rf third_party/pcre2-10.43/
-
-#	remove compiled cython artifacts installed in-place
-	@find bertrand/ -name "*.c" -type f -delete
-	@find bertrand/ -name "*.so" -type f -delete
+#   remove build artifacts
 	@rm -rf build/
+	@rm -rf test/build/
+	@rm test/.compile_flags
+	@rm -rf third_party/pcre2-10.43/
+	@rm -rf third_party/googletest-1.14.0/
 
-#   remove build/ directory
-#	@rm -rf build/
+#	remove documentation stubs
+	@rm -rf docs/build
+	@rm -rf docs/source/generated
 
 #	remove __pycache__, egg-info, .pytest_cache
 	@find . -type d -name "__pycache__" -exec rm -rf {} +
 	@find . -type f -name "*.py[co]" -delete
 	@find . -type d -name "*.egg-info" -exec rm -rf {} +
 	@find . -type d -name ".pytest_cache" -exec rm -rf {} +
-
-#	remove documentation stubs
-	@rm -rf docs/build
-	@rm -rf docs/source/generated
 
 
 doc:

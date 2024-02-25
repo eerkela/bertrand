@@ -192,7 +192,6 @@ public:
     using impl::Ops<Tuple>::operator>=;
 
     using Object::operator[];
-    using impl::SequenceOps<Tuple>::operator[];
     using impl::SequenceOps<Tuple>::concat;
     using impl::SequenceOps<Tuple>::operator+;
     using impl::SequenceOps<Tuple>::operator+=;

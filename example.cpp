@@ -25,7 +25,15 @@ void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
-    auto mode = py::Round::HALF_EVEN;
+    // py::Object o(std::vector<int>{1, 2, 3});
+    // py::print(o[{0, 2, 1}]);
+    py::Object o;
+    o = 3;
+    int x = static_cast<int>(o);
+    py::print(x);
+
+
+    // auto mode = py::Round::HALF_EVEN;
 
     // double x = 3.5;
     // py::Float py_x(x);

@@ -11,9 +11,9 @@ namespace py = bertrand::py;
 
 // TEST(py, round_integer_0_digits_does_nothing) {
 //     int a = 3;
+//     py::Int py_a(a);
 //     int b = -a;
-//     Int py_a(a);
-//     Int py_b(b);
+//     py::Int py_b(b);
 
 //     EXPECT_EQ(py::round(a,      0,    py::Round::FLOOR),    3);
 //     EXPECT_EQ(py::round(py_a,   0,    py::Round::FLOOR),    3);
@@ -64,9 +64,9 @@ namespace py = bertrand::py;
 
 // TEST(py, round_integer_positive_digits_does_nothing) {
 //     int a = 3;
+//     py::Int py_a(a);
 //     int b = -a;
-//     Int py_a(a);
-//     Int py_b(b);
+//     py::Int py_b(b);
 
 //     EXPECT_EQ(py::round(a,      0,    py::Round::FLOOR),    3);
 //     EXPECT_EQ(py::round(py_a,   0,    py::Round::FLOOR),    3);

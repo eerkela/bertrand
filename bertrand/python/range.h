@@ -2,6 +2,7 @@
 #define BERTRAND_PYTHON_RANGE_H
 
 #include "common.h"
+#include "int.h"
 
 
 namespace bertrand {
@@ -34,10 +35,7 @@ public:
 
     /* Construct a range from 0 to the given stop index (exclusive). */
     Range(Py_ssize_t stop = 0) {
-        m_ptr = PyObject_CallOneArg(
-            (PyObject*) &PyRange_Type,
-            py::cast(stop).ptr()
-        );
+        m_ptr = PyObject_CallOneArg((PyObject*) &PyRange_Type, Int(stop).ptr());
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -47,9 +45,9 @@ public:
     Range(Py_ssize_t start, Py_ssize_t stop, Py_ssize_t step = 1) {
         m_ptr = PyObject_CallFunctionObjArgs(
             (PyObject*) &PyRange_Type,
-            py::cast(start).ptr(),
-            py::cast(stop).ptr(),
-            py::cast(step).ptr(),
+            Int(start).ptr(),
+            Int(stop).ptr(),
+            Int(step).ptr(),
             nullptr
         );
         if (m_ptr == nullptr) {

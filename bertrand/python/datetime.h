@@ -742,7 +742,7 @@ Python level. */
 class Timedelta : public Object, public impl::Ops<Timedelta> {
 
     static PyObject* convert_to_timedelta(PyObject* obj) {
-        throw TypeError("cannot convert object to datetime.timedelta");
+        throw Object::noconvert<Timedelta>(obj);
     }
 
 public:
@@ -1084,7 +1084,7 @@ Python level. */
 class Date : public Object, public impl::Ops<Date> {
 
     static PyObject* convert_to_date(PyObject* obj) {
-        throw TypeError("cannot convert object to datetime.date");
+        throw Object::noconvert<Date>(obj);
     }
 
 public:
@@ -1282,7 +1282,7 @@ class Time : public Object, public impl::Ops<Time> {
     }
 
     static PyObject* convert_to_time(PyObject* obj) {
-        throw TypeError("cannot convert object to datetime.time");
+        throw Object::noconvert<Time>(obj);
     }
 
 public:
@@ -1515,7 +1515,7 @@ class Datetime : public Object, public impl::Ops<Datetime> {
     }
 
     static PyObject* convert_to_datetime(PyObject* obj) {
-        throw TypeError("cannot convert object to datetime.datetime");
+        throw Object::noconvert<Datetime>(obj);
     }
 
 public:

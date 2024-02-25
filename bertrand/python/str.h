@@ -131,6 +131,13 @@ public:
         format.template cast<std::string>(), std::forward<Args>(args)...
     ) {}
 
+    // TODO: construct from an arbitrary C++ object.  Would cast to a python object
+    // and then take a string representation of that object.
+
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
+
     /* Implicitly convert a Python string into a C++ string. */
     inline operator std::string() const {
         Object temp = reinterpret_steal<Object>(PyUnicode_AsUTF8String(this->ptr()));
@@ -227,14 +234,14 @@ public:
 
     /* Equivalent to Python `str.center(width)`. */
     inline Str center(Py_ssize_t width) const {
-        return this->attr("center")(py::cast(width));
+        return this->attr("center")(width);
     }
 
     /* Equivalent to Python `str.center(width, fillchar)`. */
     template <typename T>
     inline Str center(Py_ssize_t width, T&& fillchar) const {
         return this->attr("center")(
-            py::cast(width),
+            width,
             detail::object_or_cast(std::forward<T>(fillchar))
         );
     }
@@ -471,14 +478,14 @@ public:
 
     /* Equivalent to Python `str.ljust(width)`. */
     inline Str ljust(Py_ssize_t width) const {
-        return this->attr("ljust")(py::cast(width));
+        return this->attr("ljust")(width);
     }
 
     /* Equivalent to Python `str.ljust(width, fillchar)`. */
     template <typename T>
     inline Str ljust(Py_ssize_t width, T&& fillchar) const {
         return this->attr("ljust")(
-            py::cast(width),
+            width,
             detail::object_or_cast(std::forward<T>(fillchar))
         );
     }
@@ -624,14 +631,14 @@ public:
 
     /* Equivalent to Python `str.rjust(width)`. */
     inline Str rjust(Py_ssize_t width) const {
-        return this->attr("rjust")(py::cast(width));
+        return this->attr("rjust")(width);
     }
 
     /* Equivalent to Python `str.rjust(width, fillchar)`. */
     template <typename T>
     inline Str rjust(Py_ssize_t width, T&& fillchar) const {
         return this->attr("rjust")(
-            py::cast(width),
+            width,
             detail::object_or_cast(std::forward<T>(fillchar))
         );
     }
@@ -652,7 +659,7 @@ public:
     inline List rsplit(T&& sep, Py_ssize_t maxsplit = -1) const {
         return this->attr("rsplit")(
             detail::object_or_cast(std::forward<T>(sep)),
-            py::cast(maxsplit)
+            maxsplit
         );
     }
 
@@ -793,7 +800,6 @@ public:
     using impl::Ops<Str>::operator>;
 
     using Object::operator[];
-    using impl::SequenceOps<Str>::operator[];
     using impl::SequenceOps<Str>::operator+;
     using impl::SequenceOps<Str>::operator*;
     using impl::SequenceOps<Str>::operator*=;
