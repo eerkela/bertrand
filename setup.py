@@ -47,30 +47,25 @@ else:
     raise ValueError(f"DEBUG={repr(fdebug)} is not a valid boolean value")
 
 
-WINDOWS = sys.platform == "win32"
-
-
 class BuildExt(build_ext):
-    """A custom build_ext command that installs PCRE2 alongside any C/C++ extensions.
+    """A custom build_ext command that installs third-party C++ packages and builds C++
+    unit tests as part of pip install.
     """
 
-    def extract_pcre2(self, cwd: Path, pcre_version: str) -> None:
-        """Extract the PCRE2 tarball included in the source distribution.
+    def extract(self, cwd: Path, tarball: str) -> None:
+        """Extract a tarball in the current working directory.
 
         Parameters
         ----------
         cwd : Path
             A path to the directory where the tarball is located.
-        pcre_version : str
-            The version of PCRE2 to extract.
+        tarball : str
+            The name of the tarball to extract.
         """
         try:
-            subprocess.check_call(
-                ["tar", "-xzf", f"pcre2-{pcre_version}.tar.gz"],
-                cwd=str(cwd)
-            )
+            subprocess.check_call(["tar", "-xzf", tarball], cwd=str(cwd))
         except subprocess.CalledProcessError as exc:
-            print("failed to extract PCRE2:", exc)
+            print(f"failed to extract {tarball}:", exc)
             sys.exit(1)
 
     def install_pcre2(self, cwd: Path) -> None:
@@ -81,56 +76,82 @@ class BuildExt(build_ext):
         cwd : Path
             A path to the directory where the tarball was extracted.
         """
-        if WINDOWS:
-            try:  # check for cmake
-                subprocess.check_call(["cmake", "--version"])
-            except subprocess.CalledProcessError:
-                print("CMake not installed")
-                sys.exit(1)
-
-            try:
-                cmake_command = [
-                    "cmake",
-                    "-G",
-                    "NMake Makefiles",
-                    "..",
-                    "-DCMAKE_BUILD_TYPE=Release",
-                    "-DSUPPORT_JIT=ON",
-                ]
-                try:  # try with JIT enabled, then fall back if we encounter an error
-                    subprocess.check_call(cmake_command, cwd=str(cwd))
-                except subprocess.CalledProcessError:
-                    subprocess.check_call(cmake_command[:-1], cwd=str(cwd))
-                subprocess.check_call(["nmake"], cwd=str(cwd))
-            except subprocess.CalledProcessError as exc:
-                print("failed to build PCRE2 on Windows:", exc)
-                sys.exit(1)
-
-        # unix
+        pcre_dir = "pcre2-10.43"
+        if (cwd / pcre_dir).exists():
+            cwd = cwd / pcre_dir
         else:
+            self.extract(cwd, f"{pcre_dir}.tar.gz")
+            cwd = cwd / pcre_dir
+            cwd.mkdir(parents=True, exist_ok=True)
+
             try:
                 subprocess.check_call(["./configure", "--enable-jit=auto"], cwd=str(cwd))
                 subprocess.check_call(["make"], cwd=str(cwd))
             except subprocess.CalledProcessError as exc:
-                print("failed to build PCRE2 on Unix:", exc)
+                print("failed to build PCRE2:", exc)
                 sys.exit(1)
 
-    def run(self) -> None:
-        """Build PCRE2 from source before installing any extensions."""
-        cwd = Path(os.getcwd()) / "third_party"
-        pcre_version = "10.43"
-
-        if (cwd / f"pcre2-{pcre_version}").exists():
-            cwd /= f"pcre2-{pcre_version}"
-        else:
-            self.extract_pcre2(cwd, pcre_version)
-            cwd /= f"pcre2-{pcre_version}"
-            self.install_pcre2(cwd)
-
+        # add headers to include path and link against binary
         self.include_dirs.append(str(cwd / "src"))
         self.library_dirs.append(str(cwd / ".libs"))
         self.libraries.append("pcre2-8")
+
+    def install_gtest(self, cwd: Path) -> None:
+        """Build GoogleTest from source after extracting it.
+
+        Parameters
+        ----------
+        cwd : Path
+            A path to the directory where the tarball was extracted.
+        """
+        gtest_dir = "googletest-1.14.0"
+        if (cwd / gtest_dir).exists():
+            cwd = cwd / gtest_dir
+        else:
+            self.extract(cwd, f"{gtest_dir}.tar.gz")
+            cwd = cwd / gtest_dir / "build"
+            cwd.mkdir(parents=True, exist_ok=True)
+
+            try:
+                subprocess.check_call(
+                    ["cmake", "..", "-DCMAKE_CXX_FLAGS=-fPIC"],
+                    cwd=str(cwd)
+                )
+                subprocess.check_call(["make"], cwd=str(cwd))
+            except subprocess.CalledProcessError as exc:
+                print("failed to build GoogleTest:", exc)
+                sys.exit(1)
+
+            cwd = cwd.parent  # back out to root dir
+
+        # add headers to include path and link against binary
+        self.include_dirs.append(str(cwd / "googletest/include"))
+        self.library_dirs.append(str(cwd / "build/lib"))
+        self.libraries.append("gtest")
+
+    def run(self) -> None:
+        """Build third-party libraries from source before installing any extensions."""
+        try: # check for cmake
+            subprocess.check_call(
+                ["cmake", "--version"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        except subprocess.CalledProcessError:
+            print("CMake not installed")
+            sys.exit(1)
+
+        # install third-party C++ packages
+        cwd = Path(os.getcwd()) / "third_party"
+        self.install_pcre2(cwd)
+        self.install_gtest(cwd)
+
+        # compile Python extensions
         super().run()
+
+        # compile the test library
+        cwd = cwd.parent / "test"
+        self.compile_tests(cwd)
 
 
 EXTENSIONS = [

@@ -5,6 +5,7 @@ recursive-include bertrand *.h *.cpp *.pyx *.pxd *.pyi py.typed
 recursive-exclude bertrand *.c
 
 recursive-include third_party/pcre2-10.43.tar.gz
+recursive-include third_party/googletest-1.14.0.tar.gz
 
 recursive-include docs/source *
 include docs/Makefile docs/make.bat

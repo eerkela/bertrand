@@ -279,6 +279,15 @@ class Regex;  // incorporate more fully (write pybind11 bindings so that it can 
 
 namespace impl {
 
+    #define UNARY_OPERATOR(Derived, op, endpoint)                                       \
+        inline Object op() const {                                                      \
+            PyObject* result = endpoint(static_cast<const Derived*>(this)->ptr());      \
+            if (result == nullptr) {                                                    \
+                throw error_already_set();                                              \
+            }                                                                           \
+            return reinterpret_steal<Object>(result);                                   \
+        }                                                                               \
+
     #define COMPARISON_OPERATOR(Derived, op, endpoint)                                  \
         template <typename T>                                                           \
         inline bool op(T&& other) const {                                               \
@@ -381,6 +390,9 @@ struct Object : public pybind11::object {
             return *this;                                                               \
         }                                                                               \
 
+    UNARY_OPERATOR(Object, operator+, PyNumber_Positive);
+    UNARY_OPERATOR(Object, operator-, PyNumber_Negative);
+    UNARY_OPERATOR(Object, operator~, PyNumber_Invert);
     COMPARISON_OPERATOR(Object, operator<, Py_LT);
     COMPARISON_OPERATOR(Object, operator<=, Py_LE);
     COMPARISON_OPERATOR(Object, operator==, Py_EQ);
@@ -464,6 +476,9 @@ namespace impl {
                 return *self;                                                           \
             }                                                                           \
 
+        UNARY_OPERATOR(Derived, operator+, PyNumber_Positive);
+        UNARY_OPERATOR(Derived, operator-, PyNumber_Negative);
+        UNARY_OPERATOR(Derived, operator~, PyNumber_Invert);
         COMPARISON_OPERATOR(Derived, operator<, Py_LT);
         COMPARISON_OPERATOR(Derived, operator<=, Py_LE);
         COMPARISON_OPERATOR(Derived, operator==, Py_EQ);
@@ -510,12 +525,14 @@ namespace impl {
         #undef INPLACE_OPERATOR
     };
 
+    #undef UNARY_OPERATOR
     #undef COMPARISON_OPERATOR
     #undef REVERSE_COMPARISON
     #undef BINARY_OPERATOR
     #undef REVERSE_OPERATOR
 
     #define BERTRAND_PYTHON_OPERATORS(Mixin)                                            \
+        using Mixin::operator~;                                                         \
         using Mixin::operator<;                                                         \
         using Mixin::operator<=;                                                        \
         using Mixin::operator==;                                                        \
@@ -1164,50 +1181,24 @@ Str ascii(const pybind11::handle&);  // TODO: accept py::Str and return std::str
 Str bin(const pybind11::handle&);
 template <typename... Args, typename Func>
 constexpr auto callable(const Func&);
-template <typename T, typename U>
-auto cdiv(T&&, U&&);
-template <typename T, typename U>
-auto cdivmod(T&&, U&&);
 Str chr(const pybind11::handle&);
-template <typename T, typename U>
-auto cmod(T&&, U&&);
-template <typename T, typename U>
-auto divmod(T&&, U&&);
-template <typename T, typename U>
-auto floordiv(T&&, U&&);
+// template <typename L, typename R, typename Mode>
+// auto div(const L&, const R&, const Mode&);
+// template <typename L, typename R, typename Mode>
+// auto divmod(const L&, const R&, const Mode&);
 std::string format(const Str&, const Str&);  // TODO: delegate to py::Str?
 Str hex(const pybind11::handle&);
-template <typename T, typename U>
-auto inplace_cdiv(T&&, U&&);
-template <typename T, typename U>
-auto inplace_cmod(T&&, U&&);
-template <typename T, typename U>
-auto inplace_floordiv(T&&, U&&);
-template <typename T, typename U>
-auto inplace_matmul(T&&, U&&);
-template <typename T, typename U>
-auto inplace_mod(T&&, U&&);
-template <typename T, typename U>
-auto inplace_pow(T&&, U&&);
-template <typename T, typename U, typename V>
-auto inplace_pow(T&&, U&&, V&&);
-template <typename T, typename U>
-auto inplace_truediv(T&&, U&&);
-template <typename T, typename U>
-auto matmul(T&&, U&&);
-template <typename T, typename U>
-auto mod(T&&, U&&);
+// template <typename L, typename R, typename Mode>
+// auto mod(const L&, const R&, const Mode&);
 Str oct(const pybind11::handle&);  // TODO: make compatible with C++?
 Int ord(const pybind11::handle&);  // TODO: make compatible with C++?
 template <typename T, typename U>
 auto pow(T&&, U&&);
 template <typename T, typename U, typename V>
 auto pow(T&&, U&&, V&&);
-template <typename T>
-auto round(T&&);  // TODO: implement with optional ndigits/algorithm tags
+// template <typename T, typename Mode>
+// auto round(const T&, int, const Mode&);
 List sorted(const pybind11::handle&);  // TODO: accept C++ containers and return std::vector?
-template <typename T, typename U>
-auto truediv(T&&, U&&);
 
 
 /* Equivalent to Python `all(obj)`, except that it also works on iterable C++

@@ -6,6 +6,8 @@ MAJOR ?= false
 MINOR ?= false
 PATCH ?= false
 
+.PHONY: test
+
 
 help:
 	@echo "----------------------------------------------------------------------------"
@@ -109,8 +111,17 @@ doc:
 	@cd docs/ && $(MAKE) html
 
 test:
-#	@pytest tests/ --doctest-modules --cov=bertrand --cov-report=term-missing
-
+#	recompile C++ tests using CMake, then invoke pytest in root directory to run both
+#   C++ and Python tests using pytest-cpp
+	@{ \
+	set -e; \
+	mkdir -p test/build; \
+	cd test/build; \
+	cmake .. -DCMAKE_CXX_FLAGS=-fPIC > /dev/null; \
+	make -s; \
+	cd ../..; \
+	pytest; \
+	}
 
 doctest:
 #	validate URL links in documentation
