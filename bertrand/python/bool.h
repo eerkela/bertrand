@@ -10,6 +10,7 @@ namespace py {
 
 /* Wrapper around pybind11::bool_ that enables math operations with C++ inputs. */
 class Bool : public Object, public impl::Ops<Bool> {
+    using Ops = impl::Ops<Bool>;
 
     static PyObject* convert_to_bool(PyObject* obj) {
         int result = PyObject_IsTrue(obj);
@@ -21,13 +22,17 @@ class Bool : public Object, public impl::Ops<Bool> {
 
 public:
     static py::Type Type;
-    BERTRAND_PYTHON_OPERATORS(impl::Ops<Bool>)
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(Object, Bool, PyBool_Check, convert_to_bool)
 
     /* Default constructor.  Initializes to False. */
     Bool() : Object(Py_False, borrowed_t{}) {}
 
-    /* Construct from a C++ bool. */
+    /* Implicitly convert a C++ bool into a py::Bool. */
     Bool(bool value) : Object(value ? Py_True : Py_False, borrowed_t{}) {}
 
     /* Construct from an integer or floating point value. */
@@ -51,6 +56,49 @@ public:
     /* Construct from a std::tuple. */
     template <typename... Args>
     explicit Bool(const std::tuple<Args...>& obj) : Bool(sizeof...(Args) > 0) {}
+
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
+
+    /* Implicitly convert to a C++ boolean or numeric. */
+    inline operator bool() const {
+        return Object::operator bool();
+    }
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    using Ops::operator<;
+    using Ops::operator<=;
+    using Ops::operator==;
+    using Ops::operator!=;
+    using Ops::operator>=;
+    using Ops::operator>;
+    using Ops::operator~;
+    using Ops::operator+;
+    using Ops::operator-;
+    using Ops::operator*;
+    using Ops::operator/;
+    using Ops::operator%;
+    using Ops::operator<<;
+    using Ops::operator>>;
+    using Ops::operator&;
+    using Ops::operator|;
+    using Ops::operator^;
+
+    inline Bool& operator&=(const Bool& other) {
+        return Ops::operator&=(other);
+    }
+
+    inline Bool& operator|=(const Bool& other) {
+        return Ops::operator|=(other);
+    }
+
+    inline Bool& operator^=(const Bool& other) {
+        return Ops::operator^=(other);
+    }
 
 };
 

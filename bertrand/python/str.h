@@ -392,62 +392,62 @@ public:
 
     /* Equivalent to Python `str.isalnum()`. */
     inline bool isalnum() const {
-        return this->attr("isalnum")().cast<bool>();
+        return static_cast<bool>(this->attr("isalnum")());
     }
 
     /* Equivalent to Python `str.isalpha()`. */
     inline bool isalpha() const {
-        return this->attr("isalpha")().cast<bool>();
+        return static_cast<bool>(this->attr("isalpha")());
     }
 
     /* Equivalent to Python `str.isascii()`. */
     inline bool isascii() const {
-        return this->attr("isascii")().cast<bool>();
+        return static_cast<bool>(this->attr("isascii")());
     }
 
     /* Equivalent to Python `str.isdecimal()`. */
     inline bool isdecimal() const {
-        return this->attr("isdecimal")().cast<bool>();
+        return static_cast<bool>(this->attr("isdecimal")());
     }
 
     /* Equivalent to Python `str.isdigit()`. */
     inline bool isdigit() const {
-        return this->attr("isdigit")().cast<bool>();
+        return static_cast<bool>(this->attr("isdigit")());
     }
 
     /* Equivalent to Python `str.isidentifier()`. */
     inline bool isidentifier() const {
-        return this->attr("isidentifier")().cast<bool>();
+        return static_cast<bool>(this->attr("isidentifier")());
     }
 
     /* Equivalent to Python `str.islower()`. */
     inline bool islower() const {
-        return this->attr("islower")().cast<bool>();
+        return static_cast<bool>(this->attr("islower")());
     }
 
     /* Equivalent to Python `str.isnumeric()`. */
     inline bool isnumeric() const {
-        return this->attr("isnumeric")().cast<bool>();
+        return static_cast<bool>(this->attr("isnumeric")());
     }
 
     /* Equivalent to Python `str.isprintable()`. */
     inline bool isprintable() const {
-        return this->attr("isprintable")().cast<bool>();
+        return static_cast<bool>(this->attr("isprintable")());
     }
 
     /* Equivalent to Python `str.isspace()`. */
     inline bool isspace() const {
-        return this->attr("isspace")().cast<bool>();
+        return static_cast<bool>(this->attr("isspace")());
     }
 
     /* Equivalent to Python `str.istitle()`. */
     inline bool istitle() const {
-        return this->attr("istitle")().cast<bool>();
+        return static_cast<bool>(this->attr("istitle")());
     }
 
     /* Equivalent to Python `str.isupper()`. */
     inline bool isupper() const {
-        return this->attr("isupper")().cast<bool>();
+        return static_cast<bool>(this->attr("isupper")());
     }
 
     /* Equivalent of Python `str.join(iterable)`. */
@@ -811,6 +811,24 @@ public:
     }
 
 };
+
+
+////////////////////////////////////
+////    FORWARD DECLARATIONS    ////
+////////////////////////////////////
+
+
+inline Int::Int(const py::Str& str, int base) {
+    m_ptr = PyLong_FromUnicodeObject(str.ptr(), base);
+    if (m_ptr == nullptr) {
+        throw error_already_set();
+    }
+}
+
+
+////////////////////////////////
+////    GLOBAL FUNCTIONS    ////
+////////////////////////////////
 
 
 /* Equivalent to Python `ascii(obj)`.  Like `repr()`, but returns an ASCII-encoded

@@ -158,12 +158,12 @@ public:
     /* Equivalent to Python `dict.keys().isdisjoint(<braced initializer list>)`. */
     template <typename T>
     inline bool isdisjoint(const std::initializer_list<T>& other) const {
-        return this->attr("isdisjoint")(Set(other)).template cast<bool>();
+        return static_cast<bool>(this->attr("isdisjoint")(Set(other)));
     }
 
     /* Equivalent to Python `dict.keys().isdisjoint(<braced initializer list>)`. */
     inline bool isdisjoint(const std::initializer_list<impl::Initializer>& other) const {
-        return this->attr("isdisjoint")(Set(other)).template cast<bool>();
+        return static_cast<bool>(this->attr("isdisjoint")(Set(other)));
     }
 
     /////////////////////////

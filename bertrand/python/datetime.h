@@ -1196,17 +1196,17 @@ public:
 
     /* Equivalent to Python `datetime.date.toordinal()`. */
     inline size_t toordinal() const {
-        return this->attr("toordinal")().cast<size_t>();
+        return static_cast<size_t>(this->attr("toordinal")());
     }
 
     /* Equivalent to Python `datetime.date.weekday()`. */
     inline int weekday() const {
-        return this->attr("weekday")().cast<int>();
+        return static_cast<int>(this->attr("weekday")());
     }
 
     /* Equivalent to Python `datetime.date.isoweekday()`. */
     inline int isoweekday() const {
-        return this->attr("isoweekday")().cast<int>();
+        return static_cast<int>(this->attr("isoweekday")());
     }
 
     /* Equivalent to Python `datetime.date.isocalendar()`. */
@@ -1434,7 +1434,7 @@ public:
     /* Equivalent to Python `datetime.time.replace(args...)`. */
     template <typename... Args>
     inline Time replace(Args&&... args) const {
-        return this->attr("replace")(std::forward<Args>(args)...).template cast<Time>();
+        return this->attr("replace")(std::forward<Args>(args)...);
     }
 
     /* Equivalent to Python `datetime.time.isoformat([timespec])`. */
@@ -1769,12 +1769,12 @@ public:
 
     /* Get the number of seconds from the UTC epoch as a double. */
     inline double timestamp() const noexcept {
-        return this->attr("timestamp")().cast<double>();
+        return static_cast<double>(this->attr("timestamp")());
     }
 
     /* Get the number of microseconds from the UTC epoch as an integer. */
     inline long long abs_timestamp() const noexcept {
-        long long seconds = this->attr("timestamp")().cast<double>();
+        long long seconds = static_cast<long long>(this->attr("timestamp")());
         return seconds * 1e6 + this->microsecond();
     }
 
@@ -1853,22 +1853,22 @@ public:
 
     /* Equivalent to Python `datetime.datetime.toordinal()`. */
     inline size_t toordinal() const {
-        return this->attr("toordinal")().cast<size_t>();
+        return static_cast<size_t>(this->attr("toordinal")());
     }
 
     /* Return the day of the week as an integer, where Monday is 0 and Sunday is 6. */
     inline int weekday() const noexcept {
-        return this->attr("weekday")().cast<int>();
+        return static_cast<int>(this->attr("weekday")());
     }
 
     /* Return the day of the week as an integer, where Monday is 1 and Sunday is 7. */
     inline int isoweekday() const noexcept {
-        return this->attr("isoweekday")().cast<int>();
+        return static_cast<int>(this->attr("isoweekday")());
     }
 
     /* Return the ISO year and week number as a tuple. */
     inline std::tuple<int, int, int> isocalendar() const {
-        return this->attr("isocalendar")().cast<std::tuple<int, int, int>>();
+        return static_cast<std::tuple<int, int, int>>(this->attr("isocalendar")());
     }
 
     /* Return the ISO 8601 formatted string representation of the datetime. */

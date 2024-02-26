@@ -125,7 +125,7 @@ public:                                                                         
     template <typename T>                                                               \
     inline bool isdisjoint(T&& other) const {                                           \
         if constexpr (detail::is_pyobject<std::decay_t<T>>::value) {                    \
-            return this->attr("isdisjoint")(other).template cast<bool>();               \
+            return static_cast<bool>(this->attr("isdisjoint")(other));                  \
         } else {                                                                        \
             for (auto&& item : other) {                                                 \
                 if (contains(std::forward<decltype(item)>(item))) {                     \
@@ -168,19 +168,19 @@ public:                                                                         
     /* Equivalent to Python `set.issubset(<braced initializer list>)`. */               \
     template <typename T>                                                               \
     inline bool issubset(const std::initializer_list<T> other) const {                  \
-        return this->attr("issubset")(cls(other)).template cast<bool>();                \
+        return static_cast<bool>(this->attr("issubset")(cls(other)));                   \
     }                                                                                   \
                                                                                         \
     /* Equivalent to Python `set.issubset(<braced initializer list>)`. */               \
     inline bool issubset(const std::initializer_list<impl::Initializer>& other) const { \
-        return this->attr("issubset")(cls(other)).template cast<bool>();                \
+        return static_cast<bool>(this->attr("issubset")(cls(other)));                   \
     }                                                                                   \
                                                                                         \
     /* Equivalent to Python `set.issuperset(other)`. */                                 \
     template <typename T>                                                               \
     inline bool issuperset(T&& other) const {                                           \
         if constexpr (detail::is_pyobject<std::decay_t<T>>::value) {                    \
-            return this->attr("issuperset")(other).template cast<bool>();               \
+            return static_cast<bool>(this->attr("issuperset")(other));                  \
         } else {                                                                        \
             for (auto&& item : other) {                                                 \
                 if (!contains(std::forward<decltype(item)>(item))) {                    \

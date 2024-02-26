@@ -25,50 +25,13 @@ void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
-    // // py::Object o(std::vector<int>{1, 2, 3});
-    // // py::print(o[{0, 2, 1}]);
-    // py::Object o;
-    // o = 3;
-    // int x = static_cast<int>(o);
-    // py::print(x);
+
+    py::Bool b = true;
+    b &= 0.0;
+    py::print(b);
 
 
 
-    // py::Dict context {{"a", 1}, {"b", 2}};
-    // py::print(context["a"]);
-
-
-
-
-    // py::Object obj = py::List{1, 2, 3};
-    // int x = obj[1];
-    // py::print(x);
-    // py::print(obj);
-
-
-
-
-    // py::Type type = R"(
-    //     class Foo:
-    //         y = 2
-    // )"_python()["Foo"];
-
-    // py::print(type);
-    // int y = type.attr("y");
-    // py::print(y);
-
-    py::Tuple t {1, 2, 3};
-    std::pair<int, int> x = t[{0, 2}];
-    py::print(x);
-
-
-
-    // std::vector<int> vec = R"(
-    //     vec = [1, 2, 3]
-    // )"_python()["vec"];
-
-    // py::print(vec);
-    // py::print(context2);
 
 
     // auto mode = py::Round::HALF_EVEN;

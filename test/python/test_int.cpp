@@ -45,14 +45,14 @@ TEST(py, int_is_constructable_from_int) {
 }
 
 
-// TEST(py, int_is_constructable_from_float) {
-//     EXPECT_EQ(py::Int(0.0), 0);
-//     EXPECT_EQ(py::Int(1.0), 1);
-//     EXPECT_EQ(py::Int(-1.0), -1);
-//     EXPECT_EQ(py::Int(py::Float(0.0)), 0);
-//     EXPECT_EQ(py::Int(py::Float(1.0)), 1);
-//     EXPECT_EQ(py::Int(py::Float(-1.0)), -1);
-// }
+TEST(py, int_is_constructable_from_float) {
+    EXPECT_EQ(py::Int(0.0), 0);
+    EXPECT_EQ(py::Int(1.0), 1);
+    EXPECT_EQ(py::Int(-1.0), -1);
+    EXPECT_EQ(py::Int(py::Float(0.0)), 0);
+    EXPECT_EQ(py::Int(py::Float(1.0)), 1);
+    EXPECT_EQ(py::Int(py::Float(-1.0)), -1);
+}
 
 
 TEST(py, int_is_constructable_from_string) {
@@ -86,15 +86,15 @@ TEST(py, int_is_constructable_from_string) {
     EXPECT_EQ(py::Int(std::string_view("0x10")), 16);
     EXPECT_EQ(py::Int(std::string_view("-0x10")), -16);
 
-    // EXPECT_EQ(py::Int(py::Str("0")), 0);
-    // EXPECT_EQ(py::Int(py::Str("1")), 1);
-    // EXPECT_EQ(py::Int(py::Str("-1")), -1);
-    // EXPECT_EQ(py::Int(py::Str("0b101")), 5);
-    // EXPECT_EQ(py::Int(py::Str("-0b101")), -5);
-    // EXPECT_EQ(py::Int(py::Str("0o10")), 8);
-    // EXPECT_EQ(py::Int(py::Str("-0o10")), -8);
-    // EXPECT_EQ(py::Int(py::Str("0x10")), 16);
-    // EXPECT_EQ(py::Int(py::Str("-0x10")), -16);
+    EXPECT_EQ(py::Int(py::Str("0")), 0);
+    EXPECT_EQ(py::Int(py::Str("1")), 1);
+    EXPECT_EQ(py::Int(py::Str("-1")), -1);
+    EXPECT_EQ(py::Int(py::Str("0b101")), 5);
+    EXPECT_EQ(py::Int(py::Str("-0b101")), -5);
+    EXPECT_EQ(py::Int(py::Str("0o10")), 8);
+    EXPECT_EQ(py::Int(py::Str("-0o10")), -8);
+    EXPECT_EQ(py::Int(py::Str("0x10")), 16);
+    EXPECT_EQ(py::Int(py::Str("-0x10")), -16);
 }
 
 
@@ -144,32 +144,271 @@ TEST(py, int_is_implicitly_convertible_to_int) {
 }
 
 
-// TEST(py, int_is_implicitly_convertible_to_float) {
-//     double a = py::Int(0);
-//     double b = py::Int(1);
-//     double c = py::Int(-1);
-//     EXPECT_EQ(a, 0.0);
-//     EXPECT_EQ(b, 1.0);
-//     EXPECT_EQ(c, -1.0);
+TEST(py, int_is_implicitly_convertible_to_float) {
+    double a = py::Int(0);
+    double b = py::Int(1);
+    double c = py::Int(-1);
+    EXPECT_EQ(a, 0.0);
+    EXPECT_EQ(b, 1.0);
+    EXPECT_EQ(c, -1.0);
 
-//     py::Float d = py::Int(0);
-//     py::Float e = py::Int(1);
-//     py::Float f = py::Int(-1);
-//     EXPECT_EQ(d, 0.0);
-//     EXPECT_EQ(e, 1.0);
-//     EXPECT_EQ(f, -1.0);
-// }
+    py::Float d = py::Int(0);
+    py::Float e = py::Int(1);
+    py::Float f = py::Int(-1);
+    EXPECT_EQ(d, 0.0);
+    EXPECT_EQ(e, 1.0);
+    EXPECT_EQ(f, -1.0);
+}
 
 
-// TEST(py, int_is_explicitly_convertable_to_string) {
-//     EXPECT_EQ(static_cast<std::string>(py::Int(0)), "0");
-//     EXPECT_EQ(static_cast<std::string>(py::Int(1)), "1");
-//     EXPECT_EQ(static_cast<std::string>(py::Int(-1)), "-1");
+TEST(py, int_is_explicitly_convertable_to_string) {
+    EXPECT_EQ(static_cast<std::string>(py::Int(0)), "0");
+    EXPECT_EQ(static_cast<std::string>(py::Int(1)), "1");
+    EXPECT_EQ(static_cast<std::string>(py::Int(-1)), "-1");
 
-//     py::Str a = py::Int(0);
-//     py::Str b = py::Int(1);
-//     py::Str c = py::Int(-1);
-//     EXPECT_EQ(static_cast<std::string>(a), "0");
-//     EXPECT_EQ(static_cast<std::string>(b), "1");
-//     EXPECT_EQ(static_cast<std::string>(c), "-1");
-// }
+    py::Str a = py::Int(0);
+    py::Str b = py::Int(1);
+    py::Str c = py::Int(-1);
+    EXPECT_EQ(static_cast<std::string>(a), "0");
+    EXPECT_EQ(static_cast<std::string>(b), "1");
+    EXPECT_EQ(static_cast<std::string>(c), "-1");
+}
+
+
+///////////////////////////
+////    COMPARISONS    ////
+///////////////////////////
+
+
+TEST(py, int_lt) {
+    EXPECT_EQ(py::Int(0) < false,               false);
+    EXPECT_EQ(py::Int(0) < true,                true);
+    EXPECT_EQ(py::Int(0) < 0,                   false);
+    EXPECT_EQ(py::Int(0) < 1,                   true);
+    EXPECT_EQ(py::Int(0) < -1,                  false);
+    EXPECT_EQ(py::Int(0) < 0.0,                 false);
+    EXPECT_EQ(py::Int(0) < 1.0,                 true);
+    EXPECT_EQ(py::Int(0) < -1.0,                false);
+    EXPECT_EQ(py::Int(0) < py::Bool(false),     false);
+    EXPECT_EQ(py::Int(0) < py::Bool(true),      true);
+    EXPECT_EQ(py::Int(0) < py::Int(0),          false);
+    EXPECT_EQ(py::Int(0) < py::Int(1),          true);
+    EXPECT_EQ(py::Int(0) < py::Int(-1),         false);
+    EXPECT_EQ(py::Int(0) < py::Float(0.0),      false);
+    EXPECT_EQ(py::Int(0) < py::Float(1.0),      true);
+    EXPECT_EQ(py::Int(0) < py::Float(-1.0),     false);
+}
+
+
+TEST(py, int_le) {
+    EXPECT_EQ(py::Int(0) <= false,              true);
+    EXPECT_EQ(py::Int(0) <= true,               true);
+    EXPECT_EQ(py::Int(0) <= 0,                  true);
+    EXPECT_EQ(py::Int(0) <= 1,                  true);
+    EXPECT_EQ(py::Int(0) <= -1,                 false);
+    EXPECT_EQ(py::Int(0) <= 0.0,                true);
+    EXPECT_EQ(py::Int(0) <= 1.0,                true);
+    EXPECT_EQ(py::Int(0) <= -1.0,               false);
+    EXPECT_EQ(py::Int(0) <= py::Bool(false),    true);
+    EXPECT_EQ(py::Int(0) <= py::Bool(true),     true);
+    EXPECT_EQ(py::Int(0) <= py::Int(0),         true);
+    EXPECT_EQ(py::Int(0) <= py::Int(1),         true);
+    EXPECT_EQ(py::Int(0) <= py::Int(-1),        false);
+    EXPECT_EQ(py::Int(0) <= py::Float(0.0),     true);
+    EXPECT_EQ(py::Int(0) <= py::Float(1.0),     true);
+    EXPECT_EQ(py::Int(0) <= py::Float(-1.0),    false);
+}
+
+
+TEST(py, int_eq) {
+    EXPECT_EQ(py::Int(0) == false,              true);
+    EXPECT_EQ(py::Int(0) == true,               false);
+    EXPECT_EQ(py::Int(0) == 0,                  true);
+    EXPECT_EQ(py::Int(0) == 1,                  false);
+    EXPECT_EQ(py::Int(0) == -1,                 false);
+    EXPECT_EQ(py::Int(0) == 0.0,                true);
+    EXPECT_EQ(py::Int(0) == 1.0,                false);
+    EXPECT_EQ(py::Int(0) == -1.0,               false);
+    EXPECT_EQ(py::Int(0) == py::Bool(false),    true);
+    EXPECT_EQ(py::Int(0) == py::Bool(true),     false);
+    EXPECT_EQ(py::Int(0) == py::Int(0),         true);
+    EXPECT_EQ(py::Int(0) == py::Int(1),         false);
+    EXPECT_EQ(py::Int(0) == py::Int(-1),        false);
+    EXPECT_EQ(py::Int(0) == py::Float(0.0),     true);
+    EXPECT_EQ(py::Int(0) == py::Float(1.0),     false);
+    EXPECT_EQ(py::Int(0) == py::Float(-1.0),    false);
+}
+
+
+TEST(py, int_ne) {
+    EXPECT_EQ(py::Int(0) != false,              false);
+    EXPECT_EQ(py::Int(0) != true,               true);
+    EXPECT_EQ(py::Int(0) != 0,                  false);
+    EXPECT_EQ(py::Int(0) != 1,                  true);
+    EXPECT_EQ(py::Int(0) != -1,                 true);
+    EXPECT_EQ(py::Int(0) != 0.0,                false);
+    EXPECT_EQ(py::Int(0) != 1.0,                true);
+    EXPECT_EQ(py::Int(0) != -1.0,               true);
+    EXPECT_EQ(py::Int(0) != py::Bool(false),    false);
+    EXPECT_EQ(py::Int(0) != py::Bool(true),     true);
+    EXPECT_EQ(py::Int(0) != py::Int(0),         false);
+    EXPECT_EQ(py::Int(0) != py::Int(1),         true);
+    EXPECT_EQ(py::Int(0) != py::Int(-1),        true);
+    EXPECT_EQ(py::Int(0) != py::Float(0.0),     false);
+    EXPECT_EQ(py::Int(0) != py::Float(1.0),     true);
+    EXPECT_EQ(py::Int(0) != py::Float(-1.0),    true);
+}
+
+
+TEST(py, int_ge) {
+    EXPECT_EQ(py::Int(0) >= false,              true);
+    EXPECT_EQ(py::Int(0) >= true,               false);
+    EXPECT_EQ(py::Int(0) >= 0,                  true);
+    EXPECT_EQ(py::Int(0) >= 1,                  false);
+    EXPECT_EQ(py::Int(0) >= -1,                 true);
+    EXPECT_EQ(py::Int(0) >= 0.0,                true);
+    EXPECT_EQ(py::Int(0) >= 1.0,                false);
+    EXPECT_EQ(py::Int(0) >= -1.0,               true);
+    EXPECT_EQ(py::Int(0) >= py::Bool(false),    true);
+    EXPECT_EQ(py::Int(0) >= py::Bool(true),     false);
+    EXPECT_EQ(py::Int(0) >= py::Int(0),         true);
+    EXPECT_EQ(py::Int(0) >= py::Int(1),         false);
+    EXPECT_EQ(py::Int(0) >= py::Int(-1),        true);
+    EXPECT_EQ(py::Int(0) >= py::Float(0.0),     true);
+    EXPECT_EQ(py::Int(0) >= py::Float(1.0),     false);
+    EXPECT_EQ(py::Int(0) >= py::Float(-1.0),    true);
+}
+
+
+TEST(py, int_gt) {
+    EXPECT_EQ(py::Int(0) > false,               false);
+    EXPECT_EQ(py::Int(0) > true,                false);
+    EXPECT_EQ(py::Int(0) > 0,                   false);
+    EXPECT_EQ(py::Int(0) > 1,                   false);
+    EXPECT_EQ(py::Int(0) > -1,                  true);
+    EXPECT_EQ(py::Int(0) > 0.0,                 false);
+    EXPECT_EQ(py::Int(0) > 1.0,                 false);
+    EXPECT_EQ(py::Int(0) > -1.0,                true);
+    EXPECT_EQ(py::Int(0) > py::Bool(false),     false);
+    EXPECT_EQ(py::Int(0) > py::Bool(true),      false);
+    EXPECT_EQ(py::Int(0) > py::Int(0),          false);
+    EXPECT_EQ(py::Int(0) > py::Int(1),          false);
+    EXPECT_EQ(py::Int(0) > py::Int(-1),         true);
+    EXPECT_EQ(py::Int(0) > py::Float(0.0),      false);
+    EXPECT_EQ(py::Int(0) > py::Float(1.0),      false);
+    EXPECT_EQ(py::Int(0) > py::Float(-1.0),     true);
+}
+
+
+///////////////////////////////
+////    UNARY OPERATORS    ////
+///////////////////////////////
+
+
+TEST(py, int_unary_invert) {
+    EXPECT_EQ(~py::Int(0), -1);
+    EXPECT_EQ(~py::Int(1), -2);
+    EXPECT_EQ(~py::Int(-1), 0);
+}
+
+
+TEST(py, int_unary_plus) {
+    EXPECT_EQ(+py::Int(0), 0);
+    EXPECT_EQ(+py::Int(1), 1);
+    EXPECT_EQ(+py::Int(-1), -1);
+}
+
+
+TEST(py, int_unary_minus) {
+    EXPECT_EQ(-py::Int(0), 0);
+    EXPECT_EQ(-py::Int(1), -1);
+    EXPECT_EQ(-py::Int(-1), 1);
+}
+
+
+TEST(py, int_std_hash) {
+    std::hash<py::Int> hash;
+    EXPECT_EQ(hash(py::Int(0)), hash(py::Int(0)));
+    EXPECT_EQ(hash(py::Int(1)), hash(py::Int(1)));
+    EXPECT_EQ(hash(py::Int(-1)), hash(py::Int(-1)));
+    EXPECT_NE(hash(py::Int(0)), hash(py::Int(1)));
+    EXPECT_NE(hash(py::Int(0)), hash(py::Int(-1)));
+    EXPECT_NE(hash(py::Int(1)), hash(py::Int(-1)));
+}
+
+
+////////////////////////////////
+////    BINARY OPERATORS    ////
+////////////////////////////////
+
+
+// TODO: look these over and make sure they're comprehensive
+
+
+TEST(py, int_addition) {
+    EXPECT_EQ(py::Int(5) + false,              5);
+    EXPECT_EQ(py::Int(5) + true,               6);
+    EXPECT_EQ(py::Int(5) + 0,                  5);
+    EXPECT_EQ(py::Int(5) + 1,                  6);
+    EXPECT_EQ(py::Int(5) + -1,                 4);
+    EXPECT_EQ(py::Int(5) + 0.0,                5.0);
+    EXPECT_EQ(py::Int(5) + 1.0,                6.0);
+    EXPECT_EQ(py::Int(5) + -1.0,               4.0);
+    EXPECT_EQ(py::Int(5) + py::Bool(false),    5);
+    EXPECT_EQ(py::Int(5) + py::Bool(true),     6);
+    EXPECT_EQ(py::Int(5) + py::Int(0),         5);
+    EXPECT_EQ(py::Int(5) + py::Int(1),         6);
+    EXPECT_EQ(py::Int(5) + py::Int(-1),        4);
+    EXPECT_EQ(py::Int(5) + py::Float(0.0),     5.0);
+    EXPECT_EQ(py::Int(5) + py::Float(1.0),     6.0);
+    EXPECT_EQ(py::Int(5) + py::Float(-1.0),    4.0);
+}
+
+
+TEST(py, int_subtraction) {
+    EXPECT_EQ(py::Int(5) - false,              5);
+    EXPECT_EQ(py::Int(5) - true,               4);
+    EXPECT_EQ(py::Int(5) - 0,                  5);
+    EXPECT_EQ(py::Int(5) - 1,                  4);
+    EXPECT_EQ(py::Int(5) - -1,                 6);
+    EXPECT_EQ(py::Int(5) - 0.0,                5.0);
+    EXPECT_EQ(py::Int(5) - 1.0,                4.0);
+    EXPECT_EQ(py::Int(5) - -1.0,               6.0);
+    EXPECT_EQ(py::Int(5) - py::Bool(false),    5);
+    EXPECT_EQ(py::Int(5) - py::Bool(true),     4);
+    EXPECT_EQ(py::Int(5) - py::Int(0),         5);
+    EXPECT_EQ(py::Int(5) - py::Int(1),         4);
+    EXPECT_EQ(py::Int(5) - py::Int(-1),        6);
+    EXPECT_EQ(py::Int(5) - py::Float(0.0),     5.0);
+    EXPECT_EQ(py::Int(5) - py::Float(1.0),     4.0);
+    EXPECT_EQ(py::Int(5) - py::Float(-1.0),    6.0);
+}
+
+
+TEST(py, int_multiplication) {
+    EXPECT_EQ(py::Int(5) * false,              0);
+    EXPECT_EQ(py::Int(5) * true,               5);
+    EXPECT_EQ(py::Int(5) * 0,                  0);
+    EXPECT_EQ(py::Int(5) * 1,                  5);
+    EXPECT_EQ(py::Int(5) * -1,                 -5);
+    EXPECT_EQ(py::Int(5) * 0.0,                0.0);
+    EXPECT_EQ(py::Int(5) * 1.0,                5.0);
+    EXPECT_EQ(py::Int(5) * -1.0,               -5.0);
+    EXPECT_EQ(py::Int(5) * py::Bool(false),    0);
+    EXPECT_EQ(py::Int(5) * py::Bool(true),     5);
+    EXPECT_EQ(py::Int(5) * py::Int(0),         0);
+    EXPECT_EQ(py::Int(5) * py::Int(1),         5);
+    EXPECT_EQ(py::Int(5) * py::Int(-1),        -5);
+    EXPECT_EQ(py::Int(5) * py::Float(0.0),     0.0);
+    EXPECT_EQ(py::Int(5) * py::Float(1.0),     5.0);
+    EXPECT_EQ(py::Int(5) * py::Float(-1.0),    -5.0);
+}
+
+
+TEST(py, int_division) {
+    EXPECT_THROW(   py::Int(5) / false,              py::error_already_set);
+    EXPECT_EQ(      py::Int(5) / true,               5);
+
+}
+
+

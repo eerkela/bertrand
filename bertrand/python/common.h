@@ -355,6 +355,31 @@ namespace impl {
             name(const detail::base& accessor) : detail::base(accessor) {}              \
             name(detail::base&& accessor) : detail::base(std::move(accessor)) {}        \
                                                                                         \
+            template <typename... Args>                                                 \
+            inline Object operator()(Args&&... args) const;                             \
+                                                                                        \
+            inline explicit operator bool() const {                                     \
+                int result = PyObject_IsTrue(this->ptr());                              \
+                if (result == -1) {                                                     \
+                    throw error_already_set();                                          \
+                }                                                                       \
+                return result;                                                          \
+            }                                                                           \
+                                                                                        \
+            inline explicit operator std::string() const {                              \
+                PyObject* str = PyObject_Str(this->ptr());                              \
+                if (str == nullptr) {                                                   \
+                    throw error_already_set();                                          \
+                }                                                                       \
+                Py_ssize_t size;                                                        \
+                const char* data = PyUnicode_AsUTF8AndSize(str, &size);                 \
+                Py_DECREF(str);                                                         \
+                if (data == nullptr) {                                                  \
+                    throw error_already_set();                                          \
+                }                                                                       \
+                return std::string(data, size);                                         \
+            }                                                                           \
+                                                                                        \
             template <                                                                  \
                 typename T,                                                             \
                 std::enable_if_t<!detail::is_pyobject<T>::value, int> = 0               \
@@ -372,6 +397,12 @@ namespace impl {
     CONVERTABLE_ACCESSOR(ListAccessor, list_accessor)
 
     #undef CONVERTABLE_ACCESSOR
+
+    #define ACCESSOR_CALL_OPERATOR(name, base)                                          \
+        template <typename... Args>                                                     \
+        Object name::operator()(Args&&... args) const {                                 \
+            return detail::base::operator()(std::forward<Args>(args)...);               \
+        }                                                                               \
 
 }
 
@@ -438,8 +469,8 @@ public:
     ////    CONVERSIONS    ////
     ///////////////////////////
 
-    /* Implicitly convert an Object into a bool.  Equivalent to Python `bool(obj)`. */
-    inline operator bool() const {
+    /* Contextually convert an Object into a boolean for use in if/else branches. */
+    inline explicit operator bool() const {
         int result = PyObject_IsTrue(this->ptr());
         if (result == -1) {
             throw error_already_set();
@@ -447,7 +478,8 @@ public:
         return result;
     }
 
-    /* Explicitly cast to a string representation.  Equivalent to Python `str(obj)`. */
+    /* Explicitly cast to a string representation.  Equivalent to Python `str(obj)`,
+    except it returns a std::string. */
     inline explicit operator std::string() const {
         PyObject* str = PyObject_Str(this->ptr());
         if (str == nullptr) {
@@ -655,6 +687,15 @@ const static EllipsisType Ellipsis;
 
 namespace impl {
 
+    ACCESSOR_CALL_OPERATOR(ObjAttrAccessor, obj_attr_accessor)
+    ACCESSOR_CALL_OPERATOR(StrAttrAccessor, str_attr_accessor)
+    ACCESSOR_CALL_OPERATOR(ItemAccessor, item_accessor)
+    ACCESSOR_CALL_OPERATOR(SequenceAccessor, sequence_accessor)
+    ACCESSOR_CALL_OPERATOR(TupleAccessor, tuple_accessor)
+    ACCESSOR_CALL_OPERATOR(ListAccessor, list_accessor)
+
+    #undef ACCESSOR_CALL_OPERATOR
+
     /* A simple struct that converts a generic C++ object into a Python equivalent in
     its constructor.  This is used in conjunction with std::initializer_list to parse
     mixed-type lists in a type-safe manner.
@@ -686,6 +727,8 @@ namespace impl {
     if an in-place operator modifies the type of its left operand. */
     template <typename Derived>
     struct Ops {
+
+        // TODO: remove branch for checking if result has correct type
 
         #define INPLACE_OPERATOR(op, endpoint)                                          \
             template <typename T>                                                       \
