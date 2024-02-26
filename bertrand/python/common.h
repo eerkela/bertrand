@@ -348,6 +348,31 @@ namespace impl {
             return reinterpret_steal<Object>(result);                                   \
         }                                                                               \
 
+    #define CONVERTABLE_ACCESSOR(name, base)                                            \
+        struct name : public detail::base {                                             \
+            using detail::base::base;                                                   \
+            using detail::base::operator=;                                              \
+            name(const detail::base& accessor) : detail::base(accessor) {}              \
+            name(detail::base&& accessor) : detail::base(std::move(accessor)) {}        \
+                                                                                        \
+            template <                                                                  \
+                typename T,                                                             \
+                std::enable_if_t<!detail::is_pyobject<T>::value, int> = 0               \
+            >                                                                           \
+            inline operator T() const {                                                 \
+                return detail::base::template cast<T>();                                \
+            }                                                                           \
+        };                                                                              \
+
+    CONVERTABLE_ACCESSOR(ObjAttrAccessor, obj_attr_accessor)
+    CONVERTABLE_ACCESSOR(StrAttrAccessor, str_attr_accessor)
+    CONVERTABLE_ACCESSOR(ItemAccessor, item_accessor)
+    CONVERTABLE_ACCESSOR(SequenceAccessor, sequence_accessor)
+    CONVERTABLE_ACCESSOR(TupleAccessor, tuple_accessor)
+    CONVERTABLE_ACCESSOR(ListAccessor, list_accessor)
+
+    #undef CONVERTABLE_ACCESSOR
+
 }
 
 
@@ -443,20 +468,74 @@ public:
         return Base::cast<T>();
     }
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
+    ////////////////////////////////
+    ////    ATTRIBUTE ACCESS    ////
+    ////////////////////////////////
 
-    /* Bertrand uses a generalized slice syntax for all sequence types, using an
-     * initializer list to represent the slice.  This is equivalent to Python's
-     * `obj[start:stop:step]` syntax, and is directly converted to it in the backend.
-     * This allows arbitrary Objects to be sliced as if they were sequences, and
-     * throws compilation errors if the slice is not composed of integers or None.
+    /* Bertrand streamlines pybind11's dotted attribute accessors by allowing them to
+     * be implicitly converted to any C++ type, reducing the amount of boilerplate
+     * needed to interact with Python objects in C++.  This brings them in line with
+     * the generic Object API, and makes the code significantly more idiomatic from
+     * both a Python and C++ perspective.
      */
 
-    using Base::operator[];
+    inline impl::ObjAttrAccessor attr(handle key) const {
+        return Base::attr(key);
+    }
 
-    auto operator[](const std::initializer_list<SliceIndex>& slice) const {
+    inline impl::ObjAttrAccessor attr(Object&& key) const {
+        return Base::attr(std::move(key));
+    }
+
+    inline impl::StrAttrAccessor attr(const char* key) const {
+        return Base::attr(key);
+    }
+
+    inline impl::StrAttrAccessor attr(const std::string& key) const {
+        return Base::attr(key.c_str());
+    }
+
+    inline impl::StrAttrAccessor attr(const std::string_view& key) const {
+        return Base::attr(key.data());
+    }
+
+    ////////////////////////
+    ////    INDEXING    ////
+    ////////////////////////
+
+    /* Bertrand streamlines pybind11's index interface by allowing accessors to be
+     * implicitly converted to any C++ type, reducing the amount of boilerplate needed
+     * to interact with Python objects.  It also implements a generalized slice syntax
+     * for sequence types using an initializer list to represent the slice.  This is
+     * equivalent to Python's `obj[start:stop:step]` syntax, and is directly converted
+     * to it in the background.  This allows arbitrary Objects to be sliced as if they
+     * were sequences, and throws compilation errors if the slice is not composed of
+     * integers or None.
+     */
+
+    inline impl::ItemAccessor operator[](handle key) const {
+        return Base::operator[](key);
+    }
+
+    inline impl::ItemAccessor operator[](Object&& key) const {
+        return Base::operator[](std::move(key));
+    }
+
+    inline impl::ItemAccessor operator[](const char* key) const {
+        return Base::operator[](key);
+    }
+
+    /* Access an item from the dict using a string. */
+    inline impl::ItemAccessor operator[](const std::string& key) const {
+        return (*this)[key.c_str()];
+    }
+
+    /* Access an item from the dict using a string. */
+    inline impl::ItemAccessor operator[](const std::string_view& key) const {
+        return (*this)[key.data()];
+    }
+
+    impl::ItemAccessor operator[](const std::initializer_list<SliceIndex>& slice) const {
         if (slice.size() > 3) {
             throw ValueError(
                 "slices must be of the form {[start[, stop[, step]]]}"
@@ -473,8 +552,17 @@ public:
                 item
             );
         }
-        return this->operator[](pybind11::slice(params[0], params[1], params[2]));
+        return Base::operator[](pybind11::slice(params[0], params[1], params[2]));
     }
+
+    template <typename T, std::enable_if_t<!detail::is_pyobject<T>::value, int> = 0>
+    inline impl::ItemAccessor operator[](T&& key) const {
+        return (*this)[detail::object_or_cast(std::forward<T>(key))];
+    }
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
 
     /* pybind11 exposes generalized operator overloads for python operands, but does
     * not allow mixed Python/C++ inputs.  For ease of use, we enable them here, along

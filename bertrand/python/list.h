@@ -246,13 +246,10 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    detail::list_accessor operator[](size_t index) const {
-        return {*this, index};
-    }
+    using Object::operator[];
 
-    template <typename T, std::enable_if_t<detail::is_pyobject<T>::value, int> = 0>
-    detail::item_accessor operator[](T&& index) const {
-        return Object::operator[](std::forward<T>(index));
+    inline impl::ListAccessor operator[](size_t index) const {
+        return {*this, index};
     }
 
     detail::list_iterator begin() const {
@@ -270,7 +267,6 @@ public:
     using impl::Ops<List>::operator>;
     using impl::Ops<List>::operator>=;
 
-    using Object::operator[];
     using impl::SequenceOps<List>::concat;
     using impl::SequenceOps<List>::operator+;
     using impl::SequenceOps<List>::operator*;

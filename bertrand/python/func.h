@@ -132,7 +132,9 @@ directions.
             spam, eggs = (spam + eggs, spam)
             assert(x == spam)
             result.append(eggs)
-    )"_python(context)["result"].cast<std::vector<int>>();
+    )"_python(context)["result"];
+
+    py::print(fibonacci);  // prints [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
 
 This is a powerful feature that allows Python to be used as an inline scripting
 language in any C++ application, with full native compatibility in both directions.
