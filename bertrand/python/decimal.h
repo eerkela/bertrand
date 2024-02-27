@@ -1,3 +1,7 @@
+#ifndef BERTRAND_PYTHON_INCLUDED
+#error "This file should not be included directly.  Please include <bertrand/python.h> instead."
+#endif
+
 #ifndef BERTRAND_PYTHON_DECIMAL_H
 #define BERTRAND_PYTHON_DECIMAL_H
 

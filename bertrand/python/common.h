@@ -1,3 +1,7 @@
+#ifndef BERTRAND_PYTHON_INCLUDED
+#error "This file should not be included directly.  Please include <bertrand/python.h> instead."
+#endif
+
 #ifndef BERTRAND_PYTHON_COMMON_H
 #define BERTRAND_PYTHON_COMMON_H
 
@@ -274,10 +278,321 @@ class Timezone;
 class Date;
 class Time;
 class Datetime;
-class Regex;  // incorporate more fully (write pybind11 bindings so that it can be passed into Python scripts)
+class Regex;  // TODO: incorporate more fully (write pybind11 bindings so that it can be passed into Python scripts)
 
 
 namespace impl {
+
+    #define CONVERTABLE_ACCESSOR(name, base)                                            \
+        struct name : public detail::base {                                             \
+            using detail::base::base;                                                   \
+            using detail::base::operator=;                                              \
+            name(const detail::base& accessor) : detail::base(accessor) {}              \
+            name(detail::base&& accessor) : detail::base(std::move(accessor)) {}        \
+                                                                                        \
+            template <typename... Args>                                                 \
+            inline Object operator()(Args&&... args) const;                             \
+                                                                                        \
+            inline explicit operator bool() const {                                     \
+                int result = PyObject_IsTrue(this->ptr());                              \
+                if (result == -1) {                                                     \
+                    throw error_already_set();                                          \
+                }                                                                       \
+                return result;                                                          \
+            }                                                                           \
+                                                                                        \
+            inline explicit operator std::string() const {                              \
+                PyObject* str = PyObject_Str(this->ptr());                              \
+                if (str == nullptr) {                                                   \
+                    throw error_already_set();                                          \
+                }                                                                       \
+                Py_ssize_t size;                                                        \
+                const char* data = PyUnicode_AsUTF8AndSize(str, &size);                 \
+                Py_DECREF(str);                                                         \
+                if (data == nullptr) {                                                  \
+                    throw error_already_set();                                          \
+                }                                                                       \
+                return std::string(data, size);                                         \
+            }                                                                           \
+                                                                                        \
+            template <                                                                  \
+                typename T,                                                             \
+                std::enable_if_t<!detail::is_pyobject<T>::value, int> = 0               \
+            >                                                                           \
+            inline operator T() const {                                                 \
+                return detail::base::template cast<T>();                                \
+            }                                                                           \
+        };                                                                              \
+
+    CONVERTABLE_ACCESSOR(ObjAttrAccessor, obj_attr_accessor)
+    CONVERTABLE_ACCESSOR(StrAttrAccessor, str_attr_accessor)
+    CONVERTABLE_ACCESSOR(ItemAccessor, item_accessor)
+    CONVERTABLE_ACCESSOR(SequenceAccessor, sequence_accessor)
+    CONVERTABLE_ACCESSOR(TupleAccessor, tuple_accessor)
+    CONVERTABLE_ACCESSOR(ListAccessor, list_accessor)
+
+    #undef CONVERTABLE_ACCESSOR
+
+    template <typename Base, typename Derived>
+    constexpr bool is_same_or_subclass_of = (
+        std::is_same_v<Base, Derived> || std::is_base_of_v<Base, Derived>
+    );
+
+    namespace conversions {
+
+        struct Base {
+            static constexpr bool boollike = false;
+            static constexpr bool intlike = false;
+            static constexpr bool floatlike = false;
+            static constexpr bool complexlike = false;
+            static constexpr bool strlike = false;
+            static constexpr bool tuplelike = false;
+            static constexpr bool listlike = false;
+            static constexpr bool setlike = false;
+            static constexpr bool dictlike = false;
+            static constexpr bool callable = false;
+        };
+
+        template <typename T>
+        class Traits : public Base {
+
+            template <typename U, typename = void>
+            struct check_callable : std::false_type {};
+            template <typename U>
+            struct check_callable<U, std::void_t<decltype(&U::operator())>> :
+                std::true_type {};
+
+        public:
+            static constexpr bool callable = check_callable<T>::value;
+        };
+
+        template <typename T>
+        struct Traits<std::complex<T>> : public Base {
+            static constexpr bool complexlike = true;
+        };
+
+        template <typename... Args>
+        struct Traits<std::pair<Args...>> : public Base {
+            static constexpr bool tuplelike = true;
+        };
+
+        template <typename... Args>
+        struct Traits<std::tuple<Args...>> : public Base {
+            static constexpr bool tuplelike = true;
+        };
+
+        template <typename T, size_t N>
+        struct Traits<std::array<T, N>> : public Base {
+            static constexpr bool tuplelike = true;
+        };
+
+        template <typename... Args>
+        struct Traits<std::vector<Args...>> : public Base {
+            static constexpr bool listlike = true;
+        };
+
+        template <typename... Args>
+        struct Traits<std::deque<Args...>> : public Base {
+            static constexpr bool listlike = true;
+        };
+
+        template <typename... Args>
+        struct Traits<std::list<Args...>> : public Base {
+            static constexpr bool listlike = true;
+        };
+
+        template <typename... Args>
+        struct Traits<std::forward_list<Args...>> : public Base {
+            static constexpr bool listlike = true;
+        };
+
+        template <typename... Args>
+        struct Traits<std::set<Args...>> : public Base {
+            static constexpr bool setlike = true;
+        };
+
+        template <typename... Args>
+        struct Traits<std::unordered_set<Args...>> : public Base {
+            static constexpr bool setlike = true;
+        };
+
+        template <typename... Args>
+        struct Traits<std::map<Args...>> : public Base {
+            static constexpr bool dictlike = true;
+        };
+
+        template <typename... Args>
+        struct Traits<std::unordered_map<Args...>> : public Base {
+            static constexpr bool dictlike = true;
+        };
+
+        template <typename Return, typename... Args>
+        struct Traits<Return(*)(Args...)> : public Base {
+            static constexpr bool callable = true;
+        };
+
+    };
+
+    template <typename T>
+    constexpr bool is_object = is_same_or_subclass_of<pybind11::object, T>;
+
+    template <typename T>
+    constexpr bool is_object_exact = (
+        std::is_same_v<Object, T> ||
+        std::is_same_v<pybind11::object, T>
+    );
+
+    template <typename T>
+    constexpr bool is_accessor = (
+        is_same_or_subclass_of<detail::obj_attr_accessor, T> ||
+        is_same_or_subclass_of<detail::str_attr_accessor, T> ||
+        is_same_or_subclass_of<detail::item_accessor, T> ||
+        is_same_or_subclass_of<detail::sequence_accessor, T> ||
+        is_same_or_subclass_of<detail::tuple_accessor, T> ||
+        is_same_or_subclass_of<detail::list_accessor, T>
+    );
+
+    template <typename T>
+    constexpr bool is_bool_like = (
+        is_same_or_subclass_of<bool, T> ||
+        is_same_or_subclass_of<Bool, T> ||
+        is_same_or_subclass_of<pybind11::bool_, T>
+    );
+
+    template <typename T>
+    constexpr bool is_int_like = (
+        std::is_integral_v<T> ||
+        is_same_or_subclass_of<Int, T> ||
+        is_same_or_subclass_of<pybind11::int_, T>
+    );
+
+    template <typename T>
+    constexpr bool is_float_like = (
+        std::is_floating_point_v<T> ||
+        is_same_or_subclass_of<Float, T> ||
+        is_same_or_subclass_of<pybind11::float_, T>
+    );
+
+    template <typename T>
+    constexpr bool is_complex_like = (
+        is_same_or_subclass_of<std::complex<float>, T> ||
+        is_same_or_subclass_of<std::complex<double>, T> ||
+        is_same_or_subclass_of<std::complex<long double>, T> ||
+        is_same_or_subclass_of<Complex, T>
+    );
+
+    template <typename T>
+    constexpr bool is_slice_like = (
+        is_same_or_subclass_of<Slice, T> ||
+        is_same_or_subclass_of<pybind11::slice, T>
+    );
+
+    template <typename T>
+    constexpr bool is_range_like = (
+        is_same_or_subclass_of<Range, T>
+    );
+
+    template <typename T>
+    constexpr bool is_str_like = (
+        std::is_same_v<const char*, T> ||
+        is_same_or_subclass_of<std::string, T> ||
+        is_same_or_subclass_of<std::string_view, T> ||
+        is_same_or_subclass_of<Str, T> ||
+        is_same_or_subclass_of<pybind11::str, T>
+    );
+
+    template <typename T>
+    constexpr bool is_tuple_like = (
+        conversions::Traits<T>::tuplelike ||
+        is_same_or_subclass_of<Tuple, T> ||
+        is_same_or_subclass_of<pybind11::tuple, T>
+    );
+
+    template <typename T>
+    constexpr bool is_list_like = (
+        conversions::Traits<T>::listlike ||
+        is_same_or_subclass_of<List, T> ||
+        is_same_or_subclass_of<pybind11::list, T>
+    );
+
+    template <typename T>
+    constexpr bool is_set_like = (
+        conversions::Traits<T>::setlike ||
+        is_same_or_subclass_of<Set, T> ||
+        is_same_or_subclass_of<FrozenSet, T> ||
+        is_same_or_subclass_of<pybind11::set, T> ||
+        is_same_or_subclass_of<pybind11::frozenset, T>
+    );
+
+    template <typename T>
+    constexpr bool is_dict_like = (
+        conversions::Traits<T>::dictlike ||
+        is_same_or_subclass_of<Dict, T> ||
+        is_same_or_subclass_of<MappingProxy, T> ||
+        is_same_or_subclass_of<pybind11::dict, T>
+    );
+
+    template <typename T>
+    constexpr bool is_func_like = (
+        conversions::Traits<T>::callable ||
+        is_same_or_subclass_of<Function, T> ||
+        is_same_or_subclass_of<pybind11::function, T> ||
+        is_same_or_subclass_of<pybind11::cpp_function, T>
+    );
+
+    template <typename T>
+    constexpr bool is_type_like = (
+        is_same_or_subclass_of<Type, T> ||
+        is_same_or_subclass_of<pybind11::type, T>
+    );
+
+    template <typename T, typename = void>
+    constexpr bool has_size = false;
+    template <typename T>
+    constexpr bool has_size<
+        T,
+        std::void_t<decltype(std::declval<T>().size())>
+    > = true;
+
+    template <typename T, typename = void>
+    constexpr bool has_empty = false;
+    template <typename T>
+    constexpr bool has_empty<
+        T,
+        std::void_t<decltype(std::declval<T>().empty())>
+    > = true;
+
+    template <typename T, typename = void>
+    constexpr bool is_iterable = false;
+    template <typename T>
+    constexpr bool is_iterable<
+        T,
+        std::void_t<decltype(std::begin(std::declval<T>()), std::end(std::declval<T>()))>
+    > = true;
+
+    template <typename T, typename = void>
+    constexpr bool has_to_string = false;
+    template <typename T>
+    constexpr bool has_to_string<
+        T,
+        std::void_t<decltype(std::to_string(std::declval<T>()))>
+    > = true;
+
+    template <typename T, typename = void>
+    constexpr bool has_stream_insertion = false;
+    template <typename T>
+    constexpr bool has_stream_insertion<
+        T,
+        std::void_t<decltype(std::declval<std::ostream&>() << std::declval<T>())>
+    > = true;
+
+    template <typename T, typename = void>
+    constexpr bool has_reserve = false;
+    template <typename T>
+    constexpr bool has_reserve<
+        T,
+        std::void_t<decltype(std::declval<T>().reserve(std::declval<size_t>()))>
+    > = true;
 
     #define UNARY_OPERATOR(Derived, op, endpoint)                                       \
         inline Object op() const {                                                      \
@@ -348,60 +663,21 @@ namespace impl {
             return reinterpret_steal<Object>(result);                                   \
         }                                                                               \
 
-    #define CONVERTABLE_ACCESSOR(name, base)                                            \
-        struct name : public detail::base {                                             \
-            using detail::base::base;                                                   \
-            using detail::base::operator=;                                              \
-            name(const detail::base& accessor) : detail::base(accessor) {}              \
-            name(detail::base&& accessor) : detail::base(std::move(accessor)) {}        \
-                                                                                        \
-            template <typename... Args>                                                 \
-            inline Object operator()(Args&&... args) const;                             \
-                                                                                        \
-            inline explicit operator bool() const {                                     \
-                int result = PyObject_IsTrue(this->ptr());                              \
-                if (result == -1) {                                                     \
-                    throw error_already_set();                                          \
-                }                                                                       \
-                return result;                                                          \
+    #define INPLACE_OPERATOR(Derived, op, endpoint)                                     \
+        template <typename T>                                                           \
+        inline Derived& op(T&& other) {                                                 \
+            Derived* self = static_cast<Derived*>(this);                                \
+            pybind11::object o = detail::object_or_cast(std::forward<T>(other));        \
+            PyObject* result = endpoint(self->ptr(), o.ptr());                          \
+            if (result == nullptr) {                                                    \
+                throw error_already_set();                                              \
             }                                                                           \
-                                                                                        \
-            inline explicit operator std::string() const {                              \
-                PyObject* str = PyObject_Str(this->ptr());                              \
-                if (str == nullptr) {                                                   \
-                    throw error_already_set();                                          \
-                }                                                                       \
-                Py_ssize_t size;                                                        \
-                const char* data = PyUnicode_AsUTF8AndSize(str, &size);                 \
-                Py_DECREF(str);                                                         \
-                if (data == nullptr) {                                                  \
-                    throw error_already_set();                                          \
-                }                                                                       \
-                return std::string(data, size);                                         \
+            if (result == self->ptr()) {                                                \
+                Py_DECREF(result);                                                      \
+            } else {                                                                    \
+                *self = reinterpret_steal<Derived>(result);                             \
             }                                                                           \
-                                                                                        \
-            template <                                                                  \
-                typename T,                                                             \
-                std::enable_if_t<!detail::is_pyobject<T>::value, int> = 0               \
-            >                                                                           \
-            inline operator T() const {                                                 \
-                return detail::base::template cast<T>();                                \
-            }                                                                           \
-        };                                                                              \
-
-    CONVERTABLE_ACCESSOR(ObjAttrAccessor, obj_attr_accessor)
-    CONVERTABLE_ACCESSOR(StrAttrAccessor, str_attr_accessor)
-    CONVERTABLE_ACCESSOR(ItemAccessor, item_accessor)
-    CONVERTABLE_ACCESSOR(SequenceAccessor, sequence_accessor)
-    CONVERTABLE_ACCESSOR(TupleAccessor, tuple_accessor)
-    CONVERTABLE_ACCESSOR(ListAccessor, list_accessor)
-
-    #undef CONVERTABLE_ACCESSOR
-
-    #define ACCESSOR_CALL_OPERATOR(name, base)                                          \
-        template <typename... Args>                                                     \
-        Object name::operator()(Args&&... args) const {                                 \
-            return detail::base::operator()(std::forward<Args>(args)...);               \
+            return *self;                                                               \
         }                                                                               \
 
 }
@@ -431,6 +707,9 @@ protected:
 
 public:
     static py::Type Type;
+
+    template <typename T>
+    static constexpr bool like = impl::is_object<T>;
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -601,22 +880,6 @@ public:
     * with reverse operators and in-place equivalents.
     */
 
-    #define INPLACE_OPERATOR(op, endpoint)                                              \
-        template <typename T>                                                           \
-        inline Object& op(T&& other) {                                                  \
-            pybind11::object o = detail::object_or_cast(std::forward<T>(other));        \
-            PyObject* result = endpoint(this->ptr(), o.ptr());                          \
-            if (result == nullptr) {                                                    \
-                throw error_already_set();                                              \
-            }                                                                           \
-            if (result == this->ptr()) {                                                \
-                Py_DECREF(result);                                                      \
-            } else {                                                                    \
-                *this = reinterpret_steal<Object>(result);                              \
-            }                                                                           \
-            return *this;                                                               \
-        }                                                                               \
-
     UNARY_OPERATOR(Object, operator+, PyNumber_Positive);
     UNARY_OPERATOR(Object, operator-, PyNumber_Negative);
     UNARY_OPERATOR(Object, operator~, PyNumber_Invert);
@@ -652,18 +915,16 @@ public:
     REVERSE_OPERATOR(Object, operator&, PyNumber_And);
     REVERSE_OPERATOR(Object, operator|, PyNumber_Or);
     REVERSE_OPERATOR(Object, operator^, PyNumber_Xor);
-    INPLACE_OPERATOR(operator+=, PyNumber_InPlaceAdd);
-    INPLACE_OPERATOR(operator-=, PyNumber_InPlaceSubtract);
-    INPLACE_OPERATOR(operator*=, PyNumber_InPlaceMultiply);
-    INPLACE_OPERATOR(operator/=, PyNumber_InPlaceTrueDivide);
-    INPLACE_OPERATOR(operator%=, PyNumber_InPlaceRemainder);
-    INPLACE_OPERATOR(operator<<=, PyNumber_InPlaceLshift);
-    INPLACE_OPERATOR(operator>>=, PyNumber_InPlaceRshift);
-    INPLACE_OPERATOR(operator&=, PyNumber_InPlaceAnd);
-    INPLACE_OPERATOR(operator|=, PyNumber_InPlaceOr);
-    INPLACE_OPERATOR(operator^=, PyNumber_InPlaceXor);
-
-    #undef INPLACE_OPERATOR
+    INPLACE_OPERATOR(Object, operator+=, PyNumber_InPlaceAdd);
+    INPLACE_OPERATOR(Object, operator-=, PyNumber_InPlaceSubtract);
+    INPLACE_OPERATOR(Object, operator*=, PyNumber_InPlaceMultiply);
+    INPLACE_OPERATOR(Object, operator/=, PyNumber_InPlaceTrueDivide);
+    INPLACE_OPERATOR(Object, operator%=, PyNumber_InPlaceRemainder);
+    INPLACE_OPERATOR(Object, operator<<=, PyNumber_InPlaceLshift);
+    INPLACE_OPERATOR(Object, operator>>=, PyNumber_InPlaceRshift);
+    INPLACE_OPERATOR(Object, operator&=, PyNumber_InPlaceAnd);
+    INPLACE_OPERATOR(Object, operator|=, PyNumber_InPlaceOr);
+    INPLACE_OPERATOR(Object, operator^=, PyNumber_InPlaceXor);
 
     inline Object* operator&() {
         return this;
@@ -686,6 +947,12 @@ const static EllipsisType Ellipsis;
 
 
 namespace impl {
+
+    #define ACCESSOR_CALL_OPERATOR(name, base)                                          \
+        template <typename... Args>                                                     \
+        Object name::operator()(Args&&... args) const {                                 \
+            return detail::base::operator()(std::forward<Args>(args)...);               \
+        }                                                                               \
 
     ACCESSOR_CALL_OPERATOR(ObjAttrAccessor, obj_attr_accessor)
     ACCESSOR_CALL_OPERATOR(StrAttrAccessor, str_attr_accessor)
@@ -727,34 +994,6 @@ namespace impl {
     if an in-place operator modifies the type of its left operand. */
     template <typename Derived>
     struct Ops {
-
-        // TODO: remove branch for checking if result has correct type
-
-        #define INPLACE_OPERATOR(op, endpoint)                                          \
-            template <typename T>                                                       \
-            inline Derived& op(T&& other) {                                             \
-                Derived* self = static_cast<Derived*>(this);                            \
-                pybind11::object o = detail::object_or_cast(std::forward<T>(other));    \
-                PyObject* result = endpoint(self->ptr(), o.ptr());                      \
-                if (result == nullptr) {                                                \
-                    throw error_already_set();                                          \
-                }                                                                       \
-                if (result == self->ptr()) {                                            \
-                    Py_DECREF(result);                                                  \
-                } else if (!Derived::check_(result)) {                                  \
-                    pybind11::str otype = pybind11::repr(pybind11::type::of(o));        \
-                    pybind11::str rtype = pybind11::repr(pybind11::type::of(result));   \
-                    std::ostringstream msg;                                             \
-                    msg << "applying " << #op << " to operands of type (";              \
-                    msg << pybind11::repr(pybind11::type::of(*self)) << ", " << otype;  \
-                    msg << ") gave result of type " << rtype;                           \
-                    throw CastError(msg.str());                                         \
-                } else {                                                                \
-                    *self = reinterpret_steal<Derived>(result);                         \
-                }                                                                       \
-                return *self;                                                           \
-            }                                                                           \
-
         UNARY_OPERATOR(Derived, operator+, PyNumber_Positive);
         UNARY_OPERATOR(Derived, operator-, PyNumber_Negative);
         UNARY_OPERATOR(Derived, operator~, PyNumber_Invert);
@@ -790,18 +1029,16 @@ namespace impl {
         REVERSE_OPERATOR(Derived, operator&, PyNumber_And);
         REVERSE_OPERATOR(Derived, operator|, PyNumber_Or);
         REVERSE_OPERATOR(Derived, operator^, PyNumber_Xor);
-        INPLACE_OPERATOR(operator+=, PyNumber_InPlaceAdd);
-        INPLACE_OPERATOR(operator-=, PyNumber_InPlaceSubtract);
-        INPLACE_OPERATOR(operator*=, PyNumber_InPlaceMultiply);
-        INPLACE_OPERATOR(operator/=, PyNumber_InPlaceTrueDivide);
-        INPLACE_OPERATOR(operator%=, PyNumber_InPlaceRemainder);
-        INPLACE_OPERATOR(operator<<=, PyNumber_InPlaceLshift);
-        INPLACE_OPERATOR(operator>>=, PyNumber_InPlaceRshift);
-        INPLACE_OPERATOR(operator&=, PyNumber_InPlaceAnd);
-        INPLACE_OPERATOR(operator|=, PyNumber_InPlaceOr);
-        INPLACE_OPERATOR(operator^=, PyNumber_InPlaceXor);
-
-        #undef INPLACE_OPERATOR
+        INPLACE_OPERATOR(Object, operator+=, PyNumber_InPlaceAdd);
+        INPLACE_OPERATOR(Object, operator-=, PyNumber_InPlaceSubtract);
+        INPLACE_OPERATOR(Object, operator*=, PyNumber_InPlaceMultiply);
+        INPLACE_OPERATOR(Object, operator/=, PyNumber_InPlaceTrueDivide);
+        INPLACE_OPERATOR(Object, operator%=, PyNumber_InPlaceRemainder);
+        INPLACE_OPERATOR(Object, operator<<=, PyNumber_InPlaceLshift);
+        INPLACE_OPERATOR(Object, operator>>=, PyNumber_InPlaceRshift);
+        INPLACE_OPERATOR(Object, operator&=, PyNumber_InPlaceAnd);
+        INPLACE_OPERATOR(Object, operator|=, PyNumber_InPlaceOr);
+        INPLACE_OPERATOR(Object, operator^=, PyNumber_InPlaceXor);
     };
 
     #undef UNARY_OPERATOR
@@ -809,35 +1046,7 @@ namespace impl {
     #undef REVERSE_COMPARISON
     #undef BINARY_OPERATOR
     #undef REVERSE_OPERATOR
-
-    #define BERTRAND_PYTHON_OPERATORS(Mixin)                                            \
-        using Mixin::operator~;                                                         \
-        using Mixin::operator<;                                                         \
-        using Mixin::operator<=;                                                        \
-        using Mixin::operator==;                                                        \
-        using Mixin::operator!=;                                                        \
-        using Mixin::operator>=;                                                        \
-        using Mixin::operator>;                                                         \
-        using Mixin::operator+;                                                         \
-        using Mixin::operator-;                                                         \
-        using Mixin::operator*;                                                         \
-        using Mixin::operator/;                                                         \
-        using Mixin::operator%;                                                         \
-        using Mixin::operator<<;                                                        \
-        using Mixin::operator>>;                                                        \
-        using Mixin::operator&;                                                         \
-        using Mixin::operator|;                                                         \
-        using Mixin::operator^;                                                         \
-        using Mixin::operator+=;                                                        \
-        using Mixin::operator-=;                                                        \
-        using Mixin::operator*=;                                                        \
-        using Mixin::operator/=;                                                        \
-        using Mixin::operator%=;                                                        \
-        using Mixin::operator<<=;                                                       \
-        using Mixin::operator>>=;                                                       \
-        using Mixin::operator&=;                                                        \
-        using Mixin::operator|=;                                                        \
-        using Mixin::operator^=;                                                        \
+    #undef INPLACE_OPERATOR
 
     /* Mixin holding operator overloads for types implementing the sequence protocol,
     which makes them both concatenatable and repeatable. */
@@ -1038,26 +1247,6 @@ namespace impl {
 
     };
 
-    /* Convert an arbitrary Python/C++ value into a pybind11 object and then return a
-    new reference.  This is used in the constructors of list and tuple objects, whose
-    SET_ITEM() functions steal a reference.  Converts null pointers into Python None. */
-    template <typename T>
-    static inline PyObject* convert_newref(T&& value) {
-        if constexpr (detail::is_pyobject<T>::value) {
-            PyObject* result = value.ptr();
-            if (result == nullptr) {
-                result = Py_None;
-            }
-            return Py_NewRef(result);
-        } else {
-            PyObject* result = pybind11::cast(std::forward<T>(value)).release().ptr();
-            if (result == nullptr) {
-                throw error_already_set();
-            }
-            return result;
-        }
-    }
-
     template <typename Base, typename T>
     using enable_for = std::enable_if_t<std::is_base_of_v<Base, T>>;
 
@@ -1078,21 +1267,30 @@ namespace impl {
     PyObject* pointers, and convert() should always return a new reference.  They will
     never be passed null objects. */
     #define BERTRAND_PYTHON_CONSTRUCTORS(parent, cls, check, convert)                   \
-        PYBIND11_OBJECT_CVT(cls, parent, check, convert);                               \
-        using parent::operator=;                                                        \
-        cls& operator=(const pybind11::object& obj) {                                   \
-            if (check_(obj.ptr())) {                                                    \
-                parent::operator=(reinterpret_borrow<cls>(obj.ptr()));                  \
-            } else {                                                                    \
-                std::ostringstream msg;                                                 \
-                msg << "cannot convert " << pybind11::repr(pybind11::type::of(obj));    \
-                msg << " to " << #cls;                                                  \
-                throw CastError(msg.str());                                             \
+        PYBIND11_OBJECT_COMMON(cls, parent, check);                                     \
+        template <typename T, std::enable_if_t<impl::is_object_exact<T>, int> = 0>      \
+        cls(const T& o) :                                                               \
+            parent(check_(o) ? o.inc_ref().ptr() : convert(o.ptr()), stolen_t{})        \
+        {                                                                               \
+            if (this->ptr() == nullptr) {                                               \
+                throw error_already_set();                                              \
             }                                                                           \
-            return *this;                                                               \
         }                                                                               \
-        template <typename T, std::enable_if_t<!detail::is_pyobject<T>::value, int> = 0>\
+        template <typename T, std::enable_if_t<impl::is_object_exact<T>, int> = 0>      \
+        cls(T&& o) :                                                                    \
+            parent(check_(o) ? o.release().ptr() : convert(o.ptr()), stolen_t{})        \
+        {                                                                               \
+            if (this->ptr() == nullptr) {                                               \
+                throw error_already_set();                                              \
+            }                                                                           \
+        }                                                                               \
+        template <typename T, std::enable_if_t<std::is_convertible_v<T, cls>, int> = 0> \
         cls& operator=(T&& value) {                                                     \
+            if constexpr (std::is_same_v<cls, std::decay_t<T>>) {                       \
+                if (this == &value) {                                                   \
+                    return *this;                                                       \
+                }                                                                       \
+            }                                                                           \
             parent::operator=(cls(std::forward<T>(value)));                             \
             return *this;                                                               \
         }                                                                               \
@@ -1107,6 +1305,18 @@ namespace impl {
         inline const cls* operator&() const {                                           \
             return this;                                                                \
         }                                                                               \
+
+        // cls& operator=(const pybind11::object& obj) {
+        //     if (check_(obj.ptr())) {
+        //         parent::operator=(reinterpret_borrow<cls>(obj.ptr()));
+        //     } else {
+        //         std::ostringstream msg;
+        //         msg << "cannot convert " << pybind11::repr(pybind11::type::of(obj));
+        //         msg << " to " << #cls;
+        //         throw CastError(msg.str());
+        //     }
+        //     return *this;
+        // }
 
 }  // namespace impl
 
@@ -1219,9 +1429,9 @@ namespace impl {
 
     /* SFINAE struct allows py::iter() to work on both python and C++ types. */
     template <typename T, typename = void>
-    static constexpr bool use_pybind11_iter = false;
+    constexpr bool use_pybind11_iter = false;
     template <typename T>
-    static constexpr bool use_pybind11_iter<
+    constexpr bool use_pybind11_iter<
         T,
         std::void_t<decltype(pybind11::iter(std::declval<T>()))>
     > = true;
@@ -1229,43 +1439,9 @@ namespace impl {
     /* SFINAE struct allows py::hash() to raise informative error messages for
     unhashable types. */
     template <typename T, typename = void>
-    static constexpr bool has_std_hash = false;
+    constexpr bool has_std_hash = false;
     template <typename T>
-    static constexpr bool has_std_hash<T, std::void_t<decltype(std::hash<T>{})>> = true;
-
-    /* SFINAE trait that detects whether a C++ container has an STL-style `size()`
-    method. */
-    template <typename T, typename = void>
-    constexpr bool has_size = false;
-    template <typename T>
-    constexpr bool has_size<T, std::void_t<decltype(std::declval<T>().size())>> = true;
-
-    template <typename T, typename = void>
-    static constexpr bool has_empty = false;
-    template <typename T>
-    static constexpr bool has_empty<
-        T, std::void_t<decltype(std::declval<T>().empty())>
-    > = true;
-
-    /* SFINAE trait that detects whether std::to_string is invocable with a particular
-    type. */
-    template <typename T, typename = void>
-    constexpr bool has_to_string = false;
-    template <typename T>
-    constexpr bool has_to_string<
-        T,
-        std::void_t<decltype(std::to_string(std::declval<T>()))>
-    > = true;
-
-    /* SFINAE trait that detects whether the given type overloads the stream insertion
-    operator (<<) for string representation. */
-    template <typename T, typename = void>
-    constexpr bool has_stream_insertion = false;
-    template <typename T>
-    constexpr bool has_stream_insertion<
-        T,
-        std::void_t<decltype(std::declval<std::ostream&>() << std::declval<T>())>
-    > = true;
+    constexpr bool has_std_hash<T, std::void_t<decltype(std::hash<T>{})>> = true;
 
 }  // namespace impl
 
@@ -1691,7 +1867,6 @@ namespace std {                                                                 
 
 BERTRAND_STD_EQUAL_TO(bertrand::py::Module)
 BERTRAND_STD_EQUAL_TO(bertrand::py::Handle)
-BERTRAND_STD_EQUAL_TO(bertrand::py::Object)
 BERTRAND_STD_EQUAL_TO(bertrand::py::NoneType)
 BERTRAND_STD_EQUAL_TO(bertrand::py::EllipsisType)
 BERTRAND_STD_EQUAL_TO(bertrand::py::Iterator)

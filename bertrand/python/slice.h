@@ -1,3 +1,7 @@
+#ifndef BERTRAND_PYTHON_INCLUDED
+#error "This file should not be included directly.  Please include <bertrand/python.h> instead."
+#endif
+
 #ifndef  BERTRAND_PYTHON_SLICE_H
 #define  BERTRAND_PYTHON_SLICE_H
 
@@ -12,25 +16,45 @@ namespace py {
 inputs in order to represent denormalized slices at the Python level, and provides more
 pythonic access to its members. */
 class Slice : public Object, public impl::Ops<Slice> {
+    using Ops = impl::Ops<Slice>;
 
     static PyObject* convert_to_slice(PyObject* obj) {
-        PyObject* result = PySlice_New(nullptr, obj, nullptr);
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return result;
+        return PySlice_New(nullptr, obj, nullptr);
     }
+
+    template <typename T>
+    static constexpr bool constructor1 = impl::is_slice_like<T> && impl::is_object<T>;
 
 public:
     static py::Type Type;
+
+    template <typename T>
+    static constexpr bool like = impl::is_slice_like<T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(Object, Slice, PySlice_Check, convert_to_slice);
 
     /* Default constructor.  Initializes to all Nones. */
-    Slice() : Object(PySlice_New(nullptr, nullptr, nullptr), stolen_t{}) {}
+    Slice() : Object(PySlice_New(nullptr, nullptr, nullptr), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
 
-    /* Construct a slice from a (possibly denormalized) stop object. */
+    /* Implicitly convert a Python slice into a py::Slice.  Borrows a reference. */
+    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
+    Slice(const T& value) : Object(value.ptr(), borrowed_t{}) {}
+
+    /* Implicitly convert a Python slice into a py::Slice.  Steals a reference. */
+    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
+    Slice(T&& value) : Object(value.release(), stolen_t{}) {}
+
+    /* Explicitly construct a slice from a (possibly denormalized) stop object. */
     template <typename Stop>
-    Slice(Stop&& stop) {
+    explicit Slice(Stop&& stop) {
         m_ptr = PySlice_New(
             nullptr,
             detail::object_or_cast(std::forward<Stop>(stop)).ptr(),
@@ -41,9 +65,10 @@ public:
         }
     }
 
-    /* Construct a slice from (possibly denormalized) start and stop objects. */
+    /* Explicitly construct a slice from (possibly denormalized) start and stop
+    objects. */
     template <typename Start, typename Stop>
-    Slice(Start&& start, Stop&& stop) {
+    explicit Slice(Start&& start, Stop&& stop) {
         m_ptr = PySlice_New(
             detail::object_or_cast(std::forward<Start>(start)).ptr(),
             detail::object_or_cast(std::forward<Stop>(stop)).ptr(),
@@ -54,9 +79,10 @@ public:
         }
     }
 
-    /* Construct a slice from (possibly denormalized) start, stop, and step objects. */
+    /* Explicitly construct a slice from (possibly denormalized) start, stop, and step
+    objects. */
     template <typename Start, typename Stop, typename Step>
-    Slice(Start&& start, Stop&& stop, Step&& step) {
+    explicit Slice(Start&& start, Stop&& stop, Step&& step) {
         m_ptr = PySlice_New(
             detail::object_or_cast(std::forward<Start>(start)).ptr(),
             detail::object_or_cast(std::forward<Stop>(stop)).ptr(),
@@ -121,12 +147,12 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    using impl::Ops<Slice>::operator<;
-    using impl::Ops<Slice>::operator<=;
-    using impl::Ops<Slice>::operator==;
-    using impl::Ops<Slice>::operator!=;
-    using impl::Ops<Slice>::operator>=;
-    using impl::Ops<Slice>::operator>;
+    using Ops::operator<;
+    using Ops::operator<=;
+    using Ops::operator==;
+    using Ops::operator!=;
+    using Ops::operator>=;
+    using Ops::operator>;
 };
 
 

@@ -11,6 +11,7 @@ third_party/*
 
 # build artifacts
 test/.compile_flags
+test/build/*
 
 
 # The following ignores are suggested when creating a fresh Python project on github,

@@ -1,3 +1,7 @@
+#ifndef BERTRAND_PYTHON_INCLUDED
+#error "This file should not be included directly.  Please include <bertrand/python.h> instead."
+#endif
+
 #ifndef BERTRAND_PYTHON_LIST_H
 #define BERTRAND_PYTHON_LIST_H
 
@@ -8,6 +12,12 @@ namespace bertrand {
 namespace py {
 
 
+    /* Convert an arbitrary Python/C++ value into a pybind11 object and then return a
+    new reference.  This is used in the constructors of list and tuple objects, whose
+    SET_ITEM() functions steal a reference.  Converts null pointers into Python None. */
+    
+
+
 /* Wrapper around pybind11::list that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
 class List :
@@ -16,30 +26,73 @@ class List :
     public impl::SequenceOps<List>,
     public impl::ReverseIterable<List>
 {
+    using Ops = impl::Ops<List>;
+    using SequenceOps = impl::SequenceOps<List>;
 
     static PyObject* convert_to_list(PyObject* obj) {
-        PyObject* result = PySequence_List(obj);
-        if (result == nullptr) {
-            throw error_already_set();
+        return PySequence_List(obj);
+    }
+
+    template <typename T>
+    static inline PyObject* convert_newref(T&& value) {
+        if constexpr (detail::is_pyobject<T>::value) {
+            PyObject* result = value.ptr();
+            if (result == nullptr) {
+                result = Py_None;
+            }
+            return Py_NewRef(result);
+        } else {
+            PyObject* result = pybind11::cast(std::forward<T>(value)).release().ptr();
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return result;
         }
-        return result;
     }
 
 public:
     static py::Type Type;
+
+    template <typename T>
+    static constexpr bool like = impl::is_list_like<T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(Object, List, PyList_Check, convert_to_list);
 
     /* Default constructor.  Initializes to an empty list. */
-    List() {
-        m_ptr = PyList_New(0);
+    List() : Object(PyList_New(0), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
-    /* Pack the contents of a braced initializer into a new Python list. */
-    List(const std::initializer_list<impl::Initializer>& contents) {
-        m_ptr = PyList_New(contents.size());
+    /* Pack the contents of a homogenously-typed braced initializer into a new Python
+    list. */
+    template <typename T, std::enable_if_t<!std::is_same_v<impl::Initializer, T>, int> = 0>
+    List(const std::initializer_list<T>& contents) :
+        Object(PyList_New(contents.size()), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+        try {
+            size_t i = 0;
+            for (const T& element : contents) {
+                PyList_SET_ITEM(m_ptr, i++, convert_newref(element));
+            }
+        } catch (...) {
+            Py_DECREF(m_ptr);
+            throw;
+        }
+    }
+
+    /* Pack the contents of a mixed-type braced initializer into a new Python list. */
+    List(const std::initializer_list<impl::Initializer>& contents) :
+        Object(PyList_New(contents.size()), stolen_t{})
+    {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -58,26 +111,7 @@ public:
         }
     }
 
-    /* Pack the contents of a braced initializer into a new Python list. */
-    template <typename T, std::enable_if_t<!std::is_same_v<impl::Initializer, T>, int> = 0>
-    List(const std::initializer_list<T>& contents) {
-        m_ptr = PyList_New(contents.size());
-        if (m_ptr == nullptr) {
-            throw error_already_set();
-        }
-        try {
-            size_t i = 0;
-            for (const T& element : contents) {
-                PyList_SET_ITEM(m_ptr, i++, impl::convert_newref(element));
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Unpack a generic container into a new List.  Equivalent to Python
-    `list(container)`, except that it also works on C++ containers. */
+    /* Explicitly unpack a generic C++ or Python container into a new py::List. */
     template <typename T>
     explicit List(T&& container) {
         if constexpr (detail::is_pyobject<T>::value) {
@@ -100,7 +134,7 @@ public:
                     PyList_SET_ITEM(
                         m_ptr,
                         i++,
-                        impl::convert_newref(std::forward<decltype(item)>(item))
+                        convert_newref(std::forward<decltype(item)>(item))
                     );
                 }
             } catch (...) {
@@ -108,6 +142,27 @@ public:
                 throw;
             }
         }
+    }
+
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
+
+    /* Implicitly convert a Python list into a C++ vector, deque, list, or forward
+    list. */
+    template <
+        typename T,
+        std::enable_if_t<impl::is_list_like<T> && !impl::is_object<T>, int> = 0
+    >
+    inline operator T() const {
+        T result;
+        if constexpr (impl::has_reserve<T>) {
+            result.reserve(size());
+        }
+        for (auto&& item : *this) {
+            result.push_back(item.template cast<typename T::value_type>());
+        }
+        return result;
     }
 
     ///////////////////////////////////
@@ -145,10 +200,10 @@ public:
     }
 
     /* Equivalent to Python `list.extend(items)`. */
-    template <typename T>
+    template <typename T, std::enable_if_t<impl::is_iterable<std::decay_t<T>>, int> = 0>
     inline void extend(T&& items) {
         if constexpr (detail::is_pyobject<T>::value) {
-            this->attr("extend")(std::forward<T>(items));
+            this->attr("extend")(detail::object_or_cast(std::forward<T>(items)));
         } else {
             for (auto&& item : items) {
                 append(std::forward<decltype(item)>(item));
@@ -156,8 +211,8 @@ public:
         }
     }
 
-    /* Equivalent to Python `list.extend(items)`, where items are given as a braced
-    initializer list. */
+    /* Equivalent to Python `list.extend(items)`, where items are given as a
+    homogenously-typed braced initializer list. */
     template <typename T>
     inline void extend(const std::initializer_list<T>& items) {
         for (const T& item : items) {
@@ -165,8 +220,8 @@ public:
         }
     }
 
-    /* Equivalent to Python `list.extend(items)`, where items are given as a braced
-    initializer list. */
+    /* Equivalent to Python `list.extend(items)`, where items are given as a mixed-type
+    braced initializer list. */
     inline void extend(const std::initializer_list<impl::Initializer>& items) {
         for (const impl::Initializer& item : items) {
             append(item.value);
@@ -227,20 +282,15 @@ public:
     }
 
     /* Equivalent to Python `list.sort(reverse=reverse)`. */
-    inline void sort(bool reverse) {
-        this->attr("sort")(py::arg("reverse") = pybind11::bool_(reverse));
+    inline void sort(const Bool& reverse) {
+        this->attr("sort")(py::arg("reverse") = reverse);
     }
 
     /* Equivalent to Python `list.sort(key=key[, reverse=reverse])`.  The key function
     can be given as any C++ function-like object, but users should note that pybind11
     has a hard time parsing generic arguments, so templates and the `auto` keyword
     should be avoided. */
-    template <typename Func>
-    inline void sort(Func&& key, bool reverse = false) {
-        py::cpp_function func(std::forward<Func>(key));
-        pybind11::bool_ flag(reverse);
-        this->attr("sort")(py::arg("key") = func, py::arg("reverse") = flag);
-    }
+    inline void sort(const Function& key, const Bool& reverse = false);
 
     /////////////////////////
     ////    OPERATORS    ////
@@ -260,17 +310,19 @@ public:
         return {*this, PyList_GET_SIZE(this->ptr())};
     }
 
-    using impl::Ops<List>::operator<;
-    using impl::Ops<List>::operator<=;
-    using impl::Ops<List>::operator==;
-    using impl::Ops<List>::operator!=;
-    using impl::Ops<List>::operator>;
-    using impl::Ops<List>::operator>=;
+    using Ops::operator<;
+    using Ops::operator<=;
+    using Ops::operator==;
+    using Ops::operator!=;
+    using Ops::operator>;
+    using Ops::operator>=;
 
-    using impl::SequenceOps<List>::concat;
-    using impl::SequenceOps<List>::operator+;
-    using impl::SequenceOps<List>::operator*;
-    using impl::SequenceOps<List>::operator*=;
+    // TODO: SequenceOps::operator+ should be constrained to only accept List?
+
+    using SequenceOps::concat;
+    using SequenceOps::operator+;
+    using SequenceOps::operator*;
+    using SequenceOps::operator*=;
 
     /* Overload of concat() that allows the operand to be a braced initializer list. */
     template <typename T>
@@ -288,7 +340,7 @@ public:
                 ++i;
             }
             for (const T& item : items) {
-                PyList_SET_ITEM(result, i++, impl::convert_newref(item));
+                PyList_SET_ITEM(result, i++, convert_newref(item));
             }
             return reinterpret_steal<List>(result);
         } catch (...) {
@@ -334,7 +386,7 @@ public:
         return concat(items);
     }
 
-    template <typename T>
+    template <typename T, std::enable_if_t<impl::is_list_like<T>, int> = 0>
     inline List& operator+=(T&& items) {
         extend(std::forward<T>(items));
         return *this;
@@ -352,64 +404,6 @@ public:
     }
 
 };
-
-
-/* Equivalent to Python `sorted(obj)`. */
-inline List sorted(const pybind11::handle& obj) {
-    PyObject* endpoint = PyDict_GetItemString(PyEval_GetBuiltins(), "sorted");
-    if (endpoint == nullptr) {
-        throw error_already_set();
-    }
-    Object call = reinterpret_steal<Object>(endpoint);
-    return call(obj);
-}
-
-
-/* Equivalent to Python `sorted(obj, key=key, reverse=reverse)`. */
-template <typename Func>
-inline List sorted(const pybind11::handle& obj, Func&& key, bool reverse = false) {
-    PyObject* endpoint = PyDict_GetItemString(PyEval_GetBuiltins(), "sorted");
-    if (endpoint == nullptr) {
-        throw error_already_set();
-    }
-    Object call = reinterpret_steal<Object>(endpoint);
-    return call(
-        obj,
-        py::arg("key") = pybind11::cpp_function(std::forward<Func>(key)),
-        py::arg("reverse") = reverse
-    );
-}
-
-
-
-// TODO: sorted() for C++ types
-
-
-
-
-
-/* Equivalent to Python `dir()` with no arguments.  Returns a list of names in the
-current local scope. */
-inline List dir() {
-    PyObject* result = PyObject_Dir(nullptr);
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<List>(result);
-}
-
-
-/* Equivalent to Python `dir(obj)`. */
-inline List dir(const pybind11::handle& obj) {
-    if (obj.ptr() == nullptr) {
-        throw TypeError("cannot call dir() on a null object");
-    }
-    PyObject* result = PyObject_Dir(obj.ptr());
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<List>(result);
-}
 
 
 }  // namespace python

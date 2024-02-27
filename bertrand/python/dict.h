@@ -1,3 +1,7 @@
+#ifndef BERTRAND_PYTHON_INCLUDED
+#error "This file should not be included directly.  Please include <bertrand/python.h> instead."
+#endif
+
 #ifndef BERTRAND_PYTHON_DICT_H
 #define BERTRAND_PYTHON_DICT_H
 
@@ -414,6 +418,14 @@ class Dict : public Object, public impl::Ops<Dict> {
 
 public:
     static py::Type Type;
+
+    template <typename T>
+    static constexpr bool like = impl::is_dictlike<T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(Object, Dict, PyDict_Check, convert_to_dict);
 
     /* Default constructor.  Initializes to empty dict. */

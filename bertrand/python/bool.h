@@ -1,3 +1,7 @@
+#ifndef BERTRAND_PYTHON_INCLUDED
+#error "This file should not be included directly.  Please include <bertrand/python.h> instead."
+#endif
+
 #ifndef BERTRAND_PYTHON_BOOL_H
 #define BERTRAND_PYTHON_BOOL_H
 
@@ -20,8 +24,23 @@ class Bool : public Object, public impl::Ops<Bool> {
         return Py_NewRef(result ? Py_True : Py_False);
     }
 
+    template <typename T>
+    static constexpr bool constructor1 = impl::is_bool_like<T> && !impl::is_object<T>;
+    template <typename T>
+    static constexpr bool constructor2 = impl::is_bool_like<T> && impl::is_object<T>;
+    template <typename T>
+    static constexpr bool constructor3 = 
+        !impl::is_bool_like<T> && std::is_convertible_v<T, bool>;
+    template <typename T>
+    static constexpr bool constructor4 = !constructor3<T> && impl::has_empty<T>;
+    template <typename T>
+    static constexpr bool constructor5 = !constructor4<T> && impl::has_size<T>;
+
 public:
     static py::Type Type;
+
+    template <typename T>
+    static constexpr bool like = impl::is_bool_like<T>;
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -32,36 +51,44 @@ public:
     /* Default constructor.  Initializes to False. */
     Bool() : Object(Py_False, borrowed_t{}) {}
 
-    /* Implicitly convert a C++ bool into a py::Bool. */
-    Bool(bool value) : Object(value ? Py_True : Py_False, borrowed_t{}) {}
+    /* Implicitly convert C++ booleans into py::Bool. */
+    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
+    Bool(const T& value) : Object(value ? Py_True : Py_False, borrowed_t{}) {}
 
-    /* Construct from an integer or floating point value. */
-    template <typename T, std::enable_if_t<std::is_arithmetic<T>::value, int> = 0>
-    explicit Bool(T value) : Bool(value != 0) {}
+    /* Implicitly convert Python booleans into py::Bool.  Borrows a reference. */
+    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
+    Bool(const T& value) : Object(value.ptr(), borrowed_t{}) {}
 
-    /* Construct from any object that implements a `.size()` method. */
-    template <typename T, std::enable_if_t<impl::has_size<T>, int> = 0>
-    explicit Bool(const T& obj) : Bool(obj.size() > 0) {}
+    /* Implicitly convert Python booleans into py::Bool.  Steals a reference. */
+    template <typename T, std::enable_if_t<constructor2<std::decay_t<T>>, int> = 0>
+    Bool(T&& value) : Object(value.release(), stolen_t{}) {}
 
-    /* Construct from any object that implements an `.empty()` method. */
-    template <
-        typename T,
-        std::enable_if_t<!impl::has_size<T> && impl::has_empty<T>, int> = 0
-    >
+    /* Trigger explicit conversions to bool. */
+    template <typename T, std::enable_if_t<constructor3<T>, int> = 0>
+    explicit Bool(const T& value) : Bool(static_cast<bool>(value)) {}
+
+    /* Explicitly convert any C++ or Python object that implements a `.empty()` method
+    into a py::Bool. */
+    template <typename T, std::enable_if_t<constructor4<T>, int> = 0>
     explicit Bool(const T& obj) : Bool(!obj.empty()) {}
 
-    /* Construct from a string literal. */
-    explicit Bool(const char* str) : Bool(std::string(str)) {}
+    /* Explicitly convert and C++ or Python object that implements a `.size()` method
+    into a py::Bool. */
+    template <typename T, std::enable_if_t<constructor5<T>, int> = 0>
+    explicit Bool(const T& obj) : Bool(obj.size() > 0) {}
 
-    /* Construct from a std::tuple. */
+    /* Explicitly convert a std::tuple into a py::Bool. */
     template <typename... Args>
     explicit Bool(const std::tuple<Args...>& obj) : Bool(sizeof...(Args) > 0) {}
+
+    /* Explicitly convert a string literal into a py::Bool. */
+    explicit Bool(const char* str) : Bool(std::string(str)) {}
 
     ///////////////////////////
     ////    CONVERSIONS    ////
     ///////////////////////////
 
-    /* Implicitly convert to a C++ boolean or numeric. */
+    /* Implicitly convert a py::Bool into a C++ boolean. */
     inline operator bool() const {
         return Object::operator bool();
     }
@@ -88,15 +115,18 @@ public:
     using Ops::operator|;
     using Ops::operator^;
 
-    inline Bool& operator&=(const Bool& other) {
+    template <typename T, std::enable_if_t<impl::is_bool_like<T>, int> = 0>
+    inline Bool& operator&=(const T& other) {
         return Ops::operator&=(other);
     }
 
-    inline Bool& operator|=(const Bool& other) {
+    template <typename T, std::enable_if_t<impl::is_bool_like<T>, int> = 0>
+    inline Bool& operator|=(const T& other) {
         return Ops::operator|=(other);
     }
 
-    inline Bool& operator^=(const Bool& other) {
+    template <typename T, std::enable_if_t<impl::is_bool_like<T>, int> = 0>
+    inline Bool& operator^=(const T& other) {
         return Ops::operator^=(other);
     }
 

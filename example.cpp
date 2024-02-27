@@ -1,6 +1,5 @@
 
-#include "bertrand/python/common.h"
-#include <bertrand/bertrand.h>
+#include <bertrand/python.h>
 
 #include <chrono>
 #include <iostream>
@@ -26,9 +25,15 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-    py::Bool b = true;
-    b &= 0.0;
-    py::print(b);
+    py::Range r;
+    py::print(r);
+
+
+    // py::Object o("abc");
+
+    // py::Bool b = o;
+    // // b = 1;
+    // py::print(py::Object::like<py::Bool>);
 
 
 

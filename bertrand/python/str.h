@@ -1,3 +1,7 @@
+#ifndef BERTRAND_PYTHON_INCLUDED
+#error "This file should not be included directly.  Please include <bertrand/python.h> instead."
+#endif
+
 #ifndef BERTRAND_PYTHON_STRING_H
 #define BERTRAND_PYTHON_STRING_H
 
@@ -15,6 +19,8 @@ namespace py {
 
 /* Wrapper around pybind11::str that enables extra C API functionality. */
 class Str : public Object, public impl::Ops<Str>, public impl::SequenceOps<Str> {
+    using Ops = impl::Ops<Str>;
+    using SequenceOps = impl::SequenceOps<Str>;
 
     template <typename T>
     inline auto to_format_string(T&& arg) -> decltype(auto) {
@@ -30,17 +36,24 @@ class Str : public Object, public impl::Ops<Str>, public impl::SequenceOps<Str> 
         }
     }
 
-    static PyObject* convert_to_str(PyObject* obj) {
-        PyObject* result = PyObject_Str(obj);
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return result;
-    }
+    template <typename T>
+    static constexpr bool constructor1 = impl::is_object<T> && impl::is_str_like<T>;
+    template <typename T>
+    static constexpr bool constructor2 = impl::is_object<T> && !impl::is_str_like<T>;
+    template <typename T>
+    static constexpr bool constructor3 = !impl::is_object<T>;
 
 public:
     static py::Type Type;
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, Str, PyUnicode_Check, convert_to_str);
+
+    template <typename T>
+    static constexpr bool like = impl::is_str_like<T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, Str, PyUnicode_Check, PyObject_Str);
 
     /* Default constructor.  Initializes to empty string. */
     Str() : Object(PyUnicode_FromStringAndSize("", 0), stolen_t{}) {
@@ -49,21 +62,14 @@ public:
         }
     }
 
-    /* Get a string representation of an object using Python `str(obj)`. */
-    Str(const pybind11::handle& obj) : Object(PyObject_Str(obj.ptr()), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            throw error_already_set();
-        }
-    }
-
-    /* Construct a unicode string from a null-terminated C string. */
+    /* Implicitly convert C++ string literals into py::Str. */
     Str(const char* string) : Object(PyUnicode_FromString(string), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
-    /* Construct a unicode string from a C++ std::string. */
+    /* Implicitly convert C++ std::string into py::Str. */
     Str(const std::string& string) :
         Object(PyUnicode_FromStringAndSize(string.c_str(), string.size()), stolen_t{})
     {
@@ -72,7 +78,7 @@ public:
         }
     }
 
-    /* Construct a unicode string from a C++ std::string_view. */
+    /* Implicitly convert C++ std::string_view into py::Str. */
     Str(const std::string_view& string) :
         Object(PyUnicode_FromStringAndSize(string.data(), string.size()), stolen_t{})
     {
@@ -81,8 +87,25 @@ public:
         }
     }
 
-    /* Construct a unicode string from a Python bytes object. */
-    Str(const pybind11::bytes& bytes) : Object(PyObject_Str(bytes.ptr()), stolen_t{}) {
+    /* Implicitly convert Python strings into py::Str.  Borrows a reference. */
+    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
+    Str(const T& string) : Object(string.ptr(), borrowed_t{}) {}
+
+    /* Implicitly convert Python strings into py::Str.  Steals a reference. */
+    template <typename T, std::enable_if_t<constructor1<std::decay_t<T>>, int> = 0>
+    Str(T&& string) : Object(string.release(), stolen_t{}) {}
+
+    /* Explicitly convert an arbitrary Python object into a py::Str representation. */
+    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
+    explicit Str(const T& obj) : Object(PyObject_Str(obj.ptr()), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    /* Explicitly convert an arbitrary C++ object into a py::Str representation. */
+    template <typename T, std::enable_if_t<constructor3<T>, int> = 0>
+    explicit Str(const T& obj) : Object(PyObject_Str(pybind11::cast(obj).ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -91,11 +114,12 @@ public:
     /* Construct a unicode string from a printf-style format string.  See the python
     docs for `PyUnicode_FromFormat()` for more details.  Note that this can segfault
     if the argument types do not match the format code(s). */
-    template <typename... Args, std::enable_if_t<(sizeof...(Args) > 0), int> = 0>
-    explicit Str(const char* format, Args&&... args) {
+    template <typename First, typename... Rest>
+    explicit Str(const char* format, First&& first, Rest&&... rest) {
         m_ptr = PyUnicode_FromFormat(
             format,
-            to_format_string(std::forward<Args>(args))...
+            to_format_string(std::forward<First>(first)),
+            to_format_string(std::forward<Rest>(rest))...
         );
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -104,49 +128,41 @@ public:
 
     /* Construct a unicode string from a printf-style format string.  See
     Str(const char*, ...) for more details. */
-    template <typename... Args, std::enable_if_t<(sizeof...(Args) > 0), int> = 0>
-    explicit Str(const std::string& format, Args&&... args) : Str(
-        format.c_str(), std::forward<Args>(args)...
+    template <typename First, typename... Rest>
+    explicit Str(const std::string& format, First&& first, Rest&&... rest) : Str(
+        format.c_str(), std::forward<First>(first), std::forward<Rest>(rest)...
     ) {}
 
     /* Construct a unicode string from a printf-style format string.  See
     Str(const char*, ...) for more details. */
-    template <typename... Args, std::enable_if_t<(sizeof...(Args) > 0), int> = 0>
-    explicit Str(const std::string_view& format, Args&&... args) : Str(
-        format.data(), std::forward<Args>(args)...
+    template <typename First, typename... Rest>
+    explicit Str(const std::string_view& format, First&& first, Rest&&... rest) : Str(
+        format.data(), std::forward<First>(first), std::forward<Rest>(rest)...
     ) {}
 
     /* Construct a unicode string from a printf-style format string.  See
     Str(const char*, ...) for more details. */
     template <
         typename T,
-        typename... Args,
-        std::enable_if_t<(
-            (std::is_base_of_v<Str, T> || std::is_base_of_v<pybind11::str, T>) &&
-            sizeof...(Args) > 0),
-            int
-        > = 0
+        typename First,
+        typename... Rest,
+        std::enable_if_t<constructor1<T>, int> = 0
     >
-    explicit Str(const T& format, Args&&... args) : Str(
-        format.template cast<std::string>(), std::forward<Args>(args)...
+    explicit Str(const T& format, First&& first, Rest&&... rest) : Str(
+        format.template cast<std::string>(),
+        std::forward<First>(first),
+        std::forward<Rest>(rest)...
     ) {}
-
-    // TODO: construct from an arbitrary C++ object.  Would cast to a python object
-    // and then take a string representation of that object.
 
     ///////////////////////////
     ////    CONVERSIONS    ////
     ///////////////////////////
 
-    /* Implicitly convert a Python string into a C++ string. */
+    /* Implicitly convert a py::Str into a C++ std::string. */
     inline operator std::string() const {
-        Object temp = reinterpret_steal<Object>(PyUnicode_AsUTF8String(this->ptr()));
-        if (temp.ptr() == nullptr) {
-            throw error_already_set();
-        }
-        char* result;
         Py_ssize_t length;
-        if (PyBytes_AsStringAndSize(temp.ptr(), &result, &length) != 0) {
+        const char* result = PyUnicode_AsUTF8AndSize(this->ptr(), &length);
+        if (result == nullptr) {
             throw error_already_set();
         }
         return std::string(result, length);
@@ -185,9 +201,7 @@ public:
 
     /* Fill the string with a given character.  The input must be convertible to a
     string with a single character. */
-    template <typename T>
-    void fill(T&& ch) {
-        Str str = cast<Str>(std::forward<T>(ch));
+    void fill(const Str& str) {
         if (str.size() != 1) {
             std::ostringstream msg;
             msg << "fill character must be a single character, not '" << str << "'";
@@ -233,17 +247,14 @@ public:
     }
 
     /* Equivalent to Python `str.center(width)`. */
-    inline Str center(Py_ssize_t width) const {
+    inline Str center(const Int& width) const {
         return this->attr("center")(width);
     }
 
     /* Equivalent to Python `str.center(width, fillchar)`. */
     template <typename T>
-    inline Str center(Py_ssize_t width, T&& fillchar) const {
-        return this->attr("center")(
-            width,
-            detail::object_or_cast(std::forward<T>(fillchar))
-        );
+    inline Str center(const Int& width, const Str& fillchar) const {
+        return this->attr("center")(width, fillchar);
     }
 
     /* Equivalent to Python `str.copy()`. */
@@ -260,18 +271,12 @@ public:
     }
 
     /* Count the number of occurrences of a substring within the string. */
-    template <typename T>
     inline Py_ssize_t count(
-        T&& sub,
+        const Str& sub,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
-        Py_ssize_t result = PyUnicode_Count(
-            this->ptr(),
-            detail::object_or_cast(std::forward<T>(sub)).ptr(),
-            start,
-            stop
-        );
+        Py_ssize_t result = PyUnicode_Count(this->ptr(), sub.ptr(), start, stop);
         if (result == -1) {
             throw error_already_set();
         }
@@ -280,29 +285,19 @@ public:
 
     /* Equivalent to Python `str.encode(encoding)`. */
     inline Bytes encode(
-        const char* encoding = "utf-8",
-        const char* errors = "strict"
+        const Str& encoding = "utf-8",
+        const Str& errors = "strict"
     ) const {
-        return this->attr("encode")(
-            detail::object_or_cast(encoding),
-            detail::object_or_cast(errors)
-        );
+        return this->attr("encode")(encoding, errors);
     }
 
     /* Equivalent to Python `str.endswith(suffix[, start[, end]])`. */
-    template <typename T>
     inline bool endswith(
-        T&& suffix,
+        const Str& suffix,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
-        int result = PyUnicode_Tailmatch(
-            this->ptr(),
-            detail::object_or_cast(std::forward<T>(suffix)).ptr(),
-            start,
-            stop,
-            1
-        );
+        int result = PyUnicode_Tailmatch(this->ptr(), suffix.ptr(), start, stop, 1);
         if (result == -1) {
             throw error_already_set();
         }
@@ -310,24 +305,17 @@ public:
     }
 
     /* Equivalent to Python `str.expandtabs()`. */
-    inline Str expandtabs(Py_ssize_t tabsize = 8) const {
+    inline Str expandtabs(const Int& tabsize = 8) const {
         return this->attr("expandtabs")(tabsize);
     }
 
     /* Equivalent to Python `str.find(sub[, start[, stop]])`. */
-    template <typename T>
     inline Py_ssize_t find(
-        T&& sub,
+        const Str& sub,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
-        return PyUnicode_Find(
-            this->ptr(),
-            detail::object_or_cast(std::forward<T>(sub)).ptr(),
-            start,
-            stop,
-            1
-        );
+        return PyUnicode_Find(this->ptr(), sub.ptr(), start, stop, 1);
     }
 
     /* Equivalent to Python `str.find(sub[, start[, stop]])`, except that the substring
@@ -349,7 +337,7 @@ public:
     }
 
     /* Equivalent to Python `str.format_map(mapping)`. */
-    template <typename T>
+    template <typename T, std::enable_if_t<impl::is_dict_like<std::decay_t<T>>, int> = 0>
     inline Str format_map(T&& mapping) const {
         return this->attr("format_map")(
             detail::object_or_cast(std::forward<T>(mapping))
@@ -359,17 +347,11 @@ public:
     /* Equivalent to Python `str.index(sub[, start[, end]])`. */
     template <typename T>
     inline Py_ssize_t index(
-        T&& sub,
+        const Str& sub,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
-        Py_ssize_t result = PyUnicode_Find(
-            this->ptr(),
-            detail::object_or_cast(std::forward<T>(sub)).ptr(),
-            start,
-            stop,
-            1
-        );
+        Py_ssize_t result = PyUnicode_Find(this->ptr(), sub.ptr(), start, stop, 1);
         if (result == -1) {
             throw ValueError("substring not found");
         }
@@ -451,7 +433,7 @@ public:
     }
 
     /* Equivalent of Python `str.join(iterable)`. */
-    template <typename T>
+    template <typename T, std::enable_if_t<impl::is_iterable<std::decay_t<T>>, int> = 0>
     inline Str join(T&& iterable) const {
         PyObject* result = PyUnicode_Join(
             this->ptr(),
@@ -463,31 +445,27 @@ public:
         return reinterpret_steal<Str>(result);
     }
 
-    /* Equivalent of Python `str.join(iterable)`, where iterable is given as a braced
-    initializer. */
+    /* Equivalent of Python `str.join(iterable)`, where iterable is given as a
+    homogenously-typed braced initializer list. */
     template <typename T>
     inline Str join(const std::initializer_list<T>& iterable) const {
         return join(py::List(iterable));
     }
 
-    /* Equivalent of Python `str.join(iterable)`, where iterable is given as a braced
-    initializer. */
+    /* Equivalent of Python `str.join(iterable)`, where iterable is given as a
+    mixed-type braced initializer list. */
     inline Str join(const std::initializer_list<impl::Initializer>& iterable) const {
         return join(py::List(iterable));
     }
 
     /* Equivalent to Python `str.ljust(width)`. */
-    inline Str ljust(Py_ssize_t width) const {
+    inline Str ljust(const Int& width) const {
         return this->attr("ljust")(width);
     }
 
     /* Equivalent to Python `str.ljust(width, fillchar)`. */
-    template <typename T>
-    inline Str ljust(Py_ssize_t width, T&& fillchar) const {
-        return this->attr("ljust")(
-            width,
-            detail::object_or_cast(std::forward<T>(fillchar))
-        );
+    inline Str ljust(const Int& width, const Str& fillchar) const {
+        return this->attr("ljust")(width, fillchar);
     }
 
     /* Equivalent to Python `str.lower()`. */
@@ -501,9 +479,8 @@ public:
     }
 
     /* Equivalent to Python `str.lstrip(chars)`. */
-    template <typename T>
-    inline Str lstrip(T&& chars) const {
-        return this->attr("lstrip")(detail::object_or_cast(std::forward<T>(chars)));
+    inline Str lstrip(const Str& chars) const {
+        return this->attr("lstrip")(chars);
     }
 
     /* Equivalent to Python (static) `str.maketrans(x)`. */
@@ -545,34 +522,26 @@ public:
     }
 
     /* Equivalent to Python `str.partition(sep)`. */
-    template <typename T>
-    inline Tuple partition(T&& sep) const {
-        return this->attr("partition")(detail::object_or_cast(std::forward<T>(sep)));
+    inline Tuple partition(const Str& sep) const {
+        return this->attr("partition")(sep);
     }
 
     /* Equivalent to Python `str.removeprefix(prefix)`. */
-    template <typename T>
-    inline Str removeprefix(T&& prefix) const {
-        return this->attr("removeprefix")(
-            detail::object_or_cast(std::forward<T>(prefix))
-        );
+    inline Str removeprefix(const Str& prefix) const {
+        return this->attr("removeprefix")(prefix);
     }
 
     /* Equivalent to Python `str.removesuffix(suffix)`. */
-    template <typename T>
-    inline Str removesuffix(T&& suffix) const {
-        return this->attr("removesuffix")(
-            detail::object_or_cast(std::forward<T>(suffix))
-        );
+    inline Str removesuffix(const Str& suffix) const {
+        return this->attr("removesuffix")(suffix);
     }
 
     /* Equivalent to Python `str.replace(old, new[, count])`. */
-    template <typename T, typename U>
-    inline Str replace(T&& substr, U&& replstr, Py_ssize_t maxcount = -1) const {
+    inline Str replace(const Str& sub, const Str& repl, Py_ssize_t maxcount = -1) const {
         PyObject* result = PyUnicode_Replace(
             this->ptr(),
-            detail::object_or_cast(std::forward<T>(substr)).ptr(),
-            detail::object_or_cast(std::forward<U>(replstr)).ptr(),
+            sub.ptr(),
+            repl.ptr(),
             maxcount
         );
         if (result == nullptr) {
@@ -582,13 +551,12 @@ public:
     }
 
     /* Equivalent to Python `str.rfind(sub[, start[, stop]])`. */
-    template <typename T>
     inline Py_ssize_t rfind(
-        T&& sub,
+        const Str& sub,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
-        return PyUnicode_Find(this->ptr(), sub, start, stop, -1);
+        return PyUnicode_Find(this->ptr(), sub.ptr(), start, stop, -1);
     }
 
     /* Equivalent to Python `str.rfind(sub[, start[, stop]])`, except that the
@@ -602,13 +570,12 @@ public:
     }
 
     /* Equivalent to Python `str.rindex(sub[, start[, stop]])`. */
-    template <typename T>
     inline Py_ssize_t rindex(
-        T&& sub,
+        const Str& sub,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
-        Py_ssize_t result = PyUnicode_Find(this->ptr(), sub, start, stop, -1);
+        Py_ssize_t result = PyUnicode_Find(this->ptr(), sub.ptr(), start, stop, -1);
         if (result == -1) {
             throw ValueError("substring not found");
         }
@@ -630,23 +597,18 @@ public:
     }
 
     /* Equivalent to Python `str.rjust(width)`. */
-    inline Str rjust(Py_ssize_t width) const {
+    inline Str rjust(const Int& width) const {
         return this->attr("rjust")(width);
     }
 
     /* Equivalent to Python `str.rjust(width, fillchar)`. */
-    template <typename T>
-    inline Str rjust(Py_ssize_t width, T&& fillchar) const {
-        return this->attr("rjust")(
-            width,
-            detail::object_or_cast(std::forward<T>(fillchar))
-        );
+    inline Str rjust(const Int& width, const Str& fillchar) const {
+        return this->attr("rjust")(width, fillchar);
     }
 
     /* Equivalent to Python `str.rpartition(sep)`. */
-    template <typename T>
-    inline Tuple rpartition(T&& sep) const {
-        return this->attr("rpartition")(detail::object_or_cast(std::forward<T>(sep)));
+    inline Tuple rpartition(const Str& sep) const {
+        return this->attr("rpartition")(sep);
     }
 
     /* Equivalent to Python `str.rsplit()`. */
@@ -655,12 +617,8 @@ public:
     }
 
     /* Equivalent to Python `str.rsplit(sep[, maxsplit])`. */
-    template <typename T>
-    inline List rsplit(T&& sep, Py_ssize_t maxsplit = -1) const {
-        return this->attr("rsplit")(
-            detail::object_or_cast(std::forward<T>(sep)),
-            maxsplit
-        );
+    inline List rsplit(const Str& sep, const Int& maxsplit = -1) const {
+        return this->attr("rsplit")(sep, maxsplit);
     }
 
     /* Equivalent to Python `str.rstrip()`. */
@@ -669,9 +627,8 @@ public:
     }
 
     /* Equivalent to Python `str.rstrip(chars)`. */
-    template <typename T>
-    inline Str rstrip(T&& chars) const {
-        return this->attr("rstrip")(detail::object_or_cast(std::forward<T>(chars)));
+    inline Str rstrip(const Str& chars) const {
+        return this->attr("rstrip")(chars);
     }
 
     /* Equivalent to Python `str.split()`. */
@@ -684,13 +641,8 @@ public:
     }
 
     /* Equivalent to Python `str.split(sep[, maxsplit])`. */
-    template <typename T>
-    inline List split(T&& separator, Py_ssize_t maxsplit = -1) const {
-        PyObject* result = PyUnicode_Split(
-            this->ptr(),
-            detail::object_or_cast(std::forward<T>(separator)).ptr(),
-            maxsplit
-        );
+    inline List split(const Str& sep, Py_ssize_t maxsplit = -1) const {
+        PyObject* result = PyUnicode_Split(this->ptr(), sep.ptr(), maxsplit);
         if (result == nullptr) {
             throw error_already_set();
         }
@@ -707,19 +659,12 @@ public:
     }
 
     /* Equivalent to Python `str.startswith(prefix[, start[, end]])`. */
-    template <typename T>
     inline bool startswith(
-        T&& prefix,
+        const Str& prefix,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
-        int result = PyUnicode_Tailmatch(
-            this->ptr(),
-            detail::object_or_cast(std::forward<T>(prefix)).ptr(),
-            start,
-            stop,
-            -1
-        );
+        int result = PyUnicode_Tailmatch(this->ptr(), prefix.ptr(), start, stop, -1);
         if (result == -1) {
             throw error_already_set();
         }
@@ -732,9 +677,8 @@ public:
     }
 
     /* Equivalent to Python `str.strip(chars)`. */
-    template <typename T>
-    inline Str strip(T&& chars) const {
-        return this->attr("strip")(detail::object_or_cast(std::forward<T>(chars)));
+    inline Str strip(const Str& chars) const {
+        return this->attr("strip")(chars);
     }
 
     /* Equivalent to Python `str.swapcase()`. */
@@ -759,7 +703,7 @@ public:
     }
 
     /* Equivalent to Python `str.zfill(width)`. */
-    inline Str zfill(Py_ssize_t width) const {
+    inline Str zfill(const Int& width) const {
         return this->attr("zfill")(width);
     }
 
@@ -768,12 +712,8 @@ public:
     /////////////////////////
 
     /* Equivalent to Python `sub in str`. */
-    template <typename T>
-    inline bool contains(T&& sub) const {
-        int result = PyUnicode_Contains(
-            this->ptr(),
-            detail::object_or_cast(std::forward<T>(sub)).ptr()
-        );
+    inline bool contains(const Str& sub) const {
+        int result = PyUnicode_Contains(this->ptr(), sub.ptr());
         if (result == -1) {
             throw error_already_set();
         }
@@ -781,49 +721,32 @@ public:
     }
 
     /* Concatenate this string with another. */
-    template <typename T>
-    inline Str concat(T&& other) const {
-        PyObject* result = PyUnicode_Concat(
-            this->ptr(), detail::object_or_cast(std::forward<T>(other)).ptr()
-        );
+    inline Str concat(const Str& other) const {
+        PyObject* result = PyUnicode_Concat(this->ptr(), other.ptr());
         if (result == nullptr) {
             throw error_already_set();
         }
         return reinterpret_steal<Str>(result);
     }
 
-    using impl::Ops<Str>::operator<;
-    using impl::Ops<Str>::operator<=;
-    using impl::Ops<Str>::operator==;
-    using impl::Ops<Str>::operator!=;
-    using impl::Ops<Str>::operator>=;
-    using impl::Ops<Str>::operator>;
+    using Ops::operator<;
+    using Ops::operator<=;
+    using Ops::operator==;
+    using Ops::operator!=;
+    using Ops::operator>=;
+    using Ops::operator>;
 
     using Object::operator[];
-    using impl::SequenceOps<Str>::operator+;
-    using impl::SequenceOps<Str>::operator*;
-    using impl::SequenceOps<Str>::operator*=;
+    using SequenceOps::operator+;
+    using SequenceOps::operator*;
+    using SequenceOps::operator*=;
 
-    template <typename T>
-    inline Str& operator+=(T&& other) {
-        *this = concat(std::forward<T>(other));
+    inline Str& operator+=(const Str& other) {
+        *this = concat(other);
         return *this;
     }
 
 };
-
-
-////////////////////////////////////
-////    FORWARD DECLARATIONS    ////
-////////////////////////////////////
-
-
-inline Int::Int(const py::Str& str, int base) {
-    m_ptr = PyLong_FromUnicodeObject(str.ptr(), base);
-    if (m_ptr == nullptr) {
-        throw error_already_set();
-    }
-}
 
 
 ////////////////////////////////
@@ -924,10 +847,8 @@ namespace std {
         size_t operator()(const bertrand::py::Str& str) const {
             // ASCII string special case (taken directly from CPython source)
             // see: cpython/objects/setobject.c  -> set_contains_key()
-            Py_ssize_t result;
-            if (!PyUnicode_CheckExact(str.ptr()) ||
-                (result = _PyASCIIObject_CAST(str.ptr())->hash) == -1
-            ) {
+            Py_ssize_t result = _PyASCIIObject_CAST(str.ptr())->hash;
+            if (result == -1) {
                 result = PyObject_Hash(str.ptr());  // fall back to PyObject_Hash()
                 if (result == -1 && PyErr_Occurred()) {
                     throw bertrand::py::error_already_set();

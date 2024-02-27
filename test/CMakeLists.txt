@@ -45,13 +45,13 @@ link_directories(
 )
 
 # specify the executable
-add_executable(cpp_test ${TEST_SOURCES})
+add_executable(run_cpp_test ${TEST_SOURCES})
 
 # link against GoogleTest, PCRE2
-target_link_libraries(cpp_test ${Python3_LIBRARIES} gtest pcre2-8)
+target_link_libraries(run_cpp_test ${Python3_LIBRARIES} gtest pcre2-8)
 
 # ensure C++17
-set_target_properties(cpp_test PROPERTIES
+set_target_properties(run_cpp_test PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
 )

@@ -1,8 +1,12 @@
+#ifndef BERTRAND_PYTHON_INCLUDED
+#error "This file should not be included directly.  Please include <bertrand/python.h> instead."
+#endif
+
 #ifndef BERTRAND_PYTHON_COMPLEX_H
 #define BERTRAND_PYTHON_COMPLEX_H
 
-#include <complex>
 #include "common.h"
+#include <complex>
 
 
 namespace bertrand {
@@ -12,64 +16,92 @@ namespace py {
 /* New subclass of pybind11::object that represents a complex number at the Python
 level. */
 class Complex : public Object, public impl::Ops<Complex> {
+    using Ops = impl::Ops<Complex>;
 
     static PyObject* convert_to_complex(PyObject* obj) {
         Py_complex complex_struct = PyComplex_AsCComplex(obj);
         if (complex_struct.real == -1.0 && PyErr_Occurred()) {
             throw error_already_set();
         }
-        PyObject* result = PyComplex_FromDoubles(
-            complex_struct.real, complex_struct.imag
-        );
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return result;
+        return PyComplex_FromDoubles(complex_struct.real, complex_struct.imag);
     }
+
+    template <typename T>
+    static constexpr bool constructor1 = impl::is_complex_like<T> && impl::is_object<T>;
+    template <typename T>
+    static constexpr bool constructor2 = (
+        (impl::is_bool_like<T> || impl::is_int_like<T> || impl::is_float_like<T>) &&
+        !impl::is_object<T>
+    );
 
 public:
     static py::Type Type;
-    BERTRAND_PYTHON_OPERATORS(impl::Ops<Complex>)
+
+    template <typename T>
+    static constexpr bool like = impl::is_complex_like<T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(Object, Complex, PyComplex_Check, convert_to_complex)
 
     /* Default constructor.  Initializes to 0+0j. */
-    Complex() : Object(PyComplex_FromDoubles(0.0, 0.0), stolen_t{}) {}
-
-    /* Construct a Complex number from a C++ std::complex. */
-    template <typename T>
-    Complex(const std::complex<T>& value) : Object([&value] {
-        PyObject* result = PyComplex_FromDoubles(
-            static_cast<double>(value.real()),
-            static_cast<double>(value.imag())
-        );
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return result;
-    }(), stolen_t{}) {}
-
-    /* Construct a Complex number from a real component as a C++ integer or float. */
-    template <typename Real, std::enable_if_t<std::is_arithmetic_v<Real>, int> = 0>
-    Complex(Real real) {
-        m_ptr = PyComplex_FromDoubles(static_cast<double>(real), 0.0);
+    Complex() : Object(PyComplex_FromDoubles(0.0, 0.0), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
-    /* Construct a Complex number from separate real and imaginary components as C++
-    integers or floats. */
+    /* Implicitly convert a C++ std::complex<> to py::Complex. */
+    template <typename T>
+    Complex(const std::complex<T>& value) {
+        m_ptr = PyComplex_FromDoubles(value.real(), value.imag());
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    /* Implicitly convert Python complex numbers to py::Complex.  Borrows a
+    reference. */
+    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
+    Complex(const T& value) : Object(value.ptr(), borrowed_t{}) {}
+
+    /* Implicitly convert Python complex number to py::Complex.  Steals a reference. */
+    template <typename T, std::enable_if_t<constructor1<std::decay_t<T>>, int> = 0>
+    Complex(T&& value) : Object(value.release(), stolen_t{}) {}
+
+    /* Explicitly convert a C++ boolean, integer, or float into a py::Complex, using
+    the number as a real component. */
+    template <typename Real, std::enable_if_t<constructor2<Real>, int> = 0>
+    explicit Complex(const Real& real) {
+        m_ptr = PyComplex_FromDoubles(real, 0.0);
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    /* Explicitly convert a pair of C++ booleans, integers, or floats into a
+    py::Complex as separate real and imaginary components. */
     template <
         typename Real,
         typename Imag,
-        std::enable_if_t<std::is_arithmetic_v<Real> && std::is_arithmetic_v<Imag>, int> = 0
+        std::enable_if_t<constructor2<Real> && constructor2<Imag>, int> = 0
     >
-    Complex(Real real, Imag imag) {
-        m_ptr = PyComplex_FromDoubles(static_cast<double>(real), static_cast<double>(imag));
+    explicit Complex(const Real& real, const Imag& imag) {
+        m_ptr = PyComplex_FromDoubles(real, imag);
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
+
+    /* Explicitly convert a string into a complex number. */
+    template <typename T, std::enable_if_t<impl::is_str_like<T>, int> = 0>
+    explicit Complex(const T& value);
+
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
 
     /* Implicitly convert a Complex number into a C++ std::complex. */
     template <typename T>
@@ -101,7 +133,89 @@ public:
         if (complex_struct.real == -1.0 && PyErr_Occurred()) {
             throw error_already_set();
         }
-        return {complex_struct.real, -complex_struct.imag};
+        return Complex(complex_struct.real, -complex_struct.imag);
+    }
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    using Ops::operator<;
+    using Ops::operator<=;
+    using Ops::operator==;
+    using Ops::operator!=;
+    using Ops::operator>=;
+    using Ops::operator>;
+    using Ops::operator~;
+    using Ops::operator+;
+    using Ops::operator-;
+    using Ops::operator*;
+    using Ops::operator/;
+    using Ops::operator%;
+    using Ops::operator<<;
+    using Ops::operator>>;
+    using Ops::operator&;
+    using Ops::operator|;
+    using Ops::operator^;
+
+private:
+
+    template <typename T>
+    static constexpr bool inplace_op = (
+        impl::is_bool_like<T> || impl::is_int_like<T> || impl::is_float_like<T> ||
+        impl::is_complex_like<T>
+    );
+
+public:
+
+    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
+    inline Int& operator+=(const T& other) {
+        return Ops::operator+=(other);
+    }
+
+    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
+    inline Int& operator-=(const T& other) {
+        return Ops::operator-=(other);
+    }
+
+    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
+    inline Int& operator*=(const T& other) {
+        return Ops::operator*=(other);
+    }
+
+    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
+    inline Int& operator/=(const T& other) {
+        return Ops::operator/=(other);
+    }
+
+    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
+    inline Int& operator%=(const T& other) {
+        return Ops::operator%=(other);
+    }
+
+    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
+    inline Int& operator<<=(const T& other) {
+        return Ops::operator<<=(other);
+    }
+
+    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
+    inline Int& operator>>=(const T& other) {
+        return Ops::operator>>=(other);
+    }
+
+    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
+    inline Int& operator&=(const T& other) {
+        return Ops::operator&=(other);
+    }
+
+    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
+    inline Int& operator|=(const T& other) {
+        return Ops::operator|=(other);
+    }
+
+    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
+    inline Int& operator^=(const T& other) {
+        return Ops::operator^=(other);
     }
 
 };

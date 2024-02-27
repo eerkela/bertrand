@@ -1,11 +1,12 @@
+#ifndef BERTRAND_PYTHON_INCLUDED
+#error "This file should not be included directly.  Please include <bertrand/python.h> instead."
+#endif
+
 #ifndef BERTRAND_PYTHON_TYPE_H
 #define BERTRAND_PYTHON_TYPE_H
 
 #include "common.h"
-#include "datetime.h"
 #include "tuple.h"
-#include "set.h"
-#include "dict.h"
 
 
 namespace bertrand {
@@ -16,31 +17,28 @@ namespace py {
 ability to create new types on the fly by calling the type() metaclass, or directly
 querying PyTypeObject* fields. */
 class Type : public Object, public impl::Ops<Type> {
+    using Ops = impl::Ops<Type>;
 
     static PyObject* convert_to_type(PyObject* obj) {
         return Py_NewRef(reinterpret_cast<PyObject*>(Py_TYPE(obj)));
     }
 
 public:
+
+    template <typename T>
+    static constexpr bool like = impl::is_type_like<T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(Object, Type, PyType_Check, convert_to_type);
 
     /* Default constructor.  Initializes to the built-in type metaclass. */
-    inline Type() : Object((PyObject*) &PyType_Type, borrowed_t{}) {}
+    Type() : Object((PyObject*) &PyType_Type, borrowed_t{}) {}
 
     /* Dynamically create a new Python type by calling the type() metaclass. */
-    template <typename T, typename U, typename V>
-    explicit Type(T&& name, U&& bases, V&& dict) {
-        m_ptr = PyObject_CallFunctionObjArgs(
-            reinterpret_cast<PyObject*>(&PyType_Type),
-            detail::object_or_cast(std::forward<T>(name)).ptr(),
-            detail::object_or_cast(std::forward<U>(bases)).ptr(),
-            detail::object_or_cast(std::forward<V>(dict)).ptr(),
-            nullptr
-        );
-        if (m_ptr == nullptr) {
-            throw error_already_set();
-        }
-    }
+    explicit Type(const Str& name, const Tuple& bases, const Dict& dict);
 
     /* Create a new heap type from a CPython PyType_Spec*.  Note that this is not
     exactly interchangeable with a standard call to the type metaclass directly, as it
@@ -340,11 +338,11 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    using impl::Ops<Type>::operator==;
-    using impl::Ops<Type>::operator!=;
-
-    // NOTE: indexing a Type object calls its __class_getitem__() method, just like
+    // NOTE: indexing a Type object calls its __class_getitem__() method just like
     // normal python.
+
+    using Ops::operator==;
+    using Ops::operator!=;
 };
 
 
@@ -410,72 +408,6 @@ public:
 
     BERTRAND_PYTHON_OPERATORS(impl::Ops<Super>)
 };
-
-
-// TODO: Regex and Decimal types?
-
-
-/* Every Python type has a static `Type` member that gives access to the Python type
-object associated with instances of that class. */
-inline Type Object::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
-inline Type Bool::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyBool_Type));
-inline Type Int::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyLong_Type));
-inline Type Float::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFloat_Type));
-inline Type Complex::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyComplex_Type));
-inline Type Slice::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PySlice_Type));
-inline Type Range::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyRange_Type));
-inline Type List::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyList_Type));
-inline Type Tuple::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyTuple_Type));
-inline Type Set::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PySet_Type));
-inline Type FrozenSet::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFrozenSet_Type));
-inline Type Dict::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDict_Type));
-inline Type MappingProxy::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictProxy_Type));
-inline Type KeysView::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictKeys_Type));
-inline Type ValuesView::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictValues_Type));
-inline Type ItemsView::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictItems_Type));
-inline Type Str::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type));
-inline Type Code::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyCode_Type));
-inline Type Frame::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFrame_Type));
-inline Type Function::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFunction_Type));
-inline Type Method::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyInstanceMethod_Type));
-inline Type ClassMethod::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type));
-inline Type StaticMethod::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyStaticMethod_Type));
-inline Type Property::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyProperty_Type));
-inline Type Timedelta::Type = [] {
-    if (impl::DATETIME_IMPORTED) {
-        return reinterpret_borrow<py::Type>(impl::PyDelta_Type.ptr());
-    } else {
-        return py::Type();
-    }
-}();
-inline Type Timezone::Type = [] {
-    if (impl::DATETIME_IMPORTED) {
-        return reinterpret_borrow<py::Type>(impl::PyTZInfo_Type.ptr());
-    } else {
-        return py::Type();
-    }
-}();
-inline Type Date::Type = [] {
-    if (impl::DATETIME_IMPORTED) {
-        return reinterpret_borrow<py::Type>(impl::PyDate_Type.ptr());
-    } else {
-        return py::Type();
-    }
-}();
-inline Type Time::Type = [] {
-    if (impl::DATETIME_IMPORTED) {
-        return reinterpret_borrow<py::Type>(impl::PyTime_Type.ptr());
-    } else {
-        return py::Type();
-    }
-}();
-inline Type Datetime::Type = [] {
-    if (impl::DATETIME_IMPORTED) {
-        return reinterpret_borrow<py::Type>(impl::PyDateTime_Type.ptr());
-    } else {
-        return py::Type();
-    }
-}();
 
 
 }  // namespace python

@@ -22,6 +22,13 @@
 
 namespace assertions {
 
+    template <typename L, typename R, typename = void>
+    static constexpr bool is_assignable = false;
+    template <typename L, typename R>
+    static constexpr bool is_assignable<L, R, std::void_t<decltype(
+        std::declval<L&>() = std::declval<R>()
+    )>> = true;
+
     #define CHECK_UNARY_OPERATOR(name, op)                                              \
         template <typename T, typename = void>                                          \
         static constexpr bool name = false;                                             \

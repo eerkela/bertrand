@@ -1,3 +1,7 @@
+#ifndef BERTRAND_PYTHON_INCLUDED
+#error "This file should not be included directly.  Please include <bertrand/python.h> instead."
+#endif
+
 #ifndef BERTRAND_PYTHON_FUNC_H
 #define BERTRAND_PYTHON_FUNC_H
 
@@ -12,6 +16,12 @@
 #include "dict.h"
 #include "str.h"
 #include "tuple.h"
+
+
+// TODO: move callable() proxy up to start of file and have Function use it for its
+// like<> template.  Can then remove it from common.h
+// -> or place the zero-arg callable<> check in common.h and hook into it here.  That
+// would allow us to define it in python.h and decouple it here.
 
 
 namespace bertrand {
@@ -216,21 +226,15 @@ class Code : public Handle, public impl::Ops<Code> {
 public:
     static py::Type Type;
 
-    /* Default constructor deleted to avoid confusion + possibility of nulls. */
+    template <typename T>
+    static constexpr bool like = impl::is_same_or_subclass_of<Code, T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Default constructor deleted to avoid confusion. */
     Code() = delete;
-
-    /* Parse and compile a source string into a Python code object. */
-    explicit Code(const char* source) : Handle(compile(source)) {
-        impl::LIVING_CODE_OBJECTS.insert(this);
-    }
-
-    /* Parse and compile a source string into a Python code object. */
-    explicit Code(const std::string& source) : Handle(compile(source)) {
-        impl::LIVING_CODE_OBJECTS.insert(this);
-    }
-
-    /* Parse and compile a source string into a Python code object. */
-    explicit Code(const std::string_view& source) : Code(source.data()) {}
 
     /* Copy constructor. */
     Code(const Code& other) : Handle(other.m_ptr) {
@@ -244,6 +248,19 @@ public:
         impl::LIVING_CODE_OBJECTS.erase(&other);
         impl::LIVING_CODE_OBJECTS.insert(this);
     }
+
+    /* Parse and compile a source string into a Python code object. */
+    explicit Code(const char* source) : Handle(compile(source)) {
+        impl::LIVING_CODE_OBJECTS.insert(this);
+    }
+
+    /* Parse and compile a source string into a Python code object. */
+    explicit Code(const std::string& source) : Handle(compile(source)) {
+        impl::LIVING_CODE_OBJECTS.insert(this);
+    }
+
+    /* Parse and compile a source string into a Python code object. */
+    explicit Code(const std::string_view& source) : Code(source.data()) {}
 
     /* Copy assignment operator. */
     Code& operator=(const Code& other) {
@@ -429,7 +446,7 @@ public:
         return this;
     }
 
-    inline operator bool() const noexcept {
+    inline explicit operator bool() const noexcept {
         return m_ptr != nullptr;
     }
 
@@ -459,6 +476,14 @@ class Frame : public Object, public impl::Ops<Frame> {
 
 public:
     static py::Type Type;
+
+    template <typename T>
+    static constexpr bool like = impl::is_same_or_subclass_of<Frame, T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(Object, Frame, PyFrame_Check, convert_to_frame);
 
     /* Default constructor.  Initializes to the current execution frame. */
@@ -482,6 +507,12 @@ public:
             }
         }
     }
+
+    /* Copy constructor. */
+    Frame(const Frame& frame) : Object(frame.ptr(), borrowed_t{}) {}
+
+    /* Move constructor. */
+    Frame(Frame&& frame) : Object(frame.release(), stolen_t{}) {}
 
     /////////////////////////////////
     ////    PyFrame_* METHODS    ////
@@ -617,19 +648,48 @@ class Function : public Object, public impl::Ops<Function> {
 
 public:
     static py::Type Type;
+
+    template <typename T>
+    static constexpr bool like = impl::is_func_like<T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(Object, Function, PyFunction_Check, convert_to_function);
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Function() = delete;
 
-    /* Construct a new function from a C++ lambda or function pointer. */
+    /* Implicitly convert a C++ function or callable object into a py::Function. */
     template <
-        typename Func,
-        std::enable_if_t<!std::is_base_of_v<pybind11::handle, std::decay_t<Func>>, int> = 0
+        typename T,
+        std::enable_if_t<
+            impl::is_func_like<std::decay_t<T>> &&
+            !detail::is_pyobject<std::decay_t<T>>::value,
+        int> = 0
     >
-    Function(Func&& func) :
-        Object(pybind11::cpp_function(std::forward<Func>(func)).release(), stolen_t{})
+    Function(T&& func) :
+        Object(pybind11::cpp_function(std::forward<T>(func)).release(), stolen_t{})
     {}
+
+    /* Implicitly convert a Python function into a py::Function.  Borrows a
+    reference. */
+    template <
+        typename T,
+        std::enable_if_t<impl::is_func_like<T> && impl::is_object<T, int> = 0
+    >
+    Function(const T& func) : Object(func.ptr(), borrowed_t{}) {}
+
+    /* Implicitly convert a Python function into a py::Function.  Steals a reference. */
+    template <
+        typename T,
+        std::enable_if_t<
+            impl::is_func_like<std::decay_t<T>> &&
+            impl::is_object<std::decay_t<T>>,
+        int> = 0
+    >
+    Function(T&& func) : Object(func.release(), stolen_t{}) {}
 
     ///////////////////////////////
     ////    PyFunction_ API    ////
@@ -773,6 +833,14 @@ class Method : public Object, public impl::Ops<Method> {
 
 public:
     static py::Type Type;
+
+    template <typename T>
+    static constexpr bool like = impl::is_same_or_subclass_of<Method, T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(
         Object,
         Method,
@@ -789,6 +857,10 @@ public:
             throw error_already_set();
         }
     }
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
 
     using impl::Ops<Method>::operator==;
     using impl::Ops<Method>::operator!=;
@@ -816,6 +888,14 @@ class ClassMethod : public Object, public impl::Ops<ClassMethod> {
 
 public:
     static py::Type Type;
+
+    template <typename T>
+    static constexpr bool like = impl::is_same_or_subclass_of<ClassMethod, T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(
         Object,
         ClassMethod,
@@ -832,6 +912,10 @@ public:
             throw error_already_set();
         }
     }
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
 
     using impl::Ops<ClassMethod>::operator==;
     using impl::Ops<ClassMethod>::operator!=;
@@ -859,6 +943,14 @@ class StaticMethod : public Object, public impl::Ops<StaticMethod> {
 
 public:
     static py::Type Type;
+
+    template <typename T>
+    static constexpr bool like = impl::is_same_or_subclass_of<StaticMethod, T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(
         Object,
         StaticMethod,
@@ -875,6 +967,10 @@ public:
             throw error_already_set();
         }
     }
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
 
     using impl::Ops<StaticMethod>::operator==;
     using impl::Ops<StaticMethod>::operator!=;
@@ -908,6 +1004,14 @@ class Property : public Object, public impl::Ops<Property> {
 
 public:
     static py::Type Type;
+
+    template <typename T>
+    static constexpr bool like = impl::is_same_or_subclass_of<Property, T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(Object, Property, check_property, convert_to_property);
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
@@ -926,6 +1030,10 @@ public:
     Property(Function getter, Function setter, Function deleter) :
         Object(impl::PyProperty(getter, setter, deleter).release(), stolen_t{})
     {}
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
 
     using impl::Ops<Property>::operator==;
     using impl::Ops<Property>::operator!=;
