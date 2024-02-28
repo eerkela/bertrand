@@ -28,19 +28,6 @@ namespace bertrand {
 namespace py {
 
 
-namespace impl {
-
-    /* NOTE: storing code objects as static variables is dangerous since the Python
-    interpreter may be already destroyed by the time the code object's destructor is
-    called, which causes a segfault.  There is a workaround, but it requires us to
-    maintain a global set of living code objects and clean them up manually just before
-    Python exits. */
-    inline static std::unordered_set<Code*> LIVING_CODE_OBJECTS;
-    static void clean_up_living_code_objects();
-
-}
-
-
 /* A new subclass of pybind11::object that represents a compiled Python code object,
 enabling seamless embedding of Python as a scripting language within C++.
 
@@ -169,8 +156,8 @@ compiled once and then cached for repeated use.
 class Code : public Handle, public impl::Ops<Code> {
     /* NOTE: we can't directly inherit from pybind11::object because that causes memory
     access errors when code objects are stored as static variables.  Since that is the
-    intended use case, we provide a workaround using Python's `atexit` module. */
-    friend void impl::clean_up_living_code_objects();
+    intended use case for these objects, we provide a workaround by checking
+    `Py_IsInitialized()` in the destructor. */
     friend class Frame;
     friend class Function;
 
@@ -219,9 +206,7 @@ class Code : public Handle, public impl::Ops<Code> {
         return result;
     }
 
-    explicit Code(PyObject* ptr) : Handle(ptr) {
-        impl::LIVING_CODE_OBJECTS.insert(this);
-    }
+    explicit Code(PyObject* ptr) : Handle(ptr) {}
 
 public:
     static py::Type Type;
@@ -239,25 +224,18 @@ public:
     /* Copy constructor. */
     Code(const Code& other) : Handle(other.m_ptr) {
         Py_XINCREF(m_ptr);
-        impl::LIVING_CODE_OBJECTS.insert(this);
     }
 
     /* Move constructor. */
     Code(Code&& other) : Handle(other.m_ptr) {
         other.m_ptr = nullptr;
-        impl::LIVING_CODE_OBJECTS.erase(&other);
-        impl::LIVING_CODE_OBJECTS.insert(this);
     }
 
     /* Parse and compile a source string into a Python code object. */
-    explicit Code(const char* source) : Handle(compile(source)) {
-        impl::LIVING_CODE_OBJECTS.insert(this);
-    }
+    explicit Code(const char* source) : Handle(compile(source)) {}
 
     /* Parse and compile a source string into a Python code object. */
-    explicit Code(const std::string& source) : Handle(compile(source)) {
-        impl::LIVING_CODE_OBJECTS.insert(this);
-    }
+    explicit Code(const std::string& source) : Handle(compile(source)) {}
 
     /* Parse and compile a source string into a Python code object. */
     explicit Code(const std::string_view& source) : Code(source.data()) {}
@@ -287,10 +265,8 @@ public:
     /* Destructor.  Note that we can't use Py_XDECREF() here because it causes memory
     access errors when code objects are stored as static variables.  */
     ~Code() {
-        if (m_ptr != nullptr) {
-            impl::LIVING_CODE_OBJECTS.erase(this);
-            Py_DECREF(m_ptr);
-            m_ptr = nullptr;
+        if (Py_IsInitialized()) {
+            Py_XDECREF(m_ptr);
         }
     }
 
@@ -633,6 +609,9 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
+    pybind11::iterator begin() const = delete;
+    pybind11::iterator end() const = delete;
+
     using impl::Ops<Frame>::operator==;
     using impl::Ops<Frame>::operator!=;
 };
@@ -677,7 +656,7 @@ public:
     reference. */
     template <
         typename T,
-        std::enable_if_t<impl::is_func_like<T> && impl::is_object<T, int> = 0
+        std::enable_if_t<impl::is_func_like<T> && impl::is_object<T>, int> = 0
     >
     Function(const T& func) : Object(func.ptr(), borrowed_t{}) {}
 
@@ -701,7 +680,7 @@ public:
         if (result == nullptr) {
             throw TypeError("function has no module");
         }
-        return reinterpret_borrow<Module>(result);
+        return Module(reinterpret_borrow<pybind11::module_>(result));
     }
 
     /* Get the code object that is executed when this function is called. */
@@ -746,7 +725,8 @@ public:
     /* Set the closure associated with the function.  The input must be a Tuple or
     nullopt. */
     inline void closure(std::optional<Tuple> closure) {
-        if (PyFunction_SetClosure(this->ptr(), closure.value_or(None).ptr())) {
+        PyObject* item = closure ? closure.value().ptr() : Py_None;
+        if (PyFunction_SetClosure(this->ptr(), item)) {
             throw error_already_set();
         }
     }
@@ -764,7 +744,8 @@ public:
     /* Set the type annotations for the function.  The input must be a Dict or
     nullopt. */
     inline void annotations(std::optional<Dict> annotations) {
-        if (PyFunction_SetAnnotations(this->ptr(), annotations.value_or(None).ptr())) {
+        PyObject* item = annotations ? annotations.value().ptr() : Py_None;
+        if (PyFunction_SetAnnotations(this->ptr(), item)) {
             throw error_already_set();
         }
     }
@@ -782,7 +763,8 @@ public:
     /* Set the default values for the function.  The input must be a Tuple or
     nullopt. */
     inline void defaults(std::optional<Tuple> defaults) {
-        if (PyFunction_SetDefaults(this->ptr(), defaults.value_or(None).ptr())) {
+        PyObject* item = defaults ? defaults.value().ptr() : Py_None;
+        if (PyFunction_SetDefaults(this->ptr(), item)) {
             throw error_already_set();
         }
     }
@@ -817,6 +799,9 @@ public:
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
+
+    pybind11::iterator begin() const = delete;
+    pybind11::iterator end() const = delete;
 
     using impl::Ops<Function>::operator==;
     using impl::Ops<Function>::operator!=;
@@ -861,6 +846,9 @@ public:
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
+
+    pybind11::iterator begin() const = delete;
+    pybind11::iterator end() const = delete;
 
     using impl::Ops<Method>::operator==;
     using impl::Ops<Method>::operator!=;
@@ -917,6 +905,9 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
+    pybind11::iterator begin() const = delete;
+    pybind11::iterator end() const = delete;
+
     using impl::Ops<ClassMethod>::operator==;
     using impl::Ops<ClassMethod>::operator!=;
 };
@@ -971,6 +962,9 @@ public:
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
+
+    pybind11::iterator begin() const = delete;
+    pybind11::iterator end() const = delete;
 
     using impl::Ops<StaticMethod>::operator==;
     using impl::Ops<StaticMethod>::operator!=;
@@ -1034,6 +1028,9 @@ public:
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
+
+    pybind11::iterator begin() const = delete;
+    pybind11::iterator end() const = delete;
 
     using impl::Ops<Property>::operator==;
     using impl::Ops<Property>::operator!=;
@@ -1171,42 +1168,6 @@ inline constexpr auto callable(const Func& func) {
 /* User-defined literal to make embedding python scripts as easy as possible */
 inline bertrand::py::Code operator"" _python(const char* source, size_t size) {
     return bertrand::py::Code(std::string_view(source, size));
-}
-
-
-namespace bertrand{
-namespace py{
-namespace impl {
-
-    /* Custom atexit method that avoids conflicts with the Python interpreter when
-    py::Code objects are stored as static variables.  This is always invoked
-    immediately before Python exits, ensuring that all code objects are properly
-    freed without causing memory access errors. */
-    static void clean_up_living_code_objects() {
-        for (Code* code : impl::LIVING_CODE_OBJECTS) {
-            Py_XDECREF(code->m_ptr);
-            code->m_ptr = nullptr;
-        }
-    }
-
-    /* Register the atexit function from a Python context.  NOTE: we can't use
-    Py_AtExit() here because it actually gets executed AFTER the python interpreter
-    has already started finalizing.  If we register the cleanup function from a Python
-    context, however, then we can guarantee that the Python interpreter is valid while
-    we clean up each object.  This is convoluted, but it works. */
-    static const bool CLEAN_UP_LIVING_CODE_OBJECTS = []() {
-        if (Py_IsInitialized()) {
-            R"(
-                import atexit
-                atexit.register(CLEANUP)
-            )"_python({{"CLEANUP", py::Function(clean_up_living_code_objects)}});
-            return true;
-        }
-        return false;
-    }();
-
-}
-}
 }
 
 

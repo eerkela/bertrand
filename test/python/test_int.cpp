@@ -109,13 +109,6 @@ TEST(py, int_is_implicitly_convertible_to_bool) {
     EXPECT_EQ(a, false);
     EXPECT_EQ(b, true);
     EXPECT_EQ(c, true);
-
-    py::Bool d = py::Int(0);
-    py::Bool e = py::Int(1);
-    py::Bool f = py::Int(-1);
-    EXPECT_EQ(d, false);
-    EXPECT_EQ(e, true);
-    EXPECT_EQ(f, true);
 }
 
 
@@ -164,13 +157,6 @@ TEST(py, int_is_explicitly_convertible_to_string) {
     EXPECT_EQ(static_cast<std::string>(py::Int(0)), "0");
     EXPECT_EQ(static_cast<std::string>(py::Int(1)), "1");
     EXPECT_EQ(static_cast<std::string>(py::Int(-1)), "-1");
-
-    py::Str a = py::Int(0);
-    py::Str b = py::Int(1);
-    py::Str c = py::Int(-1);
-    EXPECT_EQ(static_cast<std::string>(a), "0");
-    EXPECT_EQ(static_cast<std::string>(b), "1");
-    EXPECT_EQ(static_cast<std::string>(c), "-1");
 }
 
 

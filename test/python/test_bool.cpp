@@ -118,39 +118,32 @@ TEST(py, bool_is_assignable_to_bool) {
 
 
 TEST(py, bool_is_assignable_to_int) {
-    py::Bool a = true;
-    py::Bool b = false;
-    a = 0;
-    b = 1;
-    EXPECT_EQ(a, false);
-    EXPECT_EQ(b, true);
+    bool bool_is_assignable_to_int = assertions::is_assignable<py::Bool, int>;
+    bool bool_is_assignable_to_unsigned_int = assertions::is_assignable<py::Bool, unsigned int>;
+    bool bool_is_assignable_to_py_int = assertions::is_assignable<py::Bool, py::Int>;
+    EXPECT_FALSE(bool_is_assignable_to_int);
+    EXPECT_FALSE(bool_is_assignable_to_unsigned_int);
+    EXPECT_FALSE(bool_is_assignable_to_py_int);
 }
 
 
 TEST(py, bool_is_assignable_to_float) {
-    py::Bool a = true;
-    py::Bool b = false;
-    a = 0.0;
-    b = 1.0;
-    EXPECT_EQ(a, false);
-    EXPECT_EQ(b, true);
+    bool bool_is_assignable_to_float = assertions::is_assignable<py::Bool, double>;
+    bool bool_is_assignable_to_py_float = assertions::is_assignable<py::Bool, py::Float>;
+    EXPECT_FALSE(bool_is_assignable_to_float);
+    EXPECT_FALSE(bool_is_assignable_to_py_float);
 }
 
 
 TEST(py, bool_is_assignable_to_string) {
+    bool bool_is_assignable_to_string_literal = assertions::is_assignable<py::Bool, const char*>;
     bool bool_is_assignable_to_std_string = assertions::is_assignable<py::Bool, std::string>;
     bool bool_is_assignable_to_std_string_view = assertions::is_assignable<py::Bool, std::string_view>;
     bool bool_is_assignable_to_py_string = assertions::is_assignable<py::Bool, py::Str>;
+    EXPECT_FALSE(bool_is_assignable_to_string_literal);
     EXPECT_FALSE(bool_is_assignable_to_std_string);
     EXPECT_FALSE(bool_is_assignable_to_std_string_view);
     EXPECT_FALSE(bool_is_assignable_to_py_string);
-
-    py::Bool a = true;
-    py::Bool b = false;
-    a = "";
-    b = "a";
-    EXPECT_EQ(a, false);
-    EXPECT_EQ(b, true);
 }
 
 
@@ -251,11 +244,6 @@ TEST(py, bool_is_implicitly_convertible_to_float) {
 TEST(py, bool_is_explicitly_convertible_to_string) {
     EXPECT_EQ(static_cast<std::string>(py::Bool(true)), "True");
     EXPECT_EQ(static_cast<std::string>(py::Bool(false)), "False");
-
-    py::Str a = py::Bool(true);
-    py::Str b = py::Bool(false);
-    EXPECT_EQ(static_cast<std::string>(a), "True");
-    EXPECT_EQ(static_cast<std::string>(b), "False");
 }
 
 

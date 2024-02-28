@@ -29,9 +29,7 @@ class Float : public Object, public impl::Ops<Float> {
         impl::is_object<T>
     );
     template <typename T>
-    static constexpr bool constructor3 = impl::is_float_like<T> && impl::is_object<T>;
-    template <typename T>
-    static constexpr bool constructor4 = (
+    static constexpr bool constructor3 = (
         !impl::is_bool_like<T> &&
         !impl::is_int_like<T> &&
         !impl::is_float_like<T> &&
@@ -74,16 +72,8 @@ public:
         }
     }
 
-    /* Implicitly convert Python floats to py::Float.  Borrows a reference. */
-    template <typename T, std::enable_if_t<constructor3<T>, int> = 0>
-    Float(const T& value) : Object(value.ptr(), borrowed_t{}) {}
-
-    /* Implicitly convert Python floats to py::Float.  Steals a reference. */
-    template <typename T, std::enable_if_t<constructor3<std::decay_t<T>>, int> = 0>
-    Float(T&& value) : Object(value.release(), stolen_t{}) {}
-
     /* Trigger explicit conversions to double. */
-    template <typename T, std::enable_if_t<constructor4<T>, int> = 0>
+    template <typename T, std::enable_if_t<constructor3<T>, int> = 0>
     explicit Float(const T& value) : Float(static_cast<double>(value)) {}
 
     /* Explicitly convert a string literal into a py::Float. */
@@ -145,6 +135,9 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
+    pybind11::iterator begin() const = delete;
+    pybind11::iterator end() const = delete;
+
     using Ops::operator<;
     using Ops::operator<=;
     using Ops::operator==;
@@ -174,52 +167,62 @@ public:
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Float& operator+=(const T& other) {
-        return Ops::operator+=(other);
+        Ops::operator+=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Float& operator-=(const T& other) {
-        return Ops::operator-=(other);
+        Ops::operator-=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Float& operator*=(const T& other) {
-        return Ops::operator*=(other);
+        Ops::operator*=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Float& operator/=(const T& other) {
-        return Ops::operator/=(other);
+        Ops::operator/=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Float& operator%=(const T& other) {
-        return Ops::operator%=(other);
+        Ops::operator%=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Float& operator<<=(const T& other) {
-        return Ops::operator<<=(other);
+        Ops::operator<<=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Float& operator>>=(const T& other) {
-        return Ops::operator>>=(other);
+        Ops::operator>>=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Float& operator&=(const T& other) {
-        return Ops::operator&=(other);
+        Ops::operator&=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Float& operator|=(const T& other) {
-        return Ops::operator|=(other);
+        Ops::operator|=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Float& operator^=(const T& other) {
-        return Ops::operator^=(other);
+        Ops::operator^=(other);
+        return *this;
     }
 
 };

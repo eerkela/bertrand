@@ -22,9 +22,6 @@ class Slice : public Object, public impl::Ops<Slice> {
         return PySlice_New(nullptr, obj, nullptr);
     }
 
-    template <typename T>
-    static constexpr bool constructor1 = impl::is_slice_like<T> && impl::is_object<T>;
-
 public:
     static py::Type Type;
 
@@ -44,22 +41,10 @@ public:
         }
     }
 
-    /* Implicitly convert a Python slice into a py::Slice.  Borrows a reference. */
-    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
-    Slice(const T& value) : Object(value.ptr(), borrowed_t{}) {}
-
-    /* Implicitly convert a Python slice into a py::Slice.  Steals a reference. */
-    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
-    Slice(T&& value) : Object(value.release(), stolen_t{}) {}
-
     /* Explicitly construct a slice from a (possibly denormalized) stop object. */
     template <typename Stop>
-    explicit Slice(Stop&& stop) {
-        m_ptr = PySlice_New(
-            nullptr,
-            detail::object_or_cast(std::forward<Stop>(stop)).ptr(),
-            nullptr
-        );
+    explicit Slice(const Stop& stop) {
+        m_ptr = PySlice_New(nullptr, detail::object_or_cast(stop).ptr(), nullptr);
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -68,10 +53,10 @@ public:
     /* Explicitly construct a slice from (possibly denormalized) start and stop
     objects. */
     template <typename Start, typename Stop>
-    explicit Slice(Start&& start, Stop&& stop) {
+    explicit Slice(const Start& start, const Stop& stop) {
         m_ptr = PySlice_New(
-            detail::object_or_cast(std::forward<Start>(start)).ptr(),
-            detail::object_or_cast(std::forward<Stop>(stop)).ptr(),
+            detail::object_or_cast(start).ptr(),
+            detail::object_or_cast(stop).ptr(),
             nullptr
         );
         if (m_ptr == nullptr) {
@@ -82,11 +67,11 @@ public:
     /* Explicitly construct a slice from (possibly denormalized) start, stop, and step
     objects. */
     template <typename Start, typename Stop, typename Step>
-    explicit Slice(Start&& start, Stop&& stop, Step&& step) {
+    explicit Slice(const Start& start, const Stop& stop, const Step& step) {
         m_ptr = PySlice_New(
-            detail::object_or_cast(std::forward<Start>(start)).ptr(),
-            detail::object_or_cast(std::forward<Stop>(stop)).ptr(),
-            detail::object_or_cast(std::forward<Step>(step)).ptr()
+            detail::object_or_cast(start).ptr(),
+            detail::object_or_cast(stop).ptr(),
+            detail::object_or_cast(step).ptr()
         );
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -146,6 +131,9 @@ public:
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
+
+    pybind11::iterator begin() const = delete;
+    pybind11::iterator end() const = delete;
 
     using Ops::operator<;
     using Ops::operator<=;

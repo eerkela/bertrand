@@ -37,11 +37,15 @@ class Str : public Object, public impl::Ops<Str>, public impl::SequenceOps<Str> 
     }
 
     template <typename T>
-    static constexpr bool constructor1 = impl::is_object<T> && impl::is_str_like<T>;
+    static constexpr bool constructor1 = (
+        impl::is_object<T> && !impl::is_object_exact<T> && !impl::is_str_like<T>
+    );
     template <typename T>
-    static constexpr bool constructor2 = impl::is_object<T> && !impl::is_str_like<T>;
+    static constexpr bool constructor2 = 
+        !impl::is_object<T> && std::is_convertible_v<T, std::string>;
     template <typename T>
-    static constexpr bool constructor3 = !impl::is_object<T>;
+    static constexpr bool constructor3 =
+        !impl::is_object<T> && !std::is_convertible_v<T, std::string>;
 
 public:
     static py::Type Type;
@@ -87,21 +91,17 @@ public:
         }
     }
 
-    /* Implicitly convert Python strings into py::Str.  Borrows a reference. */
-    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
-    Str(const T& string) : Object(string.ptr(), borrowed_t{}) {}
-
-    /* Implicitly convert Python strings into py::Str.  Steals a reference. */
-    template <typename T, std::enable_if_t<constructor1<std::decay_t<T>>, int> = 0>
-    Str(T&& string) : Object(string.release(), stolen_t{}) {}
-
     /* Explicitly convert an arbitrary Python object into a py::Str representation. */
-    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
+    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
     explicit Str(const T& obj) : Object(PyObject_Str(obj.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
+
+    /* Trigger explicit conversions to std::string. */
+    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
+    explicit Str(const T& string) : Str(std::string(string)) {}
 
     /* Explicitly convert an arbitrary C++ object into a py::Str representation. */
     template <typename T, std::enable_if_t<constructor3<T>, int> = 0>
@@ -146,7 +146,7 @@ public:
         typename T,
         typename First,
         typename... Rest,
-        std::enable_if_t<constructor1<T>, int> = 0
+        std::enable_if_t<impl::is_object<T> && impl::is_str_like<T>, int> = 0
     >
     explicit Str(const T& format, First&& first, Rest&&... rest) : Str(
         format.template cast<std::string>(),
@@ -337,11 +337,9 @@ public:
     }
 
     /* Equivalent to Python `str.format_map(mapping)`. */
-    template <typename T, std::enable_if_t<impl::is_dict_like<std::decay_t<T>>, int> = 0>
-    inline Str format_map(T&& mapping) const {
-        return this->attr("format_map")(
-            detail::object_or_cast(std::forward<T>(mapping))
-        );
+    template <typename T, std::enable_if_t<impl::is_dict_like<T>, int> = 0>
+    inline Str format_map(const T& mapping) const {
+        return this->attr("format_map")(detail::object_or_cast(mapping));
     }
 
     /* Equivalent to Python `str.index(sub[, start[, end]])`. */
@@ -433,11 +431,11 @@ public:
     }
 
     /* Equivalent of Python `str.join(iterable)`. */
-    template <typename T, std::enable_if_t<impl::is_iterable<std::decay_t<T>>, int> = 0>
-    inline Str join(T&& iterable) const {
+    template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+    inline Str join(const T& iterable) const {
         PyObject* result = PyUnicode_Join(
             this->ptr(),
-            detail::object_or_cast(std::forward<T>(iterable)).ptr()
+            detail::object_or_cast(iterable).ptr()
         );
         if (result == nullptr) {
             throw error_already_set();
@@ -447,7 +445,7 @@ public:
 
     /* Equivalent of Python `str.join(iterable)`, where iterable is given as a
     homogenously-typed braced initializer list. */
-    template <typename T>
+    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     inline Str join(const std::initializer_list<T>& iterable) const {
         return join(py::List(iterable));
     }
@@ -485,39 +483,32 @@ public:
 
     /* Equivalent to Python (static) `str.maketrans(x)`. */
     template <typename T> 
-    inline static Dict maketrans(T&& x) {
-        PyObject* result = PyObject_CallOneArg(
-            detail::object_or_cast(std::forward<T>(x)).ptr()
-        );
-
-        pybind11::type cls(
-            reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type))
-        );
-        return cls.attr("maketrans")(detail::object_or_cast(std::forward<T>(x)));
+    inline static Dict maketrans(const T& x) {
+        pybind11::type cls =
+            reinterpret_borrow<pybind11::type>((PyObject*) &PyUnicode_Type);
+        return cls.attr("maketrans")(detail::object_or_cast(x));
     }
 
     /* Equivalent to Python (static) `str.maketrans(x, y)`. */
     template <typename T, typename U> 
-    inline static Dict maketrans(T&& x, U&& y) {
-        pybind11::type cls(
-            reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type))
-        );
+    inline static Dict maketrans(const T& x, const U& y) {
+        pybind11::type cls =
+            reinterpret_borrow<pybind11::type>((PyObject*) &PyUnicode_Type);
         return cls.attr("maketrans")(
-            detail::object_or_cast(std::forward<T>(x)),
-            detail::object_or_cast(std::forward<U>(y))
+            detail::object_or_cast(x),
+            detail::object_or_cast(y)
         );
     }
 
     /* Equivalent to Python (static) `str.maketrans(x, y, z)`. */
     template <typename T, typename U, typename V> 
-    inline static Dict maketrans(T&& x, U&& y, V&& z) {
-        pybind11::type cls(
-            reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type))
-        );
+    inline static Dict maketrans(const T& x, const U& y, const V& z) {
+        pybind11::type cls =
+            reinterpret_borrow<pybind11::type>((PyObject*) &PyUnicode_Type);
         return cls.attr("maketrans")(
-            detail::object_or_cast(std::forward<T>(x)),
-            detail::object_or_cast(std::forward<U>(y)),
-            detail::object_or_cast(std::forward<V>(z))
+            detail::object_or_cast(x),
+            detail::object_or_cast(y),
+            detail::object_or_cast(z)
         );
     }
 
@@ -693,8 +684,8 @@ public:
 
     /* Equivalent to Python `str.translate(table)`. */
     template <typename T>
-    inline Str translate(T&& table) const {
-        return this->attr("translate")(detail::object_or_cast(std::forward<T>(table)));
+    inline Str translate(const T& table) const {
+        return this->attr("translate")(detail::object_or_cast(table));
     }
 
     /* Equivalent to Python `str.upper()`. */

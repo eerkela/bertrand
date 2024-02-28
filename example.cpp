@@ -25,8 +25,38 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-    py::Range r;
-    py::print(r);
+
+    static py::Module np = py::import("numpy");
+    py::print(np.attr("arange"));
+
+
+
+
+    // std::vector<py::Tuple> tuples = {{1, 2}, {3, 4}, {5, 6}};
+    // for (std::pair<int, int> x : tuples) {
+    //     py::print(x);
+    // }
+
+
+    // py::Tuple t = {};
+
+    // if (t) {
+    //     py::print("t is true");
+    // } else {
+    //     py::print("t is false");
+    // }
+
+    // py::List l = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    // for (size_t i = 0; i < 1000000; ++i) {
+    //     volatile std::vector<int> v = l;
+    // }
+
+
+
+    // std::pair<int, int> x = t;
+    // py::print(x);
+
+
 
 
     // py::Object o("abc");

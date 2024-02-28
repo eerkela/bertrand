@@ -348,6 +348,7 @@ public:
 
 /* New subclass of pybind11::object that represents Python's built-in super() type. */
 class Super : public Object, public impl::Ops<Super> {
+    using Ops = impl::Ops<Super>;
 
     inline static int check_super(PyObject* obj) {
         int result = PyObject_IsInstance(obj, reinterpret_cast<PyObject*>(&PySuper_Type));
@@ -363,6 +364,14 @@ class Super : public Object, public impl::Ops<Super> {
 
 public:
     static py::Type Type;
+
+    template <typename T>
+    static constexpr bool like = impl::is_same_or_subclass_of<Super, T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(Object, Super, check_super, convert_super);
 
     /* Default constructor.  Equivalent to Python `super()` with no arguments, which
@@ -406,7 +415,33 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    BERTRAND_PYTHON_OPERATORS(impl::Ops<Super>)
+    using Ops::operator<;
+    using Ops::operator<=;
+    using Ops::operator==;
+    using Ops::operator!=;
+    using Ops::operator>=;
+    using Ops::operator>;
+    using Ops::operator~;
+    using Ops::operator+;
+    using Ops::operator-;
+    using Ops::operator*;
+    using Ops::operator/;
+    using Ops::operator%;
+    using Ops::operator<<;
+    using Ops::operator>>;
+    using Ops::operator&;
+    using Ops::operator|;
+    using Ops::operator^;
+    using Ops::operator+=;
+    using Ops::operator-=;
+    using Ops::operator*=;
+    using Ops::operator/=;
+    using Ops::operator%=;
+    using Ops::operator<<=;
+    using Ops::operator>>=;
+    using Ops::operator&=;
+    using Ops::operator|=;
+    using Ops::operator^=;
 };
 
 

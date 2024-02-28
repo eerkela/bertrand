@@ -25,16 +25,14 @@ class Bool : public Object, public impl::Ops<Bool> {
     }
 
     template <typename T>
-    static constexpr bool constructor1 = impl::is_bool_like<T> && !impl::is_object<T>;
+    static constexpr bool constructor1 = !impl::is_object<T> && impl::is_bool_like<T>;
     template <typename T>
-    static constexpr bool constructor2 = impl::is_bool_like<T> && impl::is_object<T>;
-    template <typename T>
-    static constexpr bool constructor3 = 
+    static constexpr bool constructor2 = 
         !impl::is_bool_like<T> && std::is_convertible_v<T, bool>;
     template <typename T>
-    static constexpr bool constructor4 = !constructor3<T> && impl::has_empty<T>;
+    static constexpr bool constructor3 = !constructor2<T> && impl::has_empty<T>;
     template <typename T>
-    static constexpr bool constructor5 = !constructor4<T> && impl::has_size<T>;
+    static constexpr bool constructor4 = !constructor3<T> && impl::has_size<T>;
 
 public:
     static py::Type Type;
@@ -55,26 +53,18 @@ public:
     template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
     Bool(const T& value) : Object(value ? Py_True : Py_False, borrowed_t{}) {}
 
-    /* Implicitly convert Python booleans into py::Bool.  Borrows a reference. */
-    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
-    Bool(const T& value) : Object(value.ptr(), borrowed_t{}) {}
-
-    /* Implicitly convert Python booleans into py::Bool.  Steals a reference. */
-    template <typename T, std::enable_if_t<constructor2<std::decay_t<T>>, int> = 0>
-    Bool(T&& value) : Object(value.release(), stolen_t{}) {}
-
     /* Trigger explicit conversions to bool. */
-    template <typename T, std::enable_if_t<constructor3<T>, int> = 0>
+    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
     explicit Bool(const T& value) : Bool(static_cast<bool>(value)) {}
 
     /* Explicitly convert any C++ or Python object that implements a `.empty()` method
     into a py::Bool. */
-    template <typename T, std::enable_if_t<constructor4<T>, int> = 0>
+    template <typename T, std::enable_if_t<constructor3<T>, int> = 0>
     explicit Bool(const T& obj) : Bool(!obj.empty()) {}
 
     /* Explicitly convert and C++ or Python object that implements a `.size()` method
     into a py::Bool. */
-    template <typename T, std::enable_if_t<constructor5<T>, int> = 0>
+    template <typename T, std::enable_if_t<constructor4<T>, int> = 0>
     explicit Bool(const T& obj) : Bool(obj.size() > 0) {}
 
     /* Explicitly convert a std::tuple into a py::Bool. */
@@ -97,6 +87,9 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
+    pybind11::iterator begin() const = delete;
+    pybind11::iterator end() const = delete;
+
     using Ops::operator<;
     using Ops::operator<=;
     using Ops::operator==;
@@ -117,17 +110,20 @@ public:
 
     template <typename T, std::enable_if_t<impl::is_bool_like<T>, int> = 0>
     inline Bool& operator&=(const T& other) {
-        return Ops::operator&=(other);
+        Ops::operator&=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<impl::is_bool_like<T>, int> = 0>
     inline Bool& operator|=(const T& other) {
-        return Ops::operator|=(other);
+        Ops::operator|=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<impl::is_bool_like<T>, int> = 0>
     inline Bool& operator^=(const T& other) {
-        return Ops::operator^=(other);
+        Ops::operator^=(other);
+        return *this;
     }
 
 };

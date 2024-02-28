@@ -1,3 +1,4 @@
+#include <type_traits>
 #ifndef BERTRAND_PYTHON_INCLUDED
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
@@ -12,12 +13,6 @@ namespace bertrand {
 namespace py {
 
 
-    /* Convert an arbitrary Python/C++ value into a pybind11 object and then return a
-    new reference.  This is used in the constructors of list and tuple objects, whose
-    SET_ITEM() functions steal a reference.  Converts null pointers into Python None. */
-    
-
-
 /* Wrapper around pybind11::list that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
 class List :
@@ -29,12 +24,8 @@ class List :
     using Ops = impl::Ops<List>;
     using SequenceOps = impl::SequenceOps<List>;
 
-    static PyObject* convert_to_list(PyObject* obj) {
-        return PySequence_List(obj);
-    }
-
     template <typename T>
-    static inline PyObject* convert_newref(T&& value) {
+    static inline PyObject* convert_newref(const T& value) {
         if constexpr (detail::is_pyobject<T>::value) {
             PyObject* result = value.ptr();
             if (result == nullptr) {
@@ -42,13 +33,18 @@ class List :
             }
             return Py_NewRef(result);
         } else {
-            PyObject* result = pybind11::cast(std::forward<T>(value)).release().ptr();
+            PyObject* result = pybind11::cast(value).release().ptr();
             if (result == nullptr) {
                 throw error_already_set();
             }
             return result;
         }
     }
+
+    template <typename T>
+    static constexpr bool constructor1 =
+        !(impl::is_object_exact<T> || impl::is_object<T> && impl::is_list_like<T>) &&
+        impl::is_iterable<T>;
 
 public:
     static py::Type Type;
@@ -60,7 +56,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, List, PyList_Check, convert_to_list);
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, List, PyList_Check, PySequence_List);
 
     /* Default constructor.  Initializes to an empty list. */
     List() : Object(PyList_New(0), stolen_t{}) {
@@ -69,9 +65,9 @@ public:
         }
     }
 
-    /* Pack the contents of a homogenously-typed braced initializer into a new Python
-    list. */
-    template <typename T, std::enable_if_t<!std::is_same_v<impl::Initializer, T>, int> = 0>
+    /* Pack the contents of a homogenously-typed braced initializer list into a new
+    Python list. */
+    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     List(const std::initializer_list<T>& contents) :
         Object(PyList_New(contents.size()), stolen_t{})
     {
@@ -89,7 +85,8 @@ public:
         }
     }
 
-    /* Pack the contents of a mixed-type braced initializer into a new Python list. */
+    /* Pack the contents of a mixed-type braced initializer list into a new Python
+    list. */
     List(const std::initializer_list<impl::Initializer>& contents) :
         Object(PyList_New(contents.size()), stolen_t{})
     {
@@ -112,8 +109,8 @@ public:
     }
 
     /* Explicitly unpack a generic C++ or Python container into a new py::List. */
-    template <typename T>
-    explicit List(T&& container) {
+    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
+    explicit List(const T& container) {
         if constexpr (detail::is_pyobject<T>::value) {
             m_ptr = PySequence_List(container.ptr());
             if (m_ptr == nullptr) {
@@ -141,6 +138,52 @@ public:
                 Py_DECREF(m_ptr);
                 throw;
             }
+        }
+    }
+
+    /* Explicitly unpack a std::pair into a py::List. */
+    template <typename First, typename Second>
+    explicit List(const std::pair<First, Second>& pair) :
+        Object(PyList_New(2), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+        try {
+            PyList_SET_ITEM(m_ptr, 0, convert_newref(pair.first));
+            PyList_SET_ITEM(m_ptr, 1, convert_newref(pair.second));
+        } catch (...) {
+            Py_DECREF(m_ptr);
+            throw;
+        }
+    }
+
+private:
+
+    template <typename... Args, size_t... N>
+    inline static void unpack_tuple(
+        PyObject* result,
+        const std::tuple<Args...>& tuple,
+        std::index_sequence<N...>
+    ) {
+        (PyList_SET_ITEM(result, N, convert_newref(std::get<N>(tuple))), ...);
+    }
+
+public:
+
+    /* Explicitly unpack a std::tuple into a py::List. */
+    template <typename... Args>
+    explicit List(const std::tuple<Args...>& tuple) :
+        Object(PyList_New(sizeof...(Args)), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+        try {
+            unpack_tuple(m_ptr, tuple, std::index_sequence_for<Args...>{});
+        } catch (...) {
+            Py_DECREF(m_ptr);
+            throw;
         }
     }
 
@@ -190,18 +233,15 @@ public:
 
     /* Equivalent to Python `list.append(value)`. */
     template <typename T>
-    inline void append(T&& value) {
-        if (PyList_Append(
-            this->ptr(),
-            detail::object_or_cast(std::forward<T>(value)).ptr()
-        )) {
+    inline void append(const T& value) {
+        if (PyList_Append(this->ptr(), detail::object_or_cast(value).ptr())) {
             throw error_already_set();
         }
     }
 
     /* Equivalent to Python `list.extend(items)`. */
-    template <typename T, std::enable_if_t<impl::is_iterable<std::decay_t<T>>, int> = 0>
-    inline void extend(T&& items) {
+    template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+    inline void extend(const T& items) {
         if constexpr (detail::is_pyobject<T>::value) {
             this->attr("extend")(detail::object_or_cast(std::forward<T>(items)));
         } else {
@@ -213,7 +253,7 @@ public:
 
     /* Equivalent to Python `list.extend(items)`, where items are given as a
     homogenously-typed braced initializer list. */
-    template <typename T>
+    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     inline void extend(const std::initializer_list<T>& items) {
         for (const T& item : items) {
             append(item);
@@ -230,12 +270,8 @@ public:
 
     /* Equivalent to Python `list.insert(index, value)`. */
     template <typename T>
-    inline void insert(Py_ssize_t index, T&& value) {
-        if (PyList_Insert(
-            this->ptr(),
-            index,
-            detail::object_or_cast(std::forward<T>(value)).ptr()
-        )) {
+    inline void insert(Py_ssize_t index, const T& value) {
+        if (PyList_Insert(this->ptr(), index, detail::object_or_cast(value).ptr())) {
             throw error_already_set();
         }
     }
@@ -258,8 +294,8 @@ public:
 
     /* Equivalent to Python `list.remove(value)`. */
     template <typename T>
-    inline void remove(T&& value) {
-        this->attr("remove")(detail::object_or_cast(std::forward<T>(value)));
+    inline void remove(const T& value) {
+        this->attr("remove")(detail::object_or_cast(value));
     }
 
     /* Equivalent to Python `list.pop([index])`. */
@@ -325,7 +361,7 @@ public:
     using SequenceOps::operator*=;
 
     /* Overload of concat() that allows the operand to be a braced initializer list. */
-    template <typename T>
+    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     inline List concat(const std::initializer_list<T>& items) const {
         PyObject* result = PyList_New(size() + items.size());
         if (result == nullptr) {
@@ -377,7 +413,7 @@ public:
         }
     }
 
-    template <typename T>
+    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     inline List operator+(const std::initializer_list<T>& items) const {
         return concat(items);
     }
@@ -387,12 +423,12 @@ public:
     }
 
     template <typename T, std::enable_if_t<impl::is_list_like<T>, int> = 0>
-    inline List& operator+=(T&& items) {
-        extend(std::forward<T>(items));
+    inline List& operator+=(const T& items) {
+        extend(items);
         return *this;
     }
 
-    template <typename T>
+    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     inline List& operator+=(const std::initializer_list<T>& items) {
         extend(items);
         return *this;

@@ -30,9 +30,6 @@ class Range : public Object, public impl::Ops<Range> {
         return PyObject_CallOneArg((PyObject*) &PyRange_Type, obj);
     }
 
-    template <typename T>
-    static constexpr bool constructor1 = impl::is_range_like<T> && impl::is_object<T>;
-
 public:
     static py::Type Type;
 
@@ -52,14 +49,6 @@ public:
             throw error_already_set();
         }
     }
-
-    /* Implicitly convert a Python range into a py::Range.  Borrows a reference. */
-    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
-    Range(const T& value) : Object(value.ptr(), borrowed_t{}) {}
-
-    /* Implicitly convert a Python range into a py::Range.  Steals a reference. */
-    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
-    Range(T&& value) : Object(value.release(), stolen_t{}) {}
 
     /* Explicitly construct a range from 0 to the given stop index (exclusive). */
     explicit Range(const Int& stop) {

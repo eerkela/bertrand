@@ -1,3 +1,4 @@
+#include <sstream>
 #ifndef BERTRAND_PYTHON_INCLUDED
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
@@ -23,12 +24,8 @@ class Tuple :
     using Ops = impl::Ops<Tuple>;
     using SequenceOps = impl::SequenceOps<Tuple>;
 
-    static PyObject* convert_to_tuple(PyObject* obj) {
-        return PySequence_Tuple(obj);
-    }
-
     template <typename T>
-    static inline PyObject* convert_newref(T&& value) {
+    static inline PyObject* convert_newref(const T& value) {
         if constexpr (detail::is_pyobject<T>::value) {
             PyObject* result = value.ptr();
             if (result == nullptr) {
@@ -36,13 +33,24 @@ class Tuple :
             }
             return Py_NewRef(result);
         } else {
-            PyObject* result = pybind11::cast(std::forward<T>(value)).release().ptr();
+            PyObject* result = pybind11::cast(value).release().ptr();
             if (result == nullptr) {
                 throw error_already_set();
             }
             return result;
         }
     }
+
+    template <typename T>
+    static constexpr bool constructor1 = impl::is_object<T> && impl::is_list_like<T>;
+    template <typename T>
+    static constexpr bool constructor2 =
+        !(
+            impl::is_object_exact<T> ||
+            impl::is_object<T> &&
+            (impl::is_tuple_like<T> || impl::is_list_like<T>)
+        ) &&
+        impl::is_iterable<T>;
 
 public:
     static py::Type Type;
@@ -54,7 +62,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, Tuple, PyTuple_Check, convert_to_tuple)
+    BERTRAND_PYTHON_CONSTRUCTORS(Object, Tuple, PyTuple_Check, PySequence_Tuple)
 
     /* Default constructor.  Initializes to empty tuple. */
     Tuple() : Object(PyTuple_New(0), stolen_t{}) {
@@ -65,7 +73,7 @@ public:
 
     /* Pack the contents of a homogenously-typed braced initializer into a new Python
     tuple. */
-    template <typename T, std::enable_if_t<!std::is_same_v<impl::Initializer, T>, int> = 0>
+    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     Tuple(const std::initializer_list<T>& contents) :
         Object(PyTuple_New(contents.size()), stolen_t{})
     {
@@ -105,12 +113,17 @@ public:
         }
     }
 
-    /* Explicitly unpack a generic C++ or Python container into a new py::Tuple. */
-    template <
-        typename T,
-        std::enable_if_t<!(impl::is_object<T> && impl::is_list_like<T>), int> = 0
-    >
-    explicit Tuple(T&& container) {
+    /* Explicitly unpack a Python list into a py::Tuple directly using the C API. */
+    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
+    explicit Tuple(const T& list) : Object(PyList_AsTuple(list.ptr()), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    /* Explicitly unpack a generic C++ container into a new py::Tuple. */
+    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
+    explicit Tuple(const T& container) {
         if constexpr (detail::is_pyobject<T>::value) {
             m_ptr = PySequence_Tuple(container.ptr());
             if (m_ptr == nullptr) {
@@ -141,15 +154,108 @@ public:
         }
     }
 
-    /* Explicitly unpack a Python list into a py::Tuple directly using the C API. */
-    template <
-        typename T,
-        std::enable_if_t<impl::is_object<T> && impl::is_list_like<T>, int> = 0
-    >
-    explicit Tuple(T&& list) : Object(PyList_AsTuple(list.ptr()), stolen_t{}) {
+    /* Explicitly unpack a std::pair into a py::Tuple. */
+    template <typename First, typename Second>
+    explicit Tuple(const std::pair<First, Second>& pair) :
+        Object(PyTuple_New(2), stolen_t{})
+    {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
+        try {
+            PyTuple_SET_ITEM(m_ptr, 0, convert_newref(pair.first));
+            PyTuple_SET_ITEM(m_ptr, 1, convert_newref(pair.second));
+        } catch (...) {
+            Py_DECREF(m_ptr);
+            throw;
+        }
+    }
+
+private:
+
+    template <typename... Args, size_t... N>
+    inline static void unpack_tuple(
+        PyObject* result,
+        const std::tuple<Args...>& tuple,
+        std::index_sequence<N...>
+    ) {
+        (PyTuple_SET_ITEM(result, N, convert_newref(std::get<N>(tuple))), ...);
+    }
+
+public:
+
+    /* Explicitly unpack a std::tuple into a py::Tuple. */
+    template <typename... Args>
+    explicit Tuple(const std::tuple<Args...>& tuple) :
+        Object(PyTuple_New(sizeof...(Args)), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+        try {
+            unpack_tuple(m_ptr, tuple, std::index_sequence_for<Args...>{});
+        } catch (...) {
+            Py_DECREF(m_ptr);
+            throw;
+        }
+    }
+
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
+
+    /* Implicitly convert a py::Tuple into a C++ std::pair.  Throws an error if the
+    tuple is not of length 2. */
+    template <typename First, typename Second>
+    inline operator std::pair<First, Second>() const {
+        if (size() != 2) {
+            std::ostringstream msg;
+            msg << "conversion to std::pair requires tuple of size 2, not " << size();
+            throw IndexError(msg.str());
+        }
+        return {
+            static_cast<First>(GET_ITEM(0)),
+            static_cast<Second>(GET_ITEM(1))
+        };
+    }
+
+private:
+
+    template <typename... Args, size_t... N>
+    inline std::tuple<Args...> convert_to_std_tuple(std::index_sequence<N...>) const {
+        return std::make_tuple(static_cast<Args>(GET_ITEM(N))...);
+    }
+
+public:
+
+    /* Implicitly convert a py::Tuple into a C++ std::tuple.  Throws an error if the
+    tuple does not have the expected length. */
+    template <typename... Args>
+    inline operator std::tuple<Args...>() const {
+        if (size() != sizeof...(Args)) {
+            std::ostringstream msg;
+            msg << "conversion to std::tuple requires tuple of size " << sizeof...(Args)
+                << ", not " << size();
+            throw IndexError(msg.str());
+        }
+        return convert_to_std_tuple<Args...>(std::index_sequence_for<Args...>{});
+    }
+
+    /* Implicitly convert a py::Tuple into a C++ std::array.  Throws an error if the
+    tuple does not have the expected length. */
+    template <typename T, size_t N>
+    inline operator std::array<T, N>() const {
+        if (size() != N) {
+            std::ostringstream msg;
+            msg << "conversion to std::array requires tuple of size " << N << ", not "
+                << size();
+            throw IndexError(msg.str());
+        }
+        std::array<T, N> result;
+        for (size_t i = 0; i < N; ++i) {
+            result[i] = static_cast<T>(GET_ITEM(i));
+        }
+        return result;
     }
 
     ////////////////////////////
@@ -218,7 +324,7 @@ public:
     using SequenceOps::operator*=;
 
     /* Overload of concat() that allows the operand to be a braced initializer list. */
-    template <typename T>
+    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     inline Tuple concat(const std::initializer_list<T>& items) const {
         PyObject* result = PyTuple_New(size() + items.size());
         if (result == nullptr) {
@@ -270,7 +376,7 @@ public:
         }
     }
 
-    template <typename T>
+    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     inline Tuple operator+(const std::initializer_list<T>& items) const {
         return concat(items);
     }
@@ -279,7 +385,7 @@ public:
         return concat(items);
     }
 
-    template <typename T>
+    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     inline Tuple& operator+=(const std::initializer_list<T>& items) {
         *this = concat(items);
         return *this;

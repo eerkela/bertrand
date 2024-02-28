@@ -31,19 +31,8 @@ namespace py {
 
 namespace impl {
 
-    static const Handle re = []() -> Handle {
-        if (Py_IsInitialized()) {
-            return py::import("re");
-        }
-        return nullptr;
-    }();
-
-    static const Handle PyRegexPattern_Type = []() -> Handle {
-        if (re.ptr() != nullptr) {
-            return re.attr("Pattern");
-        }
-        return nullptr;
-    }();
+    static const Module re = py::import("re");
+    static const Handle PyRegexPattern_Type = re.attr("Pattern");
 
 }
 
@@ -636,8 +625,8 @@ public:
 
         /* Syntactic sugar for match.group(). */
         template <typename T>
-        inline OptString operator[](T&& index) const {
-            return group(std::forward<T>(index));
+        inline OptString operator[](const T& index) const {
+            return group(index);
         }
 
         /* Syntactic sugar for match.group() using initializer list syntax to extract

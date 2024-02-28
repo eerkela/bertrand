@@ -19,19 +19,17 @@ class Int : public Object, public impl::Ops<Int> {
     using Ops = impl::Ops<Int>;
 
     template <typename T>
-    static constexpr bool constructor1 = impl::is_bool_like<T> && !impl::is_object<T>;
+    static constexpr bool constructor1 = !impl::is_object<T> && impl::is_bool_like<T>;
     template <typename T>
-    static constexpr bool constructor2 = impl::is_bool_like<T> && impl::is_object<T>;
+    static constexpr bool constructor2 = impl::is_object<T> && impl::is_bool_like<T>;
     template <typename T>
-    static constexpr bool constructor3 = impl::is_int_like<T> && !impl::is_object<T>;
+    static constexpr bool constructor3 = !impl::is_object<T> && impl::is_int_like<T>;
     template <typename T>
-    static constexpr bool constructor4 = impl::is_int_like<T> && impl::is_object<T>;
+    static constexpr bool constructor4 = !impl::is_object<T> && impl::is_float_like<T>;
     template <typename T>
-    static constexpr bool constructor5 = impl::is_float_like<T> && !impl::is_object<T>;
+    static constexpr bool constructor5 = impl::is_object<T> && impl::is_float_like<T>;
     template <typename T>
-    static constexpr bool constructor6 = impl::is_float_like<T> && impl::is_object<T>;
-    template <typename T>
-    static constexpr bool constructor7 = (
+    static constexpr bool constructor6 = (
         !impl::is_bool_like<T> &&
         !impl::is_int_like<T> &&
         !impl::is_float_like<T> &&
@@ -87,16 +85,8 @@ public:
         }
     }
 
-    /* Implicitly convert Python integers to py::Int.  Borrows a reference. */
-    template <typename T, std::enable_if_t<constructor4<T>, int> = 0>
-    Int(const T& value) : Object(value.ptr(), borrowed_t{}) {}
-
-    /* Implicitly convert Python integers to py::Int.  Steals a reference. */
-    template <typename T, std::enable_if_t<constructor4<std::decay_t<T>>, int> = 0>
-    Int(T&& value) : Object(value.release(), stolen_t{}) {}
-
     /* Explicitly convert a C++ float into a py::Int. */
-    template <typename T, std::enable_if_t<constructor5<T>, int> = 0>
+    template <typename T, std::enable_if_t<constructor4<T>, int> = 0>
     explicit Int(const T& value) {
         m_ptr = PyLong_FromDouble(value);
         if (m_ptr == nullptr) {
@@ -105,7 +95,7 @@ public:
     }
 
     /* Explicitly convert a Python float into a py::Int. */
-    template <typename T, std::enable_if_t<constructor6<T>, int> = 0>
+    template <typename T, std::enable_if_t<constructor5<T>, int> = 0>
     explicit Int(const T& value) : Object(PyNumber_Long(value.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -113,7 +103,7 @@ public:
     }
 
     /* Trigger explicit conversions to long long. */
-    template <typename T, std::enable_if_t<constructor7<T>, int> = 0>
+    template <typename T, std::enable_if_t<constructor6<T>, int> = 0>
     explicit Int(const T& value) : Int(static_cast<long long>(value)) {}
 
     /* Explicitly convert a string literal with an optional base into a py::Int. */
@@ -175,6 +165,9 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
+    pybind11::iterator begin() const = delete;
+    pybind11::iterator end() const = delete;
+
     using Ops::operator<;
     using Ops::operator<=;
     using Ops::operator==;
@@ -202,17 +195,20 @@ public:
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Int& operator+=(const T& other) {
-        return Ops::operator+=(other);
+        Ops::operator+=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Int& operator-=(const T& other) {
-        return Ops::operator-=(other);
+        Ops::operator-=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Int& operator*=(const T& other) {
-        return Ops::operator*=(other);
+        Ops::operator*=(other);
+        return *this;
     }
 
     // NOTE: /= is not type-safe in C++ because it converts the result to a float.  Use
@@ -220,32 +216,38 @@ public:
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Int& operator%=(const T& other) {
-        return Ops::operator%=(other);
+        Ops::operator%=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Int& operator<<=(const T& other) {
-        return Ops::operator<<=(other);
+        Ops::operator<<=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Int& operator>>=(const T& other) {
-        return Ops::operator>>=(other);
+        Ops::operator>>=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Int& operator&=(const T& other) {
-        return Ops::operator&=(other);
+        Ops::operator&=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Int& operator|=(const T& other) {
-        return Ops::operator|=(other);
+        Ops::operator|=(other);
+        return *this;
     }
 
     template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
     inline Int& operator^=(const T& other) {
-        return Ops::operator^=(other);
+        Ops::operator^=(other);
+        return *this;
     }
 
 };

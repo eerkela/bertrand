@@ -718,8 +718,8 @@ public:
 
 /* Equivalent to Python `abs(obj)`. */
 template <typename T>
-inline auto abs(T&& obj) {
-    if constexpr (detail::is_pyobject<std::decay_t<T>>::value) {
+inline auto abs(const T& obj) {
+    if constexpr (detail::is_pyobject<T>::value) {
         PyObject* result = PyNumber_Absolute(obj.ptr());
         if (result == nullptr) {
             throw error_already_set();

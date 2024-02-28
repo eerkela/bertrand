@@ -7,7 +7,6 @@
 
 #include "common.h"
 #include "set.h"
-#include <ostream>
 
 
 namespace bertrand {
@@ -26,21 +25,21 @@ class MappingProxy : public Object, public impl::Ops<MappingProxy> {
         return result;
     }
 
-    inline static PyObject* convert_to_mappingproxy(PyObject* obj) {
-        PyObject* result = PyDictProxy_New(obj);
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return result;
-    }
-
 public:
     static py::Type Type;
+
+    template <typename T>
+    static constexpr bool like = impl::is_mappingproxy_like<T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(
         Object,
         MappingProxy,
         mappingproxy_check,
-        convert_to_mappingproxy
+        PyDictProxy_New
     )
 
     ////////////////////////////////
@@ -61,20 +60,17 @@ public:
     inline Dict copy() const;  // out of line to avoid circular dependency.
 
     /* Equivalent to Python `mappingproxy.get(key)`. */
-    template <typename K, typename V>
-    inline Object get(K&& key) const {
-        return this->attr("get")(
-            detail::object_or_cast(std::forward<K>(key)),
-            py::None
-        );
+    template <typename K>
+    inline Object get(const K& key) const {
+        return this->attr("get")(detail::object_or_cast(key), py::None);
     }
 
     /* Equivalent to Python `mappingproxy.get(key, default)`. */
     template <typename K, typename V>
-    inline Object get(K&& key, V&& default_value) const {
+    inline Object get(const K& key, const V& default_value) const {
         return this->attr("get")(
-            detail::object_or_cast(std::forward<K>(key)),
-            detail::object_or_cast(std::forward<V>(default_value))
+            detail::object_or_cast(key),
+            detail::object_or_cast(default_value)
         );
     }
 
@@ -93,19 +89,17 @@ public:
 
     /* Equivalent to Python `key in mappingproxy`. */
     template <typename T>
-    inline bool contains(T&& key) const;
+    inline bool contains(const T& key) const;
 
     using impl::Ops<MappingProxy>::operator==;
     using impl::Ops<MappingProxy>::operator!=;
-
-    // Operator overloads provided out of line to avoid circular dependency.
-
 };
 
 
 /* New subclass of pybind11::object representing a view into the keys of a dictionary
 object. */
 class KeysView : public Object, public impl::Ops<KeysView> {
+    using Ops = impl::Ops<KeysView>;
 
     inline static bool keys_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictKeys_Type);
@@ -123,9 +117,6 @@ class KeysView : public Object, public impl::Ops<KeysView> {
             }
             PyObject* result = PyObject_CallNoArgs(attr);
             Py_DECREF(attr);
-            if (result == nullptr) {
-                throw error_already_set();
-            }
             return result;
         } else {
             throw TypeError("expected a dict");
@@ -134,7 +125,19 @@ class KeysView : public Object, public impl::Ops<KeysView> {
 
 public:
     static py::Type Type;
+
+    template <typename T>
+    static constexpr bool like = impl::is_same_or_subclass_of<KeysView, T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(Object, KeysView, keys_check, convert_to_keys)
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
 
     /* Get the number of keys. */
     inline size_t size() const noexcept {
@@ -152,15 +155,15 @@ public:
     }
 
     /* Equivalent to Python `dict.keys().isdisjoint(other)`. */
-    template <typename T>
-    inline bool isdisjoint(T&& other) const {
-        return this->attr("isdisjoint")(
-            detail::object_or_cast(std::forward<T>(other))
-        ).template cast<bool>();
+    template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+    inline bool isdisjoint(const T& other) const {
+        return static_cast<bool>(
+            this->attr("isdisjoint")(detail::object_or_cast(other))
+        );
     }
 
     /* Equivalent to Python `dict.keys().isdisjoint(<braced initializer list>)`. */
-    template <typename T>
+    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     inline bool isdisjoint(const std::initializer_list<T>& other) const {
         return static_cast<bool>(this->attr("isdisjoint")(Set(other)));
     }
@@ -175,22 +178,21 @@ public:
     /////////////////////////
 
     /* Equivalent to `key in dict.keys()`. */
-    inline bool contains(const Handle& key) const {
-        int result = PySequence_Contains(this->ptr(), key.ptr());
+    template <typename T>
+    inline bool contains(const T& key) const {
+        int result = PySequence_Contains(this->ptr(), detail::object_or_cast(key).ptr());
         if (result == -1) {
             throw error_already_set();
         }
         return result;
     }
 
-    template <typename T>
-    inline Set operator|(T&& other) const {
-        return Set(this->attr("__or__")(
-            detail::object_or_cast(std::forward<T>(other))
-        ));
+    template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+    inline Set operator|(const T& other) const {
+        return Set(this->attr("__or__")(detail::object_or_cast(other)));
     }
 
-    template <typename T>
+    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     inline Set operator|(const std::initializer_list<T>& other) const {
         return Set(this->attr("__or__")(Set(other)));
     }
@@ -199,14 +201,12 @@ public:
         return Set(this->attr("__or__")(Set(other)));
     }
 
-    template <typename T>
-    inline Set operator&(T&& other) const {
-        return Set(this->attr("__and__")(
-            detail::object_or_cast(std::forward<T>(other))
-        ));
+    template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+    inline Set operator&(const T& other) const {
+        return Set(this->attr("__and__")(detail::object_or_cast(other)));
     }
 
-    template <typename T>
+    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     inline Set operator&(const std::initializer_list<T>& other) const {
         return Set(this->attr("__and__")(Set(other)));
     }
@@ -215,14 +215,12 @@ public:
         return Set(this->attr("__and__")(Set(other)));
     }
 
-    template <typename T>
-    inline Set operator-(T&& other) const {
-        return Set(this->attr("__sub__")(
-            detail::object_or_cast(std::forward<T>(other))
-        ));
+    template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+    inline Set operator-(const T& other) const {
+        return Set(this->attr("__sub__")(detail::object_or_cast(other)));
     }
 
-    template <typename T>
+    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     inline Set operator-(const std::initializer_list<T>& other) const {
         return Set(this->attr("__sub__")(Set(other)));
     }
@@ -231,14 +229,12 @@ public:
         return Set(this->attr("__sub__")(Set(other)));
     }
 
-    template <typename T>
-    inline Set operator^(T&& other) const {
-        return Set(this->attr("__xor__")(
-            detail::object_or_cast(std::forward<T>(other))
-        ));
+    template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+    inline Set operator^(const T& other) const {
+        return Set(this->attr("__xor__")(detail::object_or_cast(other)));
     }
 
-    template <typename T>
+    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     inline Set operator^(const std::initializer_list<T>& other) const {
         return Set(this->attr("__xor__")(Set(other)));
     }
@@ -247,18 +243,19 @@ public:
         return Set(this->attr("__xor__")(Set(other)));
     }
 
-    using impl::Ops<KeysView>::operator<;
-    using impl::Ops<KeysView>::operator<=;
-    using impl::Ops<KeysView>::operator==;
-    using impl::Ops<KeysView>::operator!=;
-    using impl::Ops<KeysView>::operator>=;
-    using impl::Ops<KeysView>::operator>;
+    using Ops::operator<;
+    using Ops::operator<=;
+    using Ops::operator==;
+    using Ops::operator!=;
+    using Ops::operator>=;
+    using Ops::operator>;
 };
 
 
 /* New subclass of pybind11::object representing a view into the values of a dictionary
 object. */
 class ValuesView : public Object, public impl::Ops<ValuesView> {
+    using Ops = impl::Ops<ValuesView>;
 
     inline static bool values_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictValues_Type);
@@ -276,9 +273,6 @@ class ValuesView : public Object, public impl::Ops<ValuesView> {
             }
             PyObject* result = PyObject_CallNoArgs(attr);
             Py_DECREF(attr);
-            if (result == nullptr) {
-                throw error_already_set();
-            }
             return result;
         } else {
             throw TypeError("expected a dict");
@@ -287,7 +281,19 @@ class ValuesView : public Object, public impl::Ops<ValuesView> {
 
 public:
     static py::Type Type;
+
+    template <typename T>
+    static constexpr bool like = impl::is_same_or_subclass_of<ValuesView, T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(Object, ValuesView, values_check, convert_to_values)
+
+    ///////////////////////////////
+    ////   PYTHON INTERFACE    ////
+    ///////////////////////////////
 
     /* Get the number of values. */
     inline size_t size() const noexcept {
@@ -305,26 +311,28 @@ public:
     }
 
     /* Equivalent to `value in dict.values()`. */
-    inline bool contains(const Handle& value) const {
-        int result = PySequence_Contains(this->ptr(), value.ptr());
+    template <typename T>
+    inline bool contains(const T& value) const {
+        int result = PySequence_Contains(this->ptr(), detail::object_or_cast(value).ptr());
         if (result == -1) {
             throw error_already_set();
         }
         return result;
     }
 
-    using impl::Ops<ValuesView>::operator<;
-    using impl::Ops<ValuesView>::operator<=;
-    using impl::Ops<ValuesView>::operator==;
-    using impl::Ops<ValuesView>::operator!=;
-    using impl::Ops<ValuesView>::operator>=;
-    using impl::Ops<ValuesView>::operator>;
+    using Ops::operator<;
+    using Ops::operator<=;
+    using Ops::operator==;
+    using Ops::operator!=;
+    using Ops::operator>=;
+    using Ops::operator>;
 };
 
 
 /* New subclass of pybind11::object representing a view into the items of a dictionary
 object. */
 struct ItemsView : public Object, public impl::Ops<ItemsView> {
+    using Ops = impl::Ops<ItemsView>;
 
     inline static bool items_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictItems_Type);
@@ -342,9 +350,6 @@ struct ItemsView : public Object, public impl::Ops<ItemsView> {
             }
             PyObject* result = PyObject_CallNoArgs(attr);
             Py_DECREF(attr);
-            if (result == nullptr) {
-                throw error_already_set();
-            }
             return result;
         } else {
             throw TypeError("expected a dict");
@@ -353,7 +358,19 @@ struct ItemsView : public Object, public impl::Ops<ItemsView> {
 
 public:
     static py::Type Type;
+
+    template <typename T>
+    static constexpr bool like = impl::is_same_or_subclass_of<ItemsView, T>;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
     BERTRAND_PYTHON_CONSTRUCTORS(Object, ItemsView, items_check, convert_to_items)
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
 
     /* Get the number of items. */
     inline size_t size() const noexcept {
@@ -371,27 +388,30 @@ public:
     }
 
     /* Equivalent to `value in dict.values()`. */
-    inline bool contains(const Handle& value) const {
-        int result = PySequence_Contains(this->ptr(), value.ptr());
+    template <typename T>
+    inline bool contains(const T& value) const {
+        int result = PySequence_Contains(this->ptr(), detail::object_or_cast(value).ptr());
         if (result == -1) {
             throw error_already_set();
         }
         return result;
     }
 
-    using impl::Ops<ItemsView>::operator<;
-    using impl::Ops<ItemsView>::operator<=;
-    using impl::Ops<ItemsView>::operator==;
-    using impl::Ops<ItemsView>::operator!=;
-    using impl::Ops<ItemsView>::operator>=;
-    using impl::Ops<ItemsView>::operator>;
+    using Ops::operator<;
+    using Ops::operator<=;
+    using Ops::operator==;
+    using Ops::operator!=;
+    using Ops::operator>=;
+    using Ops::operator>;
 };
 
 
 /* Wrapper around pybind11::dict that allows it to be directly initialized using
 std::initializer_list and enables extra C API functionality. */
 class Dict : public Object, public impl::Ops<Dict> {
+    using Ops = impl::Ops<Dict>;
 
+    /* Simple initializer struct for std::initializer_list. */
     struct DictInit {
         Object key;
         Object value;
@@ -404,23 +424,19 @@ class Dict : public Object, public impl::Ops<Dict> {
     };
 
     static PyObject* convert_to_dict(PyObject* obj) {
-        PyObject* result = PyObject_CallOneArg((PyObject*) &PyDict_Type, obj);
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return result;
+        return PyObject_CallOneArg((PyObject*) &PyDict_Type, obj);
     }
 
     template <typename T>
-    static constexpr bool is_dictlike = (
-        std::is_base_of_v<Dict, T> || std::is_base_of_v<pybind11::dict, T>
-    );
+    static constexpr bool constructor1 =
+        !(impl::is_object_exact<T> || impl::is_object<T> && impl::is_dict_like<T>) &&
+        impl::is_iterable<T>;
 
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_dictlike<T>;
+    static constexpr bool like = impl::is_dict_like<T>;
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -429,15 +445,16 @@ public:
     BERTRAND_PYTHON_CONSTRUCTORS(Object, Dict, PyDict_Check, convert_to_dict);
 
     /* Default constructor.  Initializes to empty dict. */
-    inline Dict() : Object(PyDict_New(), stolen_t{}) {
+    Dict() : Object(PyDict_New(), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
     /* Pack the given arguments into a dictionary using an initializer list. */
-    Dict(const std::initializer_list<DictInit>& contents) {
-        m_ptr = PyDict_New();
+    Dict(const std::initializer_list<DictInit>& contents)
+        : Object(PyDict_New(), stolen_t{})
+    {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -453,10 +470,9 @@ public:
         }
     }
 
-    /* Unpack a generic container into a new dictionary. */
-    template <typename T, std::enable_if_t<!is_dictlike<T>, int> = 0>
-    explicit Dict(T&& container) {
-        m_ptr = PyDict_New();
+    /* Explicitly unpack a generic C++ or Python container into a new py::Dict. */
+    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
+    explicit Dict(const T& container) : Object(PyDict_New(), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -493,18 +509,9 @@ public:
         }
     }
 
-    /* Unpack a pybind11::dict into a new dictionary directly using the C API. */
-    template <typename T, std::enable_if_t<is_dictlike<T>, int> = 0>
-    explicit Dict(T&& dict) {
-        m_ptr = PyDict_New();
-        if (m_ptr == nullptr) {
-            throw error_already_set();
-        }
-        if (PyDict_Merge(m_ptr, dict.ptr(), 1)) {
-            Py_DECREF(m_ptr);
-            throw error_already_set();
-        }
-    }
+    // NOTE: this last constructor is taken from pybind11 to enable its keyword
+    // argument syntax for constructing a dictionary.  It's technically superceeded by
+    // initializer lists, but it's here for backwards compatibility.
 
     /* Construct a dictionary using optional keyword arguments, following pybind11
     syntax. */
@@ -516,6 +523,32 @@ public:
     explicit Dict(Args&&... args) :
         Dict(collector(std::forward<Args>(args)...).kwargs())
     {}
+
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
+
+    /* Implicitly convert to a C++ dict type. */
+    template <
+        typename T,
+        std::enable_if_t<impl::is_dict_like<T> && !impl::is_object<T>, int> = 0
+    >
+    inline operator T() const {
+        T result;
+
+        PyObject* key;
+        PyObject* value;
+        Py_ssize_t pos = 0;
+        while (PyDict_Next(this->ptr(), &pos, &key, &value)) {
+            using Key = typename T::key_type;
+            using Value = typename T::mapped_type;
+            Key converted_key = Handle(key).template cast<Key>();
+            Value converted_value = Handle(value).template cast<Value>();
+            result[converted_key] = converted_value;
+        }
+
+        return result;
+    }
 
     ///////////////////////////
     ////    PyDict_ API    ////
@@ -532,25 +565,20 @@ public:
     }
 
     /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
-    template <typename T, std::enable_if_t<is_dictlike<T>, int> = 0>
-    inline void merge(T&& items) {
-        if (PyDict_Merge(
-            this->ptr(),
-            detail::object_or_cast(std::forward<T>(items)).ptr(),
-            0
-        )) {
+    template <typename T, std::enable_if_t<impl::is_dict_like<T>, int> = 0>
+    inline void merge(const T& items) {
+        if (PyDict_Merge(this->ptr(), detail::object_or_cast(items).ptr(), 0)) {
             throw error_already_set();
         }
     }
 
     /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
-    template <typename T, std::enable_if_t<!is_dictlike<T>, int> = 0>
-    inline void merge(T&& items) {
-        if (PyDict_MergeFromSeq2(
-            this->ptr(),
-            detail::object_or_cast(std::forward<T>(items)).ptr(),
-            0
-        )) {
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_dict_like<T> && impl::is_iterable<T>, int> = 0
+    >
+    inline void merge(const T& items) {
+        if (PyDict_MergeFromSeq2(this->ptr(), detail::object_or_cast(items).ptr(), 0)) {
             throw error_already_set();
         }
     }
@@ -574,8 +602,8 @@ public:
     }
 
     /* Equivalent to Python `dict.fromkeys(keys)`.  Values default to None. */
-    template <typename K>
-    static inline Dict fromkeys(K&& keys) {
+    template <typename K, std::enable_if_t<impl::is_iterable<K>, int> = 0>
+    static inline Dict fromkeys(const K& keys) {
         PyObject* result = PyDict_New();
         if (result == nullptr) {
             throw error_already_set();
@@ -598,7 +626,7 @@ public:
     }
 
     /* Equivalent to Python `dict.fromkeys(<braced initializer list>)`. */
-    template <typename K>
+    template <typename K, std::enable_if_t<!impl::is_initializer<K>, int> = 0>
     static inline Dict fromkeys(const std::initializer_list<K>& keys) {
         PyObject* result = PyDict_New();
         if (result == nullptr) {
@@ -645,9 +673,9 @@ public:
     }
 
     /* Equivalent to Python `dict.fromkeys(keys, value)`. */
-    template <typename K, typename V>
-    static inline Dict fromkeys(K&& keys, V&& value) {
-        Object converted = detail::object_or_cast(std::forward<V>(value));
+    template <typename K, typename V, std::enable_if_t<impl::is_iterable<K>, int> = 0>
+    static inline Dict fromkeys(const K& keys, const V& value) {
+        Object converted = detail::object_or_cast(value);
         PyObject* result = PyDict_New();
         if (result == nullptr) {
             throw error_already_set();
@@ -670,9 +698,9 @@ public:
     }
 
     /* Equivalent to Python `dict.fromkeys(<braced initializer list>, value)`. */
-    template <typename K, typename V>
-    static inline Dict fromkeys(const std::initializer_list<K>& keys, V&& value) {
-        Object converted = detail::object_or_cast(std::forward<V>(value));
+    template <typename K, typename V, std::enable_if_t<!impl::is_initializer<K>, int> = 0>
+    static inline Dict fromkeys(const std::initializer_list<K>& keys, const V& value) {
+        Object converted = detail::object_or_cast(value);
         PyObject* result = PyDict_New();
         if (result == nullptr) {
             throw error_already_set();
@@ -696,8 +724,11 @@ public:
 
     /* Equivalent to Python `dict.fromkeys(<braced initializer list>, value)`. */
     template <typename V>
-    inline Dict fromkeys(const std::initializer_list<impl::Initializer>& keys, V&& value) {
-        Object converted = detail::object_or_cast(std::forward<V>(value));
+    inline Dict fromkeys(
+        const std::initializer_list<impl::Initializer>& keys,
+        const V& value
+    ) {
+        Object converted = detail::object_or_cast(value);
         PyObject* result = PyDict_New();
         if (result == nullptr) {
             throw error_already_set();
@@ -721,10 +752,10 @@ public:
 
     /* Equivalent to Python `dict.get(key)`.  Returns None if the key is not found. */
     template <typename K>
-    inline Object get(K&& key) const {
+    inline Object get(const K& key) const {
         PyObject* result = PyDict_GetItemWithError(
             this->ptr(),
-            detail::object_or_cast(std::forward<K>(key)).ptr()
+            detail::object_or_cast(key).ptr()
         );
         if (result == nullptr) {
             if (PyErr_Occurred()) {
@@ -737,26 +768,26 @@ public:
 
     /* Equivalent to Python `dict.get(key, default_value)`. */
     template <typename K, typename V>
-    inline Object get(K&& key, V&& default_value) const {
+    inline Object get(const K& key, const V& default_value) const {
         PyObject* result = PyDict_GetItemWithError(
             this->ptr(),
-            detail::object_or_cast(std::forward<K>(key)).ptr()
+            detail::object_or_cast(key).ptr()
         );
         if (result == nullptr) {
             if (PyErr_Occurred()) {
                 throw error_already_set();
             }
-            return detail::object_or_cast(std::forward<V>(default_value));
+            return detail::object_or_cast(default_value);
         }
         return reinterpret_steal<Object>(result);
     }
 
     /* Equivalent to Python `dict.pop(key)`.  Returns None if the key is not found. */
     template <typename K>
-    inline Object pop(K&& key) {
+    inline Object pop(const K& key) {
         PyObject* result = PyDict_GetItemWithError(
             this->ptr(),
-            detail::object_or_cast(std::forward<K>(key)).ptr()
+            detail::object_or_cast(key).ptr()
         );
         if (result == nullptr) {
             if (PyErr_Occurred()) {
@@ -772,16 +803,16 @@ public:
 
     /* Equivalent to Python `dict.pop(key, default_value)`. */
     template <typename K, typename V>
-    inline Object pop(K&& key, V&& default_value) {
+    inline Object pop(const K& key, const V& default_value) {
         PyObject* result = PyDict_GetItemWithError(
             this->ptr(),
-            detail::object_or_cast(std::forward<K>(key)).ptr()
+            detail::object_or_cast(key).ptr()
         );
         if (result == nullptr) {
             if (PyErr_Occurred()) {
                 throw error_already_set();
             }
-            return detail::object_or_cast(std::forward<V>(default_value));
+            return detail::object_or_cast(default_value);
         }
         if (PyDict_DelItem(this->ptr(), result)) {
             throw error_already_set();
@@ -796,10 +827,10 @@ public:
 
     /* Equivalent to Python `dict.setdefault(key)`. */
     template <typename K>
-    inline Object setdefault(K&& key) {
+    inline Object setdefault(const K& key) {
         PyObject* result = PyDict_SetDefault(
             this->ptr(),
-            detail::object_or_cast(std::forward<K>(key)).ptr(),
+            detail::object_or_cast(key).ptr(),
             Py_None
         );
         if (result == nullptr) {
@@ -810,11 +841,11 @@ public:
 
     /* Equivalent to Python `dict.setdefault(key, default_value)`. */
     template <typename K, typename V>
-    inline Object setdefault(K&& key, V&& default_value) {
+    inline Object setdefault(const K& key, const V& default_value) {
         PyObject* result = PyDict_SetDefault(
             this->ptr(),
-            detail::object_or_cast(std::forward<K>(key)).ptr(),
-            detail::object_or_cast(std::forward<V>(default_value)).ptr()
+            detail::object_or_cast(key).ptr(),
+            detail::object_or_cast(default_value).ptr()
         );
         if (result == nullptr) {
             throw error_already_set();
@@ -823,20 +854,23 @@ public:
     }
 
     /* Equivalent to Python `dict.update(items)`. */
-    template <typename T, std::enable_if_t<is_dictlike<T>, int> = 0>
-    inline void update(T&& items) {
+    template <typename T, std::enable_if_t<impl::is_dict_like<T>, int> = 0>
+    inline void update(const T& items) {
         if (PyDict_Merge(this->ptr(), items.ptr(), 1)) {
             throw error_already_set();
         }
     }
 
     /* Equivalent to Python `dict.update(items)`. */
-    template <typename T, std::enable_if_t<!is_dictlike<T>, int> = 0>
-    inline void update(T&& items) {
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_dict_like<T> && impl::is_iterable<T>, int> = 0
+    >
+    inline void update(const T& items) {
         if constexpr (detail::is_pyobject<T>::value) {
             if (PyDict_MergeFromSeq2(
                 this->ptr(),
-                detail::object_or_cast(std::forward<T>(items)).ptr(),
+                detail::object_or_cast(items).ptr(),
                 1
             )) {
                 throw error_already_set();
@@ -887,24 +921,21 @@ public:
 
     /* Equivalent to Python `key in dict`. */
     template <typename T>
-    inline bool contains(T&& key) const {
-        int result = PyDict_Contains(
-            this->ptr(),
-            detail::object_or_cast(std::forward<T>(key)).ptr()
-        );
+    inline bool contains(const T& key) const {
+        int result = PyDict_Contains(this->ptr(), detail::object_or_cast(key).ptr());
         if (result == -1) {
             throw error_already_set();
         }
         return result;
     }
 
-    using impl::Ops<Dict>::operator==;
-    using impl::Ops<Dict>::operator!=;
+    using Ops::operator==;
+    using Ops::operator!=;
 
-    template <typename T>
-    inline Dict operator|(T&& other) const {
+    template <typename T, std::enable_if_t<impl::is_dict_like<T>, int> = 0>
+    inline Dict operator|(const T& other) const {
         Dict result = copy();
-        result.update(std::forward<T>(other));
+        result.update(other);
         return result;
     }
 
@@ -914,9 +945,9 @@ public:
         return result;
     }
 
-    template <typename T>
-    inline Dict& operator|=(T&& other) {
-        update(std::forward<T>(other));
+    template <typename T, std::enable_if_t<impl::is_dict_like<T>, int> = 0>
+    inline Dict& operator|=(const T& other) {
+        update(other);
         return *this;
     }
 
@@ -941,13 +972,13 @@ inline ValuesView MappingProxy::values() const{
 }
 
 template <typename T>
-inline bool MappingProxy::contains(T&& key) const {
-    return this->keys().contains(detail::object_or_cast(std::forward<T>(key)));
+inline bool MappingProxy::contains(const T& key) const {
+    return this->keys().contains(detail::object_or_cast(key));
 }
 
 template <typename T>
-inline Dict operator|(const MappingProxy& mapping, T&& other) {
-    return mapping.attr("__or__")(detail::object_or_cast(std::forward<T>(other)));
+inline Dict operator|(const MappingProxy& mapping, const T& other) {
+    return mapping.attr("__or__")(detail::object_or_cast(other));
 }
 
 
