@@ -18,9 +18,8 @@ namespace py {
 
 
 /* Wrapper around pybind11::str that enables extra C API functionality. */
-class Str : public Object, public impl::Ops<Str>, public impl::SequenceOps<Str> {
-    using Ops = impl::Ops<Str>;
-    using SequenceOps = impl::SequenceOps<Str>;
+class Str : public impl::SequenceOps {
+    using Base = impl::SequenceOps;
 
     template <typename T>
     inline auto to_format_string(T&& arg) -> decltype(auto) {
@@ -37,37 +36,36 @@ class Str : public Object, public impl::Ops<Str>, public impl::SequenceOps<Str> 
     }
 
     template <typename T>
-    static constexpr bool constructor1 = (
-        impl::is_object<T> && !impl::is_object_exact<T> && !impl::is_str_like<T>
-    );
+    static constexpr bool constructor1 = 
+        !impl::is_python<T> && std::is_convertible_v<T, std::string>;
     template <typename T>
-    static constexpr bool constructor2 = 
-        !impl::is_object<T> && std::is_convertible_v<T, std::string>;
+    static constexpr bool constructor2 =
+        !impl::is_python<T> && !std::is_convertible_v<T, std::string>;
     template <typename T>
     static constexpr bool constructor3 =
-        !impl::is_object<T> && !std::is_convertible_v<T, std::string>;
+        impl::is_python<T> && !impl::is_str_like<T>;
 
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_str_like<T>;
+    static constexpr bool check() { return impl::is_str_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, Str, PyUnicode_Check, PyObject_Str);
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, Str, PyUnicode_Check)
 
     /* Default constructor.  Initializes to empty string. */
-    Str() : Object(PyUnicode_FromStringAndSize("", 0), stolen_t{}) {
+    Str() : Base(PyUnicode_FromStringAndSize("", 0), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
     /* Implicitly convert C++ string literals into py::Str. */
-    Str(const char* string) : Object(PyUnicode_FromString(string), stolen_t{}) {
+    Str(const char* string) : Base(PyUnicode_FromString(string), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -75,7 +73,7 @@ public:
 
     /* Implicitly convert C++ std::string into py::Str. */
     Str(const std::string& string) :
-        Object(PyUnicode_FromStringAndSize(string.c_str(), string.size()), stolen_t{})
+        Base(PyUnicode_FromStringAndSize(string.c_str(), string.size()), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -84,28 +82,28 @@ public:
 
     /* Implicitly convert C++ std::string_view into py::Str. */
     Str(const std::string_view& string) :
-        Object(PyUnicode_FromStringAndSize(string.data(), string.size()), stolen_t{})
+        Base(PyUnicode_FromStringAndSize(string.data(), string.size()), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
-    /* Explicitly convert an arbitrary Python object into a py::Str representation. */
+    /* Trigger explicit C++ conversions to std::string. */
     template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
-    explicit Str(const T& obj) : Object(PyObject_Str(obj.ptr()), stolen_t{}) {
+    explicit Str(const T& string) : Str(std::string(string)) {}
+
+    /* Explicitly convert an arbitrary C++ object into a py::Str representation. */
+    template <typename T, std::enable_if_t<constructor3<T>, int> = 0>
+    explicit Str(const T& obj) : Base(PyObject_Str(pybind11::cast(obj).ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
-    /* Trigger explicit conversions to std::string. */
+    /* Explicitly convert an arbitrary Python object into a py::Str representation. */
     template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
-    explicit Str(const T& string) : Str(std::string(string)) {}
-
-    /* Explicitly convert an arbitrary C++ object into a py::Str representation. */
-    template <typename T, std::enable_if_t<constructor3<T>, int> = 0>
-    explicit Str(const T& obj) : Object(PyObject_Str(pybind11::cast(obj).ptr()), stolen_t{}) {
+    explicit Str(const T& obj) : Base(PyObject_Str(obj.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -720,17 +718,17 @@ public:
         return reinterpret_steal<Str>(result);
     }
 
-    using Ops::operator<;
-    using Ops::operator<=;
-    using Ops::operator==;
-    using Ops::operator!=;
-    using Ops::operator>=;
-    using Ops::operator>;
+    using Base::operator<;
+    using Base::operator<=;
+    using Base::operator==;
+    using Base::operator!=;
+    using Base::operator>=;
+    using Base::operator>;
 
-    using Object::operator[];
-    using SequenceOps::operator+;
-    using SequenceOps::operator*;
-    using SequenceOps::operator*=;
+    using Base::operator[];
+    using Base::operator+;
+    using Base::operator*;
+    using Base::operator*=;
 
     inline Str& operator+=(const Str& other) {
         *this = concat(other);

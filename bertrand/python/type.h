@@ -16,26 +16,26 @@ namespace py {
 /* Wrapper around a pybind11::type that enables extra C API functionality, such as the
 ability to create new types on the fly by calling the type() metaclass, or directly
 querying PyTypeObject* fields. */
-class Type : public Object, public impl::Ops<Type> {
-    using Ops = impl::Ops<Type>;
-
-    static PyObject* convert_to_type(PyObject* obj) {
-        return Py_NewRef(reinterpret_cast<PyObject*>(Py_TYPE(obj)));
-    }
+class Type : public impl::Ops {
+    using Base = impl::Ops;
 
 public:
 
     template <typename T>
-    static constexpr bool like = impl::is_type_like<T>;
+    static constexpr bool check() { return impl::is_type_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, Type, PyType_Check, convert_to_type);
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, Type, PyType_Check)
 
     /* Default constructor.  Initializes to the built-in type metaclass. */
-    Type() : Object((PyObject*) &PyType_Type, borrowed_t{}) {}
+    Type() : Base((PyObject*) &PyType_Type, borrowed_t{}) {}
+
+    /* Explicitly detect the type of an arbitrary Python object. */
+    template <typename T, std::enable_if_t<impl::is_python<T>, int> = 0>
+    explicit Type(const T& obj) : Base((PyObject*) Py_TYPE(obj.ptr()), borrowed_t{}) {}
 
     /* Dynamically create a new Python type by calling the type() metaclass. */
     explicit Type(const Str& name, const Tuple& bases, const Dict& dict);
@@ -44,7 +44,7 @@ public:
     exactly interchangeable with a standard call to the type metaclass directly, as it
     does not invoke any of the __init__(), __new__(), __init_subclass__(), or
     __set_name__() methods for the type or any of its bases. */
-    explicit Type(PyType_Spec* spec) : Object(PyType_FromSpec(spec), stolen_t{}) {
+    explicit Type(PyType_Spec* spec) : Base(PyType_FromSpec(spec), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -338,17 +338,14 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    // NOTE: indexing a Type object calls its __class_getitem__() method just like
-    // normal python.
-
-    using Ops::operator==;
-    using Ops::operator!=;
+    using Base::operator[];
+    using Base::operator();
 };
 
 
 /* New subclass of pybind11::object that represents Python's built-in super() type. */
-class Super : public Object, public impl::Ops<Super> {
-    using Ops = impl::Ops<Super>;
+class Super : public impl::Ops {
+    using Base = impl::Ops;
 
     inline static int check_super(PyObject* obj) {
         int result = PyObject_IsInstance(obj, reinterpret_cast<PyObject*>(&PySuper_Type));
@@ -358,26 +355,21 @@ class Super : public Object, public impl::Ops<Super> {
         return result;
     }
 
-    inline static PyObject* convert_super(PyObject* obj) {
-        throw Object::noconvert<Super>(obj);
-    }
-
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_same_or_subclass_of<Super, T>;
+    static constexpr bool check() { return impl::is_same_or_subclass_of<Super, T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, Super, check_super, convert_super);
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, Super, check_super);
 
     /* Default constructor.  Equivalent to Python `super()` with no arguments, which
     uses the calling context's inheritance hierarchy. */
-    Super() {
-        m_ptr = PyObject_CallNoArgs(reinterpret_cast<PyObject*>(&PySuper_Type));
+    Super() : Base(reinterpret_cast<PyObject*>(&PySuper_Type), borrowed_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -385,21 +377,8 @@ public:
 
     /* Explicit constructor.  Equivalent to Python `super(type, self)` with 2
     arguments. */
-    explicit Super(const pybind11::type& type, const pybind11::handle& self) {
-        m_ptr = PyObject_CallFunctionObjArgs(
-            reinterpret_cast<PyObject*>(&PySuper_Type),
-            type.ptr(),
-            self.ptr(),
-            nullptr
-        );
-        if (m_ptr == nullptr) {
-            throw error_already_set();
-        }
-    }
-
-    /* Explicit constructor.  Equivalent to Python `super(type, self)` with 2
-    arguments. */
-    explicit Super(const py::Type& type, const pybind11::handle& self) {
+    template <typename T, std::enable_if_t<impl::is_type_like<T>, int> = 0>
+    explicit Super(const T& type, const pybind11::handle& self) {
         m_ptr = PyObject_CallFunctionObjArgs(
             reinterpret_cast<PyObject*>(&PySuper_Type),
             type.ptr(),
@@ -415,33 +394,37 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    using Ops::operator<;
-    using Ops::operator<=;
-    using Ops::operator==;
-    using Ops::operator!=;
-    using Ops::operator>=;
-    using Ops::operator>;
-    using Ops::operator~;
-    using Ops::operator+;
-    using Ops::operator-;
-    using Ops::operator*;
-    using Ops::operator/;
-    using Ops::operator%;
-    using Ops::operator<<;
-    using Ops::operator>>;
-    using Ops::operator&;
-    using Ops::operator|;
-    using Ops::operator^;
-    using Ops::operator+=;
-    using Ops::operator-=;
-    using Ops::operator*=;
-    using Ops::operator/=;
-    using Ops::operator%=;
-    using Ops::operator<<=;
-    using Ops::operator>>=;
-    using Ops::operator&=;
-    using Ops::operator|=;
-    using Ops::operator^=;
+    using Base::operator[];
+    using Base::operator();
+    using Base::begin;
+    using Base::end;
+    using Base::operator<;
+    using Base::operator<=;
+    using Base::operator==;
+    using Base::operator!=;
+    using Base::operator>=;
+    using Base::operator>;
+    using Base::operator~;
+    using Base::operator+;
+    using Base::operator-;
+    using Base::operator*;
+    using Base::operator/;
+    using Base::operator%;
+    using Base::operator<<;
+    using Base::operator>>;
+    using Base::operator&;
+    using Base::operator|;
+    using Base::operator^;
+    using Base::operator+=;
+    using Base::operator-=;
+    using Base::operator*=;
+    using Base::operator/=;
+    using Base::operator%=;
+    using Base::operator<<=;
+    using Base::operator>>=;
+    using Base::operator&=;
+    using Base::operator|=;
+    using Base::operator^=;
 };
 
 

@@ -15,9 +15,22 @@ TEST(py, bool_type) {
 }
 
 
-////////////////////////////
-////    CONSTRUCTORS    ////
-////////////////////////////
+TEST(py, bool_like) {
+    EXPECT_EQ(py::Bool::like<bool>, true);
+    EXPECT_EQ(py::Bool::like<int>, false);
+    EXPECT_EQ(py::Bool::like<double>, false);
+    EXPECT_EQ(py::Bool::like<std::string>, false);
+    EXPECT_EQ(py::Bool::like<py::Bool>, true);
+    EXPECT_EQ(py::Bool::like<pybind11::bool_>, true);
+    EXPECT_EQ(py::Bool::like<py::Int>, false);
+    EXPECT_EQ(py::Bool::like<py::Float>, false);
+    EXPECT_EQ(py::Bool::like<py::Str>, false);
+}
+
+
+/////////////////////////////////////
+////    IMPLICIT CONSTRUCTORS    ////
+/////////////////////////////////////
 
 
 TEST(py, bool_is_default_constructible) {
@@ -26,15 +39,141 @@ TEST(py, bool_is_default_constructible) {
 }
 
 
+TEST(py, bool_is_implicitly_convertible_from_object) {
+    py::Object a = py::Bool(false);
+    py::Object b = py::Int(0);
+    py::Object c = py::Float(0.0);
+    py::Object d = py::Str("");
+    py::Object e = py::Tuple{};
+    py::Object f = py::List{};
+    py::Object g = py::Set{};
+    py::Object h = py::Dict{};
+
+    // implicit conversions
+    py::Bool a2 = a;
+    py::Bool b2 = b;
+    py::Bool c2 = c;
+    py::Bool d2 = d;
+    py::Bool e2 = e;
+    py::Bool f2 = f;
+    py::Bool g2 = g;
+    py::Bool h2 = h;
+
+    EXPECT_EQ(a2, false);
+    EXPECT_EQ(b2, false);
+    EXPECT_EQ(c2, false);
+    EXPECT_EQ(d2, false);
+    EXPECT_EQ(e2, false);
+    EXPECT_EQ(f2, false);
+    EXPECT_EQ(g2, false);
+    EXPECT_EQ(h2, false);
+
+    py::Object i = py::Bool(true);
+    py::Object j = py::Int(1);
+    py::Object k = py::Float(1.0);
+    py::Object l = py::Str("a");
+    py::Object m = py::Tuple{1};
+    py::Object n = py::List{1};
+    py::Object o = py::Set{1};
+    py::Object p = py::Dict{{"a", 1}};
+
+    // implicit conversions
+    py::Bool i2 = i;
+    py::Bool j2 = j;
+    py::Bool k2 = k;
+    py::Bool l2 = l;
+    py::Bool m2 = m;
+    py::Bool n2 = n;
+    py::Bool o2 = o;
+    py::Bool p2 = p;
+
+    EXPECT_EQ(i2, true);
+    EXPECT_EQ(j2, true);
+    EXPECT_EQ(k2, true);
+    EXPECT_EQ(l2, true);
+    EXPECT_EQ(m2, true);
+    EXPECT_EQ(n2, true);
+    EXPECT_EQ(o2, true);
+    EXPECT_EQ(p2, true);
+}
+
+
+
+/////////////////////////////////////
+////    EXPLICIT CONSTRUCTORS    ////
+/////////////////////////////////////
+
+
+
+
+
+
+
+TEST(py, bool_is_copy_constructible) {
+    py::Bool a = true;
+    py::Bool b = false;
+    int a_refs = a.ref_count();
+    int b_refs = b.ref_count();
+    py::Bool c = a;
+    py::Bool d = b;
+    EXPECT_EQ(c.ref_count(), a_refs + 1);
+    EXPECT_EQ(d.ref_count(), b_refs + 1);
+    EXPECT_EQ(c, true);
+    EXPECT_EQ(d, false);
+
+    pybind11::bool_ e = true;
+    pybind11::bool_ f = false;
+    int e_refs = e.ref_count();
+    int f_refs = f.ref_count();
+    py::Bool g = e;
+    py::Bool h = f;
+    EXPECT_EQ(g.ref_count(), e_refs + 1);
+    EXPECT_EQ(h.ref_count(), f_refs + 1);
+    EXPECT_EQ(g, true);
+    EXPECT_EQ(h, false);
+}
+
+
+TEST(py, bool_is_move_constructible) {
+    py::Bool a = true;
+    py::Bool b = false;
+    int a_refs = a.ref_count();
+    int b_refs = b.ref_count();
+    py::Bool c = std::move(a);
+    py::Bool d = std::move(b);
+    EXPECT_EQ(c.ref_count(), a_refs);
+    EXPECT_EQ(d.ref_count(), b_refs);
+    EXPECT_EQ(c, true);
+    EXPECT_EQ(d, false);
+
+    pybind11::bool_ e = true;
+    pybind11::bool_ f = false;
+    int e_refs = e.ref_count();
+    int f_refs = f.ref_count();
+    py::Bool g = std::move(e);
+    py::Bool h = std::move(f);
+    EXPECT_EQ(g.ref_count(), e_refs);
+    EXPECT_EQ(h.ref_count(), f_refs);
+    EXPECT_EQ(g, true);
+    EXPECT_EQ(h, false);
+}
+
+
 TEST(py, bool_is_constructible_from_bool) {
+    py::Bool a = true;
+    py::Bool b = false;
+    EXPECT_EQ(a, true);
+    EXPECT_EQ(b, false);
+
     EXPECT_EQ(py::Bool(true), true);
     EXPECT_EQ(py::Bool(false), false);
-    EXPECT_EQ(py::Bool(py::Bool(true)), true);
-    EXPECT_EQ(py::Bool(py::Bool(false)), false);
 }
 
 
 TEST(py, bool_is_constructible_from_int) {
+    // TODO: test implicit conversions separately, and assert they raise errors
+
+
     EXPECT_EQ(py::Bool(0), false);
     EXPECT_EQ(py::Bool(1), true);
     EXPECT_EQ(py::Bool(2), true);
@@ -105,6 +244,9 @@ TEST(py, bool_is_constructible_from_dict) {
 //////////////////////////
 ////    ASSIGNMENT    ////
 //////////////////////////
+
+
+// TODO: bool_is_copy_assignable, move_assignable
 
 
 TEST(py, bool_is_assignable_to_bool) {

@@ -15,43 +15,37 @@ namespace py {
 
 /* New subclass of pybind11::object that represents a complex number at the Python
 level. */
-class Complex : public Object, public impl::Ops<Complex> {
-    using Ops = impl::Ops<Complex>;
-
-    static PyObject* convert_to_complex(PyObject* obj) {
-        Py_complex complex_struct = PyComplex_AsCComplex(obj);
-        if (complex_struct.real == -1.0 && PyErr_Occurred()) {
-            throw error_already_set();
-        }
-        return PyComplex_FromDoubles(complex_struct.real, complex_struct.imag);
-    }
+class Complex : public impl::Ops {
+    using Base = impl::Ops;
 
     template <typename T>
     static constexpr bool constructor1 = (
-        !impl::is_object<T> &&
-        (impl::is_bool_like<T> || impl::is_int_like<T> || impl::is_float_like<T>)
+        !impl::is_python<T> && (
+            impl::is_bool_like<T> || impl::is_int_like<T> || impl::is_float_like<T>
+        )
     );
     template <typename T>
-    static constexpr bool constructor2 = (
-        !impl::is_object<T> &&
-        !((impl::is_bool_like<T> || impl::is_int_like<T> || impl::is_float_like<T>)) &&
-        std::is_convertible_v<T, std::complex<double>>
-    );
+    static constexpr bool constructor2 =
+        !impl::is_python<T> && !constructor1<T> &&
+        std::is_convertible_v<T, std::complex<double>>;
+    template <typename T>
+    static constexpr bool constructor3 =
+        impl::is_python<T> && !impl::is_complex_like<T>;
 
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_complex_like<T>;
+    static constexpr bool check() { return impl::is_complex_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, Complex, PyComplex_Check, convert_to_complex)
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, Complex, PyComplex_Check)
 
     /* Default constructor.  Initializes to 0+0j. */
-    Complex() : Object(PyComplex_FromDoubles(0.0, 0.0), stolen_t{}) {
+    Complex() : Base(PyComplex_FromDoubles(0.0, 0.0), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -95,9 +89,19 @@ public:
     explicit Complex(const T& value) :
         Complex(static_cast<std::complex<double>>(value)) {}
 
-    /* Explicitly convert a string into a complex number. */
-    template <typename T, std::enable_if_t<impl::is_str_like<T>, int> = 0>
-    explicit Complex(const T& value);
+
+    /* Explicitly convert an arbitrary Python object into a complex number. */
+    template <typename T, std::enable_if_t<constructor3<T>, int> = 0>
+    explicit Complex(const T& obj) {
+        Py_complex complex_struct = PyComplex_AsCComplex(obj.ptr());
+        if (complex_struct.real == -1.0 && PyErr_Occurred()) {
+            throw error_already_set();
+        }
+        m_ptr = PyComplex_FromDoubles(complex_struct.real, complex_struct.imag);
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
 
     ///////////////////////////
     ////    CONVERSIONS    ////
@@ -140,26 +144,23 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    pybind11::iterator begin() const = delete;
-    pybind11::iterator end() const = delete;
-
-    using Ops::operator<;
-    using Ops::operator<=;
-    using Ops::operator==;
-    using Ops::operator!=;
-    using Ops::operator>=;
-    using Ops::operator>;
-    using Ops::operator~;
-    using Ops::operator+;
-    using Ops::operator-;
-    using Ops::operator*;
-    using Ops::operator/;
-    using Ops::operator%;
-    using Ops::operator<<;
-    using Ops::operator>>;
-    using Ops::operator&;
-    using Ops::operator|;
-    using Ops::operator^;
+    using Base::operator<;
+    using Base::operator<=;
+    using Base::operator==;
+    using Base::operator!=;
+    using Base::operator>=;
+    using Base::operator>;
+    using Base::operator~;
+    using Base::operator+;
+    using Base::operator-;
+    using Base::operator*;
+    using Base::operator/;
+    using Base::operator%;
+    using Base::operator<<;
+    using Base::operator>>;
+    using Base::operator&;
+    using Base::operator|;
+    using Base::operator^;
 
 private:
 
@@ -171,65 +172,25 @@ private:
 
 public:
 
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Complex& operator+=(const T& other) {
-        Ops::operator+=(other);
-        return *this;
-    }
+    #define INPLACE_OP(op)                                                              \
+        template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>                 \
+        inline Complex& op(const T& other) {                                            \
+            Base::op(other);                                                            \
+            return *this;                                                               \
+        }                                                                               \
 
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Complex& operator-=(const T& other) {
-        Ops::operator-=(other);
-        return *this;
-    }
+    INPLACE_OP(operator+=)
+    INPLACE_OP(operator-=)
+    INPLACE_OP(operator*=)
+    INPLACE_OP(operator/=)
+    INPLACE_OP(operator%=)
+    INPLACE_OP(operator<<=)
+    INPLACE_OP(operator>>=)
+    INPLACE_OP(operator&=)
+    INPLACE_OP(operator|=)
+    INPLACE_OP(operator^=)
 
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Complex& operator*=(const T& other) {
-        Ops::operator*=(other);
-        return *this;
-    }
-
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Complex& operator/=(const T& other) {
-        Ops::operator/=(other);
-        return *this;
-    }
-
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Complex& operator%=(const T& other) {
-        Ops::operator%=(other);
-        return *this;
-    }
-
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Complex& operator<<=(const T& other) {
-        Ops::operator<<=(other);
-        return *this;
-    }
-
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Complex& operator>>=(const T& other) {
-        Ops::operator>>=(other);
-        return *this;
-    }
-
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Complex& operator&=(const T& other) {
-        Ops::operator&=(other);
-        return *this;
-    }
-
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Complex& operator|=(const T& other) {
-        Ops::operator|=(other);
-        return *this;
-    }
-
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Complex& operator^=(const T& other) {
-        Ops::operator^=(other);
-        return *this;
-    }
+    #undef INPLACE_OP
 
 };
 

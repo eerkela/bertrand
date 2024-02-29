@@ -15,8 +15,8 @@ namespace py {
 
 /* New subclass of pybind11::object that represents a range object at the Python
 level. */
-class Range : public Object, public impl::Ops<Range> {
-    using Ops = impl::Ops<Range>;
+class Range : public impl::Ops {
+    using Base = impl::Ops;
 
     inline static bool range_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyRange_Type);
@@ -24,10 +24,6 @@ class Range : public Object, public impl::Ops<Range> {
             throw error_already_set();
         }
         return result;
-    }
-
-    inline static PyObject* convert_to_range(PyObject* obj) {
-        return PyObject_CallOneArg((PyObject*) &PyRange_Type, obj);
     }
 
 public:
@@ -40,15 +36,10 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, Range, range_check, convert_to_range)
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, Range, range_check)
 
     /* Default constructor.  Initializes to an empty range. */
-    Range() {
-        m_ptr = PyObject_CallOneArg((PyObject*) &PyRange_Type, Int(0).ptr());
-        if (m_ptr == nullptr) {
-            throw error_already_set();
-        }
-    }
+    Range() : Range(Int::zero()) {}
 
     /* Explicitly construct a range from 0 to the given stop index (exclusive). */
     explicit Range(const Int& stop) {
@@ -79,25 +70,31 @@ public:
 
     /* Get the start index of the Range sequence. */
     inline Py_ssize_t start() const {
-        return PyLong_AsSsize_t(this->attr("start").ptr());
+        Py_ssize_t result = PyLong_AsSsize_t(this->attr("start").ptr());
+        if (result == -1 && PyErr_Occurred()) {
+            throw error_already_set();
+        }
+        return result;
     }
 
     /* Get the stop index of the Range sequence. */
     inline Py_ssize_t stop() const {
-        return PyLong_AsSsize_t(this->attr("stop").ptr());
+        Py_ssize_t result = PyLong_AsSsize_t(this->attr("stop").ptr());
+        if (result == -1 && PyErr_Occurred()) {
+            throw error_already_set();
+        }
+        return result;
     }
 
     /* Get the step size of the Range sequence. */
     inline Py_ssize_t step() const {
-        return PyLong_AsSsize_t(this->attr("step").ptr());
-    }    
+        Py_ssize_t result = PyLong_AsSsize_t(this->attr("step").ptr());
+        if (result == -1 && PyErr_Occurred()) {
+            throw error_already_set();
+        }
+        return result;
+    }
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    using Ops::operator==;
-    using Ops::operator!=;
 };
 
 

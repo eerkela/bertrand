@@ -15,14 +15,8 @@ namespace py {
 
 /* Wrapper around pybind11::tuple that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
-class Tuple :
-    public Object,
-    public impl::Ops<Tuple>,
-    public impl::SequenceOps<Tuple>,
-    public impl::ReverseIterable<Tuple>
-{
-    using Ops = impl::Ops<Tuple>;
-    using SequenceOps = impl::SequenceOps<Tuple>;
+class Tuple : public impl::SequenceOps, public impl::ReverseIterable<Tuple> {
+    using Base = impl::SequenceOps;
 
     template <typename T>
     static inline PyObject* convert_newref(const T& value) {
@@ -42,30 +36,27 @@ class Tuple :
     }
 
     template <typename T>
-    static constexpr bool constructor1 = impl::is_object<T> && impl::is_list_like<T>;
+    static constexpr bool constructor1 = impl::is_python<T> && impl::is_list_like<T>;
     template <typename T>
     static constexpr bool constructor2 =
-        !(
-            impl::is_object_exact<T> ||
-            impl::is_object<T> &&
-            (impl::is_tuple_like<T> || impl::is_list_like<T>)
-        ) &&
-        impl::is_iterable<T>;
+        impl::is_python<T> && !impl::is_list_like<T> && impl::is_iterable<T>;
+    template <typename T>
+    static constexpr bool constructor3 = !impl::is_python<T> && impl::is_iterable<T>;
 
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_tuple_like<T>;
+    static constexpr bool check() { return impl::is_tuple_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, Tuple, PyTuple_Check, PySequence_Tuple)
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, Tuple, PyTuple_Check)
 
     /* Default constructor.  Initializes to empty tuple. */
-    Tuple() : Object(PyTuple_New(0), stolen_t{}) {
+    Tuple() : Base(PyTuple_New(0), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -75,7 +66,7 @@ public:
     tuple. */
     template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     Tuple(const std::initializer_list<T>& contents) :
-        Object(PyTuple_New(contents.size()), stolen_t{})
+        Base(PyTuple_New(contents.size()), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -93,7 +84,7 @@ public:
 
     /* Pack the contents of a mixed-type braced initializer into a new Python tuple. */
     Tuple(const std::initializer_list<impl::Initializer>& contents) :
-        Object(PyTuple_New(contents.size()), stolen_t{})
+        Base(PyTuple_New(contents.size()), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -115,49 +106,52 @@ public:
 
     /* Explicitly unpack a Python list into a py::Tuple directly using the C API. */
     template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
-    explicit Tuple(const T& list) : Object(PyList_AsTuple(list.ptr()), stolen_t{}) {
+    explicit Tuple(const T& list) : Base(PyList_AsTuple(list.ptr()), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    /* Explicitly unpack a generic Python container into a py::Tuple. */
+    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
+    explicit Tuple(const T& contents) :
+        Base(PySequence_Tuple(contents.ptr()), stolen_t{})
+    {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
     /* Explicitly unpack a generic C++ container into a new py::Tuple. */
-    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
-    explicit Tuple(const T& container) {
-        if constexpr (detail::is_pyobject<T>::value) {
-            m_ptr = PySequence_Tuple(container.ptr());
-            if (m_ptr == nullptr) {
-                throw error_already_set();
+    template <typename T, std::enable_if_t<constructor3<T>, int> = 0>
+    explicit Tuple(const T& contents) {
+        size_t size = 0;
+        if constexpr (impl::has_size<T>) {
+            size = contents.size();
+        }
+        m_ptr = PyTuple_New(size);
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+        try {
+            size_t i = 0;
+            for (auto&& item : contents) {
+                PyTuple_SET_ITEM(
+                    m_ptr,
+                    i++,
+                    convert_newref(std::forward<decltype(item)>(item))
+                );
             }
-        } else {
-            size_t size = 0;
-            if constexpr (impl::has_size<T>) {
-                size = container.size();
-            }
-            m_ptr = PyTuple_New(size);
-            if (m_ptr == nullptr) {
-                throw error_already_set();
-            }
-            try {
-                size_t i = 0;
-                for (auto&& item : container) {
-                    PyTuple_SET_ITEM(
-                        m_ptr,
-                        i++,
-                        convert_newref(std::forward<decltype(item)>(item))
-                    );
-                }
-            } catch (...) {
-                Py_DECREF(m_ptr);
-                throw;
-            }
+        } catch (...) {
+            Py_DECREF(m_ptr);
+            throw;
         }
     }
 
     /* Explicitly unpack a std::pair into a py::Tuple. */
     template <typename First, typename Second>
     explicit Tuple(const std::pair<First, Second>& pair) :
-        Object(PyTuple_New(2), stolen_t{})
+        Base(PyTuple_New(2), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -187,7 +181,7 @@ public:
     /* Explicitly unpack a std::tuple into a py::Tuple. */
     template <typename... Args>
     explicit Tuple(const std::tuple<Args...>& tuple) :
-        Object(PyTuple_New(sizeof...(Args)), stolen_t{})
+        Base(PyTuple_New(sizeof...(Args)), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -296,7 +290,7 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    using Object::operator[];
+    using Base::operator[];
 
     inline impl::TupleAccessor operator[](size_t index) const {
         return {*this, index};
@@ -310,18 +304,18 @@ public:
         return {*this, PyTuple_GET_SIZE(this->ptr())};
     }
 
-    using Ops::operator<;
-    using Ops::operator<=;
-    using Ops::operator==;
-    using Ops::operator!=;
-    using Ops::operator>;
-    using Ops::operator>=;
+    using Base::operator<;
+    using Base::operator<=;
+    using Base::operator==;
+    using Base::operator!=;
+    using Base::operator>;
+    using Base::operator>=;
 
-    using SequenceOps::concat;
-    using SequenceOps::operator+;
-    using SequenceOps::operator+=;
-    using SequenceOps::operator*;
-    using SequenceOps::operator*=;
+    using Base::concat;
+    using Base::operator+;
+    using Base::operator+=;
+    using Base::operator*;
+    using Base::operator*=;
 
     /* Overload of concat() that allows the operand to be a braced initializer list. */
     template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>

@@ -5,17 +5,11 @@
 #ifndef BERTRAND_PYTHON_FUNC_H
 #define BERTRAND_PYTHON_FUNC_H
 
-#include <limits>
-#include <ostream>
-#include <sstream>
-#include <string>
-#include <type_traits>
-#include <unordered_set>
-
 #include "common.h"
 #include "dict.h"
 #include "str.h"
 #include "tuple.h"
+#include "type.h"
 
 
 // TODO: move callable() proxy up to start of file and have Function use it for its
@@ -33,39 +27,48 @@ enabling seamless embedding of Python as a scripting language within C++.
 
 This class is extremely powerful, and is best explained by example:
 
-    static py::Code script(R"(
+    static const py::Static<py::Code> script(R"(
         import numpy as np
         print(np.arange(10))
     )");
 
     script();  // prints [0 1 2 3 4 5 6 7 8 9]
 
-This creates an embedded Python script that can be executed as a function.  Here, the
-script is stateless, and can be executed without context.  Most of the time, this won't
-be the case, and data will need to be passed into the script to populate its namespace.
-For instance:
+.. note::
 
-    static py::Code script = R"(
+    Note that the script in this example is stored with static duration, which means
+    that it will only be compiled once and then cached for the duration of the program.
+    Bertrand will automatically free it when the program exits, without interfering
+    with the Python interpreter.
+
+This creates an embedded Python script that can be executed as a normal function.
+Here, the script is stateless, and can be executed without context.  Most of the time,
+this won't be the case, and data will need to be passed into the script to populate its
+namespace.  For instance:
+
+    static const py::Static<py::Code> script = R"(
         print("Hello, " + name + "!")  # name is not defined in this context
     )"_python;
 
-Note the user-defined `_python` literal used to create the script.  This is equivalent
-to calling the `Code` constructor, but is more convenient and readable.  If we try to
-execute this script without a context, we'll get an error:
+.. note::
 
-    script();  // raises NameError: name 'name' is not defined
+    Note the user-defined `_python` literal used to create the script.  This is
+    equivalent to calling the `Code` constructor, but is more convenient and readable.
 
-We can solve this by building a dictionary and passing it into the script:
+If we try to execute this script without a context, we'll get a ``NameError`` just
+like normal Python:
+
+    script();  // NameError: name 'name' is not defined
+
+We can solve this by building a context dictionary and passing it into the script as
+its global namespace.
 
     script({{"name", "world"}});  // prints Hello, world!
 
-This uses any of the ordinary py::Dict constructor, which can take arbitrary C++ values
-as long as there is a corresponding pybind11 type, making it possible to seamlessly pass
-data from C++ to Python.
-
-If we want to do the opposite and extract data from Python back to C++, we can use the
-return value of the script, which is a dictionary containing the script's namespace
-after it has been executed.  For instance:
+This uses the ordinary py::Dict constructors, which can take arbitrary C++ objects and
+pass them seamlessly to Python.  If we want to do the opposite and extract data from
+the script back to C++, then we can use its return value, which is another dictionary
+containing the context after execution.  For instance:
 
     py::Dict context = R"(
         x = 1
@@ -75,7 +78,8 @@ after it has been executed.  For instance:
 
     py::print(context);  // prints {"x": 1, "y": 2, "z": 3}
 
-We can combine these features to create a two-way data pipeline between C++ and Python:
+Combining these features allows us to create a two-way data pipeline marrying C++ and
+Python:
 
     py::Int z = R"(
         def func(x, y):
@@ -86,22 +90,22 @@ We can combine these features to create a two-way data pipeline between C++ and 
 
     py::print(z);  // prints 3
 
-Which seamlessly marries the two.  In this example, data originates in C++, passes
-through python for processing, and then returns smoothly to C++ with automatic error
-handling, reference counting, and type-safe conversions at each step.
+In this example, data originates in C++, passes through python for processing, and then
+returns smoothly to C++ with automatic error propagation, reference counting, and type
+conversions at every step.
 
 In the previous example, the input dictionary exists only for the duration of the
 script's execution, and is discarded immediately afterwards.  However, it is also
 possible to pass a mutable reference to an external dictionary, which will be updated
-in-place during the script's execution.  This allows multiple scripts to be chained
-using a shared context, without ever leaving the Python interpreter.  For instance:
+in-place as the script executes.  This allows multiple scripts to be chained using a
+shared context, without ever leaving the Python interpreter.  For instance:
 
-    static py::Code script1 = R"(
+    static const py::Static<py::Code> script1 = R"(
         x = 1
         y = 2
     )"_python;
 
-    static py::Code script2 = R"(
+    static const py::Static<py::Code> script2 = R"(
         z = x + y
         del x, y
     )"_python;
@@ -112,9 +116,8 @@ using a shared context, without ever leaving the Python interpreter.  For instan
     py::print(context);  // prints {"z": 3}
 
 Users can, of course, inspect or modify the context between scripts, either to extract
-results or pass new data into the next script.  This makes it possible to create
-complex, mixed-language workflows that are fully integrated and seamless in both
-directions.
+results or pass new data into the next script in the chain.  This makes it possible to
+create arbitrarily complex, mixed-language workflows with minimal fuss.
 
     py::Dict context = R"(
         spam = 0
@@ -133,17 +136,17 @@ directions.
 
     py::print(fibonacci);  // prints [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
 
-This is a powerful feature that allows Python to be used as an inline scripting
-language in any C++ application, with full native compatibility in both directions.
-The script is evaluated just like an ordinary Python file, and there are no
-restrictions on what can be done inside it.  This includes importing modules, defining
-classes and functions to be exported back to C++, interacting with the file system,
-third-party libraries, client code, etc.  Similarly, it is executed just like normal
-Python, and should not suffer any significant performance penalties beyond copying data
-into or out of the context.  This is especially true for static code objects, which are
-compiled once and then cached for repeated use.
+This means that Python can be easily included as an inline scripting language in any
+C++ application, with minimal overhead and full compatibility in both directions.  Each
+script is evaluated just like an ordinary Python file, and there are no restrictions on
+what can be done inside them.  This includes importing modules, defining classes and
+functions to be exported back to C++, interacting with the file system, third-party
+libraries, client code, and more.  Similarly, it is executed just like normal Python
+bytecode, and should not suffer any significant performance penalties beyond copying
+data into or out of the context.  This is especially true for static code objects,
+which are compiled once and then cached for repeated use.
 
-    static py::Code script = R"(
+    static const py::Static<py::Code> script = R"(
         print(x)
     )"_python;
 
@@ -153,13 +156,8 @@ compiled once and then cached for repeated use.
     script({{"x", "other"}});
     script({{"x", "side"}});
 */
-class Code : public Handle, public impl::Ops<Code> {
-    /* NOTE: we can't directly inherit from pybind11::object because that causes memory
-    access errors when code objects are stored as static variables.  Since that is the
-    intended use case for these objects, we provide a workaround by checking
-    `Py_IsInitialized()` in the destructor. */
-    friend class Frame;
-    friend class Function;
+class Code : public impl::Ops {
+    using Base = impl::Ops;
 
     template <typename T>
     static PyObject* compile(const T& text) {
@@ -206,69 +204,30 @@ class Code : public Handle, public impl::Ops<Code> {
         return result;
     }
 
-    explicit Code(PyObject* ptr) : Handle(ptr) {}
-
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_same_or_subclass_of<Code, T>;
+    static constexpr bool check() { return impl::is_same_or_subclass_of<Code, T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Default constructor deleted to avoid confusion. */
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, Code, PyCode_Check);
+
+    /* Default constructor deleted to throw compile errors when a script is declared
+    without an implementation. */
     Code() = delete;
 
-    /* Copy constructor. */
-    Code(const Code& other) : Handle(other.m_ptr) {
-        Py_XINCREF(m_ptr);
-    }
-
-    /* Move constructor. */
-    Code(Code&& other) : Handle(other.m_ptr) {
-        other.m_ptr = nullptr;
-    }
+    /* Parse and compile a source string into a Python code object. */
+    explicit Code(const char* source) : Base(compile(source), stolen_t{}) {}
 
     /* Parse and compile a source string into a Python code object. */
-    explicit Code(const char* source) : Handle(compile(source)) {}
-
-    /* Parse and compile a source string into a Python code object. */
-    explicit Code(const std::string& source) : Handle(compile(source)) {}
+    explicit Code(const std::string& source) : Base(compile(source), stolen_t{}) {}
 
     /* Parse and compile a source string into a Python code object. */
     explicit Code(const std::string_view& source) : Code(source.data()) {}
-
-    /* Copy assignment operator. */
-    Code& operator=(const Code& other) {
-        if (this != &other) {
-            PyObject* temp = m_ptr;
-            Py_XINCREF(m_ptr);
-            m_ptr = other.m_ptr;
-            Py_XDECREF(temp);
-        }
-        return *this;
-    }
-
-    /* Move assignment operator. */
-    Code& operator=(Code&& other) {
-        if (this != &other) {
-            PyObject* temp = m_ptr;
-            m_ptr = other.m_ptr;
-            other.m_ptr = nullptr;
-            Py_XDECREF(temp);
-        }
-        return *this;
-    }
-
-    /* Destructor.  Note that we can't use Py_XDECREF() here because it causes memory
-    access errors when code objects are stored as static variables.  */
-    ~Code() {
-        if (Py_IsInitialized()) {
-            Py_XDECREF(m_ptr);
-        }
-    }
 
     ////////////////////////////////
     ////    PyCode_* METHODS    ////
@@ -407,63 +366,32 @@ public:
         return {reinterpret_cast<PyCodeObject*>(this->ptr())};
     }
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    using impl::Ops<Code>::operator==;
-    using impl::Ops<Code>::operator!=;
-
-    inline const Code* operator&() const noexcept {
-        return this;
-    }
-
-    inline Code* operator&() noexcept {
-        return this;
-    }
-
-    inline explicit operator bool() const noexcept {
-        return m_ptr != nullptr;
-    }
-
-    inline friend std::ostream& operator<<(std::ostream& os, const Code& code) {
-        PyObject* result = PyObject_Str(code.ptr());
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        os << reinterpret_steal<Str>(result);
-        return os;
-    }
-
 };
 
 
 /* A new subclass of pybind11::object that represents a Python interpreter frame, which
 can be used to introspect its current state. */
-class Frame : public Object, public impl::Ops<Frame> {
+class Frame : public impl::Ops {
+    using Base = impl::Ops;
 
-    inline PyFrameObject* as_frame() const {
+    inline PyFrameObject* self() const {
         return reinterpret_cast<PyFrameObject*>(this->ptr());
-    }
-
-    static PyObject* convert_to_frame(PyObject* obj) {
-        throw Object::noconvert<Frame>(obj);
     }
 
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_same_or_subclass_of<Frame, T>;
+    static constexpr bool check() { return impl::is_same_or_subclass_of<Frame, T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, Frame, PyFrame_Check, convert_to_frame);
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, Frame, PyFrame_Check);
 
     /* Default constructor.  Initializes to the current execution frame. */
-    inline Frame() : Object(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{}) {
+    Frame() : Base(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw RuntimeError("no frame is currently executing");
         }
@@ -471,24 +399,18 @@ public:
 
     /* Skip backward a number of frames on construction. */
     explicit Frame(size_t skip) :
-        Object(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{})
+        Base(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw RuntimeError("no frame is currently executing");
         }
         for (size_t i = 0; i < skip; ++i) {
-            m_ptr = reinterpret_cast<PyObject*>(PyFrame_GetBack(as_frame()));
+            m_ptr = reinterpret_cast<PyObject*>(PyFrame_GetBack(self()));
             if (m_ptr == nullptr) {
                 throw IndexError("frame index out of range");
             }
         }
     }
-
-    /* Copy constructor. */
-    Frame(const Frame& frame) : Object(frame.ptr(), borrowed_t{}) {}
-
-    /* Move constructor. */
-    Frame(Frame&& frame) : Object(frame.release(), stolen_t{}) {}
 
     /////////////////////////////////
     ////    PyFrame_* METHODS    ////
@@ -496,7 +418,7 @@ public:
 
     /* Get the next outer frame from this one. */
     inline Frame back() const {
-        PyFrameObject* result = PyFrame_GetBack(as_frame());
+        PyFrameObject* result = PyFrame_GetBack(self());
         if (result == nullptr) {
             throw error_already_set();
         }
@@ -506,19 +428,21 @@ public:
     /* Get the code object associated with this frame. */
     inline Code code() const {
         // PyFrame_GetCode() is never null
-        return Code(reinterpret_cast<PyObject*>(PyFrame_GetCode(as_frame())));
+        return reinterpret_steal<Code>(
+            reinterpret_cast<PyObject*>(PyFrame_GetCode(self()))
+        );
     }
 
     /* Get the line number that the frame is currently executing. */
     inline int line_number() const noexcept {
-        return PyFrame_GetLineNumber(as_frame());
+        return PyFrame_GetLineNumber(self());
     }
 
     /* Execute the code object stored within the frame using its current context.  This
     is the main entry point for the Python interpreter, and is used behind the scenes
     whenever a program is run. */
     inline Object operator()() const {
-        PyObject* result = PyEval_EvalFrame(as_frame());
+        PyObject* result = PyEval_EvalFrame(self());
         if (result == nullptr) {
             throw error_already_set();
         }
@@ -529,12 +453,12 @@ public:
 
         /* Get the frame's builtin namespace. */
         inline Dict builtins() const {
-            return reinterpret_steal<Dict>(PyFrame_GetBuiltins(as_frame()));
+            return reinterpret_steal<Dict>(PyFrame_GetBuiltins(self()));
         }
 
         /* Get the frame's globals namespace. */
         inline Dict globals() const {
-            PyObject* result = PyFrame_GetGlobals(as_frame());
+            PyObject* result = PyFrame_GetGlobals(self());
             if (result == nullptr) {
                 throw error_already_set();
             }
@@ -543,7 +467,7 @@ public:
 
         /* Get the frame's locals namespace. */
         inline Dict locals() const {
-            PyObject* result = PyFrame_GetLocals(as_frame());
+            PyObject* result = PyFrame_GetLocals(self());
             if (result == nullptr) {
                 throw error_already_set();
             }
@@ -553,7 +477,7 @@ public:
         /* Get the generator, coroutine, or async generator that owns this frame, or
         nullopt if this frame is not owned by a generator. */
         inline std::optional<Object> generator() const {
-            PyObject* result = PyFrame_GetGenerator(as_frame());
+            PyObject* result = PyFrame_GetGenerator(self());
             if (result == nullptr) {
                 return std::nullopt;
             } else {
@@ -564,7 +488,7 @@ public:
         /* Get the "precise instruction" of the frame object, which is an index into
         the bytecode of the last instruction executed by the frame's code object. */
         inline int last_instruction() const noexcept {
-            return PyFrame_GetLasti(as_frame());
+            return PyFrame_GetLasti(self());
         }
 
     #endif
@@ -574,7 +498,7 @@ public:
         /* Get a named variable from the frame's context.  Can raise if the variable is
         not present in the frame. */
         inline Object get(PyObject* name) const {
-            PyObject* result = PyFrame_GetVar(as_frame(), name);
+            PyObject* result = PyFrame_GetVar(self(), name);
             if (result == nullptr) {
                 throw error_already_set();
             }
@@ -584,7 +508,7 @@ public:
         /* Get a named variable from the frame's context.  Can raise if the variable is
         not present in the frame. */
         inline Object get(const char* name) const {
-            PyObject* result = PyFrame_GetVarString(as_frame(), name);
+            PyObject* result = PyFrame_GetVarString(self(), name);
             if (result == nullptr) {
                 throw error_already_set();
             }
@@ -605,37 +529,25 @@ public:
 
     #endif
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    pybind11::iterator begin() const = delete;
-    pybind11::iterator end() const = delete;
-
-    using impl::Ops<Frame>::operator==;
-    using impl::Ops<Frame>::operator!=;
 };
 
 
 /* Wrapper around a pybind11::Function that allows it to be constructed from a C++
 lambda or function pointer, and enables extra introspection via the C API. */
-class Function : public Object, public impl::Ops<Function> {
-
-    static PyObject* convert_to_function(PyObject* obj) {
-        throw Object::noconvert<Function>(obj);
-    }
+class Function : public impl::Ops {
+    using Base = impl::Ops;
 
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_func_like<T>;
+    static constexpr bool check() { return impl::is_func_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, Function, PyFunction_Check, convert_to_function);
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, Function, PyFunction_Check);
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Function() = delete;
@@ -649,26 +561,8 @@ public:
         int> = 0
     >
     Function(T&& func) :
-        Object(pybind11::cpp_function(std::forward<T>(func)).release(), stolen_t{})
+        Base(pybind11::cpp_function(std::forward<T>(func)).release(), stolen_t{})
     {}
-
-    /* Implicitly convert a Python function into a py::Function.  Borrows a
-    reference. */
-    template <
-        typename T,
-        std::enable_if_t<impl::is_func_like<T> && impl::is_object<T>, int> = 0
-    >
-    Function(const T& func) : Object(func.ptr(), borrowed_t{}) {}
-
-    /* Implicitly convert a Python function into a py::Function.  Steals a reference. */
-    template <
-        typename T,
-        std::enable_if_t<
-            impl::is_func_like<std::decay_t<T>> &&
-            impl::is_object<std::decay_t<T>>,
-        int> = 0
-    >
-    Function(T&& func) : Object(func.release(), stolen_t{}) {}
 
     ///////////////////////////////
     ////    PyFunction_ API    ////
@@ -689,7 +583,8 @@ public:
         if (result == nullptr) {
             throw RuntimeError("function does not have a code object");
         }
-        return Code(result);
+        // PyFunction_GetCode returns a borrowed reference
+        return reinterpret_borrow<Code>(result);
     }
 
     /* Get the name of the file from which the code was compiled. */
@@ -796,68 +691,40 @@ public:
         return code().slots().n_keyword();
     }
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    pybind11::iterator begin() const = delete;
-    pybind11::iterator end() const = delete;
-
-    using impl::Ops<Function>::operator==;
-    using impl::Ops<Function>::operator!=;
 };
 
 
 /* New subclass of pybind11::object that represents a bound method at the Python
 level. */
-class Method : public Object, public impl::Ops<Method> {
-
-    inline static PyObject* convert_to_method(PyObject* obj) {
-        throw Object::noconvert<Method>(obj);
-    }
+class Method : public impl::Ops {
+    using Base = impl::Ops;
 
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_same_or_subclass_of<Method, T>;
+    static constexpr bool check() { return impl::is_same_or_subclass_of<Method, T>; }
 
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(
-        Object,
-        Method,
-        PyInstanceMethod_Check,
-        convert_to_method
-    )
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, Method, PyInstanceMethod_Check)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Method() = delete;
 
     /* Wrap an existing Python function as a method descriptor. */
-    Method(Function func) : Object(PyInstanceMethod_New(func.ptr()), stolen_t{}) {
+    Method(const Function& func) : Base(PyInstanceMethod_New(func.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    pybind11::iterator begin() const = delete;
-    pybind11::iterator end() const = delete;
-
-    using impl::Ops<Method>::operator==;
-    using impl::Ops<Method>::operator!=;
 };
 
 
 /* New subclass of pybind11::object that represents a bound classmethod at the Python
 level. */
-class ClassMethod : public Object, public impl::Ops<ClassMethod> {
+class ClassMethod : public impl::Ops {
+    using Base = impl::Ops;
 
     inline static bool check_classmethod(PyObject* obj) {
         int result = PyObject_IsInstance(
@@ -870,52 +737,31 @@ class ClassMethod : public Object, public impl::Ops<ClassMethod> {
         return result;
     }
 
-    inline static PyObject* convert_to_classmethod(PyObject* obj) {
-        throw Object::noconvert<ClassMethod>(obj);
-    }
-
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_same_or_subclass_of<ClassMethod, T>;
+    static constexpr bool check() { return impl::is_same_or_subclass_of<ClassMethod, T>; }
 
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    BERTRAND_PYTHON_CONSTRUCTORS(
-        Object,
-        ClassMethod,
-        check_classmethod,
-        convert_to_classmethod
-    )
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, ClassMethod, check_classmethod)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     ClassMethod() = delete;
 
     /* Wrap an existing Python function as a classmethod descriptor. */
-    ClassMethod(Function func) : Object(PyClassMethod_New(func.ptr()), stolen_t{}) {
+    ClassMethod(Function func) : Base(PyClassMethod_New(func.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    pybind11::iterator begin() const = delete;
-    pybind11::iterator end() const = delete;
-
-    using impl::Ops<ClassMethod>::operator==;
-    using impl::Ops<ClassMethod>::operator!=;
 };
 
 
 /* Wrapper around a pybind11::StaticMethod that allows it to be constructed from a
 C++ lambda or function pointer, and enables extra introspection via the C API. */
-class StaticMethod : public Object, public impl::Ops<StaticMethod> {
+class StaticMethod : public impl::Ops {
+    using Base = impl::Ops;
 
     static bool check_staticmethod(PyObject* obj) {
         int result = PyObject_IsInstance(
@@ -928,112 +774,74 @@ class StaticMethod : public Object, public impl::Ops<StaticMethod> {
         return result;
     }
 
-    static PyObject* convert_to_staticmethod(PyObject* obj) {
-        throw Object::noconvert<StaticMethod>(obj);
-    }
-
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_same_or_subclass_of<StaticMethod, T>;
+    static constexpr bool check() { return impl::is_same_or_subclass_of<StaticMethod, T>; }
 
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    BERTRAND_PYTHON_CONSTRUCTORS(
-        Object,
-        StaticMethod,
-        check_staticmethod,
-        convert_to_staticmethod
-    );
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, StaticMethod, check_staticmethod);
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     StaticMethod() = delete;
 
     /* Wrap an existing Python function as a staticmethod descriptor. */
-    StaticMethod(Function func) : Object(PyStaticMethod_New(func.ptr()), stolen_t{}) {
+    StaticMethod(Function func) : Base(PyStaticMethod_New(func.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    pybind11::iterator begin() const = delete;
-    pybind11::iterator end() const = delete;
-
-    using impl::Ops<StaticMethod>::operator==;
-    using impl::Ops<StaticMethod>::operator!=;
 };
 
 
 namespace impl {
 
-    static const Handle PyProperty = []() -> Handle {
-        return reinterpret_cast<PyObject*>(&PyProperty_Type);
-    }();
+    static const Static<Type> PyProperty = reinterpret_borrow<Type>(
+        reinterpret_cast<PyObject*>(&PyProperty_Type)
+    );
 
 }
 
 
 /* New subclass of pybind11::object that represents a property descriptor at the
 Python level. */
-class Property : public Object, public impl::Ops<Property> {
+class Property : public impl::Ops {
+    using Base = impl::Ops;
 
     inline static bool check_property(PyObject* obj) {
-        int result = PyObject_IsInstance(obj, impl::PyProperty.ptr());
+        int result = PyObject_IsInstance(obj, impl::PyProperty->ptr());
         if (result == -1) {
             throw error_already_set();
         }
         return result;
     }
 
-    inline static PyObject* convert_to_property(PyObject* obj) {
-        throw Object::noconvert<Property>(obj);
-    }
-
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_same_or_subclass_of<Property, T>;
+    static constexpr bool check() { return impl::is_same_or_subclass_of<Property, T>; }
 
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, Property, check_property, convert_to_property);
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, Property, check_property);
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Property() = delete;
 
     /* Wrap an existing Python function as a getter in a property descriptor. */
-    Property(Function getter) : Object(impl::PyProperty(getter).release(), stolen_t{}) {}
+    Property(Function getter) : Base(impl::PyProperty(getter).release(), stolen_t{}) {}
 
     /* Wrap existing Python functions as getter and setter in a property descriptor. */
     Property(Function getter, Function setter) :
-        Object(impl::PyProperty(getter, setter).release(), stolen_t{})
+        Base(impl::PyProperty(getter, setter).release(), stolen_t{})
     {}
 
     /* Wrap existing Python functions as getter, setter, and deleter in a property
     descriptor. */
     Property(Function getter, Function setter, Function deleter) :
-        Object(impl::PyProperty(getter, setter, deleter).release(), stolen_t{})
+        Base(impl::PyProperty(getter, setter, deleter).release(), stolen_t{})
     {}
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    pybind11::iterator begin() const = delete;
-    pybind11::iterator end() const = delete;
-
-    using impl::Ops<Property>::operator==;
-    using impl::Ops<Property>::operator!=;
 };
 
 

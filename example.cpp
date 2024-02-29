@@ -2,6 +2,7 @@
 #include <bertrand/python.h>
 
 #include <chrono>
+#include <cstddef>
 #include <iostream>
 #include <vector>
 #include <unordered_set>
@@ -19,15 +20,83 @@ int func(int x, int y) {
 }
 
 
+// static py::Static<py::Module> np = py::import("numpy");
+// // static py::Static<py::Function> np_array = np->attr("array");  fails, could not construct function from object of type builtin_function_or_method
+// // static py::Static<py::Object> np_array = np->attr("array");
+
+
+// static py::Type np_array = np->attr("ndarray");
+
+
+
+// static py::Static<py::List> list = {1, 2, 3, 4, 5};
+
+// static py::Static<py::Type> list = py::List::Type;
+
+
+
+// static const py::Static<py::Code> test_script(R"(
+//     import numpy as np
+//     print(np.arange(10))
+// )");
+
+
+
+
+// static py::Static<py::Code> script = R"(
+//     print("hello, world!")
+// )"_python;
+
 
 void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
+    py::Bool x = true;
+    py::Int y = x;
+    py::List z = {1, 2, 3};
+    py::print(z[{py::None, 2}]);
 
 
-    static py::Module np = py::import("numpy");
-    py::print(np.attr("arange"));
+
+
+
+    // for (size_t i = 0; i < 1000000; ++i) {
+    //     py::Float b = 4;
+    // }
+
+    // py::Int a("1");
+    // py::Float b = a;
+    // py::print(b);
+
+
+
+    // static py::Static<py::Code> script = R"(
+    //     print("hello, world!")
+    // )"_python;
+
+
+
+    // py::print(np_array(py::List{1, 2, 3}));
+
+    // for (auto&& x : list) {
+    //     py::print(x);
+    // }
+
+    // py::print(py::repr(*list));  // ???
+
+    // py::Set s = {1, 2, 3, 4, 5};
+    // py::print(s);
+    // py::Object array = np->attr("array")(py::List{1, 2, 3}, np->attr("dtype")("float16"));
+    // py::print(array.attr("dtype"));
+
+
+    // py::print(np_array);
+
+
+
+    // py::Timedelta td(1.23, py::Timedelta::Units::D);
+    // py::print(td);
 
 
 

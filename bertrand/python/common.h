@@ -237,6 +237,7 @@ PYTHON_EXCEPTION(Exception, ValueError, PyExc_ValueError)
 // wrapper types
 template <typename... Args>
 using Class = pybind11::class_<Args...>;
+using Module = pybind11::module_;
 using Handle = pybind11::handle;
 using NoneType = pybind11::none;  // TODO: lower into Object subclasses
 using EllipsisType = pybind11::ellipsis;  // TODO: lower into Object subclasses
@@ -249,7 +250,6 @@ using Bytes = pybind11::bytes;
 using Bytearray = pybind11::bytearray;
 class Object;
 class NotImplementedType;
-class Module;
 class Bool;
 class Int;
 class Float;
@@ -279,6 +279,10 @@ class Timezone;
 class Date;
 class Time;
 class Datetime;
+
+// TODO: Regex should be placed in bertrand:: namespace.  It doesn't actually wrap a
+// python object, so it shouldn't be in the py:: namespace
+
 class Regex;  // TODO: incorporate more fully (write pybind11 bindings so that it can be passed into Python scripts)
 
 
@@ -322,6 +326,17 @@ namespace impl {
             >                                                                           \
             inline operator T() const {                                                 \
                 return detail::base::template cast<T>();                                \
+            }                                                                           \
+                                                                                        \
+            template <                                                                  \
+                typename T,                                                             \
+                std::enable_if_t<                                                       \
+                    detail::is_pyobject<T>::value &&                                    \
+                    !std::is_same_v<T, pybind11::handle>,                               \
+                int> = 0                                                                \
+            >                                                                           \
+            inline operator T() const {                                                 \
+                return T(*this);                                                        \
             }                                                                           \
         };                                                                              \
 
@@ -452,6 +467,9 @@ namespace impl {
         };
 
     };
+
+    template <typename T>
+    constexpr bool is_python = detail::is_pyobject<T>::value;
 
     template <typename T>
     constexpr bool is_object = is_same_or_subclass_of<pybind11::object, T>;
@@ -670,98 +688,6 @@ namespace impl {
         decltype(std::declval<typename std::iterator_traits<T>::iterator_category>())
     >> = true;
 
-    #define UNARY_OPERATOR(Derived, op, endpoint)                                       \
-        inline Object op() const {                                                      \
-            PyObject* result = endpoint(static_cast<const Derived*>(this)->ptr());      \
-            if (result == nullptr) {                                                    \
-                throw error_already_set();                                              \
-            }                                                                           \
-            return reinterpret_steal<Object>(result);                                   \
-        }                                                                               \
-
-    #define COMPARISON_OPERATOR(Derived, op, endpoint)                                  \
-        template <typename T>                                                           \
-        inline bool op(const T& other) const {                                          \
-            int result = PyObject_RichCompareBool(                                      \
-                static_cast<const Derived*>(this)->ptr(),                               \
-                detail::object_or_cast(other).ptr(),                                    \
-                endpoint                                                                \
-            );                                                                          \
-            if (result == -1) {                                                         \
-                throw error_already_set();                                              \
-            }                                                                           \
-            return result;                                                              \
-        }                                                                               \
-
-    #define REVERSE_COMPARISON(Derived, op, endpoint)                                   \
-        template <                                                                      \
-            typename T,                                                                 \
-            std::enable_if_t<                                                           \
-                !std::is_same_v<T, Derived> && !impl::is_std_iterator<T>,               \
-            int> = 0                                                                    \
-        >                                                                               \
-        inline friend bool op(const T& other, const Derived& self) {                    \
-            int result = PyObject_RichCompareBool(                                      \
-                detail::object_or_cast(other).ptr(),                                    \
-                self.ptr(),                                                             \
-                endpoint                                                                \
-            );                                                                          \
-            if (result == -1) {                                                         \
-                throw error_already_set();                                              \
-            }                                                                           \
-            return result;                                                              \
-        }                                                                               \
-
-    #define BINARY_OPERATOR(Derived, op, endpoint)                                      \
-        template <typename T>                                                           \
-        inline Object op(const T& other) const {                                        \
-            PyObject* result = endpoint(                                                \
-                static_cast<const Derived*>(this)->ptr(),                               \
-                detail::object_or_cast(other).ptr()                                     \
-            );                                                                          \
-            if (result == nullptr) {                                                    \
-                throw error_already_set();                                              \
-            }                                                                           \
-            return reinterpret_steal<Object>(result);                                   \
-        }                                                                               \
-
-    #define REVERSE_OPERATOR(Derived, op, endpoint)                                     \
-        template <                                                                      \
-            typename T,                                                                 \
-            std::enable_if_t<                                                           \
-                !std::is_same_v<T, Derived> &&                                          \
-                !std::is_same_v<T, std::ostream> &&                                     \
-                !impl::is_std_iterator<T>,                                              \
-            int> = 0                                                                    \
-        >                                                                               \
-        inline friend Object op(const T& other, const Derived& self) {                  \
-            PyObject* result = endpoint(                                                \
-                detail::object_or_cast(other).ptr(),                                    \
-                self.ptr()                                                              \
-            );                                                                          \
-            if (result == nullptr) {                                                    \
-                throw error_already_set();                                              \
-            }                                                                           \
-            return reinterpret_steal<Object>(result);                                   \
-        }                                                                               \
-
-    #define INPLACE_OPERATOR(Derived, op, endpoint)                                     \
-        template <typename T>                                                           \
-        inline Derived& op(const T& other) {                                            \
-            Derived* self = static_cast<Derived*>(this);                                \
-            pybind11::object o = detail::object_or_cast(other);                         \
-            PyObject* result = endpoint(self->ptr(), o.ptr());                          \
-            if (result == nullptr) {                                                    \
-                throw error_already_set();                                              \
-            }                                                                           \
-            if (result == self->ptr()) {                                                \
-                Py_DECREF(result);                                                      \
-            } else {                                                                    \
-                *self = reinterpret_steal<Derived>(result);                             \
-            }                                                                           \
-            return *self;                                                               \
-        }                                                                               \
-
 }
 
 
@@ -782,8 +708,8 @@ protected:
         const char* dest_name = reinterpret_cast<PyTypeObject*>(dest.ptr())->tp_name;
 
         std::ostringstream msg;
-        msg << "could not construct '" << dest_name << "' from object of type '";
-        msg << source_name << "'";
+        msg << "could not assign object of type '" << source_name;
+        msg << "' to value of type '" << dest_name << "'";
         return TypeError(msg.str());
     }
 
@@ -791,7 +717,7 @@ public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_object<T>;
+    static constexpr bool check() { return impl::is_object<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -803,21 +729,21 @@ public:
     /* Default constructor.  Initializes to None. */
     Object() : Base(pybind11::none()) {}
 
-    /* Adopt an existing object with proper reference counting. */
-    Object(const pybind11::object& o) : Base(o) {}
-    Object(pybind11::object&& o) : Base(std::move(o)) {}
+    /* Copy constructor.  Borrows a reference to an existing python object. */
+    Object(const pybind11::object& o) : Base(o.ptr(), borrowed_t{}) {}
 
-    /* Convert an accessor proxy into a new object. */
+    /* Move constructor.  Steals a reference to a rvalue python object. */
+    Object(pybind11::object&& o) : Base(o.release(), stolen_t{}) {}
+
+    /* Convert an accessor into a generic Object. */
     template <typename Policy>
-    Object(const ::pybind11::detail::accessor<Policy> &a) :
-        Base(pybind11::object(a))
-    {}
+    Object(const detail::accessor<Policy> &a) : Base(pybind11::object(a)) {}
 
-    /* Convert any C++ value into an arbitrary python object and wrap the result. */
+    /* Convert any C++ value into a generic python object. */
     template <typename T, std::enable_if_t<!detail::is_pyobject<T>::value, int> = 0>
     Object(const T& value) : Base(pybind11::cast(value).release(), stolen_t{}) {}
 
-    /* Assign an arbitrary value to the object wrapper. */
+    /* Assign any C++ value to the object wrapper. */
     template <typename T, std::enable_if_t<!detail::is_pyobject<T>::value, int> = 0>
     Object& operator=(T&& value) {
         Base::operator=(Object(std::forward<T>(value)));
@@ -828,7 +754,59 @@ public:
     ////    CONVERSIONS    ////
     ///////////////////////////
 
-    /* Contextually convert an Object into a boolean for use in if/else branches. */
+    /* NOTE: the Object wrapper can be implicitly converted to any of its subclasses by
+     * applying a runtime type check during the assignment.  This allows us to safely
+     * convert from a generic object to a more specialized type without worrying about
+     * type mismatches or triggering non-trivial conversion logic.  It allows us to
+     * write code like this:
+     *
+     *      py::Object obj = true;
+     *      py::Bool b = obj;
+     *
+     * But not like this:
+     *
+     *      py::Object obj = true;
+     *      py::Int i = obj;  // throws a TypeError
+     *
+     * While simultaneously preserving the ability to explicitly convert using a normal
+     * constructor call:
+     *
+     *      py::Object obj = true;
+     *      py::Int i(obj);
+     *
+     * Which is similar to calling the `int()` type at the python level.  Note that the
+     * implicit conversion operator is only enabled for Object itself, and is
+     * explicitly deleted in all of its subclasses.  This prevents implicit conversions
+     * between subclasses and promotes any attempt to do so into a compile-time error,
+     * which is significantly safer and easier to debug.  This means we cannot do this:
+     *
+     *      py::Bool b = true;
+     *      py::Int i = b;  // fails to compile, calls a deleted function
+     *
+     * In general, this promotes the rule that assignment is always considered type
+     * safe, while explicit construction is reserved for type conversions and/or
+     * packing in the case of containers.
+     */
+
+    /* Implicitly convert an Object wrapper to one of its subclasses, applying a type
+    check to the underlying value. */
+    template <typename T, std::enable_if_t<std::is_base_of_v<Object, T>, int> = 0>
+    inline operator T() const {
+        if (!T::check(*this)) {
+            throw noconvert<T>(this->ptr());
+        }
+        return reinterpret_borrow<T>(this->ptr());
+    }
+
+    /* Explicitly convert to any other type.  Uses pybind11 to search for a matching
+    conversion. */
+    template <typename T, std::enable_if_t<!std::is_base_of_v<Object, T>, int> = 0>
+    inline explicit operator T() const {
+        return Base::cast<T>();
+    }
+
+    /* Contextually convert a generic object into a boolean for use in if/else
+    branches, with the same semantics as Python. */
     inline explicit operator bool() const {
         int result = PyObject_IsTrue(this->ptr());
         if (result == -1) {
@@ -837,8 +815,9 @@ public:
         return result;
     }
 
-    /* Explicitly cast to a string representation.  Equivalent to Python `str(obj)`,
-    except it returns a std::string. */
+    /* Explicitly cast to a string representation.  For some reason,
+    pybind11::cast<std::string>() doesn't always work for arbitrary types.  This
+    corrects that, giving the same results as Python `str(obj)`. */
     inline explicit operator std::string() const {
         PyObject* str = PyObject_Str(this->ptr());
         if (str == nullptr) {
@@ -853,21 +832,15 @@ public:
         return std::string(data, size);
     }
 
-    /* Explicitly cast to any other type.  Uses pybind11 to search for a conversion. */
-    template <typename T>
-    inline explicit operator T() const {
-        return Base::cast<T>();
-    }
-
     ////////////////////////////////
     ////    ATTRIBUTE ACCESS    ////
     ////////////////////////////////
 
     /* Bertrand streamlines pybind11's dotted attribute accessors by allowing them to
-     * be implicitly converted to any C++ type, reducing the amount of boilerplate
-     * needed to interact with Python objects in C++.  This brings them in line with
-     * the generic Object API, and makes the code significantly more idiomatic from
-     * both a Python and C++ perspective.
+     * be implicitly converted to any C++ type or Python type, reducing the amount of
+     * boilerplate needed to interact with Python objects in C++.  This brings them in
+     * line with the generic Object API, and makes the code significantly more idiomatic
+     * from both a Python and C++ perspective.
      */
 
     inline impl::ObjAttrAccessor attr(pybind11::handle key) const {
@@ -890,18 +863,29 @@ public:
         return Base::attr(key.data());
     }
 
+    /////////////////////////////
+    ////    CALL OPERATOR    ////
+    /////////////////////////////
+
+    /* Bertrand doesn't change the semantics of the call operator, but it does convert
+     * the return value into a as type-safe Object wrapper rather than the generic
+     * pybind11::object.
+     */
+
+    template <typename... Args>
+    inline Object operator()(Args&&... args) const {
+        return Base::operator()(std::forward<Args>(args)...);
+    }
+
     ////////////////////////
     ////    INDEXING    ////
     ////////////////////////
 
-    /* Bertrand streamlines pybind11's index interface by allowing accessors to be
-     * implicitly converted to any C++ type, reducing the amount of boilerplate needed
-     * to interact with Python objects.  It also implements a generalized slice syntax
-     * for sequence types using an initializer list to represent the slice.  This is
-     * equivalent to Python's `obj[start:stop:step]` syntax, and is directly converted
-     * to it in the background.  This allows arbitrary Objects to be sliced as if they
-     * were sequences, and throws compilation errors if the slice is not composed of
-     * integers or None.
+    /* Bertrand also simplifies pybind11's index interface by allowing accessors to be
+     * implicitly converted to any C++ type.  In addition, it implements a generalized
+     * slice syntax for sequence types using an initializer list to represent the
+     * slice.  This is also type safe, and will raise compile errors if a slice is
+     * constructed with any type other than integers or None.
      */
 
     inline impl::ItemAccessor operator[](handle key) const {
@@ -928,9 +912,7 @@ public:
 
     impl::ItemAccessor operator[](const std::initializer_list<SliceIndex>& slice) const {
         if (slice.size() > 3) {
-            throw ValueError(
-                "slices must be of the form {[start[, stop[, step]]]}"
-            );
+            throw ValueError("slices must be of the form {[start[, stop[, step]]]}");
         }
         pybind11::none None;
         size_t i = 0;
@@ -960,51 +942,150 @@ public:
     * with reverse operators and in-place equivalents.
     */
 
-    UNARY_OPERATOR(Object, operator+, PyNumber_Positive);
-    UNARY_OPERATOR(Object, operator-, PyNumber_Negative);
-    UNARY_OPERATOR(Object, operator~, PyNumber_Invert);
-    COMPARISON_OPERATOR(Object, operator<, Py_LT);
-    COMPARISON_OPERATOR(Object, operator<=, Py_LE);
-    COMPARISON_OPERATOR(Object, operator==, Py_EQ);
-    COMPARISON_OPERATOR(Object, operator!=, Py_NE);
-    COMPARISON_OPERATOR(Object, operator>=, Py_GE);
-    COMPARISON_OPERATOR(Object, operator>, Py_GT);
-    REVERSE_COMPARISON(Object, operator<, Py_LT);
-    REVERSE_COMPARISON(Object, operator<=, Py_LE);
-    REVERSE_COMPARISON(Object, operator==, Py_EQ);
-    REVERSE_COMPARISON(Object, operator!=, Py_NE);
-    REVERSE_COMPARISON(Object, operator>=, Py_GE);
-    REVERSE_COMPARISON(Object, operator>, Py_GT);
-    BINARY_OPERATOR(Object, operator+, PyNumber_Add);
-    BINARY_OPERATOR(Object, operator-, PyNumber_Subtract);
-    BINARY_OPERATOR(Object, operator*, PyNumber_Multiply);
-    BINARY_OPERATOR(Object, operator/, PyNumber_TrueDivide);
-    BINARY_OPERATOR(Object, operator%, PyNumber_Remainder);
-    BINARY_OPERATOR(Object, operator<<, PyNumber_Lshift);
-    BINARY_OPERATOR(Object, operator>>, PyNumber_Rshift);
-    BINARY_OPERATOR(Object, operator&, PyNumber_And);
-    BINARY_OPERATOR(Object, operator|, PyNumber_Or);
-    BINARY_OPERATOR(Object, operator^, PyNumber_Xor);
-    REVERSE_OPERATOR(Object, operator+, PyNumber_Add);
-    REVERSE_OPERATOR(Object, operator-, PyNumber_Subtract);
-    REVERSE_OPERATOR(Object, operator*, PyNumber_Multiply);
-    REVERSE_OPERATOR(Object, operator/, PyNumber_TrueDivide);
-    REVERSE_OPERATOR(Object, operator%, PyNumber_Remainder);
-    REVERSE_OPERATOR(Object, operator<<, PyNumber_Lshift);
-    REVERSE_OPERATOR(Object, operator>>, PyNumber_Rshift);
-    REVERSE_OPERATOR(Object, operator&, PyNumber_And);
-    REVERSE_OPERATOR(Object, operator|, PyNumber_Or);
-    REVERSE_OPERATOR(Object, operator^, PyNumber_Xor);
-    INPLACE_OPERATOR(Object, operator+=, PyNumber_InPlaceAdd);
-    INPLACE_OPERATOR(Object, operator-=, PyNumber_InPlaceSubtract);
-    INPLACE_OPERATOR(Object, operator*=, PyNumber_InPlaceMultiply);
-    INPLACE_OPERATOR(Object, operator/=, PyNumber_InPlaceTrueDivide);
-    INPLACE_OPERATOR(Object, operator%=, PyNumber_InPlaceRemainder);
-    INPLACE_OPERATOR(Object, operator<<=, PyNumber_InPlaceLshift);
-    INPLACE_OPERATOR(Object, operator>>=, PyNumber_InPlaceRshift);
-    INPLACE_OPERATOR(Object, operator&=, PyNumber_InPlaceAnd);
-    INPLACE_OPERATOR(Object, operator|=, PyNumber_InPlaceOr);
-    INPLACE_OPERATOR(Object, operator^=, PyNumber_InPlaceXor);
+    #define UNARY_OPERATOR(op, endpoint)                                                \
+        inline Object op() const {                                                      \
+            PyObject* result = endpoint(this->ptr());                                   \
+            if (result == nullptr) {                                                    \
+                throw error_already_set();                                              \
+            }                                                                           \
+            return reinterpret_steal<Object>(result);                                   \
+        }                                                                               \
+
+    #define COMPARISON_OPERATOR(op, endpoint)                                           \
+        template <typename T>                                                           \
+        inline bool op(const T& other) const {                                          \
+            int result = PyObject_RichCompareBool(                                      \
+                this->ptr(),                                                            \
+                detail::object_or_cast(other).ptr(),                                    \
+                endpoint                                                                \
+            );                                                                          \
+            if (result == -1) {                                                         \
+                throw error_already_set();                                              \
+            }                                                                           \
+            return result;                                                              \
+        }                                                                               \
+
+    #define REVERSE_COMPARISON(op, endpoint)                                            \
+        template <                                                                      \
+            typename T,                                                                 \
+            std::enable_if_t<                                                           \
+                !impl::is_same_or_subclass_of<Object, T> &&                             \
+                !impl::is_std_iterator<T>,                                              \
+            int> = 0                                                                    \
+        >                                                                               \
+        inline friend bool op(const T& other, const Object& self) {                     \
+            int result = PyObject_RichCompareBool(                                      \
+                detail::object_or_cast(other).ptr(),                                    \
+                self.ptr(),                                                             \
+                endpoint                                                                \
+            );                                                                          \
+            if (result == -1) {                                                         \
+                throw error_already_set();                                              \
+            }                                                                           \
+            return result;                                                              \
+        }                                                                               \
+
+    #define BINARY_OPERATOR(op, endpoint)                                               \
+        template <typename T>                                                           \
+        inline Object op(const T& other) const {                                        \
+            PyObject* result = endpoint(                                                \
+                this->ptr(),                                                            \
+                detail::object_or_cast(other).ptr()                                     \
+            );                                                                          \
+            if (result == nullptr) {                                                    \
+                throw error_already_set();                                              \
+            }                                                                           \
+            return reinterpret_steal<Object>(result);                                   \
+        }                                                                               \
+
+    #define REVERSE_OPERATOR(op, endpoint)                                              \
+        template <                                                                      \
+            typename T,                                                                 \
+            std::enable_if_t<                                                           \
+                !impl::is_same_or_subclass_of<Object, T> &&                             \
+                !impl::is_same_or_subclass_of<std::ostream, T> &&                       \
+                !impl::is_std_iterator<T>,                                              \
+            int> = 0                                                                    \
+        >                                                                               \
+        inline friend Object op(const T& other, const Object& self) {                   \
+            PyObject* result = endpoint(                                                \
+                detail::object_or_cast(other).ptr(),                                    \
+                self.ptr()                                                              \
+            );                                                                          \
+            if (result == nullptr) {                                                    \
+                throw error_already_set();                                              \
+            }                                                                           \
+            return reinterpret_steal<Object>(result);                                   \
+        }                                                                               \
+
+    #define INPLACE_OPERATOR(op, endpoint)                                              \
+        template <typename T>                                                           \
+        inline Object& op(const T& other) {                                             \
+            pybind11::object o = detail::object_or_cast(other);                         \
+            PyObject* result = endpoint(this->ptr(), o.ptr());                          \
+            if (result == nullptr) {                                                    \
+                throw error_already_set();                                              \
+            }                                                                           \
+            if (result == this->ptr()) {                                                \
+                Py_DECREF(result);                                                      \
+            } else {                                                                    \
+                *this = reinterpret_steal<Object>(result);                              \
+            }                                                                           \
+            return *this;                                                               \
+        }                                                                               \
+
+    UNARY_OPERATOR(operator+, PyNumber_Positive);
+    UNARY_OPERATOR(operator-, PyNumber_Negative);
+    UNARY_OPERATOR(operator~, PyNumber_Invert);
+    COMPARISON_OPERATOR(operator<, Py_LT);
+    COMPARISON_OPERATOR(operator<=, Py_LE);
+    COMPARISON_OPERATOR(operator==, Py_EQ);
+    COMPARISON_OPERATOR(operator!=, Py_NE);
+    COMPARISON_OPERATOR(operator>=, Py_GE);
+    COMPARISON_OPERATOR(operator>, Py_GT);
+    REVERSE_COMPARISON(operator<, Py_LT);
+    REVERSE_COMPARISON(operator<=, Py_LE);
+    REVERSE_COMPARISON(operator==, Py_EQ);
+    REVERSE_COMPARISON(operator!=, Py_NE);
+    REVERSE_COMPARISON(operator>=, Py_GE);
+    REVERSE_COMPARISON(operator>, Py_GT);
+    BINARY_OPERATOR(operator+, PyNumber_Add);
+    BINARY_OPERATOR(operator-, PyNumber_Subtract);
+    BINARY_OPERATOR(operator*, PyNumber_Multiply);
+    BINARY_OPERATOR(operator/, PyNumber_TrueDivide);
+    BINARY_OPERATOR(operator%, PyNumber_Remainder);
+    BINARY_OPERATOR(operator<<, PyNumber_Lshift);
+    BINARY_OPERATOR(operator>>, PyNumber_Rshift);
+    BINARY_OPERATOR(operator&, PyNumber_And);
+    BINARY_OPERATOR(operator|, PyNumber_Or);
+    BINARY_OPERATOR(operator^, PyNumber_Xor);
+    REVERSE_OPERATOR(operator+, PyNumber_Add);
+    REVERSE_OPERATOR(operator-, PyNumber_Subtract);
+    REVERSE_OPERATOR(operator*, PyNumber_Multiply);
+    REVERSE_OPERATOR(operator/, PyNumber_TrueDivide);
+    REVERSE_OPERATOR(operator%, PyNumber_Remainder);
+    REVERSE_OPERATOR(operator<<, PyNumber_Lshift);
+    REVERSE_OPERATOR(operator>>, PyNumber_Rshift);
+    REVERSE_OPERATOR(operator&, PyNumber_And);
+    REVERSE_OPERATOR(operator|, PyNumber_Or);
+    REVERSE_OPERATOR(operator^, PyNumber_Xor);
+    INPLACE_OPERATOR(operator+=, PyNumber_InPlaceAdd);
+    INPLACE_OPERATOR(operator-=, PyNumber_InPlaceSubtract);
+    INPLACE_OPERATOR(operator*=, PyNumber_InPlaceMultiply);
+    INPLACE_OPERATOR(operator/=, PyNumber_InPlaceTrueDivide);
+    INPLACE_OPERATOR(operator%=, PyNumber_InPlaceRemainder);
+    INPLACE_OPERATOR(operator<<=, PyNumber_InPlaceLshift);
+    INPLACE_OPERATOR(operator>>=, PyNumber_InPlaceRshift);
+    INPLACE_OPERATOR(operator&=, PyNumber_InPlaceAnd);
+    INPLACE_OPERATOR(operator|=, PyNumber_InPlaceOr);
+    INPLACE_OPERATOR(operator^=, PyNumber_InPlaceXor);
+
+    #undef UNARY_OPERATOR
+    #undef COMPARISON_OPERATOR
+    #undef REVERSE_COMPARISON
+    #undef BINARY_OPERATOR
+    #undef REVERSE_OPERATOR
+    #undef INPLACE_OPERATOR
 
     inline Object* operator&() {
         return this;
@@ -1014,12 +1095,31 @@ public:
         return this;
     }
 
-    inline friend std::ostream& operator<<(std::ostream& os, const Object& obj) {
-        os << static_cast<std::string>(obj);
-        return os;
+    inline auto operator*() {
+        return Base::operator*();
+    }
+
+    inline auto operator*() const {
+        return Base::operator*();
     }
 
 };
+
+
+inline std::ostream& operator<<(std::ostream& os, const Object& obj) {
+    PyObject* repr = PyObject_Repr(obj.ptr());
+    if (repr == nullptr) {
+        throw error_already_set();
+    }
+    Py_ssize_t size;
+    const char* data = PyUnicode_AsUTF8AndSize(repr, &size);
+    Py_DECREF(repr);
+    if (data == nullptr) {
+        throw error_already_set();
+    }
+    os.write(data, size);
+    return os;
+}
 
 
 const static NoneType None;
@@ -1027,21 +1127,6 @@ const static EllipsisType Ellipsis;
 
 
 namespace impl {
-
-    #define ACCESSOR_CALL_OPERATOR(name, base)                                          \
-        template <typename... Args>                                                     \
-        Object name::operator()(Args&&... args) const {                                 \
-            return detail::base::operator()(std::forward<Args>(args)...);               \
-        }                                                                               \
-
-    ACCESSOR_CALL_OPERATOR(ObjAttrAccessor, obj_attr_accessor)
-    ACCESSOR_CALL_OPERATOR(StrAttrAccessor, str_attr_accessor)
-    ACCESSOR_CALL_OPERATOR(ItemAccessor, item_accessor)
-    ACCESSOR_CALL_OPERATOR(SequenceAccessor, sequence_accessor)
-    ACCESSOR_CALL_OPERATOR(TupleAccessor, tuple_accessor)
-    ACCESSOR_CALL_OPERATOR(ListAccessor, list_accessor)
-
-    #undef ACCESSOR_CALL_OPERATOR
 
     /* A simple struct that converts a generic C++ object into a Python equivalent in
     its constructor.  This is used in conjunction with std::initializer_list to parse
@@ -1073,68 +1158,377 @@ namespace impl {
     template <typename T>
     constexpr bool is_initializer = std::is_same_v<T, Initializer>;
 
-    /* A mixin that adds type-safe in-place operators.  These will throw a CastError
-    if an in-place operator modifies the type of its left operand. */
-    template <typename Derived>
-    struct Ops {
-        UNARY_OPERATOR(Derived, operator+, PyNumber_Positive);
-        UNARY_OPERATOR(Derived, operator-, PyNumber_Negative);
-        UNARY_OPERATOR(Derived, operator~, PyNumber_Invert);
-        COMPARISON_OPERATOR(Derived, operator<, Py_LT);
-        COMPARISON_OPERATOR(Derived, operator<=, Py_LE);
-        COMPARISON_OPERATOR(Derived, operator==, Py_EQ);
-        COMPARISON_OPERATOR(Derived, operator!=, Py_NE);
-        COMPARISON_OPERATOR(Derived, operator>=, Py_GE);
-        COMPARISON_OPERATOR(Derived, operator>, Py_GT);
-        REVERSE_COMPARISON(Derived, operator<, Py_LT);
-        REVERSE_COMPARISON(Derived, operator<=, Py_LE);
-        REVERSE_COMPARISON(Derived, operator==, Py_EQ);
-        REVERSE_COMPARISON(Derived, operator!=, Py_NE);
-        REVERSE_COMPARISON(Derived, operator>=, Py_GE);
-        REVERSE_COMPARISON(Derived, operator>, Py_GT);
-        BINARY_OPERATOR(Derived, operator+, PyNumber_Add);
-        BINARY_OPERATOR(Derived, operator-, PyNumber_Subtract);
-        BINARY_OPERATOR(Derived, operator*, PyNumber_Multiply);
-        BINARY_OPERATOR(Derived, operator/, PyNumber_TrueDivide);
-        BINARY_OPERATOR(Derived, operator%, PyNumber_Remainder);
-        BINARY_OPERATOR(Derived, operator<<, PyNumber_Lshift);
-        BINARY_OPERATOR(Derived, operator>>, PyNumber_Rshift);
-        BINARY_OPERATOR(Derived, operator&, PyNumber_And);
-        BINARY_OPERATOR(Derived, operator|, PyNumber_Or);
-        BINARY_OPERATOR(Derived, operator^, PyNumber_Xor);
-        REVERSE_OPERATOR(Derived, operator+, PyNumber_Add);
-        REVERSE_OPERATOR(Derived, operator-, PyNumber_Subtract);
-        REVERSE_OPERATOR(Derived, operator*, PyNumber_Multiply);
-        REVERSE_OPERATOR(Derived, operator/, PyNumber_TrueDivide);
-        REVERSE_OPERATOR(Derived, operator%, PyNumber_Remainder);
-        REVERSE_OPERATOR(Derived, operator<<, PyNumber_Lshift);
-        REVERSE_OPERATOR(Derived, operator>>, PyNumber_Rshift);
-        REVERSE_OPERATOR(Derived, operator&, PyNumber_And);
-        REVERSE_OPERATOR(Derived, operator|, PyNumber_Or);
-        REVERSE_OPERATOR(Derived, operator^, PyNumber_Xor);
-        INPLACE_OPERATOR(Derived, operator+=, PyNumber_InPlaceAdd);
-        INPLACE_OPERATOR(Derived, operator-=, PyNumber_InPlaceSubtract);
-        INPLACE_OPERATOR(Derived, operator*=, PyNumber_InPlaceMultiply);
-        INPLACE_OPERATOR(Derived, operator/=, PyNumber_InPlaceTrueDivide);
-        INPLACE_OPERATOR(Derived, operator%=, PyNumber_InPlaceRemainder);
-        INPLACE_OPERATOR(Derived, operator<<=, PyNumber_InPlaceLshift);
-        INPLACE_OPERATOR(Derived, operator>>=, PyNumber_InPlaceRshift);
-        INPLACE_OPERATOR(Derived, operator&=, PyNumber_InPlaceAnd);
-        INPLACE_OPERATOR(Derived, operator|=, PyNumber_InPlaceOr);
-        INPLACE_OPERATOR(Derived, operator^=, PyNumber_InPlaceXor);
+    /* Tag class to identify wrappers during SFINAE checks. */
+    struct WrapperTag {};
+
+    /* A mixin class for transparent Object<> wrappers that forwards the basic interface. */
+    template <typename T>
+    class Wrapper : WrapperTag {
+        static_assert(
+            std::is_base_of_v<pybind11::object, T>,
+            "Wrapper<T> requires T to be a subclass of pybind11::object"
+        );
+
+    protected:
+        bool initialized;
+        alignas (T) unsigned char buffer[sizeof(T)];
+
+        struct alloc_t {};
+        Wrapper(const alloc_t&) : initialized(false) {}
+
+    public:
+        using Wrapped = T;
+
+        ////////////////////////////
+        ////    CONSTRUCTORS    ////
+        ////////////////////////////
+
+        /* Explicitly create an empty wrapper with uninitialized memory. */
+        inline static Wrapper alloc() {
+            return Wrapper(alloc_t{});
+        }
+
+        /* Default constructor. */
+        Wrapper() : initialized(true) {
+            new (buffer) T();
+        }
+
+        /* Forwarding constructor for the internal buffer. */
+        template <
+            typename First,
+            typename... Rest,
+            std::enable_if_t<!std::is_same_v<std::decay_t<First>, alloc_t>, int> = 0
+        >
+        Wrapper(First&& first, Rest&&... rest) : initialized(true) {
+            new (buffer) T(std::forward<First>(first), std::forward<Rest>(rest)...);
+        }
+
+        /* Forwarding constructor for homogenous initializer list syntax. */
+        template <typename U>
+        Wrapper(const std::initializer_list<U>& list) : initialized(true) {
+            new (buffer) T(list);
+        }
+
+        /* Forwarding constructor for mixed initializer list syntax. */
+        Wrapper(const std::initializer_list<impl::Initializer>& list) : initialized(true) {
+            new (buffer) T(list);
+        }
+
+        /* Copy constructor. */
+        Wrapper(const Wrapper& other) : initialized(true) {
+            new (buffer) T(*other);
+        }
+
+        /* Move constructor. */
+        Wrapper(Wrapper&& other) : initialized(true) {
+            new (buffer) T(std::move(*other));
+        }
+
+        /* Forwarding assignment operator. */
+        template <typename U>
+        Wrapper& operator=(U&& other) {
+            **this = std::forward<U>(other);
+            return *this;
+        }
+
+        /* Copy assignment operator. */
+        Wrapper& operator=(const Wrapper& other) {
+            if (&other != this) {
+                bool old_initialized = initialized;
+                bool new_initialized = other.initialized;
+                T& old_wrapped = **this;
+                const T& new_wrapped = *other;
+
+                initialized = false;  // prevent this dereference during copy
+                if (old_initialized) {
+                    old_wrapped.~T();
+                }
+
+                if (new_initialized) {
+                    new (buffer) T(new_wrapped);
+                    initialized = true;  // allow this dereference
+                }
+            }
+            return *this;
+        }
+
+        /* Move assignment operator. */
+        Wrapper& operator=(Wrapper&& other) {
+            if (&other != this) {
+                bool old_initialized = initialized;
+                bool new_initialized = other.initialized;
+                T& old_wrapped = **this;
+                T& new_wrapped = *other;
+
+                initialized = false;  // prevent this dereference during move
+                if (old_initialized) {
+                    old_wrapped.~T();
+                }
+
+                if (new_initialized) {
+                    other.initialized = false;  // prevent other dereference
+                    new (buffer) T(std::move(new_wrapped));
+                    initialized = true;  // allow this dereference
+                }
+            }
+            return *this;
+        }
+
+        /* Destructor.  Subclasses can avoid calling this by manually clearing the
+        `initialized` flag in their own destructor. */
+        ~Wrapper() {
+            if (initialized) {
+                (**this).~T();
+            }
+        }
+
+        /* Implicitly convert to the wrapped type. */
+        inline operator T&() {
+            return **this;
+        }
+
+        /* Implicitly convert to the wrapped type. */
+        inline operator const T&() const {
+            return **this;
+        }
+
+        /* Implicitly convert to the wrapped type. */
+        inline operator T() {
+            return **this;
+        }
+
+        ////////////////////////////////////
+        ////    FORWARDING INTERFACE    ////
+        ////////////////////////////////////
+
+        /* Wrappers can be used more or less just like a regular object, except that any
+        * instance of the dot operator (.) should be replaced with the arrow operator (->)
+        * instead.  This allows them to be treated like a pointer conceptually, except all
+        * of the ordinary object operators are also forwarded at the same time.
+        */
+
+        /* Dereference to get the underlying object. */
+        inline T& operator*() {
+            if (initialized) {
+                return reinterpret_cast<T&>(buffer);
+            } else {
+                throw ValueError(
+                    "dereferencing an uninitialized wrapper.  Either the object was moved "
+                    "from or not properly constructed to begin with."
+                );
+            }
+        }
+
+        /* Dereference to get the underlying object. */
+        inline const T& operator*() const {
+            if (initialized) {
+                return reinterpret_cast<const T&>(buffer);
+            } else {
+                throw ValueError(
+                    "dereferencing an uninitialized wrapper.  Either the object was moved "
+                    "from or not properly constructed to begin with."
+                );
+            }
+        }
+
+        /* Use the arrow operator to access an attribute on the object. */
+        inline T* operator->() {
+            return &(**this);
+        }
+
+        /* Use the arrow operator to access an attribute on the object. */
+        inline const T* operator->() const {
+            return &(**this);
+        }
+
+        /* Forward to the object's call operator. */
+        template <typename... Args>
+        inline auto operator()(Args&&... args) const {
+            return (**this)(std::forward<Args>(args)...);
+        }
+
+        /* Forward to the object's index operator. */
+        template <typename U>
+        inline auto operator[](U&& args) const {
+            return (**this)[std::forward<U>(args)];
+        }
+
+        /* Forward to the object's iterator methods. */
+        inline auto begin() const { return (**this).begin(); }
+        inline auto end() const { return (**this).end(); }
+
+        /////////////////////////
+        ////    OPERATORS    ////
+        /////////////////////////
+
+        /* We also have to forward all math operators for consistent behavior. */
+
+        #define UNARY_OPERATOR(opcode, op)                                              \
+            inline auto opcode() const { return op(**this); }                           \
+
+        #define BINARY_OPERATOR(opcode, op)                                             \
+            template <typename U>                                                       \
+            inline auto opcode(const U& other) const { return (**this) op other; }      \
+
+        #define REVERSE_OPERATOR(opcode, op)                                            \
+            template <                                                                  \
+                typename U,                                                             \
+                std::enable_if_t<                                                       \
+                    !impl::is_same_or_subclass_of<Object, U> &&                         \
+                    !impl::is_same_or_subclass_of<std::ostream, U> &&                   \
+                    !impl::is_std_iterator<U>,                                          \
+                int> = 0                                                                \
+            >                                                                           \
+            inline friend auto opcode(const U& other, const Wrapper& self) {            \
+                return other op *self;                                                  \
+            }                                                                           \
+
+        #define INPLACE_OPERATOR(opcode, op)                                            \
+            template <typename U>                                                       \
+            inline Wrapper& opcode(const U& other) {                                    \
+                **this op other;                                                        \
+                return *this;                                                           \
+            }                                                                           \
+
+        UNARY_OPERATOR(operator~, ~)
+        UNARY_OPERATOR(operator+, +)
+        UNARY_OPERATOR(operator-, -)
+        BINARY_OPERATOR(operator<, <)
+        BINARY_OPERATOR(operator<=, <=)
+        BINARY_OPERATOR(operator==, ==)
+        BINARY_OPERATOR(operator!=, !=)
+        BINARY_OPERATOR(operator>=, >=)
+        BINARY_OPERATOR(operator>, >)
+        REVERSE_OPERATOR(operator<, <)
+        REVERSE_OPERATOR(operator<=, <=)
+        REVERSE_OPERATOR(operator==, ==)
+        REVERSE_OPERATOR(operator!=, !=)
+        REVERSE_OPERATOR(operator>=, >=)
+        REVERSE_OPERATOR(operator>, >)
+        BINARY_OPERATOR(operator+, +)
+        BINARY_OPERATOR(operator-, -)
+        BINARY_OPERATOR(operator*, *)
+        BINARY_OPERATOR(operator/, /)
+        BINARY_OPERATOR(operator%, %)
+        BINARY_OPERATOR(operator<<, <<)
+        BINARY_OPERATOR(operator>>, >>)
+        BINARY_OPERATOR(operator&, &)
+        BINARY_OPERATOR(operator|, |)
+        BINARY_OPERATOR(operator^, ^)
+        REVERSE_OPERATOR(operator+, +)
+        REVERSE_OPERATOR(operator-, -)
+        REVERSE_OPERATOR(operator*, *)
+        REVERSE_OPERATOR(operator/, /)
+        REVERSE_OPERATOR(operator%, %)
+        REVERSE_OPERATOR(operator<<, <<)
+        REVERSE_OPERATOR(operator>>, >>)
+        REVERSE_OPERATOR(operator&, &)
+        REVERSE_OPERATOR(operator|, |)
+        REVERSE_OPERATOR(operator^, ^)
+        INPLACE_OPERATOR(operator+=, +=)
+        INPLACE_OPERATOR(operator-=, -=)
+        INPLACE_OPERATOR(operator*=, *=)
+        INPLACE_OPERATOR(operator/=, /=)
+        INPLACE_OPERATOR(operator%=, %=)
+        INPLACE_OPERATOR(operator<<=, <<=)
+        INPLACE_OPERATOR(operator>>=, >>=)
+        INPLACE_OPERATOR(operator&=, &=)
+        INPLACE_OPERATOR(operator|=, |=)
+        INPLACE_OPERATOR(operator^=, ^=)
+
+        #undef UNARY_OPERATOR
+        #undef BINARY_OPERATOR
+        #undef REVERSE_OPERATOR
+        #undef INPLACE_OPERATOR
+
+        inline Wrapper* operator&() {
+            return this;
+        }
+
+        inline const Wrapper* operator&() const {
+            return this;
+        }
+
     };
 
-    #undef UNARY_OPERATOR
-    #undef COMPARISON_OPERATOR
-    #undef REVERSE_COMPARISON
-    #undef BINARY_OPERATOR
-    #undef REVERSE_OPERATOR
-    #undef INPLACE_OPERATOR
+    /* Intermediate base class that hides all operators from the generic Object class.
+    Subclasses have to bring these back into scope via a `using` statement or a custom
+    overload as needed. */
+    struct Ops : public Object {
+        using Object::Object;
+        using Object::operator=;
+        using Object::operator==;
+        using Object::operator!=;
+
+        inline Ops* operator&() {
+            return this;
+        }
+
+        inline const Ops* operator&() const {
+            return this;
+        }
+
+        inline auto operator*() {
+            return Object::operator*();
+        }
+
+        inline auto operator*() const {
+            return Object::operator*();
+        }
+    
+        template <typename T, std::enable_if_t<std::is_base_of_v<Object, T>, int> = 0>
+        operator T() const = delete;
+
+        template <typename T, std::enable_if_t<!std::is_base_of_v<Object, T>, int> = 0>
+        inline explicit operator T() const {
+            return Object::operator T();
+        }
+
+        inline explicit operator bool() const {
+            return Object::operator bool();
+        }
+
+        inline explicit operator std::string() const {
+            return Object::operator std::string();
+        }
+
+    protected:
+        using Object::operator~;
+        using Object::operator<;
+        using Object::operator<=;
+        using Object::operator>=;
+        using Object::operator>;
+        using Object::operator+;
+        using Object::operator-;
+        using Object::operator*;
+        using Object::operator/;
+        using Object::operator%;
+        using Object::operator<<;
+        using Object::operator>>;
+        using Object::operator&;
+        using Object::operator|;
+        using Object::operator^;
+        using Object::operator+=;
+        using Object::operator-=;
+        using Object::operator*=;
+        using Object::operator/=;
+        using Object::operator%=;
+        using Object::operator<<=;
+        using Object::operator>>=;
+        using Object::operator&=;
+        using Object::operator|=;
+        using Object::operator^=;
+        using Object::operator[];
+        using Object::operator();
+        using Object::begin;
+        using Object::end;
+    };
 
     /* Mixin holding operator overloads for types implementing the sequence protocol,
     which makes them both concatenatable and repeatable. */
-    template <typename Derived>
-    struct SequenceOps {
+    struct SequenceOps : public Ops {
+        using Ops::Ops;
+        using Ops::operator=;
 
         /* Equivalent to Python `sequence.count(value)`, but also takes optional
         start/stop indices similar to `sequence.index()`. */
@@ -1145,11 +1539,7 @@ namespace impl {
             Py_ssize_t stop = -1
         ) const {
             if (start != 0 || stop != -1) {
-                PyObject* slice = PySequence_GetSlice(
-                    static_cast<const Derived*>(this)->ptr(),
-                    start,
-                    stop
-                );
+                PyObject* slice = PySequence_GetSlice(this->ptr(), start, stop);
                 if (slice == nullptr) {
                     throw error_already_set();
                 }
@@ -1164,7 +1554,7 @@ namespace impl {
                 return result;
             } else {
                 Py_ssize_t result = PySequence_Count(
-                    static_cast<const Derived*>(this)->ptr(),
+                    this->ptr(),
                     detail::object_or_cast(value).ptr()
                 );
                 if (result == -1 && PyErr_Occurred()) {
@@ -1182,11 +1572,7 @@ namespace impl {
             Py_ssize_t stop = -1
         ) const {
             if (start != 0 || stop != -1) {
-                PyObject* slice = PySequence_GetSlice(
-                    static_cast<const Derived*>(this)->ptr(),
-                    start,
-                    stop
-                );
+                PyObject* slice = PySequence_GetSlice(this->ptr(), start, stop);
                 if (slice == nullptr) {
                     throw error_already_set();
                 }
@@ -1201,7 +1587,7 @@ namespace impl {
                 return result;
             } else {
                 Py_ssize_t result = PySequence_Index(
-                    static_cast<const Derived*>(this)->ptr(),
+                    this->ptr(),
                     detail::object_or_cast(value).ptr()
                 );
                 if (result == -1 && PyErr_Occurred()) {
@@ -1212,73 +1598,71 @@ namespace impl {
         }
 
         /* Equivalent to Python `sequence + items`. */
-        template <typename T>
-        inline Derived concat(const T& items) const {
+        template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+        inline Object concat(const T& items) const {
             PyObject* result = PySequence_Concat(
-                static_cast<const Derived*>(this)->ptr(),
+                this->ptr(),
                 detail::object_or_cast(items).ptr()
             );
             if (result == nullptr) {
                 throw error_already_set();
             }
-            return reinterpret_steal<Derived>(result);
+            return reinterpret_steal<Object>(result);
         }
 
         /* Equivalent to Python `sequence * repetitions`. */
-        inline Derived repeat(Py_ssize_t repetitions) const {
+        inline Object repeat(Py_ssize_t repetitions) const {
             PyObject* result = PySequence_Repeat(
-                static_cast<const Derived*>(this)->ptr(),
+                this->ptr(),
                 repetitions
             );
             if (result == nullptr) {
                 throw error_already_set();
             }
-            return reinterpret_steal<Derived>(result);
+            return reinterpret_steal<Object>(result);
         }
 
-        template <typename T>
-        inline Derived operator+(const T& items) const {
-            return static_cast<const Derived*>(this)->concat(items);
+        template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+        inline Object operator+(const T& items) const {
+            return this->concat(items);
         }
 
-        inline Derived operator*(Py_ssize_t repetitions) {
-            return static_cast<const Derived*>(this)->repeat(repetitions);
+        inline Object operator*(Py_ssize_t repetitions) {
+            return this->repeat(repetitions);
         }
 
-        friend inline Derived operator*(Py_ssize_t repetitions, const Derived& seq) {
+        friend inline Object operator*(Py_ssize_t repetitions, const SequenceOps& seq) {
             return seq.repeat(repetitions);
         }
 
         template <typename T>
-        inline Derived& operator+=(const T& items) {
-            Derived* self = static_cast<Derived*>(this);
+        inline Object& operator+=(const T& items) {
             PyObject* result = PySequence_InPlaceConcat(
-                self->ptr(),
+                this->ptr(),
                 detail::object_or_cast(items).ptr()
             );
             if (result == nullptr) {
                 throw error_already_set();
             }
-            if (result == self->ptr()) {
+            if (result == this->ptr()) {
                 Py_DECREF(result);
             } else {
-                *self = reinterpret_steal<Derived>(result);
+                *this = reinterpret_steal<Object>(result);
             }
-            return *self;
+            return *this;
         }
 
-        inline Derived& operator*=(Py_ssize_t repetitions) {
-            Derived* self = static_cast<Derived*>(this);
-            PyObject* result = PySequence_InPlaceRepeat(self->ptr(), repetitions);
+        inline Object& operator*=(Py_ssize_t repetitions) {
+            PyObject* result = PySequence_InPlaceRepeat(this->ptr(), repetitions);
             if (result == nullptr) {
                 throw error_already_set();
             }
-            if (result == self->ptr()) {
+            if (result == this->ptr()) {
                 Py_DECREF(result);
             } else {
-                *self = reinterpret_steal<Derived>(result);
+                *this = reinterpret_steal<Object>(result);
             }
-            return *self;
+            return *this;
         }
 
     };
@@ -1325,9 +1709,7 @@ namespace impl {
             inline bool operator!=(const ReverseIterator& other) const {
                 return index != other.index;
             }
-
         };
-
     };
 
     /* Types for which is_reverse_iterable is true will use custom reverse iterators
@@ -1346,55 +1728,66 @@ namespace impl {
         std::enable_if_t<impl::is_same_or_subclass_of<List, T>>
     > = true;
 
-    /* All new subclasses of pybind11::object must define these constructors, which are
-    taken directly from PYBIND11_OBJECT_COMMON.  The check() function will be called
-    if the constructor is invoked with a generic object as input, and the convert()
-    function will be called if it fails that check.  Both should operate on raw
-    PyObject* pointers, and convert() should always return a new reference.  They will
-    never be passed null objects. */
-    #define BERTRAND_PYTHON_CONSTRUCTORS(parent, cls, check, convert)                   \
-        PYBIND11_OBJECT_COMMON(cls, parent, check);                                     \
-                                                                                        \
-        /* Implicitly convert from the generic Object wrapper.  Borrows a reference. */ \
-        template <typename T, std::enable_if_t<impl::is_object_exact<T>, int> = 0>      \
-        cls(const T& o) :                                                               \
-            parent(check_(o) ? o.inc_ref().ptr() : convert(o.ptr()), stolen_t{})        \
-        {                                                                               \
-            if (this->ptr() == nullptr) {                                               \
-                throw error_already_set();                                              \
-            }                                                                           \
+    /* All new subclasses of py::Object must define these constructors, which are taken
+    directly from PYBIND11_OBJECT_COMMON and cover the basic object creation and
+    conversion logic.
+    
+    The check() function will be called whenever a generic Object wrapper is implicitly
+    converted to this type.  It should return true if and only if the object has a
+    compatible type, and it will never be passed a null pointer.  If it returns false,
+    a TypeError will be raised during the assignment.
+
+    Also included are generic copy and move constructors that work with any object type
+    that is like this one.  It depends on each type implementing the `like` trait
+    before invoking this macro.
+
+    Lastly, a generic assignment operator is provided that triggers implicit
+    conversions to this type for any inputs that support them.  This is especially
+    nice for initializer-list syntax, enabling containers to be assigned to like this:
+
+        py::List list = {1, 2, 3, 4, 5};
+        list = {5, 4, 3, 2, 1};
+    */
+    #define BERTRAND_OBJECT_CONSTRUCTORS(parent, cls, check_func)                       \
+        /* Overload check() for C++ values using template metaprogramming. */           \
+        template <typename T, std::enable_if_t<!detail::is_pyobject<T>::value, int> = 0>\
+        static constexpr bool check(const T&) {                                         \
+            return check<T>();                                                          \
         }                                                                               \
                                                                                         \
-        /* Implicitly convert from the generic Object wrapper.  Steals a reference. */  \
-        template <                                                                      \
-            typename T,                                                                 \
-            std::enable_if_t<                                                           \
-                impl::is_object_exact<std::decay_t<T>> && std::is_rvalue_reference_v<T>,\
-            int> = 0                                                                    \
-        >                                                                               \
-        cls(T&& o) :                                                                    \
-            parent(check_(o) ? o.release().ptr() : convert(o.ptr()), stolen_t{})        \
-        {                                                                               \
-            if (this->ptr() == nullptr) {                                               \
-                throw error_already_set();                                              \
-            }                                                                           \
+        /* Overload check() for Python objects using check_func. */                     \
+        template <typename T, std::enable_if_t<detail::is_pyobject<T>::value, int> = 0> \
+        static constexpr bool check(const T& obj) {                                     \
+            return obj.ptr() != nullptr && check_func(obj.ptr());                       \
         }                                                                               \
+                                                                                        \
+        /* Inherit tagged borrow/steal constructors. */                                 \
+        cls(pybind11::handle h, const borrowed_t& t) : parent(h, t) {}                  \
+        cls(pybind11::handle h, const stolen_t& t) : parent(h, t) {}                    \
                                                                                         \
         /* Copy constructor.  Borrows a reference. */                                   \
-        template <typename T, std::enable_if_t<like<T> && impl::is_object<T>, int> = 0> \
+        template <                                                                      \
+            typename T,                                                                 \
+            std::enable_if_t<check<T>() && detail::is_pyobject<T>::value, int> = 0      \
+        >                                                                               \
         cls(const T& value) : parent(value.ptr(), borrowed_t{}) {}                      \
                                                                                         \
         /* Move constructor.  Steals a reference. */                                    \
         template <                                                                      \
             typename T,                                                                 \
             std::enable_if_t<                                                           \
-                like<T> && impl::is_object_exact<std::decay_t<T>> &&                    \
+                check<std::decay_t<T>>() &&                                             \
+                detail::is_pyobject<std::decay_t<T>>::value &&                          \
                 std::is_rvalue_reference_v<T>,                                          \
             int> = 0                                                                    \
         >                                                                               \
         cls(T&& value) : parent(value.release(), stolen_t{}) {}                         \
                                                                                         \
-        /* Trigger implicit conversions via the assignment operator. */                 \
+        /* Convert an accessor into a this type. */                                     \
+        template <typename Policy>                                                      \
+        cls(const detail::accessor<Policy> &a) : cls(pybind11::object(a)) {}            \
+                                                                                        \
+        /* Trigger implicit conversions to this type via the assignment operator. */    \
         template <typename T, std::enable_if_t<std::is_convertible_v<T, cls>, int> = 0> \
         cls& operator=(T&& value) {                                                     \
             if constexpr (std::is_same_v<cls, std::decay_t<T>>) {                       \
@@ -1406,16 +1799,69 @@ namespace impl {
             return *this;                                                               \
         }                                                                               \
                                                                                         \
-        /* Make sure these don't get lost when doing operator overloads. */             \
+        /* Make sure address operators don't get lost during overloads. */              \
         inline cls* operator&() { return this; }                                        \
         inline const cls* operator&() const { return this; }                            \
+
+    #define ACCESSOR_CALL_OPERATOR(name, base)                                          \
+        template <typename... Args>                                                     \
+        Object name::operator()(Args&&... args) const {                                 \
+            return detail::base::operator()(std::forward<Args>(args)...);               \
+        }                                                                               \
+
+    ACCESSOR_CALL_OPERATOR(ObjAttrAccessor, obj_attr_accessor)
+    ACCESSOR_CALL_OPERATOR(StrAttrAccessor, str_attr_accessor)
+    ACCESSOR_CALL_OPERATOR(ItemAccessor, item_accessor)
+    ACCESSOR_CALL_OPERATOR(SequenceAccessor, sequence_accessor)
+    ACCESSOR_CALL_OPERATOR(TupleAccessor, tuple_accessor)
+    ACCESSOR_CALL_OPERATOR(ListAccessor, list_accessor)
+
+    #undef ACCESSOR_CALL_OPERATOR
 
 }  // namespace impl
 
 
+/* Forward to the object's ostream insertion operator. */
+template <typename T>
+inline std::ostream& operator<<(std::ostream& os, const impl::Wrapper<T>& obj) {
+    os << *obj;
+    return os;
+}
+
+
+/* A lightweight proxy that allows an arbitrary Python object to be stored with static
+duration.
+
+Normally, storing a static Python object is unsafe because it can lead to a situation
+where the Python interpreter is in an invalid state at the time the object's destructor
+is called, causing a memory access violation during shutdown.  This class avoids that
+by checking `Py_IsInitialized()` and only invoking the destructor if it evaluates to
+true.  This technically means that we leave an unbalanced reference to the object, but
+since the Python interpreter is shutting down anyways, it doesn't matter.  Python will
+clean up the object regardless of its reference count. */
+template <typename T>
+struct Static : public impl::Wrapper<T> {
+    using impl::Wrapper<T>::Wrapper;
+    using impl::Wrapper<T>::operator=;
+
+    /* Explicitly create an empty wrapper with uninitialized memory. */
+    inline static Static alloc() {
+        return Static(typename impl::Wrapper<T>::alloc_t{});
+    }
+
+    /* Destructor avoids calling the Wrapper's destructor if the Python interpreter is
+    not currently initialized. */
+    ~Static() {
+        this->initialized &= Py_IsInitialized();
+    }
+
+};
+
+
 /* New subclass of pybind11::object that represents Python's global NotImplemented
 object. */
-class NotImplementedType : public Object, public impl::Ops<NotImplementedType> {
+class NotImplementedType : public impl::Ops {
+    using Base = impl::Ops;
 
     inline static int check_not_implemented(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) Py_TYPE(Py_NotImplemented));
@@ -1425,243 +1871,15 @@ class NotImplementedType : public Object, public impl::Ops<NotImplementedType> {
         return result;
     }
 
-    inline static PyObject* convert_not_implemented(PyObject* obj) {
-        throw TypeError("cannot convert object to NotImplemented");
-    }
-
 public:
     static py::Type Type;
-    BERTRAND_PYTHON_CONSTRUCTORS(
-        Object,
-        NotImplementedType,
-        check_not_implemented,
-        convert_not_implemented
-    );
 
-    NotImplementedType() : Object(Py_NotImplemented, borrowed_t{}) {}
-
-    using impl::Ops<NotImplementedType>::operator==;
-    using impl::Ops<NotImplementedType>::operator!=;
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, NotImplementedType, check_not_implemented)
+    NotImplementedType() : Base(Py_NotImplemented, borrowed_t{}) {}
 };
 
 
 static const NotImplementedType NotImplemented;
-
-
-/* A proxy class for an imported module that allows it to be stored as a static
-variable, and correctly accounts for the Python interpreter state. */
-class Module {
-    using M = pybind11::module_;
-
-    friend Module import(const char* module);
-
-    bool initialized = false;
-    alignas (M) unsigned char buffer[sizeof(M)];
-
-public:
-    static py::Type Type;
-
-    template <typename T>
-    static constexpr bool like = (
-        impl::is_same_or_subclass_of<Module, T> || impl::is_same_or_subclass_of<M, T>
-    );
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Default constructor.  Initializes to the builtins module. */
-    Module() : initialized(Py_IsInitialized()) {
-        if (initialized) {
-            new (&buffer) M(pybind11::module_::import("builtins"));
-        }
-    }
-
-    /* Forwarding constructor. */
-    template <typename... Args>
-    Module(Args&&... args) : initialized(true) {
-        new (&buffer) M(std::forward<Args>(args)...);
-    }
-
-    /* Copy constructor. */
-    Module(const Module& other) : initialized(other.initialized) {
-        if (initialized) {
-            new (&buffer) M(other.wrapped());
-        }
-    }
-
-    /* Move constructor. */
-    Module(Module&& other) : initialized(other.initialized) {
-        if (initialized) {
-            new (&buffer) M(std::move(other.wrapped()));
-            other.initialized = false;
-        }
-    }
-
-    /* Copy assignment operator. */
-    Module& operator=(const Module& other) {
-        if (&other != this) {
-            if (initialized) {
-                wrapped().~M();
-            }
-            initialized = other.initialized;
-            if (initialized) {
-                new (&buffer) M(other.wrapped());
-            }
-        }
-        return *this;
-    }
-
-    /* Move assignment operator. */
-    Module& operator=(Module&& other) {
-        if (&other != this) {
-            if (initialized) {
-                wrapped().~M();
-            }
-            initialized = other.initialized;
-            if (initialized) {
-                new (&buffer) M(std::move(other.wrapped()));
-                other.initialized = false;
-            }
-        }
-        return *this;
-    }
-
-    /* Destructor allows modules to be stored with static duration. */
-    ~Module() {
-        if (initialized && Py_IsInitialized()) {
-            wrapped().~M();
-        }
-    }
-
-    ////////////////////////////////
-    ////    OBJECT INTERFACE    ////
-    ////////////////////////////////
-
-    /* Get a reference to the wrapped module object. */
-    inline M& wrapped() {
-        if (!initialized) {
-            throw TypeError(
-                "Accessing null module.  Either the Python interpreter is not"
-                "initialized or the module was moved from."
-            );
-        }
-        return *reinterpret_cast<M*>(&buffer);
-    }
-
-    /* Get a const reference to the wrapped module object. */
-    inline const M& wrapped() const {
-        if (!initialized) {
-            throw TypeError(
-                "Accessing null module.  Either the Python interpreter is not"
-                "initialized or the module was moved from."
-            );
-        }
-        return *reinterpret_cast<const M*>(&buffer);
-    }
-
-    /* Forward to the module's `ptr()` method. */
-    inline PyObject* ptr() const {
-        return wrapped().ptr();
-    }
-
-    /* Forward to the module's `ptr()` method. */
-    inline PyObject*& ptr() {
-        return wrapped().ptr();
-    }
-
-    /* Forward to the module's `release()` method. */
-    inline auto release() {
-        return wrapped().release();
-    }
-
-    /* Forward to the module's `attr()` method. */
-    inline impl::ObjAttrAccessor attr(pybind11::handle key) const {
-        return wrapped().attr(key);
-    }
-
-    /* Forward to the module's `attr()` method. */
-    inline impl::ObjAttrAccessor attr(Object&& key) const {
-        return wrapped().attr(std::move(key));
-    }
-
-    /* Forward to the module's `attr()` method. */
-    inline impl::StrAttrAccessor attr(const char* key) const {
-        return wrapped().attr(key);
-    }
-
-    /* Forward to the module's `attr()` method. */
-    inline impl::StrAttrAccessor attr(const std::string& key) const {
-        return wrapped().attr(key.c_str());
-    }
-
-    /* Forward to the module's `attr()` method. */
-    inline impl::StrAttrAccessor attr(const std::string_view& key) const {
-        return wrapped().attr(key.data());
-    }
-
-    /* Forward to the module's `is()` method. */
-    template <typename T>
-    inline bool is(T&& other) const {
-        return wrapped().is(std::forward<T>(other));
-    }
-
-    /* Forward to the module's `doc()` method. */
-    inline auto doc() const {
-        return wrapped().doc();
-    }
-
-    ////////////////////////////////
-    ////    MODULE INTERFACE    ////
-    ////////////////////////////////
-
-    /* Forward to the module's `def()` method. */
-    template <typename... Args>
-    inline auto def(Args&&... args) {
-        return wrapped().def(std::forward<Args>(args)...);
-    }
-
-    /* Forward to the module's `def_submodule()` method. */
-    template <typename... Args>
-    inline auto def_submodule(Args&&... args) {
-        return wrapped().def_submodule(std::forward<Args>(args)...);
-    }
-
-    /* Forward to the module's `add_object()` method. */
-    template <typename... Args>
-    inline auto add_object(Args&&... args) {
-        return wrapped().add_object(std::forward<Args>(args)...);
-    }
-
-    /* Forward to the module's `reload()` method. */
-    template <typename... Args>
-    inline auto reload(Args&&... args) {
-        return wrapped().reload(std::forward<Args>(args)...);
-    }
-
-    /* Forward to the module's `create_extension_module()` method. */
-    template <typename... Args>
-    inline static Module create_extension_module(Args&&... args) {
-        return Module(M::create_extension_module(std::forward<Args>(args)...));
-    }
-
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    /* Forward to the module's `==` operator. */
-    template <typename T>
-    inline bool operator==(T&& other) const {
-        return wrapped() == std::forward<T>(other);
-    }
-
-    /* Forward to the module's `!=` operator. */
-    template <typename T>
-    inline bool operator!=(T&& other) const {
-        return wrapped() != std::forward<T>(other);
-    }
-
-};
 
 
 ////////////////////////////////
@@ -1836,11 +2054,11 @@ inline Object anext(const pybind11::handle& obj, const T& default_value) {
 
 
 /* Equivalent to Python `import module` */
-inline Module import(const char* module) {
+inline Static<Module> import(const char* module) {
     if (Py_IsInitialized()) {
-        return Module(pybind11::module_::import(module));
+        return Static<Module>(pybind11::module_::import(module));
     } else {
-        return Module();
+        return Static<Module>::alloc();  // return an empty wrapper
     }
 }
 
@@ -2012,13 +2230,13 @@ represent C++ types using std::to_string or the stream insertion operator (<<). 
 else fails, falls back to typeid(obj).name(). */
 template <typename T>
 inline std::string repr(const T& obj) {
-    if constexpr (impl::has_to_string<T>) {
-        return std::to_string(obj);
-
-    } else if constexpr (impl::has_stream_insertion<T>) {
+    if constexpr (impl::has_stream_insertion<T>) {
         std::ostringstream stream;
         stream << obj;
         return stream.str();
+
+    } else if constexpr (impl::has_to_string<T>) {
+        return std::to_string(obj);
 
     } else {
         try {

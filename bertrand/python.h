@@ -16,7 +16,7 @@
 #include "python/dict.h"
 #include "python/str.h"
 #include "python/func.h"
-#include "python/datetime.h"
+// #include "python/datetime.h"
 #include "python/math.h"
 #include "python/type.h"
 
@@ -45,7 +45,7 @@ namespace py {
 /* Every Python type has a static `Type` member that gives access to the Python type
 object associated with instances of that class. */
 inline Type Object::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
-inline Type Module::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyModule_Type));
+// inline Type Module::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyModule_Type));
 inline Type Bool::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyBool_Type));
 inline Type Int::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyLong_Type));
 inline Type Float::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFloat_Type));
@@ -69,46 +69,46 @@ inline Type Method::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObjec
 inline Type ClassMethod::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type));
 inline Type StaticMethod::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyStaticMethod_Type));
 inline Type Property::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyProperty_Type));
-inline Type Timedelta::Type = [] {
-    if (impl::DATETIME_IMPORTED) {
-        return reinterpret_borrow<py::Type>(impl::PyDelta_Type.ptr());
-    } else {
-        return py::Type();
-    }
-}();
-inline Type Timezone::Type = [] {
-    if (impl::DATETIME_IMPORTED) {
-        return reinterpret_borrow<py::Type>(impl::PyTZInfo_Type.ptr());
-    } else {
-        return py::Type();
-    }
-}();
-inline Type Date::Type = [] {
-    if (impl::DATETIME_IMPORTED) {
-        return reinterpret_borrow<py::Type>(impl::PyDate_Type.ptr());
-    } else {
-        return py::Type();
-    }
-}();
-inline Type Time::Type = [] {
-    if (impl::DATETIME_IMPORTED) {
-        return reinterpret_borrow<py::Type>(impl::PyTime_Type.ptr());
-    } else {
-        return py::Type();
-    }
-}();
-inline Type Datetime::Type = [] {
-    if (impl::DATETIME_IMPORTED) {
-        return reinterpret_borrow<py::Type>(impl::PyDateTime_Type.ptr());
-    } else {
-        return py::Type();
-    }
-}();
+// inline Type Timedelta::Type = [] {
+//     if (impl::DATETIME_IMPORTED) {
+//         return reinterpret_borrow<py::Type>(impl::PyDelta_Type.ptr());
+//     } else {
+//         return py::Type();
+//     }
+// }();
+// inline Type Timezone::Type = [] {
+//     if (impl::DATETIME_IMPORTED) {
+//         return reinterpret_borrow<py::Type>(impl::PyTZInfo_Type.ptr());
+//     } else {
+//         return py::Type();
+//     }
+// }();
+// inline Type Date::Type = [] {
+//     if (impl::DATETIME_IMPORTED) {
+//         return reinterpret_borrow<py::Type>(impl::PyDate_Type.ptr());
+//     } else {
+//         return py::Type();
+//     }
+// }();
+// inline Type Time::Type = [] {
+//     if (impl::DATETIME_IMPORTED) {
+//         return reinterpret_borrow<py::Type>(impl::PyTime_Type.ptr());
+//     } else {
+//         return py::Type();
+//     }
+// }();
+// inline Type Datetime::Type = [] {
+//     if (impl::DATETIME_IMPORTED) {
+//         return reinterpret_borrow<py::Type>(impl::PyDateTime_Type.ptr());
+//     } else {
+//         return py::Type();
+//     }
+// }();
 
 
 template <
     typename T,
-    std::enable_if_t<impl::is_str_like<T> && impl::is_object<T>, int> = 0
+    std::enable_if_t<impl::is_python<T> && impl::is_str_like<T>, int> = 0
 >
 inline Int::Int(const T& str, int base) {
     m_ptr = PyLong_FromUnicodeObject(str.ptr(), base);
@@ -120,7 +120,7 @@ inline Int::Int(const T& str, int base) {
 
 template <
     typename T,
-    std::enable_if_t<impl::is_str_like<T> && impl::is_object<T>, int> = 0
+    std::enable_if_t<impl::is_python<T> && impl::is_str_like<T>, int> = 0
 >
 inline Float::Float(const T& str) {
     m_ptr = PyFloat_FromString(str.ptr());
@@ -130,31 +130,23 @@ inline Float::Float(const T& str) {
 }
 
 
-// template <typename T, std::enable_if_t<impl::is_str_like<T>, int> = 0>
-// inline Complex::Complex(const T& value) : Object(Complex::Type(Str(value))) {
-//     if (m_ptr == nullptr) {
-//         throw error_already_set();
-//     }
-// }
+inline void List::sort(const Function& key, const Bool& reverse) {
+    this->attr("sort")(py::arg("key") = key, py::arg("reverse") = reverse);
+}
 
 
-// inline void List::sort(const Function& key, const Bool& reverse) {
-//     this->attr("sort")(py::arg("key") = key, py::arg("reverse") = reverse);
-// }
-
-
-// inline Type::Type(const Str& name, const Tuple& bases, const Dict& dict) {
-//     m_ptr = PyObject_CallFunctionObjArgs(
-//         reinterpret_cast<PyObject*>(&PyType_Type),
-//         name.ptr(),
-//         bases.ptr(),
-//         dict.ptr(),
-//         nullptr
-//     );
-//     if (m_ptr == nullptr) {
-//         throw error_already_set();
-//     }
-// }
+inline Type::Type(const Str& name, const Tuple& bases, const Dict& dict) {
+    m_ptr = PyObject_CallFunctionObjArgs(
+        reinterpret_cast<PyObject*>(&PyType_Type),
+        name.ptr(),
+        bases.ptr(),
+        dict.ptr(),
+        nullptr
+    );
+    if (m_ptr == nullptr) {
+        throw error_already_set();
+    }
+}
 
 
 

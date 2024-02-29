@@ -15,7 +15,8 @@ namespace py {
 
 /* New subclass of pybind11::object representing a read-only proxy for a Python
 dictionary or other mapping. */
-class MappingProxy : public Object, public impl::Ops<MappingProxy> {
+class MappingProxy : public impl::Ops {
+    using Base = impl::Ops;
 
     inline static bool mappingproxy_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictProxy_Type);
@@ -29,18 +30,24 @@ public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_mappingproxy_like<T>;
+    static constexpr bool check() { return impl::is_mappingproxy_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(
-        Object,
-        MappingProxy,
-        mappingproxy_check,
-        PyDictProxy_New
-    )
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, MappingProxy, mappingproxy_check)
+
+    /* Explicitly construct a read-only view on an existing dictionary. */
+    template <
+        typename T,
+        std::enable_if_t<impl::is_python<T> && impl::is_dict_like<T>, int> = 0
+    >
+    explicit MappingProxy(const T& dict) : Base(PyDictProxy_New(dict.ptr()), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
@@ -91,15 +98,13 @@ public:
     template <typename T>
     inline bool contains(const T& key) const;
 
-    using impl::Ops<MappingProxy>::operator==;
-    using impl::Ops<MappingProxy>::operator!=;
 };
 
 
 /* New subclass of pybind11::object representing a view into the keys of a dictionary
 object. */
-class KeysView : public Object, public impl::Ops<KeysView> {
-    using Ops = impl::Ops<KeysView>;
+class KeysView : public impl::Ops {
+    using Base = impl::Ops;
 
     inline static bool keys_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictKeys_Type);
@@ -109,31 +114,26 @@ class KeysView : public Object, public impl::Ops<KeysView> {
         return result;
     }
 
-    inline static PyObject* convert_to_keys(PyObject* obj) {
-        if (PyDict_Check(obj)) {
-            PyObject* attr = PyObject_GetAttrString(obj, "keys");
-            if (attr == nullptr) {
-                throw error_already_set();
-            }
-            PyObject* result = PyObject_CallNoArgs(attr);
-            Py_DECREF(attr);
-            return result;
-        } else {
-            throw TypeError("expected a dict");
-        }
-    }
-
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_same_or_subclass_of<KeysView, T>;
+    static constexpr bool check() { return impl::is_same_or_subclass_of<KeysView, T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, KeysView, keys_check, convert_to_keys)
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, KeysView, keys_check)
+
+    /* Explicitly create a keys view on an existing dictionary. */
+    template <
+        typename T,
+        std::enable_if_t<impl::is_python<T> && impl::is_dict_like<T>, int> = 0
+    >
+    explicit KeysView(const T& dict) :
+        Base(dict.attr("keys")().release(), stolen_t{})
+    {}
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
@@ -243,19 +243,19 @@ public:
         return Set(this->attr("__xor__")(Set(other)));
     }
 
-    using Ops::operator<;
-    using Ops::operator<=;
-    using Ops::operator==;
-    using Ops::operator!=;
-    using Ops::operator>=;
-    using Ops::operator>;
+    using Base::operator<;
+    using Base::operator<=;
+    using Base::operator==;
+    using Base::operator!=;
+    using Base::operator>=;
+    using Base::operator>;
 };
 
 
 /* New subclass of pybind11::object representing a view into the values of a dictionary
 object. */
-class ValuesView : public Object, public impl::Ops<ValuesView> {
-    using Ops = impl::Ops<ValuesView>;
+class ValuesView : public impl::Ops {
+    using Base = impl::Ops;
 
     inline static bool values_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictValues_Type);
@@ -265,31 +265,26 @@ class ValuesView : public Object, public impl::Ops<ValuesView> {
         return result;
     }
 
-    inline static PyObject* convert_to_values(PyObject* obj) {
-        if (PyDict_Check(obj)) {
-            PyObject* attr = PyObject_GetAttrString(obj, "values");
-            if (attr == nullptr) {
-                throw error_already_set();
-            }
-            PyObject* result = PyObject_CallNoArgs(attr);
-            Py_DECREF(attr);
-            return result;
-        } else {
-            throw TypeError("expected a dict");
-        }
-    }
-
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_same_or_subclass_of<ValuesView, T>;
+    static constexpr bool check() { return impl::is_same_or_subclass_of<ValuesView, T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, ValuesView, values_check, convert_to_values)
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, ValuesView, values_check)
+
+    /* Explicitly create a values view on an existing dictionary. */
+    template <
+        typename T,
+        std::enable_if_t<impl::is_python<T> && impl::is_dict_like<T>, int> = 0
+    >
+    explicit ValuesView(const T& dict) :
+        Base(dict.attr("values")().release(), stolen_t{})
+    {}
 
     ///////////////////////////////
     ////   PYTHON INTERFACE    ////
@@ -320,19 +315,19 @@ public:
         return result;
     }
 
-    using Ops::operator<;
-    using Ops::operator<=;
-    using Ops::operator==;
-    using Ops::operator!=;
-    using Ops::operator>=;
-    using Ops::operator>;
+    using Base::operator<;
+    using Base::operator<=;
+    using Base::operator==;
+    using Base::operator!=;
+    using Base::operator>=;
+    using Base::operator>;
 };
 
 
 /* New subclass of pybind11::object representing a view into the items of a dictionary
 object. */
-struct ItemsView : public Object, public impl::Ops<ItemsView> {
-    using Ops = impl::Ops<ItemsView>;
+struct ItemsView : public impl::Ops {
+    using Base = impl::Ops;
 
     inline static bool items_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictItems_Type);
@@ -342,31 +337,26 @@ struct ItemsView : public Object, public impl::Ops<ItemsView> {
         return result;
     }
 
-    inline static PyObject* convert_to_items(PyObject* obj) {
-        if (PyDict_Check(obj)) {
-            PyObject* attr = PyObject_GetAttrString(obj, "items");
-            if (attr == nullptr) {
-                throw error_already_set();
-            }
-            PyObject* result = PyObject_CallNoArgs(attr);
-            Py_DECREF(attr);
-            return result;
-        } else {
-            throw TypeError("expected a dict");
-        }
-    }
-
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_same_or_subclass_of<ItemsView, T>;
+    static constexpr bool check() { return impl::is_same_or_subclass_of<ItemsView, T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, ItemsView, items_check, convert_to_items)
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, ItemsView, items_check)
+
+    /* Explicitly create an items view on an existing dictionary. */
+    template <
+        typename T,
+        std::enable_if_t<impl::is_python<T> && impl::is_dict_like<T>, int> = 0
+    >
+    explicit ItemsView(const T& dict) :
+        Base(dict.attr("items")().release(), stolen_t{})
+    {}
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
@@ -390,26 +380,29 @@ public:
     /* Equivalent to `value in dict.values()`. */
     template <typename T>
     inline bool contains(const T& value) const {
-        int result = PySequence_Contains(this->ptr(), detail::object_or_cast(value).ptr());
+        int result = PySequence_Contains(
+            this->ptr(),
+            detail::object_or_cast(value).ptr()
+        );
         if (result == -1) {
             throw error_already_set();
         }
         return result;
     }
 
-    using Ops::operator<;
-    using Ops::operator<=;
-    using Ops::operator==;
-    using Ops::operator!=;
-    using Ops::operator>=;
-    using Ops::operator>;
+    using Base::operator<;
+    using Base::operator<=;
+    using Base::operator==;
+    using Base::operator!=;
+    using Base::operator>=;
+    using Base::operator>;
 };
 
 
 /* Wrapper around pybind11::dict that allows it to be directly initialized using
 std::initializer_list and enables extra C API functionality. */
-class Dict : public Object, public impl::Ops<Dict> {
-    using Ops = impl::Ops<Dict>;
+class Dict : public impl::Ops {
+    using Base = impl::Ops;
 
     /* Simple initializer struct for std::initializer_list. */
     struct DictInit {
@@ -423,29 +416,26 @@ class Dict : public Object, public impl::Ops<Dict> {
         {}
     };
 
-    static PyObject* convert_to_dict(PyObject* obj) {
-        return PyObject_CallOneArg((PyObject*) &PyDict_Type, obj);
-    }
-
     template <typename T>
-    static constexpr bool constructor1 =
-        !(impl::is_object_exact<T> || impl::is_object<T> && impl::is_dict_like<T>) &&
-        impl::is_iterable<T>;
+    static constexpr bool constructor1 = !impl::is_python<T> && impl::is_iterable<T>;
+    template <typename T>
+    static constexpr bool constructor2 =
+        impl::is_python<T> && !impl::is_dict_like<T> && impl::is_iterable<T>;
 
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_dict_like<T>;
+    static constexpr bool check() { return impl::is_dict_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, Dict, PyDict_Check, convert_to_dict);
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, Dict, PyDict_Check);
 
     /* Default constructor.  Initializes to empty dict. */
-    Dict() : Object(PyDict_New(), stolen_t{}) {
+    Dict() : Base(PyDict_New(), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -453,7 +443,7 @@ public:
 
     /* Pack the given arguments into a dictionary using an initializer list. */
     Dict(const std::initializer_list<DictInit>& contents)
-        : Object(PyDict_New(), stolen_t{})
+        : Base(PyDict_New(), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -470,37 +460,20 @@ public:
         }
     }
 
-    /* Explicitly unpack a generic C++ or Python container into a new py::Dict. */
+    /* Explicitly unpack a arbitrary C++ container into a new py::Dict. */
     template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
-    explicit Dict(const T& container) : Object(PyDict_New(), stolen_t{}) {
+    explicit Dict(const T& container) : Base(PyDict_New(), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
         try {
-            if constexpr (detail::is_pyobject<T>::value) {
-                for (const Handle& item : container) {
-                    if (py::len(item) != 2) {
-                        std::ostringstream msg;
-                        msg << "expected sequence of length 2 (key, value), not: ";
-                        msg << py::repr(item);
-                        throw ValueError(msg.str());
-                    }
-                    auto it = py::iter(item);
-                    Handle key = *it;
-                    Handle value = *(++it);
-                    if (PyDict_SetItem(m_ptr, key.ptr(), value.ptr())) {
-                        throw error_already_set();
-                    }
-                }
-            } else {
-                for (auto&& [k, v] : container) {
-                    if (PyDict_SetItem(
-                        m_ptr,
-                        detail::object_or_cast(std::forward<decltype(k)>(k)).ptr(),
-                        detail::object_or_cast(std::forward<decltype(v)>(v)).ptr()
-                    )) {
-                        throw error_already_set();
-                    }
+            for (auto&& [k, v] : container) {
+                if (PyDict_SetItem(
+                    m_ptr,
+                    detail::object_or_cast(std::forward<decltype(k)>(k)).ptr(),
+                    detail::object_or_cast(std::forward<decltype(v)>(v)).ptr()
+                )) {
+                    throw error_already_set();
                 }
             }
         } catch (...) {
@@ -509,12 +482,19 @@ public:
         }
     }
 
-    // NOTE: this last constructor is taken from pybind11 to enable its keyword
-    // argument syntax for constructing a dictionary.  It's technically superceeded by
-    // initializer lists, but it's here for backwards compatibility.
+    /* Explicitly unpack an arbitrary Python container into a new py::Dict. */
+    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
+    explicit Dict(const T& contents) :
+        Base(PyObject_CallOneArg((PyObject*) &PyDict_Type, contents.ptr()), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
 
-    /* Construct a dictionary using optional keyword arguments, following pybind11
-    syntax. */
+    /* Construct a dictionary using pybind11-style keyword arguments.  This is
+    technically superceeded by initializer lists, but it is provided for backwards
+    compatibility with Python and pybind11. */
     template <
         typename... Args,
         typename = std::enable_if_t<pybind11::args_are_all_keyword_or_ds<Args...>()>,
@@ -531,7 +511,7 @@ public:
     /* Implicitly convert to a C++ dict type. */
     template <
         typename T,
-        std::enable_if_t<impl::is_dict_like<T> && !impl::is_object<T>, int> = 0
+        std::enable_if_t<!impl::is_python<T> && impl::is_dict_like<T>, int> = 0
     >
     inline operator T() const {
         T result;
@@ -919,6 +899,8 @@ public:
     inline auto begin() const { return Object::begin(); }
     inline auto end() const { return Object::end(); }
 
+    using Base::operator[];
+
     /* Equivalent to Python `key in dict`. */
     template <typename T>
     inline bool contains(const T& key) const {
@@ -928,9 +910,6 @@ public:
         }
         return result;
     }
-
-    using Ops::operator==;
-    using Ops::operator!=;
 
     template <typename T, std::enable_if_t<impl::is_dict_like<T>, int> = 0>
     inline Dict operator|(const T& other) const {

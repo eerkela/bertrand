@@ -15,19 +15,19 @@ namespace py {
 /* Wrapper around pybind11::int_ that enables conversions from strings with different
 bases, similar to Python's `int()` constructor, as well as converting math operators
 that account for C++ inputs. */
-class Int : public Object, public impl::Ops<Int> {
-    using Ops = impl::Ops<Int>;
+class Int : public impl::Ops {
+    using Base = impl::Ops;
 
     template <typename T>
-    static constexpr bool constructor1 = !impl::is_object<T> && impl::is_bool_like<T>;
+    static constexpr bool constructor1 = impl::is_bool_like<T> && !impl::is_python<T>;
     template <typename T>
-    static constexpr bool constructor2 = impl::is_object<T> && impl::is_bool_like<T>;
+    static constexpr bool constructor2 = impl::is_bool_like<T> && impl::is_python<T>;
     template <typename T>
-    static constexpr bool constructor3 = !impl::is_object<T> && impl::is_int_like<T>;
+    static constexpr bool constructor3 = impl::is_int_like<T> && !impl::is_python<T>;
     template <typename T>
-    static constexpr bool constructor4 = !impl::is_object<T> && impl::is_float_like<T>;
+    static constexpr bool constructor4 = impl::is_float_like<T> && !impl::is_python<T>;
     template <typename T>
-    static constexpr bool constructor5 = impl::is_object<T> && impl::is_float_like<T>;
+    static constexpr bool constructor5 = impl::is_float_like<T> && impl::is_python<T>;
     template <typename T>
     static constexpr bool constructor6 = (
         !impl::is_bool_like<T> &&
@@ -36,21 +36,29 @@ class Int : public Object, public impl::Ops<Int> {
         !impl::is_str_like<T> &&
         std::is_convertible_v<T, long long>
     );
+    template <typename T>
+    static constexpr bool constructor7 = (
+        !impl::is_bool_like<T> &&
+        !impl::is_int_like<T> &&
+        !impl::is_float_like<T> &&
+        !impl::is_str_like<T> &&
+        impl::is_python<T>
+    );
 
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_int_like<T>;
+    static constexpr bool check() { return impl::is_int_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, Int, PyLong_Check, PyNumber_Long)
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, Int, PyLong_Check)
 
     /* Default constructor.  Initializes to 0. */
-    Int() : Object(PyLong_FromLong(0), stolen_t{}) {
+    Int() : Base(PyLong_FromLong(0), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -77,9 +85,9 @@ public:
         }
     }
 
-    /* Implicitly convert Python booleans to py::Int. */
+    /* Implicitly promote Python booleans to py::Int. */
     template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
-    Int(const T& value) : Object(PyNumber_Long(value.ptr()), stolen_t{}) {
+    Int(const T& value) : Base(PyNumber_Long(value.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -96,15 +104,23 @@ public:
 
     /* Explicitly convert a Python float into a py::Int. */
     template <typename T, std::enable_if_t<constructor5<T>, int> = 0>
-    explicit Int(const T& value) : Object(PyNumber_Long(value.ptr()), stolen_t{}) {
+    explicit Int(const T& value) : Base(PyNumber_Long(value.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
-    /* Trigger explicit conversions to long long. */
+    /* Trigger implicit C++ conversions to long long. */
     template <typename T, std::enable_if_t<constructor6<T>, int> = 0>
     explicit Int(const T& value) : Int(static_cast<long long>(value)) {}
+
+    /* Explicitly convert an arbitrary Python object into an integer. */
+    template <typename T, std::enable_if_t<constructor7<T>, int> = 0>
+    explicit Int(const T& obj) : Base(PyNumber_Long(obj.ptr()), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
 
     /* Explicitly convert a string literal with an optional base into a py::Int. */
     explicit Int(const char* str, int base = 0) {
@@ -123,7 +139,7 @@ public:
     /* Explicitly convert a Python string with an optional base into a py::Int. */
     template <
         typename T,
-        std::enable_if_t<impl::is_str_like<T> && impl::is_object<T>, int> = 0
+        std::enable_if_t<impl::is_python<T> && impl::is_str_like<T>, int> = 0
     >
     explicit Int(const T& str, int base = 0);
 
@@ -158,33 +174,40 @@ public:
     /* Allow explicit conversion to any type. */
     template <typename T, std::enable_if_t<!std::is_arithmetic_v<T>, int> = 0>
     inline explicit operator T() const {
-        return Object::operator T();
+        return Base::operator T();
+    }
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    /* Get a static reference to the zero singleton. */
+    static const Int& zero() {
+        static const Int zero(0);
+        return zero;
     }
 
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
 
-    pybind11::iterator begin() const = delete;
-    pybind11::iterator end() const = delete;
-
-    using Ops::operator<;
-    using Ops::operator<=;
-    using Ops::operator==;
-    using Ops::operator!=;
-    using Ops::operator>=;
-    using Ops::operator>;
-    using Ops::operator~;
-    using Ops::operator+;
-    using Ops::operator-;
-    using Ops::operator*;
-    using Ops::operator/;
-    using Ops::operator%;
-    using Ops::operator<<;
-    using Ops::operator>>;
-    using Ops::operator&;
-    using Ops::operator|;
-    using Ops::operator^;
+    using Base::operator<;
+    using Base::operator<=;
+    using Base::operator==;
+    using Base::operator!=;
+    using Base::operator>=;
+    using Base::operator>;
+    using Base::operator~;
+    using Base::operator+;
+    using Base::operator-;
+    using Base::operator*;
+    using Base::operator/;
+    using Base::operator%;
+    using Base::operator<<;
+    using Base::operator>>;
+    using Base::operator&;
+    using Base::operator|;
+    using Base::operator^;
 
 private:
 
@@ -193,63 +216,26 @@ private:
 
 public:
 
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Int& operator+=(const T& other) {
-        Ops::operator+=(other);
-        return *this;
-    }
+    #define INPLACE_OP(op)                                                              \
+        template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>                 \
+        inline Int& op(const T& other) {                                                \
+            Base::op(other);                                                            \
+            return *this;                                                               \
+        }                                                                               \
 
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Int& operator-=(const T& other) {
-        Ops::operator-=(other);
-        return *this;
-    }
-
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Int& operator*=(const T& other) {
-        Ops::operator*=(other);
-        return *this;
-    }
-
+    INPLACE_OP(operator+=)
+    INPLACE_OP(operator-=)
+    INPLACE_OP(operator*=)
     // NOTE: /= is not type-safe in C++ because it converts the result to a float.  Use
     // py::Float a = b / c; or py::Int a = py::div(b, c); instead.
+    INPLACE_OP(operator%=)
+    INPLACE_OP(operator<<=)
+    INPLACE_OP(operator>>=)
+    INPLACE_OP(operator&=)
+    INPLACE_OP(operator|=)
+    INPLACE_OP(operator^=)
 
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Int& operator%=(const T& other) {
-        Ops::operator%=(other);
-        return *this;
-    }
-
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Int& operator<<=(const T& other) {
-        Ops::operator<<=(other);
-        return *this;
-    }
-
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Int& operator>>=(const T& other) {
-        Ops::operator>>=(other);
-        return *this;
-    }
-
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Int& operator&=(const T& other) {
-        Ops::operator&=(other);
-        return *this;
-    }
-
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Int& operator|=(const T& other) {
-        Ops::operator|=(other);
-        return *this;
-    }
-
-    template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>
-    inline Int& operator^=(const T& other) {
-        Ops::operator^=(other);
-        return *this;
-    }
-
+    #undef INPLACE_OP
 };
 
 

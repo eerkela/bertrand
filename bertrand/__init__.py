@@ -68,6 +68,10 @@
 # del timedelta       # type: ignore
 
 
+
+from pybind11.setup_helpers import Pybind11Extension, build_ext
+
+
 __version__ = "0.5.1"  # handled by bumpver
 
 
@@ -82,4 +86,3 @@ def get_include() -> str:
     """
     from pathlib import Path
     return str(Path(__file__).absolute().parent.parent)
-

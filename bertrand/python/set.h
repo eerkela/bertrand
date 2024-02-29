@@ -85,7 +85,7 @@ namespace impl {
 
         /* Equivalent to Python `set.copy()`. */
         inline Derived copy() const {
-            PyObject* result = self()->convert_to_set(self()->ptr());
+            PyObject* result = self()->alloc(self()->ptr());
             if (result == nullptr) {
                 throw error_already_set();
             }
@@ -203,7 +203,7 @@ namespace impl {
         homogenously-typed braced initializer list. */
         template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
         inline Derived union_(const std::initializer_list<T>& other) const {
-            PyObject* result = self()->convert_to_set(self()->ptr());
+            PyObject* result = self()->alloc(self()->ptr());
             if (result == nullptr) {
                 throw error_already_set();
             }
@@ -223,7 +223,7 @@ namespace impl {
         /* Equivalent to Python `set.union(other)`, where other is given as a
         mixed-type braced initializer list. */
         inline Derived union_(const std::initializer_list<impl::Initializer>& other) const {
-            PyObject* result = self()->convert_to_set(self()->ptr());
+            PyObject* result = self()->alloc(self()->ptr());
             if (result == nullptr) {
                 throw error_already_set();
             }
@@ -252,7 +252,7 @@ namespace impl {
         homogenously-typed braced initializer list. */
         template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
         inline Derived intersection(const std::initializer_list<T>& other) const {
-            PyObject* result = self()->convert_to_set(nullptr);
+            PyObject* result = self()->alloc(nullptr);
             if (result == nullptr) {
                 throw error_already_set();
             }
@@ -277,7 +277,7 @@ namespace impl {
         inline Derived intersection(
             const std::initializer_list<impl::Initializer>& other
         ) const {
-            PyObject* result = self()->convert_to_set(nullptr);
+            PyObject* result = self()->alloc(nullptr);
             if (result == nullptr) {
                 throw error_already_set();
             }
@@ -308,7 +308,7 @@ namespace impl {
         homogenously-typed braced initializer list. */
         template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
         inline Derived difference(const std::initializer_list<T>& other) const {
-            PyObject* result = self()->convert_to_set(self()->ptr());
+            PyObject* result = self()->alloc(self()->ptr());
             if (result == nullptr) {
                 throw error_already_set();
             }
@@ -330,7 +330,7 @@ namespace impl {
         inline Derived difference(
             const std::initializer_list<impl::Initializer>& other
         ) const {
-            PyObject* result = self()->convert_to_set(self()->ptr());
+            PyObject* result = self()->alloc(self()->ptr());
             if (result == nullptr) {
                 throw error_already_set();
             }
@@ -357,7 +357,7 @@ namespace impl {
         as a homogenously-typed braced initializer list. */
         template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
         inline Derived symmetric_difference(const std::initializer_list<T>& other) const {
-            PyObject* result = self()->convert_to_set(nullptr);
+            PyObject* result = self()->alloc(nullptr);
             if (result == nullptr) {
                 throw error_already_set();
             }
@@ -386,7 +386,7 @@ namespace impl {
         inline Derived symmetric_difference(
             const std::initializer_list<impl::Initializer>& other
         ) const {
-            PyObject* result = self()->convert_to_set(nullptr);
+            PyObject* result = self()->alloc(nullptr);
             if (result == nullptr) {
                 throw error_already_set();
             }
@@ -497,40 +497,37 @@ namespace impl {
 
 /* Wrapper around pybind11::frozenset that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
-class FrozenSet :
-    public Object,
-    public impl::ISet<FrozenSet>,
-    public impl::Ops<FrozenSet>
-{
+class FrozenSet : public impl::Ops, public impl::ISet<FrozenSet> {
+    using Base = impl::Ops;
     using ISet = impl::ISet<FrozenSet>;
-    using Ops = impl::Ops<FrozenSet>;
 
     friend ISet;
 
-    /* This helper function is needed for interface mixin. */
-    inline static PyObject* convert_to_set(PyObject* obj) {
+    /* This helper function is needed for ISet mixin. */
+    inline static PyObject* alloc(PyObject* obj) {
         return PyFrozenSet_New(obj);
     }
 
     template <typename T>
     static constexpr bool constructor1 =
-        !(impl::is_object_exact<T> || impl::is_object<T> && impl::is_frozenset_like<T>) &&
-        impl::is_iterable<T>;
+        impl::is_python<T> && !impl::is_frozenset_like<T> && impl::is_iterable<T>;
+    template <typename T>
+    static constexpr bool constructor2 = !impl::is_python<T> && impl::is_iterable<T>;
 
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_frozenset_like<T>;
+    static constexpr bool check() { return impl::is_frozenset_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, FrozenSet, PyFrozenSet_Check, convert_to_set);
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, FrozenSet, PyFrozenSet_Check)
 
     /* Default constructor.  Initializes to an empty set. */
-    FrozenSet() : Object(PyFrozenSet_New(nullptr), stolen_t{}) {
+    FrozenSet() : Base(PyFrozenSet_New(nullptr), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -540,7 +537,7 @@ public:
     Python frozenset. */
     template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     FrozenSet(const std::initializer_list<T>& contents) :
-        Object(PyFrozenSet_New(nullptr), stolen_t{})
+        Base(PyFrozenSet_New(nullptr), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -560,7 +557,7 @@ public:
     /* Pack the contents of a mixed-type braced initializer list into a new Python
     frozenset. */
     FrozenSet(const std::initializer_list<impl::Initializer>& contents) :
-        Object(PyFrozenSet_New(nullptr), stolen_t{})
+        Base(PyFrozenSet_New(nullptr), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -577,39 +574,42 @@ public:
         }
     }
 
-    /* Explicitly unpack a generic Python or C++ container into a new py::FrozenSet. */
+    /* Explicitly unpack an arbitrary Python container into a new py::FrozenSet. */
     template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
+    explicit FrozenSet(const T& contents) :
+        Base(PyFrozenSet_New(contents.ptr()), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    /* Explicitly unpack an arbitrary C++ container into a new py::FrozenSet. */
+    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
     explicit FrozenSet(const T& container) {
-        if constexpr (detail::is_pyobject<T>::value) {
-            m_ptr = PyFrozenSet_New(container.ptr());
-            if (m_ptr == nullptr) {
-                throw error_already_set();
-            }
-        } else {
-            m_ptr = PyFrozenSet_New(nullptr);
-            if (m_ptr == nullptr) {
-                throw error_already_set();
-            }
-            try {
-                for (auto&& item : container) {
-                    if (PySet_Add(
-                        m_ptr,
-                        detail::object_or_cast(std::forward<decltype(item)>(item)).ptr())
-                    ) {
-                        throw error_already_set();
-                    }
+        m_ptr = PyFrozenSet_New(nullptr);
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+        try {
+            for (auto&& item : container) {
+                if (PySet_Add(
+                    m_ptr,
+                    detail::object_or_cast(std::forward<decltype(item)>(item)).ptr())
+                ) {
+                    throw error_already_set();
                 }
-            } catch (...) {
-                Py_DECREF(m_ptr);
-                throw;
             }
+        } catch (...) {
+            Py_DECREF(m_ptr);
+            throw;
         }
     }
 
     /* Explicitly unpack a std::pair into a py::FrozenSet. */
     template <typename First, typename Second>
     explicit FrozenSet(const std::pair<First, Second>& pair) :
-        Object(PyFrozenSet_New(nullptr), stolen_t{})
+        Base(PyFrozenSet_New(nullptr), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -630,7 +630,7 @@ public:
     /* Explicitly unpack a std::tuple into a py::FrozenSet. */
     template <typename... Args>
     explicit FrozenSet(const std::tuple<Args...>& tuple) :
-        Object(PyFrozenSet_New(nullptr), stolen_t{})
+        Base(PyFrozenSet_New(nullptr), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -647,16 +647,20 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
+    using Base::operator<;
+    using Base::operator<=;
+    using Base::operator==;
+    using Base::operator!=;
+    using Base::operator>=;
+    using Base::operator>;
+
     using ISet::size;
     using ISet::empty;
     using ISet::contains;
-
-    using Ops::operator<;
-    using Ops::operator<=;
-    using Ops::operator==;
-    using Ops::operator!=;
-    using Ops::operator>=;
-    using Ops::operator>;
+    using ISet::operator|;
+    using ISet::operator&;
+    using ISet::operator-;
+    using ISet::operator^;
 
     template <typename T, std::enable_if_t<impl::is_anyset_like<T>, int> = 0>
     inline FrozenSet& operator|=(const T& other) {
@@ -731,40 +735,37 @@ public:
 
 /* Wrapper around pybind11::set that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
-class Set :
-    public Object,
-    public impl::ISet<Set>,
-    public impl::Ops<Set>
-{
+class Set : public impl::Ops, public impl::ISet<Set> {
+    using Base = impl::Ops;
     using ISet = impl::ISet<Set>;
-    using Ops = impl::Ops<Set>;
 
     friend ISet;
 
-    /* This helper function is needed for interface mixin. */
-    inline static PyObject* convert_to_set(PyObject* obj) {
+    /* This helper function is needed for ISet mixin. */
+    inline static PyObject* alloc(PyObject* obj) {
         return PySet_New(obj);
     }
 
     template <typename T>
     static constexpr bool constructor1 =
-        !(impl::is_object_exact<T> || impl::is_object<T> && impl::is_set_like<T>) &&
-        impl::is_iterable<T>;
+        impl::is_python<T> && !impl::is_set_like<T> && impl::is_iterable<T>;
+    template <typename T>
+    static constexpr bool constructor2 = !impl::is_python<T> && impl::is_iterable<T>;
 
 public:
     static py::Type Type;
 
     template <typename T>
-    static constexpr bool like = impl::is_set_like<T>;
+    static constexpr bool check() { return impl::is_set_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_PYTHON_CONSTRUCTORS(Object, Set, PySet_Check, convert_to_set);
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, Set, PySet_Check);
 
     /* Default constructor.  Initializes to an empty set. */
-    Set() : Object(PySet_New(nullptr), stolen_t{}) {
+    Set() : Base(PySet_New(nullptr), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -774,7 +775,7 @@ public:
     Python set. */
     template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
     Set(const std::initializer_list<T>& contents) :
-        Object(PySet_New(nullptr), stolen_t{})
+        Base(PySet_New(nullptr), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -794,7 +795,7 @@ public:
     /* Pack the contents of a mixed-type braced initializer list into a new Python
     set. */
     Set(const std::initializer_list<impl::Initializer>& contents) :
-        Object(PySet_New(nullptr), stolen_t{})
+        Base(PySet_New(nullptr), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -811,15 +812,24 @@ public:
         }
     }
 
-    /* Explicitly unpack a generic C++ container into a new py::Set. */
+    /* Explicitly unpack an arbitrary Python container into a new py::Set. */
     template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
-    explicit Set(const T& container) {
-        m_ptr = PySet_New(nullptr);
+    explicit Set(const T& contents) :
+        Base(PySet_New(contents.ptr()), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    /* Explicitly unpack an arbitrary C++ container into a new py::Set. */
+    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
+    explicit Set(const T& contents) : Base(PySet_New(nullptr), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
         try {
-            for (auto&& item : container) {
+            for (auto&& item : contents) {
                 if (PySet_Add(
                     m_ptr,
                     detail::object_or_cast(std::forward<decltype(item)>(item)).ptr())
@@ -836,7 +846,7 @@ public:
     /* Explicitly unpack a std::pair into a py::Set. */
     template <typename First, typename Second>
     explicit Set(const std::pair<First, Second>& pair) :
-        Object(PySet_New(nullptr), stolen_t{})
+        Base(PySet_New(nullptr), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -857,7 +867,7 @@ public:
     /* Explicitly unpack a std::tuple into a py::Set. */
     template <typename... Args>
     explicit Set(const std::tuple<Args...>& tuple) :
-        Object(PySet_New(nullptr), stolen_t{})
+        Base(PySet_New(nullptr), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -1025,13 +1035,17 @@ public:
     using ISet::size;
     using ISet::empty;
     using ISet::contains;
+    using ISet::operator|;
+    using ISet::operator&;
+    using ISet::operator-;
+    using ISet::operator^;
 
-    using Ops::operator<;
-    using Ops::operator<=;
-    using Ops::operator==;
-    using Ops::operator!=;
-    using Ops::operator>=;
-    using Ops::operator>;
+    using Base::operator<;
+    using Base::operator<=;
+    using Base::operator==;
+    using Base::operator!=;
+    using Base::operator>=;
+    using Base::operator>;
 
     /* Equivalent to Python `set |= other`. */
     template <typename T, std::enable_if_t<impl::is_anyset_like<T>, int> = 0>
