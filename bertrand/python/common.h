@@ -848,6 +848,8 @@ namespace impl {
 
     #undef CONVERTABLE_ACCESSOR
 
+    class SliceInitializer;
+
 }
 
 
@@ -858,7 +860,6 @@ class Object : public pybind11::object {
     using Base = pybind11::object;
 
 protected:
-    using SliceIndex = std::variant<long long, pybind11::none>;
 
     template <typename Derived>
     static TypeError noconvert(PyObject* obj) {
@@ -1088,23 +1089,9 @@ public:
         return (*this)[key.data()];
     }
 
-    impl::ItemAccessor operator[](const std::initializer_list<SliceIndex>& slice) const {
-        if (slice.size() > 3) {
-            throw ValueError("slices must be of the form {[start[, stop[, step]]]}");
-        }
-        pybind11::none None;
-        size_t i = 0;
-        std::array<Object, 3> params {None, None, None};
-        for (const SliceIndex& item : slice) {
-            params[i++] = std::visit(
-                [](auto&& arg) -> Object {
-                    return detail::object_or_cast(arg);
-                },
-                item
-            );
-        }
-        return Base::operator[](pybind11::slice(params[0], params[1], params[2]));
-    }
+    impl::ItemAccessor operator[](
+        const std::initializer_list<impl::SliceInitializer>& slice
+    ) const;
 
     template <typename T, std::enable_if_t<!impl::is_python<T>, int> = 0>
     inline impl::ItemAccessor operator[](const T& key) const {
@@ -1302,37 +1289,74 @@ inline std::ostream& operator<<(std::ostream& os, const Object& obj) {
 }
 
 
+class NoneType;
 namespace impl {
 
     /* A simple struct that converts a generic C++ object into a Python equivalent in
     its constructor.  This is used in conjunction with std::initializer_list to parse
-    mixed-type lists in a type-safe manner.
-
-    NOTE: this incurs a small performance penalty, effectively requiring an extra loop
-    over the initializer list before the function is called.  Users can avoid this by
-    providing a homogenous `std::initializer_list<T>` overload alongside
-    `std::iniitializer_list<Initializer>`.  This causes conversions to be deferred to
-    the function body, which may be able to handle them more efficiently in a single
-    loop. */
+    mixed-type lists in a type-safe manner. */
     struct Initializer {
-        Object value;
-
-        /* We disable initializer construction from pybind11::handle in order not to
-        * interfere with pybind11's reinterpret_borrow/reinterpret_steal helper functions,
-        * which use initializer lists internally.  Disabling the generic initializer list
-        * constructor whenever a handle is passed in allows reinterpret_borrow/
-        * reinterpret_steal to continue to work as expected.
-        */
-
+        Object first;
         template <
             typename T,
-            std::enable_if_t<!std::is_same_v<Handle, std::decay_t<T>>, int> = 0
+            std::enable_if_t<!std::is_same_v<std::decay_t<T>, Handle>, int> = 0
         >
-        Initializer(T&& value) : value(detail::object_or_cast(std::forward<T>(value))) {}
+        Initializer(T&& value) : first(std::forward<T>(value)) {}
+    };
+
+    /* An Initializer that explicitly requires a string argument. */
+    struct StringInitializer : Initializer {
+        template <
+            typename T,
+            std::enable_if_t<impl::is_str_like<std::decay_t<T>>, int> = 0
+        >
+        StringInitializer(T&& value) : Initializer(std::forward<T>(value)) {}
+    };
+
+    /* An initializer that explicitly requires an integer or None. */
+    struct SliceInitializer : Initializer {
+        template <
+            typename T,
+            std::enable_if_t<
+                impl::is_int_like<std::decay_t<T>> ||
+                std::is_same_v<std::decay_t<T>, NoneType>,
+            int> = 0
+        >
+        SliceInitializer(T&& value) : Initializer(std::forward<T>(value)) {}
+    };
+
+    /* An Initializer that converts its argument to a python object and asserts that it
+    is hashable, for static analysis. */
+    struct HashInitializer : Initializer {
+        template <
+            typename K,
+            std::enable_if_t<
+                !std::is_same_v<std::decay_t<K>, Handle> &&
+                impl::is_hashable<std::decay_t<K>>,
+            int> = 0
+        >
+        HashInitializer(K&& key) : Initializer(std::forward<K>(key)) {}
+    };
+
+    /* A hashed Initializer that also stores a second item for dict-like access. */
+    struct DictInitializer : Initializer {
+        Object second;
+        template <
+            typename K,
+            typename V,
+            std::enable_if_t<
+                !std::is_same_v<std::decay_t<K>, Handle> &&
+                !std::is_same_v<std::decay_t<V>, Handle> &&
+                impl::is_hashable<std::decay_t<K>>,
+            int> = 0
+        >
+        DictInitializer(K&& key, V&& value) :
+            Initializer(std::forward<K>(key)), second(std::forward<V>(value))
+        {}
     };
 
     template <typename T>
-    constexpr bool is_initializer = std::is_same_v<T, Initializer>;
+    constexpr bool is_initializer = std::is_base_of_v<Initializer, T>;
 
     /* Tag class to identify wrappers during SFINAE checks. */
     struct WrapperTag {};
@@ -2206,6 +2230,21 @@ public:
     }
 
 };
+
+
+impl::ItemAccessor Object::operator[](
+    const std::initializer_list<impl::SliceInitializer>& slice
+) const {
+    if (slice.size() > 3) {
+        throw ValueError("slices must be of the form {[start[, stop[, step]]]}");
+    }
+    size_t i = 0;
+    std::array<Object, 3> params {None, None, None};
+    for (const impl::SliceInitializer& item : slice) {
+        params[i++] = item.first;
+    }
+    return Base::operator[](pybind11::slice(params[0], params[1], params[2]));
+}
 
 
 ////////////////////////////////

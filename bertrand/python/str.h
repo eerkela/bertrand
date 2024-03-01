@@ -442,15 +442,10 @@ public:
     }
 
     /* Equivalent of Python `str.join(iterable)`, where iterable is given as a
-    homogenously-typed braced initializer list. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
-    inline Str join(const std::initializer_list<T>& iterable) const {
-        return join(py::List(iterable));
-    }
-
-    /* Equivalent of Python `str.join(iterable)`, where iterable is given as a
-    mixed-type braced initializer list. */
-    inline Str join(const std::initializer_list<impl::Initializer>& iterable) const {
+    braced initializer list. */
+    inline Str join(
+        const std::initializer_list<impl::StringInitializer>& iterable
+    ) const {
         return join(py::List(iterable));
     }
 

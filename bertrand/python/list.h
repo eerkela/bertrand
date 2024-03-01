@@ -60,28 +60,7 @@ public:
         }
     }
 
-    /* Pack the contents of a homogenously-typed braced initializer list into a new
-    Python list. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
-    List(const std::initializer_list<T>& contents) :
-        Base(PyList_New(contents.size()), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            throw error_already_set();
-        }
-        try {
-            size_t i = 0;
-            for (const T& element : contents) {
-                PyList_SET_ITEM(m_ptr, i++, convert_newref(element));
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Pack the contents of a mixed-type braced initializer list into a new Python
-    list. */
+    /* Pack the contents of a braced initializer list into a new Python list. */
     List(const std::initializer_list<impl::Initializer>& contents) :
         Base(PyList_New(contents.size()), stolen_t{})
     {
@@ -90,12 +69,31 @@ public:
         }
         try {
             size_t i = 0;
-            for (const impl::Initializer& element : contents) {
+            for (const impl::Initializer& item : contents) {
                 PyList_SET_ITEM(
                     m_ptr,
                     i++,
-                    const_cast<impl::Initializer&>(element).value.release().ptr()
+                    const_cast<impl::Initializer&>(item).first.release().ptr()
                 );
+            }
+        } catch (...) {
+            Py_DECREF(m_ptr);
+            throw;
+        }
+    }
+
+    /* Pack the contents of a braced initializer list into a new Python list. */
+    template <typename T, std::enable_if_t<impl::is_initializer<T>, int> = 0>
+    List(const std::initializer_list<T>& contents) :
+        Base(PyList_New(contents.size()), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+        try {
+            size_t i = 0;
+            for (const T& item : contents) {
+                PyList_SET_ITEM(m_ptr, i++, const_cast<T&>(item).first.release().ptr());
             }
         } catch (...) {
             Py_DECREF(m_ptr);
@@ -249,20 +247,11 @@ public:
         }
     }
 
-    /* Equivalent to Python `list.extend(items)`, where items are given as a
-    homogenously-typed braced initializer list. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
-    inline void extend(const std::initializer_list<T>& items) {
-        for (const T& item : items) {
-            append(item);
-        }
-    }
-
-    /* Equivalent to Python `list.extend(items)`, where items are given as a mixed-type
-    braced initializer list. */
+    /* Equivalent to Python `list.extend(items)`, where items are given as a braced
+    initializer list. */
     inline void extend(const std::initializer_list<impl::Initializer>& items) {
         for (const impl::Initializer& item : items) {
-            append(item.value);
+            append(item.first);
         }
     }
 
@@ -359,31 +348,6 @@ public:
     using Base::operator*=;
 
     /* Overload of concat() that allows the operand to be a braced initializer list. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
-    inline List concat(const std::initializer_list<T>& items) const {
-        PyObject* result = PyList_New(size() + items.size());
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        try {
-            size_t i = 0;
-            size_t length = size();
-            PyObject** array = data();
-            while (i < length) {
-                PyList_SET_ITEM(result, i, Py_NewRef(array[i]));
-                ++i;
-            }
-            for (const T& item : items) {
-                PyList_SET_ITEM(result, i++, convert_newref(item));
-            }
-            return reinterpret_steal<List>(result);
-        } catch (...) {
-            Py_DECREF(result);
-            throw;
-        }
-    }
-
-    /* Overload of concat() that allows the operand to be a braced initializer list. */
     inline List concat(const std::initializer_list<impl::Initializer>& items) const {
         PyObject* result = PyList_New(size() + items.size());
         if (result == nullptr) {
@@ -401,7 +365,7 @@ public:
                 PyList_SET_ITEM(
                     result,
                     i++,
-                    const_cast<impl::Initializer&>(item).value.release().ptr()
+                    const_cast<impl::Initializer&>(item).first.release().ptr()
                 );
             }
             return reinterpret_steal<List>(result);
@@ -411,23 +375,12 @@ public:
         }
     }
 
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
-    inline List operator+(const std::initializer_list<T>& items) const {
-        return concat(items);
-    }
-
     inline List operator+(const std::initializer_list<impl::Initializer>& items) const {
         return concat(items);
     }
 
     template <typename T, std::enable_if_t<impl::is_list_like<T>, int> = 0>
     inline List& operator+=(const T& items) {
-        extend(items);
-        return *this;
-    }
-
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
-    inline List& operator+=(const std::initializer_list<T>& items) {
         extend(items);
         return *this;
     }

@@ -38,19 +38,14 @@ public:
     }
 
     /* Initializer list constructor. */
-    Slice(std::initializer_list<SliceIndex> indices) {
+    Slice(std::initializer_list<impl::SliceInitializer> indices) {
         if (indices.size() > 3) {
             throw ValueError("slices must be of the form {[start[, stop[, step]]]}");
         }
         size_t i = 0;
         std::array<Object, 3> params {None, None, None};
-        for (const SliceIndex& index : indices) {
-            params[i++] = std::visit(
-                [](auto&& arg) -> Object {
-                    return detail::object_or_cast(arg);
-                },
-                index
-            );
+        for (const impl::SliceInitializer& item : indices) {
+            params[i++] = item.first;
         }
         m_ptr = PySlice_New(params[0].ptr(), params[1].ptr(), params[2].ptr());
         if (m_ptr == nullptr) {

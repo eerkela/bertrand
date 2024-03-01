@@ -62,9 +62,30 @@ public:
         }
     }
 
-    /* Pack the contents of a homogenously-typed braced initializer into a new Python
-    tuple. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+    /* Pack the contents of a braced initializer into a new Python tuple. */
+    Tuple(const std::initializer_list<impl::Initializer>& contents) :
+        Base(PyTuple_New(contents.size()), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+        try {
+            size_t i = 0;
+            for (const impl::Initializer& item : contents) {
+                PyTuple_SET_ITEM(
+                    m_ptr,
+                    i++,
+                    const_cast<impl::Initializer&>(item).first.release().ptr()
+                );
+            }
+        } catch (...) {
+            Py_DECREF(m_ptr);
+            throw;
+        }
+    }
+
+    /* Pack the contents of a braced initializer into a new Python tuple. */
+    template <typename T, std::enable_if_t<impl::is_initializer<T>, int> = 0>
     Tuple(const std::initializer_list<T>& contents) :
         Base(PyTuple_New(contents.size()), stolen_t{})
     {
@@ -74,29 +95,7 @@ public:
         try {
             size_t i = 0;
             for (const T& item : contents) {
-                PyTuple_SET_ITEM(m_ptr, i++, convert_newref(item));
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Pack the contents of a mixed-type braced initializer into a new Python tuple. */
-    Tuple(const std::initializer_list<impl::Initializer>& contents) :
-        Base(PyTuple_New(contents.size()), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            throw error_already_set();
-        }
-        try {
-            size_t i = 0;
-            for (const impl::Initializer& element : contents) {
-                PyTuple_SET_ITEM(
-                    m_ptr,
-                    i++,
-                    const_cast<impl::Initializer&>(element).value.release().ptr()
-                );
+                PyTuple_SET_ITEM(m_ptr, i++, const_cast<T&>(item).first.release().ptr());
             }
         } catch (...) {
             Py_DECREF(m_ptr);
@@ -318,31 +317,6 @@ public:
     using Base::operator*=;
 
     /* Overload of concat() that allows the operand to be a braced initializer list. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
-    inline Tuple concat(const std::initializer_list<T>& items) const {
-        PyObject* result = PyTuple_New(size() + items.size());
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        try {
-            size_t i = 0;
-            size_t length = size();
-            PyObject** array = data();
-            while (i < length) {
-                PyTuple_SET_ITEM(result, i, Py_NewRef(array[i]));
-                ++i;
-            }
-            for (const T& item : items) {
-                PyTuple_SET_ITEM(result, i++, convert_newref(item));
-            }
-            return reinterpret_steal<Tuple>(result);
-        } catch (...) {
-            Py_DECREF(result);
-            throw;
-        }
-    }
-
-    /* Overload of concat() that allows the operand to be a braced initializer list. */
     inline Tuple concat(const std::initializer_list<impl::Initializer>& items) const {
         PyObject* result = PyTuple_New(size() + items.size());
         if (result == nullptr) {
@@ -360,7 +334,7 @@ public:
                 PyTuple_SET_ITEM(
                     result,
                     i++,
-                    const_cast<impl::Initializer&>(item).value.release().ptr()
+                    const_cast<impl::Initializer&>(item).first.release().ptr()
                 );
             }
             return reinterpret_steal<Tuple>(result);
@@ -370,19 +344,8 @@ public:
         }
     }
 
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
-    inline Tuple operator+(const std::initializer_list<T>& items) const {
-        return concat(items);
-    }
-
     inline Tuple operator+(const std::initializer_list<impl::Initializer>& items) const {
         return concat(items);
-    }
-
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
-    inline Tuple& operator+=(const std::initializer_list<T>& items) {
-        *this = concat(items);
-        return *this;
     }
 
     inline Tuple& operator+=(const std::initializer_list<impl::Initializer>& items) {

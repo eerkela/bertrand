@@ -167,16 +167,9 @@ public:
     }
 
     /* Equivalent to Python `dict.keys().isdisjoint(<braced initializer list>)`. */
-    template <
-        typename K,
-        std::enable_if_t<!impl::is_initializer<K> && impl::is_hashable<K>, int> = 0
-    >
-    inline bool isdisjoint(const std::initializer_list<K>& other) const {
-        return static_cast<bool>(this->attr("isdisjoint")(Set(other)));
-    }
-
-    /* Equivalent to Python `dict.keys().isdisjoint(<braced initializer list>)`. */
-    inline bool isdisjoint(const std::initializer_list<impl::Initializer>& other) const {
+    inline bool isdisjoint(
+        const std::initializer_list<impl::HashInitializer>& other
+    ) const {
         return static_cast<bool>(this->attr("isdisjoint")(Set(other)));
     }
 
@@ -199,15 +192,9 @@ public:
         return Set(this->attr("__or__")(detail::object_or_cast(other)));
     }
 
-    template <
-        typename K,
-        std::enable_if_t<!impl::is_initializer<K> && impl::is_hashable<K>, int> = 0
-    >
-    inline Set operator|(const std::initializer_list<K>& other) const {
-        return Set(this->attr("__or__")(Set(other)));
-    }
-
-    inline Set operator|(const std::initializer_list<impl::Initializer>& other) const {
+    inline Set operator|(
+        const std::initializer_list<impl::HashInitializer>& other
+    ) const {
         return Set(this->attr("__or__")(Set(other)));
     }
 
@@ -216,15 +203,9 @@ public:
         return Set(this->attr("__and__")(detail::object_or_cast(other)));
     }
 
-    template <
-        typename K,
-        std::enable_if_t<!impl::is_initializer<K> && impl::is_hashable<K>, int> = 0
-    >
-    inline Set operator&(const std::initializer_list<K>& other) const {
-        return Set(this->attr("__and__")(Set(other)));
-    }
-
-    inline Set operator&(const std::initializer_list<impl::Initializer>& other) const {
+    inline Set operator&(
+        const std::initializer_list<impl::HashInitializer>& other
+    ) const {
         return Set(this->attr("__and__")(Set(other)));
     }
 
@@ -233,15 +214,9 @@ public:
         return Set(this->attr("__sub__")(detail::object_or_cast(other)));
     }
 
-    template <
-        typename K,
-        std::enable_if_t<!impl::is_initializer<K> && impl::is_hashable<K>, int> = 0
-    >
-    inline Set operator-(const std::initializer_list<K>& other) const {
-        return Set(this->attr("__sub__")(Set(other)));
-    }
-
-    inline Set operator-(const std::initializer_list<impl::Initializer>& other) const {
+    inline Set operator-(
+        const std::initializer_list<impl::HashInitializer>& other
+    ) const {
         return Set(this->attr("__sub__")(Set(other)));
     }
 
@@ -250,15 +225,9 @@ public:
         return Set(this->attr("__xor__")(detail::object_or_cast(other)));
     }
 
-    template <
-        typename K,
-        std::enable_if_t<!impl::is_initializer<K> && impl::is_hashable<K>, int> = 0
-    >
-    inline Set operator^(const std::initializer_list<K>& other) const {
-        return Set(this->attr("__xor__")(Set(other)));
-    }
-
-    inline Set operator^(const std::initializer_list<impl::Initializer>& other) const {
+    inline Set operator^(
+        const std::initializer_list<impl::HashInitializer>& other
+    ) const {
         return Set(this->attr("__xor__")(Set(other)));
     }
 
@@ -423,18 +392,6 @@ std::initializer_list and enables extra C API functionality. */
 class Dict : public impl::Ops {
     using Base = impl::Ops;
 
-    /* Simple initializer struct for std::initializer_list. */
-    struct DictInit {
-        Object key;
-        Object value;
-
-        template <typename K, typename V>
-        DictInit(K&& key, V&& value) :
-            key(detail::object_or_cast(std::forward<K>(key))),
-            value(detail::object_or_cast(std::forward<V>(value)))
-        {}
-    };
-
     template <typename T>
     static constexpr bool constructor1 = !impl::is_python<T> && impl::is_iterable<T>;
     template <typename T>
@@ -461,15 +418,15 @@ public:
     }
 
     /* Pack the given arguments into a dictionary using an initializer list. */
-    Dict(const std::initializer_list<DictInit>& contents)
+    Dict(const std::initializer_list<impl::DictInitializer>& contents)
         : Base(PyDict_New(), stolen_t{})
     {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
         try {
-            for (const DictInit& item : contents) {
-                if (PyDict_SetItem(m_ptr, item.key.ptr(), item.value.ptr())) {
+            for (const impl::DictInitializer& item : contents) {
+                if (PyDict_SetItem(m_ptr, item.first.ptr(), item.second.ptr())) {
                     throw error_already_set();
                 }
             }
@@ -625,43 +582,16 @@ public:
     }
 
     /* Equivalent to Python `dict.fromkeys(<braced initializer list>)`. */
-    template <
-        typename K,
-        std::enable_if_t<!impl::is_initializer<K> && impl::is_hashable<K>, int> = 0
-    >
-    static inline Dict fromkeys(const std::initializer_list<K>& keys) {
+    inline Dict fromkeys(const std::initializer_list<impl::HashInitializer>& keys) {
         PyObject* result = PyDict_New();
         if (result == nullptr) {
             throw error_already_set();
         }
         try {
-            for (const K& key : keys) {
+            for (const impl::HashInitializer& init : keys) {
                 if (PyDict_SetItem(
                     result,
-                    detail::object_or_cast(key).ptr(),
-                    Py_None
-                )) {
-                    throw error_already_set();
-                }
-            }
-            return reinterpret_steal<Dict>(result);
-        } catch (...) {
-            Py_DECREF(result);
-            throw;
-        }
-    }
-
-    /* Equivalent to Python `dict.fromkeys(<braced initializer list>)`. */
-    inline Dict fromkeys(const std::initializer_list<impl::Initializer>& keys) {
-        PyObject* result = PyDict_New();
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        try {
-            for (const impl::Initializer& init : keys) {
-                if (PyDict_SetItem(
-                    result,
-                    init.value.ptr(),
+                    init.first.ptr(),
                     Py_None
                 )) {
                     throw error_already_set();
@@ -700,38 +630,9 @@ public:
     }
 
     /* Equivalent to Python `dict.fromkeys(<braced initializer list>, value)`. */
-    template <
-        typename K,
-        typename V,
-        std::enable_if_t<!impl::is_initializer<K> && impl::is_hashable<K>, int> = 0
-    >
-    static inline Dict fromkeys(const std::initializer_list<K>& keys, const V& value) {
-        Object converted = detail::object_or_cast(value);
-        PyObject* result = PyDict_New();
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        try {
-            for (const K& key : keys) {
-                if (PyDict_SetItem(
-                    result,
-                    detail::object_or_cast(key).ptr(),
-                    converted.ptr()
-                )) {
-                    throw error_already_set();
-                }
-            }
-            return reinterpret_steal<Dict>(result);
-        } catch (...) {
-            Py_DECREF(result);
-            throw;
-        }
-    }
-
-    /* Equivalent to Python `dict.fromkeys(<braced initializer list>, value)`. */
     template <typename V>
     inline Dict fromkeys(
-        const std::initializer_list<impl::Initializer>& keys,
+        const std::initializer_list<impl::HashInitializer>& keys,
         const V& value
     ) {
         Object converted = detail::object_or_cast(value);
@@ -740,10 +641,10 @@ public:
             throw error_already_set();
         }
         try {
-            for (const impl::Initializer& init : keys) {
+            for (const impl::HashInitializer& init : keys) {
                 if (PyDict_SetItem(
                     result,
-                    init.value.ptr(),
+                    init.first.ptr(),
                     converted.ptr()
                 )) {
                     throw error_already_set();
@@ -895,9 +796,9 @@ public:
     }
 
     /* Equivalent to Python `dict.update(<braced initializer list>)`. */
-    inline void update(const std::initializer_list<DictInit>& items) {
-        for (const DictInit& item : items) {
-            if (PyDict_SetItem(this->ptr(), item.key.ptr(), item.value.ptr())) {
+    inline void update(const std::initializer_list<impl::DictInitializer>& items) {
+        for (const impl::DictInitializer& item : items) {
+            if (PyDict_SetItem(this->ptr(), item.first.ptr(), item.second.ptr())) {
                 throw error_already_set();
             }
         }
@@ -944,7 +845,9 @@ public:
         return result;
     }
 
-    inline Dict operator|(const std::initializer_list<DictInit>& other) const {
+    inline Dict operator|(
+        const std::initializer_list<impl::DictInitializer>& other
+    ) const {
         Dict result = copy();
         result.update(other);
         return result;
@@ -956,7 +859,9 @@ public:
         return *this;
     }
 
-    inline Dict& operator|=(const std::initializer_list<DictInit>& other) {
+    inline Dict& operator|=(
+        const std::initializer_list<impl::DictInitializer>& other
+    ) {
         update(other);
         return *this;
     }

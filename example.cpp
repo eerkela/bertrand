@@ -95,11 +95,14 @@ void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
-    py::List list = {1, 2, 3};
-    py::Set set = {4, 5, 6};
-    set.add(list);
+    // py::List list = {1, 2, 3};
+    // py::Int x = 1;
+    // py::Set set = {true, "a", 1};
+    // py::print(set);
 
-    py::print(set);
+
+    py::Str s = py::Str(" ").join({"a", "b", "c"});
+    py::print(s[{py::None, 4}]);
 
 
 
