@@ -20,7 +20,7 @@ class Tuple : public impl::SequenceOps, public impl::ReverseIterable<Tuple> {
 
     template <typename T>
     static inline PyObject* convert_newref(const T& value) {
-        if constexpr (detail::is_pyobject<T>::value) {
+        if constexpr (impl::is_python<T>) {
             PyObject* result = value.ptr();
             if (result == nullptr) {
                 result = Py_None;

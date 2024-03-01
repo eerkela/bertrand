@@ -15,16 +15,16 @@ TEST(py, bool_type) {
 }
 
 
-TEST(py, bool_like) {
-    EXPECT_EQ(py::Bool::like<bool>, true);
-    EXPECT_EQ(py::Bool::like<int>, false);
-    EXPECT_EQ(py::Bool::like<double>, false);
-    EXPECT_EQ(py::Bool::like<std::string>, false);
-    EXPECT_EQ(py::Bool::like<py::Bool>, true);
-    EXPECT_EQ(py::Bool::like<pybind11::bool_>, true);
-    EXPECT_EQ(py::Bool::like<py::Int>, false);
-    EXPECT_EQ(py::Bool::like<py::Float>, false);
-    EXPECT_EQ(py::Bool::like<py::Str>, false);
+TEST(py, bool_check) {
+    EXPECT_EQ(py::Bool::check<bool>(), true);
+    EXPECT_EQ(py::Bool::check<int>(), false);
+    EXPECT_EQ(py::Bool::check<double>(), false);
+    EXPECT_EQ(py::Bool::check<std::string>(), false);
+    EXPECT_EQ(py::Bool::check<py::Bool>(), true);
+    EXPECT_EQ(py::Bool::check<pybind11::bool_>(), true);
+    EXPECT_EQ(py::Bool::check<py::Int>(), false);
+    EXPECT_EQ(py::Bool::check<py::Float>(), false);
+    EXPECT_EQ(py::Bool::check<py::Str>(), false);
 }
 
 

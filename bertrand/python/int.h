@@ -171,12 +171,6 @@ public:
         return PyLong_AsDouble(m_ptr);
     }
 
-    /* Allow explicit conversion to any type. */
-    template <typename T, std::enable_if_t<!std::is_arithmetic_v<T>, int> = 0>
-    inline explicit operator T() const {
-        return Base::operator T();
-    }
-
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////

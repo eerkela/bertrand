@@ -20,7 +20,7 @@ class List : public impl::SequenceOps, public impl::ReverseIterable<List> {
 
     template <typename T>
     static inline PyObject* convert_newref(const T& value) {
-        if constexpr (detail::is_pyobject<T>::value) {
+        if constexpr (impl::is_python<T>) {
             PyObject* result = value.ptr();
             if (result == nullptr) {
                 result = Py_None;
@@ -193,7 +193,7 @@ public:
     list. */
     template <
         typename T,
-        std::enable_if_t<impl::is_list_like<T> && !impl::is_object<T>, int> = 0
+        std::enable_if_t<!impl::is_python<T> && impl::is_list_like<T>, int> = 0
     >
     inline operator T() const {
         T result;
@@ -240,7 +240,7 @@ public:
     /* Equivalent to Python `list.extend(items)`. */
     template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
     inline void extend(const T& items) {
-        if constexpr (detail::is_pyobject<T>::value) {
+        if constexpr (impl::is_python<T>) {
             this->attr("extend")(detail::object_or_cast(std::forward<T>(items)));
         } else {
             for (auto&& item : items) {

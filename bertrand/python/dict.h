@@ -847,7 +847,7 @@ public:
         std::enable_if_t<!impl::is_dict_like<T> && impl::is_iterable<T>, int> = 0
     >
     inline void update(const T& items) {
-        if constexpr (detail::is_pyobject<T>::value) {
+        if constexpr (impl::is_python<T>) {
             if (PyDict_MergeFromSeq2(
                 this->ptr(),
                 detail::object_or_cast(items).ptr(),

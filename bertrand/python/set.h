@@ -56,7 +56,7 @@ namespace impl {
         /* Implicitly convert a py::FrozenSet into a C++ set or unordered_set. */
         template <
             typename T,
-            std::enable_if_t<impl::is_anyset_like<T> && !impl::is_object<T>, int> = 0
+            std::enable_if_t<!impl::is_python<T> && impl::is_anyset_like<T>, int> = 0
         >
         inline operator T() const {
             T result;
@@ -95,7 +95,7 @@ namespace impl {
         /* Equivalent to Python `set.isdisjoint(other)`. */
         template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
         inline bool isdisjoint(const T& other) const {
-            if constexpr (detail::is_pyobject<T>::value) {
+            if constexpr (impl::is_python<T>) {
                 return static_cast<bool>(self()->attr("isdisjoint")(other));
             } else {
                 for (auto&& item : other) {
@@ -154,7 +154,7 @@ namespace impl {
         /* Equivalent to Python `set.issuperset(other)`. */
         template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
         inline bool issuperset(const T& other) const {
-            if constexpr (detail::is_pyobject<T>::value) {
+            if constexpr (impl::is_python<T>) {
                 return static_cast<bool>(self()->attr("issuperset")(other));
             } else {
                 for (auto&& item : other) {

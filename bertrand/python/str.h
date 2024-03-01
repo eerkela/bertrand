@@ -43,7 +43,7 @@ class Str : public impl::SequenceOps {
         !impl::is_python<T> && !std::is_convertible_v<T, std::string>;
     template <typename T>
     static constexpr bool constructor3 =
-        impl::is_python<T> && !impl::is_str_like<T>;
+        impl::is_python<T> && !impl::is_accessor<T> && !impl::is_str_like<T>;
 
 public:
     static py::Type Type;
@@ -91,10 +91,10 @@ public:
 
     /* Trigger explicit C++ conversions to std::string. */
     template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
-    explicit Str(const T& string) : Str(std::string(string)) {}
+    explicit Str(const T& string) : Str(static_cast<std::string>(string)) {}
 
     /* Explicitly convert an arbitrary C++ object into a py::Str representation. */
-    template <typename T, std::enable_if_t<constructor3<T>, int> = 0>
+    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
     explicit Str(const T& obj) : Base(PyObject_Str(pybind11::cast(obj).ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -102,7 +102,7 @@ public:
     }
 
     /* Explicitly convert an arbitrary Python object into a py::Str representation. */
-    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
+    template <typename T, std::enable_if_t<constructor3<T>, int> = 0>
     explicit Str(const T& obj) : Base(PyObject_Str(obj.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -144,10 +144,10 @@ public:
         typename T,
         typename First,
         typename... Rest,
-        std::enable_if_t<impl::is_object<T> && impl::is_str_like<T>, int> = 0
+        std::enable_if_t<impl::is_python<T> && impl::is_str_like<T>, int> = 0
     >
     explicit Str(const T& format, First&& first, Rest&&... rest) : Str(
-        format.template cast<std::string>(),
+        static_cast<std::string>(format),
         std::forward<First>(first),
         std::forward<Rest>(rest)...
     ) {}
@@ -726,9 +726,12 @@ public:
     using Base::operator>;
 
     using Base::operator[];
-    using Base::operator+;
     using Base::operator*;
     using Base::operator*=;
+
+    inline Str operator+(const Str& other) const {
+        return concat(other);
+    }
 
     inline Str& operator+=(const Str& other) {
         *this = concat(other);

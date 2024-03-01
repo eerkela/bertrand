@@ -1,4 +1,60 @@
 
+// // example.cpp
+// #include <string>
+// #include <bertrand/bertrand.h>
+// namespace py = bertrand::py;
+
+
+// void run() {
+//     py::Str py = "This is a type-safe Python string ";
+//     std::string cpp = py.replace("Python", "C++");
+
+//     py = [](std::string str) -> std::string {
+//         return str += "that can be passed to C++ functions or\n\t";
+//     }(cpp);
+
+//     py = R"(
+//         import numpy as np
+//         x = np.arange(10)
+
+//         str += "inline Python scripts, "
+//     )"_python({{"str", py}})["str"];
+
+//     py += "with native performance, ";
+//     py::print(py::import("timeit")->attr("timeit")(py::Function([&] {
+//         static const py::Static<py::Str> lookup = "C++";
+//         py.contains(lookup);
+//     })));
+
+//     py::Str py2 = std::move(py += "automatic reference counting,\n\t");
+//     cpp = py2 + "implicit conversions, ";
+//     throw py::TypeError(cpp + "and seamless error propagation.");
+// }
+
+
+// PYBIND11_MODULE(example, m) {
+//     m.doc() = "example bertrand plugin";
+//     m.def("run", &run, "A test function to demonstrate bertrand");
+// }
+
+
+// /* >>> import example
+//  * >>> example.run()
+//  * 0.0525730510125868
+//  * Traceback (most recent call last):
+//  *   File "<stdin>", line 1, in <module>
+//  * TypeError: This is a type-safe C++ string that can be passed to C++ functions or
+//  *         inline Python scripts, with native performance, automatic reference counting,
+//  *         implicit conversions, and seamless error propagation.
+//  */
+
+
+
+///////////////////////
+////    TESTING    ////
+///////////////////////
+
+
 #include <bertrand/python.h>
 
 #include <chrono>
@@ -15,47 +71,43 @@
 namespace py = bertrand::py;
 
 
-int func(int x, int y) {
-    return x + y;
+void func(int i) {
+
 }
 
 
-// static py::Static<py::Module> np = py::import("numpy");
-// // static py::Static<py::Function> np_array = np->attr("array");  fails, could not construct function from object of type builtin_function_or_method
-// // static py::Static<py::Object> np_array = np->attr("array");
 
-
-// static py::Type np_array = np->attr("ndarray");
-
-
-
-// static py::Static<py::List> list = {1, 2, 3, 4, 5};
-
-// static py::Static<py::Type> list = py::List::Type;
-
-
-
-// static const py::Static<py::Code> test_script(R"(
-//     import numpy as np
-//     print(np.arange(10))
-// )");
-
-
-
-
-// static py::Static<py::Code> script = R"(
-//     print("hello, world!")
-// )"_python;
 
 
 void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
-    py::Bool x = true;
-    py::Int y = x;
-    py::List z = {1, 2, 3};
-    py::print(z[{py::None, 2}]);
+
+    py::Object obj = R"(
+        def foo(a=1, b=2, *, c):
+            pass
+    )"_python()["foo"];
+
+    py::print((bool)py::callable<void>(obj));
+
+
+
+    // py::Function f([](int x, int y) {
+    //     return x + y;
+    // });
+
+
+
+
+    // py::Object obj = R"(
+    //     def foo(a):
+    //         return a("World")
+    // )"_python()["foo"];
+
+    // py::print(obj([](const std::string& x) {
+    //     return "Hello, " + x + "!";
+    // }));
 
 
 

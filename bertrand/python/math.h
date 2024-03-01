@@ -22,7 +22,7 @@ class Round {
     struct RoundTag {};
 
     template <typename T>
-    static constexpr bool PYTHONLIKE = detail::is_pyobject<T>::value;
+    static constexpr bool PYTHONLIKE = impl::is_python<T>;
 
     template <typename T>
     static constexpr bool INTLIKE = std::is_integral_v<T>;
@@ -719,7 +719,7 @@ public:
 /* Equivalent to Python `abs(obj)`. */
 template <typename T>
 inline auto abs(const T& obj) {
-    if constexpr (detail::is_pyobject<T>::value) {
+    if constexpr (impl::is_python<T>) {
         PyObject* result = PyNumber_Absolute(obj.ptr());
         if (result == nullptr) {
             throw error_already_set();
@@ -771,10 +771,7 @@ auto divmod(const L& l, const R& r, const Mode& mode = Round::FLOOR) {
 /* Equivalent to Python `base ** exp` (exponentiation). */
 template <typename L, typename R>
 auto pow(const L& base, const R& exp) {
-    if constexpr (
-        detail::is_pyobject<L>::value ||
-        detail::is_pyobject<R>::value
-    ) {
+    if constexpr (impl::is_python<L> || impl::is_python<R>) {
         PyObject* result = PyNumber_Power(
             detail::object_or_cast(base).ptr(),
             detail::object_or_cast(exp).ptr(),
@@ -794,17 +791,13 @@ auto pow(const L& base, const R& exp) {
 template <typename L, typename R, typename E>
 auto pow(const L& base, const R& exp, const E& mod) {
     static_assert(
-        (std::is_integral_v<L> || detail::is_pyobject<L>::value) &&
-        (std::is_integral_v<R> || detail::is_pyobject<R>::value) &&
-        (std::is_integral_v<E> || detail::is_pyobject<E>::value),
+        (std::is_integral_v<L> || impl::is_python<L>) &&
+        (std::is_integral_v<R> || impl::is_python<R>) &&
+        (std::is_integral_v<E> || impl::is_python<E>),
         "pow() 3rd argument not allowed unless all arguments are integers"
     );
 
-    if constexpr (
-        detail::is_pyobject<L>::value ||
-        detail::is_pyobject<R>::value ||
-        detail::is_pyobject<E>::value
-    ) {
+    if constexpr (impl::is_python<L> || impl::is_python<R> || impl::is_python<E>) {
         PyObject* result = PyNumber_Power(
             detail::object_or_cast(base).ptr(),
             detail::object_or_cast(exp).ptr(),
@@ -851,7 +844,7 @@ auto round(const T& n, int digits = 0, const Mode& mode = Round::HALF_EVEN) {
         }
 
     // same for Python integers
-    } else if constexpr (detail::is_pyobject<T>::value) {
+    } else if constexpr (impl::is_python<T>) {
         // // TODO: uncomment this when all tags have a functional div() method
         // if (PyLong_Check(n.ptr())) {
         //     if (digits >= 0) {
