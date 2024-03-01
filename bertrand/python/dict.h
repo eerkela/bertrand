@@ -67,13 +67,17 @@ public:
     inline Dict copy() const;  // out of line to avoid circular dependency.
 
     /* Equivalent to Python `mappingproxy.get(key)`. */
-    template <typename K>
+    template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
     inline Object get(const K& key) const {
         return this->attr("get")(detail::object_or_cast(key), py::None);
     }
 
     /* Equivalent to Python `mappingproxy.get(key, default)`. */
-    template <typename K, typename V>
+    template <
+        typename K,
+        typename V,
+        std::enable_if_t<impl::is_hashable<K>, int> = 0
+    >
     inline Object get(const K& key, const V& default_value) const {
         return this->attr("get")(
             detail::object_or_cast(key),
@@ -95,8 +99,8 @@ public:
     /////////////////////////
 
     /* Equivalent to Python `key in mappingproxy`. */
-    template <typename T>
-    inline bool contains(const T& key) const;
+    template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
+    inline bool contains(const K& key) const;
 
 };
 
@@ -163,8 +167,11 @@ public:
     }
 
     /* Equivalent to Python `dict.keys().isdisjoint(<braced initializer list>)`. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
-    inline bool isdisjoint(const std::initializer_list<T>& other) const {
+    template <
+        typename K,
+        std::enable_if_t<!impl::is_initializer<K> && impl::is_hashable<K>, int> = 0
+    >
+    inline bool isdisjoint(const std::initializer_list<K>& other) const {
         return static_cast<bool>(this->attr("isdisjoint")(Set(other)));
     }
 
@@ -178,8 +185,8 @@ public:
     /////////////////////////
 
     /* Equivalent to `key in dict.keys()`. */
-    template <typename T>
-    inline bool contains(const T& key) const {
+    template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
+    inline bool contains(const K& key) const {
         int result = PySequence_Contains(this->ptr(), detail::object_or_cast(key).ptr());
         if (result == -1) {
             throw error_already_set();
@@ -192,8 +199,11 @@ public:
         return Set(this->attr("__or__")(detail::object_or_cast(other)));
     }
 
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
-    inline Set operator|(const std::initializer_list<T>& other) const {
+    template <
+        typename K,
+        std::enable_if_t<!impl::is_initializer<K> && impl::is_hashable<K>, int> = 0
+    >
+    inline Set operator|(const std::initializer_list<K>& other) const {
         return Set(this->attr("__or__")(Set(other)));
     }
 
@@ -206,8 +216,11 @@ public:
         return Set(this->attr("__and__")(detail::object_or_cast(other)));
     }
 
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
-    inline Set operator&(const std::initializer_list<T>& other) const {
+    template <
+        typename K,
+        std::enable_if_t<!impl::is_initializer<K> && impl::is_hashable<K>, int> = 0
+    >
+    inline Set operator&(const std::initializer_list<K>& other) const {
         return Set(this->attr("__and__")(Set(other)));
     }
 
@@ -220,8 +233,11 @@ public:
         return Set(this->attr("__sub__")(detail::object_or_cast(other)));
     }
 
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
-    inline Set operator-(const std::initializer_list<T>& other) const {
+    template <
+        typename K,
+        std::enable_if_t<!impl::is_initializer<K> && impl::is_hashable<K>, int> = 0
+    >
+    inline Set operator-(const std::initializer_list<K>& other) const {
         return Set(this->attr("__sub__")(Set(other)));
     }
 
@@ -234,8 +250,11 @@ public:
         return Set(this->attr("__xor__")(detail::object_or_cast(other)));
     }
 
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
-    inline Set operator^(const std::initializer_list<T>& other) const {
+    template <
+        typename K,
+        std::enable_if_t<!impl::is_initializer<K> && impl::is_hashable<K>, int> = 0
+    >
+    inline Set operator^(const std::initializer_list<K>& other) const {
         return Set(this->attr("__xor__")(Set(other)));
     }
 
@@ -606,7 +625,10 @@ public:
     }
 
     /* Equivalent to Python `dict.fromkeys(<braced initializer list>)`. */
-    template <typename K, std::enable_if_t<!impl::is_initializer<K>, int> = 0>
+    template <
+        typename K,
+        std::enable_if_t<!impl::is_initializer<K> && impl::is_hashable<K>, int> = 0
+    >
     static inline Dict fromkeys(const std::initializer_list<K>& keys) {
         PyObject* result = PyDict_New();
         if (result == nullptr) {
@@ -678,7 +700,11 @@ public:
     }
 
     /* Equivalent to Python `dict.fromkeys(<braced initializer list>, value)`. */
-    template <typename K, typename V, std::enable_if_t<!impl::is_initializer<K>, int> = 0>
+    template <
+        typename K,
+        typename V,
+        std::enable_if_t<!impl::is_initializer<K> && impl::is_hashable<K>, int> = 0
+    >
     static inline Dict fromkeys(const std::initializer_list<K>& keys, const V& value) {
         Object converted = detail::object_or_cast(value);
         PyObject* result = PyDict_New();
@@ -731,7 +757,7 @@ public:
     }
 
     /* Equivalent to Python `dict.get(key)`.  Returns None if the key is not found. */
-    template <typename K>
+    template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
     inline Object get(const K& key) const {
         PyObject* result = PyDict_GetItemWithError(
             this->ptr(),
@@ -747,7 +773,7 @@ public:
     }
 
     /* Equivalent to Python `dict.get(key, default_value)`. */
-    template <typename K, typename V>
+    template <typename K, typename V, std::enable_if_t<impl::is_hashable<K>, int> = 0>
     inline Object get(const K& key, const V& default_value) const {
         PyObject* result = PyDict_GetItemWithError(
             this->ptr(),
@@ -763,7 +789,7 @@ public:
     }
 
     /* Equivalent to Python `dict.pop(key)`.  Returns None if the key is not found. */
-    template <typename K>
+    template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
     inline Object pop(const K& key) {
         PyObject* result = PyDict_GetItemWithError(
             this->ptr(),
@@ -782,7 +808,7 @@ public:
     }
 
     /* Equivalent to Python `dict.pop(key, default_value)`. */
-    template <typename K, typename V>
+    template <typename K, typename V, std::enable_if_t<impl::is_hashable<K>, int> = 0>
     inline Object pop(const K& key, const V& default_value) {
         PyObject* result = PyDict_GetItemWithError(
             this->ptr(),
@@ -806,7 +832,7 @@ public:
     }
 
     /* Equivalent to Python `dict.setdefault(key)`. */
-    template <typename K>
+    template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
     inline Object setdefault(const K& key) {
         PyObject* result = PyDict_SetDefault(
             this->ptr(),
@@ -820,7 +846,7 @@ public:
     }
 
     /* Equivalent to Python `dict.setdefault(key, default_value)`. */
-    template <typename K, typename V>
+    template <typename K, typename V, std::enable_if_t<impl::is_hashable<K>, int> = 0>
     inline Object setdefault(const K& key, const V& default_value) {
         PyObject* result = PyDict_SetDefault(
             this->ptr(),
@@ -902,8 +928,8 @@ public:
     using Base::operator[];
 
     /* Equivalent to Python `key in dict`. */
-    template <typename T>
-    inline bool contains(const T& key) const {
+    template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
+    inline bool contains(const K& key) const {
         int result = PyDict_Contains(this->ptr(), detail::object_or_cast(key).ptr());
         if (result == -1) {
             throw error_already_set();
@@ -950,12 +976,12 @@ inline ValuesView MappingProxy::values() const{
     return this->attr("values")();
 }
 
-template <typename T>
-inline bool MappingProxy::contains(const T& key) const {
+template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
+inline bool MappingProxy::contains(const K& key) const {
     return this->keys().contains(detail::object_or_cast(key));
 }
 
-template <typename T>
+template <typename T, std::enable_if_t<impl::is_dict_like<T>, int> = 0>
 inline Dict operator|(const MappingProxy& mapping, const T& other) {
     return mapping.attr("__or__")(detail::object_or_cast(other));
 }

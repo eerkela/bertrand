@@ -109,7 +109,10 @@ namespace impl {
 
         /* Equivalent to Python `set.isdisjoint(other)`, where other is given as a
         homogenously-typed braced initializer list. */
-        template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+        template <
+            typename T,
+            std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+        >
         inline bool isdisjoint(const std::initializer_list<T>& other) const {
             for (const T& item : other) {
                 if (contains(item)) {
@@ -140,7 +143,10 @@ namespace impl {
 
         /* Equivalent to Python `set.issubset(other)`, where other is given as a
         homogenously-typed braced initializer list. */
-        template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+        template <
+            typename T,
+            std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+        >
         inline bool issubset(const std::initializer_list<T> other) const {
             return static_cast<bool>(self()->attr("issubset")(Derived(other)));
         }
@@ -168,7 +174,10 @@ namespace impl {
 
         /* Equivalent to Python `set.issuperset(other)`, where other is given as a
         homogenously-typed braced initializer list. */
-        template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+        template <
+            typename T,
+            std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+        >
         inline bool issuperset(const std::initializer_list<T>& other) const {
             for (const T& item : other) {
                 if (!contains(item)) {
@@ -201,7 +210,10 @@ namespace impl {
 
         /* Equivalent to Python `set.union(other)`, where other is given as a 
         homogenously-typed braced initializer list. */
-        template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+        template <
+            typename T,
+            std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+        >
         inline Derived union_(const std::initializer_list<T>& other) const {
             PyObject* result = self()->alloc(self()->ptr());
             if (result == nullptr) {
@@ -250,7 +262,10 @@ namespace impl {
 
         /* Equivalent to Python `set.intersection(other)`, where other is given as a
         homogenously-typed braced initializer list. */
-        template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+        template <
+            typename T,
+            std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+        >
         inline Derived intersection(const std::initializer_list<T>& other) const {
             PyObject* result = self()->alloc(nullptr);
             if (result == nullptr) {
@@ -306,7 +321,10 @@ namespace impl {
 
         /* Equivalent to Python `set.difference(other)`, where other is given as a
         homogenously-typed braced initializer list. */
-        template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+        template <
+            typename T,
+            std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+        >
         inline Derived difference(const std::initializer_list<T>& other) const {
             PyObject* result = self()->alloc(self()->ptr());
             if (result == nullptr) {
@@ -355,7 +373,10 @@ namespace impl {
 
         /* Equivalent to Python `set.symmetric_difference(other)`, where other is given
         as a homogenously-typed braced initializer list. */
-        template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+        template <
+            typename T,
+            std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+        >
         inline Derived symmetric_difference(const std::initializer_list<T>& other) const {
             PyObject* result = self()->alloc(nullptr);
             if (result == nullptr) {
@@ -431,7 +452,10 @@ namespace impl {
             return union_(other);
         }
 
-        template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+        template <
+            typename T,
+            std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+        >
         inline Derived operator|(const std::initializer_list<T>& other) const {
             return union_(other);
         }
@@ -447,7 +471,10 @@ namespace impl {
             return intersection(other);
         }
 
-        template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+        template <
+            typename T,
+            std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+        >
         inline Derived operator&(const std::initializer_list<T>& other) const {
             return intersection(other);
         }
@@ -463,7 +490,10 @@ namespace impl {
             return difference(other);
         }
 
-        template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+        template <
+            typename T,
+            std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+        >
         inline Derived operator-(const std::initializer_list<T>& other) const {
             return difference(other);
         }
@@ -479,7 +509,10 @@ namespace impl {
             return symmetric_difference(other);
         }
 
-        template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+        template <
+            typename T,
+            std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+        >
         inline Derived operator^(const std::initializer_list<T>& other) const {
             return symmetric_difference(other);
         }
@@ -535,7 +568,10 @@ public:
 
     /* Pack the contents of a homogenously-typed braced initializer list into a new
     Python frozenset. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+    >
     FrozenSet(const std::initializer_list<T>& contents) :
         Base(PyFrozenSet_New(nullptr), stolen_t{})
     {
@@ -607,7 +643,11 @@ public:
     }
 
     /* Explicitly unpack a std::pair into a py::FrozenSet. */
-    template <typename First, typename Second>
+    template <
+        typename First,
+        typename Second,
+        std::enable_if_t<impl::is_hashable<First> && impl::is_hashable<Second>, int> = 0
+    >
     explicit FrozenSet(const std::pair<First, Second>& pair) :
         Base(PyFrozenSet_New(nullptr), stolen_t{})
     {
@@ -628,7 +668,10 @@ public:
     }
 
     /* Explicitly unpack a std::tuple into a py::FrozenSet. */
-    template <typename... Args>
+    template <
+        typename... Args,
+        std::enable_if_t<(impl::is_hashable<Args> && ...), int> = 0
+    >
     explicit FrozenSet(const std::tuple<Args...>& tuple) :
         Base(PyFrozenSet_New(nullptr), stolen_t{})
     {
@@ -668,7 +711,10 @@ public:
         return *this;
     }
 
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+    >
     inline FrozenSet& operator|=(const std::initializer_list<T>& other) {
         *this = union_(other);
         return *this;
@@ -685,7 +731,10 @@ public:
         return *this;
     }
 
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+    >
     inline FrozenSet& operator&=(const std::initializer_list<T>& other) {
         *this = intersection(other);
         return *this;
@@ -702,7 +751,10 @@ public:
         return *this;
     }
 
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+    >
     inline FrozenSet& operator-=(const std::initializer_list<T>& other) {
         *this = difference(other);
         return *this;
@@ -719,7 +771,10 @@ public:
         return *this;
     }
 
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+    >
     inline FrozenSet& operator^=(const std::initializer_list<T>& other) {
         *this = symmetric_difference(other);
         return *this;
@@ -773,7 +828,10 @@ public:
 
     /* Pack the contents of a homogenously-typed braced initializer list into a new
     Python set. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+    >
     Set(const std::initializer_list<T>& contents) :
         Base(PySet_New(nullptr), stolen_t{})
     {
@@ -844,7 +902,11 @@ public:
     }
 
     /* Explicitly unpack a std::pair into a py::Set. */
-    template <typename First, typename Second>
+    template <
+        typename First,
+        typename Second,
+        std::enable_if_t<impl::is_hashable<First> && impl::is_hashable<Second>, int> = 0
+    >
     explicit Set(const std::pair<First, Second>& pair) :
         Base(PySet_New(nullptr), stolen_t{})
     {
@@ -865,7 +927,10 @@ public:
     }
 
     /* Explicitly unpack a std::tuple into a py::Set. */
-    template <typename... Args>
+    template <
+        typename... Args,
+        std::enable_if_t<(impl::is_hashable<Args> && ...), int> = 0
+    >
     explicit Set(const std::tuple<Args...>& tuple) :
         Base(PySet_New(nullptr), stolen_t{})
     {
@@ -885,7 +950,7 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `set.add(key)`. */
-    template <typename T>
+    template <typename T, std::enable_if_t<impl::is_hashable<T>, int> = 0>
     inline void add(const T& key) {
         if (PySet_Add(this->ptr(), detail::object_or_cast(key).ptr())) {
             throw error_already_set();
@@ -893,7 +958,7 @@ public:
     }
 
     /* Equivalent to Python `set.remove(key)`. */
-    template <typename T>
+    template <typename T, std::enable_if_t<impl::is_hashable<T>, int> = 0>
     inline void remove(const T& key) {
         Object obj = detail::object_or_cast(key);
         int result = PySet_Discard(this->ptr(), obj.ptr());
@@ -905,7 +970,7 @@ public:
     }
 
     /* Equivalent to Python `set.discard(key)`. */
-    template <typename T>
+    template <typename T, std::enable_if_t<impl::is_hashable<T>, int> = 0>
     inline void discard(const T& key) {
         if (PySet_Discard(this->ptr(), detail::object_or_cast(key).ptr()) == -1) {
             throw error_already_set();
@@ -937,7 +1002,10 @@ public:
     }
 
     /* Equivalent to Python `set.update(<braced initializer list>)`. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+    >
     inline void update(const std::initializer_list<T>& other) {
         for (const T& item : other) {
             add(item);
@@ -960,7 +1028,10 @@ public:
     }
 
     /* Equivalent to Python `set.intersection_update(<braced initializer list>)`. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+    >
     inline void intersection_update(const std::initializer_list<T>& other) {
         this->attr("intersection_update")(Set(other));
     }
@@ -981,7 +1052,10 @@ public:
     }
 
     /* Equivalent to Python `set.difference_update(<braced initializer list>)`. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+    >
     inline void difference_update(const std::initializer_list<T>& other) {
         for (const T& item : other) {
             discard(item);
@@ -1004,7 +1078,10 @@ public:
     }
 
     /* Equivalent to Python `set.symmetric_difference_update(<braced initializer list>)`. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+    >
     inline void symmetric_difference_update(const std::initializer_list<T>& other) {
         for (const T& item : other) {
             if (contains(item)) {
@@ -1055,7 +1132,10 @@ public:
     }
 
     /* Equivalent to Python `set |= <braced initializer list>`. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+    >
     inline Set& operator|=(const std::initializer_list<T>& other) {
         update(other);
         return *this;
@@ -1075,7 +1155,10 @@ public:
     }
 
     /* Equivalent to Python `set &= <braced initializer list>`. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+    >
     inline Set& operator&=(const std::initializer_list<T>& other) {
         intersection_update(other);
         return *this;
@@ -1095,7 +1178,10 @@ public:
     }
 
     /* Equivalent to Python `set -= <braced initializer list>`. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+    >
     inline Set& operator-=(const std::initializer_list<T>& other) {
         difference_update(other);
         return *this;
@@ -1115,7 +1201,10 @@ public:
     }
 
     /* Equivalent to Python `set ^= <braced initializer list>`. */
-    template <typename T, std::enable_if_t<!impl::is_initializer<T>, int> = 0>
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_initializer<T> && impl::is_hashable<T>, int> = 0
+    >
     inline Set& operator^=(const std::initializer_list<T>& other) {
         symmetric_difference_update(other);
         return *this;
