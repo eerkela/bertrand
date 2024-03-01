@@ -582,7 +582,7 @@ public:
         if (result == nullptr) {
             throw TypeError("function has no module");
         }
-        return Module(reinterpret_borrow<pybind11::module_>(result));
+        return reinterpret_borrow<Module>(result);
     }
 
     /* Get the code object that is executed when this function is called. */

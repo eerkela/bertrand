@@ -236,7 +236,6 @@ public:
 }  // namespace python
 }  // namespace bertrand
 
-
 BERTRAND_STD_HASH(bertrand::py::Int)
 
 

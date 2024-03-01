@@ -961,40 +961,6 @@ inline Dict operator|(const MappingProxy& mapping, const T& other) {
 }
 
 
-/* Get Python's builtin namespace as a dictionary.  This doesn't exist in normal
-Python, but makes it much more convenient to interact with generic Python code from
-C++. */
-inline Dict builtins() {
-    PyObject* result = PyEval_GetBuiltins();
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Dict>(result);
-}
-
-
-/* Equivalent to Python `locals()`. */
-inline Dict locals() {
-    PyObject* result = PyEval_GetLocals();
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_borrow<Dict>(result);
-}
-
-
-/* Equivalent to Python `vars()`. */
-inline Dict vars() {
-    return locals();
-}
-
-
-/* Equivalent to Python `vars(object)`. */
-inline Dict vars(const pybind11::handle& object) {
-    return object.attr("__dict__");
-}
-
-
 }  // namespace python
 }  // namespace bertrand
 

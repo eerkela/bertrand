@@ -1942,11 +1942,11 @@ public:
 }  // namespace bertrand
 
 
+BERTRAND_STD_HASH(bertrand::py::Date)
+BERTRAND_STD_HASH(bertrand::py::Datetime)
+BERTRAND_STD_HASH(bertrand::py::Time)
 BERTRAND_STD_HASH(bertrand::py::Timedelta)
 BERTRAND_STD_HASH(bertrand::py::Timezone)
-BERTRAND_STD_HASH(bertrand::py::Date)
-BERTRAND_STD_HASH(bertrand::py::Time)
-BERTRAND_STD_HASH(bertrand::py::Datetime)
 
 
 #endif  // BERTRAND_PYTHON_DATETIME_H

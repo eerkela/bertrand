@@ -378,7 +378,7 @@ public:
     /* Explicit constructor.  Equivalent to Python `super(type, self)` with 2
     arguments. */
     template <typename T, std::enable_if_t<impl::is_type_like<T>, int> = 0>
-    explicit Super(const T& type, const pybind11::handle& self) {
+    explicit Super(const T& type, const Handle& self) {
         m_ptr = PyObject_CallFunctionObjArgs(
             reinterpret_cast<PyObject*>(&PySuper_Type),
             type.ptr(),

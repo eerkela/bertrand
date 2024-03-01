@@ -103,10 +103,7 @@ namespace detail = pybind11::detail;
 // wrapper types
 template <typename... Args>
 using Class = pybind11::class_<Args...>;
-using Module = pybind11::module_;
 using Handle = pybind11::handle;
-using NoneType = pybind11::none;  // TODO: lower into Object subclasses
-using EllipsisType = pybind11::ellipsis;  // TODO: lower into Object subclasses
 using Iterator = pybind11::iterator;
 using WeakRef = pybind11::weakref;
 using Capsule = pybind11::capsule;
@@ -181,7 +178,7 @@ using ReferenceCastError = pybind11::reference_cast_error;
     public:                                                                             \
         using base::base;                                                               \
         cls() : cls("") {}                                                              \
-        explicit cls(pybind11::handle obj) : base([&obj] {                              \
+        explicit cls(Handle obj) : base([&obj] {                                        \
             PyObject* string = PyObject_Str(obj.ptr());                                 \
             if (string == nullptr) {                                                    \
                 throw error_already_set();                                              \
@@ -554,48 +551,49 @@ namespace impl {
     constexpr bool has_size = false;
     template <typename T>
     constexpr bool has_size<
-        T,
-        std::void_t<decltype(std::declval<T>().size())>
+        T, std::void_t<decltype(std::declval<T>().size())>
     > = true;
 
     template <typename T, typename = void>
     constexpr bool has_empty = false;
     template <typename T>
     constexpr bool has_empty<
-        T,
-        std::void_t<decltype(std::declval<T>().empty())>
+        T, std::void_t<decltype(std::declval<T>().empty())>
+    > = true;
+
+    template <typename T, typename = void>
+    constexpr bool is_hashable = false;
+    template <typename T>
+    constexpr bool is_hashable<
+        T, std::void_t<decltype(std::hash<T>{}(std::declval<T>()))>
     > = true;
 
     template <typename T, typename = void>
     constexpr bool is_iterable = false;
     template <typename T>
     constexpr bool is_iterable<
-        T,
-        std::void_t<decltype(std::begin(std::declval<T>()), std::end(std::declval<T>()))>
+        T, std::void_t<decltype(std::begin(std::declval<T>()), std::end(std::declval<T>()))>
     > = true;
 
     template <typename T, typename = void>
     constexpr bool has_to_string = false;
     template <typename T>
     constexpr bool has_to_string<
-        T,
-        std::void_t<decltype(std::to_string(std::declval<T>()))>
+        T, std::void_t<decltype(std::to_string(std::declval<T>()))>
     > = true;
 
     template <typename T, typename = void>
     constexpr bool has_stream_insertion = false;
     template <typename T>
     constexpr bool has_stream_insertion<
-        T,
-        std::void_t<decltype(std::declval<std::ostream&>() << std::declval<T>())>
+        T, std::void_t<decltype(std::declval<std::ostream&>() << std::declval<T>())>
     > = true;
 
     template <typename T, typename = void>
     constexpr bool has_reserve = false;
     template <typename T>
     constexpr bool has_reserve<
-        T,
-        std::void_t<decltype(std::declval<T>().reserve(std::declval<size_t>()))>
+        T, std::void_t<decltype(std::declval<T>().reserve(std::declval<size_t>()))>
     > = true;
 
     /* NOTE: reverse operators sometimes conflict with standard library iterators, so
@@ -604,31 +602,188 @@ namespace impl {
     template <typename T, typename = void>
     constexpr bool is_std_iterator = false;
     template <typename T>
-    constexpr bool is_std_iterator<T, std::void_t<
-        decltype(std::declval<typename std::iterator_traits<T>::iterator_category>())
-    >> = true;
-
-    /* SFINAE struct allows py::iter() to work on both python and C++ types. */
-    template <typename T, typename = void>
-    constexpr bool use_pybind11_iter = false;
-    template <typename T>
-    constexpr bool use_pybind11_iter<
-        T,
-        std::void_t<decltype(pybind11::iter(std::declval<T>()))>
+    constexpr bool is_std_iterator<
+        T, std::void_t<decltype(
+            std::declval<typename std::iterator_traits<T>::iterator_category>()
+        )>
     > = true;
 
-    /* SFINAE struct allows py::hash() to raise informative error messages for
-    unhashable types. */
+    /* SFINAE condition allows py::iter() to work on both python and C++ types. */
     template <typename T, typename = void>
-    constexpr bool has_std_hash = false;
+    constexpr bool pybind11_iterable = false;
     template <typename T>
-    constexpr bool has_std_hash<T, std::void_t<decltype(std::hash<T>{})>> = true;
+    constexpr bool pybind11_iterable<
+        T, std::void_t<decltype(pybind11::iter(std::declval<T>()))>
+    > = true;
 
+    template <typename T, typename = void>
+    struct OverloadsCallable : std::false_type {};
+    template <typename T>
+    struct OverloadsCallable<T, std::void_t<decltype(&T::operator())>> :
+        std::true_type
+    {};
 
-    // TODO: when calling a python object or accessor, function inputs should be
-    // converted to py::Function before passing to pybind11.  That allows users to omit
-    // the py::Function() constructor when providing a callable object.
+    /* SFINAE condition is used to recognize callable C++ types without regard to their
+    argument signatures. */
+    template <typename T>
+    static constexpr bool is_callable_any = std::disjunction_v<
+        std::is_function<std::remove_pointer_t<std::decay_t<T>>>,
+        std::is_member_function_pointer<std::decay_t<T>>,
+        OverloadsCallable<std::decay_t<T>>
+    >;
 
+    /* Base class for CallTraits tags, which contain SFINAE information about a
+    callable Python/C++ object, as returned by `py::callable()`. */
+    template <typename Func>
+    class CallTraitsBase {
+    protected:
+        const Func& func;
+
+    public:
+        constexpr CallTraitsBase(const Func& func) : func(func) {}
+
+        friend std::ostream& operator<<(std::ostream& os, const CallTraitsBase& traits) {
+            if (traits) {
+                os << "True";
+            } else {
+                os << "False";
+            }
+            return os;
+        }
+
+    };
+
+    /* Return tag for `py::callable()` when one or more template parameters are
+    supplied, representing hypothetical arguments to the function. */
+    template <typename Func, typename... Args>
+    struct CallTraits : public CallTraitsBase<Func> {
+        struct NoReturn {};
+
+    private:
+        using Base = CallTraitsBase<Func>;
+
+        /* SFINAE struct gets return type if Func is callable with the given arguments.
+        Otherwise defaults to NoReturn. */
+        template <typename T, typename = void>
+        struct GetReturn { using type = NoReturn; };
+        template <typename T>
+        struct GetReturn<
+            T, std::void_t<decltype(std::declval<T>()(std::declval<Args>()...))>
+        > {
+            using type = decltype(std::declval<T>()(std::declval<Args>()...));
+        };
+
+    public:
+        using Base::Base;
+
+        /* Get the return type of the function with the given arguments.  Defaults to
+        NoReturn if the function is not callable with those arguments. */
+        using Return = typename GetReturn<Func>::type;
+
+        /* Implicitly convert the tag to a constexpr bool. */
+        template <typename T = Func, std::enable_if_t<!impl::is_python<T>, int> = 0>
+        inline constexpr operator bool() const {
+            return std::is_invocable_v<Func, Args...>;
+        }
+
+        /* Implicitly convert to a runtime boolean by directly inspecting a Python code
+        object.  Note that the introspection is very lightweight and basic.  It first
+        checks `std::is_invocable<Func, Args...>` to see if all arguments can be
+        converted to Python objects, and then confirms that their number matches those
+        of the underlying code object.  This includes accounting for default values and
+        missing keyword-only arguments, while enforcing a C++-style calling convention.
+        Note that this check does not account for variadic arguments, which are not
+        represented in the code object itself. */
+        template <typename T = Func, std::enable_if_t<impl::is_python<T>, int> = 0>
+        operator bool() const {
+            if constexpr(std::is_same_v<Return, NoReturn>) {
+                return false;
+            } else {
+                static constexpr Py_ssize_t expected = sizeof...(Args);
+
+                // check Python object is callable
+                if (!PyCallable_Check(this->func.ptr())) {
+                    return false;
+                }
+
+                // Get code object associated with callable (borrowed ref)
+                PyCodeObject* code = (PyCodeObject*) PyFunction_GetCode(this->func.ptr());
+                if (code == nullptr) {
+                    return false;
+                }
+
+                // get number of positional/positional-only arguments from code object
+                Py_ssize_t n_args = code->co_argcount;
+                if (expected > n_args) {
+                    return false;  // too many arguments
+                }
+
+                // get number of positional defaults from function object (borrowed ref)
+                PyObject* defaults = PyFunction_GetDefaults(this->func.ptr());
+                Py_ssize_t n_defaults = 0;
+                if (defaults != nullptr) {
+                    n_defaults = PyTuple_Size(defaults);
+                }
+                if (expected < (n_args - n_defaults)) {
+                    return false;  // too few arguments
+                }
+
+                // check for presence of unfilled keyword-only arguments
+                if (code->co_kwonlyargcount > 0) {
+                    PyObject* kwdefaults = PyObject_GetAttrString(
+                        this->func.ptr(),
+                        "__kwdefaults__"
+                    );
+                    if (kwdefaults == nullptr) {
+                        PyErr_Clear();
+                        return false;
+                    }
+                    Py_ssize_t n_kwdefaults = 0;
+                    if (kwdefaults != Py_None) {
+                        n_kwdefaults = PyDict_Size(kwdefaults);
+                    }
+                    Py_DECREF(kwdefaults);
+                    if (n_kwdefaults < code->co_kwonlyargcount) {
+                        return false;
+                    }
+                }
+
+                // NOTE: we cannot account for variadic arguments, which are not
+                // represented in the code object.  This is a limitation of the Python
+                // C API
+
+                return true;
+            }
+        }
+
+    };
+
+    /* Template specialization for wildcard callable matching.  Note that for technical
+    reasons, it is easier to swap the meaning of the void parameter in this case, so
+    that the behavior of each class is self-consistent. */
+    template <typename Func>
+    class CallTraits<Func, void> : public CallTraitsBase<Func> {
+        using Base = CallTraitsBase<Func>;
+
+    public:
+        using Base::Base;
+
+        // NOTE: Return type is not well-defined for wildcard matching.  Attempting to
+        // access it will result in a compile error.
+
+        /* Implicitly convert the tag to a constexpr bool. */
+        template <typename T = Func, std::enable_if_t<!impl::is_python<T>, int> = 0>
+        inline constexpr operator bool() const {
+            return is_callable_any<Func>;
+        }
+
+        /* Implicitly convert the tag to a runtime bool. */
+        template <typename T = Func, std::enable_if_t<impl::is_python<T>, int> = 0>
+        inline operator bool() const {
+            return PyCallable_Check(this->func.ptr());
+        }
+
+    };
 
     #define CONVERTABLE_ACCESSOR(name, base)                                            \
         struct name : public detail::base {                                             \
@@ -866,11 +1021,11 @@ public:
      * from both a Python and C++ perspective.
      */
 
-    inline impl::ObjAttrAccessor attr(pybind11::handle key) const {
+    inline impl::ObjAttrAccessor attr(Handle key) const {
         return Base::attr(key);
     }
 
-    inline impl::ObjAttrAccessor attr(pybind11::object&& key) const {
+    inline impl::ObjAttrAccessor attr(Handle&& key) const {
         return Base::attr(std::move(key));
     }
 
@@ -890,15 +1045,15 @@ public:
     ////    CALL OPERATOR    ////
     /////////////////////////////
 
-    /* Bertrand doesn't change the semantics of the call operator, but it does convert
-     * the return value into a as type-safe Object wrapper rather than the generic
-     * pybind11::object.
+    /* Bertrand doesn't change the semantics of pybind11's call operator, but it does
+     * expand the number of types that can be implicitly converted as arguments, and
+     * similarly converts the return value into a type-safe Object wrapper rather than
+     * the generic pybind11::object.  This makes the call operator more type-safe and
+     * idiomatic in both languages.
      */
 
     template <typename... Args>
-    inline Object operator()(Args&&... args) const {
-        return Base::operator()(std::forward<Args>(args)...);
-    }
+    inline Object operator()(Args&&... args) const;
 
     ////////////////////////
     ////    INDEXING    ////
@@ -1171,7 +1326,7 @@ namespace impl {
 
         template <
             typename T,
-            std::enable_if_t<!std::is_same_v<pybind11::handle, std::decay_t<T>>, int> = 0
+            std::enable_if_t<!std::is_same_v<Handle, std::decay_t<T>>, int> = 0
         >
         Initializer(T&& value) : value(detail::object_or_cast(std::forward<T>(value))) {}
     };
@@ -1783,8 +1938,8 @@ namespace impl {
         }                                                                               \
                                                                                         \
         /* Inherit tagged borrow/steal constructors. */                                 \
-        cls(pybind11::handle h, const borrowed_t& t) : parent(h, t) {}                  \
-        cls(pybind11::handle h, const stolen_t& t) : parent(h, t) {}                    \
+        cls(Handle h, const borrowed_t& t) : parent(h, t) {}                            \
+        cls(Handle h, const stolen_t& t) : parent(h, t) {}                              \
                                                                                         \
         /* Copy constructor.  Borrows a reference. */                                   \
         template <                                                                      \
@@ -1823,21 +1978,6 @@ namespace impl {
         /* Make sure address operators don't get lost during overloads. */              \
         inline cls* operator&() { return this; }                                        \
         inline const cls* operator&() const { return this; }                            \
-
-    #define ACCESSOR_CALL_OPERATOR(name, base)                                          \
-        template <typename... Args>                                                     \
-        Object name::operator()(Args&&... args) const {                                 \
-            return detail::base::operator()(std::forward<Args>(args)...);               \
-        }                                                                               \
-
-    ACCESSOR_CALL_OPERATOR(ObjAttrAccessor, obj_attr_accessor)
-    ACCESSOR_CALL_OPERATOR(StrAttrAccessor, str_attr_accessor)
-    ACCESSOR_CALL_OPERATOR(ItemAccessor, item_accessor)
-    ACCESSOR_CALL_OPERATOR(SequenceAccessor, sequence_accessor)
-    ACCESSOR_CALL_OPERATOR(TupleAccessor, tuple_accessor)
-    ACCESSOR_CALL_OPERATOR(ListAccessor, list_accessor)
-
-    #undef ACCESSOR_CALL_OPERATOR
 
 }  // namespace impl
 
@@ -1879,6 +2019,22 @@ struct Static : public impl::Wrapper<T> {
 };
 
 
+/* Object subclass that represents Python's global None singleton. */
+class NoneType : public impl::Ops {
+    using Base = impl::Ops;
+
+    inline static int check_none(PyObject* obj) {
+        return Py_IsNone(obj);
+    }
+
+public:
+    static py::Type Type;
+
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, NoneType, check_none)
+    NoneType() : Base(Py_None, borrowed_t{}) {}
+};
+
+
 /* Object subclass that represents Python's global NotImplemented singleton. */
 class NotImplementedType : public impl::Ops {
     using Base = impl::Ops;
@@ -1899,10 +2055,157 @@ public:
 };
 
 
+/* Object subclass representing Python's global Ellipsis singleton. */
+class EllipsisType : public impl::Ops {
+    using Base = impl::Ops;
+
+    inline static int check_ellipsis(PyObject* obj) {
+        int result = PyObject_IsInstance(obj, (PyObject*) Py_TYPE(Py_Ellipsis));
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+public:
+    static py::Type Type;
+
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, EllipsisType, check_ellipsis)
+    EllipsisType() : Base(Py_Ellipsis, borrowed_t{}) {}
+};
+
+
 /* Singletons for immortal Python objects. */
 static const NoneType None;
 static const EllipsisType Ellipsis;
 static const NotImplementedType NotImplemented;
+
+
+/* Object subclass that represents an imported Python module. */
+class Module : public impl::Ops {
+    using Base = impl::Ops;
+
+    inline static int check_module(PyObject* obj) {
+        int result = PyModule_Check(obj);
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+public:
+    static py::Type Type;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    BERTRAND_OBJECT_CONSTRUCTORS(Base, Module, check_module)
+
+    /* Default module constructor deleted for clarity. */
+    Module() = delete;
+
+    /* Explicitly create a new module object from a statically-allocated (but
+    uninitialized) PyModuleDef struct. */
+    explicit Module(const char* name, const char* doc, PyModuleDef* def) {
+        def = new (def) PyModuleDef{
+            /* m_base */ PyModuleDef_HEAD_INIT,
+            /* m_name */ name,
+            /* m_doc */ pybind11::options::show_user_defined_docstrings() ? doc : nullptr,
+            /* m_size */ -1,
+            /* m_methods */ nullptr,
+            /* m_slots */ nullptr,
+            /* m_traverse */ nullptr,
+            /* m_clear */ nullptr,
+            /* m_free */ nullptr
+        };
+        m_ptr = PyModule_Create(def);
+        if (m_ptr == nullptr) {
+            if (PyErr_Occurred()) {
+                throw error_already_set();
+            }
+            pybind11::pybind11_fail(
+                "Internal error in pybind11::module_::create_extension_module()"
+            );
+        }
+    }
+
+    //////////////////////////////////
+    ////    PYBIND11 INTERFACE    ////
+    //////////////////////////////////
+
+    /* Equivalent to pybind11::module_::def(). */
+    template <typename Func, typename... Extra>
+    Module& def(const char* name_, Func&& f, const Extra&... extra) {
+        pybind11::cpp_function func(
+            std::forward<Func>(f),
+            pybind11::name(name_),
+            pybind11::scope(*this),
+            pybind11::sibling(getattr(*this, name_, None)),
+            extra...
+        );
+        // NB: allow overwriting here because cpp_function sets up a chain with the
+        // intention of overwriting (and has already checked internally that it isn't
+        // overwriting non-functions).
+        add_object(name_, func, true /* overwrite */);
+        return *this;
+    }
+
+    /* Equivalent to pybind11::module_::def_submodule(). */
+    Module def_submodule(const char* name, const char* doc = nullptr) {
+        const char* this_name = PyModule_GetName(m_ptr);
+        if (this_name == nullptr) {
+            throw error_already_set();
+        }
+        std::string full_name = std::string(this_name) + '.' + name;
+        Handle submodule = PyImport_AddModule(full_name.c_str());
+        if (!submodule) {
+            throw error_already_set();
+        }
+        auto result = reinterpret_borrow<Module>(submodule);
+        if (doc && pybind11::options::show_user_defined_docstrings()) {
+            result.attr("__doc__") = pybind11::str(doc);
+        }
+        attr(name) = result;
+        return result;
+    }
+
+    /* Reload the module or throws `error_already_set`. */
+    inline void reload() {
+        PyObject *obj = PyImport_ReloadModule(this->ptr());
+        if (obj == nullptr) {
+            throw error_already_set();
+        }
+        *this = reinterpret_steal<Module>(obj);
+    }
+
+    /* Equivalent to pybind11::module_::add_object(). */
+    PYBIND11_NOINLINE void add_object(
+        const char* name,
+        Handle obj,
+        bool overwrite = false
+    ) {
+        if (!overwrite && pybind11::hasattr(*this, name)) {
+            pybind11::pybind11_fail(
+                "Error during initialization: multiple incompatible definitions with name \""
+                + std::string(name) + "\"");
+        }
+        PyModule_AddObjectRef(ptr(), name, obj.ptr());
+    }
+
+    // TODO: is create_extension_module() necessary?  It might be called by internal
+    // pybind11 code, but I'm not sure.
+
+    /* Equivalent to pybind11::module_::create_extension_module() */
+    static Module create_extension_module(
+        const char* name,
+        const char* doc,
+        PyModuleDef* def
+    ) {
+        return Module(name, doc, def);
+    }
+
+};
 
 
 ////////////////////////////////
@@ -1910,520 +2213,16 @@ static const NotImplementedType NotImplemented;
 ////////////////////////////////
 
 
-/* Similarly, pybind11 exposes a fair number of built-in Python functions, but not all.
- * This can cause confusion when users try to port Python code to C++, only to find that
- * they need to do some arcane trickery to get simple things like `range()` to work as
- * expected.  As such, we provide our own set of global functions that exactly replicate
- * the Python builtins, and can be used with identical semantics.
- *
- * Built-in Python functions:
- *      https://docs.python.org/3/library/functions.html
- *
- * NOTE: many of these functions are overloaded to work with both Python and C++ types
- * interchangeably, which makes it possible to mix and match Python and C++ types in a
- * single expression.  Here's a list of built-in functions that support this:
- *
- *  py::hash() - delegates to std::hash for all types, which is overloaded to redirect
- *      to Python __hash__ if it exists.  Unhashable types will raise a compile-time
- *      error.
- *
- *  py::len() - returns either Python len() or C++ size() for containers that have it,
- *      or std::nullopt for types that don't.
- *
- *  py::iter() - either returns Python __iter__() or generates a new Python iterator
- *      from a C++ container's begin() and end() methods.  Passing an rvalue raises a
- *      compile-time error.
- *
- *  py::reversed() - either returns Python __reversed__() or generates a new Python
- *      iterator from a C++ container's rbegin() and rend() methods.  Passing an rvalue
- *      raises a compile-time error.
- *
- *  py::callable<Args...>() - for Python objects, checks callable(obj) and then
- *      optionally inspects the signature and ensures a match.  For C++ objects,
- *      delegates to std::is_invocable_v<Args...>.
- *
- *          NOTE: currently, python callables are only checked for the number of
- *          arguments, not their types.  It might be possible to add type safety in the
- *          future, but there are many blockers before that can happen.
- *
- *  py::str() - delegates to std::to_string() and the stream insertion operator (<<)
- *      for C++ types that support it.  Otherwise, attempts to convert to a Python type
- *      and then calls str() on it.
- *  
- *  py::repr() - similar to py::str(), except that it calls Python repr() rather than
- *      str(), and adds a fallback to typeid().name() if all else fails.
- *
- *  ... As well as all math operators (e.g. abs(), pow(), truediv(), etc.) which are
- *  generic and can be used with any combination of Python and C++ types.
- */
-
-
-// not implemented
-// enumerate() - use a standard range variable
-// filter() - not implemented for now due to technical challenges
-// help() - not applicable for compiled C++ code
-// input() - causes Python interpreter to hang, which brings problems in compiled C++
-// map() - not implemented for now due to technical challenges
-// open() - not implemented for now - use C++ alternatives
-// zip() - use C++ iterators directly.
-
-
-// Superceded by class wrappers
-// bool()           -> py::Bool
-// bytearray()      -> py::Bytearray
-// bytes()          -> py::Bytes
-// classmethod()    -> py::ClassMethod
-// compile()        -> py::Code
-// complex()        -> py::Complex
-// dict()           -> py::Dict
-// float()          -> py::Float
-// frozenset()      -> py::FrozenSet
-// int()            -> py::Int
-// list()           -> py::List
-// memoryview()     -> py::MemoryView
-// object()         -> py::Object
-// property()       -> py::Property
-// range()          -> py::Range
-// set()            -> py::Set
-// slice()          -> py::Slice
-// staticmethod()   -> py::StaticMethod
-// str()            -> py::Str
-// super()          -> py::Super
-// tuple()          -> py::Tuple
-// type()           -> py::Type
-
-
-// Python-only (no C++ support)
-Dict builtins();
-using pybind11::delattr;
-List dir();
-List dir(const pybind11::handle&);
-using pybind11::eval;
-using pybind11::eval_file;
-using pybind11::exec;
-using pybind11::getattr;
-using pybind11::globals;
-using pybind11::hasattr;
-using pybind11::isinstance;
-Dict locals();
-using pybind11::len_hint;
-using pybind11::print;
-using pybind11::setattr;
-Dict vars();
-Dict vars(const pybind11::handle&);
-
-
-/* Equivalent to Python `aiter(obj)`. */
-inline Object aiter(const pybind11::handle& obj) {
-    PyObject* result = PyObject_CallOneArg(
-        PyDict_GetItemString(PyEval_GetBuiltins(), "aiter"),
-        obj.ptr()
-    );
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Object>(result);
-}
-
-
-/* Equivalent to Python `anext(obj)`. */
-inline Object anext(const pybind11::handle& obj) {
-    PyObject* result = PyObject_CallOneArg(
-        PyDict_GetItemString(PyEval_GetBuiltins(), "anext"),
-        obj.ptr()
-    );
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Object>(result);
-}
-
-
-/* Equivalent to Python `anext(obj, default)`. */
-template <typename T>
-inline Object anext(const pybind11::handle& obj, const T& default_value) {
-    PyObject* result = PyObject_CallFunctionObjArgs(
-        PyDict_GetItemString(PyEval_GetBuiltins(), "anext"),
-        obj.ptr(),
-        detail::object_or_cast(default_value).ptr(),
-        nullptr
-    );
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Object>(result);
-}
-
-
 /* Equivalent to Python `import module` */
-inline Static<Module> import(const char* module) {
+inline Static<Module> import(const char* name) {
     if (Py_IsInitialized()) {
-        return Static<Module>(pybind11::module_::import(module));
+        PyObject *obj = PyImport_ImportModule(name);
+        if (obj == nullptr) {
+            throw error_already_set();
+        }
+        return Static<Module>(reinterpret_steal<Module>(obj));
     } else {
         return Static<Module>::alloc();  // return an empty wrapper
-    }
-}
-
-
-/* Equivalent to Python `issubclass(derived, base)`. */
-template <typename T>
-inline bool issubclass(const pybind11::type& derived, const T& base) {
-    int result = PyObject_IsSubclass(derived.ptr(), detail::object_or_cast(base).ptr());
-    if (result == -1) {
-        throw error_already_set();
-    }
-    return result;
-}
-
-
-/* Equivalent to Python `next(obj)`. */
-inline Object next(const pybind11::iterator& iter) {
-    PyObject* result = PyIter_Next(iter.ptr());
-    if (result == nullptr) {
-        if (PyErr_Occurred()) {
-            throw error_already_set();
-        }
-        throw StopIteration();
-    }
-    return reinterpret_steal<Object>(result);
-}
-
-
-/* Equivalent to Python `next(obj, default)`. */
-template <typename T>
-inline Object next(const pybind11::iterator& iter, const T& default_value) {
-    PyObject* result = PyIter_Next(iter.ptr());
-    if (result == nullptr) {
-        if (PyErr_Occurred()) {
-            throw error_already_set();
-        }
-        return detail::object_or_cast(default_value);
-    }
-    return reinterpret_steal<Object>(result);
-}
-
-
-// interoperable with C++
-template <typename T>
-inline auto abs(const T&);
-inline Str ascii(const pybind11::handle&);  // TODO: accept py::Str and return std::string.
-inline Str bin(const pybind11::handle&);
-// template <typename... Args, typename Func>
-// inline constexpr auto callable(const Func&);
-inline Str chr(const pybind11::handle&);
-// template <typename L, typename R, typename Mode>
-// inline auto div(const L&, const R&, const Mode&);
-// template <typename L, typename R, typename Mode>
-// inline auto divmod(const L&, const R&, const Mode&);
-inline std::string format(const Str&, const Str&);  // TODO: delegate to py::Str?
-inline Str hex(const pybind11::handle&);
-// template <typename L, typename R, typename Mode>
-// inline auto mod(const L&, const R&, const Mode&);
-inline Str oct(const pybind11::handle&);  // TODO: make compatible with C++?
-inline Int ord(const pybind11::handle&);  // TODO: make compatible with C++?
-// template <typename L, typename R>
-// inline auto pow(const L&, const R&);
-// template <typename L, typename R, typename E>
-// inline auto pow(const L&, const R&, const E&);
-// template <typename T, typename Mode>
-// inline auto round(const T&, int, const Mode&);
-inline List sorted(const pybind11::handle&);  // TODO: accept C++ containers and return std::vector?
-
-
-/* Equivalent to Python `all(obj)`, except that it also works on iterable C++
-containers. */
-template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
-inline bool all(const T& obj) {
-    return std::all_of(obj.begin(), obj.end(), [](auto&& item) {
-        return static_cast<bool>(item);
-    });
-}
-
-
-/* Equivalent to Python `any(obj)`, except that it also works on iterable C++
-containers. */
-template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
-inline bool any(const T& obj) {
-    return std::any_of(obj.begin(), obj.end(), [](auto&& item) {
-        return static_cast<bool>(item);
-    });
-}
-
-
-
-
-
-
-
-namespace impl {
-
-    /* SFINAE check to determine whether Func overloads the call operator, which
-    signifies a lambda expression or callable functor. */
-    template <typename T, typename = void>
-    struct OverloadsCallable : std::false_type {};
-    template <typename T>
-    struct OverloadsCallable<T, std::void_t<decltype(T::operator())>> :
-        std::true_type
-    {};
-
-    /* Checks whether Func is any kind of callable object, regardless of
-    arguments. */
-    template <typename T>
-    static constexpr bool is_callable_any = std::disjunction_v<
-        std::is_function<std::remove_pointer_t<std::decay_t<T>>>,
-        std::is_member_function_pointer<std::decay_t<T>>,
-        OverloadsCallable<std::decay_t<T>>
-    >;
-
-    /* Base class for CallTraits tags, which contain SFINAE information about a
-    callable Python/C++ object, as returned by `py::callable()`. */
-    template <typename Func>
-    class CallTraitsBase {
-    protected:
-        const Func& func;
-
-    public:
-        constexpr CallTraitsBase(const Func& func) : func(func) {}
-
-        friend std::ostream& operator<<(std::ostream& os, const CallTraitsBase& traits) {
-            if (traits) {
-                os << "True";
-            } else {
-                os << "False";
-            }
-            return os;
-        }
-
-    };
-
-    /* Return tag for `py::callable()` when one or more template parameters are
-    supplied, representing hypothetical arguments to the function. */
-    template <typename Func, typename... Args>
-    struct CallTraits : public CallTraitsBase<Func> {
-        struct NoReturn {};
-
-    private:
-        using Base = CallTraitsBase<Func>;
-
-        /* SFINAE struct gets return type if Func is callable with the given arguments.
-        Otherwise defaults to NoReturn. */
-        template <typename T, typename = void>
-        struct GetReturn { using type = NoReturn; };
-        template <typename T>
-        struct GetReturn<
-            T, std::void_t<decltype(std::declval<T>()(std::declval<Args>()...))>
-        > {
-            using type = decltype(std::declval<T>()(std::declval<Args>()...));
-        };
-
-    public:
-        using Base::Base;
-
-        /* Get the return type of the function with the given arguments.  Defaults to
-        NoReturn if the function is not callable with those arguments. */
-        using Return = typename GetReturn<Func>::type;
-
-        /* Implicitly convert the tag to a constexpr bool. */
-        template <typename T = Func, std::enable_if_t<!impl::is_python<T>, int> = 0>
-        inline constexpr operator bool() const {
-            return std::is_invocable_v<Func, Args...>;
-        }
-
-        /* Implicitly convert to a runtime boolean by directly inspecting a Python code
-        object.  Note that the introspection is very lightweight and basic.  It first
-        checks `std::is_invocable<Func, Args...>` to see if all arguments can be
-        converted to Python objects, and then confirms that their number matches those
-        of the underlying code object.  This includes accounting for default values and
-        missing keyword-only arguments, while enforcing a C++-style calling convention.
-        Note that this check does not account for variadic arguments, which are not
-        represented in the code object itself. */
-        template <typename T = Func, std::enable_if_t<impl::is_python<T>, int> = 0>
-        operator bool() const {
-            if constexpr(std::is_same_v<Return, NoReturn>) {
-                return false;
-            } else {
-                static constexpr Py_ssize_t expected = sizeof...(Args);
-
-                // check Python object is callable
-                if (!PyCallable_Check(this->func.ptr())) {
-                    return false;
-                }
-
-                // Get code object associated with callable (borrowed ref)
-                PyCodeObject* code = (PyCodeObject*) PyFunction_GetCode(this->func.ptr());
-                if (code == nullptr) {
-                    return false;
-                }
-
-                // get number of positional/positional-only arguments from code object
-                Py_ssize_t n_args = code->co_argcount;
-                if (expected > n_args) {
-                    return false;  // too many arguments
-                }
-
-                // get number of positional defaults from function object (borrowed ref)
-                PyObject* defaults = PyFunction_GetDefaults(this->func.ptr());
-                Py_ssize_t n_defaults = 0;
-                if (defaults != nullptr) {
-                    n_defaults = PyTuple_Size(defaults);
-                }
-                if (expected < (n_args - n_defaults)) {
-                    return false;  // too few arguments
-                }
-
-                // check for presence of unfilled keyword-only arguments
-                if (code->co_kwonlyargcount > 0) {
-                    PyObject* kwdefaults = PyObject_GetAttrString(
-                        this->func.ptr(),
-                        "__kwdefaults__"
-                    );
-                    if (kwdefaults == nullptr) {
-                        PyErr_Clear();
-                        return false;
-                    }
-                    Py_ssize_t n_kwdefaults = 0;
-                    if (kwdefaults != Py_None) {
-                        n_kwdefaults = PyDict_Size(kwdefaults);
-                    }
-                    Py_DECREF(kwdefaults);
-                    if (n_kwdefaults < code->co_kwonlyargcount) {
-                        return false;
-                    }
-                }
-
-                // NOTE: we cannot account for variadic arguments, which are not
-                // represented in the code object.  This is a limitation of the Python
-                // C API
-
-                return true;
-            }
-        }
-
-    };
-
-    /* Template specialization for wildcard callable matching.  Note that for technical
-    reasons, it is easier to swap the meaning of the void parameter in this case, so
-    that the behavior of each class is self-consistent. */
-    template <typename Func>
-    class CallTraits<Func, void> : public CallTraitsBase<Func> {
-        using Base = CallTraitsBase<Func>;
-
-    public:
-        using Base::Base;
-
-        // NOTE: Return type is not well-defined for wildcard matching.  Attempting to
-        // access it will result in a compile error.
-
-        /* Implicitly convert the tag to a constexpr bool. */
-        template <typename T = Func, std::enable_if_t<!impl::is_python<T>, int> = 0>
-        inline constexpr operator bool() const {
-            return is_callable_any<Func>;
-        }
-
-        /* Implicitly convert the tag to a runtime bool. */
-        template <typename T = Func, std::enable_if_t<impl::is_python<T>, int> = 0>
-        inline operator bool() const {
-            return PyCallable_Check(this->func.ptr());
-        }
-
-    };
-
-}  // namespace impl
-
-
-/* Equivalent to Python `callable(obj)`, except that it supports extended C++ syntax to
-account for C++ function pointers, lambdas, and constexpr SFINAE checks.
-
-Here's how this function can be used:
-
-    if (py::callable(func)) {
-        // works just like normal Python. Enters the branch if func is a Python or C++
-        // callable with arbitrary arguments.
-    }
-
-    if (py::callable<int, int>(func)) {
-        // if used on a C++ function, inspects the function's signature at compile time
-        // to determine if it can be called with the provided arguments.
-
-        // if used on a Python callable, inspects the underlying code object to ensure
-        // that all args can be converted to Python objects, and that their number
-        // matches the function's signature (not accounting for variadic or keyword
-        // arguments).
-    }
-
-    if (py::callable<void>(func)) {
-        // specifically checks that the function is callable with zero arguments.
-        // Note that the zero-argument template specialization is reserved for wildcard
-        // matching, so we have to provide an explicit void argument here.
-    }
-
-Additionally, `py::callable()` can be used at compile time if the function allows it.
-This is only enabled for C++ functions whose signatures can be fully determined at
-compile time, and will result in compile errors if used on Python objects, which
-require runtime introspection.  Users can refer to py::is_python<> to disambiguate.
-
-    using Return = typename decltype(py::callable<int, int>(func))::Return;
-        // gets the hypothetical return type of the function with the given arguments,
-        // or an internal NoReturn placeholder if no overload could be found.  Always
-        // refers to Object for Python callables, provided that the arguments are valid
-
-    static_assert(py::callable<bool, bool>(func), "func must be callable with two bools");
-        // raises a compile error if the function cannot be called with the given
-        // arguments.  Throws a no-constexpr error if used on Python callables.
-
-    if constexpr (py::callable<double, double>(func)) {
-        // enters a constexpr branch if the function can be called with the given
-        // arguments.  The compiler will discard the branch if the condition is not
-        // met, or raise a no-constexpr error if used on Python callables.
-    }
-
-Various permutations of these examples are possible, allowing users to both statically
-and dynamically dispatch based on an arbitrary function's signature, with the same
-universal syntax in both languages. */
-template <typename... Args, typename Func>
-inline constexpr auto callable(const Func& func) {
-    // If no template arguments are given, default to wildcard matching
-    if constexpr (sizeof...(Args) == 0) {
-        return impl::CallTraits<Func, void>{func};
-
-    // If void is given as a single argument, reinterpret as an empty argument list
-    } else if constexpr (
-        sizeof...(Args) == 1 &&
-        std::is_same_v<std::tuple_element_t<0, std::tuple<Args...>>, void>
-    ) {
-        return impl::CallTraits<Func>{func};
-
-    // Otherwise, pass the arguments through to the strict matching overload
-    } else {
-        return impl::CallTraits<Func, Args...>{func};
-    }
-}
-
-
-/* Equivalent to Python `hash(obj)`, but also accepts C++ types and converts hash not
-implemented errors into compile-time errors. */
-template <typename T>
-inline size_t hash(const T& obj) {
-    static_assert(
-        impl::has_std_hash<T>,
-        "hash() is not supported for this type.  Did you forget to overload std::hash?"
-    );
-    return std::hash<T>{}(obj);
-}
-
-
-/* Equivalent to Python `id(obj)`, but also works with C++ values.  Casts the object's
-memory address to a void pointer. */
-template <typename T>
-inline const void* id(const T& obj) {
-    if constexpr (std::is_pointer_v<T>) {
-        return reinterpret_cast<void*>(obj);
-
-    } else if constexpr (impl::is_python<T>) {
-        return reinterpret_cast<void*>(obj.ptr());
-
-    } else {
-        return reinterpret_cast<void*>(&obj);
     }
 }
 
@@ -2433,7 +2232,7 @@ generate Python iterators over them.  Note that C++ types as rvalues are not all
 and will trigger a compiler error. */
 template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
 inline Iterator iter(T&& obj) {
-    if constexpr (impl::use_pybind11_iter<std::decay_t<T>>) {
+    if constexpr (impl::pybind11_iterable<std::decay_t<T>>) {
         return pybind11::iter(obj);
     } else {
         static_assert(
@@ -2463,23 +2262,6 @@ inline std::optional<size_t> len(const T& obj) {
 }
 
 
-/* Equivalent to Python `max(obj)`, but also works on iterable C++ containers. */
-template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
-inline auto max(const T& obj) {
-    return *std::max_element(obj.begin(), obj.end());
-}
-
-
-/* Equivalent to Python `min(obj)`, but also works on iterable C++ containers. */
-template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
-inline auto min(const T& obj) {
-    return *std::min_element(obj.begin(), obj.end());
-}
-
-
-// TODO: overload print() to account for generic stream insertion/to_string operators
-
-
 /* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
 represent C++ types using std::to_string or the stream insertion operator (<<).  If all
 else fails, falls back to typeid(obj).name(). */
@@ -2503,68 +2285,20 @@ inline std::string repr(const T& obj) {
 }
 
 
-/* Equivalent to Python `reversed(obj)` except that it can also accept C++ containers
-and generate Python iterators over them.  Note that C++ types as rvalues are not
-allowed, and will trigger a compiler error. */
-template <typename T>
-inline Iterator reversed(T&& obj) {
-    if constexpr (impl::is_python<std::decay_t<T>>) {
-        return obj.attr("__reversed__")();
-    } else {
-        static_assert(
-            !std::is_rvalue_reference_v<decltype(obj)>,
-            "passing an rvalue to py::reversed() is unsafe"
-        );
-        return pybind11::make_iterator(obj.rbegin(), obj.rend());
-    }
-}
-
-
-/* Specialization of `reversed()` for Tuple and List objects that use direct array
-access rather than going through the Python API. */
-template <typename T, std::enable_if_t<impl::is_reverse_iterable<T>, int> = 0>
-inline Iterator reversed(const T& obj) {
-    using Iter = typename T::ReverseIterator;
-    return pybind11::make_iterator(Iter(obj.data(), obj.size() - 1), Iter(-1));
-}
-
-
-/* Equivalent to Python `sum(obj)`, but also works on C++ containers. */
-template <typename T>
-inline auto sum(const T& obj) {
-    return std::accumulate(obj.begin(), obj.end(), T{});
-}
-
-
 }  // namespace py
 }  // namespace bertrand
 
 
-/* NOTE: for compatibility with C++, py::hash() always delegates to std::hash, which
- * can be specialized for any type.  This allows pybind11 types to be used as keys in
- * std::unordered_map/std::unordered_set just like any other C++ type, and means that
- * we can catch non-hashable types at compile time rather than runtime.  The downside
- * is that we need to specialize std::hash for every pybind11 type that is hashable at
- * the python level, which is a bit cumbersome.  To facilitate this, the
- * BERTRAND_STD_HASH() macro should be invoked for every pybind11 type that can be
- * hashed.  This just delegates to pybind11::hash, which invokes Python's __hash__
- * special method like normal.
- *
- * NOTE: BERTRAND_STD_HASH() should always be invoked in the global namespace, and it
- * cannot be used if the type accepts template parameters.
+//////////////////////////////
+////    STL EXTENSIONS    ////
+//////////////////////////////
+
+
+/* Bertrand overloads std::hash<> for all Python objects hashable so that they can be
+ * used in STL containers like std::unordered_map and std::unordered_set.  This is
+ * accomplished by overloading std::hash<> for the relevant types, which also allows
+ * us to promote hash-not-implemented errors to compile-time.
  */
-
-
-namespace std {
-
-    template <typename... Args>
-    struct hash<bertrand::py::Class<Args...>> {
-        size_t operator()(const bertrand::py::Class<Args...>& obj) const {
-            return pybind11::hash(obj);
-        }
-    };
-
-}
 
 
 #define BERTRAND_STD_HASH(cls)                                                          \
@@ -2578,42 +2312,19 @@ namespace std {                                                                 
 }                                                                                       \
 
 
-BERTRAND_STD_HASH(bertrand::py::Module)
-BERTRAND_STD_HASH(bertrand::py::Handle)
-BERTRAND_STD_HASH(bertrand::py::Object)
-BERTRAND_STD_HASH(bertrand::py::NoneType)
-BERTRAND_STD_HASH(bertrand::py::EllipsisType)
-BERTRAND_STD_HASH(bertrand::py::Iterator)
-BERTRAND_STD_HASH(bertrand::py::WeakRef)
-BERTRAND_STD_HASH(bertrand::py::Capsule)
 BERTRAND_STD_HASH(bertrand::py::Buffer)
-BERTRAND_STD_HASH(bertrand::py::MemoryView)
-BERTRAND_STD_HASH(bertrand::py::Bytes)
 BERTRAND_STD_HASH(bertrand::py::Bytearray)
+BERTRAND_STD_HASH(bertrand::py::Bytes)
+BERTRAND_STD_HASH(bertrand::py::Capsule)
+BERTRAND_STD_HASH(bertrand::py::EllipsisType)
+BERTRAND_STD_HASH(bertrand::py::Handle)
+BERTRAND_STD_HASH(bertrand::py::Iterator)
+BERTRAND_STD_HASH(bertrand::py::MemoryView)
+BERTRAND_STD_HASH(bertrand::py::Module)
+BERTRAND_STD_HASH(bertrand::py::NoneType)
 BERTRAND_STD_HASH(bertrand::py::NotImplementedType)
-
-
-/* pybind11 doesn't carry over python semantics for equality comparisons, so in order
- * to use raw pybind11 types (not our custom wrappers) in std::unordered_map and
- * std::unordered_set, we need to specialize std::equal_to for each type.  This should
- * not be necessary for any derived types, as they should use Python semantics by
- * default.
- */
-
-
-namespace std {
-
-    template <typename... Args>
-    struct equal_to<bertrand::py::Class<Args...>> {
-        bool operator()(
-            const bertrand::py::Class<Args...>& a,
-            const bertrand::py::Class<Args...>& b
-        ) const {
-            return a.equal(b);
-        }
-    };
-
-}
+BERTRAND_STD_HASH(bertrand::py::Object)
+BERTRAND_STD_HASH(bertrand::py::WeakRef)
 
 
 #define BERTRAND_STD_EQUAL_TO(cls)                                                      \
@@ -2627,10 +2338,7 @@ namespace std {                                                                 
 }                                                                                       \
 
 
-BERTRAND_STD_EQUAL_TO(bertrand::py::Module)
 BERTRAND_STD_EQUAL_TO(bertrand::py::Handle)
-BERTRAND_STD_EQUAL_TO(bertrand::py::NoneType)
-BERTRAND_STD_EQUAL_TO(bertrand::py::EllipsisType)
 BERTRAND_STD_EQUAL_TO(bertrand::py::Iterator)
 BERTRAND_STD_EQUAL_TO(bertrand::py::WeakRef)
 BERTRAND_STD_EQUAL_TO(bertrand::py::Capsule)
@@ -2638,10 +2346,6 @@ BERTRAND_STD_EQUAL_TO(bertrand::py::Buffer)
 BERTRAND_STD_EQUAL_TO(bertrand::py::MemoryView)
 BERTRAND_STD_EQUAL_TO(bertrand::py::Bytes)
 BERTRAND_STD_EQUAL_TO(bertrand::py::Bytearray)
-
-
-// TODO: implement type casters for range, MappingProxy, KeysView, ValuesView,
-// ItemsView, Method, ClassMethod, StaticMethod, Property
 
 
 #endif // BERTRAND_PYTHON_COMMON_H

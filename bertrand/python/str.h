@@ -24,7 +24,7 @@ class Str : public impl::SequenceOps {
     template <typename T>
     inline auto to_format_string(T&& arg) -> decltype(auto) {
         using U = std::decay_t<T>;
-        if constexpr (std::is_base_of_v<pybind11::handle, U>) {
+        if constexpr (std::is_base_of_v<Handle, U>) {
             return arg.ptr();
         } else if constexpr (std::is_base_of_v<std::string, U>) {
             return arg.c_str();
@@ -748,7 +748,7 @@ public:
 
 /* Equivalent to Python `ascii(obj)`.  Like `repr()`, but returns an ASCII-encoded
 string. */
-inline Str ascii(const pybind11::handle& obj) {
+inline Str ascii(const Handle& obj) {
     PyObject* result = PyObject_ASCII(obj.ptr());
     if (result == nullptr) {
         throw error_already_set();
@@ -759,7 +759,7 @@ inline Str ascii(const pybind11::handle& obj) {
 
 /* Equivalent to Python `bin(obj)`.  Converts an integer or other object implementing
 __index__() into a binary string representation. */
-inline Str bin(const pybind11::handle& obj) {
+inline Str bin(const Handle& obj) {
     PyObject* string = PyNumber_ToBase(obj.ptr(), 2);
     if (string == nullptr) {
         throw error_already_set();
@@ -770,7 +770,7 @@ inline Str bin(const pybind11::handle& obj) {
 
 /* Equivalent to Python `oct(obj)`.  Converts an integer or other object implementing
 __index__() into an octal string representation. */
-inline Str oct(const pybind11::handle& obj) {
+inline Str oct(const Handle& obj) {
     PyObject* string = PyNumber_ToBase(obj.ptr(), 8);
     if (string == nullptr) {
         throw error_already_set();
@@ -781,7 +781,7 @@ inline Str oct(const pybind11::handle& obj) {
 
 /* Equivalent to Python `hex(obj)`.  Converts an integer or other object implementing
 __index__() into a hexadecimal string representation. */
-inline Str hex(const pybind11::handle& obj) {
+inline Str hex(const Handle& obj) {
     PyObject* string = PyNumber_ToBase(obj.ptr(), 16);
     if (string == nullptr) {
         throw error_already_set();
@@ -792,7 +792,7 @@ inline Str hex(const pybind11::handle& obj) {
 
 /* Equivalent to Python `chr(obj)`.  Converts an integer or other object implementing
 __index__() into a unicode character. */
-inline Str chr(const pybind11::handle& obj) {
+inline Str chr(const Handle& obj) {
     PyObject* string = PyUnicode_FromFormat("%llc", obj.cast<long long>());
     if (string == nullptr) {
         throw error_already_set();
@@ -803,7 +803,7 @@ inline Str chr(const pybind11::handle& obj) {
 
 /* Equivalent to Python `ord(obj)`.  Converts a unicode character into an integer
 representation. */
-Int ord(const pybind11::handle& obj) {
+Int ord(const Handle& obj) {
     PyObject* ptr = obj.ptr();
     if (ptr == nullptr) {
         throw TypeError("cannot call ord() on a null object");
