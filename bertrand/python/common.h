@@ -27,6 +27,60 @@
 #include <pybind11/stl_bind.h>
 
 
+/* NOTES ON PERFORMANCE:
+ * In general, bertrand should be quite efficient, and generally trade blows with
+ * native Python in most respects.  It expands out to raw CPython API calls, so
+ * properly optimized (i.e. type safe) code should retain as much performance as
+ * possible, and may even gain some due to specific optimizations at the C++ level.
+ * There are, however, a few things to keep in mind:
+ *
+ *  1.  A null pointer check followed by a type check is implicitly incurred whenever a
+ *      generalized py::Object is narrowed to a more specific type, such as py::Int or
+ *      py::List.  This is necessary to ensure type safety, and is optimized for
+ *      built-in types, but can become a pessimization if done frequently, especially
+ *      in tight loops.  If you find yourself doing this, consider either converting to
+ *      strict types earlier in the code, which will allow the compiler to enforce
+ *      these rules at compile time, or keeping all object interactions generic to
+ *      prevent thrashing.  Generally, the most common case where this can be a problem
+ *      is when assigning the result of a generic attribute lookup (`.attr()`), index
+ *      (`[]`), or call (`()`) operator to a strict type, since these operators return
+ *      py::Object instances by default.  If you naively bind these to a strict type
+ *      (e.g. `py::Int x = py::List{1, 2, 3}[1]` or `py::Str y = x.attr("__doc__")`),
+ *      then the runtime check will be implicitly incurred to make the operation type
+ *      safe.  See point #2 below for a workaround.  In the future, bertrand will
+ *      likely offer typed alternatives for the basic containers, which can promote
+ *      some of these checks to compile time, but they can never be completely
+ *      eliminated.
+ *  2.  For cases where the type of a generic object is known in advance, it is
+ *      possible to bypass the runtime check by using `py::reinterpret_borrow<T>(obj)`
+ *      or `py::reinterpret_steal<T>(obj.release())`.  These functions are not type
+ *      safe, and should be used with caution (especially the latter, which can lead to
+ *      memory leaks if used incorrectly).  However, they can be useful when working
+ *      with custom types, as in most cases a method's return type and reference count
+ *      will be known ahead of time, making the runtime check redundant.  In most other
+ *      cases, it is not recommended to use these functions, as they can lead to subtle
+ *      bugs and crashes if their assumptions are incorrect.
+ *  3.  There is a penalty for copying data across the Python/C++ boundary.  This is
+ *      generally quite small (even for lists and other container types), but it can
+ *      add up if done frequently.  If you find yourself repeatedly copying large
+ *      amounts of data between Python and C++, you should reconsider your design or
+ *      use the buffer protocol to avoid the copy.  This is especially true for NumPy
+ *      arrays, which can be accessed directly as C++ arrays without copying.
+ *  4.  Python (at least for now) does not play well with multithreaded code, and
+ *      neither does bertrand.  If you need to use Python in a multithreaded context,
+ *      consider offloading the work to C++ and passing the results back to Python.
+ *      This unlocks full native parallelism, with SIMD, OpenMP, and other tools at
+ *      your disposal.  If you must use Python, consider using the
+ *      `py::gil_scoped_release` guard to release the GIL while doing C++ work, and
+ *      then reacquire it via RAII before returning to Python.
+ *  5.  Lastly, Bertrand makes it possible to store arbitrary Python objects with
+ *      static duration using the py::Static<> wrapper, which can reduce net
+ *      allocations and improve performance.  This is especially true for global
+ *      objects like modules and scripts, which can be cached and reused across the
+ *      lifetime of the program.
+ */
+
+
 using namespace pybind11::literals;
 namespace bertrand {
 namespace py {
@@ -53,10 +107,10 @@ using pybind11::reinterpret_borrow;
 using pybind11::reinterpret_steal;
 using pybind11::implicitly_convertible;
 using pybind11::args_are_all_keyword_or_ds;
-using pybind11::make_tuple;
-using pybind11::make_iterator;
-using pybind11::make_key_iterator;
-using pybind11::make_value_iterator;
+using pybind11::make_tuple;  // TODO: unnecessary
+using pybind11::make_iterator;  // TODO: roll into Iterator() constructor
+using pybind11::make_key_iterator;  // offer as static method in Iterator:: namespace
+using pybind11::make_value_iterator;  // same as above
 using pybind11::initialize_interpreter;
 using pybind11::scoped_interpreter;
 // PYBIND11_MODULE                      <- macros don't respect namespaces
@@ -66,7 +120,7 @@ using pybind11::scoped_interpreter;
 // PYBIND11_OVERRIDE_NAME
 // PYBIND11_OVERRIDE_PURE_NAME
 using pybind11::get_override;
-using pybind11::cpp_function;
+using pybind11::cpp_function;  // TODO: unnecessary, use py::Function() instead
 using pybind11::scoped_ostream_redirect;
 using pybind11::scoped_estream_redirect;
 using pybind11::add_ostream_redirect;
@@ -107,9 +161,9 @@ using Handle = pybind11::handle;
 using Iterator = pybind11::iterator;
 using WeakRef = pybind11::weakref;
 using Capsule = pybind11::capsule;
-using Buffer = pybind11::buffer;
+using Buffer = pybind11::buffer;  // TODO: place in buffer.h along with memoryview
 using MemoryView = pybind11::memoryview;
-using Bytes = pybind11::bytes;
+using Bytes = pybind11::bytes;  // TODO: place in str.h with bytearray.  They use an API mixin
 using Bytearray = pybind11::bytearray;
 class Object;
 class NotImplementedType;
@@ -147,7 +201,6 @@ class Datetime;
 // python object, so it shouldn't be in the py:: namespace
 
 class Regex;  // TODO: incorporate more fully (write pybind11 bindings so that it can be passed into Python scripts)
-
 
 
 //////////////////////////
@@ -785,6 +838,27 @@ namespace impl {
 
     };
 
+    /* Tag class to identify wrappers during SFINAE checks. */
+    struct WrapperTag {};
+
+    template <typename T>
+    constexpr bool is_wrapper = std::is_base_of_v<WrapperTag, T>;
+
+    /* Standardized error message for type narrowing via pybind11 accessors or the
+    generic Object wrapper. */
+    template <typename Derived>
+    TypeError noconvert(PyObject* obj) {
+        pybind11::type source = pybind11::type::of(obj);
+        pybind11::type dest = Derived::type;
+        const char* source_name = reinterpret_cast<PyTypeObject*>(source.ptr())->tp_name;
+        const char* dest_name = reinterpret_cast<PyTypeObject*>(dest.ptr())->tp_name;
+
+        std::ostringstream msg;
+        msg << "cannot convert python object from type '" << source_name;
+        msg << "' to type '" << dest_name << "'";
+        return TypeError(msg.str());
+    }
+
     #define CONVERTABLE_ACCESSOR(name, base)                                            \
         struct name : public detail::base {                                             \
             using detail::base::base;                                                   \
@@ -819,7 +893,15 @@ namespace impl {
                 return result;                                                          \
             }                                                                           \
                                                                                         \
-            template <typename T, std::enable_if_t<!impl::is_python<T>, int> = 0>       \
+            template <typename T, std::enable_if_t<impl::is_wrapper<T>, int> = 0>       \
+            inline operator T() const {                                                 \
+                return T(this->operator typename T::Wrapped());                         \
+            }                                                                           \
+                                                                                        \
+            template <                                                                  \
+                typename T,                                                             \
+                std::enable_if_t<!impl::is_wrapper<T> && !impl::is_python<T>, int> = 0  \
+            >                                                                           \
             inline operator T() const {                                                 \
                 return detail::base::template cast<T>();                                \
             }                                                                           \
@@ -833,7 +915,7 @@ namespace impl {
             inline operator T() const {                                                 \
                 pybind11::object other(*this);                                          \
                 if (!T::check(other)) {                                                 \
-                    throw std::runtime_error("conversion error");                       \
+                    throw impl::noconvert<T>(this->ptr());                              \
                 }                                                                       \
                 return reinterpret_steal<T>(other.release());                           \
             }                                                                           \
@@ -859,23 +941,8 @@ static_cast<>, cross-language math operators, and generalized slice/attr syntax.
 class Object : public pybind11::object {
     using Base = pybind11::object;
 
-protected:
-
-    template <typename Derived>
-    static TypeError noconvert(PyObject* obj) {
-        pybind11::type source = pybind11::type::of(obj);
-        pybind11::type dest = Derived::Type;
-        const char* source_name = reinterpret_cast<PyTypeObject*>(source.ptr())->tp_name;
-        const char* dest_name = reinterpret_cast<PyTypeObject*>(dest.ptr())->tp_name;
-
-        std::ostringstream msg;
-        msg << "could not assign object of type '" << source_name;
-        msg << "' to value of type '" << dest_name << "'";
-        return TypeError(msg.str());
-    }
-
 public:
-    static py::Type Type;
+    static Type type;
 
     /* Check whether a templated type is considered object-like at compile time. */
     template <typename T>
@@ -970,14 +1037,24 @@ public:
     template <typename T, std::enable_if_t<std::is_base_of_v<Object, T>, int> = 0>
     inline operator T() const {
         if (!T::check(*this)) {
-            throw noconvert<T>(this->ptr());
+            throw impl::noconvert<T>(this->ptr());
         }
         return reinterpret_borrow<T>(this->ptr());
     }
 
+    /* Implicitly convert an Object wrapper to a wrapper class, which moves it into a
+    customizable buffer for static storage duration, etc. */
+    template <typename T, std::enable_if_t<impl::is_wrapper<T>, int> = 0>
+    inline operator T() const {
+        return T(this->operator typename T::Wrapped());
+    }
+
     /* Explicitly convert to any other non-Object type using pybind11 to search for a
     matching type caster. */
-    template <typename T, std::enable_if_t<!std::is_base_of_v<Object, T>, int> = 0>
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_wrapper<T> && !std::is_base_of_v<Object, T>, int> = 0
+    >
     inline explicit operator T() const {
         return Base::cast<T>();
     }
@@ -1358,9 +1435,6 @@ namespace impl {
     template <typename T>
     constexpr bool is_initializer = std::is_base_of_v<Initializer, T>;
 
-    /* Tag class to identify wrappers during SFINAE checks. */
-    struct WrapperTag {};
-
     /* A mixin class for transparent Object<> wrappers that forwards the basic interface. */
     template <typename T>
     class Wrapper : WrapperTag {
@@ -1379,39 +1453,18 @@ namespace impl {
     public:
         using Wrapped = T;
 
-        ////////////////////////////
-        ////    CONSTRUCTORS    ////
-        ////////////////////////////
-
         /* Explicitly create an empty wrapper with uninitialized memory. */
         inline static Wrapper alloc() {
             return Wrapper(alloc_t{});
         }
 
+        ////////////////////////////
+        ////    CONSTRUCTORS    ////
+        ////////////////////////////
+
         /* Default constructor. */
         Wrapper() : initialized(true) {
             new (buffer) T();
-        }
-
-        /* Forwarding constructor for the internal buffer. */
-        template <
-            typename First,
-            typename... Rest,
-            std::enable_if_t<!std::is_same_v<std::decay_t<First>, alloc_t>, int> = 0
-        >
-        Wrapper(First&& first, Rest&&... rest) : initialized(true) {
-            new (buffer) T(std::forward<First>(first), std::forward<Rest>(rest)...);
-        }
-
-        /* Forwarding constructor for homogenous initializer list syntax. */
-        template <typename U>
-        Wrapper(const std::initializer_list<U>& list) : initialized(true) {
-            new (buffer) T(list);
-        }
-
-        /* Forwarding constructor for mixed initializer list syntax. */
-        Wrapper(const std::initializer_list<impl::Initializer>& list) : initialized(true) {
-            new (buffer) T(list);
         }
 
         /* Copy constructor. */
@@ -1422,6 +1475,16 @@ namespace impl {
         /* Move constructor. */
         Wrapper(Wrapper&& other) : initialized(true) {
             new (buffer) T(std::move(*other));
+        }
+
+        /* Forwarding copy constructor for wrapped type. */
+        Wrapper(const T& other) : initialized(true) {
+            new (buffer) T(other);
+        }
+
+        /* Forwarding move constructor for wrapped type. */
+        Wrapper(T&& other) : initialized(true) {
+            new (buffer) T(std::move(other));
         }
 
         /* Forwarding assignment operator. */
@@ -1495,6 +1558,41 @@ namespace impl {
         /* Implicitly convert to the wrapped type. */
         inline operator T() {
             return **this;
+        }
+
+private:
+
+        /* Helper function triggers implicit conversion operators and/or implicit
+        constructors, but not explicit ones.  In contrast, static_cast<>() will trigger
+        explicit constructors on the target type, which can give unexpected results and
+        violate bertrand's strict type safety. */
+        template <typename U>
+        inline static decltype(auto) implicit_cast(U&& value) {
+            return std::forward<U>(value);
+        }
+
+public:
+
+        /* Forward all other implicit conversions to the wrapped type. */
+        template <
+            typename U,
+            std::enable_if_t<
+                !std::is_same_v<T, U> && std::is_convertible_v<T, U>,
+            int> = 0
+        >
+        inline operator U() const {
+            return implicit_cast<U>(**this);
+        }
+
+        /* Forward all other explicit conversions to the wrapped type. */
+        template <
+            typename U,
+            std::enable_if_t<
+                !std::is_same_v<T, U> && !std::is_convertible_v<T, U>,
+            int> = 0
+        >
+        inline explicit operator U() const {
+            return static_cast<U>(**this);
         }
 
         ////////////////////////////////////
@@ -1679,7 +1777,15 @@ namespace impl {
         template <typename T, std::enable_if_t<std::is_base_of_v<Object, T>, int> = 0>
         operator T() const = delete;
 
-        template <typename T, std::enable_if_t<!std::is_base_of_v<Object, T>, int> = 0>
+        template <typename T, std::enable_if_t<impl::is_wrapper<T>, int> = 0>
+        inline operator T() const {
+            return Object::operator T();
+        }
+
+        template <
+            typename T,
+            std::enable_if_t<!impl::is_wrapper<T> && !std::is_base_of_v<Object, T>, int> = 0
+        >
         inline explicit operator T() const {
             return Object::operator T();
         }
@@ -1961,27 +2067,11 @@ namespace impl {
             return obj.ptr() != nullptr && check_func(obj.ptr());                       \
         }                                                                               \
                                                                                         \
-        /* Inherit tagged borrow/steal constructors. */                                 \
+        /* Inherit tagged borrow/steal and copy/move constructors. */                   \
         cls(Handle h, const borrowed_t& t) : parent(h, t) {}                            \
         cls(Handle h, const stolen_t& t) : parent(h, t) {}                              \
-                                                                                        \
-        /* Copy constructor.  Borrows a reference. */                                   \
-        template <                                                                      \
-            typename T,                                                                 \
-            std::enable_if_t<check<T>() && Object::check<T>(), int> = 0                 \
-        >                                                                               \
-        cls(const T& value) : parent(value.ptr(), borrowed_t{}) {}                      \
-                                                                                        \
-        /* Move constructor.  Steals a reference. */                                    \
-        template <                                                                      \
-            typename T,                                                                 \
-            std::enable_if_t<                                                           \
-                check<std::decay_t<T>>() &&                                             \
-                Object::check<std::decay_t<T>>() &&                                     \
-                std::is_rvalue_reference_v<T>,                                          \
-            int> = 0                                                                    \
-        >                                                                               \
-        cls(T&& value) : parent(value.release(), stolen_t{}) {}                         \
+        cls(const cls& value) : parent(value.ptr(), borrowed_t{}) {}                    \
+        cls(cls&& value) : parent(value.release(), stolen_t{}) {}                       \
                                                                                         \
         /* Convert an accessor into a this type. */                                     \
         template <typename Policy>                                                      \
@@ -2002,6 +2092,9 @@ namespace impl {
         /* Make sure address operators don't get lost during overloads. */              \
         inline cls* operator&() { return this; }                                        \
         inline const cls* operator&() const { return this; }                            \
+
+    // TODO: when converting an accessor, trigger its implicit conversion operator?
+
 
 }  // namespace impl
 
@@ -2052,7 +2145,7 @@ class NoneType : public impl::Ops {
     }
 
 public:
-    static py::Type Type;
+    static Type type;
 
     BERTRAND_OBJECT_CONSTRUCTORS(Base, NoneType, check_none)
     NoneType() : Base(Py_None, borrowed_t{}) {}
@@ -2072,7 +2165,7 @@ class NotImplementedType : public impl::Ops {
     }
 
 public:
-    static py::Type Type;
+    static Type type;
 
     BERTRAND_OBJECT_CONSTRUCTORS(Base, NotImplementedType, check_not_implemented)
     NotImplementedType() : Base(Py_NotImplemented, borrowed_t{}) {}
@@ -2092,7 +2185,7 @@ class EllipsisType : public impl::Ops {
     }
 
 public:
-    static py::Type Type;
+    static Type type;
 
     BERTRAND_OBJECT_CONSTRUCTORS(Base, EllipsisType, check_ellipsis)
     EllipsisType() : Base(Py_Ellipsis, borrowed_t{}) {}
@@ -2118,7 +2211,7 @@ class Module : public impl::Ops {
     }
 
 public:
-    static py::Type Type;
+    static Type type;
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

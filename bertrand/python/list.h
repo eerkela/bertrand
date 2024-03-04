@@ -42,7 +42,7 @@ class List : public impl::SequenceOps, public impl::ReverseIterable<List> {
     static constexpr bool constructor1 = !impl::is_python<T> && impl::is_iterable<T>;
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_list_like<T>; }

@@ -27,7 +27,7 @@ class MappingProxy : public impl::Ops {
     }
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_mappingproxy_like<T>; }
@@ -119,7 +119,7 @@ class KeysView : public impl::Ops {
     }
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_same_or_subclass_of<KeysView, T>; }
@@ -254,7 +254,7 @@ class ValuesView : public impl::Ops {
     }
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_same_or_subclass_of<ValuesView, T>; }
@@ -326,7 +326,7 @@ struct ItemsView : public impl::Ops {
     }
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_same_or_subclass_of<ItemsView, T>; }
@@ -399,7 +399,7 @@ class Dict : public impl::Ops {
         impl::is_python<T> && !impl::is_dict_like<T> && impl::is_iterable<T>;
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_dict_like<T>; }
@@ -806,17 +806,17 @@ public:
 
     /* Equivalent to Python `dict.keys()`. */
     inline KeysView keys() const {
-        return this->attr("keys")();
+        return reinterpret_steal<KeysView>(this->attr("keys")().release());
     }
 
     /* Equivalent to Python `dict.values()`. */
     inline ValuesView values() const {
-        return this->attr("values")();
+        return reinterpret_steal<ValuesView>(this->attr("values")().release());
     }
 
     /* Equivalent to Python `dict.items()`. */
     inline ItemsView items() const {
-        return this->attr("items")();
+        return reinterpret_steal<ItemsView>(this->attr("items")().release());
     }
 
     /////////////////////////
@@ -870,15 +870,15 @@ public:
 
 
 inline Dict MappingProxy::copy() const{
-    return this->attr("copy")();
+    return reinterpret_steal<Dict>(this->attr("copy")().release());
 }
 
 inline KeysView MappingProxy::keys() const{
-    return this->attr("keys")();
+    return reinterpret_steal<KeysView>(this->attr("keys")().release());
 }
 
 inline ValuesView MappingProxy::values() const{
-    return this->attr("values")();
+    return reinterpret_steal<ValuesView>(this->attr("values")().release());
 }
 
 template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
@@ -888,7 +888,9 @@ inline bool MappingProxy::contains(const K& key) const {
 
 template <typename T, std::enable_if_t<impl::is_dict_like<T>, int> = 0>
 inline Dict operator|(const MappingProxy& mapping, const T& other) {
-    return mapping.attr("__or__")(detail::object_or_cast(other));
+    return reinterpret_steal<Dict>(
+        mapping.attr("__or__")(detail::object_or_cast(other)).release()
+    );
 }
 
 

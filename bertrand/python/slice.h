@@ -19,7 +19,7 @@ class Slice : public impl::Ops {
     using Base = impl::Ops;
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_slice_like<T>; }

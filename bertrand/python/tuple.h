@@ -44,7 +44,7 @@ class Tuple : public impl::SequenceOps, public impl::ReverseIterable<Tuple> {
     static constexpr bool constructor3 = !impl::is_python<T> && impl::is_iterable<T>;
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_tuple_like<T>; }

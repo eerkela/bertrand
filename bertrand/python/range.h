@@ -27,7 +27,7 @@ class Range : public impl::Ops {
     }
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool like = impl::is_range_like<T>;

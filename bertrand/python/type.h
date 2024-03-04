@@ -20,6 +20,7 @@ class Type : public impl::Ops {
     using Base = impl::Ops;
 
 public:
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_type_like<T>; }
@@ -35,7 +36,9 @@ public:
 
     /* Explicitly detect the type of an arbitrary Python object. */
     template <typename T, std::enable_if_t<impl::is_python<T>, int> = 0>
-    explicit Type(const T& obj) : Base((PyObject*) Py_TYPE(obj.ptr()), borrowed_t{}) {}
+    explicit Type(const T& obj) : Base((PyObject*) Py_TYPE(obj.ptr()), borrowed_t{}) {
+        std::cout << "getting type of: " << static_cast<std::string>(obj) << "\n";
+    }
 
     /* Dynamically create a new Python type by calling the type() metaclass. */
     explicit Type(const Str& name, const Tuple& bases, const Dict& dict);
@@ -343,6 +346,9 @@ public:
 };
 
 
+Type Type::type = Type{};  // metaprogramming in a nutshell
+
+
 /* New subclass of pybind11::object that represents Python's built-in super() type. */
 class Super : public impl::Ops {
     using Base = impl::Ops;
@@ -356,7 +362,7 @@ class Super : public impl::Ops {
     }
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_same_or_subclass_of<Super, T>; }

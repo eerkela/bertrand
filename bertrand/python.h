@@ -17,13 +17,35 @@
 #include "python/dict.h"
 #include "python/str.h"
 #include "python/func.h"
-// #include "python/datetime.h"
+#include "python/datetime.h"
 #include "python/math.h"
 #include "python/type.h"
 
 
 namespace bertrand {
 namespace py {
+
+
+/* TODO: What if I provided another wrapper besides static, like py::Typed<>?
+ *      -> This would be easier to do with special TypedList<>, etc subclasses, which
+ *         have a cleaner syntax and would apply the same Object-like semantics with
+ *         regard to type narrowing, etc.  It would imply a loop through the container
+ *         to check types, but from then on, it would be fully typed and checked by the
+ *         compiler.
+ *
+ *      py::TypedList<py::Int> list = {1, 2, "a"};
+ *      // compile error!  "a" is not implicitly convertible to int
+ *
+ *      py::TypedList<py::Int> list = {1, 2, 3};
+ *      list.append("a"); 
+ *      // compile error!  "a" is not implicitly convertible to int
+ *
+ *      py::TypedList<int> list = {1, 2, 3};
+ *      list.append("a"); 
+ *      // same as before, but with raw C++ integers.  Everything gets converted to a
+ *      // py::Object anyways, so the only thing this does is enforce C++ type safety.
+ */
+
 
 
 /* Some attributes are forward declared to avoid circular dependencies.
@@ -45,69 +67,69 @@ namespace py {
 
 /* Every Python type has a static `Type` member that gives access to the Python type
 object associated with instances of that class. */
-inline Type Object::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
-inline Type NoneType::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(Py_TYPE(Py_None)));
-inline Type NotImplementedType::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(Py_TYPE(Py_NotImplemented)));
-inline Type EllipsisType::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyEllipsis_Type));
-inline Type Module::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyModule_Type));
-inline Type Bool::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyBool_Type));
-inline Type Int::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyLong_Type));
-inline Type Float::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFloat_Type));
-inline Type Complex::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyComplex_Type));
-inline Type Slice::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PySlice_Type));
-inline Type Range::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyRange_Type));
-inline Type List::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyList_Type));
-inline Type Tuple::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyTuple_Type));
-inline Type Set::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PySet_Type));
-inline Type FrozenSet::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFrozenSet_Type));
-inline Type Dict::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDict_Type));
-inline Type MappingProxy::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictProxy_Type));
-inline Type KeysView::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictKeys_Type));
-inline Type ValuesView::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictValues_Type));
-inline Type ItemsView::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyDictItems_Type));
-inline Type Str::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type));
-inline Type Code::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyCode_Type));
-inline Type Frame::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFrame_Type));
-inline Type Function::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyFunction_Type));
-inline Type Method::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyInstanceMethod_Type));
-inline Type ClassMethod::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type));
-inline Type StaticMethod::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyStaticMethod_Type));
-inline Type Property::Type = reinterpret_borrow<py::Type>(reinterpret_cast<PyObject*>(&PyProperty_Type));
-// inline Type Timedelta::Type = [] {
-//     if (impl::DATETIME_IMPORTED) {
-//         return reinterpret_borrow<py::Type>(impl::PyDelta_Type.ptr());
-//     } else {
-//         return py::Type();
-//     }
-// }();
-// inline Type Timezone::Type = [] {
-//     if (impl::DATETIME_IMPORTED) {
-//         return reinterpret_borrow<py::Type>(impl::PyTZInfo_Type.ptr());
-//     } else {
-//         return py::Type();
-//     }
-// }();
-// inline Type Date::Type = [] {
-//     if (impl::DATETIME_IMPORTED) {
-//         return reinterpret_borrow<py::Type>(impl::PyDate_Type.ptr());
-//     } else {
-//         return py::Type();
-//     }
-// }();
-// inline Type Time::Type = [] {
-//     if (impl::DATETIME_IMPORTED) {
-//         return reinterpret_borrow<py::Type>(impl::PyTime_Type.ptr());
-//     } else {
-//         return py::Type();
-//     }
-// }();
-// inline Type Datetime::Type = [] {
-//     if (impl::DATETIME_IMPORTED) {
-//         return reinterpret_borrow<py::Type>(impl::PyDateTime_Type.ptr());
-//     } else {
-//         return py::Type();
-//     }
-// }();
+inline Type Object::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
+inline Type NoneType::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(Py_TYPE(Py_None)));
+inline Type NotImplementedType::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(Py_TYPE(Py_NotImplemented)));
+inline Type EllipsisType::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyEllipsis_Type));
+inline Type Module::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyModule_Type));
+inline Type Bool::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyBool_Type));
+inline Type Int::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyLong_Type));
+inline Type Float::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyFloat_Type));
+inline Type Complex::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyComplex_Type));
+inline Type Slice::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PySlice_Type));
+inline Type Range::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyRange_Type));
+inline Type List::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyList_Type));
+inline Type Tuple::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyTuple_Type));
+inline Type Set::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PySet_Type));
+inline Type FrozenSet::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyFrozenSet_Type));
+inline Type Dict::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyDict_Type));
+inline Type MappingProxy::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyDictProxy_Type));
+inline Type KeysView::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyDictKeys_Type));
+inline Type ValuesView::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyDictValues_Type));
+inline Type ItemsView::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyDictItems_Type));
+inline Type Str::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type));
+inline Type Code::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyCode_Type));
+inline Type Frame::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyFrame_Type));
+inline Type Function::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyFunction_Type));
+inline Type Method::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyInstanceMethod_Type));
+inline Type ClassMethod::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type));
+inline Type StaticMethod::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyStaticMethod_Type));
+inline Type Property::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyProperty_Type));
+inline Type Timedelta::type = [] {
+    if (impl::DATETIME_IMPORTED) {
+        return reinterpret_borrow<Type>(impl::PyDelta_Type->ptr());
+    } else {
+        return Type();
+    }
+}();
+inline Type Timezone::type = [] {
+    if (impl::DATETIME_IMPORTED) {
+        return reinterpret_borrow<Type>(impl::PyTZInfo_Type->ptr());
+    } else {
+        return Type();
+    }
+}();
+inline Type Date::type = [] {
+    if (impl::DATETIME_IMPORTED) {
+        return reinterpret_borrow<Type>(impl::PyDate_Type->ptr());
+    } else {
+        return Type();
+    }
+}();
+inline Type Time::type = [] {
+    if (impl::DATETIME_IMPORTED) {
+        return reinterpret_borrow<Type>(impl::PyTime_Type->ptr());
+    } else {
+        return Type();
+    }
+}();
+inline Type Datetime::type = [] {
+    if (impl::DATETIME_IMPORTED) {
+        return reinterpret_borrow<Type>(impl::PyDateTime_Type->ptr());
+    } else {
+        return Type();
+    }
+}();
 
 
 //////////////////////////////
@@ -127,7 +149,7 @@ namespace impl {
         if constexpr (is_callable_any<std::decay_t<T>>) {
             return Function(std::forward<T>(arg));
         } else {
-            return detail::object_or_cast(std::forward<T>(arg));
+            return std::forward<T>(arg);
         }
     }
 
@@ -507,7 +529,15 @@ inline auto min(const T& obj) {
 using the py::Str constructor. */
 template <typename... Args>
 inline void print(const Args&... args) {
-    pybind11::print(Str(args)...);
+    auto convert = [](auto&& arg) {
+        if constexpr (impl::is_wrapper<std::decay_t<decltype(arg)>>) {
+            return Str(*arg);
+        } else {
+            return Str(arg);
+        }
+    };
+
+    pybind11::print(convert(args)...);
 }
 
 
@@ -592,95 +622,6 @@ inline Dict vars(const Handle& object) {
 
 // TODO: implement type casters for range, MappingProxy, KeysView, ValuesView,
 // ItemsView, Method, ClassMethod, StaticMethod, Property
-
-
-namespace pybind11 {
-namespace detail {
-
-template <>
-struct type_caster<bertrand::py::Complex> {
-    PYBIND11_TYPE_CASTER(bertrand::py::Complex, _("Complex"));
-
-    /* Convert a Python object into a py::Complex value. */
-    bool load(handle src, bool convert) {
-        if (PyComplex_Check(src.ptr())) {
-            value = reinterpret_borrow<bertrand::py::Complex>(src.ptr());
-            return true;
-        }
-
-        if (!convert) {
-            return false;
-        }
-
-        Py_complex complex_struct = PyComplex_AsCComplex(src.ptr());
-        if (complex_struct.real == -1.0 && PyErr_Occurred()) {
-            PyErr_Clear();
-            return false;
-        }
-
-        value = bertrand::py::Complex(complex_struct.real, complex_struct.imag);
-        return true;
-    }
-
-    /* Convert a Complex value into a Python object. */
-    inline static handle cast(
-        const bertrand::py::Complex& src,
-        return_value_policy /* policy */,
-        handle /* parent */
-    ) {
-        return Py_XNewRef(src.ptr());
-    }
-
-};
-
-/* NOTE: pybind11 already implements a type caster for the generic std::complex<T>, so
-we can't override it directly.  However, we can specialize it at a lower level to
-handle the specific std::complex<> types that we want, which effectively bypasses the
-pybind11 implementation.  This is a bit of a hack, but it works. */
-#define COMPLEX_CASTER(T)                                                               \
-    template <>                                                                         \
-    struct type_caster<std::complex<T>> {                                               \
-        PYBIND11_TYPE_CASTER(std::complex<T>, _("complex"));                            \
-                                                                                        \
-        /* Convert a Python object into a std::complex<T> value. */                     \
-        bool load(handle src, bool convert) {                                           \
-            if (src.ptr() == nullptr) {                                                 \
-                return false;                                                           \
-            }                                                                           \
-            if (!convert && !PyComplex_Check(src.ptr())) {                              \
-                return false;                                                           \
-            }                                                                           \
-            Py_complex complex_struct = PyComplex_AsCComplex(src.ptr());                \
-            if (complex_struct.real == -1.0 && PyErr_Occurred()) {                      \
-                PyErr_Clear();                                                          \
-                return false;                                                           \
-            }                                                                           \
-            value = std::complex<T>(                                                    \
-                static_cast<T>(complex_struct.real),                                    \
-                static_cast<T>(complex_struct.imag)                                     \
-            );                                                                          \
-            return true;                                                                \
-        }                                                                               \
-                                                                                        \
-        /* Convert a std::complex<T> value into a Python object. */                     \
-        inline static handle cast(                                                      \
-            const std::complex<T>& src,                                                 \
-            return_value_policy /* policy */,                                           \
-            handle /* parent */                                                         \
-        ) {                                                                             \
-            return bertrand::py::Complex(src).release();                                \
-        }                                                                               \
-                                                                                        \
-    };                                                                                  \
-
-COMPLEX_CASTER(float);
-COMPLEX_CASTER(double);
-COMPLEX_CASTER(long double);
-
-#undef COMPLEX_CASTER
-
-} // namespace detail
-} // namespace pybind11
 
 
 #undef BERTRAND_PYTHON_CONSTRUCTORS

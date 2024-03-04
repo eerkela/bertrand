@@ -31,7 +31,7 @@ class Float : public impl::Ops {
     static constexpr bool constructor3 = impl::is_python<T> && !impl::is_float_like<T>;
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_float_like<T>; }

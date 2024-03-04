@@ -373,7 +373,7 @@ class FrozenSet : public impl::Ops, public impl::ISet<FrozenSet> {
     static constexpr bool constructor2 = !impl::is_python<T> && impl::is_iterable<T>;
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_frozenset_like<T>; }
@@ -400,26 +400,6 @@ public:
         }
         try {
             for (const impl::HashInitializer& item : contents) {
-                if (PySet_Add(m_ptr, item.first.ptr())) {
-                    throw error_already_set();
-                }
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Pack the contents of a braced initializer list into a new Python frozenset. */
-    template <typename T, std::enable_if_t<impl::is_initializer<T>, int> = 0>
-    FrozenSet(const std::initializer_list<T>& contents) :
-        Base(PyFrozenSet_New(nullptr), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            throw error_already_set();
-        }
-        try {
-            for (const T& item : contents) {
                 if (PySet_Add(m_ptr, item.first.ptr())) {
                     throw error_already_set();
                 }
@@ -592,7 +572,7 @@ class Set : public impl::Ops, public impl::ISet<Set> {
     static constexpr bool constructor2 = !impl::is_python<T> && impl::is_iterable<T>;
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_set_like<T>; }
@@ -619,26 +599,6 @@ public:
         }
         try {
             for (const impl::HashInitializer& item : contents) {
-                if (PySet_Add(m_ptr, item.first.ptr())) {
-                    throw error_already_set();
-                }
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Pack the contents of a braced initializer list into a new Python set. */
-    template <typename T, std::enable_if_t<impl::is_initializer<T>, int> = 0>
-    Set(const std::initializer_list<T>& contents) :
-        Base(PySet_New(nullptr), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            throw error_already_set();
-        }
-        try {
-            for (const T& item : contents) {
                 if (PySet_Add(m_ptr, item.first.ptr())) {
                     throw error_already_set();
                 }

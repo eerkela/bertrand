@@ -31,8 +31,8 @@ namespace py {
 
 namespace impl {
 
-    static const Module re = py::import("re");
-    static const Handle PyRegexPattern_Type = re.attr("Pattern");
+    static const Static<Module> re = py::import("re");
+    static const Static<Type> PyRegexPattern_Type = re->attr("Pattern");
 
 }
 
@@ -1176,7 +1176,7 @@ struct type_caster<bertrand::py::Regex> {
     bool load(handle src, bool convert) {
         int check = PyObject_IsInstance(
             src.ptr(),
-            bertrand::py::impl::PyRegexPattern_Type.ptr()
+            bertrand::py::impl::PyRegexPattern_Type->ptr()
         );
         if (check == -1) {
             throw error_already_set();
@@ -1192,7 +1192,7 @@ struct type_caster<bertrand::py::Regex> {
 
     /* Convert a py::Regex instance into a Python re.Pattern. */
     static handle cast(const bertrand::py::Regex& src, return_value_policy, handle) {
-        return bertrand::py::impl::re.attr("compile")(src.pattern()).release();
+        return bertrand::py::impl::re->attr("compile")(src.pattern()).release();
     }
 
 };

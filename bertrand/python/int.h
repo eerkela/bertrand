@@ -46,7 +46,7 @@ class Int : public impl::Ops {
     );
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_int_like<T>; }

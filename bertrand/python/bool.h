@@ -32,7 +32,7 @@ class Bool : public impl::Ops {
         impl::has_size<T>;
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_bool_like<T>; }

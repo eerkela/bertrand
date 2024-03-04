@@ -214,7 +214,7 @@ class Code : public impl::Ops {
     }
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_same_or_subclass_of<Code, T>; }
@@ -388,7 +388,7 @@ class Frame : public impl::Ops {
     }
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_same_or_subclass_of<Frame, T>; }
@@ -547,7 +547,7 @@ class Function : public impl::Ops {
     using Base = impl::Ops;
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_callable_any<T>; }
@@ -708,7 +708,7 @@ class Method : public impl::Ops {
     using Base = impl::Ops;
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_same_or_subclass_of<Method, T>; }
@@ -746,7 +746,7 @@ class ClassMethod : public impl::Ops {
     }
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_same_or_subclass_of<ClassMethod, T>; }
@@ -783,7 +783,7 @@ class StaticMethod : public impl::Ops {
     }
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_same_or_subclass_of<StaticMethod, T>; }
@@ -817,7 +817,7 @@ class Property : public impl::Ops {
     }
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_same_or_subclass_of<Property, T>; }

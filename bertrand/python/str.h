@@ -42,11 +42,10 @@ class Str : public impl::SequenceOps {
     static constexpr bool constructor2 =
         !impl::is_python<T> && !std::is_convertible_v<T, std::string>;
     template <typename T>
-    static constexpr bool constructor3 =
-        impl::is_python<T> && !impl::is_accessor<T> && !impl::is_str_like<T>;
+    static constexpr bool constructor3 = impl::is_python<T>;
 
 public:
-    static py::Type Type;
+    static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_str_like<T>; }
@@ -89,7 +88,7 @@ public:
         }
     }
 
-    /* Trigger explicit C++ conversions to std::string. */
+    /* Trigger implicit C++ conversions to std::string. */
     template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
     explicit Str(const T& string) : Str(static_cast<std::string>(string)) {}
 
@@ -236,23 +235,23 @@ public:
 
     /* Equivalent to Python `str.capitalize()`. */
     inline Str capitalize() const {
-        return this->attr("capitalize")();
+        return reinterpret_steal<Str>(this->attr("capitalize")().release());
     }
 
     /* Equivalent to Python `str.casefold()`. */
     inline Str casefold() const {
-        return this->attr("casefold")();
+        return reinterpret_steal<Str>(this->attr("casefold")().release());
     }
 
     /* Equivalent to Python `str.center(width)`. */
     inline Str center(const Int& width) const {
-        return this->attr("center")(width);
+        return reinterpret_steal<Str>(this->attr("center")(width).release());
     }
 
     /* Equivalent to Python `str.center(width, fillchar)`. */
     template <typename T>
     inline Str center(const Int& width, const Str& fillchar) const {
-        return this->attr("center")(width, fillchar);
+        return reinterpret_steal<Str>(this->attr("center")(width, fillchar).release());
     }
 
     /* Equivalent to Python `str.copy()`. */
@@ -286,7 +285,7 @@ public:
         const Str& encoding = "utf-8",
         const Str& errors = "strict"
     ) const {
-        return this->attr("encode")(encoding, errors);
+        return this->attr("encode")(encoding, errors);  // TODO: wrap Bytes
     }
 
     /* Equivalent to Python `str.endswith(suffix[, start[, end]])`. */
@@ -304,7 +303,7 @@ public:
 
     /* Equivalent to Python `str.expandtabs()`. */
     inline Str expandtabs(const Int& tabsize = 8) const {
-        return this->attr("expandtabs")(tabsize);
+        return reinterpret_steal<Str>(this->attr("expandtabs")(tabsize).release());
     }
 
     /* Equivalent to Python `str.find(sub[, start[, stop]])`. */
@@ -329,15 +328,17 @@ public:
     /* Equivalent to Python `str.format(*args, **kwargs)`. */
     template <typename... Args>
     inline Str format(Args&&... args) const {
-        return this->attr("format")(
+        return reinterpret_steal<Str>(this->attr("format")(
             detail::object_or_cast(std::forward<Args>(args))...
-        );
+        ).release());
     }
 
     /* Equivalent to Python `str.format_map(mapping)`. */
     template <typename T, std::enable_if_t<impl::is_dict_like<T>, int> = 0>
     inline Str format_map(const T& mapping) const {
-        return this->attr("format_map")(detail::object_or_cast(mapping));
+        return reinterpret_steal<Str>(
+            this->attr("format_map")(detail::object_or_cast(mapping)).release()
+        );
     }
 
     /* Equivalent to Python `str.index(sub[, start[, end]])`. */
@@ -451,27 +452,27 @@ public:
 
     /* Equivalent to Python `str.ljust(width)`. */
     inline Str ljust(const Int& width) const {
-        return this->attr("ljust")(width);
+        return reinterpret_steal<Str>(this->attr("ljust")(width).release());
     }
 
     /* Equivalent to Python `str.ljust(width, fillchar)`. */
     inline Str ljust(const Int& width, const Str& fillchar) const {
-        return this->attr("ljust")(width, fillchar);
+        return reinterpret_steal<Str>(this->attr("ljust")(width, fillchar).release());
     }
 
     /* Equivalent to Python `str.lower()`. */
     inline Str lower() const {
-        return this->attr("lower")();
+        return reinterpret_steal<Str>(this->attr("lower")().release());
     }
 
     /* Equivalent to Python `str.lstrip()`. */
     inline Str lstrip() const {
-        return this->attr("lstrip")();
+        return reinterpret_steal<Str>(this->attr("lstrip")().release());
     }
 
     /* Equivalent to Python `str.lstrip(chars)`. */
     inline Str lstrip(const Str& chars) const {
-        return this->attr("lstrip")(chars);
+        return reinterpret_steal<Str>(this->attr("lstrip")(chars).release());
     }
 
     /* Equivalent to Python (static) `str.maketrans(x)`. */
@@ -479,7 +480,9 @@ public:
     inline static Dict maketrans(const T& x) {
         pybind11::type cls =
             reinterpret_borrow<pybind11::type>((PyObject*) &PyUnicode_Type);
-        return cls.attr("maketrans")(detail::object_or_cast(x));
+        return reinterpret_steal<Dict>(
+            cls.attr("maketrans")(detail::object_or_cast(x)).release()
+        );
     }
 
     /* Equivalent to Python (static) `str.maketrans(x, y)`. */
@@ -487,10 +490,10 @@ public:
     inline static Dict maketrans(const T& x, const U& y) {
         pybind11::type cls =
             reinterpret_borrow<pybind11::type>((PyObject*) &PyUnicode_Type);
-        return cls.attr("maketrans")(
+        return reinterpret_steal<Dict>(cls.attr("maketrans")(
             detail::object_or_cast(x),
             detail::object_or_cast(y)
-        );
+        ).release());
     }
 
     /* Equivalent to Python (static) `str.maketrans(x, y, z)`. */
@@ -498,26 +501,26 @@ public:
     inline static Dict maketrans(const T& x, const U& y, const V& z) {
         pybind11::type cls =
             reinterpret_borrow<pybind11::type>((PyObject*) &PyUnicode_Type);
-        return cls.attr("maketrans")(
+        return reinterpret_steal<Dict>(cls.attr("maketrans")(
             detail::object_or_cast(x),
             detail::object_or_cast(y),
             detail::object_or_cast(z)
-        );
+        ).release());
     }
 
     /* Equivalent to Python `str.partition(sep)`. */
     inline Tuple partition(const Str& sep) const {
-        return this->attr("partition")(sep);
+        return reinterpret_steal<Tuple>(this->attr("partition")(sep).release());
     }
 
     /* Equivalent to Python `str.removeprefix(prefix)`. */
     inline Str removeprefix(const Str& prefix) const {
-        return this->attr("removeprefix")(prefix);
+        return reinterpret_steal<Str>(this->attr("removeprefix")(prefix).release());
     }
 
     /* Equivalent to Python `str.removesuffix(suffix)`. */
     inline Str removesuffix(const Str& suffix) const {
-        return this->attr("removesuffix")(suffix);
+        return reinterpret_steal<Str>(this->attr("removesuffix")(suffix).release());
     }
 
     /* Equivalent to Python `str.replace(old, new[, count])`. */
@@ -582,37 +585,37 @@ public:
 
     /* Equivalent to Python `str.rjust(width)`. */
     inline Str rjust(const Int& width) const {
-        return this->attr("rjust")(width);
+        return reinterpret_steal<Str>(this->attr("rjust")(width).release());
     }
 
     /* Equivalent to Python `str.rjust(width, fillchar)`. */
     inline Str rjust(const Int& width, const Str& fillchar) const {
-        return this->attr("rjust")(width, fillchar);
+        return reinterpret_steal<Str>(this->attr("rjust")(width, fillchar).release());
     }
 
     /* Equivalent to Python `str.rpartition(sep)`. */
     inline Tuple rpartition(const Str& sep) const {
-        return this->attr("rpartition")(sep);
+        return reinterpret_steal<Tuple>(this->attr("rpartition")(sep).release());
     }
 
     /* Equivalent to Python `str.rsplit()`. */
     inline List rsplit() const {
-        return this->attr("rsplit")();
+        return reinterpret_steal<List>(this->attr("rsplit")().release());
     }
 
     /* Equivalent to Python `str.rsplit(sep[, maxsplit])`. */
     inline List rsplit(const Str& sep, const Int& maxsplit = -1) const {
-        return this->attr("rsplit")(sep, maxsplit);
+        return reinterpret_steal<List>(this->attr("rsplit")(sep, maxsplit).release());
     }
 
     /* Equivalent to Python `str.rstrip()`. */
     inline Str rstrip() const {
-        return this->attr("rstrip")();
+        return reinterpret_steal<Str>(this->attr("rstrip")().release());
     }
 
     /* Equivalent to Python `str.rstrip(chars)`. */
     inline Str rstrip(const Str& chars) const {
-        return this->attr("rstrip")(chars);
+        return reinterpret_steal<Str>(this->attr("rstrip")(chars).release());
     }
 
     /* Equivalent to Python `str.split()`. */
@@ -657,38 +660,40 @@ public:
 
     /* Equivalent to Python `str.strip()`. */
     inline Str strip() const {
-        return this->attr("strip")();
+        return reinterpret_steal<Str>(this->attr("strip")().release());
     }
 
     /* Equivalent to Python `str.strip(chars)`. */
     inline Str strip(const Str& chars) const {
-        return this->attr("strip")(chars);
+        return reinterpret_steal<Str>(this->attr("strip")(chars).release());
     }
 
     /* Equivalent to Python `str.swapcase()`. */
     inline Str swapcase() const {
-        return this->attr("swapcase")();
+        return reinterpret_steal<Str>(this->attr("swapcase")().release());
     }
 
     /* Equivalent to Python `str.title()`. */
     inline Str title() const {
-        return this->attr("title")();
+        return reinterpret_steal<Str>(this->attr("title")().release());
     }
 
     /* Equivalent to Python `str.translate(table)`. */
     template <typename T>
     inline Str translate(const T& table) const {
-        return this->attr("translate")(detail::object_or_cast(table));
+        return reinterpret_steal<Str>(
+            this->attr("translate")(detail::object_or_cast(table)).release()
+        );
     }
 
     /* Equivalent to Python `str.upper()`. */
     inline Str upper() const {
-        return this->attr("upper")();
+        return reinterpret_steal<Str>(this->attr("upper")().release());
     }
 
     /* Equivalent to Python `str.zfill(width)`. */
     inline Str zfill(const Int& width) const {
-        return this->attr("zfill")(width);
+        return reinterpret_steal<Str>(this->attr("zfill")(width).release());
     }
 
     /////////////////////////

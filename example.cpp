@@ -84,9 +84,20 @@
 namespace py = bertrand::py;
 
 
-void func(int i) {
+void func(const py::Int& i) {
 
 }
+
+
+
+// void foo(const py::Type& x) {
+//     py::print(x);
+// }
+
+
+
+
+static const py::Static<py::Type> np_array = py::import("numpy")->attr("ndarray");
 
 
 
@@ -100,12 +111,6 @@ void run() {
     // py::Set set = {true, "a", 1};
     // py::print(set);
 
-
-    py::Str s = py::Str(" ").join({"a", "b", "c"});
-    py::print(s[{py::None, 4}]);
-
-
-
     // py::Object obj = R"(
     //     def foo(a=1, b=2, *, c):
     //         pass
@@ -113,17 +118,27 @@ void run() {
 
     // py::print((bool)py::callable<void>(obj));
 
-
-
     // py::Function f([](int x, int y) {
     //     return x + y;
     // });
 
 
+    py::print(np_array);
+
+
+    // static const py::Static<py::Timezone> tz = py::Timezone::utc();
+    // py::print(tz);
+
+    // py::Datetime dt("December 7th, 1941 at 8:30 AM", "US/Pacific");  // TODO: this breaks
+    // py::print(dt);
 
 
 
 
+
+
+    // static const py::Static<py::Int> a = 1;
+    // py::print(a);
 
 
 
@@ -546,7 +561,7 @@ void run() {
 
     std::chrono::time_point<Clock> end = Clock::now();
     std::chrono::duration<double> elapsed = end - start;
-    py::print("Elapsed time:", elapsed.count(), "s");
+    pybind11::print("Elapsed time:", elapsed.count(), "s");
 }
 
 
