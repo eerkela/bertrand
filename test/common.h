@@ -2,6 +2,7 @@
 #define BERTRAND_TEST_COMMON_H
 
 #include <gtest/gtest.h>
+#include <Python.h>
 
 #include <array>
 #include <cstddef>
@@ -23,33 +24,53 @@
 namespace assertions {
 
     template <typename L, typename R, typename = void>
-    static constexpr bool is_assignable = false;
+    constexpr bool is_assignable = false;
     template <typename L, typename R>
-    static constexpr bool is_assignable<L, R, std::void_t<decltype(
+    constexpr bool is_assignable<L, R, std::void_t<decltype(
         std::declval<L&>() = std::declval<R>()
     )>> = true;
 
+    template <typename T, typename = void>
+    constexpr bool is_indexable = false;
+    template <typename T>
+    constexpr bool is_indexable<T, std::void_t<decltype(
+        std::declval<T>()[0]
+    )>> = true;
+
+    template <typename T, typename = void>
+    constexpr bool is_iterable = false;
+    template <typename T>
+    constexpr bool is_iterable<T, std::void_t<decltype(
+        std::begin(std::declval<T>()),
+        std::end(std::declval<T>())
+    )>> = true;
+
+    template <typename T, typename = void>
+    constexpr bool is_callable = false;
+    template <typename T>
+    constexpr bool is_callable<T, std::void_t<decltype(&T::operator())>> = true;
+
     #define CHECK_UNARY_OPERATOR(name, op)                                              \
         template <typename T, typename = void>                                          \
-        static constexpr bool name = false;                                             \
+        constexpr bool name = false;                                                    \
         template <typename T>                                                           \
-        static constexpr bool name<T, std::void_t<decltype(                             \
+        constexpr bool name<T, std::void_t<decltype(                                    \
             op std::declval<T>()                                                        \
         )>> = true;                                                                     \
 
     #define CHECK_BINARY_OPERATOR(name, op)                                             \
         template <typename L, typename R, typename = void>                              \
-        static constexpr bool name = false;                                             \
+        constexpr bool name = false;                                                    \
         template <typename L, typename R>                                               \
-        static constexpr bool name<L, R, std::void_t<decltype(                          \
+        constexpr bool name<L, R, std::void_t<decltype(                                 \
             std::declval<L>() op std::declval<R>()                                      \
         )>> = true;                                                                     \
 
     #define CHECK_INPLACE_OPERATOR(name, op)                                            \
         template <typename L, typename R, typename = void>                              \
-        static constexpr bool name = false;                                             \
+        constexpr bool name = false;                                                    \
         template <typename L, typename R>                                               \
-        static constexpr bool name<L, R, std::void_t<decltype(                          \
+        constexpr bool name<L, R, std::void_t<decltype(                                 \
             std::declval<L&>() op std::declval<R>()                                     \
         )>> = true;                                                                     \
 

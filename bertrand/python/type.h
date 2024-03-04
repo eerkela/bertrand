@@ -41,7 +41,7 @@ public:
     }
 
     /* Dynamically create a new Python type by calling the type() metaclass. */
-    explicit Type(const Str& name, const Tuple& bases, const Dict& dict);
+    explicit Type(const Str& name, const Tuple& bases = {}, const Dict& dict = {});
 
     /* Create a new heap type from a CPython PyType_Spec*.  Note that this is not
     exactly interchangeable with a standard call to the type metaclass directly, as it
@@ -346,7 +346,7 @@ public:
 };
 
 
-Type Type::type = Type{};  // metaprogramming in a nutshell
+inline Type Type::type = Type{};  // metaprogramming in a nutshell
 
 
 /* New subclass of pybind11::object that represents Python's built-in super() type. */

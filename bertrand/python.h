@@ -17,7 +17,7 @@
 #include "python/dict.h"
 #include "python/str.h"
 #include "python/func.h"
-#include "python/datetime.h"
+// #include "python/datetime.h"
 #include "python/math.h"
 #include "python/type.h"
 
@@ -95,41 +95,41 @@ inline Type Method::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(
 inline Type ClassMethod::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type));
 inline Type StaticMethod::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyStaticMethod_Type));
 inline Type Property::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyProperty_Type));
-inline Type Timedelta::type = [] {
-    if (impl::DATETIME_IMPORTED) {
-        return reinterpret_borrow<Type>(impl::PyDelta_Type->ptr());
-    } else {
-        return Type();
-    }
-}();
-inline Type Timezone::type = [] {
-    if (impl::DATETIME_IMPORTED) {
-        return reinterpret_borrow<Type>(impl::PyTZInfo_Type->ptr());
-    } else {
-        return Type();
-    }
-}();
-inline Type Date::type = [] {
-    if (impl::DATETIME_IMPORTED) {
-        return reinterpret_borrow<Type>(impl::PyDate_Type->ptr());
-    } else {
-        return Type();
-    }
-}();
-inline Type Time::type = [] {
-    if (impl::DATETIME_IMPORTED) {
-        return reinterpret_borrow<Type>(impl::PyTime_Type->ptr());
-    } else {
-        return Type();
-    }
-}();
-inline Type Datetime::type = [] {
-    if (impl::DATETIME_IMPORTED) {
-        return reinterpret_borrow<Type>(impl::PyDateTime_Type->ptr());
-    } else {
-        return Type();
-    }
-}();
+// inline Type Timedelta::type = [] {
+//     if (impl::DATETIME_IMPORTED) {
+//         return reinterpret_borrow<Type>(impl::PyDelta_Type->ptr());
+//     } else {
+//         return Type();
+//     }
+// }();
+// inline Type Timezone::type = [] {
+//     if (impl::DATETIME_IMPORTED) {
+//         return reinterpret_borrow<Type>(impl::PyTZInfo_Type->ptr());
+//     } else {
+//         return Type();
+//     }
+// }();
+// inline Type Date::type = [] {
+//     if (impl::DATETIME_IMPORTED) {
+//         return reinterpret_borrow<Type>(impl::PyDate_Type->ptr());
+//     } else {
+//         return Type();
+//     }
+// }();
+// inline Type Time::type = [] {
+//     if (impl::DATETIME_IMPORTED) {
+//         return reinterpret_borrow<Type>(impl::PyTime_Type->ptr());
+//     } else {
+//         return Type();
+//     }
+// }();
+// inline Type Datetime::type = [] {
+//     if (impl::DATETIME_IMPORTED) {
+//         return reinterpret_borrow<Type>(impl::PyDateTime_Type->ptr());
+//     } else {
+//         return Type();
+//     }
+// }();
 
 
 //////////////////////////////
@@ -192,10 +192,18 @@ ACCESSOR_CALL_OPERATOR(ListAccessor, list_accessor)
 
 template <
     typename T,
+    std::enable_if_t<!impl::is_python<T> && impl::is_callable_any<T>, int> = 0
+>
+inline Object::Object(const T& value) : Base(Function(value).release().ptr(), stolen_t{}) {}
+
+
+template <
+    typename T,
     std::enable_if_t<impl::is_python<T> && impl::is_str_like<T>, int> = 0
 >
-inline Int::Int(const T& str, int base) {
-    m_ptr = PyLong_FromUnicodeObject(str.ptr(), base);
+inline Int::Int(const T& str, int base) :
+    Base(PyLong_FromUnicodeObject(str.ptr(), base), stolen_t{})
+{
     if (m_ptr == nullptr) {
         throw error_already_set();
     }
@@ -206,8 +214,7 @@ template <
     typename T,
     std::enable_if_t<impl::is_python<T> && impl::is_str_like<T>, int> = 0
 >
-inline Float::Float(const T& str) {
-    m_ptr = PyFloat_FromString(str.ptr());
+inline Float::Float(const T& str) : Base(PyFloat_FromString(str.ptr()), stolen_t{}) {
     if (m_ptr == nullptr) {
         throw error_already_set();
     }
@@ -236,6 +243,31 @@ inline Type::Type(const Str& name, const Tuple& bases, const Dict& dict) {
 inline void List::sort(const Function& key, const Bool& reverse) {
     this->attr("sort")(py::arg("key") = key, py::arg("reverse") = reverse);
 }
+
+
+/////////////////////////
+////    OPERATORS    ////
+/////////////////////////
+
+
+/* Strongly typing Python's math operators is complicated and involves a large number
+ * circular dependencies.  However, doing so allows us to cut down on the number of
+ * implicit conversions that are performed, thereby increasing performance and
+ * promoting type mismatches to compile time.
+ */
+
+
+DEFINE_TYPED_UNARY_OPERATOR(Bool, operator~, Int)
+DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, is_bool_like, Int)
+DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, is_int_like, Int)
+DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, is_float_like, Float)
+DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, is_complex_like, Complex)
+
+
+#undef DECLARE_TYPED_UNARY_OPERATOR
+#undef DECLARE_TYPED_BINARY_OPERATOR
+#undef DEFINE_TYPED_UNARY_OPERATOR
+#undef DEFINE_TYPED_BINARY_OPERATOR
 
 
 ////////////////////////////////
@@ -624,7 +656,8 @@ inline Dict vars(const Handle& object) {
 // ItemsView, Method, ClassMethod, StaticMethod, Property
 
 
-#undef BERTRAND_PYTHON_CONSTRUCTORS
+#undef BERTRAND_OBJECT_CONSTRUCTORS
+#undef DELETE_OPERATOR
 #undef BERTRAND_STD_HASH
 #undef BERTRAND_STD_EQUAL_TO
 #undef PYBIND11_DETAILED_ERROR_MESSAGES

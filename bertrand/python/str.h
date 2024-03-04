@@ -803,7 +803,7 @@ inline Str chr(const Handle& obj) {
 
 /* Equivalent to Python `ord(obj)`.  Converts a unicode character into an integer
 representation. */
-Int ord(const Handle& obj) {
+inline Int ord(const Handle& obj) {
     PyObject* ptr = obj.ptr();
     if (ptr == nullptr) {
         throw TypeError("cannot call ord() on a null object");

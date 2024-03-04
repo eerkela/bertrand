@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.14)
 project(bertrandTests)
 
+# ensure C++17
+set(
+    CMAKE_CXX_STANDARD 17
+    CMAKE_CXX_STANDARD_REQUIRED ON
+)
+
 # include all .cpp files in the test/ directory or any of its subdirectories.
 # NOTE: these should always either start with "test_" or end in "_test" in order to be
 # discoverable by the test runner.
@@ -49,9 +55,3 @@ add_executable(run_cpp_test ${TEST_SOURCES})
 
 # link against GoogleTest, PCRE2
 target_link_libraries(run_cpp_test ${Python3_LIBRARIES} gtest pcre2-8)
-
-# ensure C++17
-set_target_properties(run_cpp_test PROPERTIES
-    CXX_STANDARD 17
-    CXX_STANDARD_REQUIRED ON
-)

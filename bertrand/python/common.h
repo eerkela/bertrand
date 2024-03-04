@@ -359,6 +359,29 @@ namespace impl {
         std::is_same_v<Base, Derived> || std::is_base_of_v<Base, Derived>
     );
 
+    // template <typename From, typename To>
+    // class ExplicitlyConvertibleTo {
+
+    //     template <typename F, typename T>
+    //     static auto test(void*) -> decltype(static_cast<T>(std::declval<F>()), std::true_type{});
+
+    //     template <typename F, typename T>
+    //     static auto test(...) -> std::false_type;
+
+    // public:
+    //     static constexpr bool value = decltype(test<From, To>(0))::value;
+    // };
+
+    // template <typename From, typename To, typename = void>
+    // constexpr bool explicitly_convertible_to = false;
+
+    template <typename From, typename To, typename = void>
+    constexpr bool explicitly_convertible_to = false;
+    template <typename From, typename To>
+    constexpr bool explicitly_convertible_to<
+        From, To, std::void_t<decltype(static_cast<To>(std::declval<From>()))>
+    > = true;
+
     namespace conversions {
 
         struct Base {
@@ -477,7 +500,7 @@ namespace impl {
 
     template <typename T>
     constexpr bool is_int_like = (
-        std::is_integral_v<T> ||
+        (std::is_integral_v<T> && !std::is_same_v<T, bool>) ||
         is_same_or_subclass_of<Int, T> ||
         is_same_or_subclass_of<pybind11::int_, T>
     );
@@ -859,7 +882,7 @@ namespace impl {
         return TypeError(msg.str());
     }
 
-    #define CONVERTABLE_ACCESSOR(name, base)                                            \
+    #define CONVERTIBLE_ACCESSOR(name, base)                                            \
         struct name : public detail::base {                                             \
             using detail::base::base;                                                   \
             using detail::base::operator=;                                              \
@@ -921,14 +944,14 @@ namespace impl {
             }                                                                           \
         };                                                                              \
 
-    CONVERTABLE_ACCESSOR(ObjAttrAccessor, obj_attr_accessor)
-    CONVERTABLE_ACCESSOR(StrAttrAccessor, str_attr_accessor)
-    CONVERTABLE_ACCESSOR(ItemAccessor, item_accessor)
-    CONVERTABLE_ACCESSOR(SequenceAccessor, sequence_accessor)
-    CONVERTABLE_ACCESSOR(TupleAccessor, tuple_accessor)
-    CONVERTABLE_ACCESSOR(ListAccessor, list_accessor)
+    CONVERTIBLE_ACCESSOR(ObjAttrAccessor, obj_attr_accessor)
+    CONVERTIBLE_ACCESSOR(StrAttrAccessor, str_attr_accessor)
+    CONVERTIBLE_ACCESSOR(ItemAccessor, item_accessor)
+    CONVERTIBLE_ACCESSOR(SequenceAccessor, sequence_accessor)
+    CONVERTIBLE_ACCESSOR(TupleAccessor, tuple_accessor)
+    CONVERTIBLE_ACCESSOR(ListAccessor, list_accessor)
 
-    #undef CONVERTABLE_ACCESSOR
+    #undef CONVERTIBLE_ACCESSOR
 
     class SliceInitializer;
 
@@ -962,6 +985,16 @@ public:
         return value.ptr() != nullptr;
     }
 
+    /* For compatibility with pybind11, which expects these methods. */
+    template <typename T, std::enable_if_t<!impl::is_python<T>, int> = 0>
+    static constexpr bool check_(const T& value) {
+        return check(value);
+    }
+    template <typename T, std::enable_if_t<impl::is_python<T>, int> = 0>
+    static constexpr bool check_(const T& value) {
+        return check(value);
+    }
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
@@ -982,9 +1015,19 @@ public:
     template <typename Policy>
     Object(const detail::accessor<Policy> &a) : Base(pybind11::object(a)) {}
 
-    /* Convert any C++ value into a generic python object. */
-    template <typename T, std::enable_if_t<!impl::is_python<T>, int> = 0>
+    /* Convert any non-callable C++ value into a generic python object. */
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_python<T> && !impl::is_callable_any<T>, int> = 0
+    >
     Object(const T& value) : Base(pybind11::cast(value).release(), stolen_t{}) {}
+
+    /* Convert any callable C++ value into a generic python object. */
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_python<T> && impl::is_callable_any<T>, int> = 0
+    >
+    Object(const T& value);
 
     /* Assign any C++ value to the object wrapper. */
     template <typename T, std::enable_if_t<!impl::is_python<T>, int> = 0>
@@ -2073,9 +2116,15 @@ public:
         cls(const cls& value) : parent(value.ptr(), borrowed_t{}) {}                    \
         cls(cls&& value) : parent(value.release(), stolen_t{}) {}                       \
                                                                                         \
-        /* Convert an accessor into a this type. */                                     \
+        /* Convert an accessor into this type. */                                       \
         template <typename Policy>                                                      \
-        cls(const detail::accessor<Policy> &a) : cls(pybind11::object(a)) {}            \
+        cls(const detail::accessor<Policy> &a) {                                        \
+            pybind11::object obj(a);                                                    \
+            if (!check(obj)) {                                                          \
+                throw impl::noconvert<cls>(obj.ptr());                                  \
+            }                                                                           \
+            m_ptr = obj.release().ptr();                                                \
+        }                                                                               \
                                                                                         \
         /* Trigger implicit conversions to this type via the assignment operator. */    \
         template <typename T, std::enable_if_t<std::is_convertible_v<T, cls>, int> = 0> \
@@ -2093,8 +2142,54 @@ public:
         inline cls* operator&() { return this; }                                        \
         inline const cls* operator&() const { return this; }                            \
 
-    // TODO: when converting an accessor, trigger its implicit conversion operator?
+    /* Type-safe operator overloads are crazy from a circular dependency standpoint, so
+     * we have have to separate declarations from definitions.  The macros below ensure
+     * that the syntax remains consistent across the built-in types.  They should not
+     * be necessary for client code that uses the built-in types.
+     */
 
+    #define DECLARE_TYPED_UNARY_OPERATOR(cls, op, return_type)                          \
+        inline return_type op() const;                                                  \
+
+    #define DEFINE_TYPED_UNARY_OPERATOR(cls, op, return_type)                           \
+        inline return_type cls::op() const {                                            \
+            return reinterpret_steal<return_type>(Base::op().release());                \
+        }                                                                               \
+
+    #define DECLARE_TYPED_BINARY_OPERATOR(cls, op, constraint, return_type)             \
+        template <typename T, std::enable_if_t<impl::constraint<T>, int> = 0>           \
+        inline return_type op(const T& other) const;                                    \
+
+    #define DEFINE_TYPED_BINARY_OPERATOR(cls, op, constraint, return_type)              \
+        template <typename T, std::enable_if_t<impl::constraint<T>, int> = 0>           \
+        inline return_type cls::op(const T& other) const {                              \
+            return reinterpret_steal<return_type>(Base::op(other).release());           \
+        }                                                                               \
+
+        // template <
+        //     typename T,
+        //     std::enable_if_t<
+        //         !impl::is_same_or_subclass_of<Object, U> &&
+        //         !impl::is_same_or_subclass_of<std::ostream, U> &&
+        //         !impl::is_std_iterator<U>,
+        //     int> = 0
+        // >
+        // inline friend return_type opcode(const U& other, const cls& self) {
+        //     return reinterpret_steal<return_type>(Base::op(other, self).release());
+        // }
+
+        // template <typename T, std::enable_if_t<impl::constraint<T>>
+
+    // TODO: include reverse equivalents for all binary operators
+
+
+
+
+
+
+    #define DELETE_OPERATOR(op)                                                         \
+        template <typename... Args>                                                     \
+        auto op(Args&&... args) = delete;                                               \
 
 }  // namespace impl
 
@@ -2325,7 +2420,7 @@ public:
 };
 
 
-impl::ItemAccessor Object::operator[](
+inline impl::ItemAccessor Object::operator[](
     const std::initializer_list<impl::SliceInitializer>& slice
 ) const {
     if (slice.size() > 3) {

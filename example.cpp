@@ -97,33 +97,14 @@ void func(const py::Int& i) {
 
 
 
-static const py::Static<py::Type> np_array = py::import("numpy")->attr("ndarray");
-
-
-
 
 void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
-    // py::List list = {1, 2, 3};
-    // py::Int x = 1;
-    // py::Set set = {true, "a", 1};
-    // py::print(set);
 
-    // py::Object obj = R"(
-    //     def foo(a=1, b=2, *, c):
-    //         pass
-    // )"_python()["foo"];
+    py::print(py::impl::is_int_like<bool>);
 
-    // py::print((bool)py::callable<void>(obj));
-
-    // py::Function f([](int x, int y) {
-    //     return x + y;
-    // });
-
-
-    py::print(np_array);
 
 
     // static const py::Static<py::Timezone> tz = py::Timezone::utc();

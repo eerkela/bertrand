@@ -12,7 +12,7 @@ namespace bertrand {
 namespace py {
 
 
-/* Wrapper around pybind11::bool_ that enables math operations with C++ inputs. */
+/* pybind11::bool_ equivalent with stronger type safety, math operators, etc. */
 class Bool : public impl::Ops {
     using Base = impl::Ops;
 
@@ -20,7 +20,8 @@ class Bool : public impl::Ops {
     static constexpr bool constructor1 = !impl::is_python<T> && impl::is_bool_like<T>;
     template <typename T>
     static constexpr bool constructor2 = 
-        !impl::is_python<T> && !impl::is_bool_like<T> && std::is_convertible_v<T, bool>;
+        !impl::is_python<T> && !impl::is_bool_like<T> &&
+        impl::explicitly_convertible_to<T, bool>;
     template <typename T>
     static constexpr bool constructor3 = impl::is_python<T> && !impl::is_bool_like<T>;
     template <typename T>
@@ -41,6 +42,10 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
+    /* Copy/move constructors from equivalent pybind11 type. */
+    Bool(const pybind11::bool_& other) : Base(other.ptr(), borrowed_t{}) {}
+    Bool(pybind11::bool_&& other) : Base(other.release(), stolen_t{}) {}
+
     BERTRAND_OBJECT_CONSTRUCTORS(Base, Bool, PyBool_Check)
 
     /* Default constructor.  Initializes to False. */
@@ -50,7 +55,7 @@ public:
     template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
     Bool(const T& value) : Base(value ? Py_True : Py_False, borrowed_t{}) {}
 
-    /* Trigger implicit C++ conversions to bool. */
+    /* Trigger explicit conversion operators to bool. */
     template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
     explicit Bool(const T& value) : Bool(static_cast<bool>(value)) {}
 
@@ -97,14 +102,28 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
+    auto begin() const = delete;
+    auto end() const = delete;
+
+    DELETE_OPERATOR(operator[])
+    DELETE_OPERATOR(operator())
+
     using Base::operator<;
     using Base::operator<=;
     using Base::operator==;
     using Base::operator!=;
     using Base::operator>=;
     using Base::operator>;
-    using Base::operator~;
-    using Base::operator+;
+
+    DECLARE_TYPED_UNARY_OPERATOR(Bool, operator~, Int)
+
+    DECLARE_TYPED_BINARY_OPERATOR(Bool, operator+, is_bool_like, Int)
+    DECLARE_TYPED_BINARY_OPERATOR(Bool, operator+, is_int_like, Int)
+    DECLARE_TYPED_BINARY_OPERATOR(Bool, operator+, is_float_like, Float)
+    DECLARE_TYPED_BINARY_OPERATOR(Bool, operator+, is_complex_like, Complex)
+
+    // using Base::operator+;
+
     using Base::operator-;
     using Base::operator*;
     using Base::operator/;
@@ -114,6 +133,14 @@ public:
     using Base::operator&;
     using Base::operator|;
     using Base::operator^;
+
+    DELETE_OPERATOR(operator+=)
+    DELETE_OPERATOR(operator-=)
+    DELETE_OPERATOR(operator*=)
+    DELETE_OPERATOR(operator/=)
+    DELETE_OPERATOR(operator%=)
+    DELETE_OPERATOR(operator<<=)
+    DELETE_OPERATOR(operator>>=)
 
     template <typename T, std::enable_if_t<impl::is_bool_like<T>, int> = 0>
     inline Bool& operator&=(const T& other) {
@@ -134,6 +161,15 @@ public:
     }
 
 };
+
+
+
+// TODO: it's probably a good idea to specifically overload the math operators to
+// return specific types (e.g. Int, Float, etc.) instead of generic Objects.  This
+// should cut down on the number of implicit conversions that need to be performed to
+// make things type safe.  It will also promote more errors to compile time.
+
+
 
 
 }  // namespace python

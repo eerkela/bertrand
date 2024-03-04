@@ -410,6 +410,10 @@ public:
 
     BERTRAND_OBJECT_CONSTRUCTORS(Base, Dict, PyDict_Check);
 
+    /* Copy/move constructors from equivalent pybind11 type. */
+    Dict(const pybind11::dict& other) : Base(other.ptr(), borrowed_t{}) {}
+    Dict(pybind11::dict&& other) : Base(other.release(), stolen_t{}) {}
+
     /* Default constructor.  Initializes to empty dict. */
     Dict() : Base(PyDict_New(), stolen_t{}) {
         if (m_ptr == nullptr) {

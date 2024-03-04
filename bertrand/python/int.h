@@ -34,7 +34,7 @@ class Int : public impl::Ops {
         !impl::is_int_like<T> &&
         !impl::is_float_like<T> &&
         !impl::is_str_like<T> &&
-        std::is_convertible_v<T, long long>
+        !impl::is_python<T>
     );
     template <typename T>
     static constexpr bool constructor7 = (
@@ -45,6 +45,52 @@ class Int : public impl::Ops {
         impl::is_python<T>
     );
 
+    /* Helper function allows explicit conversion from any C++ type that implements an
+    implicit or explicit conversion to an integer. */
+    template <typename T>
+    inline static auto trigger_explicit_conversions(const T& value) {
+        if constexpr (impl::explicitly_convertible_to<T, uint64_t>) {
+            return static_cast<uint64_t>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, unsigned long long>) {
+            return static_cast<unsigned long long>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, int64_t>) {
+            return static_cast<int64_t>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, long long>) {
+            return static_cast<long long>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, uint32_t>) {
+            return static_cast<uint32_t>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, unsigned long>) {
+            return static_cast<unsigned long>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, unsigned int>) {
+            return static_cast<unsigned int>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, int32_t>) {
+            return static_cast<int32_t>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, long>) {
+            return static_cast<int>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, int>) {
+            return static_cast<int>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, uint16_t>) {
+            return static_cast<uint16_t>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, unsigned short>) {
+            return static_cast<unsigned short>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, int16_t>) {
+            return static_cast<int16_t>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, short>) {
+            return static_cast<short>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, uint8_t>) {
+            return static_cast<uint8_t>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, unsigned char>) {
+            return static_cast<unsigned char>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, int8_t>) {
+            return static_cast<int8_t>(value);
+        } else if constexpr (impl::explicitly_convertible_to<T, char>) {
+            return static_cast<char>(value);
+        } else {
+            static_assert(impl::explicitly_convertible_to<T, bool>);
+            return static_cast<bool>(value);
+        }
+    }
+
 public:
     static Type type;
 
@@ -54,6 +100,10 @@ public:
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    /* Copy/move constructors from equivalent pybind11 type. */
+    Int(const pybind11::int_& other) : Base(other.ptr(), borrowed_t{}) {}
+    Int(pybind11::int_&& other) : Base(other.release(), stolen_t{}) {}
 
     BERTRAND_OBJECT_CONSTRUCTORS(Base, Int, PyLong_Check)
 
@@ -110,9 +160,9 @@ public:
         }
     }
 
-    /* Trigger implicit C++ conversions to long long. */
+    /* Trigger explicit conversion operators to C++ integer types. */
     template <typename T, std::enable_if_t<constructor6<T>, int> = 0>
-    explicit Int(const T& value) : Int(static_cast<long long>(value)) {}
+    explicit Int(const T& value) : Int(trigger_explicit_conversions(value)) {}
 
     /* Explicitly convert an arbitrary Python object into an integer. */
     template <typename T, std::enable_if_t<constructor7<T>, int> = 0>
@@ -123,8 +173,9 @@ public:
     }
 
     /* Explicitly convert a string literal with an optional base into a py::Int. */
-    explicit Int(const char* str, int base = 0) {
-        m_ptr = PyLong_FromString(str, nullptr, base);
+    explicit Int(const char* str, int base = 0) :
+        Base(PyLong_FromString(str, nullptr, base), stolen_t{})
+    {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -185,6 +236,9 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
+    DELETE_OPERATOR(operator[])
+    DELETE_OPERATOR(operator())
+
     using Base::operator<;
     using Base::operator<=;
     using Base::operator==;
@@ -220,8 +274,11 @@ public:
     INPLACE_OP(operator+=)
     INPLACE_OP(operator-=)
     INPLACE_OP(operator*=)
+
     // NOTE: /= is not type-safe in C++ because it converts the result to a float.  Use
     // py::Float a = b / c; or py::Int a = py::div(b, c); instead.
+    DELETE_OPERATOR(operator/=)
+
     INPLACE_OP(operator%=)
     INPLACE_OP(operator<<=)
     INPLACE_OP(operator>>=)

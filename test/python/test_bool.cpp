@@ -4,14 +4,14 @@
 namespace py = bertrand::py;
 
 
-//////////////////////
-////    STATIC    ////
-//////////////////////
+/////////////////////
+////    TYPES    ////
+/////////////////////
 
 
 TEST(py, bool_type) {
     py::Type expected = py::reinterpret_borrow<py::Type>((PyObject*) &PyBool_Type);
-    EXPECT_EQ(py::Bool::Type, expected);
+    EXPECT_EQ(py::Bool::type, expected);
 }
 
 
@@ -33,14 +33,16 @@ TEST(py, bool_check) {
 /////////////////////////////////////
 
 
-TEST(py, bool_is_default_constructible) {
-    py::Bool a;
-    EXPECT_EQ(a, false);
-}
-
-
 TEST(py, bool_is_implicitly_convertible_from_object) {
+    // safe
     py::Object a = py::Bool(false);
+    py::Object i = py::Bool(true);
+    py::Bool a2 = a;
+    py::Bool i2 = i;
+    EXPECT_EQ(a2, false);
+    EXPECT_EQ(i2, true);
+
+    // not safe, falsy
     py::Object b = py::Int(0);
     py::Object c = py::Float(0.0);
     py::Object d = py::Str("");
@@ -48,27 +50,15 @@ TEST(py, bool_is_implicitly_convertible_from_object) {
     py::Object f = py::List{};
     py::Object g = py::Set{};
     py::Object h = py::Dict{};
+    EXPECT_THROW(py::Bool b2 = b, py::TypeError);
+    EXPECT_THROW(py::Bool c2 = c, py::TypeError);
+    EXPECT_THROW(py::Bool d2 = d, py::TypeError);
+    EXPECT_THROW(py::Bool e2 = e, py::TypeError);
+    EXPECT_THROW(py::Bool f2 = f, py::TypeError);
+    EXPECT_THROW(py::Bool g2 = g, py::TypeError);
+    EXPECT_THROW(py::Bool h2 = h, py::TypeError);
 
-    // implicit conversions
-    py::Bool a2 = a;
-    py::Bool b2 = b;
-    py::Bool c2 = c;
-    py::Bool d2 = d;
-    py::Bool e2 = e;
-    py::Bool f2 = f;
-    py::Bool g2 = g;
-    py::Bool h2 = h;
-
-    EXPECT_EQ(a2, false);
-    EXPECT_EQ(b2, false);
-    EXPECT_EQ(c2, false);
-    EXPECT_EQ(d2, false);
-    EXPECT_EQ(e2, false);
-    EXPECT_EQ(f2, false);
-    EXPECT_EQ(g2, false);
-    EXPECT_EQ(h2, false);
-
-    py::Object i = py::Bool(true);
+    // not safe, truthy
     py::Object j = py::Int(1);
     py::Object k = py::Float(1.0);
     py::Object l = py::Str("a");
@@ -76,86 +66,62 @@ TEST(py, bool_is_implicitly_convertible_from_object) {
     py::Object n = py::List{1};
     py::Object o = py::Set{1};
     py::Object p = py::Dict{{"a", 1}};
-
-    // implicit conversions
-    py::Bool i2 = i;
-    py::Bool j2 = j;
-    py::Bool k2 = k;
-    py::Bool l2 = l;
-    py::Bool m2 = m;
-    py::Bool n2 = n;
-    py::Bool o2 = o;
-    py::Bool p2 = p;
-
-    EXPECT_EQ(i2, true);
-    EXPECT_EQ(j2, true);
-    EXPECT_EQ(k2, true);
-    EXPECT_EQ(l2, true);
-    EXPECT_EQ(m2, true);
-    EXPECT_EQ(n2, true);
-    EXPECT_EQ(o2, true);
-    EXPECT_EQ(p2, true);
+    EXPECT_THROW(py::Bool j2 = j, py::TypeError);
+    EXPECT_THROW(py::Bool k2 = k, py::TypeError);
+    EXPECT_THROW(py::Bool l2 = l, py::TypeError);
+    EXPECT_THROW(py::Bool m2 = m, py::TypeError);
+    EXPECT_THROW(py::Bool n2 = n, py::TypeError);
+    EXPECT_THROW(py::Bool o2 = o, py::TypeError);
+    EXPECT_THROW(py::Bool p2 = p, py::TypeError);
 }
 
 
+TEST(py, bool_is_implicitly_convertible_from_accessor) {
+    py::List list = {true, false};
+    py::Bool a = list[0];
+    py::Bool b = list[1];
+    EXPECT_EQ(a, true);
+    EXPECT_EQ(b, false);
 
-/////////////////////////////////////
-////    EXPLICIT CONSTRUCTORS    ////
-/////////////////////////////////////
-
-
-
-
-
+    py::List list2 = {1, 0};
+    EXPECT_THROW(py::Bool c = list2[0], py::TypeError);
+    EXPECT_THROW(py::Bool d = list2[1], py::TypeError);
+}
 
 
 TEST(py, bool_is_copy_constructible) {
     py::Bool a = true;
-    py::Bool b = false;
     int a_refs = a.ref_count();
-    int b_refs = b.ref_count();
-    py::Bool c = a;
-    py::Bool d = b;
-    EXPECT_EQ(c.ref_count(), a_refs + 1);
-    EXPECT_EQ(d.ref_count(), b_refs + 1);
-    EXPECT_EQ(c, true);
-    EXPECT_EQ(d, false);
+    py::Bool b(a);
+    EXPECT_EQ(b, true);
+    EXPECT_EQ(b.ref_count(), a_refs + 1);
 
-    pybind11::bool_ e = true;
-    pybind11::bool_ f = false;
-    int e_refs = e.ref_count();
-    int f_refs = f.ref_count();
-    py::Bool g = e;
-    py::Bool h = f;
-    EXPECT_EQ(g.ref_count(), e_refs + 1);
-    EXPECT_EQ(h.ref_count(), f_refs + 1);
-    EXPECT_EQ(g, true);
-    EXPECT_EQ(h, false);
+    py::Bool c = false;
+    int c_refs = c.ref_count();
+    py::Bool d(c);
+    EXPECT_EQ(d, false);
+    EXPECT_EQ(d.ref_count(), c_refs + 1);
 }
 
 
 TEST(py, bool_is_move_constructible) {
     py::Bool a = true;
-    py::Bool b = false;
     int a_refs = a.ref_count();
-    int b_refs = b.ref_count();
-    py::Bool c = std::move(a);
-    py::Bool d = std::move(b);
-    EXPECT_EQ(c.ref_count(), a_refs);
-    EXPECT_EQ(d.ref_count(), b_refs);
-    EXPECT_EQ(c, true);
-    EXPECT_EQ(d, false);
+    py::Bool b(std::move(a));
+    EXPECT_EQ(b, true);
+    EXPECT_EQ(b.ref_count(), a_refs);
 
-    pybind11::bool_ e = true;
-    pybind11::bool_ f = false;
-    int e_refs = e.ref_count();
-    int f_refs = f.ref_count();
-    py::Bool g = std::move(e);
-    py::Bool h = std::move(f);
-    EXPECT_EQ(g.ref_count(), e_refs);
-    EXPECT_EQ(h.ref_count(), f_refs);
-    EXPECT_EQ(g, true);
-    EXPECT_EQ(h, false);
+    pybind11::bool_ c = false;
+    int c_refs = c.ref_count();
+    py::Bool d(std::move(c));
+    EXPECT_EQ(d, false);
+    EXPECT_EQ(d.ref_count(), c_refs);
+}
+
+
+TEST(py, bool_is_default_constructible) {
+    py::Bool a;
+    EXPECT_EQ(a, false);
 }
 
 
@@ -170,10 +136,126 @@ TEST(py, bool_is_constructible_from_bool) {
 }
 
 
+/////////////////////////////////////////////
+////    TYPE-SAFE ASSIGNMENT OPERATOR    ////
+/////////////////////////////////////////////
+
+
+TEST(py, bool_is_copy_assignable) {
+    py::Bool a = true;
+    py::Bool b = false;
+    int a_refs = a.ref_count();
+    b = a;
+    EXPECT_EQ(b, true);
+    EXPECT_EQ(b.ref_count(), a_refs + 1);
+}
+
+
+TEST(py, bool_is_move_assignable) {
+    py::Bool a = true;
+    py::Bool b = false;
+    int a_refs = a.ref_count();
+    b = std::move(a);
+    EXPECT_EQ(b, true);
+    EXPECT_EQ(b.ref_count(), a_refs);
+}
+
+
+TEST(py, bool_is_assignable_from_bool) {
+    py::Bool a = true;
+    a = false;
+    EXPECT_EQ(a, false);
+    a = true;
+    EXPECT_EQ(a, true);
+}
+
+
+TEST(py, bool_is_not_assignable_from_int) {
+    bool bool_is_assignable_from_int = assertions::is_assignable<py::Bool, int>;
+    bool bool_is_assignable_from_unsigned_int = assertions::is_assignable<py::Bool, unsigned int>;
+    bool bool_is_assignable_from_py_int = assertions::is_assignable<py::Bool, py::Int>;
+    EXPECT_FALSE(bool_is_assignable_from_int);
+    EXPECT_FALSE(bool_is_assignable_from_unsigned_int);
+    EXPECT_FALSE(bool_is_assignable_from_py_int);
+}
+
+
+TEST(py, bool_is_not_assignable_from_float) {
+    bool bool_is_assignable_from_float = assertions::is_assignable<py::Bool, double>;
+    bool bool_is_assignable_from_py_float = assertions::is_assignable<py::Bool, py::Float>;
+    EXPECT_FALSE(bool_is_assignable_from_float);
+    EXPECT_FALSE(bool_is_assignable_from_py_float);
+}
+
+
+TEST(py, bool_is_not_assignable_from_string) {
+    bool bool_is_assignable_from_string_literal = assertions::is_assignable<py::Bool, const char*>;
+    bool bool_is_assignable_from_std_string = assertions::is_assignable<py::Bool, std::string>;
+    bool bool_is_assignable_from_std_string_view = assertions::is_assignable<py::Bool, std::string_view>;
+    bool bool_is_assignable_from_py_string = assertions::is_assignable<py::Bool, py::Str>;
+    EXPECT_FALSE(bool_is_assignable_from_string_literal);
+    EXPECT_FALSE(bool_is_assignable_from_std_string);
+    EXPECT_FALSE(bool_is_assignable_from_std_string_view);
+    EXPECT_FALSE(bool_is_assignable_from_py_string);
+}
+
+
+TEST(py, bool_is_not_assignable_from_tuple) {
+    bool bool_is_assignable_from_std_pair = assertions::is_assignable<py::Bool, std::pair<int, int>>;
+    bool bool_is_assignable_from_empty_std_tuple = assertions::is_assignable<py::Bool, std::tuple<>>;
+    bool bool_is_assignable_from_std_tuple = assertions::is_assignable<py::Bool, std::tuple<int>>;
+    bool bool_is_assignable_from_empty_std_array = assertions::is_assignable<py::Bool, std::array<int, 0>>;
+    bool bool_is_assignable_from_std_array = assertions::is_assignable<py::Bool, std::array<int, 1>>;
+    bool bool_is_assignable_from_py_tuple = assertions::is_assignable<py::Bool, py::Tuple>;
+    EXPECT_FALSE(bool_is_assignable_from_std_pair);
+    EXPECT_FALSE(bool_is_assignable_from_empty_std_tuple);
+    EXPECT_FALSE(bool_is_assignable_from_std_tuple);
+    EXPECT_FALSE(bool_is_assignable_from_empty_std_array);
+    EXPECT_FALSE(bool_is_assignable_from_std_array);
+    EXPECT_FALSE(bool_is_assignable_from_py_tuple);
+} 
+
+
+TEST(py, bool_is_not_assignable_from_list) {
+    bool bool_is_assignable_from_std_list = assertions::is_assignable<py::Bool, std::list<int>>;
+    bool bool_is_assignable_from_std_vector = assertions::is_assignable<py::Bool, std::vector<int>>;
+    bool bool_is_assignable_from_py_list = assertions::is_assignable<py::Bool, py::List>;
+    EXPECT_FALSE(bool_is_assignable_from_std_list);
+    EXPECT_FALSE(bool_is_assignable_from_std_vector);
+    EXPECT_FALSE(bool_is_assignable_from_py_list);
+}
+
+
+TEST(py, bool_is_not_assignable_from_set) {
+    bool bool_is_assignable_from_std_set = assertions::is_assignable<py::Bool, std::set<int>>;
+    bool bool_is_assignable_from_std_unordered_set = assertions::is_assignable<py::Bool, std::unordered_set<int>>;
+    bool bool_is_assignable_from_py_set = assertions::is_assignable<py::Bool, py::Set>;
+    bool bool_is_assignable_from_py_frozenset = assertions::is_assignable<py::Bool, py::FrozenSet>;
+    EXPECT_FALSE(bool_is_assignable_from_std_set);
+    EXPECT_FALSE(bool_is_assignable_from_std_unordered_set);
+    EXPECT_FALSE(bool_is_assignable_from_py_set);
+    EXPECT_FALSE(bool_is_assignable_from_py_frozenset);
+}
+
+
+TEST(py, bool_is_not_assignable_from_dict) {
+    bool bool_is_assignable_from_std_map = assertions::is_assignable<py::Bool, std::map<int, int>>;
+    bool bool_is_assignable_from_std_unordered_map = assertions::is_assignable<py::Bool, std::unordered_map<int, int>>;
+    bool bool_is_assignable_from_py_dict = assertions::is_assignable<py::Bool, py::Dict>;
+    bool bool_is_assignable_from_py_mappingproxy = assertions::is_assignable<py::Bool, py::MappingProxy>;
+    EXPECT_FALSE(bool_is_assignable_from_std_map);
+    EXPECT_FALSE(bool_is_assignable_from_std_unordered_map);
+    EXPECT_FALSE(bool_is_assignable_from_py_dict);
+    EXPECT_FALSE(bool_is_assignable_from_py_mappingproxy);
+}
+
+
+/////////////////////////////////////
+////    EXPLICIT CONSTRUCTORS    ////
+/////////////////////////////////////
+
+
 TEST(py, bool_is_constructible_from_int) {
-    // TODO: test implicit conversions separately, and assert they raise errors
-
-
     EXPECT_EQ(py::Bool(0), false);
     EXPECT_EQ(py::Bool(1), true);
     EXPECT_EQ(py::Bool(2), true);
@@ -241,107 +323,17 @@ TEST(py, bool_is_constructible_from_dict) {
 }
 
 
-//////////////////////////
-////    ASSIGNMENT    ////
-//////////////////////////
-
-
-// TODO: bool_is_copy_assignable, move_assignable
-
-
-TEST(py, bool_is_assignable_to_bool) {
-    py::Bool a = true;
-    py::Bool b = false;
-    a = false;
-    b = true;
-    EXPECT_EQ(a, false);
-    EXPECT_EQ(b, true);
+TEST(py, bool_is_constructible_from_custom_struct) {
+    struct Implicit { operator bool() const { return true; } };
+    struct Explicit { explicit operator bool() const { return true; } };
+    EXPECT_EQ(py::Bool(Implicit{}), true);
+    EXPECT_EQ(py::Bool(Explicit{}), true);
 }
 
 
-TEST(py, bool_is_assignable_to_int) {
-    bool bool_is_assignable_to_int = assertions::is_assignable<py::Bool, int>;
-    bool bool_is_assignable_to_unsigned_int = assertions::is_assignable<py::Bool, unsigned int>;
-    bool bool_is_assignable_to_py_int = assertions::is_assignable<py::Bool, py::Int>;
-    EXPECT_FALSE(bool_is_assignable_to_int);
-    EXPECT_FALSE(bool_is_assignable_to_unsigned_int);
-    EXPECT_FALSE(bool_is_assignable_to_py_int);
-}
-
-
-TEST(py, bool_is_assignable_to_float) {
-    bool bool_is_assignable_to_float = assertions::is_assignable<py::Bool, double>;
-    bool bool_is_assignable_to_py_float = assertions::is_assignable<py::Bool, py::Float>;
-    EXPECT_FALSE(bool_is_assignable_to_float);
-    EXPECT_FALSE(bool_is_assignable_to_py_float);
-}
-
-
-TEST(py, bool_is_assignable_to_string) {
-    bool bool_is_assignable_to_string_literal = assertions::is_assignable<py::Bool, const char*>;
-    bool bool_is_assignable_to_std_string = assertions::is_assignable<py::Bool, std::string>;
-    bool bool_is_assignable_to_std_string_view = assertions::is_assignable<py::Bool, std::string_view>;
-    bool bool_is_assignable_to_py_string = assertions::is_assignable<py::Bool, py::Str>;
-    EXPECT_FALSE(bool_is_assignable_to_string_literal);
-    EXPECT_FALSE(bool_is_assignable_to_std_string);
-    EXPECT_FALSE(bool_is_assignable_to_std_string_view);
-    EXPECT_FALSE(bool_is_assignable_to_py_string);
-}
-
-
-TEST(py, bool_is_assignable_to_tuple) {
-    bool bool_is_assignable_to_std_pair = assertions::is_assignable<py::Bool, std::pair<int, int>>;
-    bool bool_is_assignable_to_empty_std_tuple = assertions::is_assignable<py::Bool, std::tuple<>>;
-    bool bool_is_assignable_to_std_tuple = assertions::is_assignable<py::Bool, std::tuple<int>>;
-    bool bool_is_assignable_to_empty_std_array = assertions::is_assignable<py::Bool, std::array<int, 0>>;
-    bool bool_is_assignable_to_std_array = assertions::is_assignable<py::Bool, std::array<int, 1>>;
-    bool bool_is_assignable_to_py_tuple = assertions::is_assignable<py::Bool, py::Tuple>;
-    EXPECT_FALSE(bool_is_assignable_to_std_pair);
-    EXPECT_FALSE(bool_is_assignable_to_empty_std_tuple);
-    EXPECT_FALSE(bool_is_assignable_to_std_tuple);
-    EXPECT_FALSE(bool_is_assignable_to_empty_std_array);
-    EXPECT_FALSE(bool_is_assignable_to_std_array);
-    EXPECT_FALSE(bool_is_assignable_to_py_tuple);
-} 
-
-
-TEST(py, bool_is_assignable_to_list) {
-    bool bool_is_assignable_to_std_list = assertions::is_assignable<py::Bool, std::list<int>>;
-    bool bool_is_assignable_to_std_vector = assertions::is_assignable<py::Bool, std::vector<int>>;
-    bool bool_is_assignable_to_py_list = assertions::is_assignable<py::Bool, py::List>;
-    EXPECT_FALSE(bool_is_assignable_to_std_list);
-    EXPECT_FALSE(bool_is_assignable_to_std_vector);
-    EXPECT_FALSE(bool_is_assignable_to_py_list);
-}
-
-
-TEST(py, bool_is_assignable_to_set) {
-    bool bool_is_assignable_to_std_set = assertions::is_assignable<py::Bool, std::set<int>>;
-    bool bool_is_assignable_to_std_unordered_set = assertions::is_assignable<py::Bool, std::unordered_set<int>>;
-    bool bool_is_assignable_to_py_set = assertions::is_assignable<py::Bool, py::Set>;
-    bool bool_is_assignable_to_py_frozenset = assertions::is_assignable<py::Bool, py::FrozenSet>;
-    EXPECT_FALSE(bool_is_assignable_to_std_set);
-    EXPECT_FALSE(bool_is_assignable_to_std_unordered_set);
-    EXPECT_FALSE(bool_is_assignable_to_py_set);
-    EXPECT_FALSE(bool_is_assignable_to_py_frozenset);
-}
-
-
-TEST(py, bool_is_assignable_to_dict) {
-    bool bool_is_assignable_to_std_map = assertions::is_assignable<py::Bool, std::map<int, int>>;
-    bool bool_is_assignable_to_std_unordered_map = assertions::is_assignable<py::Bool, std::unordered_map<int, int>>;
-    bool bool_is_assignable_to_py_dict = assertions::is_assignable<py::Bool, py::Dict>;
-    bool bool_is_assignable_to_py_mappingproxy = assertions::is_assignable<py::Bool, py::MappingProxy>;
-    EXPECT_FALSE(bool_is_assignable_to_std_map);
-    EXPECT_FALSE(bool_is_assignable_to_std_unordered_map);
-    EXPECT_FALSE(bool_is_assignable_to_py_dict);
-    EXPECT_FALSE(bool_is_assignable_to_py_mappingproxy);
-}
-
-
-///////////////////////////
-////    CONVERSIONS    ////
-///////////////////////////
+////////////////////////////////////
+////    CONVERSION OPERATORS    ////
+////////////////////////////////////
 
 
 TEST(py, bool_is_implicitly_convertible_to_bool) {
@@ -386,6 +378,38 @@ TEST(py, bool_is_implicitly_convertible_to_float) {
 TEST(py, bool_is_explicitly_convertible_to_string) {
     EXPECT_EQ(static_cast<std::string>(py::Bool(true)), "True");
     EXPECT_EQ(static_cast<std::string>(py::Bool(false)), "False");
+}
+
+
+///////////////////////////////
+////    BASIC OPERATORS    ////
+///////////////////////////////
+
+
+TEST(py, bool_is_not_indexable) {
+    bool bool_is_indexable = assertions::is_indexable<py::Bool>;
+    EXPECT_FALSE(bool_is_indexable);
+}
+
+
+TEST(py, bool_is_not_iterable) {
+    bool bool_is_iterable = assertions::is_iterable<py::Bool>;
+    EXPECT_FALSE(bool_is_iterable);
+}
+
+
+TEST(py, bool_is_not_callable) {
+    bool bool_is_callable = assertions::is_callable<py::Bool>;
+    EXPECT_FALSE(bool_is_callable);
+}
+
+
+TEST(py, bool_is_hashable) {
+    std::hash<py::Bool> hash;
+    EXPECT_EQ(hash(py::Bool(true)), hash(py::Bool(true)));
+    EXPECT_EQ(hash(py::Bool(false)), hash(py::Bool(false)));
+    EXPECT_NE(hash(py::Bool(true)), hash(py::Bool(false)));
+    EXPECT_NE(hash(py::Bool(false)), hash(py::Bool(true)));
 }
 
 
@@ -597,6 +621,9 @@ TEST(py, bool_gt) {
 ///////////////////////////////
 
 
+// TODO: check that these are all type-safe and return the expected type
+
+
 TEST(py, bool_unary_invert) {
     EXPECT_EQ(~py::Bool(true), -2);
     EXPECT_EQ(~py::Bool(false), -1);
@@ -615,18 +642,12 @@ TEST(py, bool_unary_minus) {
 }
 
 
-TEST(py, bool_std_hash) {
-    std::hash<py::Bool> hash;
-    EXPECT_EQ(hash(py::Bool(true)), hash(py::Bool(true)));
-    EXPECT_EQ(hash(py::Bool(false)), hash(py::Bool(false)));
-    EXPECT_NE(hash(py::Bool(true)), hash(py::Bool(false)));
-    EXPECT_NE(hash(py::Bool(false)), hash(py::Bool(true)));
-}
-
-
 ////////////////////////////////
 ////    BINARY OPERATORS    ////
 ////////////////////////////////
+
+
+// TODO:
 
 
 TEST(py, bool_addition) {
@@ -1004,14 +1025,14 @@ TEST(py, bool_inplace_bitwise_and) {
     EXPECT_EQ(py::Bool(false) &= py::Bool(true),    false);
     EXPECT_EQ(py::Bool(false) &= py::Bool(false),   false);
 
-    EXPECT_EQ(py::Type(py::Bool(true) &= true),             py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(true) &= false),            py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(false) &= true),            py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(false) &= false),           py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(true) &= py::Bool(true)),   py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(true) &= py::Bool(false)),  py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(false) &= py::Bool(true)),  py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(false) &= py::Bool(false)), py::Bool::Type);
+    EXPECT_EQ(py::Type(py::Bool(true) &= true),             py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(true) &= false),            py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(false) &= true),            py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(false) &= false),           py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(true) &= py::Bool(true)),   py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(true) &= py::Bool(false)),  py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(false) &= py::Bool(true)),  py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(false) &= py::Bool(false)), py::Bool::type);
 }
 
 
@@ -1034,14 +1055,14 @@ TEST(py, bool_inplace_bitwise_or) {
     EXPECT_EQ(py::Bool(false) |= py::Bool(true),     true);
     EXPECT_EQ(py::Bool(false) |= py::Bool(false),    false);
 
-    EXPECT_EQ(py::Type(py::Bool(true) |= true),             py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(true) |= false),            py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(false) |= true),            py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(false) |= false),           py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(true) |= py::Bool(true)),   py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(true) |= py::Bool(false)),  py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(false) |= py::Bool(true)),  py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(false) |= py::Bool(false)), py::Bool::Type);
+    EXPECT_EQ(py::Type(py::Bool(true) |= true),             py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(true) |= false),            py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(false) |= true),            py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(false) |= false),           py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(true) |= py::Bool(true)),   py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(true) |= py::Bool(false)),  py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(false) |= py::Bool(true)),  py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(false) |= py::Bool(false)), py::Bool::type);
 }
 
 
@@ -1064,12 +1085,12 @@ TEST(py, bool_inplace_bitwise_xor) {
     EXPECT_EQ(py::Bool(false) ^= py::Bool(true),     true);
     EXPECT_EQ(py::Bool(false) ^= py::Bool(false),    false);
 
-    EXPECT_EQ(py::Type(py::Bool(true) ^= true),             py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(true) ^= false),            py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(false) ^= true),            py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(false) ^= false),           py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(true) ^= py::Bool(true)),   py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(true) ^= py::Bool(false)),  py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(false) ^= py::Bool(true)),  py::Bool::Type);
-    EXPECT_EQ(py::Type(py::Bool(false) ^= py::Bool(false)), py::Bool::Type);
+    EXPECT_EQ(py::Type(py::Bool(true) ^= true),             py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(true) ^= false),            py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(false) ^= true),            py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(false) ^= false),           py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(true) ^= py::Bool(true)),   py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(true) ^= py::Bool(false)),  py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(false) ^= py::Bool(true)),  py::Bool::type);
+    EXPECT_EQ(py::Type(py::Bool(false) ^= py::Bool(false)), py::Bool::type);
 }
