@@ -51,20 +51,20 @@ namespace assertions {
     constexpr bool is_callable<T, std::void_t<decltype(&T::operator())>> = true;
 
     #define CHECK_UNARY_OPERATOR(name, op)                                              \
-        template <typename T, typename = void>                                          \
+        template <typename T, typename Return, typename = void>                         \
         constexpr bool name = false;                                                    \
-        template <typename T>                                                           \
-        constexpr bool name<T, std::void_t<decltype(                                    \
-            op std::declval<T>()                                                        \
-        )>> = true;                                                                     \
+        template <typename T, typename Return>                                          \
+        constexpr bool name<T, Return, std::void_t<                                     \
+            decltype(op std::declval<T>())                                              \
+        >> = std::is_same_v<decltype(op std::declval<T>()), Return>;                    \
 
     #define CHECK_BINARY_OPERATOR(name, op)                                             \
-        template <typename L, typename R, typename = void>                              \
+        template <typename L, typename R, typename Return, typename = void>             \
         constexpr bool name = false;                                                    \
-        template <typename L, typename R>                                               \
-        constexpr bool name<L, R, std::void_t<decltype(                                 \
-            std::declval<L>() op std::declval<R>()                                      \
-        )>> = true;                                                                     \
+        template <typename L, typename R, typename Return>                              \
+        constexpr bool name<L, R, Return, std::void_t<                                  \
+            decltype(std::declval<L>() op std::declval<R>())                            \
+        >> = std::is_same_v<decltype(std::declval<L>() op std::declval<R>()), Return>;  \
 
     #define CHECK_INPLACE_OPERATOR(name, op)                                            \
         template <typename L, typename R, typename = void>                              \

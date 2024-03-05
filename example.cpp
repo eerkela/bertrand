@@ -97,14 +97,43 @@ void func(const py::Int& i) {
 
 
 
+template <typename L, typename R, typename Return, typename = void>
+constexpr bool test_op = false;
+template <typename L, typename R, typename Return>
+constexpr bool test_op<L, R, Return, std::void_t<
+    decltype(std::declval<L>() + std::declval<R>())
+>> = std::is_same_v<
+    decltype(std::declval<L>() + std::declval<R>()),
+    Return
+>;
+
+
+
 
 void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-    py::print(py::impl::is_int_like<bool>);
+    py::Bool a = true;
+    py::Float b = a + 1.0;
+    py::Int c = a + 1;
+    // py::Int d = b;
+    py::print(b);
 
+
+
+    // py::print(typeid(decltype(a + static_cast<unsigned int>(1))).name());
+    // // py::print(typeid(b).name());
+    // py::print(typeid(py::Bool::__add__<int>::Return).name());
+    // py::print(a + 1);
+
+
+
+
+    // py::Bool a = true;
+    // py::Int b = a + false;
+    // py::print(test_op<py::Bool, bool, py::Int>);
 
 
     // static const py::Static<py::Timezone> tz = py::Timezone::utc();

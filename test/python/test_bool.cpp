@@ -647,34 +647,67 @@ TEST(py, bool_unary_minus) {
 ////////////////////////////////
 
 
-// TODO:
+// TODO: account for type safety
 
 
 TEST(py, bool_addition) {
+    // bool + bool
+    bool bool_is_addable_to_bool = assertions::has_addition<py::Bool, bool, py::Int>;
+    bool py_bool_is_addable_to_bool = assertions::has_addition<py::Bool, py::Bool, py::Int>;
+    EXPECT_TRUE(bool_is_addable_to_bool);
+    EXPECT_TRUE(py_bool_is_addable_to_bool);
     EXPECT_EQ(py::Bool(true) + true,                2);
     EXPECT_EQ(py::Bool(true) + false,               1);
     EXPECT_EQ(py::Bool(false) + true,               1);
     EXPECT_EQ(py::Bool(false) + false,              0);
-    EXPECT_EQ(py::Bool(true) + 1,                   2);
-    EXPECT_EQ(py::Bool(true) + 0,                   1);
-    EXPECT_EQ(py::Bool(false) + 1,                  1);
-    EXPECT_EQ(py::Bool(false) + 0,                  0);
-    EXPECT_EQ(py::Bool(true) + 1.0,                 2.0);
-    EXPECT_EQ(py::Bool(true) + 0.0,                 1.0);
-    EXPECT_EQ(py::Bool(false) + 1.0,                1.0);
-    EXPECT_EQ(py::Bool(false) + 0.0,                0.0);
     EXPECT_EQ(py::Bool(true) + py::Bool(true),      2);
     EXPECT_EQ(py::Bool(true) + py::Bool(false),     1);
     EXPECT_EQ(py::Bool(false) + py::Bool(true),     1);
     EXPECT_EQ(py::Bool(false) + py::Bool(false),    0);
+
+    // bool + int
+    bool int_is_addable_to_bool = assertions::has_addition<py::Bool, int, py::Int>;
+    bool py_int_is_addable_to_bool = assertions::has_addition<py::Bool, py::Int, py::Int>;
+    EXPECT_TRUE(int_is_addable_to_bool);
+    EXPECT_TRUE(py_int_is_addable_to_bool);
+    EXPECT_EQ(py::Bool(true) + 1,                   2);
+    EXPECT_EQ(py::Bool(true) + 0,                   1);
+    EXPECT_EQ(py::Bool(false) + 1,                  1);
+    EXPECT_EQ(py::Bool(false) + 0,                  0);
     EXPECT_EQ(py::Bool(true) + py::Int(1),          2);
     EXPECT_EQ(py::Bool(true) + py::Int(0),          1);
     EXPECT_EQ(py::Bool(false) + py::Int(1),         1);
     EXPECT_EQ(py::Bool(false) + py::Int(0),         0);
+
+    // bool + float
+    bool float_is_addable_to_bool = assertions::has_addition<py::Bool, double, py::Float>;
+    bool py_float_is_addable_to_bool = assertions::has_addition<py::Bool, py::Float, py::Float>;
+    EXPECT_TRUE(float_is_addable_to_bool);
+    EXPECT_TRUE(py_float_is_addable_to_bool);
+    EXPECT_EQ(py::Bool(true) + 1.0,                 2.0);
+    EXPECT_EQ(py::Bool(true) + 0.0,                 1.0);
+    EXPECT_EQ(py::Bool(false) + 1.0,                1.0);
+    EXPECT_EQ(py::Bool(false) + 0.0,                0.0);
     EXPECT_EQ(py::Bool(true) + py::Float(1.0),      2.0);
     EXPECT_EQ(py::Bool(true) + py::Float(0.0),      1.0);
     EXPECT_EQ(py::Bool(false) + py::Float(1.0),     1.0);
     EXPECT_EQ(py::Bool(false) + py::Float(0.0),     0.0);
+
+    // bool + complex
+
+
+    // bool + decimal
+
+
+    // bool + string
+    // bool string_is_addable_to_bool = assertions::has_addition<py::Bool, const char*, py::Object>;
+    // bool std_string_is_addable_to_bool = assertions::has_addition<py::Bool, std::string, py::Object>;
+    // bool std_string_view_is_addable_to_bool = assertions::has_addition<py::Bool, std::string_view, py::Object>;
+    // bool py_string_is_addable_to_bool = assertions::has_addition<py::Bool, py::Str, py::Object>;
+    // EXPECT_FALSE(string_is_addable_to_bool);
+    // EXPECT_FALSE(std_string_is_addable_to_bool);
+    // EXPECT_FALSE(std_string_view_is_addable_to_bool);
+    // EXPECT_FALSE(py_string_is_addable_to_bool);
 }
 
 

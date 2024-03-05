@@ -250,24 +250,67 @@ inline void List::sort(const Function& key, const Bool& reverse) {
 /////////////////////////
 
 
-/* Strongly typing Python's math operators is complicated and involves a large number
- * circular dependencies.  However, doing so allows us to cut down on the number of
- * implicit conversions that are performed, thereby increasing performance and
- * promoting type mismatches to compile time.
+/* By default, all generic operators are disabled for strict subclasses of
+ * py::Object.  This means we have to specifically enable them for each type we
+ * want to support, which promotes explicitness and type safety by design.  The
+ * following structs allow users to easily assign static types to any of these
+ * operators, which will automatically be preferred when operands of those
+ * types are detected at compile time.  By using template specialization, we
+ * allow users to do this from outside the class itself, allowing the type
+ * system to grow as needed to cover any environment.  Here's an example:
+ *
+ *      template <>
+ *      struct py::Bool::template __add__<int> {
+ *          static constexpr bool enable = true;
+ *          using Return = py::Int;
+ *      };
+ *
+ * It's that simple.  Now, whenever we call `py::Bool + int`, it will
+ * successfully compile and interpret the result as a strict `py::Int` type,
+ * eliminating runtime overhead and granting static type safety.  It is also
+ * possible to apply template constraints to these types using an optional
+ * second template parameter, which allows users to enable or disable whole
+ * categories of types at once.  Here's another example:
+ *
+ *      template <typename T>
+ *      struct py::Bool::template __add__<
+ *          T, std::enable_if_t<py::impl::is_bool_like<T>>
+ *      > {
+ *          static constexpr bool enable = true;
+ *          using Return = py::Int;
+ *      };
+ *
+ * As long as the constraint does not conflict with any other existing
+ * template overloads, this will compile and work as expected.  Note that
+ * specific overloads will always take precedence over generic ones, and any
+ * ambiguities between templates will result in compile errors.
+ *
+ * There are several benefits to this architecture.  First, it significantly
+ * reduces the number of runtime type checks that must be performed to ensure
+ * strict type safety, and promotes those checks to compile time instead, which
+ * is always preferable.  Second, it enables syntactically correct implicit
+ * conversions between C++ and Python types, which is a huge win for usability.
+ * Third, it allows us to follow traditional Python naming conventions for its
+ * operator special methods, which makes it easier to remember and use them in
+ * practice.  Finally, it disambiguates the internal behavior of these
+ * operators, reducing the number of gotchas and making the code more idiomatic
+ * and easier to reason about.
  */
 
 
-DEFINE_TYPED_UNARY_OPERATOR(Bool, operator~, Int)
-DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, is_bool_like, Int)
-DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, is_int_like, Int)
-DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, is_float_like, Float)
-DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, is_complex_like, Complex)
 
 
-#undef DECLARE_TYPED_UNARY_OPERATOR
-#undef DECLARE_TYPED_BINARY_OPERATOR
-#undef DEFINE_TYPED_UNARY_OPERATOR
-#undef DEFINE_TYPED_BINARY_OPERATOR
+// DEFINE_TYPED_UNARY_OPERATOR(Bool, operator~, Int)
+// DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, is_bool_like, Int)
+// DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, is_int_like, Int)
+// DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, is_float_like, Float)
+// DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, is_complex_like, Complex)
+
+
+// #undef DECLARE_TYPED_UNARY_OPERATOR
+// #undef DECLARE_TYPED_BINARY_OPERATOR
+// #undef DEFINE_TYPED_UNARY_OPERATOR
+// #undef DEFINE_TYPED_BINARY_OPERATOR
 
 
 ////////////////////////////////

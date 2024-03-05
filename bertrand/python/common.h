@@ -1409,6 +1409,11 @@ inline std::ostream& operator<<(std::ostream& os, const Object& obj) {
 }
 
 
+///////////////////////////////////
+////    TYPE-SAFE OPERATORS    ////
+///////////////////////////////////
+
+
 class NoneType;
 namespace impl {
 
@@ -1793,84 +1798,46 @@ public:
     };
 
     /* Intermediate base class that hides all operators from the generic Object class.
-    Subclasses have to bring these back into scope via a `using` statement or a custom
-    overload as needed. */
+    Subclasses have to specifically enable the types they want to support.  CRTP causes
+    each type's operators to be isolated from other types. */
     struct Ops : public Object {
         using Object::Object;
         using Object::operator=;
-        using Object::operator==;
-        using Object::operator!=;
 
-        inline Ops* operator&() {
-            return this;
-        }
-
-        inline const Ops* operator&() const {
-            return this;
-        }
-
-        inline auto operator*() {
-            return Object::operator*();
-        }
-
-        inline auto operator*() const {
-            return Object::operator*();
-        }
+        ///////////////////////////////
+        ////    BASIC OPERATORS    ////
+        ///////////////////////////////
     
-        template <typename T, std::enable_if_t<std::is_base_of_v<Object, T>, int> = 0>
-        operator T() const = delete;
+        // template <typename T, std::enable_if_t<std::is_base_of_v<Object, T>, int> = 0>
+        // operator T() const = delete;
 
-        template <typename T, std::enable_if_t<impl::is_wrapper<T>, int> = 0>
-        inline operator T() const {
-            return Object::operator T();
-        }
+        // template <typename T, std::enable_if_t<impl::is_wrapper<T>, int> = 0>
+        // inline operator T() const {
+        //     return Object::operator T();
+        // }
 
-        template <
-            typename T,
-            std::enable_if_t<!impl::is_wrapper<T> && !std::is_base_of_v<Object, T>, int> = 0
-        >
-        inline explicit operator T() const {
-            return Object::operator T();
-        }
+        // template <
+        //     typename T,
+        //     std::enable_if_t<!impl::is_wrapper<T> && !std::is_base_of_v<Object, T>, int> = 0
+        // >
+        // inline explicit operator T() const {
+        //     return Object::operator T();
+        // }
 
-        inline explicit operator bool() const {
-            return Object::operator bool();
-        }
+        // inline explicit operator bool() const {
+        //     return Object::operator bool();
+        // }
 
-        inline explicit operator std::string() const {
-            return Object::operator std::string();
-        }
+        // inline explicit operator std::string() const {
+        //     return Object::operator std::string();
+        // }
 
-    protected:
-        using Object::operator~;
-        using Object::operator<;
-        using Object::operator<=;
-        using Object::operator>=;
-        using Object::operator>;
-        using Object::operator+;
-        using Object::operator-;
-        using Object::operator*;
-        using Object::operator/;
-        using Object::operator%;
-        using Object::operator<<;
-        using Object::operator>>;
-        using Object::operator&;
-        using Object::operator|;
-        using Object::operator^;
-        using Object::operator+=;
-        using Object::operator-=;
-        using Object::operator*=;
-        using Object::operator/=;
-        using Object::operator%=;
-        using Object::operator<<=;
-        using Object::operator>>=;
-        using Object::operator&=;
-        using Object::operator|=;
-        using Object::operator^=;
-        using Object::operator[];
-        using Object::operator();
-        using Object::begin;
-        using Object::end;
+        // TODO: operator[], operator(), begin(), and end()
+
+        //////////////////////////////////
+        ////    OPERATOR OVERLOADS    ////
+        //////////////////////////////////
+
     };
 
     /* Mixin holding operator overloads for types implementing the sequence protocol,
@@ -1971,9 +1938,17 @@ public:
             return reinterpret_steal<Object>(result);
         }
 
+        inline auto operator+() const {
+            return Object::operator+();
+        }
+
         template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
         inline Object operator+(const T& items) const {
             return this->concat(items);
+        }
+
+        inline auto operator*() const {
+            return Object::operator*();
         }
 
         inline Object operator*(Py_ssize_t repetitions) {
@@ -1984,7 +1959,7 @@ public:
             return seq.repeat(repetitions);
         }
 
-        template <typename T>
+        template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
         inline Object& operator+=(const T& items) {
             PyObject* result = PySequence_InPlaceConcat(
                 this->ptr(),
@@ -2138,9 +2113,387 @@ public:
             return *this;                                                               \
         }                                                                               \
                                                                                         \
-        /* Make sure address operators don't get lost during overloads. */              \
+        /* Delete type narrowing operator inherited from Object. */                     \
+        template <typename T, std::enable_if_t<std::is_base_of_v<Object, T>, int> = 0>  \
+        operator T() const = delete;                                                    \
+                                                                                        \
+        /* Make sure these operators don't get lost during overloads. */                \
         inline cls* operator&() { return this; }                                        \
         inline const cls* operator&() const { return this; }                            \
+        inline auto operator*() { return parent::operator*(); }                         \
+        inline auto operator*() const { return parent::operator*(); }                   \
+                                                                                        \
+        /* The rest of the macro is for operator overloads and their control structs */ \
+        template <typename T, typename = void>                                          \
+        struct __lt__ { static constexpr bool enable = false; };                        \
+        template <typename T, typename = void>                                          \
+        struct __le__ { static constexpr bool enable = false; };                        \
+        template <typename T, typename = void>                                          \
+        struct __eq__ { static constexpr bool enable = false; };                        \
+        template <typename T, typename = void>                                          \
+        struct __ne__ { static constexpr bool enable = false; };                        \
+        template <typename T, typename = void>                                          \
+        struct __ge__ { static constexpr bool enable = false; };                        \
+        template <typename T, typename = void>                                          \
+        struct __gt__ { static constexpr bool enable = false; };                        \
+        template <typename T = cls>                                                     \
+        struct __pos__ { static constexpr bool enable = false; };                       \
+        template <typename T = cls>                                                     \
+        struct __neg__ { static constexpr bool enable = false; };                       \
+        template <typename T = cls>                                                     \
+        struct __invert__ { static constexpr bool enable = false; };                    \
+        template <typename T, typename = void>                                          \
+        struct __add__ { static constexpr bool enable = false; };                       \
+        template <typename T, typename = void>                                          \
+        struct __sub__ { static constexpr bool enable = false; };                       \
+        template <typename T, typename = void>                                          \
+        struct __mul__ { static constexpr bool enable = false; };                       \
+        template <typename T, typename = void>                                          \
+        struct __truediv__ { static constexpr bool enable = false; };                   \
+        template <typename T, typename = void>                                          \
+        struct __mod__ { static constexpr bool enable = false; };                       \
+        template <typename T, typename = void>                                          \
+        struct __lshift__ { static constexpr bool enable = false; };                    \
+        template <typename T, typename = void>                                          \
+        struct __rshift__ { static constexpr bool enable = false; };                    \
+        template <typename T, typename = void>                                          \
+        struct __and__ { static constexpr bool enable = false; };                       \
+        template <typename T, typename = void>                                          \
+        struct __or__ { static constexpr bool enable = false; };                        \
+        template <typename T, typename = void>                                          \
+        struct __xor__ { static constexpr bool enable = false; };                       \
+        template <typename T, typename = void>                                          \
+        struct __iadd__ { static constexpr bool enable = false; };                      \
+        template <typename T, typename = void>                                          \
+        struct __isub__ { static constexpr bool enable = false; };                      \
+        template <typename T, typename = void>                                          \
+        struct __imul__ { static constexpr bool enable = false; };                      \
+        template <typename T, typename = void>                                          \
+        struct __itruediv__ { static constexpr bool enable = false; };                  \
+        template <typename T, typename = void>                                          \
+        struct __imod__ { static constexpr bool enable = false; };                      \
+        template <typename T, typename = void>                                          \
+        struct __ilshift__ { static constexpr bool enable = false; };                   \
+        template <typename T, typename = void>                                          \
+        struct __irshift__ { static constexpr bool enable = false; };                   \
+        template <typename T, typename = void>                                          \
+        struct __iand__ { static constexpr bool enable = false; };                      \
+        template <typename T, typename = void>                                          \
+        struct __ior__ { static constexpr bool enable = false; };                       \
+        template <typename T, typename = void>                                          \
+        struct __ixor__ { static constexpr bool enable = false; };                      \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__lt__<T>::enable, int> = 0>            \
+        auto operator<(const T& other) const = delete;                                  \
+        template <typename T, std::enable_if_t<__lt__<T>::enable, int> = 0>             \
+        inline bool operator<(const T& other) const {                                   \
+            return parent::operator<(other);                                            \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__le__<T>::enable, int> = 0>            \
+        auto operator<=(const T& other) const = delete;                                 \
+        template <typename T, std::enable_if_t<__le__<T>::enable, int> = 0>             \
+        inline bool operator<=(const T& other) const {                                  \
+            return parent::operator<=(other);                                           \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__eq__<T>::enable, int> = 0>            \
+        auto operator==(const T& other) const = delete;                                 \
+        template <typename T, std::enable_if_t<__eq__<T>::enable, int> = 0>             \
+        inline bool operator==(const T& other) const {                                  \
+            return parent::operator==(other);                                           \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__ne__<T>::enable, int> = 0>            \
+        auto operator!=(const T& other) const = delete;                                 \
+        template <typename T, std::enable_if_t<__ne__<T>::enable, int> = 0>             \
+        inline bool operator!=(const T& other) const {                                  \
+            return parent::operator!=(other);                                           \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__ge__<T>::enable, int> = 0>            \
+        auto operator>=(const T& other) const = delete;                                 \
+        template <typename T, std::enable_if_t<__ge__<T>::enable, int> = 0>             \
+        inline bool operator>=(const T& other) const {                                  \
+            return parent::operator>=(other);                                           \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__gt__<T>::enable, int> = 0>            \
+        auto operator>(const T& other) const = delete;                                  \
+        template <typename T, std::enable_if_t<__gt__<T>::enable, int> = 0>             \
+        inline bool operator>(const T& other) const {                                   \
+            return parent::operator>(other);                                            \
+        }                                                                               \
+                                                                                        \
+        template <typename T = cls, std::enable_if_t<!__pos__<T>::enable, int> = 0>     \
+        auto operator+() const = delete;                                                \
+        template <typename T = cls, std::enable_if_t<__pos__<T>::enable, int> = 0>      \
+        inline auto operator+() const {                                                 \
+            using Return = typename __pos__<T>::Return;                                 \
+            static_assert(                                                              \
+                std::is_base_of_v<Object, Return>,                                      \
+                "Unary __pos__ operator must return a py::Object subclass.  Check "     \
+                "your specialization of __pos__ for this type and ensure the Return "   \
+                "type is derived from py::Object."                                      \
+            );                                                                          \
+            return reinterpret_steal<Return>(parent::operator+().release());            \
+        }                                                                               \
+                                                                                        \
+        template <typename T = cls, std::enable_if_t<!__neg__<T>::enable, int> = 0>     \
+        auto operator-() const = delete;                                                \
+        template <typename T = cls, std::enable_if_t<__neg__<T>::enable, int> = 0>      \
+        inline auto operator-() const {                                                 \
+            using Return = typename __neg__<T>::Return;                                 \
+            static_assert(                                                              \
+                std::is_base_of_v<Object, Return>,                                      \
+                "Unary __neg__ operator must return a py::Object subclass.  Check "     \
+                "your specialization of __neg__ for this type and ensure the Return "   \
+                "type is derived from py::Object."                                      \
+            );                                                                          \
+            return reinterpret_steal<Return>(parent::operator-().release());            \
+        }                                                                               \
+                                                                                        \
+        template <typename T = cls, std::enable_if_t<!__invert__<T>::enable, int> = 0>  \
+        auto operator~() const = delete;                                                \
+        template <typename T = cls, std::enable_if_t<__invert__<T>::enable, int> = 0>   \
+        inline auto operator~() const {                                                 \
+            using Return = typename __invert__<T>::Return;                              \
+            static_assert(                                                              \
+                std::is_base_of_v<Object, Return>,                                      \
+                "Unary __invert__ operator must return a py::Object subclass.  Check "  \
+                "your specialization of __invert__ for this type and ensure the Return " \
+                "type is derived from py::Object."                                      \
+            );                                                                          \
+            return reinterpret_steal<Return>(parent::operator~().release());            \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__add__<T>::enable, int> = 0>           \
+        auto operator+(const T& other) const = delete;                                  \
+        template <typename T, std::enable_if_t<__add__<T>::enable, int> = 0>            \
+        inline auto operator+(const T& other) const {                                   \
+            using Return = typename __add__<T>::Return;                                 \
+            static_assert(                                                              \
+                std::is_base_of_v<Object, Return>,                                      \
+                "Binary __add__ operator must return a py::Object subclass.  Check "    \
+                "your specialization of __add__ for this type and ensure the Return "   \
+                "type is derived from py::Object."                                      \
+            );                                                                          \
+            return reinterpret_steal<Return>(parent::operator+(other).release());       \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__sub__<T>::enable, int> = 0>           \
+        auto operator-(const T& other) const = delete;                                  \
+        template <typename T, std::enable_if_t<__sub__<T>::enable, int> = 0>            \
+        inline auto operator-(const T& other) const {                                   \
+            using Return = typename __sub__<T>::Return;                                 \
+            static_assert(                                                              \
+                std::is_base_of_v<Object, Return>,                                      \
+                "Binary __sub__ operator must return a py::Object subclass.  Check "    \
+                "your specialization of __sub__ for this type and ensure the Return "   \
+                "type is derived from py::Object."                                      \
+            );                                                                          \
+            return reinterpret_steal<Return>(parent::operator-(other).release());       \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__mul__<T>::enable, int> = 0>           \
+        auto operator*(const T& other) const = delete;                                  \
+        template <typename T, std::enable_if_t<__mul__<T>::enable, int> = 0>            \
+        inline auto operator*(const T& other) const {                                   \
+            using Return = typename __mul__<T>::Return;                                 \
+            static_assert(                                                              \
+                std::is_base_of_v<Object, Return>,                                      \
+                "Binary __mul__ operator must return a py::Object subclass.  Check "    \
+                "your specialization of __mul__ for this type and ensure the Return "   \
+                "type is derived from py::Object."                                      \
+            );                                                                          \
+            return reinterpret_steal<Return>(parent::operator*(other).release());       \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__truediv__<T>::enable, int> = 0>       \
+        auto operator/(const T& other) const = delete;                                  \
+        template <typename T, std::enable_if_t<__truediv__<T>::enable, int> = 0>        \
+        inline auto operator/(const T& other) const {                                   \
+            using Return = typename __truediv__<T>::Return;                             \
+            static_assert(                                                              \
+                std::is_base_of_v<Object, Return>,                                      \
+                "Binary __truediv__ operator must return a py::Object subclass.  "      \
+                "Check your specialization of __truediv__ for this type and ensure "    \
+                "the Return type is derived from py::Object."                           \
+            );                                                                          \
+            return reinterpret_steal<Return>(parent::operator/(other).release());       \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__mod__<T>::enable, int> = 0>           \
+        auto operator%(const T& other) const = delete;                                  \
+        template <typename T, std::enable_if_t<__mod__<T>::enable, int> = 0>            \
+        inline auto operator%(const T& other) const {                                   \
+            using Return = typename __mod__<T>::Return;                                 \
+            static_assert(                                                              \
+                std::is_base_of_v<Object, Return>,                                      \
+                "Binary __mod__ operator must return a py::Object subclass.  Check "    \
+                "your specialization of __mod__ for this type and ensure the Return "   \
+                "type is derived from py::Object."                                      \
+            );                                                                          \
+            return reinterpret_steal<Return>(parent::operator%(other).release());       \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__lshift__<T>::enable, int> = 0>        \
+        auto operator<<(const T& other) const = delete;                                 \
+        template <typename T, std::enable_if_t<__lshift__<T>::enable, int> = 0>         \
+        inline auto operator<<(const T& other) const {                                  \
+            using Return = typename __lshift__<T>::Return;                              \
+            static_assert(                                                              \
+                std::is_base_of_v<Object, Return>,                                      \
+                "Binary __lshift__ operator must return a py::Object subclass.  Check " \
+                "your specialization of __lshift__ for this type and ensure the Return "\
+                "type is derived from py::Object."                                      \
+            );                                                                          \
+            return reinterpret_steal<Return>(parent::operator<<(other).release());      \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__rshift__<T>::enable, int> = 0>        \
+        auto operator>>(const T& other) const = delete;                                 \
+        template <typename T, std::enable_if_t<__rshift__<T>::enable, int> = 0>         \
+        inline auto operator>>(const T& other) const {                                  \
+            using Return = typename __rshift__<T>::Return;                              \
+            static_assert(                                                              \
+                std::is_base_of_v<Object, Return>,                                      \
+                "Binary __rshift__ operator must return a py::Object subclass.  Check " \
+                "your specialization of __rshift__ for this type and ensure the Return "\
+                "type is derived from py::Object."                                      \
+            );                                                                          \
+            return reinterpret_steal<Return>(parent::operator>>(other).release());      \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__and__<T>::enable, int> = 0>           \
+        auto operator&(const T& other) const = delete;                                  \
+        template <typename T, std::enable_if_t<__and__<T>::enable, int> = 0>            \
+        inline auto operator&(const T& other) const {                                   \
+            using Return = typename __and__<T>::Return;                                 \
+            static_assert(                                                              \
+                std::is_base_of_v<Object, Return>,                                      \
+                "Binary __and__ operator must return a py::Object subclass.  Check "    \
+                "your specialization of __and__ for this type and ensure the Return "   \
+                "type is derived from py::Object."                                      \
+            );                                                                          \
+            return reinterpret_steal<Return>(parent::operator&(other).release());       \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__or__<T>::enable, int> = 0>            \
+        auto operator|(const T& other) const = delete;                                  \
+        template <typename T, std::enable_if_t<__or__<T>::enable, int> = 0>             \
+        inline auto operator|(const T& other) const {                                   \
+            using Return = typename __or__<T>::Return;                                  \
+            static_assert(                                                              \
+                std::is_base_of_v<Object, Return>,                                      \
+                "Binary __or__ operator must return a py::Object subclass.  Check "     \
+                "your specialization of __or__ for this type and ensure the Return "    \
+                "type is derived from py::Object."                                      \
+            );                                                                          \
+            return reinterpret_steal<Return>(parent::operator|(other).release());       \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__xor__<T>::enable, int> = 0>           \
+        auto operator^(const T& other) const = delete;                                  \
+        template <typename T, std::enable_if_t<__xor__<T>::enable, int> = 0>            \
+        inline auto operator^(const T& other) const {                                   \
+            using Return = typename __xor__<T>::Return;                                 \
+            static_assert(                                                              \
+                std::is_base_of_v<Object, Return>,                                      \
+                "Binary __xor__ operator must return a py::Object subclass.  Check "    \
+                "your specialization of __xor__ for this type and ensure the Return "   \
+                "type is derived from py::Object."                                      \
+            );                                                                          \
+            return reinterpret_steal<Return>(parent::operator^(other).release());       \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__iadd__<T>::enable, int> = 0>          \
+        auto operator+=(const T& other) = delete;                                       \
+        template <typename T, std::enable_if_t<__iadd__<T>::enable, int> = 0>           \
+        inline cls& operator+=(const T& other) {                                        \
+            parent::operator+=(other);                                                  \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__isub__<T>::enable, int> = 0>          \
+        auto operator-=(const T& other) = delete;                                       \
+        template <typename T, std::enable_if_t<__isub__<T>::enable, int> = 0>           \
+        inline cls& operator-=(const T& other) {                                        \
+            parent::operator-=(other);                                                  \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__imul__<T>::enable, int> = 0>          \
+        auto operator*=(const T& other) = delete;                                       \
+        template <typename T, std::enable_if_t<__imul__<T>::enable, int> = 0>           \
+        inline cls& operator*=(const T& other) {                                        \
+            parent::operator*=(other);                                                  \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__itruediv__<T>::enable, int> = 0>      \
+        auto operator/=(const T& other) = delete;                                       \
+        template <typename T, std::enable_if_t<__itruediv__<T>::enable, int> = 0>       \
+        inline cls& operator/=(const T& other) {                                        \
+            parent::operator/=(other);                                                  \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__imod__<T>::enable, int> = 0>          \
+        auto operator%=(const T& other) = delete;                                       \
+        template <typename T, std::enable_if_t<__imod__<T>::enable, int> = 0>           \
+        inline cls& operator%=(const T& other) {                                        \
+            parent::operator%=(other);                                                  \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__ilshift__<T>::enable, int> = 0>       \
+        auto operator<<=(const T& other) = delete;                                      \
+        template <typename T, std::enable_if_t<__ilshift__<T>::enable, int> = 0>        \
+        inline cls& operator<<=(const T& other) {                                       \
+            parent::operator<<=(other);                                                 \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__irshift__<T>::enable, int> = 0>       \
+        auto operator>>=(const T& other) = delete;                                      \
+        template <typename T, std::enable_if_t<__irshift__<T>::enable, int> = 0>        \
+        inline cls& operator>>=(const T& other) {                                       \
+            parent::operator>>=(other);                                                 \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__iand__<T>::enable, int> = 0>          \
+        auto operator&=(const T& other) = delete;                                       \
+        template <typename T, std::enable_if_t<__iand__<T>::enable, int> = 0>           \
+        inline cls& operator&=(const T& other) {                                        \
+            parent::operator&=(other);                                                  \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__ior__<T>::enable, int> = 0>           \
+        auto operator|=(const T& other) = delete;                                       \
+        template <typename T, std::enable_if_t<__ior__<T>::enable, int> = 0>            \
+        inline cls& operator|=(const T& other) {                                        \
+            parent::operator|=(other);                                                  \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T, std::enable_if_t<!__ixor__<T>::enable, int> = 0>          \
+        auto operator^=(const T& other) = delete;                                       \
+        template <typename T, std::enable_if_t<__ixor__<T>::enable, int> = 0>           \
+        inline cls& operator^=(const T& other) {                                        \
+            parent::operator^=(other);                                                  \
+            return *this;                                                               \
+        }                                                                               \
+
+    /* Base class for enabled operators  Encodes the return type as a template
+    parameter. */
+    template <typename T>
+    struct Returns {
+        static constexpr bool enable = true;
+        using Return = T;
+    };
 
     /* Type-safe operator overloads are crazy from a circular dependency standpoint, so
      * we have have to separate declarations from definitions.  The macros below ensure

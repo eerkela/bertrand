@@ -13,8 +13,8 @@ namespace py {
 
 
 /* pybind11::bool_ equivalent with stronger type safety, math operators, etc. */
-class Bool : public impl::Ops {
-    using Base = impl::Ops;
+class Bool : public Object {
+    using Base = Object;
 
     template <typename T>
     static constexpr bool constructor1 = !impl::is_python<T> && impl::is_bool_like<T>;
@@ -93,7 +93,7 @@ public:
     ////    CONVERSIONS    ////
     ///////////////////////////
 
-    /* Implicitly convert a py::Bool into a C++ boolean. */
+    /* Explicitly convert a py::Bool into a C++ boolean. */
     inline operator bool() const {
         return Base::operator bool();
     }
@@ -108,68 +108,197 @@ public:
     DELETE_OPERATOR(operator[])
     DELETE_OPERATOR(operator())
 
-    using Base::operator<;
-    using Base::operator<=;
-    using Base::operator==;
-    using Base::operator!=;
-    using Base::operator>=;
-    using Base::operator>;
-
-    DECLARE_TYPED_UNARY_OPERATOR(Bool, operator~, Int)
-
-    DECLARE_TYPED_BINARY_OPERATOR(Bool, operator+, is_bool_like, Int)
-    DECLARE_TYPED_BINARY_OPERATOR(Bool, operator+, is_int_like, Int)
-    DECLARE_TYPED_BINARY_OPERATOR(Bool, operator+, is_float_like, Float)
-    DECLARE_TYPED_BINARY_OPERATOR(Bool, operator+, is_complex_like, Complex)
-
-    // using Base::operator+;
-
-    using Base::operator-;
-    using Base::operator*;
-    using Base::operator/;
-    using Base::operator%;
-    using Base::operator<<;
-    using Base::operator>>;
-    using Base::operator&;
-    using Base::operator|;
-    using Base::operator^;
-
-    DELETE_OPERATOR(operator+=)
-    DELETE_OPERATOR(operator-=)
-    DELETE_OPERATOR(operator*=)
-    DELETE_OPERATOR(operator/=)
-    DELETE_OPERATOR(operator%=)
-    DELETE_OPERATOR(operator<<=)
-    DELETE_OPERATOR(operator>>=)
-
-    template <typename T, std::enable_if_t<impl::is_bool_like<T>, int> = 0>
-    inline Bool& operator&=(const T& other) {
-        Base::operator&=(other);
-        return *this;
-    }
-
-    template <typename T, std::enable_if_t<impl::is_bool_like<T>, int> = 0>
-    inline Bool& operator|=(const T& other) {
-        Base::operator|=(other);
-        return *this;
-    }
-
-    template <typename T, std::enable_if_t<impl::is_bool_like<T>, int> = 0>
-    inline Bool& operator^=(const T& other) {
-        Base::operator^=(other);
-        return *this;
-    }
-
 };
 
 
-
-// TODO: it's probably a good idea to specifically overload the math operators to
-// return specific types (e.g. Int, Float, etc.) instead of generic Objects.  This
-// should cut down on the number of implicit conversions that need to be performed to
-// make things type safe.  It will also promote more errors to compile time.
+///////////////////////////////
+////    UNARY OPERATORS    ////
+///////////////////////////////
 
 
+// TODO: include __abs__()
+
+template <>
+struct Bool::__pos__<> : impl::Returns<Int> {};
+template <>
+struct Bool::__neg__<> : impl::Returns<Int> {};
+template <>
+struct Bool::__invert__<> : impl::Returns<Int> {};
+
+
+///////////////////////////
+////    COMPARISONS    ////
+///////////////////////////
+
+
+template <>
+struct Bool::__lt__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__lt__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__lt__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__lt__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Bool::__le__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__le__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__le__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__le__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Bool::__eq__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__eq__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__eq__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__eq__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__eq__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Bool::__ne__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__ne__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__ne__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__ne__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__ne__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Bool::__ge__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__ge__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__ge__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__ge__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Bool::__gt__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__gt__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__gt__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Bool::__gt__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
+
+
+////////////////////////////////
+////    BINARY OPERATORS    ////
+////////////////////////////////
+
+
+template <>
+struct Bool::__add__<Object> : impl::Returns<Object> {};
+template <typename T>
+struct Bool::__add__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+template <typename T>
+struct Bool::__add__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+template <typename T>
+struct Bool::__add__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Float> {};
+template <typename T>
+struct Bool::__add__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+
+template <>
+struct Bool::__sub__<Object> : impl::Returns<Object> {};
+template <typename T>
+struct Bool::__sub__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+template <typename T>
+struct Bool::__sub__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+template <typename T>
+struct Bool::__sub__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Float> {};
+template <typename T>
+struct Bool::__sub__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+
+template <>
+struct Bool::__mul__<Object> : impl::Returns<Object> {};
+template <typename T>
+struct Bool::__mul__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+template <typename T>
+struct Bool::__mul__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+template <typename T>
+struct Bool::__mul__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Float> {};
+template <typename T>
+struct Bool::__mul__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+
+template <>
+struct Bool::__truediv__<Object> : impl::Returns<Object> {};
+template <typename T>
+struct Bool::__truediv__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Float> {};
+template <typename T>
+struct Bool::__truediv__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Float> {};
+template <typename T>
+struct Bool::__truediv__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Float> {};
+template <typename T>
+struct Bool::__truediv__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+
+template <>
+struct Bool::__mod__<Object> : impl::Returns<Object> {};
+template <typename T>
+struct Bool::__mod__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+template <typename T>
+struct Bool::__mod__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+template <typename T>
+struct Bool::__mod__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Float> {};
+// template <typename T>    <-- Disabled in Python
+// struct Bool::__mod__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+
+template <>
+struct Bool::__lshift__<Object> : impl::Returns<Object> {};
+template <typename T>
+struct Bool::__lshift__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+template <typename T>
+struct Bool::__lshift__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+
+template <>
+struct Bool::__rshift__<Object> : impl::Returns<Object> {};
+template <typename T>
+struct Bool::__rshift__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+template <typename T>
+struct Bool::__rshift__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+
+template <>
+struct Bool::__and__<Object> : impl::Returns<Object> {};
+template <typename T>
+struct Bool::__and__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Bool> {};
+template <typename T>
+struct Bool::__and__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+
+template <>
+struct Bool::__or__<Object> : impl::Returns<Object> {};
+template <typename T>
+struct Bool::__or__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Bool> {};
+template <typename T>
+struct Bool::__or__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+
+template <>
+struct Bool::__xor__<Object> : impl::Returns<Object> {};
+template <typename T>
+struct Bool::__xor__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Bool> {};
+template <typename T>
+struct Bool::__xor__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+
+
+/////////////////////////////////
+////    INPLACE OPERATORS    ////
+/////////////////////////////////
+
+
+template <typename T>
+struct Bool::__iand__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Bool> {};
+
+template <typename T>
+struct Bool::__ior__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Bool> {};
+
+template <typename T>
+struct Bool::__ixor__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Bool> {};
 
 
 }  // namespace python

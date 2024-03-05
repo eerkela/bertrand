@@ -15,8 +15,8 @@ namespace py {
 
 /* New subclass of pybind11::object that represents a complex number at the Python
 level. */
-class Complex : public impl::Ops {
-    using Base = impl::Ops;
+class Complex : public Object {
+    using Base = Object;
 
     template <typename T>
     static constexpr bool constructor1 = (
@@ -146,55 +146,148 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    using Base::operator<;
-    using Base::operator<=;
-    using Base::operator==;
-    using Base::operator!=;
-    using Base::operator>=;
-    using Base::operator>;
-    using Base::operator~;
-    using Base::operator+;
-    using Base::operator-;
-    using Base::operator*;
-    using Base::operator/;
-    using Base::operator%;
-    using Base::operator<<;
-    using Base::operator>>;
-    using Base::operator&;
-    using Base::operator|;
-    using Base::operator^;
+    auto begin() const = delete;
+    auto end() const = delete;
 
-private:
-
-    template <typename T>
-    static constexpr bool inplace_op = (
-        impl::is_bool_like<T> || impl::is_int_like<T> || impl::is_float_like<T> ||
-        impl::is_complex_like<T>
-    );
-
-public:
-
-    #define INPLACE_OP(op)                                                              \
-        template <typename T, std::enable_if_t<inplace_op<T>, int> = 0>                 \
-        inline Complex& op(const T& other) {                                            \
-            Base::op(other);                                                            \
-            return *this;                                                               \
-        }                                                                               \
-
-    INPLACE_OP(operator+=)
-    INPLACE_OP(operator-=)
-    INPLACE_OP(operator*=)
-    INPLACE_OP(operator/=)
-    INPLACE_OP(operator%=)
-    INPLACE_OP(operator<<=)
-    INPLACE_OP(operator>>=)
-    INPLACE_OP(operator&=)
-    INPLACE_OP(operator|=)
-    INPLACE_OP(operator^=)
-
-    #undef INPLACE_OP
+    DELETE_OPERATOR(operator[])
+    DELETE_OPERATOR(operator())
 
 };
+
+
+///////////////////////////////
+////    UNARY OPERATORS    ////
+///////////////////////////////
+
+
+// TODO: include __abs__
+
+template <>
+struct Complex::__pos__<> : impl::Returns<Complex> {};
+template <>
+struct Complex::__neg__<> : impl::Returns<Complex> {};
+template <>
+struct Complex::__invert__<> : impl::Returns<Complex> {};
+
+
+///////////////////////////
+////    COMPARISONS    ////
+///////////////////////////
+
+
+template <>
+struct Complex::__eq__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Complex::__eq__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Complex::__eq__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Complex::__eq__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Complex::__eq__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Complex::__ne__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Complex::__ne__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Complex::__ne__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Complex::__ne__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Complex::__ne__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<bool> {};
+
+
+////////////////////////////////
+////    BINARY OPERATORS    ////
+////////////////////////////////
+
+
+template <>
+struct Complex::__add__<Object> : impl::Returns<Object> {};
+template <typename T>
+struct Complex::__add__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__add__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__add__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__add__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+
+template <>
+struct Complex::__sub__<Object> : impl::Returns<Object> {};
+template <typename T>
+struct Complex::__sub__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__sub__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__sub__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__sub__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+
+template <>
+struct Complex::__mul__<Object> : impl::Returns<Object> {};
+template <typename T>
+struct Complex::__mul__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__mul__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__mul__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__mul__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+
+template <>
+struct Complex::__truediv__<Object> : impl::Returns<Object> {};
+template <typename T>
+struct Complex::__truediv__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__truediv__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__truediv__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__truediv__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+
+
+/////////////////////////////////
+////    INPLACE OPERATORS    ////
+/////////////////////////////////
+
+
+template <typename T>
+struct Complex::__iadd__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__iadd__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__iadd__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__iadd__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+
+template <typename T>
+struct Complex::__isub__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__isub__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__isub__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__isub__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+
+template <typename T>
+struct Complex::__imul__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__imul__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__imul__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__imul__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+
+template <typename T>
+struct Complex::__itruediv__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__itruediv__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__itruediv__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Complex> {};
+template <typename T>
+struct Complex::__itruediv__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
 
 
 }  // namespace bertrand
