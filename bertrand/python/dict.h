@@ -15,8 +15,8 @@ namespace py {
 
 /* New subclass of pybind11::object representing a read-only proxy for a Python
 dictionary or other mapping. */
-class MappingProxy : public impl::Ops {
-    using Base = impl::Ops;
+class MappingProxy : public Object {
+    using Base = Object;
 
     inline static bool mappingproxy_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictProxy_Type);
@@ -36,7 +36,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, MappingProxy, mappingproxy_check)
+    BERTRAND_OBJECT_COMMON(Base, MappingProxy, mappingproxy_check)
 
     /* Explicitly construct a read-only view on an existing dictionary. */
     template <
@@ -64,7 +64,7 @@ public:
     }
 
     /* Equivalent to Python `mappingproxy.copy()`. */
-    inline Dict copy() const;  // out of line to avoid circular dependency.
+    inline Dict copy() const;
 
     /* Equivalent to Python `mappingproxy.get(key)`. */
     template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
@@ -102,13 +102,26 @@ public:
     template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
     inline bool contains(const K& key) const;
 
+    template <typename... Args>
+    auto operator()(Args&&... args) const = delete;
+
+    inline Dict operator|(
+        const std::initializer_list<impl::DictInitializer>& other
+    ) const;
+
 };
+
+
+template <>
+struct MappingProxy::__or__<Object> : impl::Returns<Dict> {};
+template <typename T>
+struct MappingProxy::__or__<T, std::enable_if_t<impl::is_dict_like<T>>> : impl::Returns<Dict> {};
 
 
 /* New subclass of pybind11::object representing a view into the keys of a dictionary
 object. */
-class KeysView : public impl::Ops {
-    using Base = impl::Ops;
+class KeysView : public Object {
+    using Base = Object;
 
     inline static bool keys_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictKeys_Type);
@@ -128,7 +141,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, KeysView, keys_check)
+    BERTRAND_OBJECT_COMMON(Base, KeysView, keys_check)
 
     /* Explicitly create a keys view on an existing dictionary. */
     template <
@@ -187,20 +200,16 @@ public:
         return result;
     }
 
-    template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
-    inline Set operator|(const T& other) const {
-        return Set(this->attr("__or__")(detail::object_or_cast(other)));
-    }
+    template <typename... Args>
+    auto operator()(Args&&... args) const = delete;
+
+    template <typename T>
+    auto operator[](const T& key) const = delete;
 
     inline Set operator|(
         const std::initializer_list<impl::HashInitializer>& other
     ) const {
         return Set(this->attr("__or__")(Set(other)));
-    }
-
-    template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
-    inline Set operator&(const T& other) const {
-        return Set(this->attr("__and__")(detail::object_or_cast(other)));
     }
 
     inline Set operator&(
@@ -209,20 +218,10 @@ public:
         return Set(this->attr("__and__")(Set(other)));
     }
 
-    template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
-    inline Set operator-(const T& other) const {
-        return Set(this->attr("__sub__")(detail::object_or_cast(other)));
-    }
-
     inline Set operator-(
         const std::initializer_list<impl::HashInitializer>& other
     ) const {
         return Set(this->attr("__sub__")(Set(other)));
-    }
-
-    template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
-    inline Set operator^(const T& other) const {
-        return Set(this->attr("__xor__")(detail::object_or_cast(other)));
     }
 
     inline Set operator^(
@@ -231,19 +230,54 @@ public:
         return Set(this->attr("__xor__")(Set(other)));
     }
 
-    using Base::operator<;
-    using Base::operator<=;
-    using Base::operator==;
-    using Base::operator!=;
-    using Base::operator>=;
-    using Base::operator>;
 };
+
+
+template <>
+struct KeysView::__lt__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct KeysView::__lt__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct KeysView::__le__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct KeysView::__le__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct KeysView::__ge__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct KeysView::__ge__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct KeysView::__gt__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct KeysView::__gt__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct KeysView::__or__<Object> : impl::Returns<Set> {};
+template <typename T>
+struct KeysView::__or__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<Set> {};
+
+template <>
+struct KeysView::__and__<Object> : impl::Returns<Set> {};
+template <typename T>
+struct KeysView::__and__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<Set> {};
+
+template <>
+struct KeysView::__sub__<Object> : impl::Returns<Set> {};
+template <typename T>
+struct KeysView::__sub__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<Set> {};
+
+template <>
+struct KeysView::__xor__<Object> : impl::Returns<Set> {};
+template <typename T>
+struct KeysView::__xor__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<Set> {};
 
 
 /* New subclass of pybind11::object representing a view into the values of a dictionary
 object. */
-class ValuesView : public impl::Ops {
-    using Base = impl::Ops;
+class ValuesView : public Object {
+    using Base = Object;
 
     inline static bool values_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictValues_Type);
@@ -263,7 +297,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, ValuesView, values_check)
+    BERTRAND_OBJECT_COMMON(Base, ValuesView, values_check)
 
     /* Explicitly create a values view on an existing dictionary. */
     template <
@@ -303,19 +337,19 @@ public:
         return result;
     }
 
-    using Base::operator<;
-    using Base::operator<=;
-    using Base::operator==;
-    using Base::operator!=;
-    using Base::operator>=;
-    using Base::operator>;
+    template <typename... Args>
+    auto operator()(Args&&... args) const = delete;
+
+    template <typename T>
+    auto operator[](const T& key) const = delete;
+
 };
 
 
 /* New subclass of pybind11::object representing a view into the items of a dictionary
 object. */
-struct ItemsView : public impl::Ops {
-    using Base = impl::Ops;
+struct ItemsView : public Object {
+    using Base = Object;
 
     inline static bool items_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictItems_Type);
@@ -335,7 +369,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, ItemsView, items_check)
+    BERTRAND_OBJECT_COMMON(Base, ItemsView, items_check)
 
     /* Explicitly create an items view on an existing dictionary. */
     template <
@@ -378,19 +412,19 @@ public:
         return result;
     }
 
-    using Base::operator<;
-    using Base::operator<=;
-    using Base::operator==;
-    using Base::operator!=;
-    using Base::operator>=;
-    using Base::operator>;
+    template <typename... Args>
+    auto operator()(Args&&... args) const = delete;
+
+    template <typename T>
+    auto operator[](const T& key) const = delete;
+
 };
 
 
 /* Wrapper around pybind11::dict that allows it to be directly initialized using
 std::initializer_list and enables extra C API functionality. */
-class Dict : public impl::Ops {
-    using Base = impl::Ops;
+class Dict : public Object {
+    using Base = Object;
 
     template <typename T>
     static constexpr bool constructor1 = !impl::is_python<T> && impl::is_iterable<T>;
@@ -408,7 +442,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, Dict, PyDict_Check);
+    BERTRAND_OBJECT_COMMON(Base, Dict, PyDict_Check);
 
     /* Copy/move constructors from equivalent pybind11 type. */
     Dict(const pybind11::dict& other) : Base(other.ptr(), borrowed_t{}) {}
@@ -827,10 +861,11 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
+    template <typename... Args>
+    auto operator()(Args&&... args) const = delete;
+
     inline auto begin() const { return Object::begin(); }
     inline auto end() const { return Object::end(); }
-
-    using Base::operator[];
 
     /* Equivalent to Python `key in dict`. */
     template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
@@ -842,25 +877,12 @@ public:
         return result;
     }
 
-    template <typename T, std::enable_if_t<impl::is_dict_like<T>, int> = 0>
-    inline Dict operator|(const T& other) const {
-        Dict result = copy();
-        result.update(other);
-        return result;
-    }
-
     inline Dict operator|(
         const std::initializer_list<impl::DictInitializer>& other
     ) const {
         Dict result = copy();
         result.update(other);
         return result;
-    }
-
-    template <typename T, std::enable_if_t<impl::is_dict_like<T>, int> = 0>
-    inline Dict& operator|=(const T& other) {
-        update(other);
-        return *this;
     }
 
     inline Dict& operator|=(
@@ -871,6 +893,17 @@ public:
     }
 
 };
+
+
+template <>
+struct Dict::__or__<Object> : impl::Returns<Dict> {};
+template <typename T>
+struct Dict::__or__<T, std::enable_if_t<impl::is_dict_like<T>>> : impl::Returns<Dict> {};
+
+template <>
+struct Dict::__ior__<Object> : impl::Returns<Dict&> {};
+template <typename T>
+struct Dict::__ior__<T, std::enable_if_t<impl::is_dict_like<T>>> : impl::Returns<Dict&> {};
 
 
 inline Dict MappingProxy::copy() const{
@@ -890,11 +923,12 @@ inline bool MappingProxy::contains(const K& key) const {
     return this->keys().contains(detail::object_or_cast(key));
 }
 
-template <typename T, std::enable_if_t<impl::is_dict_like<T>, int> = 0>
-inline Dict operator|(const MappingProxy& mapping, const T& other) {
-    return reinterpret_steal<Dict>(
-        mapping.attr("__or__")(detail::object_or_cast(other)).release()
-    );
+inline Dict MappingProxy::operator|(
+    const std::initializer_list<impl::DictInitializer>& other
+) const {
+    Dict result = copy();
+    result |= other;
+    return result;
 }
 
 

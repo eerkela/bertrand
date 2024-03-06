@@ -17,7 +17,40 @@ namespace bertrand {
 namespace py {
 
 
-/* Wrapper around pybind11::str that enables extra C API functionality. */
+namespace impl {
+
+    // TODO: encapsulate Str/Bytes/ByteArray interfaces here.
+
+    template <typename Derived>
+    class IStr : public impl::SequenceOps {
+        using Base = impl::SequenceOps;
+
+        inline Derived* self() { return static_cast<Derived*>(this); }
+        inline const Derived* self() const { return static_cast<const Derived*>(this); }
+
+    protected:
+
+
+    public:
+        using Base::Base;
+
+        ////////////////////////////////
+        ////    PYTHON INTERFACE    ////
+        ////////////////////////////////
+
+        /* Equivalent to Python's `str.capitalize()`. */
+        inline Derived capitalize() const {
+            return reinterpret_steal<Derived>(self()->attr("capitalize")().release());
+        }
+
+
+    };
+
+
+}  // namespace impl
+
+
+/* Bertrand equivalent for pybind11::str. */
 class Str : public impl::SequenceOps {
     using Base = impl::SequenceOps;
 
@@ -54,7 +87,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, Str, PyUnicode_Check)
+    BERTRAND_OBJECT_COMMON(Base, Str, PyUnicode_Check)
 
     /* Default constructor.  Initializes to empty string. */
     Str() : Base(PyUnicode_FromStringAndSize("", 0), stolen_t{}) {
@@ -700,6 +733,9 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
+    template <typename... Args>
+    auto operator()(Args&&... args) const = delete;
+
     /* Equivalent to Python `sub in str`. */
     inline bool contains(const Str& sub) const {
         int result = PyUnicode_Contains(this->ptr(), sub.ptr());
@@ -718,114 +754,110 @@ public:
         return reinterpret_steal<Str>(result);
     }
 
-    using Base::operator<;
-    using Base::operator<=;
-    using Base::operator==;
-    using Base::operator!=;
-    using Base::operator>=;
-    using Base::operator>;
+    inline Str operator[](Py_ssize_t index) const {
+        return reinterpret_steal<Str>(Object(Base::operator[](index)).release());
+    }
 
-    using Base::operator[];
+    inline Str operator[](const Slice& slice) const {
+        return reinterpret_steal<Str>(Object(Base::operator[](slice)).release());
+    }
+
+    inline Str operator[](
+        const std::initializer_list<impl::SliceInitializer>& slice
+    ) const {
+        return reinterpret_steal<Str>(Object(Base::operator[](slice)).release());
+    }
+
     using Base::operator*;
     using Base::operator*=;
-
-    inline Str operator+(const Str& other) const {
-        return concat(other);
-    }
-
-    inline Str& operator+=(const Str& other) {
-        *this = concat(other);
-        return *this;
-    }
 
 };
 
 
-////////////////////////////////
-////    GLOBAL FUNCTIONS    ////
-////////////////////////////////
+template <>
+struct Str::__lt__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Str::__lt__<T, std::enable_if_t<impl::is_str_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Str::__le__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Str::__le__<T, std::enable_if_t<impl::is_str_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Str::__ge__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Str::__ge__<T, std::enable_if_t<impl::is_str_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Str::__gt__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Str::__gt__<T, std::enable_if_t<impl::is_str_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Str::__add__<Object> : impl::Returns<Str> {};
+template <typename T>
+struct Str::__add__<T, std::enable_if_t<impl::is_str_like<T>>> : impl::Returns<Str> {};
+
+template <>
+struct Str::__iadd__<Object> : impl::Returns<Str&> {};
+template <typename T>
+struct Str::__iadd__<T, std::enable_if_t<impl::is_str_like<T>>> : impl::Returns<Str&> {};
 
 
-/* Equivalent to Python `ascii(obj)`.  Like `repr()`, but returns an ASCII-encoded
-string. */
-inline Str ascii(const Handle& obj) {
-    PyObject* result = PyObject_ASCII(obj.ptr());
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Str>(result);
-}
+/* Bertrand equivalent for pybind11::bytes.
+
+bytes/bytearray interface:
+
+count(sub[, start[, end]]) -> int
+removeprefix(prefix, /) -> bytes
+removesuffix(suffix, /) -> bytes
+decode(encoding="utf-8", errors="strict") -> str
+endswith(suffix[, start[, end]]) -> bool
+find(sub[, start[, end]]) -> int
+index(sub[, start[, end]]) -> int
+join(iterable) -> bytes/bytearray
+maketrans(from, to) -> dict
+partition(sep) -> tuple
+replace(old, new[, count]) -> bytes/bytearray
+rfind(sub[, start[, end]]) -> int
+rindex(sub[, start[, end]]) -> int
+rpartition(sep) -> tuple
+startswith(prefix[, start[, end]]) -> bool
+translate(table) -> bytes/bytearray
+
+center(width[, fillbyte]) -> bytes/bytearray
+ljust(width[, fillbyte]) -> bytes/bytearray
+lstrip([chars]) -> bytes/bytearray
+rjust(width[, fillbyte]) -> bytes/bytearray
+rsplit(sep=None, maxsplit=-1) -> list
+rstrip([chars]) -> bytes/bytearray
+split(sep=None, maxsplit=-1) -> list
+strip([chars]) -> bytes/bytearray
+
+capitalize() -> bytes/bytearray
+expandtabs(tabsize=8) -> bytes/bytearray
+isalnum() -> bool
+isalpha() -> bool
+isascii() -> bool
+isdigit() -> bool
+islower() -> bool
+isspace() -> bool
+istitle() -> bool
+isupper() -> bool
+lower() -> bytes/bytearray
+splitlines([keepends]) -> list
+swapcase() -> bytes/bytearray
+title() -> bytes/bytearray
+upper() -> bytes/bytearray
+zfill(width) -> bytes/bytearray
 
 
-/* Equivalent to Python `bin(obj)`.  Converts an integer or other object implementing
-__index__() into a binary string representation. */
-inline Str bin(const Handle& obj) {
-    PyObject* string = PyNumber_ToBase(obj.ptr(), 2);
-    if (string == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Str>(string);
-}
 
 
-/* Equivalent to Python `oct(obj)`.  Converts an integer or other object implementing
-__index__() into an octal string representation. */
-inline Str oct(const Handle& obj) {
-    PyObject* string = PyNumber_ToBase(obj.ptr(), 8);
-    if (string == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Str>(string);
-}
+*/
 
 
-/* Equivalent to Python `hex(obj)`.  Converts an integer or other object implementing
-__index__() into a hexadecimal string representation. */
-inline Str hex(const Handle& obj) {
-    PyObject* string = PyNumber_ToBase(obj.ptr(), 16);
-    if (string == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Str>(string);
-}
-
-
-/* Equivalent to Python `chr(obj)`.  Converts an integer or other object implementing
-__index__() into a unicode character. */
-inline Str chr(const Handle& obj) {
-    PyObject* string = PyUnicode_FromFormat("%llc", obj.cast<long long>());
-    if (string == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Str>(string);
-}
-
-
-/* Equivalent to Python `ord(obj)`.  Converts a unicode character into an integer
-representation. */
-inline Int ord(const Handle& obj) {
-    PyObject* ptr = obj.ptr();
-    if (ptr == nullptr) {
-        throw TypeError("cannot call ord() on a null object");
-    }
-
-    if (!PyUnicode_Check(ptr)) {
-        std::ostringstream msg;
-        msg << "ord() expected a string of length 1, but ";
-        msg << Py_TYPE(ptr)->tp_name << "found";
-        throw TypeError(msg.str());
-    }
-
-    Py_ssize_t length = PyUnicode_GET_LENGTH(ptr);
-    if (length != 1) {
-        std::ostringstream msg;
-        msg << "ord() expected a character, but string of length " << length;
-        msg << " found";
-        throw TypeError(msg.str());
-    }
-
-    return PyUnicode_READ_CHAR(ptr, 0);
-}
 
 
 }  // namespace python

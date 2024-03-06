@@ -433,7 +433,7 @@ namespace impl {
 
         template <typename T, size_t N>
         struct Traits<std::array<T, N>> : public Base {
-            static constexpr bool tuplelike = true;
+            static constexpr bool listlike = true;
         };
 
         template <typename... Args>
@@ -987,13 +987,9 @@ public:
 
     /* For compatibility with pybind11, which expects these methods. */
     template <typename T, std::enable_if_t<!impl::is_python<T>, int> = 0>
-    static constexpr bool check_(const T& value) {
-        return check(value);
-    }
+    static constexpr bool check_(const T& value) { return check(value); }
     template <typename T, std::enable_if_t<impl::is_python<T>, int> = 0>
-    static constexpr bool check_(const T& value) {
-        return check(value);
-    }
+    static constexpr bool check_(const T& value) { return check(value); }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -1002,8 +998,11 @@ public:
     using Base::Base;
     using Base::operator=;
 
-    /* Default constructor.  Initializes to None. */
-    Object() : Base(pybind11::none()) {}
+    /* Default constructor.  Initializes to a null object, which should not be used
+    without initialization.  Note that this is one of the only ways in which a null
+    pointer can be injected into the bertrand type system, the other being interactions
+    with a wrapper that has been moved from. */
+    Object() : Base() {}
 
     /* Copy constructor.  Borrows a reference to an existing python object. */
     Object(const pybind11::object& o) : Base(o.ptr(), borrowed_t{}) {}
@@ -1797,54 +1796,11 @@ public:
 
     };
 
-    /* Intermediate base class that hides all operators from the generic Object class.
-    Subclasses have to specifically enable the types they want to support.  CRTP causes
-    each type's operators to be isolated from other types. */
-    struct Ops : public Object {
-        using Object::Object;
-        using Object::operator=;
-
-        ///////////////////////////////
-        ////    BASIC OPERATORS    ////
-        ///////////////////////////////
-    
-        // template <typename T, std::enable_if_t<std::is_base_of_v<Object, T>, int> = 0>
-        // operator T() const = delete;
-
-        // template <typename T, std::enable_if_t<impl::is_wrapper<T>, int> = 0>
-        // inline operator T() const {
-        //     return Object::operator T();
-        // }
-
-        // template <
-        //     typename T,
-        //     std::enable_if_t<!impl::is_wrapper<T> && !std::is_base_of_v<Object, T>, int> = 0
-        // >
-        // inline explicit operator T() const {
-        //     return Object::operator T();
-        // }
-
-        // inline explicit operator bool() const {
-        //     return Object::operator bool();
-        // }
-
-        // inline explicit operator std::string() const {
-        //     return Object::operator std::string();
-        // }
-
-        // TODO: operator[], operator(), begin(), and end()
-
-        //////////////////////////////////
-        ////    OPERATOR OVERLOADS    ////
-        //////////////////////////////////
-
-    };
-
     /* Mixin holding operator overloads for types implementing the sequence protocol,
     which makes them both concatenatable and repeatable. */
-    struct SequenceOps : public Ops {
-        using Ops::Ops;
-        using Ops::operator=;
+    struct SequenceOps : public Object {
+        using Object::Object;
+        using Object::operator=;
 
         /* Equivalent to Python `sequence.count(value)`, but also takes optional
         start/stop indices similar to `sequence.index()`. */
@@ -1914,7 +1870,7 @@ public:
         }
 
         /* Equivalent to Python `sequence + items`. */
-        template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+        template <typename T>
         inline Object concat(const T& items) const {
             PyObject* result = PySequence_Concat(
                 this->ptr(),
@@ -1942,7 +1898,7 @@ public:
             return Object::operator+();
         }
 
-        template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+        template <typename T>
         inline Object operator+(const T& items) const {
             return this->concat(items);
         }
@@ -1959,7 +1915,7 @@ public:
             return seq.repeat(repetitions);
         }
 
-        template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+        template <typename T>
         inline Object& operator+=(const T& items) {
             PyObject* result = PySequence_InPlaceConcat(
                 this->ptr(),
@@ -2072,7 +2028,7 @@ public:
         py::List list = {1, 2, 3, 4, 5};
         list = {5, 4, 3, 2, 1};
     */
-    #define BERTRAND_OBJECT_CONSTRUCTORS(parent, cls, check_func)                       \
+    #define BERTRAND_OBJECT_COMMON(parent, cls, check_func)                             \
         /* Overload check() for C++ values using template metaprogramming. */           \
         template <typename T, std::enable_if_t<!impl::is_python<T>, int> = 0>           \
         static constexpr bool check(const T&) {                                         \
@@ -2084,6 +2040,12 @@ public:
         static constexpr bool check(const T& obj) {                                     \
             return obj.ptr() != nullptr && check_func(obj.ptr());                       \
         }                                                                               \
+                                                                                        \
+        /* For compatibility with pybind11, which expects these methods. */             \
+        template <typename T, std::enable_if_t<!impl::is_python<T>, int> = 0>           \
+        static constexpr bool check_(const T& value) { return check(value); }           \
+        template <typename T, std::enable_if_t<impl::is_python<T>, int> = 0>            \
+        static constexpr bool check_(const T& value) { return check(value); }           \
                                                                                         \
         /* Inherit tagged borrow/steal and copy/move constructors. */                   \
         cls(Handle h, const borrowed_t& t) : parent(h, t) {}                            \
@@ -2102,7 +2064,7 @@ public:
         }                                                                               \
                                                                                         \
         /* Trigger implicit conversions to this type via the assignment operator. */    \
-        template <typename T, std::enable_if_t<std::is_convertible_v<T, cls>, int> = 0> \
+        template <typename T, typename enable = std::enable_if_t<std::is_convertible_v<T, cls>>>\
         cls& operator=(T&& value) {                                                     \
             if constexpr (std::is_same_v<cls, std::decay_t<T>>) {                       \
                 if (this == &value) {                                                   \
@@ -2114,14 +2076,12 @@ public:
         }                                                                               \
                                                                                         \
         /* Delete type narrowing operator inherited from Object. */                     \
-        template <typename T, std::enable_if_t<std::is_base_of_v<Object, T>, int> = 0>  \
+        template <typename T, typename enable = std::enable_if_t<std::is_base_of_v<Object, T>>>\
         operator T() const = delete;                                                    \
                                                                                         \
         /* Make sure these operators don't get lost during overloads. */                \
         inline cls* operator&() { return this; }                                        \
         inline const cls* operator&() const { return this; }                            \
-        inline auto operator*() { return parent::operator*(); }                         \
-        inline auto operator*() const { return parent::operator*(); }                   \
                                                                                         \
         /* The rest of the macro is for operator overloads and their control structs */ \
         template <typename T, typename = void>                                          \
@@ -2129,9 +2089,9 @@ public:
         template <typename T, typename = void>                                          \
         struct __le__ { static constexpr bool enable = false; };                        \
         template <typename T, typename = void>                                          \
-        struct __eq__ { static constexpr bool enable = false; };                        \
+        struct __eq__ { static constexpr bool enable = true; };  /* default enabled */  \
         template <typename T, typename = void>                                          \
-        struct __ne__ { static constexpr bool enable = false; };                        \
+        struct __ne__ { static constexpr bool enable = true; };  /* default enabled */  \
         template <typename T, typename = void>                                          \
         struct __ge__ { static constexpr bool enable = false; };                        \
         template <typename T, typename = void>                                          \
@@ -2183,49 +2143,49 @@ public:
         template <typename T, typename = void>                                          \
         struct __ixor__ { static constexpr bool enable = false; };                      \
                                                                                         \
-        template <typename T, std::enable_if_t<!__lt__<T>::enable, int> = 0>            \
+        template <typename T, typename enable = std::enable_if_t<!__lt__<T>::enable>>   \
         auto operator<(const T& other) const = delete;                                  \
         template <typename T, std::enable_if_t<__lt__<T>::enable, int> = 0>             \
         inline bool operator<(const T& other) const {                                   \
             return parent::operator<(other);                                            \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__le__<T>::enable, int> = 0>            \
+        template <typename T, typename enable = std::enable_if_t<!__le__<T>::enable>>   \
         auto operator<=(const T& other) const = delete;                                 \
         template <typename T, std::enable_if_t<__le__<T>::enable, int> = 0>             \
         inline bool operator<=(const T& other) const {                                  \
             return parent::operator<=(other);                                           \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__eq__<T>::enable, int> = 0>            \
+        template <typename T, typename enable = std::enable_if_t<!__eq__<T>::enable>>   \
         auto operator==(const T& other) const = delete;                                 \
         template <typename T, std::enable_if_t<__eq__<T>::enable, int> = 0>             \
         inline bool operator==(const T& other) const {                                  \
             return parent::operator==(other);                                           \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__ne__<T>::enable, int> = 0>            \
+        template <typename T, typename enable = std::enable_if_t<!__ne__<T>::enable>>   \
         auto operator!=(const T& other) const = delete;                                 \
         template <typename T, std::enable_if_t<__ne__<T>::enable, int> = 0>             \
         inline bool operator!=(const T& other) const {                                  \
             return parent::operator!=(other);                                           \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__ge__<T>::enable, int> = 0>            \
+        template <typename T, typename enable = std::enable_if_t<!__ge__<T>::enable>>   \
         auto operator>=(const T& other) const = delete;                                 \
         template <typename T, std::enable_if_t<__ge__<T>::enable, int> = 0>             \
         inline bool operator>=(const T& other) const {                                  \
             return parent::operator>=(other);                                           \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__gt__<T>::enable, int> = 0>            \
+        template <typename T, typename enable = std::enable_if_t<!__gt__<T>::enable>>   \
         auto operator>(const T& other) const = delete;                                  \
         template <typename T, std::enable_if_t<__gt__<T>::enable, int> = 0>             \
         inline bool operator>(const T& other) const {                                   \
             return parent::operator>(other);                                            \
         }                                                                               \
                                                                                         \
-        template <typename T = cls, std::enable_if_t<!__pos__<T>::enable, int> = 0>     \
+        template <typename T = cls, typename enable = std::enable_if_t<!__pos__<T>::enable>>\
         auto operator+() const = delete;                                                \
         template <typename T = cls, std::enable_if_t<__pos__<T>::enable, int> = 0>      \
         inline auto operator+() const {                                                 \
@@ -2239,7 +2199,7 @@ public:
             return reinterpret_steal<Return>(parent::operator+().release());            \
         }                                                                               \
                                                                                         \
-        template <typename T = cls, std::enable_if_t<!__neg__<T>::enable, int> = 0>     \
+        template <typename T = cls, typename enable = std::enable_if_t<!__neg__<T>::enable>>\
         auto operator-() const = delete;                                                \
         template <typename T = cls, std::enable_if_t<__neg__<T>::enable, int> = 0>      \
         inline auto operator-() const {                                                 \
@@ -2253,7 +2213,7 @@ public:
             return reinterpret_steal<Return>(parent::operator-().release());            \
         }                                                                               \
                                                                                         \
-        template <typename T = cls, std::enable_if_t<!__invert__<T>::enable, int> = 0>  \
+        template <typename T = cls, typename enable = std::enable_if_t<!__invert__<T>::enable>>\
         auto operator~() const = delete;                                                \
         template <typename T = cls, std::enable_if_t<__invert__<T>::enable, int> = 0>   \
         inline auto operator~() const {                                                 \
@@ -2267,7 +2227,7 @@ public:
             return reinterpret_steal<Return>(parent::operator~().release());            \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__add__<T>::enable, int> = 0>           \
+        template <typename T, typename enable = std::enable_if_t<!__add__<T>::enable>>  \
         auto operator+(const T& other) const = delete;                                  \
         template <typename T, std::enable_if_t<__add__<T>::enable, int> = 0>            \
         inline auto operator+(const T& other) const {                                   \
@@ -2281,7 +2241,7 @@ public:
             return reinterpret_steal<Return>(parent::operator+(other).release());       \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__sub__<T>::enable, int> = 0>           \
+        template <typename T, typename enable = std::enable_if_t<!__sub__<T>::enable>>  \
         auto operator-(const T& other) const = delete;                                  \
         template <typename T, std::enable_if_t<__sub__<T>::enable, int> = 0>            \
         inline auto operator-(const T& other) const {                                   \
@@ -2295,7 +2255,7 @@ public:
             return reinterpret_steal<Return>(parent::operator-(other).release());       \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__mul__<T>::enable, int> = 0>           \
+        template <typename T, typename enable = std::enable_if_t<!__mul__<T>::enable>>  \
         auto operator*(const T& other) const = delete;                                  \
         template <typename T, std::enable_if_t<__mul__<T>::enable, int> = 0>            \
         inline auto operator*(const T& other) const {                                   \
@@ -2309,7 +2269,7 @@ public:
             return reinterpret_steal<Return>(parent::operator*(other).release());       \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__truediv__<T>::enable, int> = 0>       \
+        template <typename T, typename enable = std::enable_if_t<!__truediv__<T>::enable>>\
         auto operator/(const T& other) const = delete;                                  \
         template <typename T, std::enable_if_t<__truediv__<T>::enable, int> = 0>        \
         inline auto operator/(const T& other) const {                                   \
@@ -2323,7 +2283,7 @@ public:
             return reinterpret_steal<Return>(parent::operator/(other).release());       \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__mod__<T>::enable, int> = 0>           \
+        template <typename T, typename enable = std::enable_if_t<!__mod__<T>::enable>>  \
         auto operator%(const T& other) const = delete;                                  \
         template <typename T, std::enable_if_t<__mod__<T>::enable, int> = 0>            \
         inline auto operator%(const T& other) const {                                   \
@@ -2337,7 +2297,7 @@ public:
             return reinterpret_steal<Return>(parent::operator%(other).release());       \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__lshift__<T>::enable, int> = 0>        \
+        template <typename T, typename enable = std::enable_if_t<!__lshift__<T>::enable>>\
         auto operator<<(const T& other) const = delete;                                 \
         template <typename T, std::enable_if_t<__lshift__<T>::enable, int> = 0>         \
         inline auto operator<<(const T& other) const {                                  \
@@ -2351,7 +2311,7 @@ public:
             return reinterpret_steal<Return>(parent::operator<<(other).release());      \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__rshift__<T>::enable, int> = 0>        \
+        template <typename T, typename enable = std::enable_if_t<!__rshift__<T>::enable>>\
         auto operator>>(const T& other) const = delete;                                 \
         template <typename T, std::enable_if_t<__rshift__<T>::enable, int> = 0>         \
         inline auto operator>>(const T& other) const {                                  \
@@ -2365,7 +2325,7 @@ public:
             return reinterpret_steal<Return>(parent::operator>>(other).release());      \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__and__<T>::enable, int> = 0>           \
+        template <typename T, typename enable = std::enable_if_t<!__and__<T>::enable>>  \
         auto operator&(const T& other) const = delete;                                  \
         template <typename T, std::enable_if_t<__and__<T>::enable, int> = 0>            \
         inline auto operator&(const T& other) const {                                   \
@@ -2379,7 +2339,7 @@ public:
             return reinterpret_steal<Return>(parent::operator&(other).release());       \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__or__<T>::enable, int> = 0>            \
+        template <typename T, typename enable = std::enable_if_t<!__or__<T>::enable>>   \
         auto operator|(const T& other) const = delete;                                  \
         template <typename T, std::enable_if_t<__or__<T>::enable, int> = 0>             \
         inline auto operator|(const T& other) const {                                   \
@@ -2393,7 +2353,7 @@ public:
             return reinterpret_steal<Return>(parent::operator|(other).release());       \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__xor__<T>::enable, int> = 0>           \
+        template <typename T, typename enable = std::enable_if_t<!__xor__<T>::enable>>  \
         auto operator^(const T& other) const = delete;                                  \
         template <typename T, std::enable_if_t<__xor__<T>::enable, int> = 0>            \
         inline auto operator^(const T& other) const {                                   \
@@ -2407,7 +2367,7 @@ public:
             return reinterpret_steal<Return>(parent::operator^(other).release());       \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__iadd__<T>::enable, int> = 0>          \
+        template <typename T, typename enable = std::enable_if_t<!__iadd__<T>::enable>> \
         auto operator+=(const T& other) = delete;                                       \
         template <typename T, std::enable_if_t<__iadd__<T>::enable, int> = 0>           \
         inline cls& operator+=(const T& other) {                                        \
@@ -2415,7 +2375,7 @@ public:
             return *this;                                                               \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__isub__<T>::enable, int> = 0>          \
+        template <typename T, typename enable = std::enable_if_t<!__isub__<T>::enable>> \
         auto operator-=(const T& other) = delete;                                       \
         template <typename T, std::enable_if_t<__isub__<T>::enable, int> = 0>           \
         inline cls& operator-=(const T& other) {                                        \
@@ -2423,7 +2383,7 @@ public:
             return *this;                                                               \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__imul__<T>::enable, int> = 0>          \
+        template <typename T, typename enable = std::enable_if_t<!__imul__<T>::enable>> \
         auto operator*=(const T& other) = delete;                                       \
         template <typename T, std::enable_if_t<__imul__<T>::enable, int> = 0>           \
         inline cls& operator*=(const T& other) {                                        \
@@ -2431,7 +2391,7 @@ public:
             return *this;                                                               \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__itruediv__<T>::enable, int> = 0>      \
+        template <typename T, typename enable = std::enable_if_t<!__itruediv__<T>::enable>>\
         auto operator/=(const T& other) = delete;                                       \
         template <typename T, std::enable_if_t<__itruediv__<T>::enable, int> = 0>       \
         inline cls& operator/=(const T& other) {                                        \
@@ -2439,7 +2399,7 @@ public:
             return *this;                                                               \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__imod__<T>::enable, int> = 0>          \
+        template <typename T, typename enable = std::enable_if_t<!__imod__<T>::enable>> \
         auto operator%=(const T& other) = delete;                                       \
         template <typename T, std::enable_if_t<__imod__<T>::enable, int> = 0>           \
         inline cls& operator%=(const T& other) {                                        \
@@ -2447,7 +2407,7 @@ public:
             return *this;                                                               \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__ilshift__<T>::enable, int> = 0>       \
+        template <typename T, typename enable = std::enable_if_t<!__ilshift__<T>::enable>>\
         auto operator<<=(const T& other) = delete;                                      \
         template <typename T, std::enable_if_t<__ilshift__<T>::enable, int> = 0>        \
         inline cls& operator<<=(const T& other) {                                       \
@@ -2455,7 +2415,7 @@ public:
             return *this;                                                               \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__irshift__<T>::enable, int> = 0>       \
+        template <typename T, typename enable = std::enable_if_t<!__irshift__<T>::enable>>\
         auto operator>>=(const T& other) = delete;                                      \
         template <typename T, std::enable_if_t<__irshift__<T>::enable, int> = 0>        \
         inline cls& operator>>=(const T& other) {                                       \
@@ -2463,7 +2423,7 @@ public:
             return *this;                                                               \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__iand__<T>::enable, int> = 0>          \
+        template <typename T, typename enable = std::enable_if_t<!__iand__<T>::enable>> \
         auto operator&=(const T& other) = delete;                                       \
         template <typename T, std::enable_if_t<__iand__<T>::enable, int> = 0>           \
         inline cls& operator&=(const T& other) {                                        \
@@ -2471,7 +2431,7 @@ public:
             return *this;                                                               \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__ior__<T>::enable, int> = 0>           \
+        template <typename T, typename enable = std::enable_if_t<!__ior__<T>::enable>>  \
         auto operator|=(const T& other) = delete;                                       \
         template <typename T, std::enable_if_t<__ior__<T>::enable, int> = 0>            \
         inline cls& operator|=(const T& other) {                                        \
@@ -2479,7 +2439,7 @@ public:
             return *this;                                                               \
         }                                                                               \
                                                                                         \
-        template <typename T, std::enable_if_t<!__ixor__<T>::enable, int> = 0>          \
+        template <typename T, typename enable = std::enable_if_t<!__ixor__<T>::enable>> \
         auto operator^=(const T& other) = delete;                                       \
         template <typename T, std::enable_if_t<__ixor__<T>::enable, int> = 0>           \
         inline cls& operator^=(const T& other) {                                        \
@@ -2494,51 +2454,6 @@ public:
         static constexpr bool enable = true;
         using Return = T;
     };
-
-    /* Type-safe operator overloads are crazy from a circular dependency standpoint, so
-     * we have have to separate declarations from definitions.  The macros below ensure
-     * that the syntax remains consistent across the built-in types.  They should not
-     * be necessary for client code that uses the built-in types.
-     */
-
-    #define DECLARE_TYPED_UNARY_OPERATOR(cls, op, return_type)                          \
-        inline return_type op() const;                                                  \
-
-    #define DEFINE_TYPED_UNARY_OPERATOR(cls, op, return_type)                           \
-        inline return_type cls::op() const {                                            \
-            return reinterpret_steal<return_type>(Base::op().release());                \
-        }                                                                               \
-
-    #define DECLARE_TYPED_BINARY_OPERATOR(cls, op, constraint, return_type)             \
-        template <typename T, std::enable_if_t<impl::constraint<T>, int> = 0>           \
-        inline return_type op(const T& other) const;                                    \
-
-    #define DEFINE_TYPED_BINARY_OPERATOR(cls, op, constraint, return_type)              \
-        template <typename T, std::enable_if_t<impl::constraint<T>, int> = 0>           \
-        inline return_type cls::op(const T& other) const {                              \
-            return reinterpret_steal<return_type>(Base::op(other).release());           \
-        }                                                                               \
-
-        // template <
-        //     typename T,
-        //     std::enable_if_t<
-        //         !impl::is_same_or_subclass_of<Object, U> &&
-        //         !impl::is_same_or_subclass_of<std::ostream, U> &&
-        //         !impl::is_std_iterator<U>,
-        //     int> = 0
-        // >
-        // inline friend return_type opcode(const U& other, const cls& self) {
-        //     return reinterpret_steal<return_type>(Base::op(other, self).release());
-        // }
-
-        // template <typename T, std::enable_if_t<impl::constraint<T>>
-
-    // TODO: include reverse equivalents for all binary operators
-
-
-
-
-
 
     #define DELETE_OPERATOR(op)                                                         \
         template <typename... Args>                                                     \
@@ -2585,8 +2500,7 @@ struct Static : public impl::Wrapper<T> {
 
 
 /* Object subclass that represents Python's global None singleton. */
-class NoneType : public impl::Ops {
-    using Base = impl::Ops;
+class NoneType : public Object {
 
     inline static int check_none(PyObject* obj) {
         return Py_IsNone(obj);
@@ -2595,14 +2509,13 @@ class NoneType : public impl::Ops {
 public:
     static Type type;
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, NoneType, check_none)
-    NoneType() : Base(Py_None, borrowed_t{}) {}
+    BERTRAND_OBJECT_COMMON(Object, NoneType, check_none)
+    NoneType() : Object(Py_None, borrowed_t{}) {}
 };
 
 
 /* Object subclass that represents Python's global NotImplemented singleton. */
-class NotImplementedType : public impl::Ops {
-    using Base = impl::Ops;
+class NotImplementedType : public Object {
 
     inline static int check_not_implemented(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) Py_TYPE(Py_NotImplemented));
@@ -2615,14 +2528,13 @@ class NotImplementedType : public impl::Ops {
 public:
     static Type type;
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, NotImplementedType, check_not_implemented)
-    NotImplementedType() : Base(Py_NotImplemented, borrowed_t{}) {}
+    BERTRAND_OBJECT_COMMON(Object, NotImplementedType, check_not_implemented)
+    NotImplementedType() : Object(Py_NotImplemented, borrowed_t{}) {}
 };
 
 
 /* Object subclass representing Python's global Ellipsis singleton. */
-class EllipsisType : public impl::Ops {
-    using Base = impl::Ops;
+class EllipsisType : public Object {
 
     inline static int check_ellipsis(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) Py_TYPE(Py_Ellipsis));
@@ -2635,8 +2547,8 @@ class EllipsisType : public impl::Ops {
 public:
     static Type type;
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, EllipsisType, check_ellipsis)
-    EllipsisType() : Base(Py_Ellipsis, borrowed_t{}) {}
+    BERTRAND_OBJECT_COMMON(Object, EllipsisType, check_ellipsis)
+    EllipsisType() : Object(Py_Ellipsis, borrowed_t{}) {}
 };
 
 
@@ -2647,8 +2559,8 @@ static const NotImplementedType NotImplemented;
 
 
 /* Object subclass that represents an imported Python module. */
-class Module : public impl::Ops {
-    using Base = impl::Ops;
+class Module : public Object {
+    using Base = Object;
 
     inline static int check_module(PyObject* obj) {
         int result = PyModule_Check(obj);
@@ -2665,7 +2577,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, Module, check_module)
+    BERTRAND_OBJECT_COMMON(Base, Module, check_module)
 
     /* Default module constructor deleted for clarity. */
     Module() = delete;

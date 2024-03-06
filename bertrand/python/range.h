@@ -7,6 +7,7 @@
 
 #include "common.h"
 #include "int.h"
+#include "slice.h"
 
 
 namespace bertrand {
@@ -15,8 +16,8 @@ namespace py {
 
 /* New subclass of pybind11::object that represents a range object at the Python
 level. */
-class Range : public impl::Ops {
-    using Base = impl::Ops;
+class Range : public Object {
+    using Base = Object;
 
     inline static bool range_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyRange_Type);
@@ -36,7 +37,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, Range, range_check)
+    BERTRAND_OBJECT_COMMON(Base, Range, range_check)
 
     /* Default constructor.  Initializes to an empty range. */
     Range() : Range(Int::zero()) {}
@@ -90,6 +91,44 @@ public:
     inline Py_ssize_t step() const {
         Py_ssize_t result = PyLong_AsSsize_t(this->attr("step").ptr());
         if (result == -1 && PyErr_Occurred()) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    template <typename... Args>
+    auto operator()(Args&&... args) const = delete;
+
+    inline Int operator[](size_t index) const {
+        PyObject* result = PySequence_GetItem(this->ptr(), index);
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Int>(result);
+    }
+
+    inline Range operator[](const Slice& slice) const {
+        PyObject* result = PyObject_GetItem(this->ptr(), slice.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Range>(result);
+    }
+
+    inline Range operator[](
+        const std::initializer_list<impl::SliceInitializer>& slice
+    ) const {
+        return (*this)[Slice(slice)];
+    }
+
+    template <typename T, std::enable_if_t<impl::is_int_like<T>, int> = 0>
+    inline bool contains(const T& item) const {
+        int result = PySequence_Contains(this->ptr(), detail::object_or_cast(item).ptr());
+        if (result == -1) {
             throw error_already_set();
         }
         return result;

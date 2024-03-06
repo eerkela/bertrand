@@ -7,6 +7,7 @@
 #define BERTRAND_PYTHON_TUPLE_H
 
 #include "common.h"
+#include "slice.h"
 
 
 namespace bertrand {
@@ -53,7 +54,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, Tuple, PyTuple_Check)
+    BERTRAND_OBJECT_COMMON(Base, Tuple, PyTuple_Check)
 
     /* Default constructor.  Initializes to empty tuple. */
     Tuple() : Base(PyTuple_New(0), stolen_t{}) {
@@ -289,30 +290,30 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    using Base::operator[];
-
+    // taken from pybind11::tuple
     inline impl::TupleAccessor operator[](size_t index) const {
         return {*this, index};
     }
 
-    detail::tuple_iterator begin() const {
+    inline Tuple operator[](const Slice& slice) const {
+        return reinterpret_steal<Tuple>(Object(Base::operator[](slice)).release());
+    }
+
+    inline Tuple operator[](
+        const std::initializer_list<impl::SliceInitializer>& slice
+    ) const {
+        return reinterpret_steal<Tuple>(Object(Base::operator[](slice)).release());
+    }
+
+    inline detail::tuple_iterator begin() const {
         return {*this, 0};
     }
 
-    detail::tuple_iterator end() const {
+    inline detail::tuple_iterator end() const {
         return {*this, PyTuple_GET_SIZE(this->ptr())};
     }
 
-    using Base::operator<;
-    using Base::operator<=;
-    using Base::operator==;
-    using Base::operator!=;
-    using Base::operator>;
-    using Base::operator>=;
-
     using Base::concat;
-    using Base::operator+;
-    using Base::operator+=;
     using Base::operator*;
     using Base::operator*=;
 
@@ -354,6 +355,37 @@ public:
     }
 
 };
+
+
+template <>
+struct Tuple::__lt__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Tuple::__lt__<T, std::enable_if_t<impl::is_tuple_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Tuple::__le__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Tuple::__le__<T, std::enable_if_t<impl::is_tuple_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Tuple::__ge__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Tuple::__ge__<T, std::enable_if_t<impl::is_tuple_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Tuple::__gt__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Tuple::__gt__<T, std::enable_if_t<impl::is_tuple_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Tuple::__add__<Object> : impl::Returns<Tuple> {};
+template <typename T>
+struct Tuple::__add__<T, std::enable_if_t<impl::is_tuple_like<T>>> : impl::Returns<Tuple> {};
+
+template <>
+struct Tuple::__iadd__<Object> : impl::Returns<Tuple&> {};
+template <typename T>
+struct Tuple::__iadd__<T, std::enable_if_t<impl::is_tuple_like<T>>> : impl::Returns<Tuple&> {};
 
 
 }  // namespace python

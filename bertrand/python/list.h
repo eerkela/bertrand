@@ -51,7 +51,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, List, PyList_Check)
+    BERTRAND_OBJECT_COMMON(Base, List, PyList_Check)
 
     /* Default constructor.  Initializes to an empty list. */
     List() : Base(PyList_New(0), stolen_t{}) {
@@ -187,6 +187,23 @@ public:
     ////    CONVERSIONS    ////
     ///////////////////////////
 
+    /* Implicitly convert a py::List into a C++ std::array.  Throws an error if the
+    list does not have the expected length. */
+    template <typename T, size_t N>
+    inline operator std::array<T, N>() const {
+        if (size() != N) {
+            std::ostringstream msg;
+            msg << "conversion to std::array requires list of size " << N << ", not "
+                << size();
+            throw IndexError(msg.str());
+        }
+        std::array<T, N> result;
+        for (size_t i = 0; i < N; ++i) {
+            result[i] = static_cast<T>(GET_ITEM(i));
+        }
+        return result;
+    }
+
     /* Implicitly convert a Python list into a C++ vector, deque, list, or forward
     list. */
     template <
@@ -223,6 +240,21 @@ public:
         return PySequence_Fast_ITEMS(this->ptr());
     }
 
+    /* Directly access an item without bounds checking or constructing a proxy. */
+    inline Object GET_ITEM(Py_ssize_t index) const {
+        return reinterpret_borrow<Object>(PyList_GET_ITEM(this->ptr(), index));
+    }
+
+    /* Directly set an item without bounds checking or constructing a proxy.
+    
+    NOTE: This steals a reference to `value` and does not clear the previous
+    item if one is present.  This is dangerous, and should only be used to fill in
+    a newly-allocated (empty) list. */
+    template <typename T>
+    inline void SET_ITEM(Py_ssize_t index, PyObject* value) {
+        PyList_SET_ITEM(this->ptr(), index, value);
+    }
+
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
@@ -239,7 +271,7 @@ public:
     template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
     inline void extend(const T& items) {
         if constexpr (impl::is_python<T>) {
-            this->attr("extend")(detail::object_or_cast(std::forward<T>(items)));
+            this->attr("extend")(detail::object_or_cast(items));
         } else {
             for (auto&& item : items) {
                 append(std::forward<decltype(item)>(item));
@@ -325,25 +357,15 @@ public:
         return {*this, index};
     }
 
-    detail::list_iterator begin() const {
+    inline detail::list_iterator begin() const {
         return {*this, 0};
     }
 
-    detail::list_iterator end() const {
+    inline detail::list_iterator end() const {
         return {*this, PyList_GET_SIZE(this->ptr())};
     }
 
-    using Base::operator<;
-    using Base::operator<=;
-    using Base::operator==;
-    using Base::operator!=;
-    using Base::operator>;
-    using Base::operator>=;
-
-    // TODO: SequenceOps::operator+ should be constrained to only accept List?
-
     using Base::concat;
-    using Base::operator+;
     using Base::operator*;
     using Base::operator*=;
 
@@ -379,18 +401,43 @@ public:
         return concat(items);
     }
 
-    template <typename T, std::enable_if_t<impl::is_list_like<T>, int> = 0>
-    inline List& operator+=(const T& items) {
-        extend(items);
-        return *this;
-    }
-
     inline List& operator+=(const std::initializer_list<impl::Initializer>& items) {
         extend(items);
         return *this;
     }
 
 };
+
+
+template <>
+struct List::__lt__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct List::__lt__<T, std::enable_if_t<impl::is_list_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct List::__le__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct List::__le__<T, std::enable_if_t<impl::is_list_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct List::__ge__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct List::__ge__<T, std::enable_if_t<impl::is_list_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct List::__gt__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct List::__gt__<T, std::enable_if_t<impl::is_list_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct List::__add__<Object> : impl::Returns<List> {};
+template <typename T>
+struct List::__add__<T, std::enable_if_t<impl::is_list_like<T>>> : impl::Returns<List> {};
+
+template <>
+struct List::__iadd__<Object> : impl::Returns<List&> {};
+template <typename T>
+struct List::__iadd__<T, std::enable_if_t<impl::is_list_like<T>>> : impl::Returns<List&> {};
 
 
 }  // namespace python

@@ -42,7 +42,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, Complex, PyComplex_Check)
+    BERTRAND_OBJECT_COMMON(Base, Complex, PyComplex_Check)
 
     /* Default constructor.  Initializes to 0+0j. */
     Complex() : Base(PyComplex_FromDoubles(0.0, 0.0), stolen_t{}) {
@@ -146,11 +146,17 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
+    template <typename... Args>
+    auto operator()(Args&&... args) const = delete;
+
+    template <typename T>
+    auto operator[](T&& index) const = delete;
+
     auto begin() const = delete;
     auto end() const = delete;
 
-    DELETE_OPERATOR(operator[])
-    DELETE_OPERATOR(operator())
+    template <typename T>
+    auto contains(const T& value) const = delete;
 
 };
 
@@ -168,34 +174,6 @@ template <>
 struct Complex::__neg__<> : impl::Returns<Complex> {};
 template <>
 struct Complex::__invert__<> : impl::Returns<Complex> {};
-
-
-///////////////////////////
-////    COMPARISONS    ////
-///////////////////////////
-
-
-template <>
-struct Complex::__eq__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Complex::__eq__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<bool> {};
-template <typename T>
-struct Complex::__eq__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
-template <typename T>
-struct Complex::__eq__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
-template <typename T>
-struct Complex::__eq__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<bool> {};
-
-template <>
-struct Complex::__ne__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Complex::__ne__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<bool> {};
-template <typename T>
-struct Complex::__ne__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
-template <typename T>
-struct Complex::__ne__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
-template <typename T>
-struct Complex::__ne__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<bool> {};
 
 
 ////////////////////////////////

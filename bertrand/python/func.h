@@ -165,8 +165,8 @@ which are compiled once and then cached for repeated use.
     script({{"x", "other"}});
     script({{"x", "side"}});
 */
-class Code : public impl::Ops {
-    using Base = impl::Ops;
+class Code : public Object {
+    using Base = Object;
 
     template <typename T>
     static PyObject* compile(const T& text) {
@@ -223,7 +223,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, Code, PyCode_Check);
+    BERTRAND_OBJECT_COMMON(Base, Code, PyCode_Check);
 
     /* Default constructor deleted to throw compile errors when a script is declared
     without an implementation. */
@@ -380,8 +380,8 @@ public:
 
 /* A new subclass of pybind11::object that represents a Python interpreter frame, which
 can be used to introspect its current state. */
-class Frame : public impl::Ops {
-    using Base = impl::Ops;
+class Frame : public Object {
+    using Base = Object;
 
     inline PyFrameObject* self() const {
         return reinterpret_cast<PyFrameObject*>(this->ptr());
@@ -397,7 +397,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, Frame, PyFrame_Check);
+    BERTRAND_OBJECT_COMMON(Base, Frame, PyFrame_Check);
 
     /* Default constructor.  Initializes to the current execution frame. */
     Frame() : Base(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{}) {
@@ -543,8 +543,8 @@ public:
 
 /* Wrapper around a pybind11::Function that allows it to be constructed from a C++
 lambda or function pointer, and enables extra introspection via the C API. */
-class Function : public impl::Ops {
-    using Base = impl::Ops;
+class Function : public Object {
+    using Base = Object;
 
 public:
     static Type type;
@@ -556,7 +556,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, Function, PyFunction_Check);
+    BERTRAND_OBJECT_COMMON(Base, Function, PyFunction_Check);
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Function() = delete;
@@ -575,6 +575,11 @@ public:
     ///////////////////////////////
     ////    PyFunction_ API    ////
     ///////////////////////////////
+
+    template <typename... Args>
+    inline Object operator()(Args&&... args) const {
+        return Base::operator()(std::forward<Args>(args)...);
+    }
 
     /* Get the module in which this function was defined. */
     inline Module module_() const {
@@ -704,8 +709,7 @@ public:
 
 /* New subclass of pybind11::object that represents a bound method at the Python
 level. */
-class Method : public impl::Ops {
-    using Base = impl::Ops;
+class Method : public Object {
 
 public:
     static Type type;
@@ -714,13 +718,13 @@ public:
     static constexpr bool check() { return impl::is_same_or_subclass_of<Method, T>; }
 
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, Method, PyInstanceMethod_Check)
+    BERTRAND_OBJECT_COMMON(Object, Method, PyInstanceMethod_Check)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Method() = delete;
 
     /* Wrap an existing Python function as a method descriptor. */
-    Method(const Function& func) : Base(PyInstanceMethod_New(func.ptr()), stolen_t{}) {
+    Method(const Function& func) : Object(PyInstanceMethod_New(func.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -731,8 +735,7 @@ public:
 
 /* New subclass of pybind11::object that represents a bound classmethod at the Python
 level. */
-class ClassMethod : public impl::Ops {
-    using Base = impl::Ops;
+class ClassMethod : public Object {
 
     inline static bool check_classmethod(PyObject* obj) {
         int result = PyObject_IsInstance(
@@ -751,13 +754,13 @@ public:
     template <typename T>
     static constexpr bool check() { return impl::is_same_or_subclass_of<ClassMethod, T>; }
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, ClassMethod, check_classmethod)
+    BERTRAND_OBJECT_COMMON(Object, ClassMethod, check_classmethod)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     ClassMethod() = delete;
 
     /* Wrap an existing Python function as a classmethod descriptor. */
-    ClassMethod(Function func) : Base(PyClassMethod_New(func.ptr()), stolen_t{}) {
+    ClassMethod(Function func) : Object(PyClassMethod_New(func.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -768,8 +771,7 @@ public:
 
 /* Wrapper around a pybind11::StaticMethod that allows it to be constructed from a
 C++ lambda or function pointer, and enables extra introspection via the C API. */
-class StaticMethod : public impl::Ops {
-    using Base = impl::Ops;
+class StaticMethod : public Object {
 
     static bool check_staticmethod(PyObject* obj) {
         int result = PyObject_IsInstance(
@@ -788,13 +790,13 @@ public:
     template <typename T>
     static constexpr bool check() { return impl::is_same_or_subclass_of<StaticMethod, T>; }
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, StaticMethod, check_staticmethod);
+    BERTRAND_OBJECT_COMMON(Object, StaticMethod, check_staticmethod);
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     StaticMethod() = delete;
 
     /* Wrap an existing Python function as a staticmethod descriptor. */
-    StaticMethod(Function func) : Base(PyStaticMethod_New(func.ptr()), stolen_t{}) {
+    StaticMethod(Function func) : Object(PyStaticMethod_New(func.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -805,8 +807,7 @@ public:
 
 /* New subclass of pybind11::object that represents a property descriptor at the
 Python level. */
-class Property : public impl::Ops {
-    using Base = impl::Ops;
+class Property : public Object {
 
     inline static bool check_property(PyObject* obj) {
         int result = PyObject_IsInstance(obj, impl::PyProperty->ptr());
@@ -822,23 +823,23 @@ public:
     template <typename T>
     static constexpr bool check() { return impl::is_same_or_subclass_of<Property, T>; }
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, Property, check_property);
+    BERTRAND_OBJECT_COMMON(Object, Property, check_property);
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Property() = delete;
 
     /* Wrap an existing Python function as a getter in a property descriptor. */
-    Property(Function getter) : Base(impl::PyProperty(getter).release(), stolen_t{}) {}
+    Property(Function getter) : Object(impl::PyProperty(getter).release(), stolen_t{}) {}
 
     /* Wrap existing Python functions as getter and setter in a property descriptor. */
     Property(Function getter, Function setter) :
-        Base(impl::PyProperty(getter, setter).release(), stolen_t{})
+        Object(impl::PyProperty(getter, setter).release(), stolen_t{})
     {}
 
     /* Wrap existing Python functions as getter, setter, and deleter in a property
     descriptor. */
     Property(Function getter, Function setter, Function deleter) :
-        Base(impl::PyProperty(getter, setter, deleter).release(), stolen_t{})
+        Object(impl::PyProperty(getter, setter, deleter).release(), stolen_t{})
     {}
 
 };

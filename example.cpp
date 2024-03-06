@@ -114,13 +114,21 @@ void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
+    // py::Tuple t = {1, 2, 3, 4, 5};
+    // py::List s = {1, 2, 3, 4, 5};
+    // py::print(t == s);
 
-    py::Bool a = true;
-    py::Float b = a + 1.0;
-    py::Int c = a + 1;
-    // py::Int d = b;
+    // for (size_t i = 0; i < 1000000; ++i) {
+    //     py::FrozenSet set = {1, 2, 3};
+    //     py::FrozenSet set2 = set - py::FrozenSet{2, 3, 4};
+    // }
+
+    py::Str a = "abc";
+    py::Str b = a[1];
     py::print(b);
 
+    
+    // py::print(list);
 
 
     // py::print(typeid(decltype(a + static_cast<unsigned int>(1))).name());

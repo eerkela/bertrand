@@ -16,8 +16,8 @@ namespace py {
 /* Wrapper around a pybind11::type that enables extra C API functionality, such as the
 ability to create new types on the fly by calling the type() metaclass, or directly
 querying PyTypeObject* fields. */
-class Type : public impl::Ops {
-    using Base = impl::Ops;
+class Type : public Object {
+    using Base = Object;
 
 public:
     static Type type;
@@ -29,7 +29,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, Type, PyType_Check)
+    BERTRAND_OBJECT_COMMON(Base, Type, PyType_Check)
 
     /* Default constructor.  Initializes to the built-in type metaclass. */
     Type() : Base((PyObject*) &PyType_Type, borrowed_t{}) {}
@@ -346,12 +346,19 @@ public:
 };
 
 
-inline Type Type::type = Type{};  // metaprogramming in a nutshell
+template <typename T>
+struct Type::__eq__<T, std::enable_if_t<impl::is_python<T>>> : impl::Returns<bool> {};
+template <typename T>
+struct Type::__ne__<T, std::enable_if_t<impl::is_python<T>>> : impl::Returns<bool> {};
+
+
+///////////////////////
+////    SUPER()    ////
+///////////////////////
 
 
 /* New subclass of pybind11::object that represents Python's built-in super() type. */
-class Super : public impl::Ops {
-    using Base = impl::Ops;
+class Super : public Object {
 
     inline static int check_super(PyObject* obj) {
         int result = PyObject_IsInstance(obj, reinterpret_cast<PyObject*>(&PySuper_Type));
@@ -367,15 +374,13 @@ public:
     template <typename T>
     static constexpr bool check() { return impl::is_same_or_subclass_of<Super, T>; }
 
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, Super, check_super);
+    BERTRAND_OBJECT_COMMON(Object, Super, check_super);
 
     /* Default constructor.  Equivalent to Python `super()` with no arguments, which
     uses the calling context's inheritance hierarchy. */
-    Super() : Base(reinterpret_cast<PyObject*>(&PySuper_Type), borrowed_t{}) {
+    Super() : Object(
+        PyObject_CallNoArgs(reinterpret_cast<PyObject*>(&PySuper_Type)), stolen_t{}
+    ) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -400,37 +405,138 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    using Base::operator[];
-    using Base::operator();
-    using Base::begin;
-    using Base::end;
-    using Base::operator<;
-    using Base::operator<=;
-    using Base::operator==;
-    using Base::operator!=;
-    using Base::operator>=;
-    using Base::operator>;
-    using Base::operator~;
-    using Base::operator+;
-    using Base::operator-;
-    using Base::operator*;
-    using Base::operator/;
-    using Base::operator%;
-    using Base::operator<<;
-    using Base::operator>>;
-    using Base::operator&;
-    using Base::operator|;
-    using Base::operator^;
-    using Base::operator+=;
-    using Base::operator-=;
-    using Base::operator*=;
-    using Base::operator/=;
-    using Base::operator%=;
-    using Base::operator<<=;
-    using Base::operator>>=;
-    using Base::operator&=;
-    using Base::operator|=;
-    using Base::operator^=;
+    template <typename... Args>
+    inline auto operator()(Args&&... args) const {
+        return Object::operator()(std::forward<Args>(args)...);
+    }
+
+    template <typename T>
+    inline auto operator[](T&& attr) const {
+        return Object::operator[](std::forward<T>(attr));
+    }
+
+    inline auto operator+() const {
+        return Object::operator+();
+    }
+
+    inline auto operator-() const {
+        return Object::operator-();
+    }
+
+    inline auto operator~() const {
+        return Object::operator~();
+    }
+
+    template <typename T>
+    inline auto operator+(const T& other) const {
+        return Object::operator+(other);
+    }
+
+    template <typename T>
+    inline auto operator-(const T& other) const {
+        return Object::operator-(other);
+    }
+
+    template <typename T>
+    inline auto operator*(const T& other) const {
+        return Object::operator*(other);
+    }
+
+    template <typename T>
+    inline auto operator/(const T& other) const {
+        return Object::operator/(other);
+    }
+
+    template <typename T>
+    inline auto operator%(const T& other) const {
+        return Object::operator%(other);
+    }
+
+    template <typename T>
+    inline auto operator<<(const T& other) const {
+        return Object::operator<<(other);
+    }
+
+    template <typename T>
+    inline auto operator>>(const T& other) const {
+        return Object::operator>>(other);
+    }
+
+    template <typename T>
+    inline auto operator&(const T& other) const {
+        return Object::operator&(other);
+    }
+
+    template <typename T>
+    inline auto operator|(const T& other) const {
+        return Object::operator|(other);
+    }
+
+    template <typename T>
+    inline auto operator^(const T& other) const {
+        return Object::operator^(other);
+    }
+
+    template <typename T>
+    inline Super& operator+=(const T& other) {
+        Object::operator+=(other);
+        return *this;
+    }
+
+    template <typename T>
+    inline Super& operator-=(const T& other) {
+        Object::operator-=(other);
+        return *this;
+    }
+
+    template <typename T>
+    inline Super& operator*=(const T& other) {
+        Object::operator*=(other);
+        return *this;
+    }
+
+    template <typename T>
+    inline Super& operator/=(const T& other) {
+        Object::operator/=(other);
+        return *this;
+    }
+
+    template <typename T>
+    inline Super& operator%=(const T& other) {
+        Object::operator%=(other);
+        return *this;
+    }
+
+    template <typename T>
+    inline Super& operator<<=(const T& other) {
+        Object::operator<<=(other);
+        return *this;
+    }
+
+    template <typename T>
+    inline Super& operator>>=(const T& other) {
+        Object::operator>>=(other);
+        return *this;
+    }
+
+    template <typename T>
+    inline Super& operator&=(const T& other) {
+        Object::operator&=(other);
+        return *this;
+    }
+
+    template <typename T>
+    inline Super& operator|=(const T& other) {
+        Object::operator|=(other);
+        return *this;
+    }
+
+    template <typename T>
+    inline Super& operator^=(const T& other) {
+        Object::operator^=(other);
+        return *this;
+    }
+
 };
 
 

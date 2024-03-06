@@ -15,8 +15,8 @@ namespace py {
 /* Wrapper around pybind11::slice that allows it to be instantiated with non-integer
 inputs in order to represent denormalized slices at the Python level, and provides more
 pythonic access to its members. */
-class Slice : public impl::Ops {
-    using Base = impl::Ops;
+class Slice : public Object {
+    using Base = Object;
 
 public:
     static Type type;
@@ -28,7 +28,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, Slice, PySlice_Check)
+    BERTRAND_OBJECT_COMMON(Base, Slice, PySlice_Check)
 
     /* Default constructor.  Initializes to all Nones. */
     Slice() : Base(PySlice_New(nullptr, nullptr, nullptr), stolen_t{}) {
@@ -149,13 +149,40 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    using Base::operator<;
-    using Base::operator<=;
-    using Base::operator==;
-    using Base::operator!=;
-    using Base::operator>=;
-    using Base::operator>;
+    template <typename... Args>
+    auto operator()(Args&&... args) const = delete;
+
+    template <typename T>
+    auto operator[](const T& index) const = delete;
+
+    template <typename T>
+    auto contains(const T& item) const = delete;
+
+    auto begin() const = delete;
+    auto end() const = delete;
+
 };
+
+
+template <>
+struct Slice::__lt__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Slice::__lt__<T, std::enable_if_t<impl::is_slice_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Slice::__le__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Slice::__le__<T, std::enable_if_t<impl::is_slice_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Slice::__ge__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Slice::__ge__<T, std::enable_if_t<impl::is_slice_like<T>>> : impl::Returns<bool> {};
+
+template <>
+struct Slice::__gt__<Object> : impl::Returns<bool> {};
+template <typename T>
+struct Slice::__gt__<T, std::enable_if_t<impl::is_slice_like<T>>> : impl::Returns<bool> {};
 
 
 }  // namespace python

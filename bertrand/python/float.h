@@ -40,7 +40,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_CONSTRUCTORS(Base, Float, PyFloat_Check)
+    BERTRAND_OBJECT_COMMON(Base, Float, PyFloat_Check)
 
     /* Default constructor.  Initializes to 0.0. */
     Float() : Base(PyFloat_FromDouble(0.0), stolen_t{}) {
@@ -128,11 +128,17 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
+    template <typename... Args>
+    auto operator()(Args&&... args) const = delete;
+
+    template <typename T>
+    auto operator[](T&& index) const = delete;
+
     auto begin() const = delete;
     auto end() const = delete;
 
-    DELETE_OPERATOR(operator[])
-    DELETE_OPERATOR(operator())
+    template <typename T>
+    auto contains(const T& value) const = delete;
 
 };
 
@@ -174,28 +180,6 @@ template <typename T>
 struct Float::__le__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
 template <typename T>
 struct Float::__le__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
-
-template <>
-struct Float::__eq__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Float::__eq__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<bool> {};
-template <typename T>
-struct Float::__eq__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
-template <typename T>
-struct Float::__eq__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
-template <typename T>
-struct Float::__eq__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<bool> {};
-
-template <>
-struct Float::__ne__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Float::__ne__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<bool> {};
-template <typename T>
-struct Float::__ne__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
-template <typename T>
-struct Float::__ne__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
-template <typename T>
-struct Float::__ne__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Float::__ge__<Object> : impl::Returns<bool> {};
