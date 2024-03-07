@@ -3,7 +3,7 @@ project(bertrandTests)
 
 # ensure C++17
 set(
-    CMAKE_CXX_STANDARD 17
+    CMAKE_CXX_STANDARD 20
     CMAKE_CXX_STANDARD_REQUIRED ON
 )
 

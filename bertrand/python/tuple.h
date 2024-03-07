@@ -1,5 +1,4 @@
-#include <sstream>
-#ifndef BERTRAND_PYTHON_INCLUDED
+#if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
 
@@ -37,10 +36,10 @@ class Tuple : public impl::SequenceOps, public impl::ReverseIterable<Tuple> {
     }
 
     template <typename T>
-    static constexpr bool constructor1 = impl::is_python<T> && impl::is_list_like<T>;
+    static constexpr bool constructor1 = impl::is_python<T> && impl::list_like<T>;
     template <typename T>
     static constexpr bool constructor2 =
-        impl::is_python<T> && !impl::is_list_like<T> && impl::is_iterable<T>;
+        impl::is_python<T> && !impl::list_like<T> && impl::is_iterable<T>;
     template <typename T>
     static constexpr bool constructor3 = !impl::is_python<T> && impl::is_iterable<T>;
 
@@ -48,7 +47,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_tuple_like<T>; }
+    static constexpr bool check() { return impl::tuple_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -360,32 +359,32 @@ public:
 template <>
 struct Tuple::__lt__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Tuple::__lt__<T, std::enable_if_t<impl::is_tuple_like<T>>> : impl::Returns<bool> {};
+struct Tuple::__lt__<T, std::enable_if_t<impl::tuple_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Tuple::__le__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Tuple::__le__<T, std::enable_if_t<impl::is_tuple_like<T>>> : impl::Returns<bool> {};
+struct Tuple::__le__<T, std::enable_if_t<impl::tuple_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Tuple::__ge__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Tuple::__ge__<T, std::enable_if_t<impl::is_tuple_like<T>>> : impl::Returns<bool> {};
+struct Tuple::__ge__<T, std::enable_if_t<impl::tuple_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Tuple::__gt__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Tuple::__gt__<T, std::enable_if_t<impl::is_tuple_like<T>>> : impl::Returns<bool> {};
+struct Tuple::__gt__<T, std::enable_if_t<impl::tuple_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Tuple::__add__<Object> : impl::Returns<Tuple> {};
 template <typename T>
-struct Tuple::__add__<T, std::enable_if_t<impl::is_tuple_like<T>>> : impl::Returns<Tuple> {};
+struct Tuple::__add__<T, std::enable_if_t<impl::tuple_like<T>>> : impl::Returns<Tuple> {};
 
 template <>
 struct Tuple::__iadd__<Object> : impl::Returns<Tuple&> {};
 template <typename T>
-struct Tuple::__iadd__<T, std::enable_if_t<impl::is_tuple_like<T>>> : impl::Returns<Tuple&> {};
+struct Tuple::__iadd__<T, std::enable_if_t<impl::tuple_like<T>>> : impl::Returns<Tuple&> {};
 
 
 }  // namespace python

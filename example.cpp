@@ -84,29 +84,64 @@
 namespace py = bertrand::py;
 
 
-void func(const py::Int& i) {
+// void func(const py::Int& i) {
 
-}
-
-
-
-// void foo(const py::Type& x) {
-//     py::print(x);
 // }
 
 
 
 
-template <typename L, typename R, typename Return, typename = void>
-constexpr bool test_op = false;
-template <typename L, typename R, typename Return>
-constexpr bool test_op<L, R, Return, std::void_t<
-    decltype(std::declval<L>() + std::declval<R>())
->> = std::is_same_v<
-    decltype(std::declval<L>() + std::declval<R>()),
-    Return
->;
 
+template <typename T, typename... Args>
+struct __call__ {
+    static constexpr bool enable = false;
+};
+
+
+template <typename L, typename R>
+struct __add__ {
+    static constexpr bool enable = false;
+};
+
+
+template <typename L, typename R>
+requires __add__<L, R>::enable
+auto operator+(const L& l, const R& r) -> __add__<L, R>::Return {
+    return 1;
+}
+
+
+struct Foo {
+
+    template <typename... Args> requires __call__<Foo, Args...>::enable
+    auto operator()(const Args&... args) const -> __call__<Foo, Args...>::Return {
+        return sizeof...(Args);
+    }
+
+    template <typename T> requires (!__add__<Foo, T>::enable)
+    auto operator+(const T&) const = delete;
+
+};
+
+
+template <py::impl::int_like T>
+struct __call__<Foo, T> : py::impl::Returns<int> {};
+
+
+template <py::impl::float_like T>
+struct __call__<Foo, T> : py::impl::Returns<long long> {};
+
+
+template <py::impl::int_like T1, py::impl::int_like T2>
+struct __call__<Foo, T1, T2> : py::impl::Returns<double> {};
+
+
+template <py::impl::int_like T>
+struct __add__<Foo, T> : py::impl::Returns<int> {};
+
+
+template <py::impl::float_like T>
+struct __add__<Foo, T> : py::impl::Returns<double> {};
 
 
 
@@ -114,18 +149,35 @@ void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
+
+    Foo foo;
+    py::print(foo + 1.0);
+    py::print(foo(5, 6), typeid(decltype(foo(5, 6))).name());
+
+
+    // py::Bool b = true;
+    // py::print(b + true);
+
+
+
     // py::Tuple t = {1, 2, 3, 4, 5};
     // py::List s = {1, 2, 3, 4, 5};
     // py::print(t == s);
 
+    // py::FrozenSet set = {1, 2, 3};    
     // for (size_t i = 0; i < 1000000; ++i) {
-    //     py::FrozenSet set = {1, 2, 3};
     //     py::FrozenSet set2 = set - py::FrozenSet{2, 3, 4};
     // }
 
-    py::Str a = "abc";
-    py::Str b = a[1];
-    py::print(b);
+
+
+    // // std::string x = py::Int(0);  // compile error!
+
+
+    // py::Bool b = true;
+    // std::vector<int> list = b.cast<std::vector<int>>();
+    // py::print(list);
+
 
     
     // py::print(list);

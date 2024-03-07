@@ -1,4 +1,4 @@
-#ifndef BERTRAND_PYTHON_INCLUDED
+#if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
 
@@ -217,7 +217,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_same_or_subclass_of<Code, T>; }
+    static constexpr bool check() { return std::is_base_of_v<Code, T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -391,7 +391,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_same_or_subclass_of<Frame, T>; }
+    static constexpr bool check() { return std::is_base_of_v<Frame, T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -710,12 +710,11 @@ public:
 /* New subclass of pybind11::object that represents a bound method at the Python
 level. */
 class Method : public Object {
-
 public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_same_or_subclass_of<Method, T>; }
+    static constexpr bool check() { return std::is_base_of_v<Method, T>; }
 
 
     BERTRAND_OBJECT_COMMON(Object, Method, PyInstanceMethod_Check)
@@ -752,7 +751,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_same_or_subclass_of<ClassMethod, T>; }
+    static constexpr bool check() { return std::is_base_of_v<ClassMethod, T>; }
 
     BERTRAND_OBJECT_COMMON(Object, ClassMethod, check_classmethod)
 
@@ -788,7 +787,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_same_or_subclass_of<StaticMethod, T>; }
+    static constexpr bool check() { return std::is_base_of_v<StaticMethod, T>; }
 
     BERTRAND_OBJECT_COMMON(Object, StaticMethod, check_staticmethod);
 
@@ -821,7 +820,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_same_or_subclass_of<Property, T>; }
+    static constexpr bool check() { return std::is_base_of_v<Property, T>; }
 
     BERTRAND_OBJECT_COMMON(Object, Property, check_property);
 

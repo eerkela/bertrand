@@ -1,4 +1,4 @@
-#ifndef BERTRAND_PYTHON_INCLUDED
+#if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
 
@@ -31,7 +31,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool like = impl::is_range_like<T>;
+    static constexpr bool like = impl::range_like<T>;
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -125,7 +125,7 @@ public:
         return (*this)[Slice(slice)];
     }
 
-    template <typename T, std::enable_if_t<impl::is_int_like<T>, int> = 0>
+    template <typename T, std::enable_if_t<impl::int_like<T>, int> = 0>
     inline bool contains(const T& item) const {
         int result = PySequence_Contains(this->ptr(), detail::object_or_cast(item).ptr());
         if (result == -1) {

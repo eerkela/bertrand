@@ -1,4 +1,4 @@
-#ifndef BERTRAND_PYTHON_INCLUDED
+#if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
 
@@ -19,7 +19,7 @@ namespace py {
 
 namespace impl {
 
-    // TODO: encapsulate Str/Bytes/ByteArray interfaces here.
+    // TODO: encapsulate Str/Bytes/ByteArray interfaces here
 
     template <typename Derived>
     class IStr : public impl::SequenceOps {
@@ -81,7 +81,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_str_like<T>; }
+    static constexpr bool check() { return impl::str_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -176,7 +176,7 @@ public:
         typename T,
         typename First,
         typename... Rest,
-        std::enable_if_t<impl::is_python<T> && impl::is_str_like<T>, int> = 0
+        std::enable_if_t<impl::is_python<T> && impl::str_like<T>, int> = 0
     >
     explicit Str(const T& format, First&& first, Rest&&... rest) : Str(
         static_cast<std::string>(format),
@@ -367,7 +367,7 @@ public:
     }
 
     /* Equivalent to Python `str.format_map(mapping)`. */
-    template <typename T, std::enable_if_t<impl::is_dict_like<T>, int> = 0>
+    template <typename T, std::enable_if_t<impl::dict_like<T>, int> = 0>
     inline Str format_map(const T& mapping) const {
         return reinterpret_steal<Str>(
             this->attr("format_map")(detail::object_or_cast(mapping)).release()
@@ -777,32 +777,32 @@ public:
 template <>
 struct Str::__lt__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Str::__lt__<T, std::enable_if_t<impl::is_str_like<T>>> : impl::Returns<bool> {};
+struct Str::__lt__<T, std::enable_if_t<impl::str_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Str::__le__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Str::__le__<T, std::enable_if_t<impl::is_str_like<T>>> : impl::Returns<bool> {};
+struct Str::__le__<T, std::enable_if_t<impl::str_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Str::__ge__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Str::__ge__<T, std::enable_if_t<impl::is_str_like<T>>> : impl::Returns<bool> {};
+struct Str::__ge__<T, std::enable_if_t<impl::str_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Str::__gt__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Str::__gt__<T, std::enable_if_t<impl::is_str_like<T>>> : impl::Returns<bool> {};
+struct Str::__gt__<T, std::enable_if_t<impl::str_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Str::__add__<Object> : impl::Returns<Str> {};
 template <typename T>
-struct Str::__add__<T, std::enable_if_t<impl::is_str_like<T>>> : impl::Returns<Str> {};
+struct Str::__add__<T, std::enable_if_t<impl::str_like<T>>> : impl::Returns<Str> {};
 
 template <>
 struct Str::__iadd__<Object> : impl::Returns<Str&> {};
 template <typename T>
-struct Str::__iadd__<T, std::enable_if_t<impl::is_str_like<T>>> : impl::Returns<Str&> {};
+struct Str::__iadd__<T, std::enable_if_t<impl::str_like<T>>> : impl::Returns<Str&> {};
 
 
 /* Bertrand equivalent for pybind11::bytes.

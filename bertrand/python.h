@@ -200,7 +200,7 @@ inline Object::Object(const T& value) : Base(Function(value).release().ptr(), st
 
 template <
     typename T,
-    std::enable_if_t<impl::is_python<T> && impl::is_str_like<T>, int> = 0
+    std::enable_if_t<impl::is_python<T> && impl::str_like<T>, int> = 0
 >
 inline Int::Int(const T& str, int base) :
     Base(PyLong_FromUnicodeObject(str.ptr(), base), stolen_t{})
@@ -213,7 +213,7 @@ inline Int::Int(const T& str, int base) :
 
 template <
     typename T,
-    std::enable_if_t<impl::is_python<T> && impl::is_str_like<T>, int> = 0
+    std::enable_if_t<impl::is_python<T> && impl::str_like<T>, int> = 0
 >
 inline Float::Float(const T& str) : Base(PyFloat_FromString(str.ptr()), stolen_t{}) {
     if (m_ptr == nullptr) {
@@ -275,7 +275,7 @@ inline void List::sort(const Function& key, const Bool& reverse) {
  *
  *      template <typename T>
  *      struct py::Bool::template __add__<
- *          T, std::enable_if_t<py::impl::is_bool_like<T>>
+ *          T, std::enable_if_t<py::impl::bool_like<T>>
  *      > {
  *          static constexpr bool enable = true;
  *          using Return = py::Int;
@@ -302,10 +302,10 @@ inline void List::sort(const Function& key, const Bool& reverse) {
 
 
 // DEFINE_TYPED_UNARY_OPERATOR(Bool, operator~, Int)
-// DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, is_bool_like, Int)
-// DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, is_int_like, Int)
-// DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, is_float_like, Float)
-// DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, is_complex_like, Complex)
+// DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, bool_like, Int)
+// DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, int_like, Int)
+// DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, float_like, Float)
+// DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, complex_like, Complex)
 
 
 // #undef DECLARE_TYPED_UNARY_OPERATOR

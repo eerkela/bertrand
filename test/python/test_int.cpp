@@ -36,7 +36,13 @@ TEST(py_int, check) {
 /////////////////////////////////////
 
 
-TEST(py_int, implicitly_convertible_from_object) {
+TEST(py_int, default_construct) {
+    py::Int a;
+    EXPECT_EQ(a, 0);
+}
+
+
+TEST(py_int, from_object) {
     // safe
     py::Object a = py::Bool(true);
     py::Object b = py::Int(0);
@@ -51,116 +57,85 @@ TEST(py_int, implicitly_convertible_from_object) {
     // not safe
     py::Object d = py::Float(1.0);
     py::Object e = py::Str("1");
+    py::Object f = py::Tuple{};
+    py::Object g = py::List{};
+    py::Object h = py::Set{};
+    py::Object i = py::Dict{};
     EXPECT_THROW(py::Int d2 = d, py::TypeError);
     EXPECT_THROW(py::Int e2 = e, py::TypeError);
+    EXPECT_THROW(py::Int f2 = f, py::TypeError);
+    EXPECT_THROW(py::Int g2 = g, py::TypeError);
+    EXPECT_THROW(py::Int h2 = h, py::TypeError);
+    EXPECT_THROW(py::Int i2 = i, py::TypeError);
 }
 
 
-TEST(py_int, implicitly_convertible_from_accessor) {
+TEST(py_int, from_accessor) {
+    // safe
     py::List list = {0, 1};
     py::Int a = list[0];
     py::Int b = list[1];
     EXPECT_EQ(a, 0);
     EXPECT_EQ(b, 1);
-
     py::List list2 = {false, true};
     py::Int c = list2[0];
     py::Int d = list2[1];
     EXPECT_EQ(c, 0);
     EXPECT_EQ(d, 1);
 
+    // not safe
     py::List list3 = {0.0, 1.0};
     EXPECT_THROW(py::Int e = list3[0], py::TypeError);
     EXPECT_THROW(py::Int f = list3[1], py::TypeError);
 }
 
 
-TEST(py_int, copy_constructible) {
+TEST(py_int, copy) {
+    // copy construct
     py::Int a = 1;
     int a_refs = a.ref_count();
     py::Int b(a);
     EXPECT_EQ(b, 1);
     EXPECT_EQ(b.ref_count(), a_refs + 1);
 
-    py::Int c = -5;
+    // copy assign
+    py::Int c = 1;
+    py::Int d = 2;
     int c_refs = c.ref_count();
-    py::Int d(c);
-    EXPECT_EQ(d, -5);
+    d = c;
+    EXPECT_EQ(d, 1);
     EXPECT_EQ(d.ref_count(), c_refs + 1);
 }
 
 
-TEST(py_int, move_constructible) {
+TEST(py_int, move) {
+    // move construct
     py::Int a = 1;
     int a_refs = a.ref_count();
     py::Int b(std::move(a));
     EXPECT_EQ(b, 1);
     EXPECT_EQ(b.ref_count(), a_refs);
 
-    py::Int c = -5;
+    // move assign
+    py::Int c = 1;
+    py::Int d = 2;
     int c_refs = c.ref_count();
-    py::Int d(std::move(c));
-    EXPECT_EQ(d, -5);
+    d = std::move(c);
+    EXPECT_EQ(d, 1);
     EXPECT_EQ(d.ref_count(), c_refs);
 }
 
 
-TEST(py_int, default_constructible) {
-    py::Int a;
-    EXPECT_EQ(a, 0);
-}
-
-
-TEST(py_int, constructible_from_bool) {
+TEST(py_int, from_bool) {
+    // constructor
     EXPECT_EQ(py::Int(true), 1);
     EXPECT_EQ(py::Int(false), 0);
     EXPECT_EQ(py::Int(py::Bool(true)), 1);
     EXPECT_EQ(py::Int(py::Bool(false)), 0);
-}
 
-
-TEST(py_int, constructible_from_int) {
-    EXPECT_EQ(py::Int(0), 0);
-    EXPECT_EQ(py::Int(1), 1);
-    EXPECT_EQ(py::Int(-1), -1);
-    EXPECT_EQ(py::Int(py::Int(0)), 0);
-    EXPECT_EQ(py::Int(py::Int(1)), 1);
-    EXPECT_EQ(py::Int(py::Int(-1)), -1);
-
-    unsigned int a = 0;
-    unsigned int b = 1;
-    EXPECT_EQ(py::Int(a), 0);
-    EXPECT_EQ(py::Int(b), 1);
-}
-
-
-/////////////////////////////////////////////
-////    TYPE-SAFE ASSIGNMENT OPERATOR    ////
-/////////////////////////////////////////////
-
-
-TEST(py_int, copy_assignable) {
+    // assignment
     py::Int a = 1;
-    py::Int b = 2;
-    int a_refs = a.ref_count();
-    b = a;
-    EXPECT_EQ(b, 1);
-    EXPECT_EQ(b.ref_count(), a_refs + 1);
-}
-
-
-TEST(py_int, move_assignable) {
-    py::Int a = 1;
-    py::Int b = 2;
-    int a_refs = a.ref_count();
-    b = std::move(a);
-    EXPECT_EQ(b, 1);
-    EXPECT_EQ(b.ref_count(), a_refs);
-}
-
-
-TEST(py_int, assignable_from_bool) {
-    py::Int a = 1;
+    EXPECT_EQ(a, 1);
     a = true;
     EXPECT_EQ(a, 1);
     a = false;
@@ -168,33 +143,27 @@ TEST(py_int, assignable_from_bool) {
 }
 
 
-TEST(py_int, assignable_from_int) {
+TEST(py_int, from_int) {
+    // constructor
+    EXPECT_EQ(py::Int(0), 0);
+    EXPECT_EQ(py::Int(1), 1);
+    EXPECT_EQ(py::Int(-1), -1);
+    EXPECT_EQ(py::Int(static_cast<unsigned int>(0)), 0);
+    EXPECT_EQ(py::Int(static_cast<unsigned int>(1)), 1);
+
+    // assignment
     py::Int a = 1;
+    EXPECT_EQ(a, 1);
     a = 0;
     EXPECT_EQ(a, 0);
     a = 1;
     EXPECT_EQ(a, 1);
     a = -1;
     EXPECT_EQ(a, -1);
-
     a = static_cast<unsigned int>(0);
     EXPECT_EQ(a, 0);
     a = static_cast<unsigned int>(1);
     EXPECT_EQ(a, 1);
-}
-
-
-TEST(py_int, not_assignable_from_float) {
-    assertions::assign<py::Int>::from<double>::invalid();
-    assertions::assign<py::Int>::from<py::Float>::invalid();
-}
-
-
-TEST(py_int, not_assignable_from_string) {
-    assertions::assign<py::Int>::from<const char*>::invalid();
-    assertions::assign<py::Int>::from<std::string>::invalid();
-    assertions::assign<py::Int>::from<std::string_view>::invalid();
-    assertions::assign<py::Int>::from<py::Str>::invalid();
 }
 
 
@@ -203,18 +172,23 @@ TEST(py_int, not_assignable_from_string) {
 /////////////////////////////////////
 
 
-TEST(py_int, constructible_from_float) {
+TEST(py_int, from_float) {
+    // constructor
     EXPECT_EQ(py::Int(0.0), 0);
     EXPECT_EQ(py::Int(1.0), 1);
     EXPECT_EQ(py::Int(-1.0), -1);
     EXPECT_EQ(py::Int(py::Float(0.0)), 0);
     EXPECT_EQ(py::Int(py::Float(1.0)), 1);
     EXPECT_EQ(py::Int(py::Float(-1.0)), -1);
+
+    // assignment
+    assertions::assign<py::Int, double>::invalid();
+    assertions::assign<py::Int, double>::invalid();
 }
 
 
-TEST(py_int, constructible_from_string) {
-    // without base
+TEST(py_int, from_string) {
+    // constructor - string literal without base
     EXPECT_EQ(py::Int("0"), 0);
     EXPECT_EQ(py::Int("1"), 1);
     EXPECT_EQ(py::Int("-1"), -1);
@@ -225,6 +199,7 @@ TEST(py_int, constructible_from_string) {
     EXPECT_EQ(py::Int("0x10"), 16);
     EXPECT_EQ(py::Int("-0x10"), -16);
 
+    // constructor - std::string without base
     EXPECT_EQ(py::Int(std::string("0")), 0);
     EXPECT_EQ(py::Int(std::string("1")), 1);
     EXPECT_EQ(py::Int(std::string("-1")), -1);
@@ -235,6 +210,7 @@ TEST(py_int, constructible_from_string) {
     EXPECT_EQ(py::Int(std::string("0x10")), 16);
     EXPECT_EQ(py::Int(std::string("-0x10")), -16);
 
+    // constructor - std::string_view without base
     EXPECT_EQ(py::Int(std::string_view("0")), 0);
     EXPECT_EQ(py::Int(std::string_view("1")), 1);
     EXPECT_EQ(py::Int(std::string_view("-1")), -1);
@@ -245,6 +221,7 @@ TEST(py_int, constructible_from_string) {
     EXPECT_EQ(py::Int(std::string_view("0x10")), 16);
     EXPECT_EQ(py::Int(std::string_view("-0x10")), -16);
 
+    // constructor - py::Str without base
     EXPECT_EQ(py::Int(py::Str("0")), 0);
     EXPECT_EQ(py::Int(py::Str("1")), 1);
     EXPECT_EQ(py::Int(py::Str("-1")), -1);
@@ -255,7 +232,7 @@ TEST(py_int, constructible_from_string) {
     EXPECT_EQ(py::Int(py::Str("0x10")), 16);
     EXPECT_EQ(py::Int(py::Str("-0x10")), -16);
 
-    // with base
+    // constructor - string literal with base
     EXPECT_EQ(py::Int("0", 10), 0);
     EXPECT_EQ(py::Int("1", 10), 1);
     EXPECT_EQ(py::Int("-1", 10), -1);
@@ -266,6 +243,7 @@ TEST(py_int, constructible_from_string) {
     EXPECT_EQ(py::Int("0x10", 16), 16);
     EXPECT_EQ(py::Int("-0x10", 16), -16);
 
+    // constructor - std::string with base
     EXPECT_EQ(py::Int(std::string("0"), 10), 0);
     EXPECT_EQ(py::Int(std::string("1"), 10), 1);
     EXPECT_EQ(py::Int(std::string("-1"), 10), -1);
@@ -276,6 +254,7 @@ TEST(py_int, constructible_from_string) {
     EXPECT_EQ(py::Int(std::string("0x10"), 16), 16);
     EXPECT_EQ(py::Int(std::string("-0x10"), 16), -16);
 
+    // constructor - std::string_view with base
     EXPECT_EQ(py::Int(std::string_view("0"), 10), 0);
     EXPECT_EQ(py::Int(std::string_view("1"), 10), 1);
     EXPECT_EQ(py::Int(std::string_view("-1"), 10), -1);
@@ -286,6 +265,7 @@ TEST(py_int, constructible_from_string) {
     EXPECT_EQ(py::Int(std::string_view("0x10"), 16), 16);
     EXPECT_EQ(py::Int(std::string_view("-0x10"), 16), -16);
 
+    // constructor - py::Str with base
     EXPECT_EQ(py::Int(py::Str("0"), 10), 0);
     EXPECT_EQ(py::Int(py::Str("1"), 10), 1);
     EXPECT_EQ(py::Int(py::Str("-1"), 10), -1);
@@ -295,123 +275,205 @@ TEST(py_int, constructible_from_string) {
     EXPECT_EQ(py::Int(py::Str("-0o10"), 8), -8);
     EXPECT_EQ(py::Int(py::Str("0x10"), 16), 16);
     EXPECT_EQ(py::Int(py::Str("-0x10"), 16), -16);
+
+    // assignment
+    assertions::assign<py::Int, const char*>::invalid();
+    assertions::assign<py::Int, std::string>::invalid();
+    assertions::assign<py::Int, std::string_view>::invalid();
+    assertions::assign<py::Int, py::Str>::invalid();
 }
 
 
-TEST(py_int, constructible_from_custom_struct) {
+TEST(py_int, from_custom_type) {
     // uint64_t
     struct ImplicitUInt64_T { operator uint64_t() const { return 1; } };
     struct ExplicitUInt64_T { explicit operator uint64_t() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitUInt64_T{}), 1);
     EXPECT_EQ(py::Int(ExplicitUInt64_T{}), 1);
+    assertions::assign<py::Int, ImplicitUInt64_T>::invalid();
+    assertions::assign<py::Int, ExplicitUInt64_T>::invalid();
+    assertions::assign<py::Int&, ImplicitUInt64_T>::invalid();
+    assertions::assign<py::Int&, ExplicitUInt64_T>::invalid();
 
     // unsigned long long
     struct ImplicitUnsignedLongLong { operator unsigned long long() const { return 1; } };
     struct ExplicitUnsignedLongLong { explicit operator unsigned long long() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitUnsignedLongLong{}), 1);
     EXPECT_EQ(py::Int(ExplicitUnsignedLongLong{}), 1);
+    assertions::assign<py::Int, ImplicitUnsignedLongLong>::invalid();
+    assertions::assign<py::Int, ExplicitUnsignedLongLong>::invalid();
+    assertions::assign<py::Int&, ImplicitUnsignedLongLong>::invalid();
+    assertions::assign<py::Int&, ExplicitUnsignedLongLong>::invalid();
 
     // int64_t
     struct ImplicitInt64_T { operator int64_t() const { return 1; } };
     struct ExplicitInt64_T { explicit operator int64_t() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitInt64_T{}), 1);
     EXPECT_EQ(py::Int(ExplicitInt64_T{}), 1);
+    assertions::assign<py::Int, ImplicitInt64_T>::invalid();
+    assertions::assign<py::Int, ExplicitInt64_T>::invalid();
+    assertions::assign<py::Int&, ImplicitInt64_T>::invalid();
+    assertions::assign<py::Int&, ExplicitInt64_T>::invalid();
 
     // long long
     struct ImplicitLongLong { operator long long() const { return 1; } };
     struct ExplicitLongLong { explicit operator long long() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitLongLong{}), 1);
     EXPECT_EQ(py::Int(ExplicitLongLong{}), 1);
+    assertions::assign<py::Int, ImplicitLongLong>::invalid();
+    assertions::assign<py::Int, ExplicitLongLong>::invalid();
+    assertions::assign<py::Int&, ImplicitLongLong>::invalid();
+    assertions::assign<py::Int&, ExplicitLongLong>::invalid();
 
     // uint32_t
     struct ImplicitUInt32_T { operator uint32_t() const { return 1; } };
     struct ExplicitUInt32_T { explicit operator uint32_t() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitUInt32_T{}), 1);
     EXPECT_EQ(py::Int(ExplicitUInt32_T{}), 1);
+    assertions::assign<py::Int, ImplicitUInt32_T>::invalid();
+    assertions::assign<py::Int, ExplicitUInt32_T>::invalid();
+    assertions::assign<py::Int&, ImplicitUInt32_T>::invalid();
+    assertions::assign<py::Int&, ExplicitUInt32_T>::invalid();
 
     // unsigned long
     struct ImplicitUnsignedLong { operator unsigned long() const { return 1; } };
     struct ExplicitUnsignedLong { explicit operator unsigned long() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitUnsignedLong{}), 1);
     EXPECT_EQ(py::Int(ExplicitUnsignedLong{}), 1);
+    assertions::assign<py::Int, ImplicitUnsignedLong>::invalid();
+    assertions::assign<py::Int, ExplicitUnsignedLong>::invalid();
+    assertions::assign<py::Int&, ImplicitUnsignedLong>::invalid();
+    assertions::assign<py::Int&, ExplicitUnsignedLong>::invalid();
 
     // unsigned int
     struct ImplicitUnsignedInt { operator unsigned int() const { return 1; } };
     struct ExplicitUnsignedInt { explicit operator unsigned int() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitUnsignedInt{}), 1);
     EXPECT_EQ(py::Int(ExplicitUnsignedInt{}), 1);
+    assertions::assign<py::Int, ImplicitUnsignedInt>::invalid();
+    assertions::assign<py::Int, ExplicitUnsignedInt>::invalid();
+    assertions::assign<py::Int&, ImplicitUnsignedInt>::invalid();
+    assertions::assign<py::Int&, ExplicitUnsignedInt>::invalid();
 
     // int32_t
     struct ImplicitInt32_T { operator int32_t() const { return 1; } };
     struct ExplicitInt32_T { explicit operator int32_t() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitInt32_T{}), 1);
     EXPECT_EQ(py::Int(ExplicitInt32_T{}), 1);
+    assertions::assign<py::Int, ImplicitInt32_T>::invalid();
+    assertions::assign<py::Int, ExplicitInt32_T>::invalid();
+    assertions::assign<py::Int&, ImplicitInt32_T>::invalid();
+    assertions::assign<py::Int&, ExplicitInt32_T>::invalid();
 
     // long
     struct ImplicitLong { operator long() const { return 1; } };
     struct ExplicitLong { explicit operator long() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitLong{}), 1);
     EXPECT_EQ(py::Int(ExplicitLong{}), 1);
+    assertions::assign<py::Int, ImplicitLong>::invalid();
+    assertions::assign<py::Int, ExplicitLong>::invalid();
+    assertions::assign<py::Int&, ImplicitLong>::invalid();
+    assertions::assign<py::Int&, ExplicitLong>::invalid();
 
     // int
     struct ImplicitInt { operator int() const { return 1; } };
     struct ExplicitInt { explicit operator int() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitInt{}), 1);
     EXPECT_EQ(py::Int(ExplicitInt{}), 1);
+    assertions::assign<py::Int, ImplicitInt>::invalid();
+    assertions::assign<py::Int, ExplicitInt>::invalid();
+    assertions::assign<py::Int&, ImplicitInt>::invalid();
+    assertions::assign<py::Int&, ExplicitInt>::invalid();
 
     // uint16_t
     struct ImplicitUInt16_T { operator uint16_t() const { return 1; } };
     struct ExplicitUInt16_T { explicit operator uint16_t() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitUInt16_T{}), 1);
     EXPECT_EQ(py::Int(ExplicitUInt16_T{}), 1);
+    assertions::assign<py::Int, ImplicitUInt16_T>::invalid();
+    assertions::assign<py::Int, ExplicitUInt16_T>::invalid();
+    assertions::assign<py::Int&, ImplicitUInt16_T>::invalid();
+    assertions::assign<py::Int&, ExplicitUInt16_T>::invalid();
 
     // unsigned short
     struct ImplicitUnsignedShort { operator unsigned short() const { return 1; } };
     struct ExplicitUnsignedShort { explicit operator unsigned short() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitUnsignedShort{}), 1);
     EXPECT_EQ(py::Int(ExplicitUnsignedShort{}), 1);
+    assertions::assign<py::Int, ImplicitUnsignedShort>::invalid();
+    assertions::assign<py::Int, ExplicitUnsignedShort>::invalid();
+    assertions::assign<py::Int&, ImplicitUnsignedShort>::invalid();
+    assertions::assign<py::Int&, ExplicitUnsignedShort>::invalid();
 
     // int16_t
     struct ImplicitInt16_T { operator int16_t() const { return 1; } };
     struct ExplicitInt16_T { explicit operator int16_t() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitInt16_T{}), 1);
     EXPECT_EQ(py::Int(ExplicitInt16_T{}), 1);
+    assertions::assign<py::Int, ImplicitInt16_T>::invalid();
+    assertions::assign<py::Int, ExplicitInt16_T>::invalid();
+    assertions::assign<py::Int&, ImplicitInt16_T>::invalid();
+    assertions::assign<py::Int&, ExplicitInt16_T>::invalid();
 
     // short
     struct ImplicitShort { operator short() const { return 1; } };
     struct ExplicitShort { explicit operator short() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitShort{}), 1);
     EXPECT_EQ(py::Int(ExplicitShort{}), 1);
+    assertions::assign<py::Int, ImplicitShort>::invalid();
+    assertions::assign<py::Int, ExplicitShort>::invalid();
+    assertions::assign<py::Int&, ImplicitShort>::invalid();
+    assertions::assign<py::Int&, ExplicitShort>::invalid();
 
     // uint8_t
     struct ImplicitUInt8_T { operator uint8_t() const { return 1; } };
     struct ExplicitUInt8_T { explicit operator uint8_t() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitUInt8_T{}), 1);
     EXPECT_EQ(py::Int(ExplicitUInt8_T{}), 1);
+    assertions::assign<py::Int, ImplicitUInt8_T>::invalid();
+    assertions::assign<py::Int, ExplicitUInt8_T>::invalid();
+    assertions::assign<py::Int&, ImplicitUInt8_T>::invalid();
+    assertions::assign<py::Int&, ExplicitUInt8_T>::invalid();
 
     // unsigned char
     struct ImplicitUnsignedChar { operator unsigned char() const { return 1; } };
     struct ExplicitUnsignedChar { explicit operator unsigned char() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitUnsignedChar{}), 1);
     EXPECT_EQ(py::Int(ExplicitUnsignedChar{}), 1);
+    assertions::assign<py::Int, ImplicitUnsignedChar>::invalid();
+    assertions::assign<py::Int, ExplicitUnsignedChar>::invalid();
+    assertions::assign<py::Int&, ImplicitUnsignedChar>::invalid();
+    assertions::assign<py::Int&, ExplicitUnsignedChar>::invalid();
 
     // int8_t
     struct ImplicitInt8_T { operator int8_t() const { return 1; } };
     struct ExplicitInt8_T { explicit operator int8_t() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitInt8_T{}), 1);
     EXPECT_EQ(py::Int(ExplicitInt8_T{}), 1);
+    assertions::assign<py::Int, ImplicitInt8_T>::invalid();
+    assertions::assign<py::Int, ExplicitInt8_T>::invalid();
+    assertions::assign<py::Int&, ImplicitInt8_T>::invalid();
+    assertions::assign<py::Int&, ExplicitInt8_T>::invalid();
 
     // char
     struct ImplicitChar { operator char() const { return 1; } };
     struct ExplicitChar { explicit operator char() const { return 1; } };
     EXPECT_EQ(py::Int(ImplicitChar{}), 1);
     EXPECT_EQ(py::Int(ExplicitChar{}), 1);
+    assertions::assign<py::Int, ImplicitChar>::invalid();
+    assertions::assign<py::Int, ExplicitChar>::invalid();
+    assertions::assign<py::Int&, ImplicitChar>::invalid();
+    assertions::assign<py::Int&, ExplicitChar>::invalid();
 
     // bool
     struct ImplicitBool { operator bool() const { return true; } };
     struct ExplicitBool { explicit operator bool() const { return true; } };
     EXPECT_EQ(py::Int(ImplicitBool{}), 1);
     EXPECT_EQ(py::Int(ExplicitBool{}), 1);
+    assertions::assign<py::Int, ImplicitBool>::invalid();
+    assertions::assign<py::Int, ExplicitBool>::invalid();
+    assertions::assign<py::Int&, ImplicitBool>::invalid();
+    assertions::assign<py::Int&, ExplicitBool>::invalid();
 
     // multiple options
     struct ImplicitMultiple {
@@ -436,14 +498,19 @@ TEST(py_int, constructible_from_custom_struct) {
     };
     EXPECT_EQ(py::Int(ImplicitMultiple{}), 1);
     EXPECT_EQ(py::Int(ExplicitMultiple{}), 1);
-}
+    assertions::assign<py::Int, ImplicitMultiple>::invalid();
+    assertions::assign<py::Int, ExplicitMultiple>::invalid();
+    assertions::assign<py::Int&, ImplicitMultiple>::invalid();
+    assertions::assign<py::Int&, ExplicitMultiple>::invalid();
 
-
-TEST(py_int, constructible_from_python_object) {
+    // Python type
     py::Type Foo("Foo");
     Foo.attr("__index__") = py::Method([](const py::Object& self) { return 42; });
     py::Object foo = Foo();
     EXPECT_EQ(py::Int(foo), 42);
+    EXPECT_THROW(py::Int a = foo, py::TypeError);
+    py::Int a = 0;
+    EXPECT_THROW(a = foo, py::TypeError);
 }
 
 
@@ -452,24 +519,22 @@ TEST(py_int, constructible_from_python_object) {
 ///////////////////////////
 
 
-TEST(py_int, implicitly_convertible_to_bool) {
-    bool a = py::Int(0);
-    bool b = py::Int(1);
-    bool c = py::Int(-1);
-    EXPECT_EQ(a, false);
-    EXPECT_EQ(b, true);
-    EXPECT_EQ(c, true);
+TEST(py_int, to_bool) {
+    assertions::assign<bool, py::Int>::invalid();
+    assertions::assign<bool&, py::Int>::invalid();
+    assertions::assign<py::Bool, py::Int>::invalid();
+    assertions::assign<py::Bool&, py::Int>::invalid();
 }
 
 
-TEST(py_int, implicitly_convertible_to_int) {
+TEST(py_int, to_int) {
+    // assignment
     int a = py::Int(0);
     int b = py::Int(1);
     int c = py::Int(-1);
     EXPECT_EQ(a, 0);
     EXPECT_EQ(b, 1);
     EXPECT_EQ(c, -1);
-
     unsigned int d = py::Int(0);
     unsigned int e = py::Int(1);
     unsigned int f = py::Int(-1);
@@ -477,33 +542,43 @@ TEST(py_int, implicitly_convertible_to_int) {
     EXPECT_EQ(e, static_cast<unsigned int>(1));
     EXPECT_EQ(f, static_cast<unsigned int>(-1));
 
-    py::Int g = py::Int(0);
-    py::Int h = py::Int(1);
-    py::Int i = py::Int(-1);
-    EXPECT_EQ(g, 0);
-    EXPECT_EQ(h, 1);
-    EXPECT_EQ(i, -1);
+    // function parameters
+    auto func1 = [](int x) { return x; };
+    auto func2 = [](unsigned int x) { return x; };
+    EXPECT_EQ(func1(py::Int(0)), 0);
+    EXPECT_EQ(func2(py::Int(1)), static_cast<unsigned int>(1));
 }
 
 
-TEST(py_int, implicitly_convertible_to_float) {
+TEST(py_int, to_float) {
+    // assignment
     double a = py::Int(0);
     double b = py::Int(1);
     double c = py::Int(-1);
     EXPECT_EQ(a, 0.0);
     EXPECT_EQ(b, 1.0);
     EXPECT_EQ(c, -1.0);
-
     py::Float d = py::Int(0);
     py::Float e = py::Int(1);
     py::Float f = py::Int(-1);
     EXPECT_EQ(d, 0.0);
     EXPECT_EQ(e, 1.0);
     EXPECT_EQ(f, -1.0);
+
+    // function parameters
+    auto func1 = [](double x) { return x; };
+    auto func2 = [](const py::Float& x) { return x; };
+    EXPECT_EQ(func1(py::Int(0)), 0.0);
+    EXPECT_EQ(func2(py::Int(1)), 1.0);
 }
 
 
-TEST(py_int, explicitly_convertible_to_string) {
+TEST(py_int, to_string) {
+    // assignment
+    assertions::assign<std::string, py::Int&&>::invalid();
+    assertions::assign<std::string&, py::Int&&>::invalid();
+
+    // explicit cast
     EXPECT_EQ(static_cast<std::string>(py::Int(0)), "0");
     EXPECT_EQ(static_cast<std::string>(py::Int(1)), "1");
     EXPECT_EQ(static_cast<std::string>(py::Int(-1)), "-1");
@@ -777,9 +852,6 @@ TEST(py_int, greater_than) {
 }
 
 
-
-
-
 TEST(py_int, invert) {
     assertions::unary_invert<py::Int>::returns<py::Int>::valid();
     EXPECT_EQ(~py::Int(0), -1);
@@ -794,6 +866,14 @@ TEST(py_int, plus) {
     EXPECT_EQ(+py::Int(0), 0);
     EXPECT_EQ(+py::Int(1), 1);
     EXPECT_EQ(+py::Int(-1), -1);
+
+    // // ++py::Int, py::Int++
+    EXPECT_EQ(++py::Int(0), 1);
+    EXPECT_EQ(++py::Int(1), 2);
+    EXPECT_EQ(++py::Int(-1), 0);
+    py::Int a = 1;
+    EXPECT_EQ(a++, 1);
+    EXPECT_EQ(a, 2);
 
     // py::Int + bool
     assertions::binary_plus<py::Int, bool>::returns<py::Int>::valid();
@@ -862,6 +942,14 @@ TEST(py_int, minus) {
     EXPECT_EQ(-py::Int(0), 0);
     EXPECT_EQ(-py::Int(1), -1);
     EXPECT_EQ(-py::Int(-1), 1);
+
+    // // --py::Int, py::Int--
+    EXPECT_EQ(--py::Int(0), -1);
+    EXPECT_EQ(--py::Int(1), 0);
+    EXPECT_EQ(--py::Int(-1), -2);
+    py::Int a = 1;
+    EXPECT_EQ(a--, 1);
+    EXPECT_EQ(a, 0);
 
     // py::Int - bool
     assertions::binary_minus<py::Int, bool>::returns<py::Int>::valid();

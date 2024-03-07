@@ -4,15 +4,11 @@ import subprocess
 import sys
 
 from setuptools import setup
-from pybind11.setup_helpers import Pybind11Extension, build_ext
-
-import bertrand
+from bertrand import BuildExt, Extension
 
 
-class BuildExt(build_ext):
-    """A custom build_ext command that installs third-party C++ packages and builds C++
-    unit tests as part of pip install.
-    """
+class build_ext(BuildExt):
+    """Builds PCRE2 and GoogleTest alongside bertrand source."""
 
     def extract(self, cwd: Path, tarball: str) -> None:
         """Extract a tarball in the current working directory.
@@ -111,25 +107,17 @@ class BuildExt(build_ext):
         # compile Python extensions
         super().run()
 
-        # save compiler flags to test/ so that we can use the same configuration when
-        # building the test suite
+        # save compiler flags to test directory so that we can use the same
+        # configuration when building tests
         cwd = cwd.parent / "test"
         with (cwd / ".compile_flags").open("w") as file:
             file.write(" ".join(
                 self.compiler.compiler_so[1:] +  # remove the compiler name
-                ["-fvisibility=hidden", "-g0"]  # these are added by Pybind11Extension
+                ["-std=c++20", "-fvisibility=hidden", "-g0"]  # added by Pybind11Extension
             ))
 
 
-ext_modules = [
-    Pybind11Extension(
-        "example",
-        ["example.cpp"],
-    ),
-]
-
 setup(
-    ext_modules=ext_modules,
-    cmdclass={"build_ext": BuildExt},
-    include_dirs=[bertrand.get_include()],
+    ext_modules=[Extension("example", ["example.cpp"])],
+    cmdclass={"build_ext": build_ext},
 )

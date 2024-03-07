@@ -1,4 +1,4 @@
-#ifndef BERTRAND_PYTHON_INCLUDED
+#if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
 
@@ -96,10 +96,10 @@ namespace impl {
 
         template <typename T>
         static constexpr bool enable_cpp =
-            !is_python<T> && (is_int_like<T> || is_float_like<T>);
+            !is_python<T> && (int_like<T> || float_like<T>);
         template <typename T>
         static constexpr bool enable_py =
-            is_python<T> && (is_int_like<T> || is_float_like<T>);
+            is_python<T> && (int_like<T> || float_like<T>);
 
         template <typename From>
         class Unit {
@@ -709,7 +709,7 @@ public:
     using Units = impl::TimeUnits;  // pull these into the base namespace?
 
     template <typename T>
-    static constexpr bool check() { return impl::is_timedelta_like<T>; }
+    static constexpr bool check() { return impl::timedelta_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -965,7 +965,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_timezone_like<T>; }
+    static constexpr bool check() { return impl::timezone_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -1035,7 +1035,7 @@ public:
     using Units = impl::TimeUnits;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_date_like<T>; }
+    static constexpr bool check() { return impl::date_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -1238,7 +1238,7 @@ public:
     using Units = impl::TimeUnits;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_time_like<T>; }
+    static constexpr bool check() { return impl::time_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -1475,7 +1475,7 @@ public:
     using Units = impl::TimeUnits;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_datetime_like<T>; }
+    static constexpr bool check() { return impl::datetime_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

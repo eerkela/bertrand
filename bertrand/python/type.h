@@ -1,4 +1,4 @@
-#ifndef BERTRAND_PYTHON_INCLUDED
+#if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
 
@@ -23,7 +23,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_type_like<T>; }
+    static constexpr bool check() { return impl::type_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -346,12 +346,6 @@ public:
 };
 
 
-template <typename T>
-struct Type::__eq__<T, std::enable_if_t<impl::is_python<T>>> : impl::Returns<bool> {};
-template <typename T>
-struct Type::__ne__<T, std::enable_if_t<impl::is_python<T>>> : impl::Returns<bool> {};
-
-
 ///////////////////////
 ////    SUPER()    ////
 ///////////////////////
@@ -372,7 +366,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_same_or_subclass_of<Super, T>; }
+    static constexpr bool check() { return std::is_base_of_v<Super, T>; }
 
     BERTRAND_OBJECT_COMMON(Object, Super, check_super);
 
@@ -388,7 +382,7 @@ public:
 
     /* Explicit constructor.  Equivalent to Python `super(type, self)` with 2
     arguments. */
-    template <typename T, std::enable_if_t<impl::is_type_like<T>, int> = 0>
+    template <impl::type_like T>
     explicit Super(const T& type, const Handle& self) {
         m_ptr = PyObject_CallFunctionObjArgs(
             reinterpret_cast<PyObject*>(&PySuper_Type),

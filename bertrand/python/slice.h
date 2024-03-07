@@ -1,4 +1,4 @@
-#ifndef BERTRAND_PYTHON_INCLUDED
+#if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
 
@@ -22,7 +22,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_slice_like<T>; }
+    static constexpr bool check() { return impl::slice_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -167,22 +167,22 @@ public:
 template <>
 struct Slice::__lt__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Slice::__lt__<T, std::enable_if_t<impl::is_slice_like<T>>> : impl::Returns<bool> {};
+struct Slice::__lt__<T, std::enable_if_t<impl::slice_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Slice::__le__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Slice::__le__<T, std::enable_if_t<impl::is_slice_like<T>>> : impl::Returns<bool> {};
+struct Slice::__le__<T, std::enable_if_t<impl::slice_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Slice::__ge__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Slice::__ge__<T, std::enable_if_t<impl::is_slice_like<T>>> : impl::Returns<bool> {};
+struct Slice::__ge__<T, std::enable_if_t<impl::slice_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Slice::__gt__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Slice::__gt__<T, std::enable_if_t<impl::is_slice_like<T>>> : impl::Returns<bool> {};
+struct Slice::__gt__<T, std::enable_if_t<impl::slice_like<T>>> : impl::Returns<bool> {};
 
 
 }  // namespace python

@@ -1,4 +1,4 @@
-#ifndef BERTRAND_PYTHON_INCLUDED
+#if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
 
@@ -58,7 +58,7 @@ namespace impl {
         /* Implicitly convert a py::FrozenSet into a C++ set or unordered_set. */
         template <
             typename T,
-            std::enable_if_t<!impl::is_python<T> && impl::is_anyset_like<T>, int> = 0
+            std::enable_if_t<!impl::is_python<T> && impl::anyset_like<T>, int> = 0
         >
         inline operator T() const {
             T result;
@@ -356,7 +356,7 @@ class FrozenSet : public impl::ISet<FrozenSet> {
 
     template <typename T>
     static constexpr bool constructor1 =
-        impl::is_python<T> && !impl::is_frozenset_like<T> && impl::is_iterable<T>;
+        impl::is_python<T> && !impl::frozenset_like<T> && impl::is_iterable<T>;
     template <typename T>
     static constexpr bool constructor2 = !impl::is_python<T> && impl::is_iterable<T>;
 
@@ -364,7 +364,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_frozenset_like<T>; }
+    static constexpr bool check() { return impl::frozenset_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -504,62 +504,62 @@ public:
 template <>
 struct FrozenSet::__lt__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct FrozenSet::__lt__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<bool> {};
+struct FrozenSet::__lt__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct FrozenSet::__le__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct FrozenSet::__le__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<bool> {};
+struct FrozenSet::__le__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct FrozenSet::__ge__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct FrozenSet::__ge__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<bool> {};
+struct FrozenSet::__ge__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct FrozenSet::__gt__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct FrozenSet::__gt__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<bool> {};
+struct FrozenSet::__gt__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct FrozenSet::__or__<Object> : impl::Returns<FrozenSet> {};
 template <typename T>
-struct FrozenSet::__or__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<FrozenSet> {};
+struct FrozenSet::__or__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<FrozenSet> {};
 
 template <>
 struct FrozenSet::__and__<Object> : impl::Returns<FrozenSet> {};
 template <typename T>
-struct FrozenSet::__and__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<FrozenSet> {};
+struct FrozenSet::__and__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<FrozenSet> {};
 
 template <>
 struct FrozenSet::__sub__<Object> : impl::Returns<FrozenSet> {};
 template <typename T>
-struct FrozenSet::__sub__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<FrozenSet> {};
+struct FrozenSet::__sub__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<FrozenSet> {};
 
 template <>
 struct FrozenSet::__xor__<Object> : impl::Returns<FrozenSet> {};
 template <typename T>
-struct FrozenSet::__xor__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<FrozenSet> {};
+struct FrozenSet::__xor__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<FrozenSet> {};
 
 template <>
 struct FrozenSet::__ior__<Object> : impl::Returns<FrozenSet&> {};
 template <typename T>
-struct FrozenSet::__ior__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<FrozenSet&> {};
+struct FrozenSet::__ior__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<FrozenSet&> {};
 
 template <>
 struct FrozenSet::__iand__<Object> : impl::Returns<FrozenSet&> {};
 template <typename T>
-struct FrozenSet::__iand__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<FrozenSet&> {};
+struct FrozenSet::__iand__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<FrozenSet&> {};
 
 template <>
 struct FrozenSet::__isub__<Object> : impl::Returns<FrozenSet&> {};
 template <typename T>
-struct FrozenSet::__isub__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<FrozenSet&> {};
+struct FrozenSet::__isub__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<FrozenSet&> {};
 
 template <>
 struct FrozenSet::__ixor__<Object> : impl::Returns<FrozenSet&> {};
 template <typename T>
-struct FrozenSet::__ixor__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<FrozenSet&> {};
+struct FrozenSet::__ixor__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<FrozenSet&> {};
 
 
 /* Wrapper around pybind11::set that allows it to be directly initialized using
@@ -575,7 +575,7 @@ class Set : public impl::ISet<Set> {
 
     template <typename T>
     static constexpr bool constructor1 =
-        impl::is_python<T> && !impl::is_set_like<T> && impl::is_iterable<T>;
+        impl::is_python<T> && !impl::set_like<T> && impl::is_iterable<T>;
     template <typename T>
     static constexpr bool constructor2 = !impl::is_python<T> && impl::is_iterable<T>;
 
@@ -583,7 +583,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_set_like<T>; }
+    static constexpr bool check() { return impl::set_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -836,65 +836,66 @@ public:
 
 };
 
+
 template <>
 struct Set::__lt__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Set::__lt__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<bool> {};
+struct Set::__lt__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Set::__le__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Set::__le__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<bool> {};
+struct Set::__le__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Set::__ge__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Set::__ge__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<bool> {};
+struct Set::__ge__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Set::__gt__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Set::__gt__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<bool> {};
+struct Set::__gt__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Set::__or__<Object> : impl::Returns<Set> {};
 template <typename T>
-struct Set::__or__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<Set> {};
+struct Set::__or__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set> {};
 
 template <>
 struct Set::__and__<Object> : impl::Returns<Set> {};
 template <typename T>
-struct Set::__and__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<Set> {};
+struct Set::__and__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set> {};
 
 template <>
 struct Set::__sub__<Object> : impl::Returns<Set> {};
 template <typename T>
-struct Set::__sub__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<Set> {};
+struct Set::__sub__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set> {};
 
 template <>
 struct Set::__xor__<Object> : impl::Returns<Set> {};
 template <typename T>
-struct Set::__xor__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<Set> {};
+struct Set::__xor__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set> {};
 
 template <>
 struct Set::__ior__<Object> : impl::Returns<Set&> {};
 template <typename T>
-struct Set::__ior__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<Set&> {};
+struct Set::__ior__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set&> {};
 
 template <>
 struct Set::__iand__<Object> : impl::Returns<Set&> {};
 template <typename T>
-struct Set::__iand__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<Set&> {};
+struct Set::__iand__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set&> {};
 
 template <>
 struct Set::__isub__<Object> : impl::Returns<Set&> {};
 template <typename T>
-struct Set::__isub__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<Set&> {};
+struct Set::__isub__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set&> {};
 
 template <>
 struct Set::__ixor__<Object> : impl::Returns<Set&> {};
 template <typename T>
-struct Set::__ixor__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<Set&> {};
+struct Set::__ixor__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set&> {};
 
 
 }  // namespace python

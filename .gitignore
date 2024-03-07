@@ -10,6 +10,7 @@ third_party/*
 !third_party/*.tar.gz
 
 # build artifacts
+compile_commands.json
 test/.compile_flags
 test/build/*
 

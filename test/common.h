@@ -27,43 +27,22 @@ namespace assertions {
     ////    operator=    ////
     /////////////////////////
 
-    template <typename T1>
+    template <typename L, typename R, typename = void>
     struct assign {
-        // T1& = T2
-        template <typename T2, typename = void>
-        struct from {
-            static void valid() {
-                FAIL() << "Expression `L& = R` is invalid [with L = "
-                       << typeid(T1).name() << " and R = " << typeid(T2).name() << " ]";
-            }
-            static void invalid() {}
-        };
-        template <typename T2>
-        struct from<T2, std::void_t<decltype(std::declval<T1&>() = std::declval<T2>() )>> {
-            static void valid() {}
-            static void invalid() {
-                FAIL() << "Expression `L& = R` is valid [with L = "
-                       << typeid(T1).name() << " and R = " << typeid(T2).name() << " ]";
-            }
-        };
+        static void valid() {
+            FAIL() << "Expression `L = R` is invalid [with L = "
+                   << typeid(L).name() << " and R = " << typeid(R).name() << " ]";
+        }
+        static void invalid() {}
+    };
 
-        // T2& = T1
-        template <typename T2, typename = void>
-        struct to {
-            static void valid() {
-                FAIL() << "Expression `L& = R` is invalid [with L = "
-                       << typeid(T2).name() << " and R = " << typeid(T1).name() << " ]";
-            }
-            static void invalid() {}
-        };
-        template <typename T2>
-        struct to<T2, std::void_t<decltype(std::declval<T2&>() = std::declval<T1>() )>> {
-            static void valid() {}
-            static void invalid() {
-                FAIL() << "Expression `L& = R` is valid [with L = "
-                       << typeid(T2).name() << " and R = " << typeid(T1).name() << " ]";
-            }
-        };
+    template <typename L, typename R>
+    struct assign<L, R, std::enable_if_t<std::is_convertible_v<R, L>>> {
+        static void valid() {}
+        static void invalid() {
+            FAIL() << "Expression `L = R` is valid [with L = "
+                   << typeid(L).name() << " and R = " << typeid(R).name() << " ]";
+        }
     };
 
     //////////////////////////
@@ -365,6 +344,102 @@ namespace assertions {
         };
     };
 
+    //////////////////////////////
+    ////    POST INCREMENT    ////
+    //////////////////////////////
+
+    template <typename T, typename = void>
+    struct post_increment {
+        static void valid() {
+            FAIL() << "Type " << typeid(T).name()
+                   << " does not support the unary ++(postfix) operator.";
+        }
+        static void invalid() {}
+
+        template <typename Return>
+        struct returns {
+            static void valid() { post_increment::valid(); }
+            static void invalid() { post_increment::invalid(); }
+        };
+    };
+
+    template <typename T>
+    struct post_increment<T, std::void_t<decltype(std::declval<T>()++)>> {
+        using type = decltype(std::declval<T>()++);
+        static void valid() {}
+        static void invalid() {
+            FAIL() << "Type " << typeid(T).name()
+                   << " supports the unary ++(postfix) operator.";
+        }
+
+        template <typename Return, typename = void>
+        struct returns {
+            static void valid() {
+                FAIL() << "Return types do not match.  Expected: "
+                       << typeid(Return).name() << "  Got: "
+                       << typeid(type).name();
+            }
+            static void invalid() {}
+        };
+
+        template <typename Return>
+        struct returns<Return, std::enable_if_t<std::is_same_v<Return, type>>> {
+            static void valid() {}
+            static void invalid() {
+                FAIL() << "Return types match (expected no match).  Return type: "
+                       << typeid(Return).name();
+            }
+        };
+    };
+
+    //////////////////////////////
+    ////    POST DECREMENT    ////
+    //////////////////////////////
+
+    template <typename T, typename = void>
+    struct post_decrement {
+        static void valid() {
+            FAIL() << "Type " << typeid(T).name()
+                   << " does not support the unary --(postfix) operator.";
+        }
+        static void invalid() {}
+
+        template <typename Return>
+        struct returns {
+            static void valid() { post_decrement::valid(); }
+            static void invalid() { post_decrement::invalid(); }
+        };
+    };
+
+    template <typename T>
+    struct post_decrement<T, std::void_t<decltype(std::declval<T>()--)>> {
+        using type = decltype(std::declval<T>()--);
+        static void valid() {}
+        static void invalid() {
+            FAIL() << "Type " << typeid(T).name()
+                   << " supports the unary --(postfix) operator.";
+        }
+
+        template <typename Return, typename = void>
+        struct returns {
+            static void valid() {
+                FAIL() << "Return types do not match.  Expected: "
+                       << typeid(Return).name() << "  Got: "
+                       << typeid(type).name();
+            }
+            static void invalid() {}
+        };
+
+        template <typename Return>
+        struct returns<Return, std::enable_if_t<std::is_same_v<Return, type>>> {
+            static void valid() {}
+            static void invalid() {
+                FAIL() << "Return types match (expected no match).  Return type: "
+                       << typeid(Return).name();
+            }
+        };
+    };
+
     ///////////////////////////////
     ////    UNARY OPERATORS    ////
     ///////////////////////////////
@@ -417,6 +492,8 @@ namespace assertions {
     UNARY_OPERATOR(unary_invert, ~)
     UNARY_OPERATOR(unary_plus, +)
     UNARY_OPERATOR(unary_minus, -)
+    UNARY_OPERATOR(pre_increment, ++)
+    UNARY_OPERATOR(pre_decrement, --)
     UNARY_OPERATOR(dereference, *)
     UNARY_OPERATOR(address_of, &)
     UNARY_OPERATOR(unary_not, !)
@@ -530,11 +607,6 @@ namespace assertions {
     INPLACE_OPERATOR(inplace_bitwise_xor, ^=)
 
     #undef INPLACE_OPERATOR
-
-    /////////////////////////
-    ////    operator&    ////
-    /////////////////////////
-
 
 
     // TODO: implicit conversion operators?

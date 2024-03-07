@@ -69,20 +69,8 @@
 
 
 
-from pybind11.setup_helpers import Pybind11Extension, build_ext
+
+from .setup_helpers import BuildExt, Extension, get_include
 
 
 __version__ = "0.5.1"  # handled by bumpver
-
-
-def get_include() -> str:
-    """Get the path to the include directory for this package, which is necessary to
-    make C++ headers available to the compiler.
-
-    Returns
-    -------
-    str
-        The path to the include directory for this package.
-    """
-    from pathlib import Path
-    return str(Path(__file__).absolute().parent.parent)

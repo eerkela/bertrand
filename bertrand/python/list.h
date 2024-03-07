@@ -1,5 +1,4 @@
-#include <type_traits>
-#ifndef BERTRAND_PYTHON_INCLUDED
+#if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
 
@@ -37,7 +36,7 @@ class List : public impl::SequenceOps, public impl::ReverseIterable<List> {
 
     template <typename T>
     static constexpr bool constructor2 =
-        impl::is_python<T> && !impl::is_list_like<T> && impl::is_iterable<T>;
+        impl::is_python<T> && !impl::list_like<T> && impl::is_iterable<T>;
     template <typename T>
     static constexpr bool constructor1 = !impl::is_python<T> && impl::is_iterable<T>;
 
@@ -45,7 +44,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_list_like<T>; }
+    static constexpr bool check() { return impl::list_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -208,7 +207,7 @@ public:
     list. */
     template <
         typename T,
-        std::enable_if_t<!impl::is_python<T> && impl::is_list_like<T>, int> = 0
+        std::enable_if_t<!impl::is_python<T> && impl::list_like<T>, int> = 0
     >
     inline operator T() const {
         T result;
@@ -412,32 +411,32 @@ public:
 template <>
 struct List::__lt__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct List::__lt__<T, std::enable_if_t<impl::is_list_like<T>>> : impl::Returns<bool> {};
+struct List::__lt__<T, std::enable_if_t<impl::list_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct List::__le__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct List::__le__<T, std::enable_if_t<impl::is_list_like<T>>> : impl::Returns<bool> {};
+struct List::__le__<T, std::enable_if_t<impl::list_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct List::__ge__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct List::__ge__<T, std::enable_if_t<impl::is_list_like<T>>> : impl::Returns<bool> {};
+struct List::__ge__<T, std::enable_if_t<impl::list_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct List::__gt__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct List::__gt__<T, std::enable_if_t<impl::is_list_like<T>>> : impl::Returns<bool> {};
+struct List::__gt__<T, std::enable_if_t<impl::list_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct List::__add__<Object> : impl::Returns<List> {};
 template <typename T>
-struct List::__add__<T, std::enable_if_t<impl::is_list_like<T>>> : impl::Returns<List> {};
+struct List::__add__<T, std::enable_if_t<impl::list_like<T>>> : impl::Returns<List> {};
 
 template <>
 struct List::__iadd__<Object> : impl::Returns<List&> {};
 template <typename T>
-struct List::__iadd__<T, std::enable_if_t<impl::is_list_like<T>>> : impl::Returns<List&> {};
+struct List::__iadd__<T, std::enable_if_t<impl::list_like<T>>> : impl::Returns<List&> {};
 
 
 }  // namespace python

@@ -1,4 +1,4 @@
-#ifndef BERTRAND_PYTHON_INCLUDED
+#if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
 
@@ -354,26 +354,12 @@ PYTHON_EXCEPTION(Exception, ValueError, PyExc_ValueError)
 
 namespace impl {
 
-    template <typename Base, typename Derived>
-    constexpr bool is_same_or_subclass_of = (
-        std::is_same_v<Base, Derived> || std::is_base_of_v<Base, Derived>
-    );
-
-    // template <typename From, typename To>
-    // class ExplicitlyConvertibleTo {
-
-    //     template <typename F, typename T>
-    //     static auto test(void*) -> decltype(static_cast<T>(std::declval<F>()), std::true_type{});
-
-    //     template <typename F, typename T>
-    //     static auto test(...) -> std::false_type;
-
-    // public:
-    //     static constexpr bool value = decltype(test<From, To>(0))::value;
-    // };
-
-    // template <typename From, typename To, typename = void>
-    // constexpr bool explicitly_convertible_to = false;
+    template <typename From, typename To, typename = void>
+    constexpr bool has_conversion_operator = false;
+    template <typename From, typename To>
+    constexpr bool has_conversion_operator<
+        From, To, std::void_t<decltype(std::declval<From>().operator To())>
+    > = true;
 
     template <typename From, typename To, typename = void>
     constexpr bool explicitly_convertible_to = false;
@@ -476,237 +462,238 @@ namespace impl {
             static constexpr bool dictlike = true;
         };
 
-    };
+    }  // namespace conversions
 
-    template <typename T>
-    constexpr bool is_python = detail::is_pyobject<T>::value;
+    namespace traits {
 
-    template <typename T>
-    constexpr bool is_accessor = (
-        is_same_or_subclass_of<detail::obj_attr_accessor, T> ||
-        is_same_or_subclass_of<detail::str_attr_accessor, T> ||
-        is_same_or_subclass_of<detail::item_accessor, T> ||
-        is_same_or_subclass_of<detail::sequence_accessor, T> ||
-        is_same_or_subclass_of<detail::tuple_accessor, T> ||
-        is_same_or_subclass_of<detail::list_accessor, T>
-    );
+        template <typename T>
+        concept is_python = detail::is_pyobject<T>::value;
 
-    template <typename T>
-    constexpr bool is_bool_like = (
-        is_same_or_subclass_of<bool, T> ||
-        is_same_or_subclass_of<Bool, T> ||
-        is_same_or_subclass_of<pybind11::bool_, T>
-    );
+        template <typename T>
+        concept is_accessor = (
+            std::is_base_of_v<detail::obj_attr_accessor, T> ||
+            std::is_base_of_v<detail::str_attr_accessor, T> ||
+            std::is_base_of_v<detail::item_accessor, T> ||
+            std::is_base_of_v<detail::sequence_accessor, T> ||
+            std::is_base_of_v<detail::tuple_accessor, T> ||
+            std::is_base_of_v<detail::list_accessor, T>
+        );
 
-    template <typename T>
-    constexpr bool is_int_like = (
-        (std::is_integral_v<T> && !std::is_same_v<T, bool>) ||
-        is_same_or_subclass_of<Int, T> ||
-        is_same_or_subclass_of<pybind11::int_, T>
-    );
+        template <typename T>
+        concept bool_like = (
+            std::is_same_v<bool, T> ||
+            std::is_base_of_v<py::Bool, T> ||
+            std::is_base_of_v<pybind11::bool_, T>
+        );
 
-    template <typename T>
-    constexpr bool is_float_like = (
-        std::is_floating_point_v<T> ||
-        is_same_or_subclass_of<Float, T> ||
-        is_same_or_subclass_of<pybind11::float_, T>
-    );
+        template <typename T>
+        concept int_like = (
+            (std::is_integral_v<T> && !std::is_same_v<T, bool>) ||
+            std::is_base_of_v<Int, T> ||
+            std::is_base_of_v<pybind11::int_, T>
+        );
 
-    template <typename T>
-    constexpr bool is_complex_like = (
-        is_same_or_subclass_of<std::complex<float>, T> ||
-        is_same_or_subclass_of<std::complex<double>, T> ||
-        is_same_or_subclass_of<std::complex<long double>, T> ||
-        is_same_or_subclass_of<Complex, T>
-    );
+        template <typename T>
+        concept float_like = (
+            std::is_floating_point_v<T> ||
+            std::is_base_of_v<Float, T> ||
+            std::is_base_of_v<pybind11::float_, T>
+        );
 
-    template <typename T>
-    constexpr bool is_str_like = (
-        std::is_same_v<const char*, T> ||
-        is_same_or_subclass_of<std::string, T> ||
-        is_same_or_subclass_of<std::string_view, T> ||
-        is_same_or_subclass_of<Str, T> ||
-        is_same_or_subclass_of<pybind11::str, T>
-    );
+        template <typename T>
+        concept complex_like = (
+            std::is_base_of_v<std::complex<float>, T> ||
+            std::is_base_of_v<std::complex<double>, T> ||
+            std::is_base_of_v<std::complex<long double>, T> ||
+            std::is_base_of_v<Complex, T>
+        );
 
-    template <typename T>
-    constexpr bool is_timedelta_like = (
-        conversions::Traits<T>::timedeltalike ||
-        is_same_or_subclass_of<Timedelta, T>
-    );
+        template <typename T>
+        concept str_like = (
+            std::is_same_v<const char*, T> ||
+            std::is_base_of_v<std::string, T> ||
+            std::is_base_of_v<std::string_view, T> ||
+            std::is_base_of_v<Str, T> ||
+            std::is_base_of_v<pybind11::str, T>
+        );
 
-    template <typename T>
-    constexpr bool is_timezone_like = (
-        conversions::Traits<T>::timezonelike ||
-        is_same_or_subclass_of<Timezone, T>
-    );
+        template <typename T>
+        concept timedelta_like = (
+            conversions::Traits<T>::timedeltalike ||
+            std::is_base_of_v<Timedelta, T>
+        );
 
-    template <typename T>
-    constexpr bool is_date_like = (
-        conversions::Traits<T>::datelike ||
-        is_same_or_subclass_of<Date, T>
-    );
+        template <typename T>
+        concept timezone_like = (
+            conversions::Traits<T>::timezonelike ||
+            std::is_base_of_v<Timezone, T>
+        );
 
-    template <typename T>
-    constexpr bool is_time_like = (
-        conversions::Traits<T>::timelike ||
-        is_same_or_subclass_of<Time, T>
-    );
+        template <typename T>
+        concept date_like = (
+            conversions::Traits<T>::datelike ||
+            std::is_base_of_v<Date, T>
+        );
 
-    template <typename T>
-    constexpr bool is_datetime_like = (
-        conversions::Traits<T>::datetimelike ||
-        is_same_or_subclass_of<Datetime, T>
-    );
+        template <typename T>
+        concept time_like = (
+            conversions::Traits<T>::timelike ||
+            std::is_base_of_v<Time, T>
+        );
 
-    template <typename T>
-    constexpr bool is_slice_like = (
-        is_same_or_subclass_of<Slice, T> ||
-        is_same_or_subclass_of<pybind11::slice, T>
-    );
+        template <typename T>
+        concept datetime_like = (
+            conversions::Traits<T>::datetimelike ||
+            std::is_base_of_v<Datetime, T>
+        );
 
-    template <typename T>
-    constexpr bool is_range_like = (
-        is_same_or_subclass_of<Range, T>
-    );
+        template <typename T>
+        concept slice_like = (
+            std::is_base_of_v<Slice, T> ||
+            std::is_base_of_v<pybind11::slice, T>
+        );
 
-    template <typename T>
-    constexpr bool is_tuple_like = (
-        conversions::Traits<T>::tuplelike ||
-        is_same_or_subclass_of<Tuple, T> ||
-        is_same_or_subclass_of<pybind11::tuple, T>
-    );
+        template <typename T>
+        concept range_like = (
+            std::is_base_of_v<Range, T>
+        );
 
-    template <typename T>
-    constexpr bool is_list_like = (
-        conversions::Traits<T>::listlike ||
-        is_same_or_subclass_of<List, T> ||
-        is_same_or_subclass_of<pybind11::list, T>
-    );
+        template <typename T>
+        concept tuple_like = (
+            conversions::Traits<T>::tuplelike ||
+            std::is_base_of_v<Tuple, T> ||
+            std::is_base_of_v<pybind11::tuple, T>
+        );
 
-    template <typename T>
-    constexpr bool is_set_like = (
-        conversions::Traits<T>::setlike ||
-        is_same_or_subclass_of<Set, T> ||
-        is_same_or_subclass_of<pybind11::set, T>
-    );
+        template <typename T>
+        concept list_like = (
+            conversions::Traits<T>::listlike ||
+            std::is_base_of_v<List, T> ||
+            std::is_base_of_v<pybind11::list, T>
+        );
 
-    template <typename T>
-    constexpr bool is_frozenset_like = (
-        conversions::Traits<T>::setlike ||
-        is_same_or_subclass_of<FrozenSet, T> ||
-        is_same_or_subclass_of<pybind11::frozenset, T>
-    );
+        template <typename T>
+        concept set_like = (
+            conversions::Traits<T>::setlike ||
+            std::is_base_of_v<Set, T> ||
+            std::is_base_of_v<pybind11::set, T>
+        );
 
-    template <typename T>
-    constexpr bool is_anyset_like = is_set_like<T> || is_frozenset_like<T>;
+        template <typename T>
+        concept frozenset_like = (
+            conversions::Traits<T>::setlike ||
+            std::is_base_of_v<FrozenSet, T> ||
+            std::is_base_of_v<pybind11::frozenset, T>
+        );
 
-    template <typename T>
-    constexpr bool is_dict_like = (
-        conversions::Traits<T>::dictlike ||
-        is_same_or_subclass_of<Dict, T> ||
-        is_same_or_subclass_of<pybind11::dict, T>
-    );
+        template <typename T>
+        concept anyset_like = set_like<T> || frozenset_like<T>;
 
-    template <typename T>
-    constexpr bool is_mappingproxy_like = (
-        conversions::Traits<T>::dictlike ||
-        is_same_or_subclass_of<MappingProxy, T>
-    );
+        template <typename T>
+        concept dict_like = (
+            conversions::Traits<T>::dictlike ||
+            std::is_base_of_v<Dict, T> ||
+            std::is_base_of_v<pybind11::dict, T>
+        );
 
-    template <typename T>
-    constexpr bool is_anydict_like = is_dict_like<T> || is_mappingproxy_like<T>;
+        template <typename T>
+        concept mappingproxy_like = (
+            conversions::Traits<T>::dictlike ||
+            std::is_base_of_v<MappingProxy, T>
+        );
 
-    template <typename T>
-    constexpr bool is_type_like = (
-        is_same_or_subclass_of<Type, T> ||
-        is_same_or_subclass_of<pybind11::type, T>
-    );
+        template <typename T>
+        concept anydict_like = dict_like<T> || mappingproxy_like<T>;
 
-    template <typename T, typename = void>
-    constexpr bool has_size = false;
-    template <typename T>
-    constexpr bool has_size<
-        T, std::void_t<decltype(std::declval<T>().size())>
-    > = true;
+        template <typename T>
+        concept type_like = (
+            std::is_base_of_v<Type, T> ||
+            std::is_base_of_v<pybind11::type, T>
+        );
 
-    template <typename T, typename = void>
-    constexpr bool has_empty = false;
-    template <typename T>
-    constexpr bool has_empty<
-        T, std::void_t<decltype(std::declval<T>().empty())>
-    > = true;
+        template <typename T>
+        concept has_size = requires(const T& t) {
+            { t.size() } -> std::convertible_to<size_t>;
+        };
 
-    template <typename T, typename = void>
-    constexpr bool is_hashable = false;
-    template <typename T>
-    constexpr bool is_hashable<
-        T, std::void_t<decltype(std::hash<T>{}(std::declval<T>()))>
-    > = true;
+        template <typename T>
+        concept has_empty = requires(const T& t) {
+            { t.empty() } -> std::convertible_to<bool>;
+        };
 
-    template <typename T, typename = void>
-    constexpr bool is_iterable = false;
-    template <typename T>
-    constexpr bool is_iterable<
-        T, std::void_t<decltype(std::begin(std::declval<T>()), std::end(std::declval<T>()))>
-    > = true;
+        template <typename T>
+        concept has_reserve = requires(T& t, size_t n) {
+            { t.reserve(n) };
+        };
 
-    template <typename T, typename = void>
-    constexpr bool has_to_string = false;
-    template <typename T>
-    constexpr bool has_to_string<
-        T, std::void_t<decltype(std::to_string(std::declval<T>()))>
-    > = true;
+        template <typename T>
+        concept is_hashable = requires(const T& t) {
+            { std::hash<T>{}(t) } -> std::convertible_to<size_t>;
+        };
 
-    template <typename T, typename = void>
-    constexpr bool has_stream_insertion = false;
-    template <typename T>
-    constexpr bool has_stream_insertion<
-        T, std::void_t<decltype(std::declval<std::ostream&>() << std::declval<T>())>
-    > = true;
+        template <typename T>
+        concept is_iterable = requires(const T& t) {
+            { std::begin(t) } -> std::input_or_output_iterator;
+            { std::end(t) } -> std::input_or_output_iterator;
+        };
 
-    template <typename T, typename = void>
-    constexpr bool has_reserve = false;
-    template <typename T>
-    constexpr bool has_reserve<
-        T, std::void_t<decltype(std::declval<T>().reserve(std::declval<size_t>()))>
-    > = true;
+        template <typename T>
+        concept reverse_iterable = requires(const T& t) {
+            { std::rbegin(t) } -> std::input_or_output_iterator;
+            { std::rend(t) } -> std::input_or_output_iterator;
+        };
 
-    /* NOTE: reverse operators sometimes conflict with standard library iterators, so
-    we need some way of detecting them.  This is somewhat hacky, but it seems to
-    work. */
-    template <typename T, typename = void>
-    constexpr bool is_std_iterator = false;
-    template <typename T>
-    constexpr bool is_std_iterator<
-        T, std::void_t<decltype(
-            std::declval<typename std::iterator_traits<T>::iterator_category>()
-        )>
-    > = true;
+        template <typename T>
+        concept has_to_string = requires(const T& t) {
+            { std::to_string(t) } -> std::convertible_to<std::string>;
+        };
 
-    /* SFINAE condition allows py::iter() to work on both python and C++ types. */
-    template <typename T, typename = void>
-    constexpr bool pybind11_iterable = false;
-    template <typename T>
-    constexpr bool pybind11_iterable<
-        T, std::void_t<decltype(pybind11::iter(std::declval<T>()))>
-    > = true;
+        template <typename T>
+        concept has_stream_insertion = requires(std::ostream& os, const T& t) {
+            { os << t } -> std::convertible_to<std::ostream&>;
+        };
 
-    template <typename T, typename = void>
-    struct OverloadsCallable : std::false_type {};
-    template <typename T>
-    struct OverloadsCallable<T, std::void_t<decltype(&T::operator())>> :
-        std::true_type
-    {};
+        /* NOTE: reverse operators sometimes conflict with standard library iterators, so
+        we need some way of detecting them.  This is somewhat hacky, but it seems to
+        work. */
+        template <typename T, typename = void>
+        constexpr bool is_std_iterator = false;
+        template <typename T>
+        constexpr bool is_std_iterator<
+            T, std::void_t<decltype(
+                std::declval<typename std::iterator_traits<T>::iterator_category>()
+            )>
+        > = true;
 
-    /* SFINAE condition is used to recognize callable C++ types without regard to their
-    argument signatures. */
-    template <typename T>
-    static constexpr bool is_callable_any = std::disjunction_v<
-        std::is_function<std::remove_pointer_t<std::decay_t<T>>>,
-        std::is_member_function_pointer<std::decay_t<T>>,
-        OverloadsCallable<std::decay_t<T>>
-    >;
+        /* SFINAE condition allows py::iter() to work on both python and C++ types. */
+        template <typename T, typename = void>
+        constexpr bool pybind11_iterable = false;
+        template <typename T>
+        constexpr bool pybind11_iterable<
+            T, std::void_t<decltype(pybind11::iter(std::declval<T>()))>
+        > = true;
+
+        template <typename T, typename = void>
+        struct OverloadsCallable : std::false_type {};
+        template <typename T>
+        struct OverloadsCallable<T, std::void_t<decltype(&T::operator())>> :
+            std::true_type
+        {};
+
+        /* SFINAE condition is used to recognize callable C++ types without regard to their
+        argument signatures. */
+        template <typename T>
+        static constexpr bool is_callable_any = std::disjunction_v<
+            std::is_function<std::remove_pointer_t<std::decay_t<T>>>,
+            std::is_member_function_pointer<std::decay_t<T>>,
+            OverloadsCallable<std::decay_t<T>>
+        >;
+
+    }  // namespace traits
+
+    using namespace traits;
+
+
 
     /* Base class for CallTraits tags, which contain SFINAE information about a
     callable Python/C++ object, as returned by `py::callable()`. */
@@ -931,9 +918,7 @@ namespace impl {
                                                                                         \
             template <                                                                  \
                 typename T,                                                             \
-                std::enable_if_t<                                                       \
-                    impl::is_same_or_subclass_of<pybind11::object, T>,                  \
-                int> = 0                                                                \
+                std::enable_if_t<std::is_base_of_v<pybind11::object, T>, int> = 0       \
             >                                                                           \
             inline operator T() const {                                                 \
                 pybind11::object other(*this);                                          \
@@ -953,7 +938,7 @@ namespace impl {
 
     #undef CONVERTIBLE_ACCESSOR
 
-    class SliceInitializer;
+    struct SliceInitializer;
 
 }
 
@@ -970,7 +955,7 @@ public:
     /* Check whether a templated type is considered object-like at compile time. */
     template <typename T>
     static constexpr bool check() {
-        return impl::is_same_or_subclass_of<pybind11::object, T>;
+        return std::is_base_of_v<pybind11::object, T>;
     }
 
     /* Check whether a C++ value is considered object-like at compile time. */
@@ -995,20 +980,22 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    using Base::Base;
-    using Base::operator=;
-
     /* Default constructor.  Initializes to a null object, which should not be used
     without initialization.  Note that this is one of the only ways in which a null
     pointer can be injected into the bertrand type system, the other being interactions
     with a wrapper that has been moved from. */
-    Object() : Base() {}
+    Object() = default;
+
+    /* reinterpret_borrow/steal constructors.  The tags themselves are protected and
+    only accessible within subclasses of pybind11::object. */
+    Object(pybind11::handle h, const borrowed_t& t) : Base(h, t) {}
+    Object(pybind11::handle h, const stolen_t& t) : Base(h, t) {}
 
     /* Copy constructor.  Borrows a reference to an existing python object. */
-    Object(const pybind11::object& o) : Base(o.ptr(), borrowed_t{}) {}
+    Object(const pybind11::object& o) : Base(o) {}
 
     /* Move constructor.  Steals a reference to a rvalue python object. */
-    Object(pybind11::object&& o) : Base(o.release(), stolen_t{}) {}
+    Object(pybind11::object&& o) : Base(std::move(o)) {}
 
     /* Convert an accessor into a generic Object. */
     template <typename Policy>
@@ -1026,7 +1013,9 @@ public:
         typename T,
         std::enable_if_t<!impl::is_python<T> && impl::is_callable_any<T>, int> = 0
     >
-    Object(const T& value);
+    Object(const T& value);  // defined in python.h
+
+    using Base::operator=;
 
     /* Assign any C++ value to the object wrapper. */
     template <typename T, std::enable_if_t<!impl::is_python<T>, int> = 0>
@@ -1253,8 +1242,7 @@ public:
         template <                                                                      \
             typename T,                                                                 \
             std::enable_if_t<                                                           \
-                !impl::is_same_or_subclass_of<Object, T> &&                             \
-                !impl::is_std_iterator<T>,                                              \
+                !std::is_base_of_v<Object, T> && !impl::is_std_iterator<T>,             \
             int> = 0                                                                    \
         >                                                                               \
         inline friend bool op(const T& other, const Object& self) {                     \
@@ -1286,8 +1274,8 @@ public:
         template <                                                                      \
             typename T,                                                                 \
             std::enable_if_t<                                                           \
-                !impl::is_same_or_subclass_of<Object, T> &&                             \
-                !impl::is_same_or_subclass_of<std::ostream, T> &&                       \
+                !std::is_base_of_v<Object, T> &&                                        \
+                !std::is_base_of_v<std::ostream, T> &&                                  \
                 !impl::is_std_iterator<T>,                                              \
             int> = 0                                                                    \
         >                                                                               \
@@ -1432,7 +1420,7 @@ namespace impl {
     struct StringInitializer : Initializer {
         template <
             typename T,
-            std::enable_if_t<impl::is_str_like<std::decay_t<T>>, int> = 0
+            std::enable_if_t<impl::str_like<std::decay_t<T>>, int> = 0
         >
         StringInitializer(T&& value) : Initializer(std::forward<T>(value)) {}
     };
@@ -1442,7 +1430,7 @@ namespace impl {
         template <
             typename T,
             std::enable_if_t<
-                impl::is_int_like<std::decay_t<T>> ||
+                impl::int_like<std::decay_t<T>> ||
                 std::is_same_v<std::decay_t<T>, NoneType>,
             int> = 0
         >
@@ -1719,8 +1707,8 @@ public:
             template <                                                                  \
                 typename U,                                                             \
                 std::enable_if_t<                                                       \
-                    !impl::is_same_or_subclass_of<Object, U> &&                         \
-                    !impl::is_same_or_subclass_of<std::ostream, U> &&                   \
+                    !std::is_base_of_v<Object, U> &&                                    \
+                    !std::is_base_of_v<std::ostream, U> &&                              \
                     !impl::is_std_iterator<U>,                                          \
                 int> = 0                                                                \
             >                                                                           \
@@ -1999,19 +1987,17 @@ public:
     constexpr bool is_reverse_iterable = false;
     template <typename T>
     constexpr bool is_reverse_iterable<
-        T,
-        std::enable_if_t<impl::is_same_or_subclass_of<Tuple, T>>
+        T, std::enable_if_t<std::is_base_of_v<Tuple, T>>
     > = true;
     template <typename T>
     constexpr bool is_reverse_iterable<
-        T,
-        std::enable_if_t<impl::is_same_or_subclass_of<List, T>>
+        T, std::enable_if_t<std::is_base_of_v<List, T>>
     > = true;
 
     /* All new subclasses of py::Object must define these constructors, which are taken
     directly from PYBIND11_OBJECT_COMMON and cover the basic object creation and
     conversion logic.
-    
+
     The check() function will be called whenever a generic Object wrapper is implicitly
     converted to this type.  It should return true if and only if the object has a
     compatible type, and it will never be passed a null pointer.  If it returns false,
@@ -2050,8 +2036,8 @@ public:
         /* Inherit tagged borrow/steal and copy/move constructors. */                   \
         cls(Handle h, const borrowed_t& t) : parent(h, t) {}                            \
         cls(Handle h, const stolen_t& t) : parent(h, t) {}                              \
-        cls(const cls& value) : parent(value.ptr(), borrowed_t{}) {}                    \
-        cls(cls&& value) : parent(value.release(), stolen_t{}) {}                       \
+        cls(const cls& value) : parent(value) {}                                        \
+        cls(cls&& value) : parent(std::move(value)) {}                                  \
                                                                                         \
         /* Convert an accessor into this type. */                                       \
         template <typename Policy>                                                      \
@@ -2064,19 +2050,28 @@ public:
         }                                                                               \
                                                                                         \
         /* Trigger implicit conversions to this type via the assignment operator. */    \
-        template <typename T, typename enable = std::enable_if_t<std::is_convertible_v<T, cls>>>\
+        template <                                                                      \
+            typename T,                                                                 \
+            typename enable = std::enable_if_t<std::is_convertible_v<T, cls>>           \
+        >                                                                               \
         cls& operator=(T&& value) {                                                     \
             if constexpr (std::is_same_v<cls, std::decay_t<T>>) {                       \
-                if (this == &value) {                                                   \
-                    return *this;                                                       \
+                if (this != &value) {                                                   \
+                    parent::operator=(std::forward<T>(value));                          \
                 }                                                                       \
+            } else if constexpr (impl::has_conversion_operator<std::decay_t<T>, cls>) { \
+                parent::operator=(value.operator cls());                                \
+            } else {                                                                    \
+                parent::operator=(cls(std::forward<T>(value)));                         \
             }                                                                           \
-            parent::operator=(cls(std::forward<T>(value)));                             \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
         /* Delete type narrowing operator inherited from Object. */                     \
-        template <typename T, typename enable = std::enable_if_t<std::is_base_of_v<Object, T>>>\
+        template <                                                                      \
+            typename T,                                                                 \
+            typename enable = std::enable_if_t<std::is_base_of_v<Object, T>>            \
+        >                                                                               \
         operator T() const = delete;                                                    \
                                                                                         \
         /* Make sure these operators don't get lost during overloads. */                \

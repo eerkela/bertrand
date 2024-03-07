@@ -1,4 +1,4 @@
-#ifndef BERTRAND_PYTHON_INCLUDED
+#if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
 
@@ -19,29 +19,29 @@ class Int : public Object {
     using Base = Object;
 
     template <typename T>
-    static constexpr bool constructor1 = impl::is_bool_like<T> && !impl::is_python<T>;
+    static constexpr bool constructor1 = impl::bool_like<T> && !impl::is_python<T>;
     template <typename T>
-    static constexpr bool constructor2 = impl::is_bool_like<T> && impl::is_python<T>;
+    static constexpr bool constructor2 = impl::bool_like<T> && impl::is_python<T>;
     template <typename T>
-    static constexpr bool constructor3 = impl::is_int_like<T> && !impl::is_python<T>;
+    static constexpr bool constructor3 = impl::int_like<T> && !impl::is_python<T>;
     template <typename T>
-    static constexpr bool constructor4 = impl::is_float_like<T> && !impl::is_python<T>;
+    static constexpr bool constructor4 = impl::float_like<T> && !impl::is_python<T>;
     template <typename T>
-    static constexpr bool constructor5 = impl::is_float_like<T> && impl::is_python<T>;
+    static constexpr bool constructor5 = impl::float_like<T> && impl::is_python<T>;
     template <typename T>
     static constexpr bool constructor6 = (
-        !impl::is_bool_like<T> &&
-        !impl::is_int_like<T> &&
-        !impl::is_float_like<T> &&
-        !impl::is_str_like<T> &&
+        !impl::bool_like<T> &&
+        !impl::int_like<T> &&
+        !impl::float_like<T> &&
+        !impl::str_like<T> &&
         !impl::is_python<T>
     );
     template <typename T>
     static constexpr bool constructor7 = (
-        !impl::is_bool_like<T> &&
-        !impl::is_int_like<T> &&
-        !impl::is_float_like<T> &&
-        !impl::is_str_like<T> &&
+        !impl::bool_like<T> &&
+        !impl::int_like<T> &&
+        !impl::float_like<T> &&
+        !impl::str_like<T> &&
         impl::is_python<T>
     );
 
@@ -95,7 +95,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_int_like<T>; }
+    static constexpr bool check() { return impl::int_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -190,7 +190,7 @@ public:
     /* Explicitly convert a Python string with an optional base into a py::Int. */
     template <
         typename T,
-        std::enable_if_t<impl::is_python<T> && impl::is_str_like<T>, int> = 0
+        std::enable_if_t<impl::is_python<T> && impl::str_like<T>, int> = 0
     >
     explicit Int(const T& str, int base = 0);
 
@@ -199,7 +199,10 @@ public:
     ///////////////////////////
 
     /* Implicitly convert a Python int into a C++ integer. */
-    template <typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
+    template <
+        typename T,
+        std::enable_if_t<!impl::is_python<T> && impl::int_like<T>, int> = 0
+    >
     inline operator T() const {
         if constexpr (sizeof(T) <= sizeof(long)) {
             if constexpr (std::is_signed_v<T>) {
@@ -250,6 +253,42 @@ public:
     template <typename T>
     auto contains(const T& value) const = delete;
 
+    inline Int& operator++() {
+        static const Int one(1);
+        PyObject* result = PyNumber_InPlaceAdd(m_ptr, one.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        PyObject* temp = m_ptr;
+        m_ptr = result;
+        Py_XDECREF(temp);
+        return *this;
+    }
+
+    inline Int operator++(int) {
+        Int result = *this;
+        ++(*this);
+        return result;
+    }
+
+    inline Int& operator--() {
+        static const Int one(1);
+        PyObject* result = PyNumber_InPlaceSubtract(m_ptr, one.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        PyObject* temp = m_ptr;
+        m_ptr = result;
+        Py_XDECREF(temp);
+        return *this;
+    }
+
+    inline Int operator--(int) {
+        Int result = *this;
+        --(*this);
+        return result;
+    }
+
 };
 
 
@@ -276,38 +315,38 @@ struct Int::__invert__<> : impl::Returns<Int> {};
 template <>
 struct Int::__lt__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Int::__lt__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<bool> {};
+struct Int::__lt__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<bool> {};
 template <typename T>
-struct Int::__lt__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
+struct Int::__lt__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<bool> {};
 template <typename T>
-struct Int::__lt__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
+struct Int::__lt__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Int::__le__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Int::__le__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<bool> {};
+struct Int::__le__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<bool> {};
 template <typename T>
-struct Int::__le__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
+struct Int::__le__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<bool> {};
 template <typename T>
-struct Int::__le__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
+struct Int::__le__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Int::__ge__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Int::__ge__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<bool> {};
+struct Int::__ge__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<bool> {};
 template <typename T>
-struct Int::__ge__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
+struct Int::__ge__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<bool> {};
 template <typename T>
-struct Int::__ge__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
+struct Int::__ge__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct Int::__gt__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct Int::__gt__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<bool> {};
+struct Int::__gt__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<bool> {};
 template <typename T>
-struct Int::__gt__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<bool> {};
+struct Int::__gt__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<bool> {};
 template <typename T>
-struct Int::__gt__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<bool> {};
+struct Int::__gt__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<bool> {};
 
 
 ////////////////////////////////
@@ -318,92 +357,92 @@ struct Int::__gt__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<
 template <>
 struct Int::__add__<Object> : impl::Returns<Object> {};
 template <typename T>
-struct Int::__add__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__add__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__add__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__add__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__add__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Float> {};
+struct Int::__add__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<Float> {};
 template <typename T>
-struct Int::__add__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+struct Int::__add__<T, std::enable_if_t<impl::complex_like<T>>> : impl::Returns<Complex> {};
 
 template <>
 struct Int::__sub__<Object> : impl::Returns<Object> {};
 template <typename T>
-struct Int::__sub__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__sub__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__sub__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__sub__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__sub__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Float> {};
+struct Int::__sub__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<Float> {};
 template <typename T>
-struct Int::__sub__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+struct Int::__sub__<T, std::enable_if_t<impl::complex_like<T>>> : impl::Returns<Complex> {};
 
 template <>
 struct Int::__mul__<Object> : impl::Returns<Object> {};
 template <typename T>
-struct Int::__mul__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__mul__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__mul__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__mul__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__mul__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Float> {};
+struct Int::__mul__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<Float> {};
 template <typename T>
-struct Int::__mul__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+struct Int::__mul__<T, std::enable_if_t<impl::complex_like<T>>> : impl::Returns<Complex> {};
 
 template <>
 struct Int::__truediv__<Object> : impl::Returns<Object> {};
 template <typename T>
-struct Int::__truediv__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Float> {};
+struct Int::__truediv__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Float> {};
 template <typename T>
-struct Int::__truediv__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Float> {};
+struct Int::__truediv__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Float> {};
 template <typename T>
-struct Int::__truediv__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Float> {};
+struct Int::__truediv__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<Float> {};
 template <typename T>
-struct Int::__truediv__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+struct Int::__truediv__<T, std::enable_if_t<impl::complex_like<T>>> : impl::Returns<Complex> {};
 
 template <>
 struct Int::__mod__<Object> : impl::Returns<Object> {};
 template <typename T>
-struct Int::__mod__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__mod__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__mod__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__mod__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__mod__<T, std::enable_if_t<impl::is_float_like<T>>> : impl::Returns<Float> {};
+struct Int::__mod__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<Float> {};
 // template <typename T>    <-- Disabled in Python
-// struct Int::__mod__<T, std::enable_if_t<impl::is_complex_like<T>>> : impl::Returns<Complex> {};
+// struct Int::__mod__<T, std::enable_if_t<impl::complex_like<T>>> : impl::Returns<Complex> {};
 
 template <>
 struct Int::__lshift__<Object> : impl::Returns<Object> {};
 template <typename T>
-struct Int::__lshift__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__lshift__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__lshift__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__lshift__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 
 template <>
 struct Int::__rshift__<Object> : impl::Returns<Object> {};
 template <typename T>
-struct Int::__rshift__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__rshift__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__rshift__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__rshift__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 
 template <>
 struct Int::__and__<Object> : impl::Returns<Object> {};
 template <typename T>
-struct Int::__and__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__and__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__and__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__and__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 
 template <>
 struct Int::__or__<Object> : impl::Returns<Object> {};
 template <typename T>
-struct Int::__or__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__or__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__or__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__or__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 
 template <>
 struct Int::__xor__<Object> : impl::Returns<Object> {};
 template <typename T>
-struct Int::__xor__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__xor__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__xor__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__xor__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 
 
 /////////////////////////////////
@@ -412,52 +451,52 @@ struct Int::__xor__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<I
 
 
 template <typename T>
-struct Int::__iadd__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__iadd__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__iadd__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__iadd__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 
 template <typename T>
-struct Int::__isub__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__isub__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__isub__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__isub__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 
 template <typename T>
-struct Int::__imul__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__imul__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__imul__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__imul__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 
 // operator/= is not type-safe in C++ because it converts the result to a float.  Use
 // py::Float a = b / c; or py::Int a = py::div(b, c); instead.
 
 template <typename T>
-struct Int::__imod__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__imod__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__imod__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__imod__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 
 template <typename T>
-struct Int::__ilshift__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__ilshift__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__ilshift__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__ilshift__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 
 template <typename T>
-struct Int::__irshift__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__irshift__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__irshift__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__irshift__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 
 template <typename T>
-struct Int::__iand__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__iand__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__iand__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__iand__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 
 template <typename T>
-struct Int::__ior__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__ior__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__ior__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__ior__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 
 template <typename T>
-struct Int::__ixor__<T, std::enable_if_t<impl::is_bool_like<T>>> : impl::Returns<Int> {};
+struct Int::__ixor__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Int> {};
 template <typename T>
-struct Int::__ixor__<T, std::enable_if_t<impl::is_int_like<T>>> : impl::Returns<Int> {};
+struct Int::__ixor__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Int> {};
 
 
 }  // namespace python

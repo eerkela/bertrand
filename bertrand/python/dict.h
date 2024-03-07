@@ -1,4 +1,4 @@
-#ifndef BERTRAND_PYTHON_INCLUDED
+#if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
 
@@ -30,7 +30,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_mappingproxy_like<T>; }
+    static constexpr bool check() { return impl::mappingproxy_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -41,7 +41,7 @@ public:
     /* Explicitly construct a read-only view on an existing dictionary. */
     template <
         typename T,
-        std::enable_if_t<impl::is_python<T> && impl::is_dict_like<T>, int> = 0
+        std::enable_if_t<impl::is_python<T> && impl::dict_like<T>, int> = 0
     >
     explicit MappingProxy(const T& dict) : Base(PyDictProxy_New(dict.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
@@ -115,7 +115,7 @@ public:
 template <>
 struct MappingProxy::__or__<Object> : impl::Returns<Dict> {};
 template <typename T>
-struct MappingProxy::__or__<T, std::enable_if_t<impl::is_dict_like<T>>> : impl::Returns<Dict> {};
+struct MappingProxy::__or__<T, std::enable_if_t<impl::dict_like<T>>> : impl::Returns<Dict> {};
 
 
 /* New subclass of pybind11::object representing a view into the keys of a dictionary
@@ -135,7 +135,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_same_or_subclass_of<KeysView, T>; }
+    static constexpr bool check() { return std::is_base_of_v<KeysView, T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -146,7 +146,7 @@ public:
     /* Explicitly create a keys view on an existing dictionary. */
     template <
         typename T,
-        std::enable_if_t<impl::is_python<T> && impl::is_dict_like<T>, int> = 0
+        std::enable_if_t<impl::is_python<T> && impl::dict_like<T>, int> = 0
     >
     explicit KeysView(const T& dict) :
         Base(dict.attr("keys")().release(), stolen_t{})
@@ -236,42 +236,42 @@ public:
 template <>
 struct KeysView::__lt__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct KeysView::__lt__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<bool> {};
+struct KeysView::__lt__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct KeysView::__le__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct KeysView::__le__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<bool> {};
+struct KeysView::__le__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct KeysView::__ge__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct KeysView::__ge__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<bool> {};
+struct KeysView::__ge__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct KeysView::__gt__<Object> : impl::Returns<bool> {};
 template <typename T>
-struct KeysView::__gt__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<bool> {};
+struct KeysView::__gt__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
 
 template <>
 struct KeysView::__or__<Object> : impl::Returns<Set> {};
 template <typename T>
-struct KeysView::__or__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<Set> {};
+struct KeysView::__or__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set> {};
 
 template <>
 struct KeysView::__and__<Object> : impl::Returns<Set> {};
 template <typename T>
-struct KeysView::__and__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<Set> {};
+struct KeysView::__and__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set> {};
 
 template <>
 struct KeysView::__sub__<Object> : impl::Returns<Set> {};
 template <typename T>
-struct KeysView::__sub__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<Set> {};
+struct KeysView::__sub__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set> {};
 
 template <>
 struct KeysView::__xor__<Object> : impl::Returns<Set> {};
 template <typename T>
-struct KeysView::__xor__<T, std::enable_if_t<impl::is_anyset_like<T>>> : impl::Returns<Set> {};
+struct KeysView::__xor__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set> {};
 
 
 /* New subclass of pybind11::object representing a view into the values of a dictionary
@@ -291,7 +291,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_same_or_subclass_of<ValuesView, T>; }
+    static constexpr bool check() { return std::is_base_of_v<ValuesView, T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -302,7 +302,7 @@ public:
     /* Explicitly create a values view on an existing dictionary. */
     template <
         typename T,
-        std::enable_if_t<impl::is_python<T> && impl::is_dict_like<T>, int> = 0
+        std::enable_if_t<impl::is_python<T> && impl::dict_like<T>, int> = 0
     >
     explicit ValuesView(const T& dict) :
         Base(dict.attr("values")().release(), stolen_t{})
@@ -363,7 +363,7 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_same_or_subclass_of<ItemsView, T>; }
+    static constexpr bool check() { return std::is_base_of_v<ItemsView, T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -374,7 +374,7 @@ public:
     /* Explicitly create an items view on an existing dictionary. */
     template <
         typename T,
-        std::enable_if_t<impl::is_python<T> && impl::is_dict_like<T>, int> = 0
+        std::enable_if_t<impl::is_python<T> && impl::dict_like<T>, int> = 0
     >
     explicit ItemsView(const T& dict) :
         Base(dict.attr("items")().release(), stolen_t{})
@@ -430,13 +430,13 @@ class Dict : public Object {
     static constexpr bool constructor1 = !impl::is_python<T> && impl::is_iterable<T>;
     template <typename T>
     static constexpr bool constructor2 =
-        impl::is_python<T> && !impl::is_dict_like<T> && impl::is_iterable<T>;
+        impl::is_python<T> && !impl::dict_like<T> && impl::is_iterable<T>;
 
 public:
     static Type type;
 
     template <typename T>
-    static constexpr bool check() { return impl::is_dict_like<T>; }
+    static constexpr bool check() { return impl::dict_like<T>; }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -525,7 +525,7 @@ public:
     /* Implicitly convert to a C++ dict type. */
     template <
         typename T,
-        std::enable_if_t<!impl::is_python<T> && impl::is_dict_like<T>, int> = 0
+        std::enable_if_t<!impl::is_python<T> && impl::dict_like<T>, int> = 0
     >
     inline operator T() const {
         T result;
@@ -559,7 +559,7 @@ public:
     }
 
     /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
-    template <typename T, std::enable_if_t<impl::is_dict_like<T>, int> = 0>
+    template <typename T, std::enable_if_t<impl::dict_like<T>, int> = 0>
     inline void merge(const T& items) {
         if (PyDict_Merge(this->ptr(), detail::object_or_cast(items).ptr(), 0)) {
             throw error_already_set();
@@ -569,7 +569,7 @@ public:
     /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
     template <
         typename T,
-        std::enable_if_t<!impl::is_dict_like<T> && impl::is_iterable<T>, int> = 0
+        std::enable_if_t<!impl::dict_like<T> && impl::is_iterable<T>, int> = 0
     >
     inline void merge(const T& items) {
         if (PyDict_MergeFromSeq2(this->ptr(), detail::object_or_cast(items).ptr(), 0)) {
@@ -799,7 +799,7 @@ public:
     }
 
     /* Equivalent to Python `dict.update(items)`. */
-    template <typename T, std::enable_if_t<impl::is_dict_like<T>, int> = 0>
+    template <typename T, std::enable_if_t<impl::dict_like<T>, int> = 0>
     inline void update(const T& items) {
         if (PyDict_Merge(this->ptr(), items.ptr(), 1)) {
             throw error_already_set();
@@ -809,7 +809,7 @@ public:
     /* Equivalent to Python `dict.update(items)`. */
     template <
         typename T,
-        std::enable_if_t<!impl::is_dict_like<T> && impl::is_iterable<T>, int> = 0
+        std::enable_if_t<!impl::dict_like<T> && impl::is_iterable<T>, int> = 0
     >
     inline void update(const T& items) {
         if constexpr (impl::is_python<T>) {
@@ -898,12 +898,12 @@ public:
 template <>
 struct Dict::__or__<Object> : impl::Returns<Dict> {};
 template <typename T>
-struct Dict::__or__<T, std::enable_if_t<impl::is_dict_like<T>>> : impl::Returns<Dict> {};
+struct Dict::__or__<T, std::enable_if_t<impl::dict_like<T>>> : impl::Returns<Dict> {};
 
 template <>
 struct Dict::__ior__<Object> : impl::Returns<Dict&> {};
 template <typename T>
-struct Dict::__ior__<T, std::enable_if_t<impl::is_dict_like<T>>> : impl::Returns<Dict&> {};
+struct Dict::__ior__<T, std::enable_if_t<impl::dict_like<T>>> : impl::Returns<Dict&> {};
 
 
 inline Dict MappingProxy::copy() const{
