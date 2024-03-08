@@ -22,7 +22,7 @@ class Round {
     struct RoundTag {};
 
     template <typename T>
-    static constexpr bool PYTHONLIKE = impl::is_python<T>;
+    static constexpr bool PYTHONLIKE = impl::python_like<T>;
 
     template <typename T>
     static constexpr bool INTLIKE = std::is_integral_v<T>;
@@ -719,7 +719,7 @@ public:
 /* Equivalent to Python `abs(obj)`. */
 template <typename T>
 inline auto abs(const T& obj) {
-    if constexpr (impl::is_python<T>) {
+    if constexpr (impl::python_like<T>) {
         PyObject* result = PyNumber_Absolute(obj.ptr());
         if (result == nullptr) {
             throw error_already_set();
@@ -771,7 +771,7 @@ auto divmod(const L& l, const R& r, const Mode& mode = Round::FLOOR) {
 /* Equivalent to Python `base ** exp` (exponentiation). */
 template <typename L, typename R>
 auto pow(const L& base, const R& exp) {
-    if constexpr (impl::is_python<L> || impl::is_python<R>) {
+    if constexpr (impl::python_like<L> || impl::python_like<R>) {
         PyObject* result = PyNumber_Power(
             detail::object_or_cast(base).ptr(),
             detail::object_or_cast(exp).ptr(),
@@ -791,13 +791,13 @@ auto pow(const L& base, const R& exp) {
 template <typename L, typename R, typename E>
 auto pow(const L& base, const R& exp, const E& mod) {
     static_assert(
-        (std::is_integral_v<L> || impl::is_python<L>) &&
-        (std::is_integral_v<R> || impl::is_python<R>) &&
-        (std::is_integral_v<E> || impl::is_python<E>),
+        (std::is_integral_v<L> || impl::python_like<L>) &&
+        (std::is_integral_v<R> || impl::python_like<R>) &&
+        (std::is_integral_v<E> || impl::python_like<E>),
         "pow() 3rd argument not allowed unless all arguments are integers"
     );
 
-    if constexpr (impl::is_python<L> || impl::is_python<R> || impl::is_python<E>) {
+    if constexpr (impl::python_like<L> || impl::python_like<R> || impl::python_like<E>) {
         PyObject* result = PyNumber_Power(
             detail::object_or_cast(base).ptr(),
             detail::object_or_cast(exp).ptr(),
@@ -844,7 +844,7 @@ auto round(const T& n, int digits = 0, const Mode& mode = Round::HALF_EVEN) {
         }
 
     // same for Python integers
-    } else if constexpr (impl::is_python<T>) {
+    } else if constexpr (impl::python_like<T>) {
         // // TODO: uncomment this when all tags have a functional div() method
         // if (PyLong_Check(n.ptr())) {
         //     if (digits >= 0) {

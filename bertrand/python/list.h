@@ -19,7 +19,7 @@ class List : public impl::SequenceOps, public impl::ReverseIterable<List> {
 
     template <typename T>
     static inline PyObject* convert_newref(const T& value) {
-        if constexpr (impl::is_python<T>) {
+        if constexpr (impl::python_like<T>) {
             PyObject* result = value.ptr();
             if (result == nullptr) {
                 result = Py_None;
@@ -36,9 +36,9 @@ class List : public impl::SequenceOps, public impl::ReverseIterable<List> {
 
     template <typename T>
     static constexpr bool constructor2 =
-        impl::is_python<T> && !impl::list_like<T> && impl::is_iterable<T>;
+        impl::python_like<T> && !impl::list_like<T> && impl::is_iterable<T>;
     template <typename T>
-    static constexpr bool constructor1 = !impl::is_python<T> && impl::is_iterable<T>;
+    static constexpr bool constructor1 = !impl::python_like<T> && impl::is_iterable<T>;
 
 public:
     static Type type;
@@ -101,7 +101,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary Python container into a new py::List. */
-    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
+    template <typename T> requires (constructor1<T>)
     explicit List(const T& contents) :
         Base(PySequence_List(contents.ptr()), stolen_t{})
     {
@@ -111,7 +111,7 @@ public:
     }
 
     /* Explicitly unpack a generic C++ container into a new py::List. */
-    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
+    template <typename T> requires (constructor2<T>)
     explicit List(const T& contents) {
         size_t size = 0;
         if constexpr (impl::has_size<T>) {
@@ -205,10 +205,7 @@ public:
 
     /* Implicitly convert a Python list into a C++ vector, deque, list, or forward
     list. */
-    template <
-        typename T,
-        std::enable_if_t<!impl::is_python<T> && impl::list_like<T>, int> = 0
-    >
+    template <typename T> requires (!impl::python_like<T> && impl::list_like<T>)
     inline operator T() const {
         T result;
         if constexpr (impl::has_reserve<T>) {
@@ -267,9 +264,9 @@ public:
     }
 
     /* Equivalent to Python `list.extend(items)`. */
-    template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+    template <impl::is_iterable T>
     inline void extend(const T& items) {
-        if constexpr (impl::is_python<T>) {
+        if constexpr (impl::python_like<T>) {
             this->attr("extend")(detail::object_or_cast(items));
         } else {
             for (auto&& item : items) {
@@ -408,36 +405,41 @@ public:
 };
 
 
-template <>
-struct List::__lt__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct List::__lt__<T, std::enable_if_t<impl::list_like<T>>> : impl::Returns<bool> {};
+namespace impl {
+
 
 template <>
-struct List::__le__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct List::__le__<T, std::enable_if_t<impl::list_like<T>>> : impl::Returns<bool> {};
+struct __lt__<List, Object> : Returns<bool> {};
+template <list_like T>
+struct __lt__<List, T> : Returns<bool> {};
 
 template <>
-struct List::__ge__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct List::__ge__<T, std::enable_if_t<impl::list_like<T>>> : impl::Returns<bool> {};
+struct __le__<List, Object> : Returns<bool> {};
+template <list_like T>
+struct __le__<List, T> : Returns<bool> {};
 
 template <>
-struct List::__gt__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct List::__gt__<T, std::enable_if_t<impl::list_like<T>>> : impl::Returns<bool> {};
+struct __ge__<List, Object> : Returns<bool> {};
+template <list_like T>
+struct __ge__<List, T> : Returns<bool> {};
 
 template <>
-struct List::__add__<Object> : impl::Returns<List> {};
-template <typename T>
-struct List::__add__<T, std::enable_if_t<impl::list_like<T>>> : impl::Returns<List> {};
+struct __gt__<List, Object> : Returns<bool> {};
+template <list_like T>
+struct __gt__<List, T> : Returns<bool> {};
 
 template <>
-struct List::__iadd__<Object> : impl::Returns<List&> {};
-template <typename T>
-struct List::__iadd__<T, std::enable_if_t<impl::list_like<T>>> : impl::Returns<List&> {};
+struct __add__<List, Object> : Returns<List> {};
+template <list_like T>
+struct __add__<List, T> : Returns<List> {};
 
+template <>
+struct __iadd__<List, Object> : Returns<List&> {};
+template <list_like T>
+struct __iadd__<List, T> : Returns<List&> {};
+
+
+}  // namespace impl
 
 }  // namespace python
 }  // namespace bertrand

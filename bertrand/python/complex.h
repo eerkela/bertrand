@@ -20,17 +20,17 @@ class Complex : public Object {
 
     template <typename T>
     static constexpr bool constructor1 = (
-        !impl::is_python<T> && (
+        !impl::python_like<T> && (
             impl::bool_like<T> || impl::int_like<T> || impl::float_like<T>
         )
     );
     template <typename T>
     static constexpr bool constructor2 =
-        !impl::is_python<T> && !constructor1<T> &&
+        !impl::python_like<T> && !constructor1<T> &&
         std::is_convertible_v<T, std::complex<double>>;
     template <typename T>
     static constexpr bool constructor3 =
-        impl::is_python<T> && !impl::complex_like<T>;
+        impl::python_like<T> && !impl::complex_like<T>;
 
 public:
     static Type type;
@@ -63,7 +63,7 @@ public:
 
     /* Explicitly convert a C++ boolean, integer, or float into a py::Complex, using
     the number as a real component. */
-    template <typename Real, std::enable_if_t<constructor1<Real>, int> = 0>
+    template <typename Real> requires (constructor1<Real>)
     explicit Complex(const Real& real) :
         Base(PyComplex_FromDoubles(real, 0.0), stolen_t{})
     {
@@ -74,11 +74,8 @@ public:
 
     /* Explicitly convert a pair of C++ booleans, integers, or floats into a
     py::Complex as separate real and imaginary components. */
-    template <
-        typename Real,
-        typename Imag,
-        std::enable_if_t<constructor1<Real> && constructor1<Imag>, int> = 0
-    >
+    template <typename Real, typename Imag>
+        requires (constructor1<Real> && constructor1<Imag>)
     explicit Complex(const Real& real, const Imag& imag) :
         Base(PyComplex_FromDoubles(real, imag), stolen_t{})
     {
@@ -88,12 +85,12 @@ public:
     }
 
     /* Trigger explicit conversions to std::complex<double>. */
-    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
+    template <typename T> requires (constructor2<T>)
     explicit Complex(const T& value) :
         Complex(static_cast<std::complex<double>>(value)) {}
 
     /* Explicitly convert an arbitrary Python object into a complex number. */
-    template <typename T, std::enable_if_t<constructor3<T>, int> = 0>
+    template <typename T> requires (constructor3<T>)
     explicit Complex(const T& obj) {
         Py_complex complex_struct = PyComplex_AsCComplex(obj.ptr());
         if (complex_struct.real == -1.0 && PyErr_Occurred()) {
@@ -161,6 +158,8 @@ public:
 };
 
 
+namespace impl {
+
 ///////////////////////////////
 ////    UNARY OPERATORS    ////
 ///////////////////////////////
@@ -169,11 +168,11 @@ public:
 // TODO: include __abs__
 
 template <>
-struct Complex::__pos__<> : impl::Returns<Complex> {};
+struct __pos__<Complex> : Returns<Complex> {};
 template <>
-struct Complex::__neg__<> : impl::Returns<Complex> {};
+struct __neg__<Complex> : Returns<Complex> {};
 template <>
-struct Complex::__invert__<> : impl::Returns<Complex> {};
+struct __invert__<Complex> : Returns<Complex> {};
 
 
 ////////////////////////////////
@@ -182,48 +181,48 @@ struct Complex::__invert__<> : impl::Returns<Complex> {};
 
 
 template <>
-struct Complex::__add__<Object> : impl::Returns<Object> {};
-template <typename T>
-struct Complex::__add__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__add__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__add__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__add__<T, std::enable_if_t<impl::complex_like<T>>> : impl::Returns<Complex> {};
+struct __add__<Complex, Object> : Returns<Object> {};
+template <bool_like T>
+struct __add__<Complex, T> : Returns<Complex> {};
+template <int_like T>
+struct __add__<Complex, T> : Returns<Complex> {};
+template <float_like T>
+struct __add__<Complex, T> : Returns<Complex> {};
+template <complex_like T>
+struct __add__<Complex, T> : Returns<Complex> {};
 
 template <>
-struct Complex::__sub__<Object> : impl::Returns<Object> {};
-template <typename T>
-struct Complex::__sub__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__sub__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__sub__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__sub__<T, std::enable_if_t<impl::complex_like<T>>> : impl::Returns<Complex> {};
+struct __sub__<Complex, Object> : Returns<Object> {};
+template <bool_like T>
+struct __sub__<Complex, T> : Returns<Complex> {};
+template <int_like T>
+struct __sub__<Complex, T> : Returns<Complex> {};
+template <float_like T>
+struct __sub__<Complex, T> : Returns<Complex> {};
+template <complex_like T>
+struct __sub__<Complex, T> : Returns<Complex> {};
 
 template <>
-struct Complex::__mul__<Object> : impl::Returns<Object> {};
-template <typename T>
-struct Complex::__mul__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__mul__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__mul__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__mul__<T, std::enable_if_t<impl::complex_like<T>>> : impl::Returns<Complex> {};
+struct __mul__<Complex, Object> : Returns<Object> {};
+template <bool_like T>
+struct __mul__<Complex, T> : Returns<Complex> {};
+template <int_like T>
+struct __mul__<Complex, T> : Returns<Complex> {};
+template <float_like T>
+struct __mul__<Complex, T> : Returns<Complex> {};
+template <complex_like T>
+struct __mul__<Complex, T> : Returns<Complex> {};
 
 template <>
-struct Complex::__truediv__<Object> : impl::Returns<Object> {};
-template <typename T>
-struct Complex::__truediv__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__truediv__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__truediv__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__truediv__<T, std::enable_if_t<impl::complex_like<T>>> : impl::Returns<Complex> {};
+struct __truediv__<Complex, Object> : Returns<Object> {};
+template <bool_like T>
+struct __truediv__<Complex, T> : Returns<Complex> {};
+template <int_like T>
+struct __truediv__<Complex, T> : Returns<Complex> {};
+template <float_like T>
+struct __truediv__<Complex, T> : Returns<Complex> {};
+template <complex_like T>
+struct __truediv__<Complex, T> : Returns<Complex> {};
 
 
 /////////////////////////////////
@@ -231,41 +230,44 @@ struct Complex::__truediv__<T, std::enable_if_t<impl::complex_like<T>>> : impl::
 /////////////////////////////////
 
 
-template <typename T>
-struct Complex::__iadd__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__iadd__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__iadd__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__iadd__<T, std::enable_if_t<impl::complex_like<T>>> : impl::Returns<Complex> {};
+template <bool_like T>
+struct __iadd__<Complex, T> : Returns<Complex> {};
+template <int_like T>
+struct __iadd__<Complex, T> : Returns<Complex> {};
+template <float_like T>
+struct __iadd__<Complex, T> : Returns<Complex> {};
+template <complex_like T>
+struct __iadd__<Complex, T> : Returns<Complex> {};
 
-template <typename T>
-struct Complex::__isub__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__isub__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__isub__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__isub__<T, std::enable_if_t<impl::complex_like<T>>> : impl::Returns<Complex> {};
+template <bool_like T>
+struct __isub__<Complex, T> : Returns<Complex> {};
+template <int_like T>
+struct __isub__<Complex, T> : Returns<Complex> {};
+template <float_like T>
+struct __isub__<Complex, T> : Returns<Complex> {};
+template <complex_like T>
+struct __isub__<Complex, T> : Returns<Complex> {};
 
-template <typename T>
-struct Complex::__imul__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__imul__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__imul__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__imul__<T, std::enable_if_t<impl::complex_like<T>>> : impl::Returns<Complex> {};
+template <bool_like T>
+struct __imul__<Complex, T> : Returns<Complex> {};
+template <int_like T>
+struct __imul__<Complex, T> : Returns<Complex> {};
+template <float_like T>
+struct __imul__<Complex, T> : Returns<Complex> {};
+template <complex_like T>
+struct __imul__<Complex, T> : Returns<Complex> {};
 
-template <typename T>
-struct Complex::__itruediv__<T, std::enable_if_t<impl::bool_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__itruediv__<T, std::enable_if_t<impl::int_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__itruediv__<T, std::enable_if_t<impl::float_like<T>>> : impl::Returns<Complex> {};
-template <typename T>
-struct Complex::__itruediv__<T, std::enable_if_t<impl::complex_like<T>>> : impl::Returns<Complex> {};
+template <bool_like T>
+struct __itruediv__<Complex, T> : Returns<Complex> {};
+template <int_like T>
+struct __itruediv__<Complex, T> : Returns<Complex> {};
+template <float_like T>
+struct __itruediv__<Complex, T> : Returns<Complex> {};
+template <complex_like T>
+struct __itruediv__<Complex, T> : Returns<Complex> {};
+
+
+} // namespace impl
 
 
 }  // namespace bertrand

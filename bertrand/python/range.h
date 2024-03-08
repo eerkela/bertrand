@@ -125,7 +125,7 @@ public:
         return (*this)[Slice(slice)];
     }
 
-    template <typename T, std::enable_if_t<impl::int_like<T>, int> = 0>
+    template <impl::int_like T>
     inline bool contains(const T& item) const {
         int result = PySequence_Contains(this->ptr(), detail::object_or_cast(item).ptr());
         if (result == -1) {

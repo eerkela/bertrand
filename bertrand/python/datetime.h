@@ -96,10 +96,10 @@ namespace impl {
 
         template <typename T>
         static constexpr bool enable_cpp =
-            !is_python<T> && (int_like<T> || float_like<T>);
+            !python_like<T> && (int_like<T> || float_like<T>);
         template <typename T>
         static constexpr bool enable_py =
-            is_python<T> && (int_like<T> || float_like<T>);
+            python_like<T> && (int_like<T> || float_like<T>);
 
         template <typename From>
         class Unit {

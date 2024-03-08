@@ -191,17 +191,12 @@ ACCESSOR_CALL_OPERATOR(ListAccessor, list_accessor)
  */
 
 
-template <
-    typename T,
-    std::enable_if_t<!impl::is_python<T> && impl::is_callable_any<T>, int> = 0
->
+template <typename T> requires (!impl::python_like<T> && impl::is_callable_any<T>)
 inline Object::Object(const T& value) : Base(Function(value).release().ptr(), stolen_t{}) {}
 
 
-template <
-    typename T,
-    std::enable_if_t<impl::is_python<T> && impl::str_like<T>, int> = 0
->
+template <typename T>
+    requires impl::python_like<T> && impl::str_like<T>
 inline Int::Int(const T& str, int base) :
     Base(PyLong_FromUnicodeObject(str.ptr(), base), stolen_t{})
 {
@@ -211,10 +206,8 @@ inline Int::Int(const T& str, int base) :
 }
 
 
-template <
-    typename T,
-    std::enable_if_t<impl::is_python<T> && impl::str_like<T>, int> = 0
->
+template <typename T>
+    requires impl::python_like<T> && impl::str_like<T>
 inline Float::Float(const T& str) : Base(PyFloat_FromString(str.ptr()), stolen_t{}) {
     if (m_ptr == nullptr) {
         throw error_already_set();
@@ -249,6 +242,9 @@ inline void List::sort(const Function& key, const Bool& reverse) {
 /////////////////////////
 ////    OPERATORS    ////
 /////////////////////////
+
+
+// TODO: update with C++20 concepts rather than std::enable_if_t
 
 
 /* By default, all generic operators are disabled for strict subclasses of
@@ -387,7 +383,7 @@ inline Object aiter(const Handle& obj) {
 
 /* Equivalent to Python `all(obj)`, except that it also works on iterable C++
 containers. */
-template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+template <impl::is_iterable T>
 inline bool all(const T& obj) {
     return std::all_of(obj.begin(), obj.end(), [](auto&& item) {
         return static_cast<bool>(item);
@@ -410,7 +406,7 @@ inline Object anext(const Handle& obj, const T& default_value) {
 
 /* Equivalent to Python `any(obj)`, except that it also works on iterable C++
 containers. */
-template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+template <impl::is_iterable T>
 inline bool any(const T& obj) {
     return std::any_of(obj.begin(), obj.end(), [](auto&& item) {
         return static_cast<bool>(item);
@@ -469,7 +465,7 @@ Here's how this function can be used:
 Additionally, `py::callable()` can be used at compile time if the function allows it.
 This is only enabled for C++ functions whose signatures can be fully determined at
 compile time, and will result in compile errors if used on Python objects, which
-require runtime introspection.  Users can refer to py::is_python<> to disambiguate.
+require runtime introspection.  Users can refer to py::python_like<> to disambiguate.
 
     using Return = typename decltype(py::callable<int, int>(func))::Return;
         // gets the hypothetical return type of the function with the given arguments,
@@ -575,7 +571,7 @@ inline const void* id(const T& obj) {
     if constexpr (std::is_pointer_v<T>) {
         return reinterpret_cast<void*>(obj);
 
-    } else if constexpr (impl::is_python<T>) {
+    } else if constexpr (impl::python_like<T>) {
         return reinterpret_cast<void*>(obj.ptr());
 
     } else {
@@ -632,14 +628,14 @@ inline Object next(const Iterator& iter, const Object& default_value) {
 
 
 /* Equivalent to Python `max(obj)`, but also works on iterable C++ containers. */
-template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+template <impl::is_iterable T>
 inline auto max(const T& obj) {
     return *std::max_element(obj.begin(), obj.end());
 }
 
 
 /* Equivalent to Python `min(obj)`, but also works on iterable C++ containers. */
-template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+template <impl::is_iterable T>
 inline auto min(const T& obj) {
     return *std::min_element(obj.begin(), obj.end());
 }
@@ -704,7 +700,7 @@ and generate Python iterators over them.  Note that C++ types as rvalues are not
 allowed, and will trigger a compile-time error. */
 template <typename T>
 inline Iterator reversed(T&& obj) {
-    if constexpr (impl::is_python<std::decay_t<T>>) {
+    if constexpr (impl::python_like<std::decay_t<T>>) {
         return obj.attr("__reversed__")();
     } else {
         static_assert(

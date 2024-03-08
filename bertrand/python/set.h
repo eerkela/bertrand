@@ -39,15 +39,6 @@ namespace impl {
             (insert_from_tuple(result, std::get<N>(tuple)), ...);
         }
 
-        template <typename T>
-        struct is_iterable_struct {
-            static constexpr bool value = impl::is_iterable<T>;
-        };
-
-        template <typename... Args>
-        static constexpr bool all_iterable =
-            std::conjunction_v<is_iterable_struct<std::decay_t<Args>>...>;
-
     public:
         using Base::Base;
 
@@ -56,10 +47,7 @@ namespace impl {
         ///////////////////////////
 
         /* Implicitly convert a py::FrozenSet into a C++ set or unordered_set. */
-        template <
-            typename T,
-            std::enable_if_t<!impl::is_python<T> && impl::anyset_like<T>, int> = 0
-        >
+        template <typename T> requires (!impl::python_like<T> && impl::anyset_like<T>)
         inline operator T() const {
             T result;
             for (auto&& item : *self()) {
@@ -95,9 +83,9 @@ namespace impl {
         }
 
         /* Equivalent to Python `set.isdisjoint(other)`. */
-        template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+        template <impl::is_iterable T>
         inline bool isdisjoint(const T& other) const {
-            if constexpr (impl::is_python<T>) {
+            if constexpr (impl::python_like<T>) {
                 return static_cast<bool>(self()->attr("isdisjoint")(other));
             } else {
                 for (auto&& item : other) {
@@ -121,7 +109,7 @@ namespace impl {
         }
 
         /* Equivalent to Python `set.issubset(other)`. */
-        template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+        template <impl::is_iterable T>
         inline bool issubset(const T& other) const {
             return static_cast<bool>(self()->attr("issubset")(
                 detail::object_or_cast(other)
@@ -135,9 +123,9 @@ namespace impl {
         }
 
         /* Equivalent to Python `set.issuperset(other)`. */
-        template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+        template <impl::is_iterable T>
         inline bool issuperset(const T& other) const {
-            if constexpr (impl::is_python<T>) {
+            if constexpr (impl::python_like<T>) {
                 return static_cast<bool>(self()->attr("issuperset")(other));
             } else {
                 for (auto&& item : other) {
@@ -163,8 +151,8 @@ namespace impl {
         }
 
         /* Equivalent to Python `set.union(*others)`. */
-        template <typename... Args, std::enable_if_t<all_iterable<Args...>, int> = 0>
-        inline Derived union_(Args&&... others) const {
+        template <impl::is_iterable... Args>
+        inline Derived union_(const Args&... others) const {
             return self()->attr("union")(
                 detail::object_or_cast(std::forward<Args>(others))...
             );
@@ -191,8 +179,8 @@ namespace impl {
         }
 
         /* Equivalent to Python `set.intersection(other)`. */
-        template <typename... Args, std::enable_if_t<all_iterable<Args...>, int> = 0>
-        inline Derived intersection(Args&&... others) const {
+        template <impl::is_iterable... Args>
+        inline Derived intersection(const Args&... others) const {
             return self()->attr("intersection")(
                 detail::object_or_cast(std::forward<Args>(others))...
             );
@@ -223,8 +211,8 @@ namespace impl {
         }
 
         /* Equivalent to Python `set.difference(other)`. */
-        template <typename... Args, std::enable_if_t<all_iterable<Args...>, int> = 0>
-        inline Derived difference(Args&&... others) const {
+        template <impl::is_iterable... Args>
+        inline Derived difference(const Args&... others) const {
             return self()->attr("difference")(
                 detail::object_or_cast(std::forward<Args>(others))...
             );
@@ -253,7 +241,7 @@ namespace impl {
         }
 
         /* Equivalent to Python `set.symmetric_difference(other)`. */
-        template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+        template <impl::is_iterable T>
         inline Derived symmetric_difference(const T& other) const {
             return self()->attr("symmetric_difference")(detail::object_or_cast(other));
         }
@@ -356,9 +344,9 @@ class FrozenSet : public impl::ISet<FrozenSet> {
 
     template <typename T>
     static constexpr bool constructor1 =
-        impl::is_python<T> && !impl::frozenset_like<T> && impl::is_iterable<T>;
+        impl::python_like<T> && !impl::frozenset_like<T> && impl::is_iterable<T>;
     template <typename T>
-    static constexpr bool constructor2 = !impl::is_python<T> && impl::is_iterable<T>;
+    static constexpr bool constructor2 = !impl::python_like<T> && impl::is_iterable<T>;
 
 public:
     static Type type;
@@ -399,7 +387,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary Python container into a new py::FrozenSet. */
-    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
+    template <typename T> requires (constructor1<T>)
     explicit FrozenSet(const T& contents) :
         Base(PyFrozenSet_New(contents.ptr()), stolen_t{})
     {
@@ -409,7 +397,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary C++ container into a new py::FrozenSet. */
-    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
+    template <typename T> requires (constructor2<T>)
     explicit FrozenSet(const T& container) {
         m_ptr = PyFrozenSet_New(nullptr);
         if (m_ptr == nullptr) {
@@ -431,11 +419,7 @@ public:
     }
 
     /* Explicitly unpack a std::pair into a py::FrozenSet. */
-    template <
-        typename First,
-        typename Second,
-        std::enable_if_t<impl::is_hashable<First> && impl::is_hashable<Second>, int> = 0
-    >
+    template <impl::is_hashable First, impl::is_hashable Second>
     explicit FrozenSet(const std::pair<First, Second>& pair) :
         Base(PyFrozenSet_New(nullptr), stolen_t{})
     {
@@ -456,10 +440,7 @@ public:
     }
 
     /* Explicitly unpack a std::tuple into a py::FrozenSet. */
-    template <
-        typename... Args,
-        std::enable_if_t<(impl::is_hashable<Args> && ...), int> = 0
-    >
+    template <impl::is_hashable... Args>
     explicit FrozenSet(const std::tuple<Args...>& tuple) :
         Base(PyFrozenSet_New(nullptr), stolen_t{})
     {
@@ -501,65 +482,69 @@ public:
 };
 
 
-template <>
-struct FrozenSet::__lt__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct FrozenSet::__lt__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
+namespace impl {
 
 template <>
-struct FrozenSet::__le__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct FrozenSet::__le__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
+struct __lt__<FrozenSet, Object> : Returns<bool> {};
+template <anyset_like T>
+struct __lt__<FrozenSet, T> : Returns<bool> {};
 
 template <>
-struct FrozenSet::__ge__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct FrozenSet::__ge__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
+struct __le__<FrozenSet, Object> : Returns<bool> {};
+template <anyset_like T>
+struct __le__<FrozenSet, T> : Returns<bool> {};
 
 template <>
-struct FrozenSet::__gt__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct FrozenSet::__gt__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
+struct __ge__<FrozenSet, Object> : Returns<bool> {};
+template <anyset_like T>
+struct __ge__<FrozenSet, T> : Returns<bool> {};
 
 template <>
-struct FrozenSet::__or__<Object> : impl::Returns<FrozenSet> {};
-template <typename T>
-struct FrozenSet::__or__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<FrozenSet> {};
+struct __gt__<FrozenSet, Object> : Returns<bool> {};
+template <anyset_like T>
+struct __gt__<FrozenSet, T> : Returns<bool> {};
 
 template <>
-struct FrozenSet::__and__<Object> : impl::Returns<FrozenSet> {};
-template <typename T>
-struct FrozenSet::__and__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<FrozenSet> {};
+struct __or__<FrozenSet, Object> : Returns<FrozenSet> {};
+template <anyset_like T>
+struct __or__<FrozenSet, T> : Returns<FrozenSet> {};
 
 template <>
-struct FrozenSet::__sub__<Object> : impl::Returns<FrozenSet> {};
-template <typename T>
-struct FrozenSet::__sub__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<FrozenSet> {};
+struct __and__<FrozenSet, Object> : Returns<FrozenSet> {};
+template <anyset_like T>
+struct __and__<FrozenSet, T> : Returns<FrozenSet> {};
 
 template <>
-struct FrozenSet::__xor__<Object> : impl::Returns<FrozenSet> {};
-template <typename T>
-struct FrozenSet::__xor__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<FrozenSet> {};
+struct __sub__<FrozenSet, Object> : Returns<FrozenSet> {};
+template <anyset_like T>
+struct __sub__<FrozenSet, T> : Returns<FrozenSet> {};
 
 template <>
-struct FrozenSet::__ior__<Object> : impl::Returns<FrozenSet&> {};
-template <typename T>
-struct FrozenSet::__ior__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<FrozenSet&> {};
+struct __xor__<FrozenSet, Object> : Returns<FrozenSet> {};
+template <anyset_like T>
+struct __xor__<FrozenSet, T> : Returns<FrozenSet> {};
 
 template <>
-struct FrozenSet::__iand__<Object> : impl::Returns<FrozenSet&> {};
-template <typename T>
-struct FrozenSet::__iand__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<FrozenSet&> {};
+struct __ior__<FrozenSet, Object> : Returns<FrozenSet&> {};
+template <anyset_like T>
+struct __ior__<FrozenSet, T> : Returns<FrozenSet&> {};
 
 template <>
-struct FrozenSet::__isub__<Object> : impl::Returns<FrozenSet&> {};
-template <typename T>
-struct FrozenSet::__isub__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<FrozenSet&> {};
+struct __iand__<FrozenSet, Object> : Returns<FrozenSet&> {};
+template <anyset_like T>
+struct __iand__<FrozenSet, T> : Returns<FrozenSet&> {};
 
 template <>
-struct FrozenSet::__ixor__<Object> : impl::Returns<FrozenSet&> {};
-template <typename T>
-struct FrozenSet::__ixor__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<FrozenSet&> {};
+struct __isub__<FrozenSet, Object> : Returns<FrozenSet&> {};
+template <anyset_like T>
+struct __isub__<FrozenSet, T> : Returns<FrozenSet&> {};
+
+template <>
+struct __ixor__<FrozenSet, Object> : Returns<FrozenSet&> {};
+template <anyset_like T>
+struct __ixor__<FrozenSet, T> : Returns<FrozenSet&> {};
+
+} // namespace impl
 
 
 /* Wrapper around pybind11::set that allows it to be directly initialized using
@@ -575,9 +560,9 @@ class Set : public impl::ISet<Set> {
 
     template <typename T>
     static constexpr bool constructor1 =
-        impl::is_python<T> && !impl::set_like<T> && impl::is_iterable<T>;
+        impl::python_like<T> && !impl::set_like<T> && impl::is_iterable<T>;
     template <typename T>
-    static constexpr bool constructor2 = !impl::is_python<T> && impl::is_iterable<T>;
+    static constexpr bool constructor2 = !impl::python_like<T> && impl::is_iterable<T>;
 
 public:
     static Type type;
@@ -618,7 +603,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary Python container into a new py::Set. */
-    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
+    template <typename T> requires (constructor1<T>)
     explicit Set(const T& contents) :
         Base(PySet_New(contents.ptr()), stolen_t{})
     {
@@ -628,7 +613,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary C++ container into a new py::Set. */
-    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
+    template <typename T> requires (constructor2<T>)
     explicit Set(const T& contents) : Base(PySet_New(nullptr), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -649,11 +634,7 @@ public:
     }
 
     /* Explicitly unpack a std::pair into a py::Set. */
-    template <
-        typename First,
-        typename Second,
-        std::enable_if_t<impl::is_hashable<First> && impl::is_hashable<Second>, int> = 0
-    >
+    template <impl::is_hashable First, impl::is_hashable Second>
     explicit Set(const std::pair<First, Second>& pair) :
         Base(PySet_New(nullptr), stolen_t{})
     {
@@ -674,10 +655,7 @@ public:
     }
 
     /* Explicitly unpack a std::tuple into a py::Set. */
-    template <
-        typename... Args,
-        std::enable_if_t<(impl::is_hashable<Args> && ...), int> = 0
-    >
+    template <impl::is_hashable... Args>
     explicit Set(const std::tuple<Args...>& tuple) :
         Base(PySet_New(nullptr), stolen_t{})
     {
@@ -697,7 +675,7 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `set.add(key)`. */
-    template <typename T, std::enable_if_t<impl::is_hashable<T>, int> = 0>
+    template <impl::is_hashable T>
     inline void add(const T& key) {
         if (PySet_Add(this->ptr(), detail::object_or_cast(key).ptr())) {
             throw error_already_set();
@@ -705,7 +683,7 @@ public:
     }
 
     /* Equivalent to Python `set.remove(key)`. */
-    template <typename T, std::enable_if_t<impl::is_hashable<T>, int> = 0>
+    template <impl::is_hashable T>
     inline void remove(const T& key) {
         Object obj = detail::object_or_cast(key);
         int result = PySet_Discard(this->ptr(), obj.ptr());
@@ -717,7 +695,7 @@ public:
     }
 
     /* Equivalent to Python `set.discard(key)`. */
-    template <typename T, std::enable_if_t<impl::is_hashable<T>, int> = 0>
+    template <impl::is_hashable T>
     inline void discard(const T& key) {
         if (PySet_Discard(this->ptr(), detail::object_or_cast(key).ptr()) == -1) {
             throw error_already_set();
@@ -741,8 +719,8 @@ public:
     }
 
     /* Equivalent to Python `set.update(*others)`. */
-    template <typename... Args, std::enable_if_t<Base::all_iterable<Args...>, int> = 0>
-    inline void update(Args&&... others) {
+    template <impl::is_iterable... Args>
+    inline void update(const Args&... others) {
         this->attr("update")(
             detail::object_or_cast(std::forward<Args>(others))...
         );
@@ -756,8 +734,8 @@ public:
     }
 
     /* Equivalent to Python `set.intersection_update(*others)`. */
-    template <typename... Args, std::enable_if_t<Base::all_iterable<Args...>, int> = 0>
-    inline void intersection_update(Args&&... others) {
+    template <impl::is_iterable... Args>
+    inline void intersection_update(const Args&... others) {
         this->attr("intersection_update")(
             detail::object_or_cast(std::forward<Args>(others))...
         );
@@ -771,8 +749,8 @@ public:
     }
 
     /* Equivalent to Python `set.difference_update(*others)`. */
-    template <typename... Args, std::enable_if_t<Base::all_iterable<Args...>, int> = 0>
-    inline void difference_update(Args&&... others) {
+    template <impl::is_iterable... Args>
+    inline void difference_update(const Args&... others) {
         this->attr("difference_update")(
             detail::object_or_cast(std::forward<Args>(others))...
         );
@@ -788,7 +766,7 @@ public:
     }
 
     /* Equivalent to Python `set.symmetric_difference_update(other)`. */
-    template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+    template <impl::is_iterable T>
     inline void symmetric_difference_update(const T& other) {
         this->attr("symmetric_difference_update")(detail::object_or_cast(other));
     }
@@ -837,66 +815,71 @@ public:
 };
 
 
-template <>
-struct Set::__lt__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Set::__lt__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
+namespace impl {
+
 
 template <>
-struct Set::__le__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Set::__le__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
+struct __lt__<Set, Object> : Returns<bool> {};
+template <anyset_like T>
+struct __lt__<Set, T> : Returns<bool> {};
 
 template <>
-struct Set::__ge__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Set::__ge__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
+struct __le__<Set, Object> : Returns<bool> {};
+template <anyset_like T>
+struct __le__<Set, T> : Returns<bool> {};
 
 template <>
-struct Set::__gt__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Set::__gt__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
+struct __ge__<Set, Object> : Returns<bool> {};
+template <anyset_like T>
+struct __ge__<Set, T> : Returns<bool> {};
 
 template <>
-struct Set::__or__<Object> : impl::Returns<Set> {};
-template <typename T>
-struct Set::__or__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set> {};
+struct __gt__<Set, Object> : Returns<bool> {};
+template <anyset_like T>
+struct __gt__<Set, T> : Returns<bool> {};
 
 template <>
-struct Set::__and__<Object> : impl::Returns<Set> {};
-template <typename T>
-struct Set::__and__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set> {};
+struct __or__<Set, Object> : Returns<Set> {};
+template <anyset_like T>
+struct __or__<Set, T> : Returns<Set> {};
 
 template <>
-struct Set::__sub__<Object> : impl::Returns<Set> {};
-template <typename T>
-struct Set::__sub__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set> {};
+struct __and__<Set, Object> : Returns<Set> {};
+template <anyset_like T>
+struct __and__<Set, T> : Returns<Set> {};
 
 template <>
-struct Set::__xor__<Object> : impl::Returns<Set> {};
-template <typename T>
-struct Set::__xor__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set> {};
+struct __sub__<Set, Object> : Returns<Set> {};
+template <anyset_like T>
+struct __sub__<Set, T> : Returns<Set> {};
 
 template <>
-struct Set::__ior__<Object> : impl::Returns<Set&> {};
-template <typename T>
-struct Set::__ior__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set&> {};
+struct __xor__<Set, Object> : Returns<Set> {};
+template <anyset_like T>
+struct __xor__<Set, T> : Returns<Set> {};
 
 template <>
-struct Set::__iand__<Object> : impl::Returns<Set&> {};
-template <typename T>
-struct Set::__iand__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set&> {};
+struct __ior__<Set, Object> : Returns<Set&> {};
+template <anyset_like T>
+struct __ior__<Set, T> : Returns<Set&> {};
 
 template <>
-struct Set::__isub__<Object> : impl::Returns<Set&> {};
-template <typename T>
-struct Set::__isub__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set&> {};
+struct __iand__<Set, Object> : Returns<Set&> {};
+template <anyset_like T>
+struct __iand__<Set, T> : Returns<Set&> {};
 
 template <>
-struct Set::__ixor__<Object> : impl::Returns<Set&> {};
-template <typename T>
-struct Set::__ixor__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set&> {};
+struct __isub__<Set, Object> : Returns<Set&> {};
+template <anyset_like T>
+struct __isub__<Set, T> : Returns<Set&> {};
 
+template <>
+struct __ixor__<Set, Object> : Returns<Set&> {};
+template <anyset_like T>
+struct __ixor__<Set, T> : Returns<Set&> {};
+
+
+}  // namespace impl
 
 }  // namespace python
 }  // namespace bertrand

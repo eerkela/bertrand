@@ -70,12 +70,12 @@ class Str : public impl::SequenceOps {
 
     template <typename T>
     static constexpr bool constructor1 = 
-        !impl::is_python<T> && std::is_convertible_v<T, std::string>;
+        !impl::python_like<T> && std::is_convertible_v<T, std::string>;
     template <typename T>
     static constexpr bool constructor2 =
-        !impl::is_python<T> && !std::is_convertible_v<T, std::string>;
+        !impl::python_like<T> && !std::is_convertible_v<T, std::string>;
     template <typename T>
-    static constexpr bool constructor3 = impl::is_python<T>;
+    static constexpr bool constructor3 = impl::python_like<T>;
 
 public:
     static Type type;
@@ -122,11 +122,11 @@ public:
     }
 
     /* Trigger implicit C++ conversions to std::string. */
-    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
+    template <typename T> requires (constructor1<T>)
     explicit Str(const T& string) : Str(static_cast<std::string>(string)) {}
 
     /* Explicitly convert an arbitrary C++ object into a py::Str representation. */
-    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
+    template <typename T> requires (constructor2<T>)
     explicit Str(const T& obj) : Base(PyObject_Str(pybind11::cast(obj).ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -134,7 +134,7 @@ public:
     }
 
     /* Explicitly convert an arbitrary Python object into a py::Str representation. */
-    template <typename T, std::enable_if_t<constructor3<T>, int> = 0>
+    template <typename T> requires (constructor3<T>)
     explicit Str(const T& obj) : Base(PyObject_Str(obj.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -172,12 +172,8 @@ public:
 
     /* Construct a unicode string from a printf-style format string.  See
     Str(const char*, ...) for more details. */
-    template <
-        typename T,
-        typename First,
-        typename... Rest,
-        std::enable_if_t<impl::is_python<T> && impl::str_like<T>, int> = 0
-    >
+    template <typename T, typename First, typename... Rest>
+        requires (impl::python_like<T> && impl::str_like<T>)
     explicit Str(const T& format, First&& first, Rest&&... rest) : Str(
         static_cast<std::string>(format),
         std::forward<First>(first),
@@ -367,7 +363,7 @@ public:
     }
 
     /* Equivalent to Python `str.format_map(mapping)`. */
-    template <typename T, std::enable_if_t<impl::dict_like<T>, int> = 0>
+    template <impl::dict_like T>
     inline Str format_map(const T& mapping) const {
         return reinterpret_steal<Str>(
             this->attr("format_map")(detail::object_or_cast(mapping)).release()
@@ -463,7 +459,7 @@ public:
     }
 
     /* Equivalent of Python `str.join(iterable)`. */
-    template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+    template <impl::is_iterable T>
     inline Str join(const T& iterable) const {
         PyObject* result = PyUnicode_Join(
             this->ptr(),
@@ -774,35 +770,39 @@ public:
 };
 
 
-template <>
-struct Str::__lt__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Str::__lt__<T, std::enable_if_t<impl::str_like<T>>> : impl::Returns<bool> {};
+namespace impl {
 
 template <>
-struct Str::__le__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Str::__le__<T, std::enable_if_t<impl::str_like<T>>> : impl::Returns<bool> {};
+struct __lt__<Str, Object> : Returns<bool> {};
+template <str_like T>
+struct __lt__<Str, T> : Returns<bool> {};
 
 template <>
-struct Str::__ge__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Str::__ge__<T, std::enable_if_t<impl::str_like<T>>> : impl::Returns<bool> {};
+struct __le__<Str, Object> : Returns<bool> {};
+template <str_like T>
+struct __le__<Str, T> : Returns<bool> {};
 
 template <>
-struct Str::__gt__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Str::__gt__<T, std::enable_if_t<impl::str_like<T>>> : impl::Returns<bool> {};
+struct __ge__<Str, Object> : Returns<bool> {};
+template <str_like T>
+struct __ge__<Str, T> : Returns<bool> {};
 
 template <>
-struct Str::__add__<Object> : impl::Returns<Str> {};
-template <typename T>
-struct Str::__add__<T, std::enable_if_t<impl::str_like<T>>> : impl::Returns<Str> {};
+struct __gt__<Str, Object> : Returns<bool> {};
+template <str_like T>
+struct __gt__<Str, T> : Returns<bool> {};
 
 template <>
-struct Str::__iadd__<Object> : impl::Returns<Str&> {};
-template <typename T>
-struct Str::__iadd__<T, std::enable_if_t<impl::str_like<T>>> : impl::Returns<Str&> {};
+struct __add__<Str, Object> : Returns<Str> {};
+template <str_like T>
+struct __add__<Str, T> : Returns<Str> {};
+
+template <>
+struct __iadd__<Str, Object> : Returns<Str&> {};
+template <str_like T>
+struct __iadd__<Str, T> : Returns<Str&> {};
+
+} // namespace impl
 
 
 /* Bertrand equivalent for pybind11::bytes.

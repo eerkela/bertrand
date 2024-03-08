@@ -396,7 +396,7 @@ public:
         }
 
         /* Extract several capture groups at once. */
-        template <typename... Args, std::enable_if_t<(sizeof...(Args) > 1), int> = 0>
+        template <typename... Args> requires (sizeof...(Args) > 1)
         inline GroupVec group(Args&&... args) const noexcept {
             return {group(std::forward<Args>(args))...};
         }

@@ -164,26 +164,30 @@ public:
 };
 
 
-template <>
-struct Slice::__lt__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Slice::__lt__<T, std::enable_if_t<impl::slice_like<T>>> : impl::Returns<bool> {};
+namespace impl {
 
 template <>
-struct Slice::__le__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Slice::__le__<T, std::enable_if_t<impl::slice_like<T>>> : impl::Returns<bool> {};
+struct __lt__<Slice, Object> : Returns<bool> {};
+template <slice_like T>
+struct __lt__<Slice, T> : Returns<bool> {};
 
 template <>
-struct Slice::__ge__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Slice::__ge__<T, std::enable_if_t<impl::slice_like<T>>> : impl::Returns<bool> {};
+struct __le__<Slice, Object> : Returns<bool> {};
+template <slice_like T>
+struct __le__<Slice, T> : Returns<bool> {};
 
 template <>
-struct Slice::__gt__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Slice::__gt__<T, std::enable_if_t<impl::slice_like<T>>> : impl::Returns<bool> {};
+struct __ge__<Slice, Object> : Returns<bool> {};
+template <slice_like T>
+struct __ge__<Slice, T> : Returns<bool> {};
 
+template <>
+struct __gt__<Slice, Object> : Returns<bool> {};
+template <slice_like T>
+struct __gt__<Slice, T> : Returns<bool> {};
+
+
+} // namespace impl
 
 }  // namespace python
 }  // namespace bertrand

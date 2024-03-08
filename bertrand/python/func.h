@@ -562,12 +562,8 @@ public:
     Function() = delete;
 
     /* Implicitly convert a C++ function or callable object into a py::Function. */
-    template <
-        typename T,
-        std::enable_if_t<
-            check<std::decay_t<T>>() && !impl::is_python<std::decay_t<T>>,
-        int> = 0
-    >
+    template <typename T>
+        requires (check<std::decay_t<T>>() && !impl::python_like<std::decay_t<T>>)
     Function(T&& func) :
         Base(pybind11::cpp_function(std::forward<T>(func)).release(), stolen_t{})
     {}

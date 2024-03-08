@@ -20,7 +20,7 @@ class Tuple : public impl::SequenceOps, public impl::ReverseIterable<Tuple> {
 
     template <typename T>
     static inline PyObject* convert_newref(const T& value) {
-        if constexpr (impl::is_python<T>) {
+        if constexpr (impl::python_like<T>) {
             PyObject* result = value.ptr();
             if (result == nullptr) {
                 result = Py_None;
@@ -36,12 +36,12 @@ class Tuple : public impl::SequenceOps, public impl::ReverseIterable<Tuple> {
     }
 
     template <typename T>
-    static constexpr bool constructor1 = impl::is_python<T> && impl::list_like<T>;
+    static constexpr bool constructor1 = impl::python_like<T> && impl::list_like<T>;
     template <typename T>
     static constexpr bool constructor2 =
-        impl::is_python<T> && !impl::list_like<T> && impl::is_iterable<T>;
+        impl::python_like<T> && !impl::list_like<T> && impl::is_iterable<T>;
     template <typename T>
-    static constexpr bool constructor3 = !impl::is_python<T> && impl::is_iterable<T>;
+    static constexpr bool constructor3 = !impl::python_like<T> && impl::is_iterable<T>;
 
 public:
     static Type type;
@@ -104,7 +104,7 @@ public:
     }
 
     /* Explicitly unpack a Python list into a py::Tuple directly using the C API. */
-    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
+    template <typename T> requires (constructor1<T>)
     explicit Tuple(const T& list) : Base(PyList_AsTuple(list.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -112,7 +112,7 @@ public:
     }
 
     /* Explicitly unpack a generic Python container into a py::Tuple. */
-    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
+    template <typename T> requires (constructor2<T>)
     explicit Tuple(const T& contents) :
         Base(PySequence_Tuple(contents.ptr()), stolen_t{})
     {
@@ -122,7 +122,7 @@ public:
     }
 
     /* Explicitly unpack a generic C++ container into a new py::Tuple. */
-    template <typename T, std::enable_if_t<constructor3<T>, int> = 0>
+    template <typename T> requires (constructor3<T>)
     explicit Tuple(const T& contents) {
         size_t size = 0;
         if constexpr (impl::has_size<T>) {
@@ -356,36 +356,40 @@ public:
 };
 
 
-template <>
-struct Tuple::__lt__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Tuple::__lt__<T, std::enable_if_t<impl::tuple_like<T>>> : impl::Returns<bool> {};
+namespace impl {
 
 template <>
-struct Tuple::__le__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Tuple::__le__<T, std::enable_if_t<impl::tuple_like<T>>> : impl::Returns<bool> {};
+struct __lt__<Tuple, Object> : Returns<bool> {};
+template <tuple_like T>
+struct __lt__<Tuple, T> : Returns<bool> {};
 
 template <>
-struct Tuple::__ge__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Tuple::__ge__<T, std::enable_if_t<impl::tuple_like<T>>> : impl::Returns<bool> {};
+struct __le__<Tuple, Object> : Returns<bool> {};
+template <tuple_like T>
+struct __le__<Tuple, T> : Returns<bool> {};
 
 template <>
-struct Tuple::__gt__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct Tuple::__gt__<T, std::enable_if_t<impl::tuple_like<T>>> : impl::Returns<bool> {};
+struct __ge__<Tuple, Object> : Returns<bool> {};
+template <tuple_like T>
+struct __ge__<Tuple, T> : Returns<bool> {};
 
 template <>
-struct Tuple::__add__<Object> : impl::Returns<Tuple> {};
-template <typename T>
-struct Tuple::__add__<T, std::enable_if_t<impl::tuple_like<T>>> : impl::Returns<Tuple> {};
+struct __gt__<Tuple, Object> : Returns<bool> {};
+template <tuple_like T>
+struct __gt__<Tuple, T> : Returns<bool> {};
 
 template <>
-struct Tuple::__iadd__<Object> : impl::Returns<Tuple&> {};
-template <typename T>
-struct Tuple::__iadd__<T, std::enable_if_t<impl::tuple_like<T>>> : impl::Returns<Tuple&> {};
+struct __add__<Tuple, Object> : Returns<Tuple> {};
+template <tuple_like T>
+struct __add__<Tuple, T> : Returns<Tuple> {};
 
+template <>
+struct __iadd__<Tuple, Object> : Returns<Tuple&> {};
+template <tuple_like T>
+struct __iadd__<Tuple, T> : Returns<Tuple&> {};
+
+
+} // namespace impl
 
 }  // namespace python
 }  // namespace bertrand

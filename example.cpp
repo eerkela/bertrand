@@ -90,73 +90,20 @@ namespace py = bertrand::py;
 
 
 
-
-
-template <typename T, typename... Args>
-struct __call__ {
-    static constexpr bool enable = false;
-};
-
-
-template <typename L, typename R>
-struct __add__ {
-    static constexpr bool enable = false;
-};
-
-
-template <typename L, typename R>
-requires __add__<L, R>::enable
-auto operator+(const L& l, const R& r) -> __add__<L, R>::Return {
-    return 1;
-}
-
-
-struct Foo {
-
-    template <typename... Args> requires __call__<Foo, Args...>::enable
-    auto operator()(const Args&... args) const -> __call__<Foo, Args...>::Return {
-        return sizeof...(Args);
-    }
-
-    template <typename T> requires (!__add__<Foo, T>::enable)
-    auto operator+(const T&) const = delete;
-
-};
-
-
-template <py::impl::int_like T>
-struct __call__<Foo, T> : py::impl::Returns<int> {};
-
-
-template <py::impl::float_like T>
-struct __call__<Foo, T> : py::impl::Returns<long long> {};
-
-
-template <py::impl::int_like T1, py::impl::int_like T2>
-struct __call__<Foo, T1, T2> : py::impl::Returns<double> {};
-
-
-template <py::impl::int_like T>
-struct __add__<Foo, T> : py::impl::Returns<int> {};
-
-
-template <py::impl::float_like T>
-struct __add__<Foo, T> : py::impl::Returns<double> {};
-
-
-
 void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-    Foo foo;
-    py::print(foo + 1.0);
-    py::print(foo(5, 6), typeid(decltype(foo(5, 6))).name());
+    // Foo foo;
+    // py::print(foo + 1.0);
+    // py::print(foo(5, 6), typeid(decltype(foo(5, 6))).name());
 
 
-    // py::Bool b = true;
-    // py::print(b + true);
+    py::Int x = 1;
+    py::Int y = x + 1;
+    py::print(y + "abc");
+
 
 
 
@@ -631,9 +578,10 @@ void run() {
 
     std::chrono::time_point<Clock> end = Clock::now();
     std::chrono::duration<double> elapsed = end - start;
-    pybind11::print("Elapsed time:", elapsed.count(), "s");
+    std::cout << "Elapsed time: " << elapsed.count() << "s\n";
 }
 
+#include <pybind11/pybind11.h>
 
 
 PYBIND11_MODULE(example, m) {

@@ -39,10 +39,7 @@ public:
     BERTRAND_OBJECT_COMMON(Base, MappingProxy, mappingproxy_check)
 
     /* Explicitly construct a read-only view on an existing dictionary. */
-    template <
-        typename T,
-        std::enable_if_t<impl::is_python<T> && impl::dict_like<T>, int> = 0
-    >
+    template <typename T> requires (impl::python_like<T> && impl::dict_like<T>)
     explicit MappingProxy(const T& dict) : Base(PyDictProxy_New(dict.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -67,17 +64,13 @@ public:
     inline Dict copy() const;
 
     /* Equivalent to Python `mappingproxy.get(key)`. */
-    template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
+    template <impl::is_hashable K>
     inline Object get(const K& key) const {
         return this->attr("get")(detail::object_or_cast(key), py::None);
     }
 
     /* Equivalent to Python `mappingproxy.get(key, default)`. */
-    template <
-        typename K,
-        typename V,
-        std::enable_if_t<impl::is_hashable<K>, int> = 0
-    >
+    template <impl::is_hashable K, typename V>
     inline Object get(const K& key, const V& default_value) const {
         return this->attr("get")(
             detail::object_or_cast(key),
@@ -99,7 +92,7 @@ public:
     /////////////////////////
 
     /* Equivalent to Python `key in mappingproxy`. */
-    template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
+    template <impl::is_hashable K>
     inline bool contains(const K& key) const;
 
     template <typename... Args>
@@ -113,9 +106,9 @@ public:
 
 
 template <>
-struct MappingProxy::__or__<Object> : impl::Returns<Dict> {};
-template <typename T>
-struct MappingProxy::__or__<T, std::enable_if_t<impl::dict_like<T>>> : impl::Returns<Dict> {};
+struct impl::__or__<MappingProxy, Object> : impl::Returns<Dict> {};
+template <impl::dict_like T>
+struct impl::__or__<MappingProxy, T> : impl::Returns<Dict> {};
 
 
 /* New subclass of pybind11::object representing a view into the keys of a dictionary
@@ -144,10 +137,7 @@ public:
     BERTRAND_OBJECT_COMMON(Base, KeysView, keys_check)
 
     /* Explicitly create a keys view on an existing dictionary. */
-    template <
-        typename T,
-        std::enable_if_t<impl::is_python<T> && impl::dict_like<T>, int> = 0
-    >
+    template <typename T> requires (impl::python_like<T> && impl::dict_like<T>)
     explicit KeysView(const T& dict) :
         Base(dict.attr("keys")().release(), stolen_t{})
     {}
@@ -172,7 +162,7 @@ public:
     }
 
     /* Equivalent to Python `dict.keys().isdisjoint(other)`. */
-    template <typename T, std::enable_if_t<impl::is_iterable<T>, int> = 0>
+    template <impl::is_iterable T>
     inline bool isdisjoint(const T& other) const {
         return static_cast<bool>(
             this->attr("isdisjoint")(detail::object_or_cast(other))
@@ -191,7 +181,7 @@ public:
     /////////////////////////
 
     /* Equivalent to `key in dict.keys()`. */
-    template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
+    template <impl::is_hashable K>
     inline bool contains(const K& key) const {
         int result = PySequence_Contains(this->ptr(), detail::object_or_cast(key).ptr());
         if (result == -1) {
@@ -233,45 +223,51 @@ public:
 };
 
 
-template <>
-struct KeysView::__lt__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct KeysView::__lt__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
+namespace impl {
+
 
 template <>
-struct KeysView::__le__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct KeysView::__le__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
+struct __lt__<KeysView, Object> : Returns<bool> {};
+template <anyset_like T>
+struct __lt__<KeysView, T> : Returns<bool> {};
 
 template <>
-struct KeysView::__ge__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct KeysView::__ge__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
+struct __le__<KeysView, Object> : Returns<bool> {};
+template <anyset_like T>
+struct __le__<KeysView, T> : Returns<bool> {};
 
 template <>
-struct KeysView::__gt__<Object> : impl::Returns<bool> {};
-template <typename T>
-struct KeysView::__gt__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<bool> {};
+struct __ge__<KeysView, Object> : Returns<bool> {};
+template <anyset_like T>
+struct __ge__<KeysView, T> : Returns<bool> {};
 
 template <>
-struct KeysView::__or__<Object> : impl::Returns<Set> {};
-template <typename T>
-struct KeysView::__or__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set> {};
+struct __gt__<KeysView, Object> : Returns<bool> {};
+template <anyset_like T>
+struct __gt__<KeysView, T> : Returns<bool> {};
 
 template <>
-struct KeysView::__and__<Object> : impl::Returns<Set> {};
-template <typename T>
-struct KeysView::__and__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set> {};
+struct __or__<KeysView, Object> : Returns<Set> {};
+template <anyset_like T>
+struct __or__<KeysView, T> : Returns<Set> {};
 
 template <>
-struct KeysView::__sub__<Object> : impl::Returns<Set> {};
-template <typename T>
-struct KeysView::__sub__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set> {};
+struct __and__<KeysView, Object> : Returns<Set> {};
+template <anyset_like T>
+struct __and__<KeysView, T> : Returns<Set> {};
 
 template <>
-struct KeysView::__xor__<Object> : impl::Returns<Set> {};
-template <typename T>
-struct KeysView::__xor__<T, std::enable_if_t<impl::anyset_like<T>>> : impl::Returns<Set> {};
+struct __sub__<KeysView, Object> : Returns<Set> {};
+template <anyset_like T>
+struct __sub__<KeysView, T> : Returns<Set> {};
+
+template <>
+struct __xor__<KeysView, Object> : Returns<Set> {};
+template <anyset_like T>
+struct __xor__<KeysView, T> : Returns<Set> {};
+
+
+}  // namespace impl
 
 
 /* New subclass of pybind11::object representing a view into the values of a dictionary
@@ -300,10 +296,7 @@ public:
     BERTRAND_OBJECT_COMMON(Base, ValuesView, values_check)
 
     /* Explicitly create a values view on an existing dictionary. */
-    template <
-        typename T,
-        std::enable_if_t<impl::is_python<T> && impl::dict_like<T>, int> = 0
-    >
+    template <typename T> requires (impl::python_like<T> && impl::dict_like<T>)
     explicit ValuesView(const T& dict) :
         Base(dict.attr("values")().release(), stolen_t{})
     {}
@@ -348,7 +341,7 @@ public:
 
 /* New subclass of pybind11::object representing a view into the items of a dictionary
 object. */
-struct ItemsView : public Object {
+class ItemsView : public Object {
     using Base = Object;
 
     inline static bool items_check(PyObject* obj) {
@@ -372,10 +365,7 @@ public:
     BERTRAND_OBJECT_COMMON(Base, ItemsView, items_check)
 
     /* Explicitly create an items view on an existing dictionary. */
-    template <
-        typename T,
-        std::enable_if_t<impl::is_python<T> && impl::dict_like<T>, int> = 0
-    >
+    template <typename T> requires (impl::python_like<T> && impl::dict_like<T>)
     explicit ItemsView(const T& dict) :
         Base(dict.attr("items")().release(), stolen_t{})
     {}
@@ -427,10 +417,10 @@ class Dict : public Object {
     using Base = Object;
 
     template <typename T>
-    static constexpr bool constructor1 = !impl::is_python<T> && impl::is_iterable<T>;
+    static constexpr bool constructor1 = !impl::python_like<T> && impl::is_iterable<T>;
     template <typename T>
     static constexpr bool constructor2 =
-        impl::is_python<T> && !impl::dict_like<T> && impl::is_iterable<T>;
+        impl::python_like<T> && !impl::dict_like<T> && impl::is_iterable<T>;
 
 public:
     static Type type;
@@ -475,7 +465,7 @@ public:
     }
 
     /* Explicitly unpack a arbitrary C++ container into a new py::Dict. */
-    template <typename T, std::enable_if_t<constructor1<T>, int> = 0>
+    template <typename T> requires (constructor1<T>)
     explicit Dict(const T& container) : Base(PyDict_New(), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -497,7 +487,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary Python container into a new py::Dict. */
-    template <typename T, std::enable_if_t<constructor2<T>, int> = 0>
+    template <typename T> requires (constructor2<T>)
     explicit Dict(const T& contents) :
         Base(PyObject_CallOneArg((PyObject*) &PyDict_Type, contents.ptr()), stolen_t{})
     {
@@ -511,9 +501,9 @@ public:
     compatibility with Python and pybind11. */
     template <
         typename... Args,
-        typename = std::enable_if_t<pybind11::args_are_all_keyword_or_ds<Args...>()>,
         typename collector = detail::deferred_t<detail::unpacking_collector<>, Args...>
     >
+        requires (pybind11::args_are_all_keyword_or_ds<Args...>())
     explicit Dict(Args&&... args) :
         Dict(collector(std::forward<Args>(args)...).kwargs())
     {}
@@ -523,10 +513,7 @@ public:
     ///////////////////////////
 
     /* Implicitly convert to a C++ dict type. */
-    template <
-        typename T,
-        std::enable_if_t<!impl::is_python<T> && impl::dict_like<T>, int> = 0
-    >
+    template <typename T> requires (!impl::python_like<T> && impl::dict_like<T>)
     inline operator T() const {
         T result;
 
@@ -559,7 +546,7 @@ public:
     }
 
     /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
-    template <typename T, std::enable_if_t<impl::dict_like<T>, int> = 0>
+    template <impl::dict_like T>
     inline void merge(const T& items) {
         if (PyDict_Merge(this->ptr(), detail::object_or_cast(items).ptr(), 0)) {
             throw error_already_set();
@@ -567,10 +554,7 @@ public:
     }
 
     /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
-    template <
-        typename T,
-        std::enable_if_t<!impl::dict_like<T> && impl::is_iterable<T>, int> = 0
-    >
+    template <typename T> requires (!impl::dict_like<T> && impl::is_iterable<T>)
     inline void merge(const T& items) {
         if (PyDict_MergeFromSeq2(this->ptr(), detail::object_or_cast(items).ptr(), 0)) {
             throw error_already_set();
@@ -596,7 +580,7 @@ public:
     }
 
     /* Equivalent to Python `dict.fromkeys(keys)`.  Values default to None. */
-    template <typename K, std::enable_if_t<impl::is_iterable<K>, int> = 0>
+    template <impl::is_iterable K>
     static inline Dict fromkeys(const K& keys) {
         PyObject* result = PyDict_New();
         if (result == nullptr) {
@@ -643,7 +627,7 @@ public:
     }
 
     /* Equivalent to Python `dict.fromkeys(keys, value)`. */
-    template <typename K, typename V, std::enable_if_t<impl::is_iterable<K>, int> = 0>
+    template <impl::is_iterable K, typename V>
     static inline Dict fromkeys(const K& keys, const V& value) {
         Object converted = detail::object_or_cast(value);
         PyObject* result = PyDict_New();
@@ -696,7 +680,7 @@ public:
     }
 
     /* Equivalent to Python `dict.get(key)`.  Returns None if the key is not found. */
-    template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
+    template <impl::is_hashable K>
     inline Object get(const K& key) const {
         PyObject* result = PyDict_GetItemWithError(
             this->ptr(),
@@ -712,7 +696,7 @@ public:
     }
 
     /* Equivalent to Python `dict.get(key, default_value)`. */
-    template <typename K, typename V, std::enable_if_t<impl::is_hashable<K>, int> = 0>
+    template <impl::is_hashable K, typename V>
     inline Object get(const K& key, const V& default_value) const {
         PyObject* result = PyDict_GetItemWithError(
             this->ptr(),
@@ -728,7 +712,7 @@ public:
     }
 
     /* Equivalent to Python `dict.pop(key)`.  Returns None if the key is not found. */
-    template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
+    template <impl::is_hashable K>
     inline Object pop(const K& key) {
         PyObject* result = PyDict_GetItemWithError(
             this->ptr(),
@@ -747,7 +731,7 @@ public:
     }
 
     /* Equivalent to Python `dict.pop(key, default_value)`. */
-    template <typename K, typename V, std::enable_if_t<impl::is_hashable<K>, int> = 0>
+    template <impl::is_hashable K, typename V>
     inline Object pop(const K& key, const V& default_value) {
         PyObject* result = PyDict_GetItemWithError(
             this->ptr(),
@@ -771,7 +755,7 @@ public:
     }
 
     /* Equivalent to Python `dict.setdefault(key)`. */
-    template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
+    template <impl::is_hashable K>
     inline Object setdefault(const K& key) {
         PyObject* result = PyDict_SetDefault(
             this->ptr(),
@@ -785,7 +769,7 @@ public:
     }
 
     /* Equivalent to Python `dict.setdefault(key, default_value)`. */
-    template <typename K, typename V, std::enable_if_t<impl::is_hashable<K>, int> = 0>
+    template <impl::is_hashable K, typename V>
     inline Object setdefault(const K& key, const V& default_value) {
         PyObject* result = PyDict_SetDefault(
             this->ptr(),
@@ -799,7 +783,7 @@ public:
     }
 
     /* Equivalent to Python `dict.update(items)`. */
-    template <typename T, std::enable_if_t<impl::dict_like<T>, int> = 0>
+    template <impl::dict_like T>
     inline void update(const T& items) {
         if (PyDict_Merge(this->ptr(), items.ptr(), 1)) {
             throw error_already_set();
@@ -807,12 +791,9 @@ public:
     }
 
     /* Equivalent to Python `dict.update(items)`. */
-    template <
-        typename T,
-        std::enable_if_t<!impl::dict_like<T> && impl::is_iterable<T>, int> = 0
-    >
+    template <typename T> requires (!impl::dict_like<T> && impl::is_iterable<T>)
     inline void update(const T& items) {
-        if constexpr (impl::is_python<T>) {
+        if constexpr (impl::python_like<T>) {
             if (PyDict_MergeFromSeq2(
                 this->ptr(),
                 detail::object_or_cast(items).ptr(),
@@ -868,7 +849,7 @@ public:
     inline auto end() const { return Object::end(); }
 
     /* Equivalent to Python `key in dict`. */
-    template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
+    template <impl::is_hashable K>
     inline bool contains(const K& key) const {
         int result = PyDict_Contains(this->ptr(), detail::object_or_cast(key).ptr());
         if (result == -1) {
@@ -895,15 +876,19 @@ public:
 };
 
 
-template <>
-struct Dict::__or__<Object> : impl::Returns<Dict> {};
-template <typename T>
-struct Dict::__or__<T, std::enable_if_t<impl::dict_like<T>>> : impl::Returns<Dict> {};
+namespace impl {
 
 template <>
-struct Dict::__ior__<Object> : impl::Returns<Dict&> {};
-template <typename T>
-struct Dict::__ior__<T, std::enable_if_t<impl::dict_like<T>>> : impl::Returns<Dict&> {};
+struct __or__<Dict, Object> : Returns<Dict> {};
+template <dict_like T>
+struct __or__<Dict, T> : Returns<Dict> {};
+
+template <>
+struct __ior__<Dict, Object> : Returns<Dict&> {};
+template <dict_like T>
+struct __ior__<Dict, T> : Returns<Dict&> {};
+
+}  // namespace impl
 
 
 inline Dict MappingProxy::copy() const{
@@ -918,7 +903,7 @@ inline ValuesView MappingProxy::values() const{
     return reinterpret_steal<ValuesView>(this->attr("values")().release());
 }
 
-template <typename K, std::enable_if_t<impl::is_hashable<K>, int> = 0>
+template <impl::is_hashable K>
 inline bool MappingProxy::contains(const K& key) const {
     return this->keys().contains(detail::object_or_cast(key));
 }

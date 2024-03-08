@@ -7,6 +7,7 @@
 
 #include "common.h"
 #include "tuple.h"
+#include "dict.h"
 
 
 namespace bertrand {
@@ -35,7 +36,7 @@ public:
     Type() : Base((PyObject*) &PyType_Type, borrowed_t{}) {}
 
     /* Explicitly detect the type of an arbitrary Python object. */
-    template <typename T, std::enable_if_t<impl::is_python<T>, int> = 0>
+    template <impl::python_like T>
     explicit Type(const T& obj) : Base((PyObject*) Py_TYPE(obj.ptr()), borrowed_t{}) {
         std::cout << "getting type of: " << static_cast<std::string>(obj) << "\n";
     }
