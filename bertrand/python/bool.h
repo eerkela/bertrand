@@ -13,8 +13,8 @@ namespace py {
 
 
 /* pybind11::bool_ equivalent with stronger type safety, math operators, etc. */
-class Bool : public Object {
-    using Base = Object;
+class Bool : public impl::Ops<Bool> {
+    using Base = impl::Ops<Bool>;
 
     template <typename T>
     static constexpr bool constructor1 = !impl::python_like<T> && impl::bool_like<T>;
@@ -101,14 +101,6 @@ public:
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
-
-    auto operator*() const = delete;
-
-    template <typename... Args>
-    auto operator()(Args&&... args) const = delete;
-
-    template <typename T>
-    auto operator[](T&& index) const = delete;
 
     auto begin() const = delete;
     auto end() const = delete;

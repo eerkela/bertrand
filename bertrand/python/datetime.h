@@ -715,7 +715,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_COMMON(Base, Timedelta, PyDelta_Check)
+    BERTRAND_OBJECT_STRICT(Base, Timedelta, PyDelta_Check)
 
     /* Default constructor.  Initializes to an empty delta. */
     Timedelta() : Timedelta(0, 0, 0) {}
@@ -971,7 +971,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_COMMON(Base, Timezone, PyTZInfo_Check)
+    BERTRAND_OBJECT_STRICT(Base, Timezone, PyTZInfo_Check)
 
     /* Default constructor.  Initializes to the system's local timezone. */
     Timezone() : Base(local().ptr(), borrowed_t{}) {}
@@ -1041,7 +1041,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_COMMON(Base, Date, PyDate_Check)
+    BERTRAND_OBJECT_STRICT(Base, Date, PyDate_Check)
 
     /* Default constructor.  Initializes to the current system date. */
     Date() : Base(impl::PyDate_Type->attr("today")().release(), stolen_t{}) {}
@@ -1244,7 +1244,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_COMMON(Base, Time, PyTime_Check)
+    BERTRAND_OBJECT_STRICT(Base, Time, PyTime_Check)
 
     /* Default constructor.  Initializes to the current system time, in its local
     timezone. */
@@ -1481,7 +1481,7 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_COMMON(Base, Datetime, PyDateTime_Check)
+    BERTRAND_OBJECT_STRICT(Base, Datetime, PyDateTime_Check)
 
     /* Default constructor.  Initializes to the current system time with local
     timezone. */

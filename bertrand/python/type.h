@@ -17,8 +17,8 @@ namespace py {
 /* Wrapper around a pybind11::type that enables extra C API functionality, such as the
 ability to create new types on the fly by calling the type() metaclass, or directly
 querying PyTypeObject* fields. */
-class Type : public Object {
-    using Base = Object;
+class Type : public impl::Ops<Type> {
+    using Base = impl::Ops<Type>;
 
 public:
     static Type type;
@@ -37,9 +37,9 @@ public:
 
     /* Explicitly detect the type of an arbitrary Python object. */
     template <impl::python_like T>
-    explicit Type(const T& obj) : Base((PyObject*) Py_TYPE(obj.ptr()), borrowed_t{}) {
-        std::cout << "getting type of: " << static_cast<std::string>(obj) << "\n";
-    }
+    explicit Type(const T& obj) :
+        Base(reinterpret_cast<PyObject*>(Py_TYPE(obj.ptr())), borrowed_t{})
+    {}
 
     /* Dynamically create a new Python type by calling the type() metaclass. */
     explicit Type(const Str& name, const Tuple& bases = {}, const Dict& dict = {});
@@ -57,8 +57,9 @@ public:
     /* Create a new heap type from a CPython PyType_Spec and bases.  See
     Type(PyType_Spec*) for more information. */
     template <typename T>
-    explicit Type(PyType_Spec* spec, T&& bases) {
-        m_ptr = PyType_FromSpecWithBases(spec, bases);
+    explicit Type(PyType_Spec* spec, const Tuple& bases) :
+        Base(PyType_FromSpecWithBases(spec, bases.ptr()), stolen_t{})
+    {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -69,12 +70,9 @@ public:
         /* Create a new heap type from a module name, CPython PyType_Spec, and bases.
         See Type(PyType_Spec*) for more information. */
         template <typename T, typename U>
-        explicit Type(T&& module, PyType_Spec* spec, U&& bases) {
-            m_ptr = PyType_FromModuleAndSpec(
-                detail::object_or_cast(std::forward<T>(module)).ptr(),
-                spec,
-                detail::object_or_cast(std::forward<U>(bases)).ptr()
-            );
+        explicit Type(const Module& module, PyType_Spec* spec, const Tuple& bases) :
+            Base(PyType_FromModuleAndSpec(module.ptr(), spec, bases.ptr()), stolen_t{})
+        {
             if (m_ptr == nullptr) {
                 throw error_already_set();
             }
@@ -87,13 +85,20 @@ public:
         /* Create a new heap type from a full CPython metaclass, module name,
         PyType_Spec and bases.  See Type(PyType_Spec*) for more information. */
         template <typename T, typename U, typename V>
-        explicit Type(T&& metaclass, U&& module, PyType_Spec* spec, V&& bases) {
-            m_ptr = PyType_FromMetaClass(
-                detail::object_or_cast(std::forward<T>(metaclass)).ptr(),
-                detail::object_or_cast(std::forward<U>(module)).ptr(),
+        explicit Type(
+            const Type& metaclass,
+            const Module& module,
+            PyType_Spec* spec,
+            const Tuple& bases
+        ) : Base(
+            PyType_FromMetaClass(
+                reinterpret_cast<PyTypeObject*>(metaclass.ptr()),
+                module.ptr(),
                 spec,
-                detail::object_or_cast(std::forward<V>(bases)).ptr()
-            );
+                bases.ptr()
+            ),
+            stolen_t{}
+        ) {
             if (m_ptr == nullptr) {
                 throw error_already_set();
             }
@@ -314,37 +319,25 @@ public:
         return {reinterpret_cast<PyTypeObject*>(this->ptr())};
     }
 
-    /* Finalize a type object in a C++ extension, filling in any inherited slots.  This
-    should be called on a raw CPython type struct to finish its initialization. */
-    inline static void READY(PyTypeObject* type) {
-        if (PyType_Ready(type) < 0) {
-            throw error_already_set();
-        }
-    }
-
-    /* Clear the lookup cache for the type and all of its subtypes.  This method must
+    /* Clear the lookup cache for the type and all of its subtypes.  This method should
     be called after any manual modification to the attributes or this class or any of
-    its bases. */
+    its bases at the C++ level, in order to synchronize them with the Python
+    interpreter.  Most users will never need to use this in practice. */
     inline void clear_cache() const noexcept {
         PyType_Modified(reinterpret_cast<PyTypeObject*>(this->ptr()));
     }
 
-    /* Check whether this type is an actual subtype of a another type.  This avoids
-    calling `__subclasscheck__()` on the parent type. */
-    inline bool is_subtype(const pybind11::type& base) const {
-        return PyType_IsSubtype(
-            reinterpret_cast<PyTypeObject*>(this->ptr()),
-            reinterpret_cast<PyTypeObject*>(base.ptr())
-        );
-    }
-
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    using Base::operator[];
-    using Base::operator();
 };
+
+
+namespace impl {
+
+template <typename... Args>
+struct __call__<Type, Args...> : Returns<Object> {};
+template <typename T>
+struct __getitem__<Type, T> : Returns<Object> {};
+
+}  // namespace impl
 
 
 ///////////////////////
@@ -353,7 +346,8 @@ public:
 
 
 /* New subclass of pybind11::object that represents Python's built-in super() type. */
-class Super : public Object {
+class Super : public impl::Ops<Super> {
+    using Base = impl::Ops<Super>;
 
     inline static int check_super(PyObject* obj) {
         int result = PyObject_IsInstance(obj, reinterpret_cast<PyObject*>(&PySuper_Type));
@@ -369,12 +363,13 @@ public:
     template <typename T>
     static constexpr bool check() { return std::is_base_of_v<Super, T>; }
 
-    BERTRAND_OBJECT_COMMON(Object, Super, check_super);
+    BERTRAND_OBJECT_COMMON(Base, Super, check_super);
 
     /* Default constructor.  Equivalent to Python `super()` with no arguments, which
     uses the calling context's inheritance hierarchy. */
-    Super() : Object(
-        PyObject_CallNoArgs(reinterpret_cast<PyObject*>(&PySuper_Type)), stolen_t{}
+    Super() : Base(
+        PyObject_CallNoArgs(reinterpret_cast<PyObject*>(&PySuper_Type)),
+        stolen_t{}
     ) {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -383,157 +378,96 @@ public:
 
     /* Explicit constructor.  Equivalent to Python `super(type, self)` with 2
     arguments. */
-    template <impl::type_like T>
-    explicit Super(const T& type, const Handle& self) {
-        m_ptr = PyObject_CallFunctionObjArgs(
+    explicit Super(const Type& type, const Handle& self) :
+        Base(PyObject_CallFunctionObjArgs(
             reinterpret_cast<PyObject*>(&PySuper_Type),
             type.ptr(),
             self.ptr(),
             nullptr
-        );
+        ), stolen_t{})
+    {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    template <typename... Args>
-    inline auto operator()(Args&&... args) const {
-        return Object::operator()(std::forward<Args>(args)...);
-    }
-
-    template <typename T>
-    inline auto operator[](T&& attr) const {
-        return Object::operator[](std::forward<T>(attr));
-    }
-
-    inline auto operator+() const {
-        return Object::operator+();
-    }
-
-    inline auto operator-() const {
-        return Object::operator-();
-    }
-
-    inline auto operator~() const {
-        return Object::operator~();
-    }
-
-    template <typename T>
-    inline auto operator+(const T& other) const {
-        return Object::operator+(other);
-    }
-
-    template <typename T>
-    inline auto operator-(const T& other) const {
-        return Object::operator-(other);
-    }
-
-    template <typename T>
-    inline auto operator*(const T& other) const {
-        return Object::operator*(other);
-    }
-
-    template <typename T>
-    inline auto operator/(const T& other) const {
-        return Object::operator/(other);
-    }
-
-    template <typename T>
-    inline auto operator%(const T& other) const {
-        return Object::operator%(other);
-    }
-
-    template <typename T>
-    inline auto operator<<(const T& other) const {
-        return Object::operator<<(other);
-    }
-
-    template <typename T>
-    inline auto operator>>(const T& other) const {
-        return Object::operator>>(other);
-    }
-
-    template <typename T>
-    inline auto operator&(const T& other) const {
-        return Object::operator&(other);
-    }
-
-    template <typename T>
-    inline auto operator|(const T& other) const {
-        return Object::operator|(other);
-    }
-
-    template <typename T>
-    inline auto operator^(const T& other) const {
-        return Object::operator^(other);
-    }
-
-    template <typename T>
-    inline Super& operator+=(const T& other) {
-        Object::operator+=(other);
-        return *this;
-    }
-
-    template <typename T>
-    inline Super& operator-=(const T& other) {
-        Object::operator-=(other);
-        return *this;
-    }
-
-    template <typename T>
-    inline Super& operator*=(const T& other) {
-        Object::operator*=(other);
-        return *this;
-    }
-
-    template <typename T>
-    inline Super& operator/=(const T& other) {
-        Object::operator/=(other);
-        return *this;
-    }
-
-    template <typename T>
-    inline Super& operator%=(const T& other) {
-        Object::operator%=(other);
-        return *this;
-    }
-
-    template <typename T>
-    inline Super& operator<<=(const T& other) {
-        Object::operator<<=(other);
-        return *this;
-    }
-
-    template <typename T>
-    inline Super& operator>>=(const T& other) {
-        Object::operator>>=(other);
-        return *this;
-    }
-
-    template <typename T>
-    inline Super& operator&=(const T& other) {
-        Object::operator&=(other);
-        return *this;
-    }
-
-    template <typename T>
-    inline Super& operator|=(const T& other) {
-        Object::operator|=(other);
-        return *this;
-    }
-
-    template <typename T>
-    inline Super& operator^=(const T& other) {
-        Object::operator^=(other);
-        return *this;
-    }
-
 };
 
+
+namespace impl {
+
+template <typename... Args>
+struct __call__<Super, Args...> : Returns<Object> {};
+template <typename T>
+struct __getitem__<Super, T> : Returns<Object> {};
+
+template <typename T>
+struct __lt__<Super, T> : Returns<bool> {};
+template <typename T>
+struct __le__<Super, T> : Returns<bool> {};
+template <typename T>
+struct __eq__<Super, T> : Returns<bool> {};
+template <typename T>
+struct __ne__<Super, T> : Returns<bool> {};
+template <typename T>
+struct __ge__<Super, T> : Returns<bool> {};
+template <typename T>
+struct __gt__<Super, T> : Returns<bool> {};
+
+template <>
+struct __pos__<Super> : Returns<Object> {};
+template <>
+struct __neg__<Super> : Returns<Object> {};
+template <>
+struct __invert__<Super> : Returns<Object> {};
+template <>
+struct __increment__<Super> : Returns<Object> {};
+template <>
+struct __decrement__<Super> : Returns<Object> {};
+
+template <typename T>
+struct __add__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __sub__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __mul__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __truediv__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __mod__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __lshift__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __rshift__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __and__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __or__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __xor__<Super, T> : Returns<Object> {};
+
+template <typename T>
+struct __iadd__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __isub__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __imul__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __itruediv__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __imod__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __ilshift__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __irshift__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __iand__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __ior__<Super, T> : Returns<Object> {};
+template <typename T>
+struct __ixor__<Super, T> : Returns<Object> {};
+
+}  // namespace impl
 
 }  // namespace python
 }  // namespace bertrand

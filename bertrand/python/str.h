@@ -5,6 +5,8 @@
 #ifndef BERTRAND_PYTHON_STRING_H
 #define BERTRAND_PYTHON_STRING_H
 
+// #include <format>
+
 #include "common.h"
 #include "int.h"
 #include "list.h"
@@ -15,6 +17,10 @@
 
 namespace bertrand {
 namespace py {
+
+
+// TODO: consider using std::format() for printf-style formatting.  This is more
+// type-safe and generic, avoids the need to learn % formatting, and does not crash
 
 
 namespace impl {
@@ -141,48 +147,69 @@ public:
         }
     }
 
-    /* Construct a unicode string from a printf-style format string.  See the python
-    docs for `PyUnicode_FromFormat()` for more details.  Note that this can segfault
-    if the argument types do not match the format code(s). */
-    template <typename First, typename... Rest>
-    explicit Str(const char* format, First&& first, Rest&&... rest) {
-        m_ptr = PyUnicode_FromFormat(
+    /* Construct a Python unicode string from a std::format()-style interpolated
+    string. */
+    template <typename... Args> requires (sizeof...(Args) > 0)
+    explicit Str(const std::string_view& format, Args&&... args) {
+        std::string result = std::vformat(
             format,
-            to_format_string(std::forward<First>(first)),
-            to_format_string(std::forward<Rest>(rest))...
+            std::make_format_args(std::forward<Args>(args))...
         );
+        m_ptr = PyUnicode_FromStringAndSize(result.c_str(), result.size());
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
-    /* Construct a unicode string from a printf-style format string.  See
-    Str(const char*, ...) for more details. */
-    template <typename First, typename... Rest>
-    explicit Str(const std::string& format, First&& first, Rest&&... rest) : Str(
-        format.c_str(), std::forward<First>(first), std::forward<Rest>(rest)...
+    /* Construct a Python unicode string from a std::format()-style interpolated string
+    with an optional locale. */
+    template <typename... Args> requires (sizeof...(Args) > 0)
+    explicit Str(
+        const std::locale& locale,
+        const std::string_view& format,
+        Args&&... args
+    ) {
+        std::string result = std::vformat(
+            locale,
+            format,
+            std::make_format_args(std::forward<Args>(args))...
+        );
+        m_ptr = PyUnicode_FromStringAndSize(result.c_str(), result.size());
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    /* Construct a Python unicode string from a std::format()-style interpolated string.
+    This overload is chosen when the format string is given as a Python unicode
+    string. */
+    template <typename T, typename... Args>
+        requires (sizeof...(Args) > 0 && impl::str_like<T> && impl::python_like<T>)
+    explicit Str(const T& format, Args&&... args) : Str(
+        format.template cast<std::string>(),
+        std::forward<Args>(args)...
     ) {}
 
-    /* Construct a unicode string from a printf-style format string.  See
-    Str(const char*, ...) for more details. */
-    template <typename First, typename... Rest>
-    explicit Str(const std::string_view& format, First&& first, Rest&&... rest) : Str(
-        format.data(), std::forward<First>(first), std::forward<Rest>(rest)...
-    ) {}
-
-    /* Construct a unicode string from a printf-style format string.  See
-    Str(const char*, ...) for more details. */
-    template <typename T, typename First, typename... Rest>
-        requires (impl::python_like<T> && impl::str_like<T>)
-    explicit Str(const T& format, First&& first, Rest&&... rest) : Str(
-        static_cast<std::string>(format),
-        std::forward<First>(first),
-        std::forward<Rest>(rest)...
+    /* Construct a Python unicode string from a std::format()-style interpolated string
+    with an optional locale. */
+    template <typename T, typename... Args>
+        requires (sizeof...(Args) > 0 && impl::str_like<T> && impl::python_like<T>)
+    explicit Str(
+        const std::locale& locale,
+        const T& format,
+        Args&&... args
+    ) : Str(
+        locale,
+        format.template cast<std::string>(),
+        std::forward<Args>(args)...
     ) {}
 
     ///////////////////////////
     ////    CONVERSIONS    ////
     ///////////////////////////
+
+    // TODO: convert to const char*, std::string_view?  Since Python caches the UTF8
+    // representation within the string itself, this can be possibly made safe
 
     /* Implicitly convert a py::Str into a C++ std::string. */
     inline operator std::string() const {
@@ -728,9 +755,6 @@ public:
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
-
-    template <typename... Args>
-    auto operator()(Args&&... args) const = delete;
 
     /* Equivalent to Python `sub in str`. */
     inline bool contains(const Str& sub) const {

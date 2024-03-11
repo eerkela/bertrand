@@ -15,8 +15,8 @@ namespace py {
 /* Wrapper around pybind11::int_ that enables conversions from strings with different
 bases, similar to Python's `int()` constructor, as well as converting math operators
 that account for C++ inputs. */
-class Int : public Object {
-    using Base = Object;
+class Int : public impl::Ops<Int> {
+    using Base = impl::Ops<Int>;
 
     template <typename T>
     static constexpr bool constructor1 = impl::bool_like<T> && !impl::python_like<T>;
@@ -233,55 +233,14 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    auto operator*() const = delete;
-
-    template <typename... Args>
-    auto operator()(Args&&... args) const = delete;
-
-    template <typename T>
-    auto operator[](T&& index) const = delete;
-
     auto begin() const = delete;
     auto end() const = delete;
 
     template <typename T>
     auto contains(const T& value) const = delete;
 
-    inline Int& operator++() {
-        static const Int one(1);
-        PyObject* result = PyNumber_InPlaceAdd(m_ptr, one.ptr());
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        PyObject* temp = m_ptr;
-        m_ptr = result;
-        Py_XDECREF(temp);
-        return *this;
-    }
-
-    inline Int operator++(int) {
-        Int result = *this;
-        ++(*this);
-        return result;
-    }
-
-    inline Int& operator--() {
-        static const Int one(1);
-        PyObject* result = PyNumber_InPlaceSubtract(m_ptr, one.ptr());
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        PyObject* temp = m_ptr;
-        m_ptr = result;
-        Py_XDECREF(temp);
-        return *this;
-    }
-
-    inline Int operator--(int) {
-        Int result = *this;
-        --(*this);
-        return result;
-    }
+    using Base::operator*;
+    // using Base::operator-;
 
 };
 
@@ -301,6 +260,10 @@ template <>
 struct __neg__<Int> : Returns<Int> {};
 template <>
 struct __invert__<Int> : Returns<Int> {};
+template <>
+struct __increment__<Int> : Returns<Int> {};
+template <>
+struct __decrement__<Int> : Returns<Int> {};
 
 
 ///////////////////////////

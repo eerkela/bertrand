@@ -16,8 +16,8 @@ namespace py {
 
 /* New subclass of pybind11::object that represents a range object at the Python
 level. */
-class Range : public Object {
-    using Base = Object;
+class Range : public impl::Ops<Range> {
+    using Base = impl::Ops<Range>;
 
     inline static bool range_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyRange_Type);
@@ -99,9 +99,6 @@ public:
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
-
-    template <typename... Args>
-    auto operator()(Args&&... args) const = delete;
 
     inline Int operator[](size_t index) const {
         PyObject* result = PySequence_GetItem(this->ptr(), index);

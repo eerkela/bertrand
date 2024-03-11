@@ -15,8 +15,8 @@ namespace py {
 
 /* New subclass of pybind11::object that represents a complex number at the Python
 level. */
-class Complex : public Object {
-    using Base = Object;
+class Complex : public impl::Ops<Complex> {
+    using Base = impl::Ops<Complex>;
 
     template <typename T>
     static constexpr bool constructor1 = (
@@ -142,9 +142,6 @@ public:
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
-
-    template <typename... Args>
-    auto operator()(Args&&... args) const = delete;
 
     template <typename T>
     auto operator[](T&& index) const = delete;

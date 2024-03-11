@@ -157,9 +157,32 @@ namespace impl {
 }
 
 
+template <typename T, typename... Args>
+    requires (impl::__call__<T, Args...>::enable)
+inline auto Object::call_impl(
+    const T& obj,
+    Args&&... args
+) -> impl::__call__<T, Args...>::Return {
+    using Return = impl::__call__<T, Args...>::Return;
+    static_assert(
+        std::is_same_v<Return, void> || std::is_base_of_v<Return, Object>,
+        "Call operator must return either void or a py::Object subclass.  Check your "
+        "specialization of __call__ for the given arguments and ensure that it is "
+        "derived from py::Object."
+    );
+    if constexpr (std::is_void_v<Return>) {
+        obj.pybind11_call(impl::interpret_arg(std::forward<Args>(args))...);
+    } else {
+        return reinterpret_steal<Return>(obj.pybind11_call(
+            impl::interpret_arg(std::forward<Args>(args))...
+        ).release());
+    }
+}
+
+
 template <typename... Args>
-inline Object Object::operator()(Args&&... args) const {
-    return Base::operator()(impl::interpret_arg(std::forward<Args>(args))...);
+inline auto Object::operator()(Args&&... args) const {
+    return call_impl(*this, std::forward<Args>(args)...);
 }
 
 

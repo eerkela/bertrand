@@ -68,8 +68,9 @@
 ///////////////////////
 
 
-#include <bertrand/python.h>
+// #include <bertrand/python.h>
 
+#include "pybind11/pytypes.h"
 #include <chrono>
 #include <cstddef>
 #include <iostream>
@@ -81,7 +82,11 @@
 #include <limits>
 
 
-namespace py = bertrand::py;
+#include <Python.h>
+#include <pybind11/pybind11.h>
+
+
+// namespace py = bertrand::py;
 
 
 // void func(const py::Int& i) {
@@ -94,16 +99,54 @@ void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
+    // py::Int a = 1;
+    // py::print(a < 2);
+
+
+    // NOTE: PySequence_Concat is ~30-40% faster than PyNumber_Add
+
+    PyObject* list1 = PyList_New(3);
+    PyList_SET_ITEM(list1, 0, PyLong_FromLong(1));
+    PyList_SET_ITEM(list1, 1, PyLong_FromLong(2));
+    PyList_SET_ITEM(list1, 2, PyLong_FromLong(3));
+
+    PyObject* list2 = PyList_New(3);
+    PyList_SET_ITEM(list2, 0, PyLong_FromLong(4));
+    PyList_SET_ITEM(list2, 1, PyLong_FromLong(5));
+    PyList_SET_ITEM(list2, 2, PyLong_FromLong(6));
+
+    for (size_t i = 0; i < 1000000; ++i) {
+        PyObject* temp = PySequence_Concat(list1, list2);
+        Py_DECREF(temp);
+    }
+
+
+    PyObject* list3 = PySequence_Concat(list1, list2);
+    Py_DECREF(list1);
+    Py_DECREF(list2);
+
+    PyObject* str = PyObject_Repr(list3);
+    Py_DECREF(list3);
+    const char* c_str = PyUnicode_AsUTF8(str);
+    Py_DECREF(str);
+    std::cout << c_str << std::endl;
+
+
+
+
+
+
 
     // Foo foo;
     // py::print(foo + 1.0);
     // py::print(foo(5, 6), typeid(decltype(foo(5, 6))).name());
 
 
-    py::Int x = 1;
-    py::Int y = x + 1;
-    py::print(y + "abc");
+    // py::Str a = "abc";
+    // py::Str b = std::string("def") + a;
+    // py::print(b);
 
+    // py::print(py::impl::str_like<const char*>);
 
 
 
