@@ -15,8 +15,8 @@ namespace py {
 
 /* New subclass of pybind11::object that represents a complex number at the Python
 level. */
-class Complex : public impl::Ops<Complex> {
-    using Base = impl::Ops<Complex>;
+class Complex : public impl::Inherits<Object, Complex> {
+    using Base = impl::Inherits<Object, Complex>;
 
     template <typename T>
     static constexpr bool constructor1 = (
@@ -138,19 +138,6 @@ public:
         }
         return Complex(complex_struct.real, -complex_struct.imag);
     }
-
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    template <typename T>
-    auto operator[](T&& index) const = delete;
-
-    auto begin() const = delete;
-    auto end() const = delete;
-
-    template <typename T>
-    auto contains(const T& value) const = delete;
 
 };
 

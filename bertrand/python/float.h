@@ -15,8 +15,8 @@ namespace py {
 /* Wrapper around pybind11::float_ that enables conversions from strings, similar to
 Python's `float()` constructor, as well as converting math operators that account for
 C++ inputs. */
-class Float : public impl::Ops<Float> {
-    using Base = impl::Ops<Float>;
+class Float : public impl::Inherits<Object, Float> {
+    using Base = impl::Inherits<Object, Float>;
 
     template <typename T>
     static constexpr bool constructor1 = (
@@ -120,19 +120,6 @@ public:
     inline operator double() const {
         return PyFloat_AS_DOUBLE(this->ptr());
     }
-
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    template <typename T>
-    auto operator[](T&& index) const = delete;
-
-    auto begin() const = delete;
-    auto end() const = delete;
-
-    template <typename T>
-    auto contains(const T& value) const = delete;
 
 };
 

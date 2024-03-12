@@ -14,8 +14,12 @@ namespace py {
 
 /* Wrapper around pybind11::list that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
-class List : public impl::SequenceOps, public impl::ReverseIterable<List> {
-    using Base = impl::SequenceOps;
+class List :
+    public impl::Inherits<Object, List>,
+    public impl::SequenceOps<List>,
+    public impl::ReverseIterable<List>
+{
+    using Base = impl::Inherits<Object, List>;
 
     template <typename T>
     static inline PyObject* convert_newref(const T& value) {
@@ -347,12 +351,6 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    using Base::operator[];
-
-    inline impl::ListAccessor operator[](size_t index) const {
-        return {*this, index};
-    }
-
     inline detail::list_iterator begin() const {
         return {*this, 0};
     }
@@ -361,9 +359,9 @@ public:
         return {*this, PyList_GET_SIZE(this->ptr())};
     }
 
-    using Base::concat;
-    using Base::operator*;
-    using Base::operator*=;
+    using impl::SequenceOps<List>::concat;
+    using impl::SequenceOps<List>::operator*;
+    using impl::SequenceOps<List>::operator*=;
 
     /* Overload of concat() that allows the operand to be a braced initializer list. */
     inline List concat(const std::initializer_list<impl::Initializer>& items) const {

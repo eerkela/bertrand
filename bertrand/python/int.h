@@ -15,8 +15,8 @@ namespace py {
 /* Wrapper around pybind11::int_ that enables conversions from strings with different
 bases, similar to Python's `int()` constructor, as well as converting math operators
 that account for C++ inputs. */
-class Int : public impl::Ops<Int> {
-    using Base = impl::Ops<Int>;
+class Int : public impl::Inherits<Object, Int> {
+    using Base = impl::Inherits<Object, Int>;
 
     template <typename T>
     static constexpr bool constructor1 = impl::bool_like<T> && !impl::python_like<T>;
@@ -228,19 +228,6 @@ public:
         static const Int zero(0);
         return zero;
     }
-
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    auto begin() const = delete;
-    auto end() const = delete;
-
-    template <typename T>
-    auto contains(const T& value) const = delete;
-
-    using Base::operator*;
-    // using Base::operator-;
 
 };
 

@@ -15,8 +15,8 @@ namespace py {
 
 /* New subclass of pybind11::object representing a read-only proxy for a Python
 dictionary or other mapping. */
-class MappingProxy : public impl::Ops<MappingProxy> {
-    using Base = impl::Ops<MappingProxy>;
+class MappingProxy : public impl::Inherits<Object, MappingProxy> {
+    using Base = impl::Inherits<Object, MappingProxy>;
 
     inline static bool mappingproxy_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictProxy_Type);
@@ -110,8 +110,8 @@ struct impl::__or__<MappingProxy, T> : impl::Returns<Dict> {};
 
 /* New subclass of pybind11::object representing a view into the keys of a dictionary
 object. */
-class KeysView : public impl::Ops<KeysView> {
-    using Base = impl::Ops<KeysView>;
+class KeysView : public impl::Inherits<Object, KeysView> {
+    using Base = impl::Inherits<Object, KeysView>;
 
     inline static bool keys_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictKeys_Type);
@@ -186,9 +186,6 @@ public:
         }
         return result;
     }
-
-    template <typename T>
-    auto operator[](const T& key) const = delete;
 
     inline Set operator|(
         const std::initializer_list<impl::HashInitializer>& other
@@ -266,8 +263,8 @@ struct __xor__<KeysView, T> : Returns<Set> {};
 
 /* New subclass of pybind11::object representing a view into the values of a dictionary
 object. */
-class ValuesView : public impl::Ops<ValuesView> {
-    using Base = impl::Ops<ValuesView>;
+class ValuesView : public impl::Inherits<Object, ValuesView> {
+    using Base = impl::Inherits<Object, ValuesView>;
 
     inline static bool values_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictValues_Type);
@@ -324,16 +321,13 @@ public:
         return result;
     }
 
-    template <typename T>
-    auto operator[](const T& key) const = delete;
-
 };
 
 
 /* New subclass of pybind11::object representing a view into the items of a dictionary
 object. */
-class ItemsView : public impl::Ops<ItemsView> {
-    using Base = impl::Ops<ItemsView>;
+class ItemsView : public impl::Inherits<Object, ItemsView> {
+    using Base = impl::Inherits<Object, ItemsView>;
 
     inline static bool items_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictItems_Type);
@@ -393,16 +387,13 @@ public:
         return result;
     }
 
-    template <typename T>
-    auto operator[](const T& key) const = delete;
-
 };
 
 
 /* Wrapper around pybind11::dict that allows it to be directly initialized using
 std::initializer_list and enables extra C API functionality. */
-class Dict : public impl::Ops<Dict> {
-    using Base = impl::Ops<Dict>;
+class Dict : public impl::Inherits<Object, Dict> {
+    using Base = impl::Inherits<Object, Dict>;
 
     template <typename T>
     static constexpr bool constructor1 = !impl::python_like<T> && impl::is_iterable<T>;

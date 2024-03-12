@@ -13,10 +13,24 @@ namespace bertrand {
 namespace py {
 
 
+namespace impl {
+
+
+
+
+
+}  // namespace impl
+
+
+
 /* Wrapper around pybind11::tuple that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
-class Tuple : public impl::SequenceOps, public impl::ReverseIterable<Tuple> {
-    using Base = impl::SequenceOps;
+class Tuple :
+    public impl::Inherits<Object, Tuple>,
+    public impl::SequenceOps<Tuple>,
+    public impl::ReverseIterable<Tuple>
+{
+    using Base = impl::Inherits<Object, Tuple>;
 
     template <typename T>
     static inline PyObject* convert_newref(const T& value) {
@@ -289,21 +303,6 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    // taken from pybind11::tuple
-    inline impl::TupleAccessor operator[](size_t index) const {
-        return {*this, index};
-    }
-
-    inline Tuple operator[](const Slice& slice) const {
-        return reinterpret_steal<Tuple>(Object(Base::operator[](slice)).release());
-    }
-
-    inline Tuple operator[](
-        const std::initializer_list<impl::SliceInitializer>& slice
-    ) const {
-        return reinterpret_steal<Tuple>(Object(Base::operator[](slice)).release());
-    }
-
     inline detail::tuple_iterator begin() const {
         return {*this, 0};
     }
@@ -312,9 +311,11 @@ public:
         return {*this, PyTuple_GET_SIZE(this->ptr())};
     }
 
-    using Base::concat;
-    using Base::operator*;
-    using Base::operator*=;
+    // TODO: figure this out
+
+    using impl::SequenceOps<Tuple>::concat;
+    using impl::SequenceOps<Tuple>::operator*;
+    using impl::SequenceOps<Tuple>::operator*=;
 
     /* Overload of concat() that allows the operand to be a braced initializer list. */
     inline Tuple concat(const std::initializer_list<impl::Initializer>& items) const {

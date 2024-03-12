@@ -12,9 +12,9 @@ namespace bertrand {
 namespace py {
 
 
-/* pybind11::bool_ equivalent with stronger type safety, math operators, etc. */
-class Bool : public impl::Ops<Bool> {
-    using Base = impl::Ops<Bool>;
+/* pybind11::bool_ equivalent with stronger type safety and cross-language support. */
+class Bool : public impl::Inherits<Object, Bool> {
+    using Base = impl::Inherits<Object, Bool>;
 
     template <typename T>
     static constexpr bool constructor1 = !impl::python_like<T> && impl::bool_like<T>;
@@ -93,20 +93,10 @@ public:
     ////    CONVERSIONS    ////
     ///////////////////////////
 
-    /* Explicitly convert a py::Bool into a C++ boolean. */
+    /* implicitly convert a py::Bool into a C++ boolean. */
     inline operator bool() const {
         return Base::operator bool();
     }
-
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    auto begin() const = delete;
-    auto end() const = delete;
-
-    template <typename T>
-    auto contains(const T& value) const = delete;
 
 };
 
@@ -124,6 +114,8 @@ template <>
 struct __pos__<Bool> : Returns<Int> {};
 template <>
 struct __neg__<Bool> : Returns<Int> {};
+template <>
+struct __abs__<Bool> : Returns<Int> {};
 template <>
 struct __invert__<Bool> : Returns<Int> {};
 

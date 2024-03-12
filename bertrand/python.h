@@ -157,13 +157,13 @@ namespace impl {
 }
 
 
-template <typename T, typename... Args>
-    requires (impl::__call__<T, Args...>::enable)
-inline auto Object::call_impl(
-    const T& obj,
-    Args&&... args
-) -> impl::__call__<T, Args...>::Return {
-    using Return = impl::__call__<T, Args...>::Return;
+
+template <typename... Args>
+    requires (impl::__call__<Object, Args...>::enable)
+inline auto Object::operator()(Args&&... args) const
+    -> impl::__call__<Object, Args...>::Return
+{
+    using Return = impl::__call__<Object, Args...>::Return;
     static_assert(
         std::is_same_v<Return, void> || std::is_base_of_v<Return, Object>,
         "Call operator must return either void or a py::Object subclass.  Check your "
@@ -171,37 +171,13 @@ inline auto Object::call_impl(
         "derived from py::Object."
     );
     if constexpr (std::is_void_v<Return>) {
-        obj.pybind11_call(impl::interpret_arg(std::forward<Args>(args))...);
+        Base::operator()(impl::interpret_arg(std::forward<Args>(args))...);
     } else {
-        return reinterpret_steal<Return>(obj.pybind11_call(
-            impl::interpret_arg(std::forward<Args>(args))...
-        ).release());
+        return reinterpret_steal<Return>(
+            Base::operator()(impl::interpret_arg(std::forward<Args>(args))...).release()
+        );
     }
 }
-
-
-template <typename... Args>
-inline auto Object::operator()(Args&&... args) const {
-    return call_impl(*this, std::forward<Args>(args)...);
-}
-
-
-#define ACCESSOR_CALL_OPERATOR(name, base)                                              \
-    template <typename... Args>                                                         \
-    Object impl::name::operator()(Args&&... args) const {                               \
-        return detail::base::operator()(                                                \
-            impl::interpret_arg(std::forward<Args>(args))...                            \
-        );                                                                              \
-    }                                                                                   \
-
-ACCESSOR_CALL_OPERATOR(ObjAttrAccessor, obj_attr_accessor)
-ACCESSOR_CALL_OPERATOR(StrAttrAccessor, str_attr_accessor)
-ACCESSOR_CALL_OPERATOR(ItemAccessor, item_accessor)
-ACCESSOR_CALL_OPERATOR(SequenceAccessor, sequence_accessor)
-ACCESSOR_CALL_OPERATOR(TupleAccessor, tuple_accessor)
-ACCESSOR_CALL_OPERATOR(ListAccessor, list_accessor)
-
-#undef ACCESSOR_CALL_OPERATOR
 
 
 ////////////////////////////
@@ -707,7 +683,7 @@ using the py::Str constructor. */
 template <typename... Args>
 inline void print(const Args&... args) {
     auto convert = [](auto&& arg) {
-        if constexpr (impl::is_wrapper<std::decay_t<decltype(arg)>>) {
+        if constexpr (impl::is_proxy<std::decay_t<decltype(arg)>>) {
             return Str(*arg);
         } else {
             return Str(arg);

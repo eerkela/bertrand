@@ -15,8 +15,8 @@ namespace py {
 /* Wrapper around pybind11::slice that allows it to be instantiated with non-integer
 inputs in order to represent denormalized slices at the Python level, and provides more
 pythonic access to its members. */
-class Slice : public impl::Ops<Slice> {
-    using Base = impl::Ops<Slice>;
+class Slice : public impl::Inherits<Object, Slice> {
+    using Base = impl::Inherits<Object, Slice>;
 
 public:
     static Type type;
@@ -144,19 +144,6 @@ public:
         }
         return {start, stop, step, length};
     }
-
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    template <typename T>
-    auto operator[](const T& index) const = delete;
-
-    template <typename T>
-    auto contains(const T& item) const = delete;
-
-    auto begin() const = delete;
-    auto end() const = delete;
 
 };
 

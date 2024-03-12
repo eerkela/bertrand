@@ -68,9 +68,8 @@
 ///////////////////////
 
 
-// #include <bertrand/python.h>
+#include <bertrand/python.h>
 
-#include "pybind11/pytypes.h"
 #include <chrono>
 #include <cstddef>
 #include <iostream>
@@ -105,31 +104,56 @@ void run() {
 
     // NOTE: PySequence_Concat is ~30-40% faster than PyNumber_Add
 
-    PyObject* list1 = PyList_New(3);
-    PyList_SET_ITEM(list1, 0, PyLong_FromLong(1));
-    PyList_SET_ITEM(list1, 1, PyLong_FromLong(2));
-    PyList_SET_ITEM(list1, 2, PyLong_FromLong(3));
+    // PyObject* list1 = PyList_New(3);
+    // PyList_SET_ITEM(list1, 0, PyLong_FromLong(1));
+    // PyList_SET_ITEM(list1, 1, PyLong_FromLong(2));
+    // PyList_SET_ITEM(list1, 2, PyLong_FromLong(3));
 
-    PyObject* list2 = PyList_New(3);
-    PyList_SET_ITEM(list2, 0, PyLong_FromLong(4));
-    PyList_SET_ITEM(list2, 1, PyLong_FromLong(5));
-    PyList_SET_ITEM(list2, 2, PyLong_FromLong(6));
+    // PyObject* list2 = PyList_New(3);
+    // PyList_SET_ITEM(list2, 0, PyLong_FromLong(4));
+    // PyList_SET_ITEM(list2, 1, PyLong_FromLong(5));
+    // PyList_SET_ITEM(list2, 2, PyLong_FromLong(6));
 
-    for (size_t i = 0; i < 1000000; ++i) {
-        PyObject* temp = PySequence_Concat(list1, list2);
-        Py_DECREF(temp);
-    }
+    // for (size_t i = 0; i < 1000000; ++i) {
+    //     // PyObject* attr = PyObject_GetAttrString(list1, "append");
+    //     // Py_DECREF(attr);
+
+    //     // PyObject* temp = PyUnicode_FromStringAndSize("append", 6);
+    //     // PyObject* attr = PyObject_GetAttr(list1, temp);
+    //     // Py_DECREF(temp);
+    //     // Py_DECREF(attr);
 
 
-    PyObject* list3 = PySequence_Concat(list1, list2);
-    Py_DECREF(list1);
-    Py_DECREF(list2);
+    //     if (i < 0 || i >= static_cast<size_t>(PyList_GET_SIZE(list1))) {
+    //         // PyErr_SetString(PyExc_IndexError, "list index out of range");
+    //         // return;
+    //         volatile int x = 0;
+    //     }
 
-    PyObject* str = PyObject_Repr(list3);
-    Py_DECREF(list3);
-    const char* c_str = PyUnicode_AsUTF8(str);
-    Py_DECREF(str);
-    std::cout << c_str << std::endl;
+    //     PyObject* item = Py_NewRef(PyList_GET_ITEM(list1, 0));
+    //     Py_DECREF(item);
+
+    //     // PyObject** items = PySequence_Fast_ITEMS(list1);
+    //     // PyObject* item = Py_NewRef(items[0]);
+    //     // Py_DECREF(item);
+
+
+    //     // PyObject* temp = PySequence_Concat(list1, list2);
+    //     // Py_DECREF(temp);
+    // }
+
+
+    // PyObject* list3 = PySequence_Concat(list1, list2);
+    // Py_DECREF(list1);
+    // Py_DECREF(list2);
+
+    // // PyObject_DelItem(list3, pybind11::cast(0).ptr());
+
+    // PyObject* str = PyObject_Repr(list3);
+    // Py_DECREF(list3);
+    // const char* c_str = PyUnicode_AsUTF8(str);
+    // Py_DECREF(str);
+    // std::cout << c_str << std::endl;
 
 
 

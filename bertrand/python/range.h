@@ -16,8 +16,8 @@ namespace py {
 
 /* New subclass of pybind11::object that represents a range object at the Python
 level. */
-class Range : public impl::Ops<Range> {
-    using Base = impl::Ops<Range>;
+class Range : public impl::Inherits<Object, Range> {
+    using Base = impl::Inherits<Object, Range>;
 
     inline static bool range_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyRange_Type);
@@ -71,7 +71,7 @@ public:
 
     /* Get the start index of the Range sequence. */
     inline Py_ssize_t start() const {
-        Py_ssize_t result = PyLong_AsSsize_t(this->attr("start").ptr());
+        Py_ssize_t result = PyLong_AsSsize_t(this->attr("start")->ptr());
         if (result == -1 && PyErr_Occurred()) {
             throw error_already_set();
         }
@@ -80,7 +80,7 @@ public:
 
     /* Get the stop index of the Range sequence. */
     inline Py_ssize_t stop() const {
-        Py_ssize_t result = PyLong_AsSsize_t(this->attr("stop").ptr());
+        Py_ssize_t result = PyLong_AsSsize_t(this->attr("stop")->ptr());
         if (result == -1 && PyErr_Occurred()) {
             throw error_already_set();
         }
@@ -89,7 +89,7 @@ public:
 
     /* Get the step size of the Range sequence. */
     inline Py_ssize_t step() const {
-        Py_ssize_t result = PyLong_AsSsize_t(this->attr("step").ptr());
+        Py_ssize_t result = PyLong_AsSsize_t(this->attr("step")->ptr());
         if (result == -1 && PyErr_Occurred()) {
             throw error_already_set();
         }

@@ -15,8 +15,8 @@ namespace py {
 namespace impl {
 
     template <typename Derived>
-    class ISet : public impl::Ops<Derived> {
-        using Base = impl::Ops<Derived>;
+    class ISet : public impl::Inherits<Object, Derived> {
+        using Base = impl::Inherits<Object, Derived>;
 
         inline Derived* self() { return static_cast<Derived*>(this); }
         inline const Derived* self() const { return static_cast<const Derived*>(this); }
@@ -290,9 +290,6 @@ namespace impl {
             }
             return result;
         }
-
-        template <typename T>
-        inline auto operator[](const T& key) = delete;
 
         using Base::operator|;
         using Base::operator&;
