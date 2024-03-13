@@ -1,3 +1,4 @@
+#include <cstddef>
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
@@ -354,6 +355,9 @@ PYTHON_EXCEPTION(Exception, ValueError, PyExc_ValueError)
 
 namespace impl {
 
+    /* Tag class to identify object proxies during SFINAE checks. */
+    struct ProxyTag {};
+
     /* Helper function triggers implicit conversion operators and/or implicit
     constructors, but not explicit ones.  In contrast, static_cast<>() will trigger
     explicit constructors on the target type, which can give unexpected results and
@@ -459,34 +463,18 @@ namespace impl {
                 static constexpr bool dictlike = true;
             };
 
-        }  // namespace categories
-
-        template <typename From, typename To, typename = void>
-        constexpr bool has_conversion_operator = false;
-        template <typename From, typename To>
-        constexpr bool has_conversion_operator<
-            From, To, std::void_t<decltype(std::declval<From>().operator To())>
-        > = true;
-
-        template <typename From, typename To, typename = void>
-        constexpr bool explicitly_convertible_to = false;
-        template <typename From, typename To>
-        constexpr bool explicitly_convertible_to<
-            From, To, std::void_t<decltype(static_cast<To>(std::declval<From>()))>
-        > = true;
+        }
 
         template <typename T>
         concept python_like = detail::is_pyobject<T>::value;
 
         template <typename T>
-        concept accessor_like = (
-            std::is_base_of_v<detail::obj_attr_accessor, T> ||
-            std::is_base_of_v<detail::str_attr_accessor, T> ||
-            std::is_base_of_v<detail::item_accessor, T> ||
-            std::is_base_of_v<detail::sequence_accessor, T> ||
-            std::is_base_of_v<detail::tuple_accessor, T> ||
-            std::is_base_of_v<detail::list_accessor, T>
-        );
+        concept proxy_like = std::is_base_of_v<ProxyTag, T>;
+
+        template <typename T>
+        concept accessor_like = requires(const T& t) {
+            { []<typename Policy>(const detail::accessor<Policy>){}(t) } -> std::same_as<void>;
+        };
 
         template <typename T>
         concept sequence_like = requires(const T& t) {
@@ -518,18 +506,20 @@ namespace impl {
         );
 
         template <typename T>
-        concept complex_like = (
-            std::is_base_of_v<std::complex<float>, T> ||
-            std::is_base_of_v<std::complex<double>, T> ||
-            std::is_base_of_v<std::complex<long double>, T> ||
-            std::is_base_of_v<Complex, T>
-        );
+        concept complex_like = requires(const T& t) {
+            { t.real() } -> std::convertible_to<double>;
+            { t.imag() } -> std::convertible_to<double>;
+        };
+
+        template <typename T>
+        concept string_literal = requires(const T& t) {
+            { []<size_t N>(const char(&)[N]){}(t) } -> std::same_as<void>;
+        };
 
         template <typename T>
         concept str_like = (
-            std::is_same_v<const char*, T> ||
-            std::is_base_of_v<std::string, T> ||
-            std::is_base_of_v<std::string_view, T> ||
+            std::is_constructible_v<std::string, T> ||
+            std::is_constructible_v<std::string_view, T> ||
             std::is_base_of_v<Str, T> ||
             std::is_base_of_v<pybind11::str, T>
         );
@@ -628,6 +618,16 @@ namespace impl {
             std::is_base_of_v<pybind11::type, T>
         );
 
+        template <typename From, typename To>
+        concept explicitly_convertible_to = requires(const From& from) {
+            static_cast<To>(from);
+        };
+
+        template <typename From, typename To>
+        concept has_conversion_operator = requires(const From& from) {
+            from.operator To();
+        };
+
         template <typename T>
         concept has_size = requires(const T& t) {
             { t.size() } -> std::convertible_to<size_t>;
@@ -640,12 +640,13 @@ namespace impl {
 
         template <typename T>
         concept has_reserve = requires(T& t, size_t n) {
-            { t.reserve(n) };
+            { t.reserve(n) } -> std::same_as<void>;
         };
 
+        // NOTE: decay is necessary to treat `const char[N]` like `const char*`
         template <typename T>
-        concept is_hashable = requires(const T& t) {
-            { std::hash<T>{}(t) } -> std::convertible_to<size_t>;
+        concept is_hashable = requires(T&& t) {
+            { std::hash<std::decay_t<T>>{}(std::forward<T>(t)) } -> std::convertible_to<size_t>;
         };
 
         template <typename T>
@@ -670,6 +671,8 @@ namespace impl {
             { os << t } -> std::convertible_to<std::ostream&>;
         };
 
+        // TODO: what happens if we remove is_std_iterator?
+
         /* NOTE: reverse operators sometimes conflict with standard library iterators, so
         we need some way of detecting them.  This is somewhat hacky, but it seems to
         work. */
@@ -682,29 +685,18 @@ namespace impl {
             )>
         > = true;
 
-        /* SFINAE condition allows py::iter() to work on both python and C++ types. */
-        template <typename T, typename = void>
-        constexpr bool pybind11_iterable = false;
         template <typename T>
-        constexpr bool pybind11_iterable<
-            T, std::void_t<decltype(pybind11::iter(std::declval<T>()))>
-        > = true;
-
-        template <typename T, typename = void>
-        struct OverloadsCallable : std::false_type {};
-        template <typename T>
-        struct OverloadsCallable<T, std::void_t<decltype(&T::operator())>> :
-            std::true_type
-        {};
+        concept pybind11_iterable = requires(const T& t) {
+            { pybind11::iter(t) } -> std::convertible_to<py::Iterator>;
+        };
 
         /* SFINAE condition is used to recognize callable C++ types without regard to their
         argument signatures. */
         template <typename T>
-        static constexpr bool is_callable_any = std::disjunction_v<
-            std::is_function<std::remove_pointer_t<std::decay_t<T>>>,
-            std::is_member_function_pointer<std::decay_t<T>>,
-            OverloadsCallable<std::decay_t<T>>
-        >;
+        concept is_callable_any = 
+            std::is_function_v<std::remove_pointer_t<std::decay_t<T>>> ||
+            std::is_member_function_pointer_v<std::decay_t<T>> ||
+            requires { &std::decay_t<T>::operator(); };
 
         /* Base class for CallTraits tags, which contain SFINAE information about a
         callable Python/C++ object, as returned by `py::callable()`. */
@@ -859,7 +851,7 @@ namespace impl {
 
         };
 
-    }  // namespace concepts
+    }
     using namespace concepts;
 
     template <typename T>
@@ -868,18 +860,18 @@ namespace impl {
     struct __call__ { static constexpr bool enable = false; };
     template <typename T>
     struct __len__ { static constexpr bool enable = false; };
-    template <typename T, typename Key>
-    struct __contains__ { static constexpr bool enable = false; };
     template <typename T>
     struct __iter__ { static constexpr bool enable = false; };
     template <typename T>
     struct __reversed__ { static constexpr bool enable = false; };
     template <typename T, typename Key>
-    struct __getitem__ { static constexpr bool enable = false; };  // TODO: constrain accessor conversions
-    template <typename T, typename Key, typename Value>
-    struct __setitem__ { static constexpr bool enable = false; };  // TODO: constrain accessor assignment
+    struct __contains__ { static constexpr bool enable = false; };
     template <typename T, typename Key>
-    struct __delitem__ { static constexpr bool enable = false; };  // TODO: enable/disable .del()
+    struct __getitem__ { static constexpr bool enable = false; };
+    template <typename T, typename Key, typename Value>
+    struct __setitem__ { static constexpr bool enable = false; };
+    template <typename T, typename Key>
+    struct __delitem__ { static constexpr bool enable = false; };
     template <typename T>
     struct __pos__ { static constexpr bool enable = false; };
     template <typename T>
@@ -953,16 +945,6 @@ namespace impl {
         using Return = T;
     };
 
-    /* Tag class to identify wrappers during SFINAE checks. */
-    struct ProxyTag {};
-
-    template <typename T>
-    constexpr bool is_proxy = std::is_base_of_v<ProxyTag, T>;
-
-    class AttrAccessor;
-    template <typename Obj, typename Key>
-    class ItemAccessor;
-
     /* Standardized error message for type narrowing via pybind11 accessors or the
     generic Object wrapper. */
     template <typename Derived>
@@ -977,6 +959,10 @@ namespace impl {
         msg << "' to type '" << dest_name << "'";
         return TypeError(msg.str());
     }
+
+    class AttrAccessor;
+    template <typename Obj, typename Key>
+    class ItemAccessor;
 
     struct SliceInitializer;
 
@@ -1031,16 +1017,36 @@ public:
     /* Move constructor.  Steals a reference to a rvalue python object. */
     Object(pybind11::object&& o) : Base(std::move(o)) {}
 
-    /* Convert an accessor into a generic Object. */
+    /* Convert a pybind11 accessor into a generic Object. */
     template <typename Policy>
     Object(const detail::accessor<Policy> &a) : Base(pybind11::object(a)) {}
 
+    // TODO: bertrand-converting accessor should use a standard form with template
+    // specialization, so that there are no ambiguities the user needs to consider.
+    // This means encoding the different behavior in a template policy, which we can
+    // specialize on.  All accessors should be accessible through impl::Accessor<Policy>
+    // which means we don't need any additional constraints to disambiguate them.
+
+    /* Convert a bertrand accessor into a generic Object. */
+    template <typename T> requires (impl::proxy_like<T>)
+    Object(const T& value) : Base(*value) {}
+
     /* Convert any non-callable C++ value into a generic python object. */
-    template <typename T> requires (!impl::python_like<T> && !impl::is_callable_any<T>)
+    template <typename T>
+        requires (
+            !impl::proxy_like<T> &&
+            !impl::python_like<T> &&
+            !impl::is_callable_any<T>
+        )
     Object(const T& value) : Base(pybind11::cast(value).release(), stolen_t{}) {}
 
     /* Convert any callable C++ value into a generic python object. */
-    template <typename T> requires (!impl::python_like<T> && impl::is_callable_any<T>)
+    template <typename T>
+        requires (
+            !impl::proxy_like<T> &&
+            !impl::python_like<T> &&
+            impl::is_callable_any<T>
+        )
     Object(const T& value);  // defined in python.h
 
     using Base::operator=;
@@ -1102,7 +1108,7 @@ public:
 
     /* Implicitly convert an Object to a wrapper class, which moves it into a managed
     buffer for static storage duration, etc. */
-    template <typename T> requires (impl::is_proxy<T>)
+    template <typename T> requires (impl::proxy_like<T>)
     inline operator T() const {
         return T(this->operator typename T::Wrapped());
     }
@@ -1110,7 +1116,7 @@ public:
     /* Explicitly convert to any other non-Object type using pybind11's type casting
     mechanism. */
     template <typename T>
-        requires (!impl::is_proxy<T> && !std::is_base_of_v<Object, T>)
+        requires (!impl::proxy_like<T> && !std::is_base_of_v<Object, T>)
     inline explicit operator T() const {
         return Base::cast<T>();
     }
@@ -1164,7 +1170,7 @@ public:
     inline impl::AttrAccessor attr(const char* key) const;
 
     template <typename Key> requires (impl::__getitem__<Object, Key>::enable)
-    inline impl::ItemAccessor<Object, Key> operator[](Key&& key) const;
+    inline impl::ItemAccessor<Object, std::decay_t<Key>> operator[](Key&& key) const;
 
     template <typename T = Object> requires (impl::__getitem__<T, Slice>::enable)
     inline impl::ItemAccessor<T, Slice> operator[](
@@ -1246,125 +1252,10 @@ public:
 
 namespace impl {
 
-    template <>
-    struct __dereference__<Object> : Returns<Object> {};  // TODO: return type not considered
-    template <typename ... Args>
-    struct __call__<Object, Args...> : Returns<Object> {};
-    template <>
-    struct __len__<Object> : Returns<size_t> {};
-    template <typename T>
-    struct __contains__<Object, T> : Returns<bool> {};
-    template <>
-    struct __iter__<Object> : Returns<Object> {};
-    template <>
-    struct __reversed__<Object> : Returns<Object> {};
-    template <typename T>
-    struct __getitem__<Object, T> : Returns<Object> {};
-    template <typename T>
-    struct __setitem__<Object, T, Object> : Returns<void> {};
-    template <typename T>
-    struct __delitem__<Object, T> : Returns<void> {};
-    template <>
-    struct __pos__<Object> : impl::Returns<Object> {};
-    template <>
-    struct __neg__<Object> : impl::Returns<Object> {};
-    template <>
-    struct __abs__<Object> : impl::Returns<Object> {};
-    template <>
-    struct __invert__<Object> : impl::Returns<Object> {};
-    template <>
-    struct __increment__<Object> : impl::Returns<Object> {};
-    template <>
-    struct __decrement__<Object> : impl::Returns<Object> {};
-    template <typename T>
-    struct __lt__<Object, T> : impl::Returns<bool> {};
-    template <typename T>
-    struct __lt__<T, Object> : impl::Returns<bool> {};
-    template <typename T>
-    struct __le__<Object, T> : impl::Returns<bool> {};
-    template <typename T>
-    struct __le__<T, Object> : impl::Returns<bool> {};
-    template <typename T1, typename T2> requires (std::is_base_of_v<Object, T1>)
-    struct __eq__<T1, T2> : impl::Returns<bool> {};
-    template <typename T1, typename T2> requires (std::is_base_of_v<Object, T2>)
-    struct __eq__<T1, T2> : impl::Returns<bool> {};
-    template <typename T1, typename T2> requires (std::is_base_of_v<Object, T1>)
-    struct __ne__<T1, T2> : impl::Returns<bool> {};
-    template <typename T1, typename T2> requires (std::is_base_of_v<Object, T2>)
-    struct __ne__<T1, T2> : impl::Returns<bool> {};
-    template <typename T>
-    struct __ge__<Object, T> : impl::Returns<bool> {};
-    template <typename T>
-    struct __ge__<T, Object> : impl::Returns<bool> {};
-    template <typename T>
-    struct __gt__<Object, T> : impl::Returns<bool> {};
-    template <typename T>
-    struct __gt__<T, Object> : impl::Returns<bool> {};
-    template <typename T>
-    struct __add__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __add__<T, Object> : impl::Returns<Object> {};
-    template <typename T>
-    struct __sub__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __sub__<T, Object> : impl::Returns<Object> {};
-    template <typename T>
-    struct __mul__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __mul__<T, Object> : impl::Returns<Object> {};
-    template <typename T>
-    struct __truediv__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __truediv__<T, Object> : impl::Returns<Object> {};
-    template <typename T>
-    struct __mod__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __mod__<T, Object> : impl::Returns<Object> {};
-    template <typename T>
-    struct __lshift__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __lshift__<T, Object> : impl::Returns<Object> {};
-    template <typename T>
-    struct __rshift__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __rshift__<T, Object> : impl::Returns<Object> {};
-    template <typename T>
-    struct __and__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __and__<T, Object> : impl::Returns<Object> {};
-    template <typename T>
-    struct __or__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __or__<T, Object> : impl::Returns<Object> {};
-    template <typename T>
-    struct __xor__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __xor__<T, Object> : impl::Returns<Object> {};
-    template <typename T>
-    struct __iadd__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __isub__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __imul__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __itruediv__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __imod__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __ilshift__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __irshift__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __iand__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __ior__<Object, T> : impl::Returns<Object> {};
-    template <typename T>
-    struct __ixor__<Object, T> : impl::Returns<Object> {};
-
     /* Base class for all accessor proxies.  Stores an arbitrary object in a buffer and
     forwards its interface using pointer semantics. */
     template <typename Obj, typename Derived>
-    class Proxy {
+    class Proxy : public ProxyTag {
     public:
         using Wrapped = Obj;
 
@@ -1547,7 +1438,7 @@ namespace impl {
         }
 
         template <typename T = Wrapped> requires (impl::__getitem__<T, Slice>::enable)
-        inline impl::ItemAccessor<T, Slice> operator[](
+        inline auto operator[](
             std::initializer_list<impl::SliceInitializer> slice
         ) const;
 
@@ -2166,7 +2057,7 @@ namespace impl {
         }
 
         template <typename Key> requires (__getitem__<Derived, Key>::enable)
-        inline ItemAccessor<Derived, Key> operator[](Key&& key) const {
+        inline ItemAccessor<Derived, std::decay_t<Key>> operator[](Key&& key) const {
             return {*this, std::forward<Key>(key)};
         }
 
@@ -2511,7 +2402,7 @@ namespace impl {
         cls(const cls& value) : parent(value) {}                                        \
         cls(cls&& value) : parent(std::move(value)) {}                                  \
                                                                                         \
-        /* Convert an accessor into this type. */                                       \
+        /* Convert a pybind11 accessor into this type. */                               \
         template <typename Policy>                                                      \
         cls(const detail::accessor<Policy> &a) {                                        \
             pybind11::object obj(a);                                                    \
@@ -2539,6 +2430,121 @@ namespace impl {
         /* Delete type narrowing operator inherited from Object. */                     \
         template <typename T> requires (std::is_base_of_v<Object, T>)                   \
         operator T() const = delete;                                                    \
+
+    template <>
+    struct __dereference__<Object>                          : Returns<detail::args_proxy> {};
+    template <typename ... Args>
+    struct __call__<Object, Args...>                        : Returns<Object> {};
+    template <>
+    struct __len__<Object>                                  : Returns<size_t> {};
+    template <typename T>
+    struct __contains__<Object, T>                          : Returns<bool> {};
+    template <>
+    struct __iter__<Object>                                 : Returns<Object> {};
+    template <>
+    struct __reversed__<Object>                             : Returns<Object> {};
+    template <typename Key>
+    struct __getitem__<Object, Key>                         : Returns<Object> {};
+    template <typename Key, typename Value>
+    struct __setitem__<Object, Key, Value>                  : Returns<void> {};
+    template <typename Key>
+    struct __delitem__<Object, Key>                         : Returns<void> {};
+    template <>
+    struct __pos__<Object>                                  : Returns<Object> {};
+    template <>
+    struct __neg__<Object>                                  : Returns<Object> {};
+    template <>
+    struct __abs__<Object>                                  : Returns<Object> {};
+    template <>
+    struct __invert__<Object>                               : Returns<Object> {};
+    template <>
+    struct __increment__<Object>                            : Returns<Object> {};
+    template <>
+    struct __decrement__<Object>                            : Returns<Object> {};
+    template <typename T>
+    struct __lt__<Object, T>                                : Returns<bool> {};
+    template <typename T>
+    struct __lt__<T, Object>                                : Returns<bool> {};
+    template <typename T>
+    struct __le__<Object, T>                                : Returns<bool> {};
+    template <typename T>
+    struct __le__<T, Object>                                : Returns<bool> {};
+    template <typename T1, typename T2> requires (std::is_base_of_v<Object, T1>)
+    struct __eq__<T1, T2>                                   : Returns<bool> {};
+    template <typename T1, typename T2> requires (std::is_base_of_v<Object, T2>)
+    struct __eq__<T1, T2>                                   : Returns<bool> {};
+    template <typename T1, typename T2> requires (std::is_base_of_v<Object, T1>)
+    struct __ne__<T1, T2>                                   : Returns<bool> {};
+    template <typename T1, typename T2> requires (std::is_base_of_v<Object, T2>)
+    struct __ne__<T1, T2>                                   : Returns<bool> {};
+    template <typename T>
+    struct __ge__<Object, T>                                : Returns<bool> {};
+    template <typename T>
+    struct __ge__<T, Object>                                : Returns<bool> {};
+    template <typename T>
+    struct __gt__<Object, T>                                : Returns<bool> {};
+    template <typename T>
+    struct __gt__<T, Object>                                : Returns<bool> {};
+    template <typename T>
+    struct __add__<Object, T>                               : Returns<Object> {};
+    template <typename T>
+    struct __add__<T, Object>                               : Returns<Object> {};
+    template <typename T>
+    struct __sub__<Object, T>                               : Returns<Object> {};
+    template <typename T>
+    struct __sub__<T, Object>                               : Returns<Object> {};
+    template <typename T>
+    struct __mul__<Object, T>                               : Returns<Object> {};
+    template <typename T>
+    struct __mul__<T, Object>                               : Returns<Object> {};
+    template <typename T>
+    struct __truediv__<Object, T>                           : Returns<Object> {};
+    template <typename T>
+    struct __truediv__<T, Object>                           : Returns<Object> {};
+    template <typename T>
+    struct __mod__<Object, T>                               : Returns<Object> {};
+    template <typename T>
+    struct __mod__<T, Object>                               : Returns<Object> {};
+    template <typename T>
+    struct __lshift__<Object, T>                            : Returns<Object> {};
+    template <typename T>
+    struct __lshift__<T, Object>                            : Returns<Object> {};
+    template <typename T>
+    struct __rshift__<Object, T>                            : Returns<Object> {};
+    template <typename T>
+    struct __rshift__<T, Object>                            : Returns<Object> {};
+    template <typename T>
+    struct __and__<Object, T>                               : Returns<Object> {};
+    template <typename T>
+    struct __and__<T, Object>                               : Returns<Object> {};
+    template <typename T>
+    struct __or__<Object, T>                                : Returns<Object> {};
+    template <typename T>
+    struct __or__<T, Object>                                : Returns<Object> {};
+    template <typename T>
+    struct __xor__<Object, T>                               : Returns<Object> {};
+    template <typename T>
+    struct __xor__<T, Object>                               : Returns<Object> {};
+    template <typename T>
+    struct __iadd__<Object, T>                              : Returns<Object> {};
+    template <typename T>
+    struct __isub__<Object, T>                              : Returns<Object> {};
+    template <typename T>
+    struct __imul__<Object, T>                              : Returns<Object> {};
+    template <typename T>
+    struct __itruediv__<Object, T>                          : Returns<Object> {};
+    template <typename T>
+    struct __imod__<Object, T>                              : Returns<Object> {};
+    template <typename T>
+    struct __ilshift__<Object, T>                           : Returns<Object> {};
+    template <typename T>
+    struct __irshift__<Object, T>                           : Returns<Object> {};
+    template <typename T>
+    struct __iand__<Object, T>                              : Returns<Object> {};
+    template <typename T>
+    struct __ior__<Object, T>                               : Returns<Object> {};
+    template <typename T>
+    struct __ixor__<Object, T>                              : Returns<Object> {};
 
 }  // namespace impl
 
@@ -2592,7 +2598,7 @@ inline impl::AttrAccessor Object::attr(const char* key) const {
 
 
 template <typename Key> requires (impl::__getitem__<Object, Key>::enable)
-inline impl::ItemAccessor<Object, Key> Object::operator[](Key&& key) const {
+inline impl::ItemAccessor<Object, std::decay_t<Key>> Object::operator[](Key&& key) const {
     return {*this, std::forward<Key>(key)};
 }
 
@@ -3401,170 +3407,6 @@ static const EllipsisType Ellipsis;
 static const NotImplementedType NotImplemented;
 
 
-
-// /* Wrapper around pybind11::slice that allows it to be instantiated with non-integer
-// inputs in order to represent denormalized slices at the Python level, and provides more
-// pythonic access to its members. */
-// class Slice : public impl::Inherits<Object, Slice> {
-//     using Base = impl::Inherits<Object, Slice>;
-
-// public:
-//     static Type type;
-
-//     template <typename T>
-//     static constexpr bool check() { return impl::slice_like<T>; }
-
-//     ////////////////////////////
-//     ////    CONSTRUCTORS    ////
-//     ////////////////////////////
-
-//     BERTRAND_OBJECT_COMMON(Base, Slice, PySlice_Check)
-
-//     /* Default constructor.  Initializes to all Nones. */
-//     Slice() : Base(PySlice_New(nullptr, nullptr, nullptr), stolen_t{}) {
-//         if (m_ptr == nullptr) {
-//             throw error_already_set();
-//         }
-//     }
-
-//     /* Initializer list constructor. */
-//     Slice(std::initializer_list<impl::SliceInitializer> indices) {
-//         if (indices.size() > 3) {
-//             throw ValueError("slices must be of the form {[start[, stop[, step]]]}");
-//         }
-//         size_t i = 0;
-//         std::array<Object, 3> params {None, None, None};
-//         for (const impl::SliceInitializer& item : indices) {
-//             params[i++] = item.first;
-//         }
-//         m_ptr = PySlice_New(params[0].ptr(), params[1].ptr(), params[2].ptr());
-//         if (m_ptr == nullptr) {
-//             throw error_already_set();
-//         }
-//     }
-
-//     /* Explicitly construct a slice from a (possibly denormalized) stop object. */
-//     template <typename Stop>
-//     explicit Slice(const Stop& stop) {
-//         m_ptr = PySlice_New(nullptr, detail::object_or_cast(stop).ptr(), nullptr);
-//         if (m_ptr == nullptr) {
-//             throw error_already_set();
-//         }
-//     }
-
-//     /* Explicitly construct a slice from (possibly denormalized) start and stop
-//     objects. */
-//     template <typename Start, typename Stop>
-//     explicit Slice(const Start& start, const Stop& stop) {
-//         m_ptr = PySlice_New(
-//             detail::object_or_cast(start).ptr(),
-//             detail::object_or_cast(stop).ptr(),
-//             nullptr
-//         );
-//         if (m_ptr == nullptr) {
-//             throw error_already_set();
-//         }
-//     }
-
-//     /* Explicitly construct a slice from (possibly denormalized) start, stop, and step
-//     objects. */
-//     template <typename Start, typename Stop, typename Step>
-//     explicit Slice(const Start& start, const Stop& stop, const Step& step) {
-//         m_ptr = PySlice_New(
-//             detail::object_or_cast(start).ptr(),
-//             detail::object_or_cast(stop).ptr(),
-//             detail::object_or_cast(step).ptr()
-//         );
-//         if (m_ptr == nullptr) {
-//             throw error_already_set();
-//         }
-//     }
-
-//     ////////////////////////////////
-//     ////    PYTHON INTERFACE    ////
-//     ////////////////////////////////
-
-//     /* Get the start object of the slice.  Note that this might not be an integer. */
-//     inline Object start() const {
-//         return this->attr("start");
-//     }
-
-//     /* Get the stop object of the slice.  Note that this might not be an integer. */
-//     inline Object stop() const {
-//         return this->attr("stop");
-//     }
-
-//     /* Get the step object of the slice.  Note that this might not be an integer. */
-//     inline Object step() const {
-//         return this->attr("step");
-//     }
-
-//     /* Data struct containing normalized indices obtained from a py::Slice object. */
-//     struct Indices {
-//         Py_ssize_t start;
-//         Py_ssize_t stop;
-//         Py_ssize_t step;
-//         Py_ssize_t length;
-//     };
-
-//     /* Normalize the indices of this slice against a container of the given length.
-//     This accounts for negative indices and clips those that are out of bounds.
-//     Returns a simple data struct with the following fields:
-
-//         * (Py_ssize_t) start: the normalized start index
-//         * (Py_ssize_t) stop: the normalized stop index
-//         * (Py_ssize_t) step: the normalized step size
-//         * (Py_ssize_t) length: the number of indices that are included in the slice
-
-//     It can be destructured using structured bindings:
-
-//         auto [start, stop, step, length] = slice.indices(size);
-//     */
-//     inline Indices indices(size_t size) const {
-//         Py_ssize_t start, stop, step, length = 0;
-//         if (PySlice_GetIndicesEx(
-//             this->ptr(),
-//             static_cast<Py_ssize_t>(size),
-//             &start,
-//             &stop,
-//             &step,
-//             &length
-//         )) {
-//             throw error_already_set();
-//         }
-//         return {start, stop, step, length};
-//     }
-
-// };
-
-
-// namespace impl {
-
-// template <>
-// struct __lt__<Slice, Object> : Returns<bool> {};
-// template <slice_like T>
-// struct __lt__<Slice, T> : Returns<bool> {};
-
-// template <>
-// struct __le__<Slice, Object> : Returns<bool> {};
-// template <slice_like T>
-// struct __le__<Slice, T> : Returns<bool> {};
-
-// template <>
-// struct __ge__<Slice, Object> : Returns<bool> {};
-// template <slice_like T>
-// struct __ge__<Slice, T> : Returns<bool> {};
-
-// template <>
-// struct __gt__<Slice, Object> : Returns<bool> {};
-// template <slice_like T>
-// struct __gt__<Slice, T> : Returns<bool> {};
-
-
-// } // namespace impl
-
-
-
 namespace impl {
 
     /* A simple struct that converts a generic C++ object into a Python equivalent in
@@ -3620,14 +3462,197 @@ namespace impl {
     template <typename T>
     constexpr bool is_initializer = std::is_base_of_v<Initializer, T>;
 
+    template <>
+    struct __lt__<Slice, Object> : Returns<bool> {};
+    template <slice_like T>
+    struct __lt__<Slice, T> : Returns<bool> {};
 
+    template <>
+    struct __le__<Slice, Object> : Returns<bool> {};
+    template <slice_like T>
+    struct __le__<Slice, T> : Returns<bool> {};
+
+    template <>
+    struct __ge__<Slice, Object> : Returns<bool> {};
+    template <slice_like T>
+    struct __ge__<Slice, T> : Returns<bool> {};
+
+    template <>
+    struct __gt__<Slice, Object> : Returns<bool> {};
+    template <slice_like T>
+    struct __gt__<Slice, T> : Returns<bool> {};
 
 }  // namespace impl
 
 
-// TODO: move slice here
+/* Wrapper around pybind11::slice that allows it to be instantiated with non-integer
+inputs in order to represent denormalized slices at the Python level, and provides more
+pythonic access to its members. */
+class Slice : public impl::Inherits<Object, Slice> {
+    using Base = impl::Inherits<Object, Slice>;
+
+public:
+    static Type type;
+
+    template <typename T>
+    static constexpr bool check() { return impl::slice_like<T>; }
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    BERTRAND_OBJECT_COMMON(Base, Slice, PySlice_Check)
+
+    /* Default constructor.  Initializes to all Nones. */
+    Slice() : Base(PySlice_New(nullptr, nullptr, nullptr), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    /* Initializer list constructor. */
+    Slice(std::initializer_list<impl::SliceInitializer> indices) {
+        if (indices.size() > 3) {
+            throw ValueError("slices must be of the form {[start[, stop[, step]]]}");
+        }
+        size_t i = 0;
+        std::array<Object, 3> params {None, None, None};
+        for (const impl::SliceInitializer& item : indices) {
+            params[i++] = item.first;
+        }
+        m_ptr = PySlice_New(params[0].ptr(), params[1].ptr(), params[2].ptr());
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    /* Explicitly construct a slice from a (possibly denormalized) stop object. */
+    template <typename Stop>
+    explicit Slice(const Stop& stop) {
+        m_ptr = PySlice_New(nullptr, detail::object_or_cast(stop).ptr(), nullptr);
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    /* Explicitly construct a slice from (possibly denormalized) start and stop
+    objects. */
+    template <typename Start, typename Stop>
+    explicit Slice(const Start& start, const Stop& stop) {
+        m_ptr = PySlice_New(
+            detail::object_or_cast(start).ptr(),
+            detail::object_or_cast(stop).ptr(),
+            nullptr
+        );
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    /* Explicitly construct a slice from (possibly denormalized) start, stop, and step
+    objects. */
+    template <typename Start, typename Stop, typename Step>
+    explicit Slice(const Start& start, const Stop& stop, const Step& step) {
+        m_ptr = PySlice_New(
+            detail::object_or_cast(start).ptr(),
+            detail::object_or_cast(stop).ptr(),
+            detail::object_or_cast(step).ptr()
+        );
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    /* Get the start object of the slice.  Note that this might not be an integer. */
+    inline Object start() const {
+        return this->attr("start");
+    }
+
+    /* Get the stop object of the slice.  Note that this might not be an integer. */
+    inline Object stop() const {
+        return this->attr("stop");
+    }
+
+    /* Get the step object of the slice.  Note that this might not be an integer. */
+    inline Object step() const {
+        return this->attr("step");
+    }
+
+    /* Data struct containing normalized indices obtained from a py::Slice object. */
+    struct Indices {
+        Py_ssize_t start;
+        Py_ssize_t stop;
+        Py_ssize_t step;
+        Py_ssize_t length;
+    };
+
+    /* Normalize the indices of this slice against a container of the given length.
+    This accounts for negative indices and clips those that are out of bounds.
+    Returns a simple data struct with the following fields:
+
+        * (Py_ssize_t) start: the normalized start index
+        * (Py_ssize_t) stop: the normalized stop index
+        * (Py_ssize_t) step: the normalized step size
+        * (Py_ssize_t) length: the number of indices that are included in the slice
+
+    It can be destructured using C++17 structured bindings:
+
+        auto [start, stop, step, length] = slice.indices(size);
+    */
+    inline Indices indices(size_t size) const {
+        Py_ssize_t start, stop, step, length = 0;
+        if (PySlice_GetIndicesEx(
+            this->ptr(),
+            static_cast<Py_ssize_t>(size),
+            &start,
+            &stop,
+            &step,
+            &length
+        )) {
+            throw error_already_set();
+        }
+        return {start, stop, step, length};
+    }
+
+};
 
 
+template <typename T> requires (impl::__getitem__<T, Slice>::enable)
+inline impl::ItemAccessor<T, Slice> Object::operator[](
+    std::initializer_list<impl::SliceInitializer> slice
+) const {
+    if (slice.size() > 3) {
+        throw ValueError("slices must be of the form {[start[, stop[, step]]]}");
+    }
+    std::array<Object, 3> params {None, None, None};
+    size_t i = 0;
+    for (const impl::SliceInitializer& item : slice) {
+        params[i++] = item.first;
+    }
+    return Base::operator[](Slice(params[0], params[1], params[2]));
+}
+
+
+template <typename Base, typename Derived>
+template <typename T> requires (impl::__getitem__<T, Slice>::enable)
+inline impl::ItemAccessor<T, Slice> impl::Inherits<Base, Derived>::operator[](
+    std::initializer_list<impl::SliceInitializer> slice
+) const {
+    return Base::operator[](slice);
+}
+
+
+template <typename Obj, typename Key>
+template <typename T> requires (impl::__getitem__<T, Slice>::enable)
+inline auto impl::Proxy<Obj, Key>::operator[](
+    std::initializer_list<impl::SliceInitializer> slice
+) const {
+    return deref()[slice];
+}
 
 
 /* Object subclass that represents an imported Python module. */
@@ -3747,21 +3772,6 @@ public:
     }
 
 };
-
-
-// inline impl::ItemAccessor Object::operator[](
-//     const std::initializer_list<impl::SliceInitializer>& slice
-// ) const {
-//     if (slice.size() > 3) {
-//         throw ValueError("slices must be of the form {[start[, stop[, step]]]}");
-//     }
-//     size_t i = 0;
-//     std::array<Object, 3> params {None, None, None};
-//     for (const impl::SliceInitializer& item : slice) {
-//         params[i++] = item.first;
-//     }
-//     return Base::operator[](pybind11::slice(params[0], params[1], params[2]));
-// }
 
 
 ////////////////////////////////

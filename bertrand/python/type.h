@@ -333,11 +333,13 @@ public:
 namespace impl {
 
 template <typename... Args>
-struct __call__<Type, Args...> : Returns<Object> {};
+struct __call__<Type, Args...>                                  : Returns<Object> {};
 template <typename T>
-struct __getitem__<Type, T> : Returns<Object> {};
+struct __getitem__<Type, T>                                     : Returns<Object> {};
+template <typename T>
+struct __or__<Type, T>                                          : Returns<Object> {};
 
-}  // namespace impl
+}
 
 
 ///////////////////////
@@ -396,76 +398,112 @@ public:
 
 namespace impl {
 
-template <typename... Args>
-struct __call__<Super, Args...> : Returns<Object> {};
-template <typename T>
-struct __getitem__<Super, T> : Returns<Object> {};
-
-template <typename T>
-struct __lt__<Super, T> : Returns<bool> {};
-template <typename T>
-struct __le__<Super, T> : Returns<bool> {};
-template <typename T>
-struct __eq__<Super, T> : Returns<bool> {};
-template <typename T>
-struct __ne__<Super, T> : Returns<bool> {};
-template <typename T>
-struct __ge__<Super, T> : Returns<bool> {};
-template <typename T>
-struct __gt__<Super, T> : Returns<bool> {};
-
 template <>
-struct __pos__<Super> : Returns<Object> {};
+struct __dereference__<Super>                               : Returns<detail::args_proxy> {};
+template <typename ... Args>
+struct __call__<Super, Args...>                             : Returns<Object> {};
 template <>
-struct __neg__<Super> : Returns<Object> {};
+struct __len__<Super>                                       : Returns<size_t> {};
+template <typename T>
+struct __contains__<Super, T>                               : Returns<bool> {};
 template <>
-struct __invert__<Super> : Returns<Object> {};
+struct __iter__<Super>                                      : Returns<Object> {};
 template <>
-struct __increment__<Super> : Returns<Object> {};
+struct __reversed__<Super>                                  : Returns<Object> {};
+template <typename Key>
+struct __getitem__<Super, Key>                              : Returns<Object> {};
+template <typename Key, typename Value>
+struct __setitem__<Super, Key, Value>                       : Returns<void> {};
+template <typename Key>
+struct __delitem__<Super, Key>                              : Returns<void> {};
 template <>
-struct __decrement__<Super> : Returns<Object> {};
-
+struct __pos__<Super>                                       : Returns<Object> {};
+template <>
+struct __neg__<Super>                                       : Returns<Object> {};
+template <>
+struct __abs__<Super>                                       : Returns<Object> {};
+template <>
+struct __invert__<Super>                                    : Returns<Object> {};
+template <>
+struct __increment__<Super>                                 : Returns<Object> {};
+template <>
+struct __decrement__<Super>                                 : Returns<Object> {};
 template <typename T>
-struct __add__<Super, T> : Returns<Object> {};
+struct __lt__<Super, T>                                     : Returns<bool> {};
 template <typename T>
-struct __sub__<Super, T> : Returns<Object> {};
+struct __lt__<T, Super>                                     : Returns<bool> {};
 template <typename T>
-struct __mul__<Super, T> : Returns<Object> {};
+struct __le__<Super, T>                                     : Returns<bool> {};
 template <typename T>
-struct __truediv__<Super, T> : Returns<Object> {};
+struct __le__<T, Super>                                     : Returns<bool> {};
 template <typename T>
-struct __mod__<Super, T> : Returns<Object> {};
+struct __ge__<Super, T>                                     : Returns<bool> {};
 template <typename T>
-struct __lshift__<Super, T> : Returns<Object> {};
+struct __ge__<T, Super>                                     : Returns<bool> {};
 template <typename T>
-struct __rshift__<Super, T> : Returns<Object> {};
+struct __gt__<Super, T>                                     : Returns<bool> {};
 template <typename T>
-struct __and__<Super, T> : Returns<Object> {};
+struct __gt__<T, Super>                                     : Returns<bool> {};
 template <typename T>
-struct __or__<Super, T> : Returns<Object> {};
+struct __add__<Super, T>                                    : Returns<Object> {};
 template <typename T>
-struct __xor__<Super, T> : Returns<Object> {};
-
+struct __add__<T, Super>                                    : Returns<Object> {};
 template <typename T>
-struct __iadd__<Super, T> : Returns<Object> {};
+struct __sub__<Super, T>                                    : Returns<Object> {};
 template <typename T>
-struct __isub__<Super, T> : Returns<Object> {};
+struct __sub__<T, Super>                                    : Returns<Object> {};
 template <typename T>
-struct __imul__<Super, T> : Returns<Object> {};
+struct __mul__<Super, T>                                    : Returns<Object> {};
 template <typename T>
-struct __itruediv__<Super, T> : Returns<Object> {};
+struct __mul__<T, Super>                                    : Returns<Object> {};
 template <typename T>
-struct __imod__<Super, T> : Returns<Object> {};
+struct __truediv__<Super, T>                                : Returns<Object> {};
 template <typename T>
-struct __ilshift__<Super, T> : Returns<Object> {};
+struct __truediv__<T, Super>                                : Returns<Object> {};
 template <typename T>
-struct __irshift__<Super, T> : Returns<Object> {};
+struct __mod__<Super, T>                                    : Returns<Object> {};
 template <typename T>
-struct __iand__<Super, T> : Returns<Object> {};
+struct __mod__<T, Super>                                    : Returns<Object> {};
 template <typename T>
-struct __ior__<Super, T> : Returns<Object> {};
+struct __lshift__<Super, T>                                 : Returns<Object> {};
 template <typename T>
-struct __ixor__<Super, T> : Returns<Object> {};
+struct __lshift__<T, Super>                                 : Returns<Object> {};
+template <typename T>
+struct __rshift__<Super, T>                                 : Returns<Object> {};
+template <typename T>
+struct __rshift__<T, Super>                                 : Returns<Object> {};
+template <typename T>
+struct __and__<Super, T>                                    : Returns<Object> {};
+template <typename T>
+struct __and__<T, Super>                                    : Returns<Object> {};
+template <typename T>
+struct __or__<Super, T>                                     : Returns<Object> {};
+template <typename T>
+struct __or__<T, Super>                                     : Returns<Object> {};
+template <typename T>
+struct __xor__<Super, T>                                    : Returns<Object> {};
+template <typename T>
+struct __xor__<T, Super>                                    : Returns<Object> {};
+template <typename T>
+struct __iadd__<Super, T>                                   : Returns<Object> {};
+template <typename T>
+struct __isub__<Super, T>                                   : Returns<Object> {};
+template <typename T>
+struct __imul__<Super, T>                                   : Returns<Object> {};
+template <typename T>
+struct __itruediv__<Super, T>                               : Returns<Object> {};
+template <typename T>
+struct __imod__<Super, T>                                   : Returns<Object> {};
+template <typename T>
+struct __ilshift__<Super, T>                                : Returns<Object> {};
+template <typename T>
+struct __irshift__<Super, T>                                : Returns<Object> {};
+template <typename T>
+struct __iand__<Super, T>                                   : Returns<Object> {};
+template <typename T>
+struct __ior__<Super, T>                                    : Returns<Object> {};
+template <typename T>
+struct __ixor__<Super, T>                                   : Returns<Object> {};
 
 }  // namespace impl
 

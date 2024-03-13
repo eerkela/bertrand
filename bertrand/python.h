@@ -9,7 +9,6 @@
 #include "python/int.h"
 #include "python/float.h"
 #include "python/complex.h"
-#include "python/slice.h"
 #include "python/range.h"
 #include "python/list.h"
 #include "python/tuple.h"
@@ -44,7 +43,12 @@ namespace py {
  *      list.append("a"); 
  *      // same as before, but with raw C++ integers.  Everything gets converted to a
  *      // py::Object anyways, so the only thing this does is enforce C++ type safety.
+ *
+ * NOTE: TypedList<T> would force T to be a subclass of py::Object, and would refuse
+ * to compile any code that violates type safety.  That would completely eliminate all
+ * runtime overhead compared to normal lists
  */
+
 
 
 
@@ -190,12 +194,12 @@ inline auto Object::operator()(Args&&... args) const
  */
 
 
-template <typename T> requires (!impl::python_like<T> && impl::is_callable_any<T>)
+template <typename T> requires (!impl::proxy_like<T> && !impl::python_like<T> && impl::is_callable_any<T>)
 inline Object::Object(const T& value) : Base(Function(value).release().ptr(), stolen_t{}) {}
 
 
 template <typename T>
-    requires impl::python_like<T> && impl::str_like<T>
+    requires (impl::python_like<T> && impl::str_like<T>)
 inline Int::Int(const T& str, int base) :
     Base(PyLong_FromUnicodeObject(str.ptr(), base), stolen_t{})
 {
@@ -205,9 +209,7 @@ inline Int::Int(const T& str, int base) :
 }
 
 
-template <typename T>
-    requires impl::python_like<T> && impl::str_like<T>
-inline Float::Float(const T& str) : Base(PyFloat_FromString(str.ptr()), stolen_t{}) {
+inline Float::Float(const Str& str) : Base(PyFloat_FromString(str.ptr()), stolen_t{}) {
     if (m_ptr == nullptr) {
         throw error_already_set();
     }
@@ -541,14 +543,14 @@ inline List dir(const Handle& obj) {
 
 /* Equivalent to Python `hash(obj)`, but delegates to std::hash, which is overloaded
 for the relevant Python types.  This promotes hash-not-implemented exceptions into
-compile-time errors. */
+compile-time equivalents. */
 template <typename T>
-inline size_t hash(const T& obj) {
+inline size_t hash(T&& obj) {
     static_assert(
         impl::is_hashable<T>,
         "hash() is not supported for this type.  Did you forget to overload std::hash?"
     );
-    return std::hash<T>{}(obj);
+    return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
 }
 
 
@@ -683,13 +685,12 @@ using the py::Str constructor. */
 template <typename... Args>
 inline void print(const Args&... args) {
     auto convert = [](auto&& arg) {
-        if constexpr (impl::is_proxy<std::decay_t<decltype(arg)>>) {
+        if constexpr (impl::proxy_like<std::decay_t<decltype(arg)>>) {
             return Str(*arg);
         } else {
             return Str(arg);
         }
     };
-
     pybind11::print(convert(args)...);
 }
 

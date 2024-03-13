@@ -5,6 +5,8 @@
 #ifndef BERTRAND_PYTHON_STRING_H
 #define BERTRAND_PYTHON_STRING_H
 
+// #include <format>  // part of the C++20 standard, but not available until GCC 13+
+
 #include "common.h"
 #include "int.h"
 #include "list.h"
@@ -15,10 +17,6 @@
 
 namespace bertrand {
 namespace py {
-
-
-// TODO: consider using std::format() for printf-style formatting.  This is more
-// type-safe and generic, avoids the need to learn % formatting, and does not crash
 
 
 namespace impl {
@@ -786,39 +784,48 @@ public:
 namespace impl {
 
 template <>
-struct __lt__<Str, Object> : Returns<bool> {};
-template <str_like T>
-struct __lt__<Str, T> : Returns<bool> {};
-
+struct __dereference__<Str>                                     : Returns<detail::args_proxy> {};
 template <>
-struct __le__<Str, Object> : Returns<bool> {};
-template <str_like T>
-struct __le__<Str, T> : Returns<bool> {};
-
+struct __len__<Str>                                             : Returns<size_t> {};
 template <>
-struct __ge__<Str, Object> : Returns<bool> {};
-template <str_like T>
-struct __ge__<Str, T> : Returns<bool> {};
-
+struct __iter__<Str>                                            : Returns<Str> {};
 template <>
-struct __gt__<Str, Object> : Returns<bool> {};
+struct __reversed__<Str>                                        : Returns<Str> {};
 template <str_like T>
-struct __gt__<Str, T> : Returns<bool> {};
-
+struct __contains__<Str, T>                                     : Returns<bool> {};
+template <int_like T>
+struct __getitem__<Str, T>                                      : Returns<Str> {};
 template <>
-struct __add__<Str, Object> : Returns<Str> {};
-template <str_like T>
-struct __add__<Str, T> : Returns<Str> {};
-
+struct __getitem__<Str, Slice>                                  : Returns<Str> {};
 template <>
-struct __iadd__<Str, Object> : Returns<Str&> {};
+struct __lt__<Str, Object>                                      : Returns<bool> {};
 template <str_like T>
-struct __iadd__<Str, T> : Returns<Str&> {};
+struct __lt__<Str, T>                                           : Returns<bool> {};
+template <>
+struct __le__<Str, Object>                                      : Returns<bool> {};
+template <str_like T>
+struct __le__<Str, T>                                           : Returns<bool> {};
+template <>
+struct __ge__<Str, Object>                                      : Returns<bool> {};
+template <str_like T>
+struct __ge__<Str, T>                                           : Returns<bool> {};
+template <>
+struct __gt__<Str, Object>                                      : Returns<bool> {};
+template <str_like T>
+struct __gt__<Str, T>                                           : Returns<bool> {};
+template <>
+struct __add__<Str, Object>                                     : Returns<Str> {};
+template <str_like T>
+struct __add__<Str, T>                                          : Returns<Str> {};
+template <>
+struct __iadd__<Str, Object>                                    : Returns<Str&> {};
+template <str_like T>
+struct __iadd__<Str, T>                                         : Returns<Str&> {};
 
-} // namespace impl
+}
 
 
-/* Bertrand equivalent for pybind11::bytes.
+/* TODO: Bertrand equivalent for pybind11::bytes.
 
 bytes/bytearray interface:
 

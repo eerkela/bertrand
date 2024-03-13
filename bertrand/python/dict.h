@@ -102,10 +102,26 @@ public:
 };
 
 
+namespace impl {
+
 template <>
-struct impl::__or__<MappingProxy, Object> : impl::Returns<Dict> {};
-template <impl::dict_like T>
-struct impl::__or__<MappingProxy, T> : impl::Returns<Dict> {};
+struct __dereference__<MappingProxy>                        : Returns<detail::args_proxy> {};
+template <>
+struct __len__<MappingProxy>                                : Returns<size_t> {};
+template <>
+struct __iter__<MappingProxy>                               : Returns<Object> {};
+template <>
+struct __reversed__<MappingProxy>                           : Returns<Object> {};
+template <is_hashable Key>
+struct __contains__<MappingProxy, Key>                      : Returns<bool> {};
+template <is_hashable Key>
+struct __getitem__<MappingProxy, Key>                       : Returns<Object> {};
+template <>
+struct __or__<MappingProxy, Object>                         : Returns<Dict> {};
+template <dict_like T>
+struct __or__<MappingProxy, T>                              : Returns<Dict> {};
+
+}
 
 
 /* New subclass of pybind11::object representing a view into the keys of a dictionary
@@ -216,49 +232,62 @@ public:
 
 namespace impl {
 
-
 template <>
-struct __lt__<KeysView, Object> : Returns<bool> {};
-template <anyset_like T>
-struct __lt__<KeysView, T> : Returns<bool> {};
-
+struct __dereference__<KeysView>                            : Returns<detail::args_proxy> {};
 template <>
-struct __le__<KeysView, Object> : Returns<bool> {};
-template <anyset_like T>
-struct __le__<KeysView, T> : Returns<bool> {};
-
+struct __len__<KeysView>                                    : Returns<size_t> {};
+template <is_hashable Key>
+struct __contains__<KeysView, Key>                          : Returns<bool> {};
 template <>
-struct __ge__<KeysView, Object> : Returns<bool> {};
+struct __lt__<KeysView, Object>                             : Returns<bool> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __lt__<KeysView, T>                                  : Returns<bool> {};
 template <anyset_like T>
-struct __ge__<KeysView, T> : Returns<bool> {};
-
+struct __lt__<KeysView, T>                                  : Returns<bool> {};
 template <>
-struct __gt__<KeysView, Object> : Returns<bool> {};
+struct __le__<KeysView, Object>                             : Returns<bool> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __le__<KeysView, T>                                  : Returns<bool> {};
 template <anyset_like T>
-struct __gt__<KeysView, T> : Returns<bool> {};
-
+struct __le__<KeysView, T>                                  : Returns<bool> {};
 template <>
-struct __or__<KeysView, Object> : Returns<Set> {};
+struct __ge__<KeysView, Object>                             : Returns<bool> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __ge__<KeysView, T>                                  : Returns<bool> {};
 template <anyset_like T>
-struct __or__<KeysView, T> : Returns<Set> {};
-
+struct __ge__<KeysView, T>                                  : Returns<bool> {};
 template <>
-struct __and__<KeysView, Object> : Returns<Set> {};
+struct __gt__<KeysView, Object>                             : Returns<bool> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __gt__<KeysView, T>                                  : Returns<bool> {};
 template <anyset_like T>
-struct __and__<KeysView, T> : Returns<Set> {};
-
+struct __gt__<KeysView, T>                                  : Returns<bool> {};
 template <>
-struct __sub__<KeysView, Object> : Returns<Set> {};
+struct __or__<KeysView, Object>                             : Returns<Set> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __or__<KeysView, T>                                  : Returns<Set> {};
 template <anyset_like T>
-struct __sub__<KeysView, T> : Returns<Set> {};
-
+struct __or__<KeysView, T>                                  : Returns<Set> {};
 template <>
-struct __xor__<KeysView, Object> : Returns<Set> {};
+struct __and__<KeysView, Object>                            : Returns<Set> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __and__<KeysView, T>                                 : Returns<Set> {};
 template <anyset_like T>
-struct __xor__<KeysView, T> : Returns<Set> {};
+struct __and__<KeysView, T>                                 : Returns<Set> {};
+template <>
+struct __sub__<KeysView, Object>                            : Returns<Set> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __sub__<KeysView, T>                                 : Returns<Set> {};
+template <anyset_like T>
+struct __sub__<KeysView, T>                                 : Returns<Set> {};
+template <>
+struct __xor__<KeysView, Object>                            : Returns<Set> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __xor__<KeysView, T>                                 : Returns<Set> {};
+template <anyset_like T>
+struct __xor__<KeysView, T>                                 : Returns<Set> {};
 
-
-}  // namespace impl
+}
 
 
 /* New subclass of pybind11::object representing a view into the values of a dictionary
@@ -322,6 +351,22 @@ public:
     }
 
 };
+
+
+namespace impl {
+
+template <>
+struct __dereference__<ValuesView>                          : Returns<detail::args_proxy> {};
+template <>
+struct __len__<ValuesView>                                  : Returns<size_t> {};
+template <>
+struct __iter__<ValuesView>                                 : Returns<Object> {};
+template <>
+struct __reversed__<ValuesView>                             : Returns<Object> {};
+template <typename T>
+struct __contains__<ValuesView, T>                          : Returns<bool> {};
+
+}
 
 
 /* New subclass of pybind11::object representing a view into the items of a dictionary
@@ -388,6 +433,22 @@ public:
     }
 
 };
+
+
+namespace impl {
+
+template <>
+struct __dereference__<ItemsView>                           : Returns<detail::args_proxy> {};
+template <>
+struct __len__<ItemsView>                                   : Returns<size_t> {};
+template <>
+struct __iter__<ItemsView>                                  : Returns<Object> {};
+template <>
+struct __reversed__<ItemsView>                              : Returns<Object> {};
+template <typename First, typename Second>
+struct __contains__<ItemsView, std::pair<First, Second>>    : Returns<bool> {};
+
+}
 
 
 /* Wrapper around pybind11::dict that allows it to be directly initialized using
@@ -855,16 +916,31 @@ public:
 namespace impl {
 
 template <>
-struct __or__<Dict, Object> : Returns<Dict> {};
-template <dict_like T>
-struct __or__<Dict, T> : Returns<Dict> {};
-
+struct __dereference__<Dict>                                : Returns<detail::args_proxy> {};
 template <>
-struct __ior__<Dict, Object> : Returns<Dict&> {};
+struct __len__<Dict>                                        : Returns<size_t> {};
+template <>
+struct __iter__<Dict>                                       : Returns<Object> {};
+template <>
+struct __reversed__<Dict>                                   : Returns<Object> {};
+template <is_hashable Key>
+struct __contains__<Dict, Key>                              : Returns<bool> {};
+template <is_hashable Key>
+struct __getitem__<Dict, Key>                               : Returns<Object> {};
+template <is_hashable Key, typename Value>
+struct __setitem__<Dict, Key, Value>                        : Returns<void> {};
+template <is_hashable Key>
+struct __delitem__<Dict, Key>                               : Returns<void> {};
+template <>
+struct __or__<Dict, Object>                                 : Returns<Dict> {};
 template <dict_like T>
-struct __ior__<Dict, T> : Returns<Dict&> {};
+struct __or__<Dict, T>                                      : Returns<Dict> {};
+template <>
+struct __ior__<Dict, Object>                                : Returns<Dict&> {};
+template <dict_like T>
+struct __ior__<Dict, T>                                     : Returns<Dict&> {};
 
-}  // namespace impl
+}
 
 
 inline Dict MappingProxy::copy() const{

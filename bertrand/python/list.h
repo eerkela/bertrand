@@ -405,39 +405,54 @@ public:
 
 namespace impl {
 
-
 template <>
-struct __lt__<List, Object> : Returns<bool> {};
-template <list_like T>
-struct __lt__<List, T> : Returns<bool> {};
-
+struct __dereference__<List>                                : Returns<detail::args_proxy> {};
 template <>
-struct __le__<List, Object> : Returns<bool> {};
-template <list_like T>
-struct __le__<List, T> : Returns<bool> {};
-
+struct __len__<List>                                        : Returns<size_t> {};
 template <>
-struct __ge__<List, Object> : Returns<bool> {};
-template <list_like T>
-struct __ge__<List, T> : Returns<bool> {};
-
+struct __iter__<List>                                       : Returns<Object> {};
 template <>
-struct __gt__<List, Object> : Returns<bool> {};
-template <list_like T>
-struct __gt__<List, T> : Returns<bool> {};
-
+struct __reversed__<List>                                   : Returns<Object> {};
+template <typename T>
+struct __contains__<List, T>                                : Returns<bool> {};
+template <int_like T>
+struct __getitem__<List, T>                                 : Returns<Object> {};
 template <>
-struct __add__<List, Object> : Returns<List> {};
+struct __getitem__<List, Slice>                             : Returns<List> {};
+template <int_like T>
+struct __setitem__<List, T, Object>                         : Returns<void> {};
 template <list_like T>
-struct __add__<List, T> : Returns<List> {};
-
+struct __setitem__<List, Slice, T>                          : Returns<void> {};
+template <int_like T>
+struct __delitem__<List, T>                                 : Returns<void> {};
 template <>
-struct __iadd__<List, Object> : Returns<List&> {};
+struct __delitem__<List, Slice>                             : Returns<void> {};
+template <>
+struct __lt__<List, Object>                                 : Returns<bool> {};
 template <list_like T>
-struct __iadd__<List, T> : Returns<List&> {};
+struct __lt__<List, T>                                      : Returns<bool> {};
+template <>
+struct __le__<List, Object>                                 : Returns<bool> {};
+template <list_like T>
+struct __le__<List, T>                                      : Returns<bool> {};
+template <>
+struct __ge__<List, Object>                                 : Returns<bool> {};
+template <list_like T>
+struct __ge__<List, T>                                      : Returns<bool> {};
+template <>
+struct __gt__<List, Object>                                 : Returns<bool> {};
+template <list_like T>
+struct __gt__<List, T>                                      : Returns<bool> {};
+template <>
+struct __add__<List, Object>                                : Returns<List> {};
+template <list_like T>
+struct __add__<List, T>                                     : Returns<List> {};
+template <>
+struct __iadd__<List, Object>                               : Returns<List&> {};
+template <list_like T>
+struct __iadd__<List, T>                                    : Returns<List&> {};
 
-
-}  // namespace impl
+}
 
 }  // namespace python
 }  // namespace bertrand

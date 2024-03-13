@@ -7,7 +7,6 @@
 
 #include "common.h"
 #include "int.h"
-#include "slice.h"
 
 
 namespace bertrand {
@@ -133,6 +132,25 @@ public:
 
 };
 
+
+namespace impl {
+
+template <>
+struct __dereference__<Range>                               : Returns<detail::args_proxy> {};
+template <>
+struct __len__<Range>                                       : Returns<size_t> {};
+template <>
+struct __iter__<Range>                                      : Returns<Int> {};
+template <>
+struct __reversed__<Range>                                  : Returns<Int> {};
+template <int_like T>
+struct __contains__<Range, T>                               : Returns<bool> {};
+template <int_like T>
+struct __getitem__<Range, T>                                : Returns<Int> {};
+template <>
+struct __getitem__<Range, Slice>                            : Returns<Range> {};
+
+}
 
 }  // namespace python
 }  // namespace bertrand

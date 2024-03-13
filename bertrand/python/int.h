@@ -234,221 +234,174 @@ public:
 
 namespace impl {
 
-///////////////////////////////
-////    UNARY OPERATORS    ////
-///////////////////////////////
-
-
-// TODO: include __abs__()?
-
 template <>
-struct __pos__<Int> : Returns<Int> {};
+struct __pos__<Int>                                             : Returns<Int> {};
 template <>
-struct __neg__<Int> : Returns<Int> {};
+struct __neg__<Int>                                             : Returns<Int> {};
 template <>
-struct __invert__<Int> : Returns<Int> {};
+struct __abs__<Int>                                             : Returns<Int> {};
 template <>
-struct __increment__<Int> : Returns<Int> {};
+struct __invert__<Int>                                          : Returns<Int> {};
 template <>
-struct __decrement__<Int> : Returns<Int> {};
-
-
-///////////////////////////
-////    COMPARISONS    ////
-///////////////////////////
-
-
+struct __increment__<Int>                                       : Returns<Int> {};
 template <>
-struct __lt__<Int, Object> : Returns<bool> {};
+struct __decrement__<Int>                                       : Returns<Int> {};
+template <>
+struct __lt__<Int, Object>                                      : Returns<bool> {};
 template <bool_like T>
-struct __lt__<Int, T> : Returns<bool> {};
+struct __lt__<Int, T>                                           : Returns<bool> {};
 template <int_like T>
-struct __lt__<Int, T> : Returns<bool> {};
+struct __lt__<Int, T>                                           : Returns<bool> {};
 template <float_like T>
-struct __lt__<Int, T> : Returns<bool> {};
-
+struct __lt__<Int, T>                                           : Returns<bool> {};
 template <>
-struct __le__<Int, Object> : Returns<bool> {};
+struct __le__<Int, Object>                                      : Returns<bool> {};
 template <bool_like T>
-struct __le__<Int, T> : Returns<bool> {};
+struct __le__<Int, T>                                           : Returns<bool> {};
 template <int_like T>
-struct __le__<Int, T> : Returns<bool> {};
+struct __le__<Int, T>                                           : Returns<bool> {};
 template <float_like T>
-struct __le__<Int, T> : Returns<bool> {};
-
+struct __le__<Int, T>                                           : Returns<bool> {};
 template <>
-struct __ge__<Int, Object> : Returns<bool> {};
+struct __ge__<Int, Object>                                      : Returns<bool> {};
 template <bool_like T>
-struct __ge__<Int, T> : Returns<bool> {};
+struct __ge__<Int, T>                                           : Returns<bool> {};
 template <int_like T>
-struct __ge__<Int, T> : Returns<bool> {};
+struct __ge__<Int, T>                                           : Returns<bool> {};
 template <float_like T>
-struct __ge__<Int, T> : Returns<bool> {};
-
+struct __ge__<Int, T>                                           : Returns<bool> {};
 template <>
-struct __gt__<Int, Object> : Returns<bool> {};
+struct __gt__<Int, Object>                                      : Returns<bool> {};
 template <bool_like T>
-struct __gt__<Int, T> : Returns<bool> {};
+struct __gt__<Int, T>                                           : Returns<bool> {};
 template <int_like T>
-struct __gt__<Int, T> : Returns<bool> {};
+struct __gt__<Int, T>                                           : Returns<bool> {};
 template <float_like T>
-struct __gt__<Int, T> : Returns<bool> {};
-
-
-////////////////////////////////
-////    BINARY OPERATORS    ////
-////////////////////////////////
-
-
+struct __gt__<Int, T>                                           : Returns<bool> {};
 template <>
-struct __add__<Int, Object> : Returns<Object> {};
+struct __add__<Int, Object>                                     : Returns<Object> {};
 template <bool_like T>
-struct __add__<Int, T> : Returns<Int> {};
+struct __add__<Int, T>                                          : Returns<Int> {};
 template <int_like T>
-struct __add__<Int, T> : Returns<Int> {};
+struct __add__<Int, T>                                          : Returns<Int> {};
 template <float_like T>
-struct __add__<Int, T> : Returns<Float> {};
+struct __add__<Int, T>                                          : Returns<Float> {};
 template <complex_like T>
-struct __add__<Int, T> : Returns<Complex> {};
-
+struct __add__<Int, T>                                          : Returns<Complex> {};
 template <>
-struct __sub__<Int, Object> : Returns<Object> {};
+struct __sub__<Int, Object>                                     : Returns<Object> {};
 template <bool_like T>
-struct __sub__<Int, T> : Returns<Int> {};
+struct __sub__<Int, T>                                          : Returns<Int> {};
 template <int_like T>
-struct __sub__<Int, T> : Returns<Int> {};
+struct __sub__<Int, T>                                          : Returns<Int> {};
 template <float_like T>
-struct __sub__<Int, T> : Returns<Float> {};
+struct __sub__<Int, T>                                          : Returns<Float> {};
 template <complex_like T>
-struct __sub__<Int, T> : Returns<Complex> {};
-
+struct __sub__<Int, T>                                          : Returns<Complex> {};
 template <>
-struct __mul__<Int, Object> : Returns<Object> {};
+struct __mul__<Int, Object>                                     : Returns<Object> {};
 template <bool_like T>
-struct __mul__<Int, T> : Returns<Int> {};
+struct __mul__<Int, T>                                          : Returns<Int> {};
 template <int_like T>
-struct __mul__<Int, T> : Returns<Int> {};
+struct __mul__<Int, T>                                          : Returns<Int> {};
 template <float_like T>
-struct __mul__<Int, T> : Returns<Float> {};
+struct __mul__<Int, T>                                          : Returns<Float> {};
 template <complex_like T>
-struct __mul__<Int, T> : Returns<Complex> {};
-
+struct __mul__<Int, T>                                          : Returns<Complex> {};
 template <>
-struct __truediv__<Int, Object> : Returns<Object> {};
+struct __truediv__<Int, Object>                                 : Returns<Object> {};
 template <bool_like T>
-struct __truediv__<Int, T> : Returns<Float> {};
+struct __truediv__<Int, T>                                      : Returns<Float> {};
 template <int_like T>
-struct __truediv__<Int, T> : Returns<Float> {};
+struct __truediv__<Int, T>                                      : Returns<Float> {};
 template <float_like T>
-struct __truediv__<Int, T> : Returns<Float> {};
+struct __truediv__<Int, T>                                      : Returns<Float> {};
 template <complex_like T>
-struct __truediv__<Int, T> : Returns<Complex> {};
-
+struct __truediv__<Int, T>                                      : Returns<Complex> {};
 template <>
-struct __mod__<Int, Object> : Returns<Object> {};
+struct __mod__<Int, Object>                                     : Returns<Object> {};
 template <bool_like T>
-struct __mod__<Int, T> : Returns<Int> {};
+struct __mod__<Int, T>                                          : Returns<Int> {};
 template <int_like T>
-struct __mod__<Int, T> : Returns<Int> {};
+struct __mod__<Int, T>                                          : Returns<Int> {};
 template <float_like T>
-struct __mod__<Int, T> : Returns<Float> {};
+struct __mod__<Int, T>                                          : Returns<Float> {};
 // template <complex_like T>    <-- Disabled in Python
-// struct __mod__<Int, T> : Returns<Complex> {};
-
+// struct __mod__<Int, T>                                       : Returns<Complex> {};
 template <>
-struct __lshift__<Int, Object> : Returns<Object> {};
+struct __lshift__<Int, Object>                                  : Returns<Object> {};
 template <bool_like T>
-struct __lshift__<Int, T> : Returns<Int> {};
+struct __lshift__<Int, T>                                       : Returns<Int> {};
 template <int_like T>
-struct __lshift__<Int, T> : Returns<Int> {};
-
+struct __lshift__<Int, T>                                       : Returns<Int> {};
 template <>
-struct __rshift__<Int, Object> : Returns<Object> {};
+struct __rshift__<Int, Object>                                  : Returns<Object> {};
 template <bool_like T>
-struct __rshift__<Int, T> : Returns<Int> {};
+struct __rshift__<Int, T>                                       : Returns<Int> {};
 template <int_like T>
-struct __rshift__<Int, T> : Returns<Int> {};
-
+struct __rshift__<Int, T>                                       : Returns<Int> {};
 template <>
-struct __and__<Int, Object> : Returns<Object> {};
+struct __and__<Int, Object>                                     : Returns<Object> {};
 template <bool_like T>
-struct __and__<Int, T> : Returns<Int> {};
+struct __and__<Int, T>                                          : Returns<Int> {};
 template <int_like T>
-struct __and__<Int, T> : Returns<Int> {};
-
+struct __and__<Int, T>                                          : Returns<Int> {};
 template <>
-struct __or__<Int, Object> : Returns<Object> {};
+struct __or__<Int, Object>                                      : Returns<Object> {};
 template <bool_like T>
-struct __or__<Int, T> : Returns<Int> {};
+struct __or__<Int, T>                                           : Returns<Int> {};
 template <int_like T>
-struct __or__<Int, T> : Returns<Int> {};
-
+struct __or__<Int, T>                                           : Returns<Int> {};
 template <>
-struct __xor__<Int, Object> : Returns<Object> {};
+struct __xor__<Int, Object>                                     : Returns<Object> {};
 template <bool_like T>
-struct __xor__<Int, T> : Returns<Int> {};
+struct __xor__<Int, T>                                          : Returns<Int> {};
 template <int_like T>
-struct __xor__<Int, T> : Returns<Int> {};
-
-
-/////////////////////////////////
-////    INPLACE OPERATORS    ////
-/////////////////////////////////
-
-
+struct __xor__<Int, T>                                          : Returns<Int> {};
 template <bool_like T>
-struct __iadd__<Int, T> : Returns<Int> {};
+struct __iadd__<Int, T>                                         : Returns<Int> {};
 template <int_like T>
-struct __iadd__<Int, T> : Returns<Int> {};
-
+struct __iadd__<Int, T>                                         : Returns<Int> {};
 template <bool_like T>
-struct __isub__<Int, T> : Returns<Int> {};
+struct __isub__<Int, T>                                         : Returns<Int> {};
 template <int_like T>
-struct __isub__<Int, T> : Returns<Int> {};
-
+struct __isub__<Int, T>                                         : Returns<Int> {};
 template <bool_like T>
-struct __imul__<Int, T> : Returns<Int> {};
+struct __imul__<Int, T>                                         : Returns<Int> {};
 template <int_like T>
-struct __imul__<Int, T> : Returns<Int> {};
-
+struct __imul__<Int, T>                                         : Returns<Int> {};
 // operator/= is not type-safe in C++ because it converts the result to a float.  Use
 // py::Float a = b / c; or py::Int a = py::div(b, c); instead.
-
 template <bool_like T>
-struct __imod__<Int, T> : Returns<Int> {};
+struct __imod__<Int, T>                                         : Returns<Int> {};
 template <int_like T>
-struct __imod__<Int, T> : Returns<Int> {};
-
+struct __imod__<Int, T>                                         : Returns<Int> {};
 template <bool_like T>
-struct __ilshift__<Int, T> : Returns<Int> {};
+struct __ilshift__<Int, T>                                      : Returns<Int> {};
 template <int_like T>
-struct __ilshift__<Int, T> : Returns<Int> {};
-
+struct __ilshift__<Int, T>                                      : Returns<Int> {};
 template <bool_like T>
-struct __irshift__<Int, T> : Returns<Int> {};
+struct __irshift__<Int, T>                                      : Returns<Int> {};
 template <int_like T>
-struct __irshift__<Int, T> : Returns<Int> {};
-
+struct __irshift__<Int, T>                                      : Returns<Int> {};
 template <bool_like T>
-struct __iand__<Int, T> : Returns<Int> {};
+struct __iand__<Int, T>                                         : Returns<Int> {};
 template <int_like T>
-struct __iand__<Int, T> : Returns<Int> {};
-
+struct __iand__<Int, T>                                         : Returns<Int> {};
 template <bool_like T>
-struct __ior__<Int, T> : Returns<Int> {};
+struct __ior__<Int, T>                                          : Returns<Int> {};
 template <int_like T>
-struct __ior__<Int, T> : Returns<Int> {};
-
+struct __ior__<Int, T>                                          : Returns<Int> {};
 template <bool_like T>
-struct __ixor__<Int, T> : Returns<Int> {};
+struct __ixor__<Int, T>                                         : Returns<Int> {};
 template <int_like T>
-struct __ixor__<Int, T> : Returns<Int> {};
+struct __ixor__<Int, T>                                         : Returns<Int> {};
 
-
-} // namespace impl
+}
 
 }  // namespace python
 }  // namespace bertrand
+
 
 BERTRAND_STD_HASH(bertrand::py::Int)
 

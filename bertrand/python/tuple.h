@@ -6,21 +6,10 @@
 #define BERTRAND_PYTHON_TUPLE_H
 
 #include "common.h"
-#include "slice.h"
 
 
 namespace bertrand {
 namespace py {
-
-
-namespace impl {
-
-
-
-
-
-}  // namespace impl
-
 
 
 /* Wrapper around pybind11::tuple that allows it to be directly initialized using
@@ -360,37 +349,45 @@ public:
 namespace impl {
 
 template <>
-struct __lt__<Tuple, Object> : Returns<bool> {};
-template <tuple_like T>
-struct __lt__<Tuple, T> : Returns<bool> {};
-
+struct __dereference__<Tuple>                                   : Returns<detail::args_proxy> {};
 template <>
-struct __le__<Tuple, Object> : Returns<bool> {};
-template <tuple_like T>
-struct __le__<Tuple, T> : Returns<bool> {};
-
+struct __len__<Tuple>                                           : Returns<size_t> {};
 template <>
-struct __ge__<Tuple, Object> : Returns<bool> {};
-template <tuple_like T>
-struct __ge__<Tuple, T> : Returns<bool> {};
-
+struct __iter__<Tuple>                                          : Returns<Object> {};
 template <>
-struct __gt__<Tuple, Object> : Returns<bool> {};
-template <tuple_like T>
-struct __gt__<Tuple, T> : Returns<bool> {};
-
+struct __reversed__<Tuple>                                      : Returns<Object> {};
+template <typename T>
+struct __contains__<Tuple, T>                                   : Returns<bool> {};
+template <int_like T>
+struct __getitem__<Tuple, T>                                    : Returns<Object> {};
 template <>
-struct __add__<Tuple, Object> : Returns<Tuple> {};
-template <tuple_like T>
-struct __add__<Tuple, T> : Returns<Tuple> {};
-
+struct __getitem__<Tuple, Slice>                                : Returns<Tuple> {};
 template <>
-struct __iadd__<Tuple, Object> : Returns<Tuple&> {};
+struct __lt__<Tuple, Object>                                    : Returns<bool> {};
 template <tuple_like T>
-struct __iadd__<Tuple, T> : Returns<Tuple&> {};
+struct __lt__<Tuple, T>                                         : Returns<bool> {};
+template <>
+struct __le__<Tuple, Object>                                    : Returns<bool> {};
+template <tuple_like T>
+struct __le__<Tuple, T>                                         : Returns<bool> {};
+template <>
+struct __ge__<Tuple, Object>                                    : Returns<bool> {};
+template <tuple_like T>
+struct __ge__<Tuple, T>                                         : Returns<bool> {};
+template <>
+struct __gt__<Tuple, Object>                                    : Returns<bool> {};
+template <tuple_like T>
+struct __gt__<Tuple, T>                                         : Returns<bool> {};
+template <>
+struct __add__<Tuple, Object>                                   : Returns<Tuple> {};
+template <tuple_like T>
+struct __add__<Tuple, T>                                        : Returns<Tuple> {};
+template <>
+struct __iadd__<Tuple, Object>                                  : Returns<Tuple&> {};
+template <tuple_like T>
+struct __iadd__<Tuple, T>                                       : Returns<Tuple&> {};
 
-
-} // namespace impl
+}
 
 }  // namespace python
 }  // namespace bertrand
