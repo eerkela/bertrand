@@ -194,7 +194,7 @@ inline auto Object::operator()(Args&&... args) const
  */
 
 
-template <typename T> requires (!impl::proxy_like<T> && !impl::python_like<T> && impl::is_callable_any<T>)
+template <typename T> requires (!impl::python_like<T> && impl::is_callable_any<T>)
 inline Object::Object(const T& value) : Base(Function(value).release().ptr(), stolen_t{}) {}
 
 

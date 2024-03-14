@@ -960,9 +960,11 @@ namespace impl {
         return TypeError(msg.str());
     }
 
-    class AttrAccessor;
+    template <typename Policy>
+    class Proxy;
+    class Attr;
     template <typename Obj, typename Key>
-    class ItemAccessor;
+    class Item;
 
     struct SliceInitializer;
 
@@ -1021,32 +1023,18 @@ public:
     template <typename Policy>
     Object(const detail::accessor<Policy> &a) : Base(pybind11::object(a)) {}
 
-    // TODO: bertrand-converting accessor should use a standard form with template
-    // specialization, so that there are no ambiguities the user needs to consider.
-    // This means encoding the different behavior in a template policy, which we can
-    // specialize on.  All accessors should be accessible through impl::Accessor<Policy>
-    // which means we don't need any additional constraints to disambiguate them.
+    // TODO: this must be forward declared
 
     /* Convert a bertrand accessor into a generic Object. */
-    template <typename T> requires (impl::proxy_like<T>)
-    Object(const T& value) : Base(*value) {}
+    template <typename Policy>
+    Object(const impl::Proxy<Policy>& value) : Base(*value) {}
 
     /* Convert any non-callable C++ value into a generic python object. */
-    template <typename T>
-        requires (
-            !impl::proxy_like<T> &&
-            !impl::python_like<T> &&
-            !impl::is_callable_any<T>
-        )
+    template <typename T> requires (!impl::python_like<T> && !impl::is_callable_any<T>)
     Object(const T& value) : Base(pybind11::cast(value).release(), stolen_t{}) {}
 
     /* Convert any callable C++ value into a generic python object. */
-    template <typename T>
-        requires (
-            !impl::proxy_like<T> &&
-            !impl::python_like<T> &&
-            impl::is_callable_any<T>
-        )
+    template <typename T> requires (!impl::python_like<T> && impl::is_callable_any<T>)
     Object(const T& value);  // defined in python.h
 
     using Base::operator=;
@@ -1166,16 +1154,15 @@ public:
         -> impl::__call__<Object, Args...>::Return;  // defined in python.h
 
     template <typename Key> requires (impl::str_like<Key>)
-    inline impl::AttrAccessor attr(Key&& key) const;
-    inline impl::AttrAccessor attr(const char* key) const;
+    inline impl::Proxy<impl::Attr> attr(Key&& key) const;
 
     template <typename Key> requires (impl::__getitem__<Object, Key>::enable)
-    inline impl::ItemAccessor<Object, std::decay_t<Key>> operator[](Key&& key) const;
+    inline auto operator[](Key&& key) const
+        -> impl::Proxy<impl::Item<Object, std::decay_t<Key>>>;
 
     template <typename T = Object> requires (impl::__getitem__<T, Slice>::enable)
-    inline impl::ItemAccessor<T, Slice> operator[](
-        std::initializer_list<impl::SliceInitializer> slice
-    ) const;
+    inline auto operator[](std::initializer_list<impl::SliceInitializer> slice) const
+        -> impl::Proxy<impl::Item<Object, Slice>>;
 
     template <typename Key> requires (impl::__contains__<Object, Key>::enable)
     inline bool contains(const Key& key) const {
@@ -1254,170 +1241,118 @@ namespace impl {
 
     /* Base class for all accessor proxies.  Stores an arbitrary object in a buffer and
     forwards its interface using pointer semantics. */
-    template <typename Obj, typename Derived>
+    template <typename Policy>
     class Proxy : public ProxyTag {
-    public:
-        using Wrapped = Obj;
 
-    protected:
-        alignas (Wrapped) mutable unsigned char buffer[sizeof(Wrapped)];
-        mutable bool initialized;
+        template <typename... Args>
+        static constexpr bool has_assignment_operator = requires(Policy p, Args&&... args) {
+            { p.set(std::forward<Args>(args)...) } -> std::same_as<void>;
+        };
 
-        struct alloc {};
-
-        /* Protected constructor for manual initialization. */
-        Proxy(const alloc&) : initialized(false) {}
-
-    private:
-
-        // deref() uses derived class's dereference operator through CRTP
-        Wrapped& deref() { return *static_cast<Derived&>(*this); }
-        const Wrapped& deref() const { return *static_cast<const Derived&>(*this); }
+        template <typename... Args>
+        static constexpr bool has_deletion_operator = requires(Policy p, Args&&... args) {
+            { p.del(std::forward<Args>(args)...) } -> std::same_as<void>;
+        };
 
     public:
+        using Wrapped = Policy::Wrapped;
+        Policy policy;
 
         ////////////////////////////
         ////    CONSTRUCTORS    ////
         ////////////////////////////
 
-        /* Default constructor. */
-        Proxy() : initialized(true) {
-            new (buffer) Wrapped();
-        }
+        /* Forwarding constructor for templated policy. */
+        Proxy(Policy&& policy) : policy(std::move(policy)) {}
 
         /* Copy constructor. */
-        Proxy(const Proxy& other) : initialized(other.initialized) {
-            if (initialized) {
-                new (buffer) Wrapped(reinterpret_cast<Wrapped&>(other.buffer));
-            }
-        }
+        Proxy(const Proxy& other) : policy(other.policy) {}
 
         /* Move constructor. */
-        Proxy(Proxy&& other) : initialized(other.initialized) {
-            if (initialized) {
-                new (buffer) Wrapped(std::move(reinterpret_cast<Wrapped&>(other.buffer)));
-            }
+        Proxy(Proxy&& other) : policy(std::move(other.policy)) {}
+
+        // /* Copy assignment operator. */
+        // Proxy& operator=(const Proxy& other) {
+        //     if (&other != this) {
+        //         if (initialized) {
+        //             initialized = false;
+        //             reinterpret_cast<Wrapped&>(buffer).~Wrapped();
+        //         }
+        //         if (other.initialized) {
+        //             new (buffer) Wrapped(reinterpret_cast<Wrapped&>(other.buffer));
+        //             initialized = true;
+        //         }
+        //     }
+        //     return *this;
+        // }
+
+        // /* Move assignment operator. */
+        // Proxy& operator=(Proxy&& other) {
+        //     if (&other != this) {
+        //         if (initialized) {
+        //             initialized = false;
+        //             reinterpret_cast<Wrapped&>(buffer).~Wrapped();
+        //         }
+        //         if (other.initialized) {
+        //             other.initialized = false;
+        //             new (buffer) Wrapped(
+        //                 std::move(reinterpret_cast<Wrapped&>(other.buffer))
+        //             );
+        //             initialized = true;
+        //         }
+        //     }
+        //     return *this;
+        // }
+
+        ///////////////////////////
+        ////    GET/SET/DEL    ////
+        ///////////////////////////
+
+        inline Wrapped& operator*() {
+            return policy.get();
         }
 
-        /* Forwarding copy constructor for wrapped type. */
-        Proxy(const Wrapped& value) : initialized(true) {
-            new (buffer) Wrapped(value);
+        inline const Wrapped& operator*() const {
+            return policy.get();
         }
 
-        /* Forwarding move constructor for wrapped type. */
-        Proxy(Wrapped&& value) : initialized(true) {
-            new (buffer) Wrapped(std::move(value));
-        }
-
-        /* Copy assignment operator. */
-        Proxy& operator=(const Proxy& other) {
-            if (&other != this) {
-                if (initialized) {
-                    initialized = false;
-                    reinterpret_cast<Wrapped&>(buffer).~Wrapped();
-                }
-                if (other.initialized) {
-                    new (buffer) Wrapped(reinterpret_cast<Wrapped&>(other.buffer));
-                    initialized = true;
-                }
-            }
+        template <typename... Args> requires (has_assignment_operator<Args...>)
+        inline Proxy& operator=(Args&&... args) {
+            policy.set(std::forward<Args>(args)...);
             return *this;
         }
 
-        /* Move assignment operator. */
-        Proxy& operator=(Proxy&& other) {
-            if (&other != this) {
-                if (initialized) {
-                    initialized = false;
-                    reinterpret_cast<Wrapped&>(buffer).~Wrapped();
-                }
-                if (other.initialized) {
-                    other.initialized = false;
-                    new (buffer) Wrapped(
-                        std::move(reinterpret_cast<Wrapped&>(other.buffer))
-                    );
-                    initialized = true;
-                }
-            }
-            return *this;
-        }
-
-        /* Forwarding copy assignment operator. */
-        Proxy& operator=(const Wrapped& value) {
-            if (initialized) {
-                initialized = false;
-                reinterpret_cast<Wrapped&>(buffer).~Wrapped();
-            }
-            new (buffer) Wrapped(value);
-            initialized = true;
-            return *this;
-        }
-
-        /* Forwarding move assignment operator. */
-        Proxy& operator=(Wrapped&& value) {
-            if (initialized) {
-                initialized = false;
-                reinterpret_cast<Wrapped&>(buffer).~Wrapped();
-            }
-            new (buffer) Wrapped(std::move(value));
-            initialized = true;
-            return *this;
-        }
-
-        /* Destructor.  Can be avoided by manually clearing the initialized flag. */
-        ~Proxy() {
-            if (initialized) {
-                reinterpret_cast<Wrapped&>(buffer).~Wrapped();
-            }
+        template <typename... Args> requires (has_deletion_operator<Args...>)
+        inline void del(Args&&... args) {
+            return policy.del(std::forward<Args>(args)...);
         }
 
         ////////////////////////////////////
         ////    FORWARDING INTERFACE    ////
         ////////////////////////////////////
 
-        // fallback dereference operator.  Can be overridden via CRTP.
-        inline Wrapped& operator*() {
-            if (!initialized) {
-                throw ValueError(
-                    "dereferencing an uninitialized accessor.  Either the accessor was "
-                    "moved from or not properly constructed to begin with."
-                );
-            }
-            return reinterpret_cast<Wrapped&>(buffer);
-        }
-
-        inline const Wrapped& operator*() const {
-            if (!initialized) {
-                throw ValueError(
-                    "dereferencing an uninitialized accessor.  Either the accessor was "
-                    "moved from or not properly constructed to begin with."
-                );
-            }
-            return reinterpret_cast<Wrapped&>(buffer);
-        }
-
         // all attributes of wrapped type are forwarded using the arrow operator.  Just
-        // replace all instances of `.` with `->`.
+        // replace all instances of `.` with `->`
         inline Wrapped* operator->() {
-            return &deref();
+            return &(**this);
         };
 
         inline const Wrapped* operator->() const {
-            return &deref();
+            return &(**this);
         };
 
         inline operator Wrapped() const {
-            return deref();
+            return **this;
         }
 
         template <typename T> requires (std::is_convertible_v<Wrapped, T>)
         inline operator T() const {
-            return implicit_cast<T>(deref());
+            return implicit_cast<T>(**this);
         }
 
         template <typename T> requires (!std::is_convertible_v<Wrapped, T>)
         inline explicit operator T() const {
-            return static_cast<T>(deref());
+            return static_cast<T>(**this);
         }
 
         /////////////////////////
@@ -1429,51 +1364,49 @@ namespace impl {
 
         template <typename... Args>
         inline auto operator()(Args&&... args) const {
-            return deref()(std::forward<Args>(args)...);
+            return (**this)(std::forward<Args>(args)...);
         }
 
         template <typename T>
         inline auto operator[](T&& key) const {
-            return deref()[std::forward<T>(key)];
+            return (**this)[std::forward<T>(key)];
         }
 
         template <typename T = Wrapped> requires (impl::__getitem__<T, Slice>::enable)
-        inline auto operator[](
-            std::initializer_list<impl::SliceInitializer> slice
-        ) const;
+        inline auto operator[](std::initializer_list<impl::SliceInitializer> slice) const;
 
         template <typename T>
-        inline auto contains(const T& value) const { return deref().contains(value); }
-        inline auto size() const { return deref().size(); }
-        inline auto begin() const { return deref().begin(); }
-        inline auto end() const { return deref().end(); }
-        inline auto rbegin() const { return deref().rbegin(); }
-        inline auto rend() const { return deref().rend(); }
+        inline auto contains(const T& value) const { return (**this).contains(value); }
+        inline auto size() const { return (**this).size(); }
+        inline auto begin() const { return (**this).begin(); }
+        inline auto end() const { return (**this).end(); }
+        inline auto rbegin() const { return (**this).rbegin(); }
+        inline auto rend() const { return (**this).rend(); }
 
         #define BINARY_OPERATOR(op)                                                     \
             template <typename T>                                                       \
             inline auto operator op(const T& value) const {                             \
-                return deref() op value;                                                \
+                return **this op value;                                                 \
             }                                                                           \
             template <typename T>                                                       \
             inline friend auto operator op(                                             \
                 const T& value, const Proxy& self                                       \
-            ) { return value op self.deref(); }                                         \
+            ) { return value op *self; }                                                \
 
         #define INPLACE_OPERATOR(op)                                                    \
             template <typename T>                                                       \
             inline Proxy& operator op(const T& value) {                                 \
-                deref() op value;                                                       \
+                **this op value;                                                        \
                 return *this;                                                           \
             }                                                                           \
 
-        inline auto operator+() const { return +deref(); }
-        inline auto operator-() const { return -deref(); }
-        inline auto operator~() const { return ~deref(); }
-        inline auto operator++() { return ++deref(); }
-        inline auto operator--() { return --deref(); }
-        inline auto operator++(int) { return deref()++; }
-        inline auto operator--(int) { return deref()--; }
+        inline auto operator+() const { return +(**this); }
+        inline auto operator-() const { return -(**this); }
+        inline auto operator~() const { return ~(**this); }
+        inline auto operator++() { return ++(**this); }
+        inline auto operator--() { return --(**this); }
+        inline auto operator++(int) { return (**this)++; }
+        inline auto operator--(int) { return (**this)--; }
         BINARY_OPERATOR(<)
         BINARY_OPERATOR(<=)
         BINARY_OPERATOR(==)
@@ -1505,48 +1438,33 @@ namespace impl {
         #undef INPLACE_OPERATOR
 
         inline friend std::ostream& operator<<(std::ostream& os, const Proxy& self) {
-            os << self.deref();
+            os << *self;
             return os;
         }
 
     };
 
-    /* An extended accessor class that allows attributes to be used more consistently
-    with bertrand's operator overloads.  This does not (and can not) apply any strict
-    typing rules, but it does make using attributes more intuitive in C++. */
-    class AttrAccessor : public Proxy<Object, AttrAccessor> {
-        using Base = Proxy<Object, AttrAccessor>;
+    struct PolicyTag {};
+
+    /* A Proxy policy that replaces the result of pybind11's `.attr()` method.  This
+    does not (and can not) enforce any strict typing rules, but it brings the syntax
+    more in line with the rest of bertrand's expanded operator overloads. */
+    class Attr : PolicyTag {
+        alignas (Object) mutable unsigned char buffer[sizeof(Object)];
+        mutable bool initialized;
         Handle obj;
         Object key;
 
-        void get_attr() const {
-            if (obj.ptr() == nullptr) {
-                throw ValueError(
-                    "dereferencing an uninitialized accessor.  Either the accessor "
-                    "was moved from or not properly constructed to begin with."
-                );
-            }
-            PyObject* result = PyObject_GetAttr(obj.ptr(), key.ptr());
-            if (result == nullptr) {
-                throw error_already_set();
-            }
-            new (Base::buffer) Object(reinterpret_steal<Object>(result));
-            Base::initialized = true;
-        }
-
     public:
-
-        ////////////////////////////
-        ////    CONSTRUCTORS    ////
-        ////////////////////////////
+        using Wrapped = Object;
 
         template <typename T> requires (str_like<T> && python_like<T>)
-        AttrAccessor(Handle obj, T&& key) :
-            Base(alloc{}), obj(obj), key(std::forward<T>(key))
+        Attr(Handle obj, T&& key) :
+            initialized(false), obj(obj), key(std::forward<T>(key))
         {}
 
-        AttrAccessor(Handle obj, const char* key) :
-            Base(alloc{}), obj(obj),
+        Attr(Handle obj, const char* key) :
+            initialized(false), obj(obj),
             key(reinterpret_steal<Object>(PyUnicode_FromString(key)))
         {
             if (this->key.ptr() == nullptr) {
@@ -1554,8 +1472,8 @@ namespace impl {
             }
         }
 
-        AttrAccessor(Handle obj, const std::string& key) :
-            Base(alloc{}), obj(obj), key(reinterpret_steal<Object>(
+        Attr(Handle obj, const std::string& key) :
+            initialized(false), obj(obj), key(reinterpret_steal<Object>(
                 PyUnicode_FromStringAndSize(key.c_str(), key.size())
             ))
         {
@@ -1564,8 +1482,8 @@ namespace impl {
             }
         }
 
-        AttrAccessor(Handle obj, const std::string_view& key) :
-            Base(alloc{}), obj(obj), key(reinterpret_steal<Object>(
+        Attr(Handle obj, const std::string_view& key) :
+            initialized(false), obj(obj), key(reinterpret_steal<Object>(
                 PyUnicode_FromStringAndSize(key.data(), key.size())
             ))
         {
@@ -1574,17 +1492,28 @@ namespace impl {
             }
         }
 
-        AttrAccessor(const AttrAccessor& other) :
-            Base(other), obj(other.obj), key(other.key)
-        {}
+        Attr(const Attr& other) :
+            initialized(other.initialized), obj(other.obj), key(other.key)
+        {
+            if (initialized) {
+                new (buffer) Object(reinterpret_cast<Object&>(other.buffer));
+            }
+        }
 
-        AttrAccessor(AttrAccessor&& other) :
-            Base(std::move(other)), obj(other.obj), key(std::move(other.key))
-        {}
+        Attr(Attr&& other) :
+            initialized(other.initialized), obj(other.obj), key(std::move(other.key))
+        {
+            other.initialized = false;
+            if (initialized) {
+                new (buffer) Object(std::move(reinterpret_cast<Object&>(other.buffer)));
+            }
+        }
 
-        ////////////////////////////////////
-        ////    FORWARDING INTERFACE    ////
-        ////////////////////////////////////
+        ~Attr() {
+            if (initialized) {
+                reinterpret_cast<Object&>(buffer).~Object();
+            }
+        }
 
         /* pybind11's attribute accessors only perform the lookup when the accessor is
          * converted to a value, which we hook to provide string type safety.  In this
@@ -1608,23 +1537,23 @@ namespace impl {
          *      py::Int i = reinterpret_steal<py::Int>(obj.attr("some_int").release());
          */
 
-        inline Object& operator*() {
-            if (!Base::initialized) {
-                get_attr();
+        Object& get() const {
+            if (!initialized) {
+                if (obj.ptr() == nullptr) {
+                    throw ValueError(
+                        "dereferencing an uninitialized accessor.  Either the accessor "
+                        "was moved from or not properly constructed to begin with."
+                    );
+                }
+                PyObject* result = PyObject_GetAttr(obj.ptr(), key.ptr());
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                new (buffer) Object(reinterpret_steal<Object>(result));
+                initialized = true;
             }
-            return reinterpret_cast<Object&>(Base::buffer);
+            return reinterpret_cast<Object&>(buffer);
         }
-
-        inline const Object& operator*() const {
-            if (!Base::initialized) {
-                get_attr();
-            }
-            return reinterpret_cast<Object&>(Base::buffer);
-        }
-
-        //////////////////////////
-        ////    ASSIGNMENT    ////
-        //////////////////////////
 
         /* Similarly, assigning to a pybind11 wrapper corresponds to a Python
          * __setattr__ call.  Due to the same restrictions as above, we can't enforce
@@ -1636,22 +1565,17 @@ namespace impl {
          */
 
         template <typename T>
-        inline AttrAccessor& operator=(T&& value) {
-            new (Base::buffer) Object(std::forward<T>(value));
-            Base::initialized = true;
+        void set(T&& value) {
+            new (buffer) Object(std::forward<T>(value));
+            initialized = true;
             if (PyObject_SetAttr(
                 obj.ptr(),
                 key.ptr(),
-                reinterpret_cast<Object&>(Base::buffer).ptr()
+                reinterpret_cast<Object&>(buffer).ptr()
             ) < 0) {
                 throw error_already_set();
             }
-            return *this;
         }
-
-        ////////////////////////
-        ////    DELETION    ////
-        ////////////////////////
 
         /* C++'s delete operator does not directly correspond to Python's `del`
          * statement, so we can't piggyback off it here.  Instead, we offer a separate
@@ -1661,78 +1585,69 @@ namespace impl {
          *      obj.attr("some_int").del();  // Equivalent to Python `del obj.some_int`
          */
 
-        inline void del() {
+        void del() {
             if (PyObject_DelAttr(obj.ptr(), key.ptr()) < 0) {
                 throw error_already_set();
             }
-            if (Base::initialized) {
-                reinterpret_cast<Object&>(Base::buffer).~Object();
-                Base::initialized = false;
+            if (initialized) {
+                reinterpret_cast<Object&>(buffer).~Object();
+                initialized = false;
             }
         }
 
     };
 
-    /* A type-safe accessor class that uses the __getitem__, __setitem__, and
-    __delitem__ control structs to promote static type safety. */
+    /* A Proxy policy that replaces the result of pybind11's `[]` operator and promotes
+    static type safety.  Uses the __getitem__, __setitem__, and __delitem__ control
+    structs to selectively enable/disable the index operator for particular types, as
+    well as assignment and deletion on the resulting proxy. */
     template <typename Obj, typename Key>
-    class ItemAccessor :
-        public Proxy<typename __getitem__<Obj, Key>::Return, ItemAccessor<Obj, Key>>
-    {
+    class Item : PolicyTag {
     public:
-        using Return = typename __getitem__<Obj, Key>::Return;
+        using Wrapped = typename __getitem__<Obj, Key>::Return;
         static_assert(
-            std::is_base_of_v<Object, Return>,
+            std::is_base_of_v<Object, Wrapped>,
             "index operator must return a subclass of py::Object.  Check your "
             "specialization of __getitem__ for these types and ensure the Return "
             "type is set to a subclass of py::Object."
         );
 
     private:
-        using Base = Proxy<Return, ItemAccessor>;
-        Handle container;
+        alignas (Wrapped) mutable unsigned char buffer[sizeof(Wrapped)];
+        mutable bool initialized;
+        Handle obj;
         Object key;
-
-        void get_item() const {
-            if (container.ptr() == nullptr) {
-                throw ValueError(
-                    "dereferencing an uninitialized accessor.  Either the accessor "
-                    "was moved from or not properly constructed to begin with."
-                );
-            }
-            PyObject* result = PyObject_GetItem(container.ptr(), key.ptr());
-            if (result == nullptr) {
-                throw error_already_set();
-            }
-            new (Base::buffer) Return(reinterpret_steal<Return>(result));
-            Base::initialized = true;
-        }
 
     public:
 
-        ////////////////////////////
-        ////    CONSTRUCTORS    ////
-        ////////////////////////////
+        Item(Handle obj, const Key& key) : initialized(false), obj(obj), key(key) {}
 
-        ItemAccessor(Handle container, const Key& key) :
-            Base(typename Base::alloc{}), container(container), key(key)
+        Item(Handle obj, Key&& key) :
+            initialized(false), obj(obj), key(std::move(key))
         {}
 
-        ItemAccessor(Handle container, Key&& key) :
-            Base(typename Base::alloc{}), container(container), key(std::move(key))
-        {}
+        Item(const Item& other) :
+            initialized(other.initialized), obj(other.obj), key(other.key)
+        {
+            if (initialized) {
+                new (buffer) Wrapped(reinterpret_cast<Wrapped&>(other.buffer));
+            }
+        }
 
-        ItemAccessor(const ItemAccessor& other) :
-            Base(other), container(other.container), key(other.key)
-        {}
+        Item(Item&& other) :
+            initialized(other.initialized), obj(other.obj), key(std::move(other.key))
+        {
+            other.initialized = false;
+            if (initialized) {
+                new (buffer) Wrapped(std::move(reinterpret_cast<Wrapped&>(other.buffer)));
+            }
+        }
 
-        ItemAccessor(ItemAccessor&& other) :
-            Base(std::move(other)), container(other.container), key(std::move(other.key))
-        {}
-
-        ////////////////////////////////////
-        ////    FORWARDING INTERFACE    ////
-        ////////////////////////////////////
+        ~Item() {
+            if (initialized) {
+                reinterpret_cast<Wrapped&>(buffer).~Wrapped();
+            }
+        }
 
         /* pybind11's item accessors only perform the lookup when the accessor is
          * converted to a value, which we can hook to provide strong type safety.  In
@@ -1754,23 +1669,23 @@ namespace impl {
          *      py::Int item = list[{1, 3}];  // compile error, List is not convertible to Int
          */
 
-        inline Return& operator*() {
-            if (!Base::initialized) {
-                get_item();
+        Wrapped& get() const {
+            if (!initialized) {
+                if (obj.ptr() == nullptr) {
+                    throw ValueError(
+                        "dereferencing an uninitialized accessor.  Either the accessor "
+                        "was moved from or not properly constructed to begin with."
+                    );
+                }
+                PyObject* result = PyObject_GetItem(obj.ptr(), key.ptr());
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                new (buffer) Wrapped(reinterpret_steal<Wrapped>(result));
+                initialized = true;
             }
-            return reinterpret_cast<Return&>(Base::buffer);
+            return reinterpret_cast<Wrapped&>(buffer);
         }
-
-        inline const Return& operator*() const {
-            if (!Base::initialized) {
-                get_item();
-            }
-            return reinterpret_cast<Return&>(Base::buffer);
-        }
-
-        //////////////////////////
-        ////    ASSIGNMENT    ////
-        //////////////////////////
 
         /* Similarly, assigning to a pybind11 wrapper corresponds to a Python
          * __setitem__ call, and we can carry strong type safety here as well.  By
@@ -1791,28 +1706,23 @@ namespace impl {
          */
 
         template <typename T> requires (__setitem__<Obj, Key, T>::enable)
-        inline ItemAccessor& operator=(T&& value) {
+        void set(T&& value) {
             static_assert(
                 std::is_void_v<typename __setitem__<Obj, Key, T>::Return>,
                 "index assignment operator must return void.  Check your "
                 "specialization of __setitem__ for these types and ensure the Return "
                 "type is set to void."
             );
-            new (Base::buffer) Return(std::forward<T>(value));
-            Base::initialized = true;
+            new (buffer) Wrapped(std::forward<T>(value));
+            initialized = true;
             if (PyObject_SetItem(
-                container.ptr(),
+                obj.ptr(),
                 key.ptr(),
-                reinterpret_cast<Return&>(Base::buffer).ptr()
+                reinterpret_cast<Wrapped&>(buffer).ptr()
             ) < 0) {
                 throw error_already_set();
             }
-            return *this;
         }
-
-        ////////////////////////
-        ////    DELETION    ////
-        ////////////////////////
 
         /* C++'s delete operator does not directly correspond to Python's `del`
          * statement, so we can't piggyback off it here.  Instead, we offer a separate
@@ -1834,116 +1744,118 @@ namespace impl {
          */
 
         template <typename T = Key> requires (__delitem__<Obj, T>::enable)
-        inline void del() {
+        void del() {
             static_assert(
                 std::is_void_v<typename __delitem__<Obj, T>::Return>,
                 "index deletion operator must return void.  Check your specialization "
                 "of __delitem__ for these types and ensure the Return type is set to "
                 "void."
             );
-            if (PyObject_DelItem(container.ptr(), key.ptr()) < 0) {
+            if (PyObject_DelItem(obj.ptr(), key.ptr()) < 0) {
                 throw error_already_set();
             }
-            if (Base::initialized) {
-                reinterpret_cast<Return&>(Base::buffer).~Return();
-                Base::initialized = false;
+            if (initialized) {
+                reinterpret_cast<Wrapped&>(buffer).~Wrapped();
+                initialized = false;
             }
         }
 
     };
 
-    /* A specialization of ItemAccessor that is optimized for Tuple instances. */
+    /* A specialization of Item that is optimized for Tuple instances. */
     template <typename Obj, typename Key>
         requires (std::is_base_of_v<Tuple, Obj> && std::is_integral_v<Key>)
-    class ItemAccessor<Obj, Key> :
-        public Proxy<typename __getitem__<Obj, Key>::Return, ItemAccessor<Obj, Key>>
-    {
+    class Item<Obj, Key> : PolicyTag {
     public:
-        using Return = typename __getitem__<Obj, Key>::Return;
+        using Wrapped = typename __getitem__<Obj, Key>::Return;
         static_assert(
-            std::is_base_of_v<Object, Return>,
+            std::is_base_of_v<Object, Wrapped>,
             "index operator must return a subclass of py::Object.  Check your "
             "specialization of __getitem__ for these types and ensure the Return "
             "type is set to a subclass of py::Object."
         );
 
     private:
-        using Base = Proxy<Return, ItemAccessor>;
-        Handle container;
+        alignas (Wrapped) mutable unsigned char buffer[sizeof(Wrapped)];
+        mutable bool initialized;
+        Handle obj;
         Py_ssize_t index;
-
-        void get_item() const {
-            if (container.ptr() == nullptr) {
-                throw ValueError(
-                    "dereferencing an uninitialized accessor.  Either the accessor "
-                    "was moved from or not properly constructed to begin with."
-                );
-            }
-            Py_ssize_t size = PyTuple_GET_SIZE(container.ptr());
-            Py_ssize_t norm = index + size * (index < 0);
-            if (norm < 0 || norm >= size) {
-                throw IndexError("tuple index out of range");
-            }
-            PyObject* result = PyTuple_GET_ITEM(container.ptr(), norm);
-            if (result == nullptr) {
-                throw error_already_set();
-            }
-            new (Base::buffer) Return(reinterpret_steal<Return>(result));
-            Base::initialized = true;
-        }
 
     public:
 
-        ItemAccessor(Handle container, Py_ssize_t index) :
-            Base(typename Base::alloc{}), container(container), index(index)
+        Item(Handle obj, Py_ssize_t index) :
+            initialized(false), obj(obj), index(index)
         {}
 
-        ItemAccessor(const ItemAccessor& other) :
-            Base(other), container(other.container), index(other.index)
-        {}
-
-        ItemAccessor(ItemAccessor&& other) noexcept :
-            Base(std::move(other)), container(other.container), index(other.index)
-        {}
-
-        inline Return& operator*() {
-            if (!Base::initialized) {
-                get_item();
+        Item(const Item& other) :
+            initialized(other.initialized), obj(other.obj), index(other.index)
+        {
+            if (initialized) {
+                new (buffer) Wrapped(reinterpret_cast<Wrapped&>(other.buffer));
             }
-            return reinterpret_cast<Return&>(Base::buffer);
         }
 
-        inline const Return& operator*() const {
-            if (!Base::initialized) {
-                get_item();
+        Item(Item&& other) noexcept :
+            initialized(other.initialized), obj(other.obj), index(other.index)
+        {
+            other.initialized = false;
+            if (initialized) {
+                new (buffer) Wrapped(std::move(reinterpret_cast<Wrapped&>(other.buffer)));
             }
-            return reinterpret_cast<Return&>(Base::buffer);
+        }
+
+        ~Item() {
+            if (initialized) {
+                reinterpret_cast<Wrapped&>(buffer).~Wrapped();
+            }
+        }
+
+        Wrapped& get() const {
+            if (!initialized) {
+                if (obj.ptr() == nullptr) {
+                    throw ValueError(
+                        "dereferencing an uninitialized accessor.  Either the accessor "
+                        "was moved from or not properly constructed to begin with."
+                    );
+                }
+                Py_ssize_t size = PyTuple_GET_SIZE(obj.ptr());
+                Py_ssize_t norm = index + size * (index < 0);
+                if (norm < 0 || norm >= size) {
+                    throw IndexError("tuple index out of range");
+                }
+                PyObject* result = PyTuple_GET_ITEM(obj.ptr(), norm);
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                new (buffer) Wrapped(reinterpret_steal<Wrapped>(result));
+                initialized = true;
+            }
+            return reinterpret_cast<Wrapped&>(buffer);
         }
 
     };
 
-    /* A specialization of ItemAccessor that is optimized for List instances. */
+    /* A specialization of Item that is optimized for List instances. */
     template <typename Obj, typename Key>
         requires (std::is_base_of_v<List, Obj> && std::is_integral_v<Key>)
-    class ItemAccessor<Obj, Key> :
-        public Proxy<typename __getitem__<Obj, Key>::Return, ItemAccessor<Obj, Key>>
-    {
+    class Item<Obj, Key> : PolicyTag {
     public:
-        using Return = typename __getitem__<Obj, Key>::Return;
+        using Wrapped = typename __getitem__<Obj, Key>::Return;
         static_assert(
-            std::is_base_of_v<Object, Return>,
+            std::is_base_of_v<Object, Wrapped>,
             "index operator must return a subclass of py::Object.  Check your "
             "specialization of __getitem__ for these types and ensure the Return "
             "type is set to a subclass of py::Object."
         );
 
     private:
-        using Base = Proxy<Return, ItemAccessor>;
-        Handle container;
+        alignas (Wrapped) mutable unsigned char buffer[sizeof(Wrapped)];
+        mutable bool initialized;
+        Handle obj;
         Py_ssize_t index;
 
         inline Py_ssize_t normalized() const {
-            Py_ssize_t size = PyList_GET_SIZE(container.ptr());
+            Py_ssize_t size = PyList_GET_SIZE(obj.ptr());
             Py_ssize_t result = index + size * (index < 0);
             if (result < 0 || result >= size) {
                 throw IndexError("list index out of range");
@@ -1951,52 +1863,50 @@ namespace impl {
             return result;
         }
 
-        void get_item() const {
-            if (container.ptr() == nullptr) {
-                throw ValueError(
-                    "dereferencing an uninitialized accessor.  Either the accessor "
-                    "was moved from or not properly constructed to begin with."
-                );
-            }
-            Py_ssize_t norm = normalized();
-            PyObject* result = PyList_GET_ITEM(container.ptr(), norm);
-            if (result == nullptr) {
-                throw error_already_set();
-            }
-            new (Base::buffer) Return(reinterpret_steal<Return>(result));
-            Base::initialized = true;
-        }
-
     public:
 
-        ItemAccessor(Handle container, Py_ssize_t index) :
-            Base(typename Base::alloc{}), container(container), index(index)
+        Item(Handle obj, Py_ssize_t index) :
+            initialized(false), obj(obj), index(index)
         {}
 
-        ItemAccessor(const ItemAccessor& other) :
-            Base(other), container(other.container), index(other.index)
-        {}
-
-        ItemAccessor(ItemAccessor&& other) noexcept :
-            Base(std::move(other)), container(other.container), index(other.index)
-        {}
-    
-        inline Return& operator*() {
-            if (!Base::initialized) {
-                get_item();
+        Item(const Item& other) :
+            initialized(other.initialized), obj(other.obj), index(other.index)
+        {
+            if (initialized) {
+                new (buffer) Wrapped(reinterpret_cast<Wrapped&>(other.buffer));
             }
-            return reinterpret_cast<Return&>(Base::buffer);
         }
 
-        inline const Return& operator*() const {
-            if (!Base::initialized) {
-                get_item();
+        Item(Item&& other) noexcept :
+            initialized(other.initialized), obj(other.obj), index(other.index)
+        {
+            other.initialized = false;
+            if (initialized) {
+                new (buffer) Wrapped(std::move(reinterpret_cast<Wrapped&>(other.buffer)));
             }
-            return reinterpret_cast<Return&>(Base::buffer);
+        }
+    
+        Wrapped& get() const {
+            if (!initialized) {
+                if (obj.ptr() == nullptr) {
+                    throw ValueError(
+                        "dereferencing an uninitialized accessor.  Either the accessor "
+                        "was moved from or not properly constructed to begin with."
+                    );
+                }
+                Py_ssize_t norm = normalized();
+                PyObject* result = PyList_GET_ITEM(obj.ptr(), norm);
+                if (result == nullptr) {
+                    throw error_already_set();
+                }
+                new (buffer) Wrapped(reinterpret_steal<Wrapped>(result));
+                initialized = true;
+            }
+            return reinterpret_cast<Wrapped&>(buffer);
         }
 
         template <typename T> requires (__setitem__<Obj, Key, T>::enable)
-        inline ItemAccessor& operator=(T&& value) {
+        void set(T&& value) {
             static_assert(
                 std::is_void_v<typename __setitem__<Obj, Key, T>::Return>,
                 "index assignment operator must return void.  Check your "
@@ -2004,25 +1914,24 @@ namespace impl {
                 "type is set to void."
             );
             Py_ssize_t norm = normalized();
-            new (Base::buffer) Return(std::forward<T>(value));
-            Base::initialized = true;
+            new (buffer) Wrapped(std::forward<T>(value));
+            initialized = true;
 
             // Since type and index safety is guaranteed within this context, we can
             // avoid error checking and use PyList_SET_ITEM directly.  Note that this
             // steals a reference to the new object and does not clear the previous
             // value, so we need to account for that manually.
-            PyObject* previous = PyList_GET_ITEM(container.ptr(), norm);
+            PyObject* previous = PyList_GET_ITEM(obj.ptr(), norm);
             PyList_SET_ITEM(
-                container.ptr(),
+                obj.ptr(),
                 norm,
-                Py_NewRef(reinterpret_cast<Return&>(Base::buffer).ptr())
+                Py_NewRef(reinterpret_cast<Wrapped&>(buffer).ptr())
             );
             Py_XDECREF(previous);
-            return *this;
         }
 
         template <typename T = Key> requires (__delitem__<Obj, T>::enable)
-        inline void del() {
+        void del() {
             static_assert(
                 std::is_void_v<typename __delitem__<Obj, T>::Return>,
                 "index deletion operator must return void.  Check your specialization "
@@ -2031,15 +1940,136 @@ namespace impl {
             );
             Py_ssize_t norm = normalized();
             if (PyObject_DelItem(
-                container.ptr(),
+                obj.ptr(),
                 pybind11::cast(norm).ptr()
             ) < 0) {
                 throw error_already_set();
             }
-            if (Base::initialized) {
-                reinterpret_cast<Return&>(Base::buffer).~Return();
-                Base::initialized = false;
+            if (initialized) {
+                reinterpret_cast<Wrapped&>(buffer).~Wrapped();
+                initialized = false;
             }
+        }
+
+    };
+
+    /* A Proxy policy that allows any Python object to be stored with static duration.
+    
+    Normally, storing a static Python object is unsafe because it causes the Python
+    interpreter to be in an invalid state at the time the object's destructor is
+    called, triggering a memory access violation during shutdown.  This class avoids
+    that issue by checking `Py_IsInitialized()` and only invoking the destructor if it
+    evaluates to true.  This technically means that we leave an unbalanced reference to
+    the object, but since the Python interpreter is shutting down anyway, it doesn't
+    actually matter.  Python will clean up the object regardless of its reference count.
+
+    Note that storing objects that require explicit cleanup - such as open file handles
+    or remote connections - is still unsafe, as the object's destructor will not be
+    called at shutdown. */
+    template <typename T>
+    class Static : PolicyTag {
+        alignas (T) mutable unsigned char buffer[sizeof(T)];
+        mutable bool initialized;
+
+    public:
+        using Wrapped = T;
+
+        /* Default constructor. */
+        Static() : initialized(true) {
+            new (buffer) Wrapped();
+        }
+
+        /* Forwarding copy constructor for wrapped type. */
+        Static(const Wrapped& value) : initialized(true) {
+            new (buffer) Wrapped(value);
+        }
+
+        /* Forwarding move constructor for wrapped type. */
+        Static(Wrapped&& value) : initialized(true) {
+            new (buffer) Wrapped(std::move(value));
+        }
+
+        /* Copy constructor. */
+        Static(const Static& other) : initialized(other.initialized) {
+            if (initialized) {
+                new (buffer) Wrapped(reinterpret_cast<Wrapped&>(other.buffer));
+            }
+        }
+
+        /* Move constructor. */
+        Static(Static&& other) : initialized(other.initialized) {
+            other.initialized = false;
+            if (initialized) {
+                new (buffer) Wrapped(std::move(reinterpret_cast<Wrapped&>(other.buffer)));
+            }
+        }
+
+        /* Destructor only called if Py_IsInitialized() evalutes to true. */
+        ~Static() {
+            if (initialized && Py_IsInitialized()) {
+                reinterpret_cast<Wrapped&>(buffer).~Wrapped();
+            }
+        }
+
+        Wrapped& get() const {
+            if (!initialized) {
+                throw ValueError(
+                    "dereferencing an uninitialized accessor.  Either the accessor was "
+                    "moved from or not properly constructed to begin with."
+                );
+            }
+            return reinterpret_cast<Wrapped&>(buffer);
+        }
+
+        void set(const Wrapped& value) {
+            if (initialized) {
+                reinterpret_cast<Wrapped&>(buffer) = value;
+            } else {
+                new (buffer) Wrapped(value);
+                initialized = true;
+            }
+        }
+
+        void set(Wrapped&& value) {
+            if (initialized) {
+                reinterpret_cast<Wrapped&>(buffer) = std::move(value);
+            } else {
+                new (buffer) Wrapped(std::move(value));
+                initialized = true;
+            }
+        }
+
+        /* Copy assignment operator. */
+        Static& operator=(const Static& other) {
+            if (&other != this) {
+                if (initialized) {
+                    initialized = false;
+                    reinterpret_cast<Wrapped&>(buffer).~Wrapped();
+                }
+                if (other.initialized) {
+                    new (buffer) Wrapped(reinterpret_cast<Wrapped&>(other.buffer));
+                    initialized = true;
+                }
+            }
+            return *this;
+        }
+
+        /* Move assignment operator. */
+        Static& operator=(Static&& other) {
+            if (&other != this) {
+                if (initialized) {
+                    initialized = false;
+                    reinterpret_cast<Wrapped&>(buffer).~Wrapped();
+                }
+                if (other.initialized) {
+                    other.initialized = false;
+                    new (buffer) Wrapped(
+                        std::move(reinterpret_cast<Wrapped&>(other.buffer))
+                    );
+                    initialized = true;
+                }
+            }
+            return *this;
         }
 
     };
@@ -2057,12 +2087,12 @@ namespace impl {
         }
 
         template <typename Key> requires (__getitem__<Derived, Key>::enable)
-        inline ItemAccessor<Derived, std::decay_t<Key>> operator[](Key&& key) const {
-            return {*this, std::forward<Key>(key)};
+        inline Proxy<Item<Derived, std::decay_t<Key>>> operator[](Key&& key) const {
+            return {{*this, std::forward<Key>(key)}};
         }
 
         template <typename T = Derived> requires (impl::__getitem__<T, Slice>::enable)
-        inline impl::ItemAccessor<T, Slice> operator[](
+        inline Proxy<Item<T, Slice>> operator[](
             std::initializer_list<impl::SliceInitializer> slice
         ) const;
 
@@ -2295,7 +2325,8 @@ namespace impl {
     };
 
 
-    // TODO: revisit ReverseIterable with new iterator protocol
+    // TODO: 
+
 
     /* Mixin holding an optimized reverse iterator for data structures that allow
     direct access to the underlying array.  This avoids the overhead of going through
@@ -2411,6 +2442,10 @@ namespace impl {
             }                                                                           \
             m_ptr = obj.release().ptr();                                                \
         }                                                                               \
+                                                                                        \
+        /* Convert a bertrand accessor into this type. */                               \
+        template <typename Policy>                                                      \
+        cls(const impl::Proxy<Policy>& value) : parent(*value) {}                       \
                                                                                         \
         /* Trigger implicit conversions to this type via the assignment operator. */    \
         template <typename T> requires (std::is_convertible_v<T, cls>)                  \
@@ -2549,36 +2584,40 @@ namespace impl {
 }  // namespace impl
 
 
-/* A lightweight proxy that allows an arbitrary Python object to be stored with static
-duration.
-
-Normally, storing a static Python object is unsafe because it can lead to a situation
-where the Python interpreter is in an invalid state at the time the object's destructor
-is called, causing a memory access violation during shutdown.  This class avoids that
-by checking `Py_IsInitialized()` and only invoking the destructor if it evaluates to
-true.  This technically means that we leave an unbalanced reference to the object, but
-since the Python interpreter is shutting down anyways, it doesn't matter.  Python will
-clean up the object regardless of its reference count. */
 template <typename T>
-class Static : public impl::Proxy<T, Static<T>> {
-    using Base = impl::Proxy<T, Static<T>>;
+using Static = impl::Proxy<impl::Static<T>>;
 
-public:
-    using Base::Base;
-    using Base::operator=;
 
-    /* Explicitly create an empty wrapper with uninitialized memory. */
-    inline static Static alloc() {
-        return Static(typename Base::alloc{});
-    }
+// /* A lightweight proxy that allows an arbitrary Python object to be stored with static
+// duration.
 
-    /* Destructor avoids calling the proxy's destructor if the Python interpreter is
-    not currently initialized. */
-    ~Static() {
-        this->initialized &= Py_IsInitialized();
-    }
+// Normally, storing a static Python object is unsafe because it can lead to a situation
+// where the Python interpreter is in an invalid state at the time the object's destructor
+// is called, causing a memory access violation during shutdown.  This class avoids that
+// by checking `Py_IsInitialized()` and only invoking the destructor if it evaluates to
+// true.  This technically means that we leave an unbalanced reference to the object, but
+// since the Python interpreter is shutting down anyways, it doesn't matter.  Python will
+// clean up the object regardless of its reference count. */
+// template <typename T>
+// class Static : public impl::Proxy<T, Static<T>> {
+//     using Base = impl::Proxy<T, Static<T>>;
 
-};
+// public:
+//     using Base::Base;
+//     using Base::operator=;
+
+//     /* Explicitly create an empty wrapper with uninitialized memory. */
+//     inline static Static alloc() {
+//         return Static(typename Base::alloc{});
+//     }
+
+//     /* Destructor avoids calling the proxy's destructor if the Python interpreter is
+//     not currently initialized. */
+//     ~Static() {
+//         this->initialized &= Py_IsInitialized();
+//     }
+
+// };
 
 
 /////////////////////////
@@ -2587,19 +2626,21 @@ public:
 
 
 template <typename Key> requires (impl::str_like<Key>)
-inline impl::AttrAccessor Object::attr(Key&& key) const {
-    return {*this, std::forward<Key>(key)};
+inline impl::Proxy<impl::Attr> Object::attr(Key&& key) const {
+    return {{*this, std::forward<Key>(key)}};
 }
 
 
-inline impl::AttrAccessor Object::attr(const char* key) const {
-    return {*this, key};
-}
+// inline impl::Proxy<impl::Attr> Object::attr(const char* key) const {
+//     return {{*this, key}};
+// }
 
 
 template <typename Key> requires (impl::__getitem__<Object, Key>::enable)
-inline impl::ItemAccessor<Object, std::decay_t<Key>> Object::operator[](Key&& key) const {
-    return {*this, std::forward<Key>(key)};
+inline auto Object::operator[](Key&& key) const
+    -> impl::Proxy<impl::Item<Object, std::decay_t<Key>>>
+{
+    return {{*this, std::forward<Key>(key)}};
 }
 
 
@@ -3622,9 +3663,9 @@ public:
 
 
 template <typename T> requires (impl::__getitem__<T, Slice>::enable)
-inline impl::ItemAccessor<T, Slice> Object::operator[](
-    std::initializer_list<impl::SliceInitializer> slice
-) const {
+inline auto Object::operator[](std::initializer_list<impl::SliceInitializer> slice) const
+    -> impl::Proxy<impl::Item<Object, Slice>>
+{
     if (slice.size() > 3) {
         throw ValueError("slices must be of the form {[start[, stop[, step]]]}");
     }
@@ -3633,25 +3674,26 @@ inline impl::ItemAccessor<T, Slice> Object::operator[](
     for (const impl::SliceInitializer& item : slice) {
         params[i++] = item.first;
     }
-    return Base::operator[](Slice(params[0], params[1], params[2]));
+    return {{*this, Slice(params[0], params[1], params[2])}};
 }
 
 
 template <typename Base, typename Derived>
 template <typename T> requires (impl::__getitem__<T, Slice>::enable)
-inline impl::ItemAccessor<T, Slice> impl::Inherits<Base, Derived>::operator[](
+inline impl::Proxy<impl::Item<T, Slice>> impl::Inherits<Base, Derived>::operator[](
     std::initializer_list<impl::SliceInitializer> slice
 ) const {
     return Base::operator[](slice);
 }
 
 
-template <typename Obj, typename Key>
+
+template <typename Policy>
 template <typename T> requires (impl::__getitem__<T, Slice>::enable)
-inline auto impl::Proxy<Obj, Key>::operator[](
+inline auto impl::Proxy<Policy>::operator[](
     std::initializer_list<impl::SliceInitializer> slice
 ) const {
-    return deref()[slice];
+    return (**this)[slice];
 }
 
 
@@ -3781,15 +3823,15 @@ public:
 
 /* Equivalent to Python `import module` */
 inline Static<Module> import(const char* name) {
-    if (Py_IsInitialized()) {
+    // if (Py_IsInitialized()) {
         PyObject *obj = PyImport_ImportModule(name);
         if (obj == nullptr) {
             throw error_already_set();
         }
         return Static<Module>(reinterpret_steal<Module>(obj));
-    } else {
-        return Static<Module>::alloc();  // return an empty wrapper
-    }
+    // } else {
+    //     return Static<Module>::alloc();  // return an empty wrapper
+    // }
 }
 
 
