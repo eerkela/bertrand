@@ -15,8 +15,8 @@ namespace py {
 
 /* New subclass of pybind11::object that represents a complex number at the Python
 level. */
-class Complex : public impl::Inherits<Object, Complex> {
-    using Base = impl::Inherits<Object, Complex>;
+class Complex : public Object {
+    using Base = Object;
 
     template <typename T>
     static constexpr bool constructor1 = (

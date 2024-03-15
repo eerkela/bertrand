@@ -165,8 +165,8 @@ which are compiled once and then cached for repeated use.
     script({{"x", "other"}});
     script({{"x", "side"}});
 */
-class Code : public impl::Inherits<Object, Code> {
-    using Base = impl::Inherits<Object, Code>;
+class Code : public Object {
+    using Base = Object;
 
     template <typename T>
     static PyObject* compile(const T& text) {
@@ -380,8 +380,8 @@ public:
 
 /* A new subclass of pybind11::object that represents a Python interpreter frame, which
 can be used to introspect its current state. */
-class Frame : public impl::Inherits<Object, Frame> {
-    using Base = impl::Inherits<Object, Frame>;
+class Frame : public Object {
+    using Base = Object;
 
     inline PyFrameObject* self() const {
         return reinterpret_cast<PyFrameObject*>(this->ptr());
@@ -543,8 +543,8 @@ public:
 
 /* Wrapper around a pybind11::Function that allows it to be constructed from a C++
 lambda or function pointer, and enables extra introspection via the C API. */
-class Function : public impl::Inherits<Object, Function> {
-    using Base = impl::Inherits<Object, Function>;
+class Function : public Object {
+    using Base = Object;
 
 public:
     static Type type;
@@ -704,8 +704,8 @@ struct impl::__call__<Function, Args...> : impl::Returns<Object> {};
 
 /* New subclass of pybind11::object that represents a bound method at the Python
 level. */
-class Method : public impl::Inherits<Object, Method> {
-    using Base = impl::Inherits<Object, Method>;
+class Method : public Object {
+    using Base = Object;
 
 public:
     static Type type;
@@ -739,8 +739,8 @@ public:
 
 /* New subclass of pybind11::object that represents a bound classmethod at the Python
 level. */
-class ClassMethod : public impl::Inherits<Object, ClassMethod> {
-    using Base = impl::Inherits<Object, ClassMethod>;
+class ClassMethod : public Object {
+    using Base = Object;
 
     inline static bool check_classmethod(PyObject* obj) {
         int result = PyObject_IsInstance(
@@ -783,8 +783,8 @@ public:
 
 /* Wrapper around a pybind11::StaticMethod that allows it to be constructed from a
 C++ lambda or function pointer, and enables extra introspection via the C API. */
-class StaticMethod : public impl::Inherits<Object, StaticMethod> {
-    using Base = impl::Inherits<Object, StaticMethod>;
+class StaticMethod : public Object {
+    using Base = Object;
 
     static bool check_staticmethod(PyObject* obj) {
         int result = PyObject_IsInstance(
@@ -827,8 +827,8 @@ public:
 
 /* New subclass of pybind11::object that represents a property descriptor at the
 Python level. */
-class Property : public impl::Inherits<Object, Property> {
-    using Base = impl::Inherits<Object, Property>;
+class Property : public Object {
+    using Base = Object;
 
     inline static bool check_property(PyObject* obj) {
         int result = PyObject_IsInstance(obj, impl::PyProperty->ptr());

@@ -13,8 +13,8 @@ namespace py {
 
 
 /* pybind11::bool_ equivalent with stronger type safety and cross-language support. */
-class Bool : public impl::Inherits<Object, Bool> {
-    using Base = impl::Inherits<Object, Bool>;
+class Bool : public Object {
+    using Base = Object;
 
     template <typename T>
     static constexpr bool constructor1 = !impl::python_like<T> && impl::bool_like<T>;

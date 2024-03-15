@@ -15,8 +15,8 @@ namespace py {
 
 /* New subclass of pybind11::object representing a read-only proxy for a Python
 dictionary or other mapping. */
-class MappingProxy : public impl::Inherits<Object, MappingProxy> {
-    using Base = impl::Inherits<Object, MappingProxy>;
+class MappingProxy : public Object {
+    using Base = Object;
 
     inline static bool mappingproxy_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictProxy_Type);
@@ -126,8 +126,8 @@ struct __or__<MappingProxy, T>                              : Returns<Dict> {};
 
 /* New subclass of pybind11::object representing a view into the keys of a dictionary
 object. */
-class KeysView : public impl::Inherits<Object, KeysView> {
-    using Base = impl::Inherits<Object, KeysView>;
+class KeysView : public Object {
+    using Base = Object;
 
     inline static bool keys_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictKeys_Type);
@@ -292,8 +292,8 @@ struct __xor__<KeysView, T>                                 : Returns<Set> {};
 
 /* New subclass of pybind11::object representing a view into the values of a dictionary
 object. */
-class ValuesView : public impl::Inherits<Object, ValuesView> {
-    using Base = impl::Inherits<Object, ValuesView>;
+class ValuesView : public Object {
+    using Base = Object;
 
     inline static bool values_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictValues_Type);
@@ -371,8 +371,8 @@ struct __contains__<ValuesView, T>                          : Returns<bool> {};
 
 /* New subclass of pybind11::object representing a view into the items of a dictionary
 object. */
-class ItemsView : public impl::Inherits<Object, ItemsView> {
-    using Base = impl::Inherits<Object, ItemsView>;
+class ItemsView : public Object {
+    using Base = Object;
 
     inline static bool items_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictItems_Type);
@@ -453,8 +453,8 @@ struct __contains__<ItemsView, std::pair<First, Second>>    : Returns<bool> {};
 
 /* Wrapper around pybind11::dict that allows it to be directly initialized using
 std::initializer_list and enables extra C API functionality. */
-class Dict : public impl::Inherits<Object, Dict> {
-    using Base = impl::Inherits<Object, Dict>;
+class Dict : public Object {
+    using Base = Object;
 
     template <typename T>
     static constexpr bool constructor1 = !impl::python_like<T> && impl::is_iterable<T>;

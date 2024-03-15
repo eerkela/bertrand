@@ -15,8 +15,8 @@ namespace py {
 namespace impl {
 
     template <typename Derived>
-    class ISet : public impl::Inherits<Object, Derived> {
-        using Base = impl::Inherits<Object, Derived>;
+    class ISet : public Object {
+        using Base = Object;
 
         inline Derived* self() { return static_cast<Derived*>(this); }
         inline const Derived* self() const { return static_cast<const Derived*>(this); }
@@ -325,6 +325,70 @@ namespace impl {
 }  // namespace impl
 
 
+namespace impl {
+
+template <>
+struct __dereference__<FrozenSet>                               : Returns<detail::args_proxy> {};
+template <>
+struct __len__<FrozenSet>                                       : Returns<size_t> {};
+template <>
+struct __iter__<FrozenSet>                                      : Returns<Object> {};
+template <>
+struct __reversed__<FrozenSet>                                  : Returns<Object> {};
+template <is_hashable T>
+struct __contains__<FrozenSet, T>                               : Returns<bool> {};
+template <>
+struct __lt__<FrozenSet, Object>                                : Returns<bool> {};
+template <anyset_like T>
+struct __lt__<FrozenSet, T>                                     : Returns<bool> {};
+template <>
+struct __le__<FrozenSet, Object>                                : Returns<bool> {};
+template <anyset_like T>
+struct __le__<FrozenSet, T>                                     : Returns<bool> {};
+template <>
+struct __ge__<FrozenSet, Object>                                : Returns<bool> {};
+template <anyset_like T>
+struct __ge__<FrozenSet, T>                                     : Returns<bool> {};
+template <>
+struct __gt__<FrozenSet, Object>                                : Returns<bool> {};
+template <anyset_like T>
+struct __gt__<FrozenSet, T>                                     : Returns<bool> {};
+template <>
+struct __or__<FrozenSet, Object>                                : Returns<FrozenSet> {};
+template <anyset_like T>
+struct __or__<FrozenSet, T>                                     : Returns<FrozenSet> {};
+template <>
+struct __and__<FrozenSet, Object>                               : Returns<FrozenSet> {};
+template <anyset_like T>
+struct __and__<FrozenSet, T>                                    : Returns<FrozenSet> {};
+template <>
+struct __sub__<FrozenSet, Object>                               : Returns<FrozenSet> {};
+template <anyset_like T>
+struct __sub__<FrozenSet, T>                                    : Returns<FrozenSet> {};
+template <>
+struct __xor__<FrozenSet, Object>                               : Returns<FrozenSet> {};
+template <anyset_like T>
+struct __xor__<FrozenSet, T>                                    : Returns<FrozenSet> {};
+template <>
+struct __ior__<FrozenSet, Object>                               : Returns<FrozenSet&> {};
+template <anyset_like T>
+struct __ior__<FrozenSet, T>                                    : Returns<FrozenSet&> {};
+template <>
+struct __iand__<FrozenSet, Object>                              : Returns<FrozenSet&> {};
+template <anyset_like T>
+struct __iand__<FrozenSet, T>                                   : Returns<FrozenSet&> {};
+template <>
+struct __isub__<FrozenSet, Object>                              : Returns<FrozenSet&> {};
+template <anyset_like T>
+struct __isub__<FrozenSet, T>                                   : Returns<FrozenSet&> {};
+template <>
+struct __ixor__<FrozenSet, Object>                              : Returns<FrozenSet&> {};
+template <anyset_like T>
+struct __ixor__<FrozenSet, T>                                   : Returns<FrozenSet&> {};
+
+}
+
+
 /* Wrapper around pybind11::frozenset that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
 class FrozenSet : public impl::ISet<FrozenSet> {
@@ -479,63 +543,63 @@ public:
 namespace impl {
 
 template <>
-struct __dereference__<FrozenSet>                               : Returns<detail::args_proxy> {};
+struct __dereference__<Set>                                     : Returns<detail::args_proxy> {};
 template <>
-struct __len__<FrozenSet>                                       : Returns<size_t> {};
+struct __len__<Set>                                             : Returns<size_t> {};
 template <>
-struct __iter__<FrozenSet>                                      : Returns<Object> {};
+struct __iter__<Set>                                            : Returns<Object> {};
 template <>
-struct __reversed__<FrozenSet>                                  : Returns<Object> {};
+struct __reversed__<Set>                                        : Returns<Object> {};
 template <is_hashable T>
-struct __contains__<FrozenSet, T>                               : Returns<bool> {};
+struct __contains__<Set, T>                                     : Returns<bool> {};
 template <>
-struct __lt__<FrozenSet, Object>                                : Returns<bool> {};
+struct __lt__<Set, Object>                                      : Returns<bool> {};
 template <anyset_like T>
-struct __lt__<FrozenSet, T>                                     : Returns<bool> {};
+struct __lt__<Set, T>                                           : Returns<bool> {};
 template <>
-struct __le__<FrozenSet, Object>                                : Returns<bool> {};
+struct __le__<Set, Object>                                      : Returns<bool> {};
 template <anyset_like T>
-struct __le__<FrozenSet, T>                                     : Returns<bool> {};
+struct __le__<Set, T>                                           : Returns<bool> {};
 template <>
-struct __ge__<FrozenSet, Object>                                : Returns<bool> {};
+struct __ge__<Set, Object>                                      : Returns<bool> {};
 template <anyset_like T>
-struct __ge__<FrozenSet, T>                                     : Returns<bool> {};
+struct __ge__<Set, T>                                           : Returns<bool> {};
 template <>
-struct __gt__<FrozenSet, Object>                                : Returns<bool> {};
+struct __gt__<Set, Object>                                      : Returns<bool> {};
 template <anyset_like T>
-struct __gt__<FrozenSet, T>                                     : Returns<bool> {};
+struct __gt__<Set, T>                                           : Returns<bool> {};
 template <>
-struct __or__<FrozenSet, Object>                                : Returns<FrozenSet> {};
+struct __or__<Set, Object>                                      : Returns<Set> {};
 template <anyset_like T>
-struct __or__<FrozenSet, T>                                     : Returns<FrozenSet> {};
+struct __or__<Set, T>                                           : Returns<Set> {};
 template <>
-struct __and__<FrozenSet, Object>                               : Returns<FrozenSet> {};
+struct __and__<Set, Object>                                     : Returns<Set> {};
 template <anyset_like T>
-struct __and__<FrozenSet, T>                                    : Returns<FrozenSet> {};
+struct __and__<Set, T>                                          : Returns<Set> {};
 template <>
-struct __sub__<FrozenSet, Object>                               : Returns<FrozenSet> {};
+struct __sub__<Set, Object>                                     : Returns<Set> {};
 template <anyset_like T>
-struct __sub__<FrozenSet, T>                                    : Returns<FrozenSet> {};
+struct __sub__<Set, T>                                          : Returns<Set> {};
 template <>
-struct __xor__<FrozenSet, Object>                               : Returns<FrozenSet> {};
+struct __xor__<Set, Object>                                     : Returns<Set> {};
 template <anyset_like T>
-struct __xor__<FrozenSet, T>                                    : Returns<FrozenSet> {};
+struct __xor__<Set, T>                                          : Returns<Set> {};
 template <>
-struct __ior__<FrozenSet, Object>                               : Returns<FrozenSet&> {};
+struct __ior__<Set, Object>                                     : Returns<Set&> {};
 template <anyset_like T>
-struct __ior__<FrozenSet, T>                                    : Returns<FrozenSet&> {};
+struct __ior__<Set, T>                                          : Returns<Set&> {};
 template <>
-struct __iand__<FrozenSet, Object>                              : Returns<FrozenSet&> {};
+struct __iand__<Set, Object>                                    : Returns<Set&> {};
 template <anyset_like T>
-struct __iand__<FrozenSet, T>                                   : Returns<FrozenSet&> {};
+struct __iand__<Set, T>                                         : Returns<Set&> {};
 template <>
-struct __isub__<FrozenSet, Object>                              : Returns<FrozenSet&> {};
+struct __isub__<Set, Object>                                    : Returns<Set&> {};
 template <anyset_like T>
-struct __isub__<FrozenSet, T>                                   : Returns<FrozenSet&> {};
+struct __isub__<Set, T>                                         : Returns<Set&> {};
 template <>
-struct __ixor__<FrozenSet, Object>                              : Returns<FrozenSet&> {};
+struct __ixor__<Set, Object>                                    : Returns<Set&> {};
 template <anyset_like T>
-struct __ixor__<FrozenSet, T>                                   : Returns<FrozenSet&> {};
+struct __ixor__<Set, T>                                         : Returns<Set&> {};
 
 }
 
@@ -807,69 +871,6 @@ public:
 
 };
 
-
-namespace impl {
-
-template <>
-struct __dereference__<Set>                                     : Returns<detail::args_proxy> {};
-template <>
-struct __len__<Set>                                             : Returns<size_t> {};
-template <>
-struct __iter__<Set>                                            : Returns<Object> {};
-template <>
-struct __reversed__<Set>                                        : Returns<Object> {};
-template <is_hashable T>
-struct __contains__<Set, T>                                     : Returns<bool> {};
-template <>
-struct __lt__<Set, Object>                                      : Returns<bool> {};
-template <anyset_like T>
-struct __lt__<Set, T>                                           : Returns<bool> {};
-template <>
-struct __le__<Set, Object>                                      : Returns<bool> {};
-template <anyset_like T>
-struct __le__<Set, T>                                           : Returns<bool> {};
-template <>
-struct __ge__<Set, Object>                                      : Returns<bool> {};
-template <anyset_like T>
-struct __ge__<Set, T>                                           : Returns<bool> {};
-template <>
-struct __gt__<Set, Object>                                      : Returns<bool> {};
-template <anyset_like T>
-struct __gt__<Set, T>                                           : Returns<bool> {};
-template <>
-struct __or__<Set, Object>                                      : Returns<Set> {};
-template <anyset_like T>
-struct __or__<Set, T>                                           : Returns<Set> {};
-template <>
-struct __and__<Set, Object>                                     : Returns<Set> {};
-template <anyset_like T>
-struct __and__<Set, T>                                          : Returns<Set> {};
-template <>
-struct __sub__<Set, Object>                                     : Returns<Set> {};
-template <anyset_like T>
-struct __sub__<Set, T>                                          : Returns<Set> {};
-template <>
-struct __xor__<Set, Object>                                     : Returns<Set> {};
-template <anyset_like T>
-struct __xor__<Set, T>                                          : Returns<Set> {};
-template <>
-struct __ior__<Set, Object>                                     : Returns<Set&> {};
-template <anyset_like T>
-struct __ior__<Set, T>                                          : Returns<Set&> {};
-template <>
-struct __iand__<Set, Object>                                    : Returns<Set&> {};
-template <anyset_like T>
-struct __iand__<Set, T>                                         : Returns<Set&> {};
-template <>
-struct __isub__<Set, Object>                                    : Returns<Set&> {};
-template <anyset_like T>
-struct __isub__<Set, T>                                         : Returns<Set&> {};
-template <>
-struct __ixor__<Set, Object>                                    : Returns<Set&> {};
-template <anyset_like T>
-struct __ixor__<Set, T>                                         : Returns<Set&> {};
-
-}
 
 }  // namespace python
 }  // namespace bertrand

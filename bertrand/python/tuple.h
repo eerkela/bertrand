@@ -15,11 +15,11 @@ namespace py {
 /* Wrapper around pybind11::tuple that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
 class Tuple :
-    public impl::Inherits<Object, Tuple>,
+    public Object,
     public impl::SequenceOps<Tuple>,
     public impl::ReverseIterable<Tuple>
 {
-    using Base = impl::Inherits<Object, Tuple>;
+    using Base = Object;
 
     template <typename T>
     static inline PyObject* convert_newref(const T& value) {

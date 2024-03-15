@@ -13,10 +13,30 @@ namespace bertrand {
 namespace py {
 
 
+namespace impl {
+
+template <>
+struct __dereference__<Range>                               : Returns<detail::args_proxy> {};
+template <>
+struct __len__<Range>                                       : Returns<size_t> {};
+template <>
+struct __iter__<Range>                                      : Returns<Int> {};
+template <>
+struct __reversed__<Range>                                  : Returns<Int> {};
+template <int_like T>
+struct __contains__<Range, T>                               : Returns<bool> {};
+template <int_like T>
+struct __getitem__<Range, T>                                : Returns<Int> {};
+template <>
+struct __getitem__<Range, Slice>                            : Returns<Range> {};
+
+}
+
+
 /* New subclass of pybind11::object that represents a range object at the Python
 level. */
-class Range : public impl::Inherits<Object, Range> {
-    using Base = impl::Inherits<Object, Range>;
+class Range : public Object {
+    using Base = Object;
 
     inline static bool range_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyRange_Type);
@@ -132,25 +152,6 @@ public:
 
 };
 
-
-namespace impl {
-
-template <>
-struct __dereference__<Range>                               : Returns<detail::args_proxy> {};
-template <>
-struct __len__<Range>                                       : Returns<size_t> {};
-template <>
-struct __iter__<Range>                                      : Returns<Int> {};
-template <>
-struct __reversed__<Range>                                  : Returns<Int> {};
-template <int_like T>
-struct __contains__<Range, T>                               : Returns<bool> {};
-template <int_like T>
-struct __getitem__<Range, T>                                : Returns<Int> {};
-template <>
-struct __getitem__<Range, Slice>                            : Returns<Range> {};
-
-}
 
 }  // namespace python
 }  // namespace bertrand

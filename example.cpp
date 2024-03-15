@@ -85,7 +85,7 @@
 #include <pybind11/pybind11.h>
 
 
-// namespace py = bertrand::py;
+namespace py = bertrand::py;
 
 
 // void func(const py::Int& i) {
@@ -98,8 +98,12 @@ void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
-    // py::Int a = 1;
-    // py::print(a < 2);
+    py::List list = {1, 2, 3, 4};
+    py::Int x = list[{1, 3}];  // TODO: clearly wrong.  Should never be allowed
+    py::print(x);
+
+
+
 
 
     // NOTE: PySequence_Concat is ~30-40% faster than PyNumber_Add

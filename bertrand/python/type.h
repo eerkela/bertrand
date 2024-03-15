@@ -17,8 +17,8 @@ namespace py {
 /* Wrapper around a pybind11::type that enables extra C API functionality, such as the
 ability to create new types on the fly by calling the type() metaclass, or directly
 querying PyTypeObject* fields. */
-class Type : public impl::Inherits<Object, Type> {
-    using Base = impl::Inherits<Object, Type>;
+class Type : public Object {
+    using Base = Object;
 
 public:
     static Type type;
@@ -348,8 +348,8 @@ struct __or__<Type, T>                                          : Returns<Object
 
 
 /* New subclass of pybind11::object that represents Python's built-in super() type. */
-class Super : public impl::Inherits<Object, Super> {
-    using Base = impl::Inherits<Object, Super>;
+class Super : public Object {
+    using Base = Object;
 
     inline static int check_super(PyObject* obj) {
         int result = PyObject_IsInstance(obj, reinterpret_cast<PyObject*>(&PySuper_Type));

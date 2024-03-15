@@ -25,10 +25,10 @@ namespace impl {
 
     template <typename Derived>
     class IStr :
-        public impl::Inherits<Object, Derived>,
+        public Object,
         public impl::SequenceOps<Derived>
     {
-        using Base = impl::Inherits<Object, Derived>;
+        using Base = Object;
 
         inline Derived* self() { return static_cast<Derived*>(this); }
         inline const Derived* self() const { return static_cast<const Derived*>(this); }
@@ -55,9 +55,54 @@ namespace impl {
 }  // namespace impl
 
 
+
+namespace impl {
+
+template <>
+struct __dereference__<Str>                                     : Returns<detail::args_proxy> {};
+template <>
+struct __len__<Str>                                             : Returns<size_t> {};
+template <>
+struct __iter__<Str>                                            : Returns<Str> {};
+template <>
+struct __reversed__<Str>                                        : Returns<Str> {};
+template <str_like T>
+struct __contains__<Str, T>                                     : Returns<bool> {};
+template <int_like T>
+struct __getitem__<Str, T>                                      : Returns<Str> {};
+template <>
+struct __getitem__<Str, Slice>                                  : Returns<Str> {};
+template <>
+struct __lt__<Str, Object>                                      : Returns<bool> {};
+template <str_like T>
+struct __lt__<Str, T>                                           : Returns<bool> {};
+template <>
+struct __le__<Str, Object>                                      : Returns<bool> {};
+template <str_like T>
+struct __le__<Str, T>                                           : Returns<bool> {};
+template <>
+struct __ge__<Str, Object>                                      : Returns<bool> {};
+template <str_like T>
+struct __ge__<Str, T>                                           : Returns<bool> {};
+template <>
+struct __gt__<Str, Object>                                      : Returns<bool> {};
+template <str_like T>
+struct __gt__<Str, T>                                           : Returns<bool> {};
+template <>
+struct __add__<Str, Object>                                     : Returns<Str> {};
+template <str_like T>
+struct __add__<Str, T>                                          : Returns<Str> {};
+template <>
+struct __iadd__<Str, Object>                                    : Returns<Str&> {};
+template <str_like T>
+struct __iadd__<Str, T>                                         : Returns<Str&> {};
+
+}
+
+
 /* Bertrand equivalent for pybind11::str. */
-class Str : public impl::Inherits<Object, Str>, public impl::SequenceOps<Str> {
-    using Base = impl::Inherits<Object, Str>;
+class Str : public Object {
+    using Base = Object;
 
     template <typename T>
     inline auto to_format_string(T&& arg) -> decltype(auto) {
@@ -781,48 +826,7 @@ public:
 };
 
 
-namespace impl {
 
-template <>
-struct __dereference__<Str>                                     : Returns<detail::args_proxy> {};
-template <>
-struct __len__<Str>                                             : Returns<size_t> {};
-template <>
-struct __iter__<Str>                                            : Returns<Str> {};
-template <>
-struct __reversed__<Str>                                        : Returns<Str> {};
-template <str_like T>
-struct __contains__<Str, T>                                     : Returns<bool> {};
-template <int_like T>
-struct __getitem__<Str, T>                                      : Returns<Str> {};
-template <>
-struct __getitem__<Str, Slice>                                  : Returns<Str> {};
-template <>
-struct __lt__<Str, Object>                                      : Returns<bool> {};
-template <str_like T>
-struct __lt__<Str, T>                                           : Returns<bool> {};
-template <>
-struct __le__<Str, Object>                                      : Returns<bool> {};
-template <str_like T>
-struct __le__<Str, T>                                           : Returns<bool> {};
-template <>
-struct __ge__<Str, Object>                                      : Returns<bool> {};
-template <str_like T>
-struct __ge__<Str, T>                                           : Returns<bool> {};
-template <>
-struct __gt__<Str, Object>                                      : Returns<bool> {};
-template <str_like T>
-struct __gt__<Str, T>                                           : Returns<bool> {};
-template <>
-struct __add__<Str, Object>                                     : Returns<Str> {};
-template <str_like T>
-struct __add__<Str, T>                                          : Returns<Str> {};
-template <>
-struct __iadd__<Str, Object>                                    : Returns<Str&> {};
-template <str_like T>
-struct __iadd__<Str, T>                                         : Returns<Str&> {};
-
-}
 
 
 /* TODO: Bertrand equivalent for pybind11::bytes.

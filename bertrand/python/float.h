@@ -15,8 +15,8 @@ namespace py {
 /* Wrapper around pybind11::float_ that enables conversions from strings, similar to
 Python's `float()` constructor, as well as converting math operators that account for
 C++ inputs. */
-class Float : public impl::Inherits<Object, Float> {
-    using Base = impl::Inherits<Object, Float>;
+class Float : public Object {
+    using Base = Object;
 
     template <typename T>
     static constexpr bool constructor1 = (
@@ -50,7 +50,8 @@ public:
     }
 
     /* Implicitly convert C++ booleans, integers, and floats to py::Float. */
-    template <typename T> requires (constructor1<T>)
+    template <typename T>
+        requires (constructor1<T>)
     Float(const T& value) : Base(PyFloat_FromDouble(value), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();

@@ -161,13 +161,8 @@ namespace impl {
 }
 
 
-
-template <typename... Args>
-    requires (impl::__call__<Object, Args...>::enable)
-inline auto Object::operator()(Args&&... args) const
-    -> impl::__call__<Object, Args...>::Return
-{
-    using Return = impl::__call__<Object, Args...>::Return;
+template <typename Return, typename T, typename... Args>
+inline Return Object::operator_call(const T& obj, Args&&... args) {
     static_assert(
         std::is_same_v<Return, void> || std::is_base_of_v<Return, Object>,
         "Call operator must return either void or a py::Object subclass.  Check your "
@@ -175,11 +170,11 @@ inline auto Object::operator()(Args&&... args) const
         "derived from py::Object."
     );
     if constexpr (std::is_void_v<Return>) {
-        Base::operator()(impl::interpret_arg(std::forward<Args>(args))...);
+        obj.operator_call_impl(impl::interpret_arg(std::forward<Args>(args))...);
     } else {
-        return reinterpret_steal<Return>(
-            Base::operator()(impl::interpret_arg(std::forward<Args>(args))...).release()
-        );
+        return reinterpret_steal<Return>(obj.operator_call_impl(
+            impl::interpret_arg(std::forward<Args>(args))...
+        ).release());
     }
 }
 
