@@ -6,18 +6,20 @@
 #define BERTRAND_PYTHON_LIST_H
 
 #include "common.h"
+#include "bool.h"
 
 
 namespace bertrand {
 namespace py {
 
 
+
 namespace impl {
 
 template <>
 struct __dereference__<List>                                : Returns<detail::args_proxy> {};
-template <>
-struct __len__<List>                                        : Returns<size_t> {};
+// template <>   <-- already defined using PyList_GET_SIZE
+// struct __len__<List>                                        : Returns<size_t> {};
 template <>
 struct __iter__<List>                                       : Returns<Object> {};
 template <>
@@ -90,12 +92,6 @@ class List :
         }
     }
 
-    template <typename T>
-    static constexpr bool constructor2 =
-        impl::python_like<T> && !impl::list_like<T> && impl::is_iterable<T>;
-    template <typename T>
-    static constexpr bool constructor1 = !impl::python_like<T> && impl::is_iterable<T>;
-
 public:
     static Type type;
 
@@ -157,7 +153,8 @@ public:
     }
 
     /* Explicitly unpack an arbitrary Python container into a new py::List. */
-    template <typename T> requires (constructor1<T>)
+    template <typename T>
+        requires (impl::python_like<T> && !impl::list_like<T> && impl::is_iterable<T>)
     explicit List(const T& contents) :
         Base(PySequence_List(contents.ptr()), stolen_t{})
     {
@@ -167,7 +164,7 @@ public:
     }
 
     /* Explicitly unpack a generic C++ container into a new py::List. */
-    template <typename T> requires (constructor2<T>)
+    template <typename T> requires (!impl::python_like<T> && impl::is_iterable<T>)
     explicit List(const T& contents) {
         size_t size = 0;
         if constexpr (impl::has_size<T>) {

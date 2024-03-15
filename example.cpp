@@ -99,7 +99,7 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
     py::List list = {1, 2, 3, 4};
-    py::Int x = list[{1, 3}];  // TODO: clearly wrong.  Should never be allowed
+    py::List x = list[{1, 3}];
     py::print(x);
 
 
