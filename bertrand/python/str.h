@@ -55,7 +55,6 @@ namespace impl {
 }  // namespace impl
 
 
-
 namespace impl {
 
 template <>
@@ -118,15 +117,6 @@ class Str : public Object {
         }
     }
 
-    template <typename T>
-    static constexpr bool constructor1 = 
-        !impl::python_like<T> && std::is_convertible_v<T, std::string>;
-    template <typename T>
-    static constexpr bool constructor2 =
-        !impl::python_like<T> && !std::is_convertible_v<T, std::string>;
-    template <typename T>
-    static constexpr bool constructor3 = impl::python_like<T>;
-
 public:
     static Type type;
 
@@ -146,8 +136,23 @@ public:
         }
     }
 
-    /* Implicitly convert C++ string literals into py::Str. */
-    Str(const char* string) : Base(PyUnicode_FromString(string), stolen_t{}) {
+    /* Implicitly convert a string literal into a py::Str. */
+    template <size_t N>
+    Str(const char(&string)[N]) : Base(
+        PyUnicode_FromStringAndSize(string, N - 1),
+        stolen_t{}
+    ) {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    /* Implicitly convert C-style string arrays into py::Str. */
+    template <typename T> requires (std::is_convertible_v<T, const char*>)
+    Str(const T& string) : Base(
+        PyUnicode_FromString(string),
+        stolen_t{}
+    ) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
@@ -172,11 +177,13 @@ public:
     }
 
     /* Trigger implicit C++ conversions to std::string. */
-    template <typename T> requires (constructor1<T>)
+    template <typename T>
+        requires (!impl::python_like<T> && std::is_convertible_v<T, std::string>)
     explicit Str(const T& string) : Str(static_cast<std::string>(string)) {}
 
     /* Explicitly convert an arbitrary C++ object into a py::Str representation. */
-    template <typename T> requires (constructor2<T>)
+    template <typename T>
+        requires (!impl::python_like<T> && !std::is_convertible_v<T, std::string>)
     explicit Str(const T& obj) : Base(PyObject_Str(pybind11::cast(obj).ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -184,7 +191,7 @@ public:
     }
 
     /* Explicitly convert an arbitrary Python object into a py::Str representation. */
-    template <typename T> requires (constructor3<T>)
+    template <typename T> requires (impl::python_like<T>)
     explicit Str(const T& obj) : Base(PyObject_Str(obj.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -254,8 +261,17 @@ public:
     ////    CONVERSIONS    ////
     ///////////////////////////
 
-    // TODO: convert to const char*, std::string_view?  Since Python caches the UTF8
-    // representation within the string itself, this can be possibly made safe
+    /* Implicitly convert a py::Str into a C-style UTF8 byte array.  Note that Python
+    caches the result in the string itself, making this operation unsafe for
+    rvalue-qualified objects. */
+    inline operator const char*() const && = delete;
+    inline operator const char*() const & {
+        const char* result = PyUnicode_AsUTF8(this->ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
+    }
 
     /* Implicitly convert a py::Str into a C++ std::string. */
     inline operator std::string() const {
@@ -265,6 +281,19 @@ public:
             throw error_already_set();
         }
         return std::string(result, length);
+    }
+
+    /* Implicitly convert a py::Str into a C++ std::string_view.  Note that this
+    provides a view into an internal buffer stored in the string itself, making this
+    operation unsafe for rvalue-qualified objects. */
+    inline operator std::string_view() const && = delete;
+    inline operator std::string_view() const & {
+        Py_ssize_t length;
+        const char* result = PyUnicode_AsUTF8AndSize(this->ptr(), &length);
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return std::string_view(result, length);
     }
 
     ///////////////////////////////////

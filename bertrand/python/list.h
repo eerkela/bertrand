@@ -30,12 +30,12 @@ template <int_like T>
 struct __getitem__<List, T>                                 : Returns<Object> {};
 template <>
 struct __getitem__<List, Slice>                             : Returns<List> {};
-template <int_like T>
-struct __setitem__<List, T, Object>                         : Returns<void> {};
-template <list_like T>
-struct __setitem__<List, Slice, T>                          : Returns<void> {};
-template <int_like T>
-struct __delitem__<List, T>                                 : Returns<void> {};
+template <int_like Key, typename Value>
+struct __setitem__<List, Key, Value>                        : Returns<void> {};
+template <list_like Value>
+struct __setitem__<List, Slice, Value>                      : Returns<void> {};
+template <int_like Key>
+struct __delitem__<List, Key>                               : Returns<void> {};
 template <>
 struct __delitem__<List, Slice>                             : Returns<void> {};
 template <>

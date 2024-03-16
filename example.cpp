@@ -88,9 +88,10 @@
 namespace py = bertrand::py;
 
 
-// void func(const py::Int& i) {
+void func(const std::vector<int>& vec) {
+    py::print(vec);
+}
 
-// }
 
 
 
@@ -98,12 +99,22 @@ void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
-    py::List list = {1, 2, 3, 4};
-    py::List x = list[{1, 3}];
-    py::print(x);
+    // py::List list = {1, 2, 3, 4};
+    // py::List x = list[{1, 3}];
+    // py::print(x);
+
+    // py::Str x = "abcdef";
+    // // const char* y = x[{1, 3, 1}];
+    // // std::string_view y = x;
+    // // std::string_view y = py::Str("abcdef");
+    // py::print(x[{1, 4}]->attr("startswith")("abc"));
 
 
 
+
+    py::List x = {1, 2, 3};
+    x[1] = 4;
+    func(x);
 
 
     // NOTE: PySequence_Concat is ~30-40% faster than PyNumber_Add
