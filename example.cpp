@@ -94,6 +94,12 @@ void func(const std::vector<int>& vec) {
 
 
 
+template <py::impl::str_like T>
+void func2(const T& x) {
+    py::print(x);
+}
+
+
 
 void run() {
     using Clock = std::chrono::high_resolution_clock;
@@ -111,10 +117,22 @@ void run() {
 
 
 
+    // py::Int x = 1;
+    // py::Int y = x + 1;
+    // py::print(x, y);
 
-    py::List x = {1, 2, 3};
-    x[1] = 4;
-    func(x);
+    // py::List z = {1, 2, 3};
+    // py::print(z + py::List{4, 5, 6});
+
+    static const py::Str stat = "join";
+
+
+    py::Str x = "abc";
+    // py::Str y = x + "def";
+    for (size_t i = 0; i < 1000000; ++i) {
+        x.capitalize();
+    }
+
 
 
     // NOTE: PySequence_Concat is ~30-40% faster than PyNumber_Add

@@ -86,7 +86,8 @@ namespace impl {
         template <impl::is_iterable T>
         inline bool isdisjoint(const T& other) const {
             if constexpr (impl::python_like<T>) {
-                return static_cast<bool>(self()->attr("isdisjoint")(other));
+                static const pybind11::str method = "isdisjoint";
+                return static_cast<bool>(self()->attr(method)(other));
             } else {
                 for (auto&& item : other) {
                     if (contains(std::forward<decltype(item)>(item))) {
@@ -111,7 +112,8 @@ namespace impl {
         /* Equivalent to Python `set.issubset(other)`. */
         template <impl::is_iterable T>
         inline bool issubset(const T& other) const {
-            return static_cast<bool>(self()->attr("issubset")(
+            static const pybind11::str method = "issubset";
+            return static_cast<bool>(self()->attr(method)(
                 detail::object_or_cast(other)
             ));
         }
@@ -119,14 +121,16 @@ namespace impl {
         /* Equivalent to Python `set.issubset(other)`, where other is given as a
         braced initializer list. */
         inline bool issubset(const std::initializer_list<impl::HashInitializer>& other) const {
-            return static_cast<bool>(self()->attr("issubset")(Derived(other)));
+            static const pybind11::str method = "issubset";
+            return static_cast<bool>(self()->attr(method)(Derived(other)));
         }
 
         /* Equivalent to Python `set.issuperset(other)`. */
         template <impl::is_iterable T>
         inline bool issuperset(const T& other) const {
             if constexpr (impl::python_like<T>) {
-                return static_cast<bool>(self()->attr("issuperset")(other));
+                static const pybind11::str method = "issuperset";
+                return static_cast<bool>(self()->attr(method)(other));
             } else {
                 for (auto&& item : other) {
                     if (!contains(std::forward<decltype(item)>(item))) {
@@ -153,7 +157,8 @@ namespace impl {
         /* Equivalent to Python `set.union(*others)`. */
         template <impl::is_iterable... Args>
         inline Derived union_(const Args&... others) const {
-            return self()->attr("union")(
+            static const pybind11::str method = "union";
+            return self()->attr(method)(
                 detail::object_or_cast(std::forward<Args>(others))...
             );
         }
@@ -181,7 +186,8 @@ namespace impl {
         /* Equivalent to Python `set.intersection(other)`. */
         template <impl::is_iterable... Args>
         inline Derived intersection(const Args&... others) const {
-            return self()->attr("intersection")(
+            static const pybind11::str method = "intersection";
+            return self()->attr(method)(
                 detail::object_or_cast(std::forward<Args>(others))...
             );
         }
@@ -213,7 +219,8 @@ namespace impl {
         /* Equivalent to Python `set.difference(other)`. */
         template <impl::is_iterable... Args>
         inline Derived difference(const Args&... others) const {
-            return self()->attr("difference")(
+            static const pybind11::str method = "difference";
+            return self()->attr(method)(
                 detail::object_or_cast(std::forward<Args>(others))...
             );
         }
@@ -243,7 +250,8 @@ namespace impl {
         /* Equivalent to Python `set.symmetric_difference(other)`. */
         template <impl::is_iterable T>
         inline Derived symmetric_difference(const T& other) const {
-            return self()->attr("symmetric_difference")(detail::object_or_cast(other));
+            static const pybind11::str method = "symmetric_difference";
+            return self()->attr(method)(detail::object_or_cast(other));
         }
 
         /* Equivalent to Python `set.symmetric_difference(other)`, where other is given
@@ -778,9 +786,8 @@ public:
     /* Equivalent to Python `set.update(*others)`. */
     template <impl::is_iterable... Args>
     inline void update(const Args&... others) {
-        this->attr("update")(
-            detail::object_or_cast(std::forward<Args>(others))...
-        );
+        static const pybind11::str method = "update";
+        attr(method)(detail::object_or_cast(std::forward<Args>(others))...);
     }
 
     /* Equivalent to Python `set.update(<braced initializer list>)`. */
@@ -793,24 +800,23 @@ public:
     /* Equivalent to Python `set.intersection_update(*others)`. */
     template <impl::is_iterable... Args>
     inline void intersection_update(const Args&... others) {
-        this->attr("intersection_update")(
-            detail::object_or_cast(std::forward<Args>(others))...
-        );
+        static const pybind11::str method = "intersection_update";
+        attr(method)(detail::object_or_cast(std::forward<Args>(others))...);
     }
 
     /* Equivalent to Python `set.intersection_update(<braced initializer list>)`. */
     inline void intersection_update(
         const std::initializer_list<impl::HashInitializer>& other
     ) {
-        this->attr("intersection_update")(Set(other));
+        static const pybind11::str method = "intersection_update";
+        attr(method)(Set(other));
     }
 
     /* Equivalent to Python `set.difference_update(*others)`. */
     template <impl::is_iterable... Args>
     inline void difference_update(const Args&... others) {
-        this->attr("difference_update")(
-            detail::object_or_cast(std::forward<Args>(others))...
-        );
+        static const pybind11::str method = "difference_update";
+        attr(method)(detail::object_or_cast(std::forward<Args>(others))...);
     }
 
     /* Equivalent to Python `set.difference_update(<braced initializer list>)`. */
@@ -825,7 +831,8 @@ public:
     /* Equivalent to Python `set.symmetric_difference_update(other)`. */
     template <impl::is_iterable T>
     inline void symmetric_difference_update(const T& other) {
-        this->attr("symmetric_difference_update")(detail::object_or_cast(other));
+        static const pybind11::str method = "symmetric_difference_update";
+        attr(method)(detail::object_or_cast(other));
     }
 
     /* Equivalent to Python `set.symmetric_difference_update(<braced initializer list>)`. */

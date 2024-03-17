@@ -23,6 +23,9 @@ namespace bertrand {
 namespace py {
 
 
+// TODO: all attr() calls should use a static name for performance
+
+
 
 // TODO: should probably just only build timedeltas from C++ integers, not python ones.
 // That way we only have to maintain one path, and implicit conversions might just

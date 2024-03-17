@@ -5,7 +5,21 @@
 #ifndef BERTRAND_PYTHON_STRING_H
 #define BERTRAND_PYTHON_STRING_H
 
-// #include <format>  // part of the C++20 standard, but not available until GCC 13+
+// std::format is part of the C++20 standard, but was not fully implemented until GCC 
+// 13+, clang 17+, or MSVC 19.29+
+#if defined(__GNUC__) && !defined(__clang__)
+    #if (__GNUC__ >= 13)
+        #define BERTRAND_HAS_STD_FORMAT
+    #endif
+#elif defined(__clang__)
+    #if (__clang_major__ >= 17)
+        #define BERTRAND_HAS_STD_FORMAT
+    #endif
+#elif defined(_MSC_VER)
+    #if (_MSC_VER >= 1929)
+        #define BERTRAND_HAS_STD_FORMAT
+    #endif
+#endif
 
 #include "common.h"
 #include "int.h"
@@ -13,6 +27,9 @@
 #include "tuple.h"
 #include "set.h"
 #include "dict.h"
+#ifdef BERTRAND_HAS_STD_FORMAT
+    #include <format>
+#endif
 
 
 namespace bertrand {
@@ -45,7 +62,8 @@ namespace impl {
 
         /* Equivalent to Python's `str.capitalize()`. */
         inline Derived capitalize() const {
-            return reinterpret_steal<Derived>(self()->attr("capitalize")().release());
+            static const pybind11::str method = "capitalize";
+            return reinterpret_steal<Derived>(self()->attr(method)().release());
         }
 
 
@@ -100,7 +118,7 @@ struct __iadd__<Str, T>                                         : Returns<Str&> 
 
 
 /* Bertrand equivalent for pybind11::str. */
-class Str : public Object {
+class Str : public Object, public impl::SequenceOps<Str> {
     using Base = Object;
 
     template <typename T>
@@ -147,7 +165,7 @@ public:
         }
     }
 
-    /* Implicitly convert C-style string arrays into py::Str. */
+    /* Implicitly convert a C-style string array into a py::Str. */
     template <typename T> requires (std::is_convertible_v<T, const char*>)
     Str(const T& string) : Base(
         PyUnicode_FromString(string),
@@ -158,7 +176,7 @@ public:
         }
     }
 
-    /* Implicitly convert C++ std::string into py::Str. */
+    /* Implicitly convert a C++ std::string into a py::Str. */
     Str(const std::string& string) :
         Base(PyUnicode_FromStringAndSize(string.c_str(), string.size()), stolen_t{})
     {
@@ -167,7 +185,7 @@ public:
         }
     }
 
-    /* Implicitly convert C++ std::string_view into py::Str. */
+    /* Implicitly convert a C++ std::string_view into a py::Str. */
     Str(const std::string_view& string) :
         Base(PyUnicode_FromStringAndSize(string.data(), string.size()), stolen_t{})
     {
@@ -179,7 +197,7 @@ public:
     /* Trigger implicit C++ conversions to std::string. */
     template <typename T>
         requires (!impl::python_like<T> && std::is_convertible_v<T, std::string>)
-    explicit Str(const T& string) : Str(static_cast<std::string>(string)) {}
+    explicit Str(const T& string) : Str(impl::implicit_cast<std::string>(string)) {}
 
     /* Explicitly convert an arbitrary C++ object into a py::Str representation. */
     template <typename T>
@@ -198,64 +216,66 @@ public:
         }
     }
 
-    // NOTE: <format> header is only available in GCC 13+
+    #ifdef BERTRAND_HAS_STD_FORMAT
 
-    // /* Construct a Python unicode string from a std::format()-style interpolated
-    // string. */
-    // template <typename... Args> requires (sizeof...(Args) > 0)
-    // explicit Str(const std::string_view& format, Args&&... args) {
-    //     std::string result = std::vformat(
-    //         format,
-    //         std::make_format_args(std::forward<Args>(args))...
-    //     );
-    //     m_ptr = PyUnicode_FromStringAndSize(result.c_str(), result.size());
-    //     if (m_ptr == nullptr) {
-    //         throw error_already_set();
-    //     }
-    // }
+        /* Construct a Python unicode string from a std::format()-style interpolated
+        string. */
+        template <typename... Args> requires (sizeof...(Args) > 0)
+        explicit Str(const std::string_view& format, Args&&... args) {
+            std::string result = std::vformat(
+                format,
+                std::make_format_args(std::forward<Args>(args))...
+            );
+            m_ptr = PyUnicode_FromStringAndSize(result.c_str(), result.size());
+            if (m_ptr == nullptr) {
+                throw error_already_set();
+            }
+        }
 
-    // /* Construct a Python unicode string from a std::format()-style interpolated string
-    // with an optional locale. */
-    // template <typename... Args> requires (sizeof...(Args) > 0)
-    // explicit Str(
-    //     const std::locale& locale,
-    //     const std::string_view& format,
-    //     Args&&... args
-    // ) {
-    //     std::string result = std::vformat(
-    //         locale,
-    //         format,
-    //         std::make_format_args(std::forward<Args>(args))...
-    //     );
-    //     m_ptr = PyUnicode_FromStringAndSize(result.c_str(), result.size());
-    //     if (m_ptr == nullptr) {
-    //         throw error_already_set();
-    //     }
-    // }
+        /* Construct a Python unicode string from a std::format()-style interpolated string
+        with an optional locale. */
+        template <typename... Args> requires (sizeof...(Args) > 0)
+        explicit Str(
+            const std::locale& locale,
+            const std::string_view& format,
+            Args&&... args
+        ) {
+            std::string result = std::vformat(
+                locale,
+                format,
+                std::make_format_args(std::forward<Args>(args))...
+            );
+            m_ptr = PyUnicode_FromStringAndSize(result.c_str(), result.size());
+            if (m_ptr == nullptr) {
+                throw error_already_set();
+            }
+        }
 
-    // /* Construct a Python unicode string from a std::format()-style interpolated string.
-    // This overload is chosen when the format string is given as a Python unicode
-    // string. */
-    // template <typename T, typename... Args>
-    //     requires (sizeof...(Args) > 0 && impl::str_like<T> && impl::python_like<T>)
-    // explicit Str(const T& format, Args&&... args) : Str(
-    //     format.template cast<std::string>(),
-    //     std::forward<Args>(args)...
-    // ) {}
+        /* Construct a Python unicode string from a std::format()-style interpolated string.
+        This overload is chosen when the format string is given as a Python unicode
+        string. */
+        template <typename T, typename... Args>
+            requires (sizeof...(Args) > 0 && impl::str_like<T> && impl::python_like<T>)
+        explicit Str(const T& format, Args&&... args) : Str(
+            format.template cast<std::string>(),
+            std::forward<Args>(args)...
+        ) {}
 
-    // /* Construct a Python unicode string from a std::format()-style interpolated string
-    // with an optional locale. */
-    // template <typename T, typename... Args>
-    //     requires (sizeof...(Args) > 0 && impl::str_like<T> && impl::python_like<T>)
-    // explicit Str(
-    //     const std::locale& locale,
-    //     const T& format,
-    //     Args&&... args
-    // ) : Str(
-    //     locale,
-    //     format.template cast<std::string>(),
-    //     std::forward<Args>(args)...
-    // ) {}
+        /* Construct a Python unicode string from a std::format()-style interpolated string
+        with an optional locale. */
+        template <typename T, typename... Args>
+            requires (sizeof...(Args) > 0 && impl::str_like<T> && impl::python_like<T>)
+        explicit Str(
+            const std::locale& locale,
+            const T& format,
+            Args&&... args
+        ) : Str(
+            locale,
+            format.template cast<std::string>(),
+            std::forward<Args>(args)...
+        ) {}
+
+    #endif
 
     ///////////////////////////
     ////    CONVERSIONS    ////
@@ -366,23 +386,27 @@ public:
 
     /* Equivalent to Python `str.capitalize()`. */
     inline Str capitalize() const {
-        return reinterpret_steal<Str>(this->attr("capitalize")().release());
+        static const pybind11::str method = "capitalize";
+        return reinterpret_steal<Str>(attr(method)().release());
     }
 
     /* Equivalent to Python `str.casefold()`. */
     inline Str casefold() const {
-        return reinterpret_steal<Str>(this->attr("casefold")().release());
+        static const pybind11::str method = "casefold";
+        return reinterpret_steal<Str>(attr(method)().release());
     }
 
     /* Equivalent to Python `str.center(width)`. */
     inline Str center(const Int& width) const {
-        return reinterpret_steal<Str>(this->attr("center")(width).release());
+        static const pybind11::str method = "center";
+        return reinterpret_steal<Str>(attr(method)(width).release());
     }
 
     /* Equivalent to Python `str.center(width, fillchar)`. */
     template <typename T>
     inline Str center(const Int& width, const Str& fillchar) const {
-        return reinterpret_steal<Str>(this->attr("center")(width, fillchar).release());
+        static const pybind11::str method = "center";
+        return reinterpret_steal<Str>(attr(method)(width, fillchar).release());
     }
 
     /* Equivalent to Python `str.copy()`. */
@@ -416,7 +440,8 @@ public:
         const Str& encoding = "utf-8",
         const Str& errors = "strict"
     ) const {
-        return this->attr("encode")(encoding, errors);  // TODO: wrap Bytes
+        static const pybind11::str method = "encode";
+        return attr(method)(encoding, errors);  // TODO: wrap Bytes
     }
 
     /* Equivalent to Python `str.endswith(suffix[, start[, end]])`. */
@@ -434,7 +459,8 @@ public:
 
     /* Equivalent to Python `str.expandtabs()`. */
     inline Str expandtabs(const Int& tabsize = 8) const {
-        return reinterpret_steal<Str>(this->attr("expandtabs")(tabsize).release());
+        static const pybind11::str method = "expandtabs";
+        return reinterpret_steal<Str>(attr(method)(tabsize).release());
     }
 
     /* Equivalent to Python `str.find(sub[, start[, stop]])`. */
@@ -459,7 +485,8 @@ public:
     /* Equivalent to Python `str.format(*args, **kwargs)`. */
     template <typename... Args>
     inline Str format(Args&&... args) const {
-        return reinterpret_steal<Str>(this->attr("format")(
+        static const pybind11::str method = "format";
+        return reinterpret_steal<Str>(attr(method)(
             detail::object_or_cast(std::forward<Args>(args))...
         ).release());
     }
@@ -467,8 +494,9 @@ public:
     /* Equivalent to Python `str.format_map(mapping)`. */
     template <impl::dict_like T>
     inline Str format_map(const T& mapping) const {
+        static const pybind11::str method = "format_map";
         return reinterpret_steal<Str>(
-            this->attr("format_map")(detail::object_or_cast(mapping)).release()
+            attr(method)(detail::object_or_cast(mapping)).release()
         );
     }
 
@@ -502,62 +530,74 @@ public:
 
     /* Equivalent to Python `str.isalnum()`. */
     inline bool isalnum() const {
-        return static_cast<bool>(this->attr("isalnum")());
+        static const pybind11::str method = "isalnum";
+        return static_cast<bool>(attr(method)());
     }
 
     /* Equivalent to Python `str.isalpha()`. */
     inline bool isalpha() const {
-        return static_cast<bool>(this->attr("isalpha")());
+        static const pybind11::str method = "isalpha";
+        return static_cast<bool>(attr(method)());
     }
 
     /* Equivalent to Python `str.isascii()`. */
     inline bool isascii() const {
-        return static_cast<bool>(this->attr("isascii")());
+        static const pybind11::str method = "isascii";
+        return static_cast<bool>(attr(method)());
     }
 
     /* Equivalent to Python `str.isdecimal()`. */
     inline bool isdecimal() const {
-        return static_cast<bool>(this->attr("isdecimal")());
+        static const pybind11::str method = "isdecimal";
+        return static_cast<bool>(attr(method)());
     }
 
     /* Equivalent to Python `str.isdigit()`. */
     inline bool isdigit() const {
-        return static_cast<bool>(this->attr("isdigit")());
+        static const pybind11::str method = "isdigit";
+        return static_cast<bool>(attr(method)());
     }
 
     /* Equivalent to Python `str.isidentifier()`. */
     inline bool isidentifier() const {
-        return static_cast<bool>(this->attr("isidentifier")());
+        static const pybind11::str method = "isidentifier";
+        return static_cast<bool>(attr(method)());
     }
 
     /* Equivalent to Python `str.islower()`. */
     inline bool islower() const {
-        return static_cast<bool>(this->attr("islower")());
+        static const pybind11::str method = "islower";
+        return static_cast<bool>(attr(method)());
     }
 
     /* Equivalent to Python `str.isnumeric()`. */
     inline bool isnumeric() const {
-        return static_cast<bool>(this->attr("isnumeric")());
+        static const pybind11::str method = "isnumeric";
+        return static_cast<bool>(attr(method)());
     }
 
     /* Equivalent to Python `str.isprintable()`. */
     inline bool isprintable() const {
-        return static_cast<bool>(this->attr("isprintable")());
+        static const pybind11::str method = "isprintable";
+        return static_cast<bool>(attr(method)());
     }
 
     /* Equivalent to Python `str.isspace()`. */
     inline bool isspace() const {
-        return static_cast<bool>(this->attr("isspace")());
+        static const pybind11::str method = "isspace";
+        return static_cast<bool>(attr(method)());
     }
 
     /* Equivalent to Python `str.istitle()`. */
     inline bool istitle() const {
-        return static_cast<bool>(this->attr("istitle")());
+        static const pybind11::str method = "istitle";
+        return static_cast<bool>(attr(method)());
     }
 
     /* Equivalent to Python `str.isupper()`. */
     inline bool isupper() const {
-        return static_cast<bool>(this->attr("isupper")());
+        static const pybind11::str method = "isupper";
+        return static_cast<bool>(attr(method)());
     }
 
     /* Equivalent of Python `str.join(iterable)`. */
@@ -583,45 +623,52 @@ public:
 
     /* Equivalent to Python `str.ljust(width)`. */
     inline Str ljust(const Int& width) const {
-        return reinterpret_steal<Str>(this->attr("ljust")(width).release());
+        static const pybind11::str method = "ljust";
+        return reinterpret_steal<Str>(attr(method)(width).release());
     }
 
     /* Equivalent to Python `str.ljust(width, fillchar)`. */
     inline Str ljust(const Int& width, const Str& fillchar) const {
-        return reinterpret_steal<Str>(this->attr("ljust")(width, fillchar).release());
+        static const pybind11::str method = "ljust";
+        return reinterpret_steal<Str>(attr(method)(width, fillchar).release());
     }
 
     /* Equivalent to Python `str.lower()`. */
     inline Str lower() const {
-        return reinterpret_steal<Str>(this->attr("lower")().release());
+        static const pybind11::str method = "lower";
+        return reinterpret_steal<Str>(attr(method)().release());
     }
 
     /* Equivalent to Python `str.lstrip()`. */
     inline Str lstrip() const {
-        return reinterpret_steal<Str>(this->attr("lstrip")().release());
+        static const pybind11::str method = "lstrip";
+        return reinterpret_steal<Str>(attr(method)().release());
     }
 
     /* Equivalent to Python `str.lstrip(chars)`. */
     inline Str lstrip(const Str& chars) const {
-        return reinterpret_steal<Str>(this->attr("lstrip")(chars).release());
+        static const pybind11::str method = "lstrip";
+        return reinterpret_steal<Str>(attr(method)(chars).release());
     }
 
     /* Equivalent to Python (static) `str.maketrans(x)`. */
     template <typename T> 
     inline static Dict maketrans(const T& x) {
+        static const pybind11::str method = "maketrans";
         pybind11::type cls =
             reinterpret_borrow<pybind11::type>((PyObject*) &PyUnicode_Type);
         return reinterpret_steal<Dict>(
-            cls.attr("maketrans")(detail::object_or_cast(x)).release()
+            cls.attr(method)(detail::object_or_cast(x)).release()
         );
     }
 
     /* Equivalent to Python (static) `str.maketrans(x, y)`. */
     template <typename T, typename U> 
     inline static Dict maketrans(const T& x, const U& y) {
+        static const pybind11::str method = "maketrans";
         pybind11::type cls =
             reinterpret_borrow<pybind11::type>((PyObject*) &PyUnicode_Type);
-        return reinterpret_steal<Dict>(cls.attr("maketrans")(
+        return reinterpret_steal<Dict>(cls.attr(method)(
             detail::object_or_cast(x),
             detail::object_or_cast(y)
         ).release());
@@ -630,9 +677,10 @@ public:
     /* Equivalent to Python (static) `str.maketrans(x, y, z)`. */
     template <typename T, typename U, typename V> 
     inline static Dict maketrans(const T& x, const U& y, const V& z) {
+        static const pybind11::str method = "maketrans";
         pybind11::type cls =
             reinterpret_borrow<pybind11::type>((PyObject*) &PyUnicode_Type);
-        return reinterpret_steal<Dict>(cls.attr("maketrans")(
+        return reinterpret_steal<Dict>(cls.attr(method)(
             detail::object_or_cast(x),
             detail::object_or_cast(y),
             detail::object_or_cast(z)
@@ -641,17 +689,20 @@ public:
 
     /* Equivalent to Python `str.partition(sep)`. */
     inline Tuple partition(const Str& sep) const {
-        return reinterpret_steal<Tuple>(this->attr("partition")(sep).release());
+        static const pybind11::str method = "partition";
+        return reinterpret_steal<Tuple>(attr(method)(sep).release());
     }
 
     /* Equivalent to Python `str.removeprefix(prefix)`. */
     inline Str removeprefix(const Str& prefix) const {
-        return reinterpret_steal<Str>(this->attr("removeprefix")(prefix).release());
+        static const pybind11::str method = "removeprefix";
+        return reinterpret_steal<Str>(attr(method)(prefix).release());
     }
 
     /* Equivalent to Python `str.removesuffix(suffix)`. */
     inline Str removesuffix(const Str& suffix) const {
-        return reinterpret_steal<Str>(this->attr("removesuffix")(suffix).release());
+        static const pybind11::str method = "removesuffix";
+        return reinterpret_steal<Str>(attr(method)(suffix).release());
     }
 
     /* Equivalent to Python `str.replace(old, new[, count])`. */
@@ -716,37 +767,44 @@ public:
 
     /* Equivalent to Python `str.rjust(width)`. */
     inline Str rjust(const Int& width) const {
-        return reinterpret_steal<Str>(this->attr("rjust")(width).release());
+        static const pybind11::str method = "rjust";
+        return reinterpret_steal<Str>(attr(method)(width).release());
     }
 
     /* Equivalent to Python `str.rjust(width, fillchar)`. */
     inline Str rjust(const Int& width, const Str& fillchar) const {
-        return reinterpret_steal<Str>(this->attr("rjust")(width, fillchar).release());
+        static const pybind11::str method = "rjust";
+        return reinterpret_steal<Str>(attr(method)(width, fillchar).release());
     }
 
     /* Equivalent to Python `str.rpartition(sep)`. */
     inline Tuple rpartition(const Str& sep) const {
-        return reinterpret_steal<Tuple>(this->attr("rpartition")(sep).release());
+        static const pybind11::str method = "rpartition";
+        return reinterpret_steal<Tuple>(attr(method)(sep).release());
     }
 
     /* Equivalent to Python `str.rsplit()`. */
     inline List rsplit() const {
-        return reinterpret_steal<List>(this->attr("rsplit")().release());
+        static const pybind11::str method = "rsplit";
+        return reinterpret_steal<List>(this->attr(method)().release());
     }
 
     /* Equivalent to Python `str.rsplit(sep[, maxsplit])`. */
     inline List rsplit(const Str& sep, const Int& maxsplit = -1) const {
-        return reinterpret_steal<List>(this->attr("rsplit")(sep, maxsplit).release());
+        static const pybind11::str method = "rsplit";
+        return reinterpret_steal<List>(attr(method)(sep, maxsplit).release());
     }
 
     /* Equivalent to Python `str.rstrip()`. */
     inline Str rstrip() const {
-        return reinterpret_steal<Str>(this->attr("rstrip")().release());
+        static const pybind11::str method = "rstrip";
+        return reinterpret_steal<Str>(attr(method)().release());
     }
 
     /* Equivalent to Python `str.rstrip(chars)`. */
     inline Str rstrip(const Str& chars) const {
-        return reinterpret_steal<Str>(this->attr("rstrip")(chars).release());
+        static const pybind11::str method = "rstrip";
+        return reinterpret_steal<Str>(attr(method)(chars).release());
     }
 
     /* Equivalent to Python `str.split()`. */
@@ -791,40 +849,47 @@ public:
 
     /* Equivalent to Python `str.strip()`. */
     inline Str strip() const {
-        return reinterpret_steal<Str>(this->attr("strip")().release());
+        static const pybind11::str method = "strip";
+        return reinterpret_steal<Str>(attr(method)().release());
     }
 
     /* Equivalent to Python `str.strip(chars)`. */
     inline Str strip(const Str& chars) const {
-        return reinterpret_steal<Str>(this->attr("strip")(chars).release());
+        static const pybind11::str method = "strip";
+        return reinterpret_steal<Str>(attr(method)(chars).release());
     }
 
     /* Equivalent to Python `str.swapcase()`. */
     inline Str swapcase() const {
-        return reinterpret_steal<Str>(this->attr("swapcase")().release());
+        static const pybind11::str method = "swapcase";
+        return reinterpret_steal<Str>(attr(method)().release());
     }
 
     /* Equivalent to Python `str.title()`. */
     inline Str title() const {
-        return reinterpret_steal<Str>(this->attr("title")().release());
+        static const pybind11::str method = "title";
+        return reinterpret_steal<Str>(attr(method)().release());
     }
 
     /* Equivalent to Python `str.translate(table)`. */
     template <typename T>
     inline Str translate(const T& table) const {
+        static const pybind11::str method = "translate";
         return reinterpret_steal<Str>(
-            this->attr("translate")(detail::object_or_cast(table)).release()
+            attr(method)(detail::object_or_cast(table)).release()
         );
     }
 
     /* Equivalent to Python `str.upper()`. */
     inline Str upper() const {
-        return reinterpret_steal<Str>(this->attr("upper")().release());
+        static const pybind11::str method = "upper";
+        return reinterpret_steal<Str>(attr(method)().release());
     }
 
     /* Equivalent to Python `str.zfill(width)`. */
     inline Str zfill(const Int& width) const {
-        return reinterpret_steal<Str>(this->attr("zfill")(width).release());
+        static const pybind11::str method = "zfill";
+        return reinterpret_steal<Str>(attr(method)(width).release());
     }
 
     /////////////////////////
@@ -840,17 +905,27 @@ public:
         return result;
     }
 
-    /* Concatenate this string with another. */
-    inline Str concat(const Str& other) const {
-        PyObject* result = PyUnicode_Concat(this->ptr(), other.ptr());
+protected:
+
+    using impl::SequenceOps<Str>::operator_mul;
+    using impl::SequenceOps<Str>::operator_imul;
+
+    template <typename Return, typename L, typename R>
+    inline static auto operator_add(const L& lhs, const R& rhs) {
+        PyObject* result = PyUnicode_Concat(
+            detail::object_or_cast(lhs).ptr(),
+            detail::object_or_cast(rhs).ptr()
+        );
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Str>(result);
+        return reinterpret_steal<Return>(result);
     }
 
-    using Base::operator*;
-    using Base::operator*=;
+    template <typename Return, typename L, typename R>
+    inline static void operator_iadd(L& lhs, const R& rhs) {
+        lhs = operator_add<Return>(lhs, rhs);
+    }
 
 };
 

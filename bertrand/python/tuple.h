@@ -300,13 +300,29 @@ public:
         return {*this, PyTuple_GET_SIZE(this->ptr())};
     }
 
-    // TODO: figure this out
+    inline Tuple operator+(const std::initializer_list<impl::Initializer>& items) const {
+        return concat(items);
+    }
 
-    using impl::SequenceOps<Tuple>::concat;
-    using impl::SequenceOps<Tuple>::operator*;
-    using impl::SequenceOps<Tuple>::operator*=;
+    inline friend Tuple operator+(
+        const std::initializer_list<impl::Initializer>& items,
+        const Tuple& self
+    ) {
+        return self.concat(items);
+    }
 
-    /* Overload of concat() that allows the operand to be a braced initializer list. */
+    inline Tuple& operator+=(const std::initializer_list<impl::Initializer>& items) {
+        *this = concat(items);
+        return *this;
+    }
+
+protected:
+
+    using impl::SequenceOps<Tuple>::operator_add;
+    using impl::SequenceOps<Tuple>::operator_iadd;
+    using impl::SequenceOps<Tuple>::operator_mul;
+    using impl::SequenceOps<Tuple>::operator_imul;
+
     inline Tuple concat(const std::initializer_list<impl::Initializer>& items) const {
         PyObject* result = PyTuple_New(size() + items.size());
         if (result == nullptr) {
@@ -332,15 +348,6 @@ public:
             Py_DECREF(result);
             throw;
         }
-    }
-
-    inline Tuple operator+(const std::initializer_list<impl::Initializer>& items) const {
-        return concat(items);
-    }
-
-    inline Tuple& operator+=(const std::initializer_list<impl::Initializer>& items) {
-        *this = concat(items);
-        return *this;
     }
 
 };

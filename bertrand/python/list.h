@@ -320,7 +320,8 @@ public:
     template <impl::is_iterable T>
     inline void extend(const T& items) {
         if constexpr (impl::python_like<T>) {
-            this->attr("extend")(detail::object_or_cast(items));
+            static const pybind11::str method = "extend";
+            attr(method)(detail::object_or_cast(items));
         } else {
             for (auto&& item : items) {
                 append(std::forward<decltype(item)>(item));
@@ -363,12 +364,14 @@ public:
     /* Equivalent to Python `list.remove(value)`. */
     template <typename T>
     inline void remove(const T& value) {
-        this->attr("remove")(detail::object_or_cast(value));
+        static const pybind11::str method = "remove";
+        attr(method)(detail::object_or_cast(value));
     }
 
     /* Equivalent to Python `list.pop([index])`. */
     inline Object pop(Py_ssize_t index = -1) {
-        return this->attr("pop")(index);
+        static const pybind11::str method = "pop";
+        return attr(method)(index);
     }
 
     /* Equivalent to Python `list.reverse()`. */
@@ -387,7 +390,8 @@ public:
 
     /* Equivalent to Python `list.sort(reverse=reverse)`. */
     inline void sort(const Bool& reverse) {
-        this->attr("sort")(py::arg("reverse") = reverse);
+        static const pybind11::str method = "sort";
+        attr(method)(py::arg("reverse") = reverse);
     }
 
     /* Equivalent to Python `list.sort(key=key[, reverse=reverse])`.  The key function
@@ -408,11 +412,29 @@ public:
         return {*this, PyList_GET_SIZE(this->ptr())};
     }
 
-    using impl::SequenceOps<List>::concat;
-    using impl::SequenceOps<List>::operator*;
-    using impl::SequenceOps<List>::operator*=;
+    inline List operator+(const std::initializer_list<impl::Initializer>& items) const {
+        return concat(items);
+    }
 
-    /* Overload of concat() that allows the operand to be a braced initializer list. */
+    inline friend List operator+(
+        const std::initializer_list<impl::Initializer>& items,
+        const List& list
+    ) {
+        return list.concat(items);
+    }
+
+    inline List& operator+=(const std::initializer_list<impl::Initializer>& items) {
+        extend(items);
+        return *this;
+    }
+
+protected:
+
+    using impl::SequenceOps<List>::operator_add;
+    using impl::SequenceOps<List>::operator_iadd;
+    using impl::SequenceOps<List>::operator_mul;
+    using impl::SequenceOps<List>::operator_imul;
+
     inline List concat(const std::initializer_list<impl::Initializer>& items) const {
         PyObject* result = PyList_New(size() + items.size());
         if (result == nullptr) {
@@ -438,15 +460,6 @@ public:
             Py_DECREF(result);
             throw;
         }
-    }
-
-    inline List operator+(const std::initializer_list<impl::Initializer>& items) const {
-        return concat(items);
-    }
-
-    inline List& operator+=(const std::initializer_list<impl::Initializer>& items) {
-        extend(items);
-        return *this;
     }
 
 };

@@ -773,9 +773,8 @@ public:
 
     /* Get the underlying function. */
     inline Function function() const {
-        return reinterpret_steal<Function>(
-            Object(this->attr("__func__")).release()
-        );
+        static const pybind11::str method = "__func__";
+        return reinterpret_steal<Function>(Object(attr(method)).release());
     }
 
 };
@@ -817,9 +816,8 @@ public:
 
     /* Get the underlying function. */
     inline Function function() const {
-        return reinterpret_steal<Function>(
-            Object(this->attr("__func__")).release()
-        );
+        static const pybind11::str method = "__func__";
+        return reinterpret_steal<Function>(Object(attr(method)).release());
     }
 
 };
@@ -867,17 +865,20 @@ public:
 
     /* Get the function being used as a getter. */
     inline Function fget() const {
-        return reinterpret_steal<Function>(Object(this->attr("fget")).release());
+        static const pybind11::str method = "fget";
+        return reinterpret_steal<Function>(Object(attr(method)).release());
     }
 
     /* Get the function being used as a setter. */
     inline Function fset() const {
-        return reinterpret_steal<Function>(Object(this->attr("fset")).release());
+        static const pybind11::str method = "fset";
+        return reinterpret_steal<Function>(Object(attr(method)).release());
     }
 
     /* Get the function being used as a deleter. */
     inline Function fdel() const {
-        return reinterpret_steal<Function>(Object(this->attr("fdel")).release());
+        static const pybind11::str method = "fdel";
+        return reinterpret_steal<Function>(Object(attr(method)).release());
     }
 
 };

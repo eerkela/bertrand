@@ -1186,13 +1186,15 @@ struct type_caster<bertrand::py::Regex> {
 
         // create a new Regex instance from the pattern.  Note that this resets any
         // flags that were set on the pattern.
-        value = bertrand::py::Regex(src.attr("pattern").cast<std::string>());
+        static const pybind11::str method = "pattern";
+        value = bertrand::py::Regex(src.attr(method).cast<std::string>());
         return true;
     }
 
     /* Convert a py::Regex instance into a Python re.Pattern. */
     static handle cast(const bertrand::py::Regex& src, return_value_policy, handle) {
-        return bertrand::py::impl::re->attr("compile")(src.pattern()).release();
+        static const pybind11::str method = "compile";
+        return bertrand::py::impl::re->attr(method)(src.pattern()).release();
     }
 
 };

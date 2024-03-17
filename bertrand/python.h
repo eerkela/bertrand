@@ -163,12 +163,6 @@ namespace impl {
 
 template <typename Return, typename T, typename... Args>
 inline Return Object::operator_call(const T& obj, Args&&... args) {
-    static_assert(
-        std::is_same_v<Return, void> || std::is_base_of_v<Return, Object>,
-        "Call operator must return either void or a py::Object subclass.  Check your "
-        "specialization of __call__ for the given arguments and ensure that it is "
-        "derived from py::Object."
-    );
     if constexpr (std::is_void_v<Return>) {
         obj.operator_call_impl(impl::interpret_arg(std::forward<Args>(args))...);
     } else {
