@@ -42,9 +42,9 @@ namespace impl {
     public:
         using Base::Base;
 
-        ///////////////////////////
-        ////    CONVERSIONS    ////
-        ///////////////////////////
+        /////////////////////////////
+        ////    C++ INTERFACE    ////
+        /////////////////////////////
 
         /* Implicitly convert a py::FrozenSet into a C++ set or unordered_set. */
         template <typename T> requires (!impl::python_like<T> && impl::anyset_like<T>)
@@ -54,10 +54,6 @@ namespace impl {
                 result.insert(item.template cast<typename T::value_type>());
             }
         }
-
-        //////////////////////////
-        ////    PySet_ API    ////
-        //////////////////////////
 
         /* Get the size of the set. */
         inline size_t size() const noexcept {

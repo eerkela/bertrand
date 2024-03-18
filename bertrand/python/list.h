@@ -62,6 +62,14 @@ template <>
 struct __iadd__<List, Object>                               : Returns<List&> {};
 template <list_like T>
 struct __iadd__<List, T>                                    : Returns<List&> {};
+template <>
+struct __mul__<List, Object>                                : Returns<List> {};
+template <int_like T>
+struct __mul__<List, T>                                     : Returns<List> {};
+template <>
+struct __imul__<List, Object>                               : Returns<List&> {};
+template <int_like T>
+struct __imul__<List, T>                                    : Returns<List&> {};
 
 }
 
@@ -235,9 +243,9 @@ public:
         }
     }
 
-    ///////////////////////////
-    ////    CONVERSIONS    ////
-    ///////////////////////////
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
 
     /* Implicitly convert a py::List into a C++ std::array.  Throws an error if the
     list does not have the expected length. */
@@ -269,10 +277,6 @@ public:
         }
         return result;
     }
-
-    ///////////////////////////////////
-    ////    PyList* API METHODS    ////
-    ///////////////////////////////////
 
     /* Get the size of the list. */
     inline size_t size() const noexcept {

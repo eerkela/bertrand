@@ -106,9 +106,9 @@ public:
 
     #endif
 
-    ///////////////////////////
-    ////    PyType_ API    ////
-    ///////////////////////////
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
 
     /* A proxy for the type's PyTypeObject* struct. */
     struct Slots {

@@ -15,6 +15,7 @@
 #include "python/set.h"
 #include "python/dict.h"
 #include "python/str.h"
+#include "python/bytes.h"
 #include "python/func.h"
 // #include "python/datetime.h"
 #include "python/math.h"
@@ -25,40 +26,15 @@ namespace bertrand {
 namespace py {
 
 
-/* TODO: What if I provided another wrapper besides static, like py::Typed<>?
- *      -> This would be easier to do with special TypedList<>, etc subclasses, which
- *         have a cleaner syntax and would apply the same Object-like semantics with
- *         regard to type narrowing, etc.  It would imply a loop through the container
- *         to check types, but from then on, it would be fully typed and checked by the
- *         compiler.
- *
- *      py::TypedList<py::Int> list = {1, 2, "a"};
- *      // compile error!  "a" is not implicitly convertible to int
- *
- *      py::TypedList<py::Int> list = {1, 2, 3};
- *      list.append("a"); 
- *      // compile error!  "a" is not implicitly convertible to int
- *
- *      py::TypedList<int> list = {1, 2, 3};
- *      list.append("a"); 
- *      // same as before, but with raw C++ integers.  Everything gets converted to a
- *      // py::Object anyways, so the only thing this does is enforce C++ type safety.
- *
- * NOTE: TypedList<T> would force T to be a subclass of py::Object, and would refuse
- * to compile any code that violates type safety.  That would completely eliminate all
- * runtime overhead compared to normal lists
- */
+namespace literals {
 
+    using namespace pybind11::literals;
 
+    inline Code operator ""_python(const char* source, size_t size) {
+        return Code(std::string_view(source, size));
+    }
 
-
-/* Some attributes are forward declared to avoid circular dependencies.
- *
- * Since this file is the only valid entry point for the python ecosystem, it makes
- * sense to define them here, with full context.  This avoids complicated include paths
- * and decouples some of the types from one another.  It also relaxes some of the
- * strictness around inclusion order, and generally promotes code organization.
- */
+}
 
 
 // TODO: Regex and Decimal types?
@@ -71,7 +47,7 @@ namespace py {
 
 /* Every Python type has a static `Type` member that gives access to the Python type
 object associated with instances of that class. */
-inline Type Type::type = Type{};  // metaprogramming in a nutshell
+inline Type Type::type = Type{};
 inline Type Object::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
 inline Type NoneType::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(Py_TYPE(Py_None)));
 inline Type NotImplementedType::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(Py_TYPE(Py_NotImplemented)));
@@ -93,6 +69,8 @@ inline Type KeysView::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*
 inline Type ValuesView::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyDictValues_Type));
 inline Type ItemsView::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyDictItems_Type));
 inline Type Str::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type));
+inline Type Bytes::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyBytes_Type));
+inline Type ByteArray::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyByteArray_Type));
 inline Type Code::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyCode_Type));
 inline Type Frame::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyFrame_Type));
 inline Type Function::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyFunction_Type));
@@ -669,18 +647,25 @@ inline Int ord(const Handle& obj) {
 }
 
 
+namespace impl {
+
+    template <typename T>
+    inline Str print_impl(T&& arg) {
+        if constexpr (impl::proxy_like<std::decay_t<T>>) {
+            return Str(*arg);
+        } else {
+            return Str(std::forward<T>(arg));
+        }
+    }
+
+}
+
+
 /* Equivalent to Python `print(args...)`, except that it can take arbitrary C++ objects
 using the py::Str constructor. */
 template <typename... Args>
 inline void print(const Args&... args) {
-    auto convert = [](auto&& arg) {
-        if constexpr (impl::proxy_like<std::decay_t<decltype(arg)>>) {
-            return Str(*arg);
-        } else {
-            return Str(arg);
-        }
-    };
-    pybind11::print(convert(args)...);
+    pybind11::print(impl::print_impl(args)...);
 }
 
 

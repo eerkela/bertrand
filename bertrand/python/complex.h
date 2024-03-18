@@ -102,9 +102,9 @@ public:
         }
     }
 
-    ///////////////////////////
-    ////    CONVERSIONS    ////
-    ///////////////////////////
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
 
     /* Implicitly convert a Complex number into a C++ std::complex. */
     template <typename T>

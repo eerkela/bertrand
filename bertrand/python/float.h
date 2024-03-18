@@ -73,9 +73,9 @@ public:
     /* Explicitly convert a string into a py::Float. */
     explicit Float(const Str& str);
 
-    ///////////////////////////
-    ////    CONVERSIONS    ////
-    ///////////////////////////
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
 
     /* Implicitly convert a Python float into a C++ float. */
     inline operator double() const {

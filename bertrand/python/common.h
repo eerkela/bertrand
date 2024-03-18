@@ -29,30 +29,27 @@
 
 
 /* NOTES ON PERFORMANCE:
- * In general, bertrand should be quite efficient, and generally trade blows with
- * native Python in most respects.  It expands out to raw CPython API calls, so
- * properly optimized (i.e. type safe) code should retain as much performance as
- * possible, and may even gain some due to specific optimizations at the C++ level.
- * There are, however, a few things to keep in mind:
+ * In general, bertrand should be as fast or faster than the equivalent Python code,
+ * owing to the use of static typing, compilation, and optimized CPython API calls.  
+ * There are a few things to keep in mind, however:
  *
  *  1.  A null pointer check followed by a type check is implicitly incurred whenever a
- *      generalized py::Object is narrowed to a more specific type, such as py::Int or
+ *      generic py::Object is narrowed to a more specific type, such as py::Int or
  *      py::List.  This is necessary to ensure type safety, and is optimized for
  *      built-in types, but can become a pessimization if done frequently, especially
  *      in tight loops.  If you find yourself doing this, consider either converting to
- *      strict types earlier in the code, which will allow the compiler to enforce
- *      these rules at compile time, or keeping all object interactions generic to
- *      prevent thrashing.  Generally, the most common case where this can be a problem
- *      is when assigning the result of a generic attribute lookup (`.attr()`), index
- *      (`[]`), or call (`()`) operator to a strict type, since these operators return
- *      py::Object instances by default.  If you naively bind these to a strict type
- *      (e.g. `py::Int x = py::List{1, 2, 3}[1]` or `py::Str y = x.attr("__doc__")`),
- *      then the runtime check will be implicitly incurred to make the operation type
- *      safe.  See point #2 below for a workaround.  In the future, bertrand will
- *      likely offer typed alternatives for the basic containers, which can promote
- *      some of these checks to compile time, but they can never be completely
- *      eliminated.
- *  2.  For cases where the type of a generic object is known in advance, it is
+ *      strict types earlier in the code (which eliminates runtime overhead and allows
+ *      the compiler to enforce these checks at compile time) or keeping all object
+ *      interactions fully generic to prevent thrashing.  Generally, the only cases
+ *      where this can be a problem are when accessing a named attribute via `attr()`,
+ *      calling a Python function via `()`, indexing into a generic container using
+ *      `[]`, or iterating over such a container in a range-based loop, all of which
+ *      return py::Object instances by default.  Note that all of these can be made
+ *      type-safe by writing an additional wrapper class that specializes the
+ *      `py::impl::__call__`, `py::impl::__getitem__`, and `py::impl::__iter__` control
+ *      structs, eliminating the runtime check and promoting it to compile time.  See
+ *      point #2 below for a less intrusive, unsafe workaround.
+ *  2.  For cases where the exact type of a generic object is known in advance, it is
  *      possible to bypass the runtime check by using `py::reinterpret_borrow<T>(obj)`
  *      or `py::reinterpret_steal<T>(obj.release())`.  These functions are not type
  *      safe, and should be used with caution (especially the latter, which can lead to
@@ -60,29 +57,34 @@
  *      with custom types, as in most cases a method's return type and reference count
  *      will be known ahead of time, making the runtime check redundant.  In most other
  *      cases, it is not recommended to use these functions, as they can lead to subtle
- *      bugs and crashes if their assumptions are incorrect.
+ *      bugs and crashes if the assumptions they make are incorrect.
  *  3.  There is a penalty for copying data across the Python/C++ boundary.  This is
  *      generally quite small (even for lists and other container types), but it can
  *      add up if done frequently.  If you find yourself repeatedly copying large
  *      amounts of data between Python and C++, you should reconsider your design or
- *      use the buffer protocol to avoid the copy.  This is especially true for NumPy
- *      arrays, which can be accessed directly as C++ arrays without copying.
+ *      use the buffer protocol to avoid the copy.  An easy way to do this is to use
+ *      NumPy arrays, which can be accessed directly from C++ without copying.
  *  4.  Python (at least for now) does not play well with multithreaded code, and
- *      neither does bertrand.  If you need to use Python in a multithreaded context,
- *      consider offloading the work to C++ and passing the results back to Python.
- *      This unlocks full native parallelism, with SIMD, OpenMP, and other tools at
- *      your disposal.  If you must use Python, consider using the
- *      `py::gil_scoped_release` guard to release the GIL while doing C++ work, and
- *      then reacquire it via RAII before returning to Python.
+ *      neither does bertrand.  If you need to use Python objects in a multithreaded
+ *      context, consider offloading the work to C++ and passing the results back to
+ *      Python. This unlocks full native parallelism, with SIMD, OpenMP, and other
+ *      tools at your disposal.  If you must use Python, first read the GIL chapter in
+ *      the Python C API documentation, and then consider using the
+ *      `py::gil_scoped_release` guard to release the GIL within a specific context,
+ *      and automatically reacquire it using RAII before returning to Python.
  *  5.  Lastly, Bertrand makes it possible to store arbitrary Python objects with
  *      static duration using the py::Static<> wrapper, which can reduce net
- *      allocations and improve performance.  This is especially true for global
- *      objects like modules and scripts, which can be cached and reused across the
- *      lifetime of the program.
+ *      allocations and improve performance.  This is especially true for named methods
+ *      in `attr()` lookups, or global objects like modules and scripts, which can be
+ *      cached and reused across the lifetime of the program.
+ *
+ * Even without these optimizations, bertrand should be quite competitive with native
+ * Python code, and should trade blows with it in most cases.  If you find a case where
+ * bertrand is significantly slower than Python, please file an issue on the GitHub
+ * repository, and we will investigate it as soon as possible.
  */
 
 
-using namespace pybind11::literals;
 namespace bertrand {
 namespace py {
 
@@ -164,8 +166,6 @@ using WeakRef = pybind11::weakref;
 using Capsule = pybind11::capsule;
 using Buffer = pybind11::buffer;  // TODO: place in buffer.h along with memoryview
 using MemoryView = pybind11::memoryview;
-using Bytes = pybind11::bytes;  // TODO: place in str.h with bytearray.  They use an API mixin
-using Bytearray = pybind11::bytearray;
 class Object;
 class NotImplementedType;
 class Bool;
@@ -184,6 +184,8 @@ class ValuesView;
 class Dict;
 class MappingProxy;
 class Str;
+class Bytes;
+class ByteArray;
 class Type;
 class Code;
 class Frame;
@@ -522,6 +524,22 @@ namespace impl {
             std::is_constructible_v<std::string_view, T> ||
             std::is_base_of_v<Str, T> ||
             std::is_base_of_v<pybind11::str, T>
+        );
+
+        template <typename T>
+        concept bytes_like = (
+            string_literal<T> ||
+            std::is_same_v<std::remove_cvref_t<T>, void*> ||
+            std::is_base_of_v<Bytes, T> ||
+            std::is_base_of_v<pybind11::bytes, T>
+        );
+
+        template <typename T>
+        concept bytearray_like = (
+            string_literal<T> ||
+            std::is_same_v<std::remove_cvref_t<T>, void*> ||
+            std::is_base_of_v<ByteArray, T> ||
+            std::is_base_of_v<pybind11::bytearray, T>
         );
 
         template <typename T>
@@ -4034,8 +4052,6 @@ namespace std {                                                                 
 
 
 BERTRAND_STD_HASH(bertrand::py::Buffer)
-BERTRAND_STD_HASH(bertrand::py::Bytearray)
-BERTRAND_STD_HASH(bertrand::py::Bytes)
 BERTRAND_STD_HASH(bertrand::py::Capsule)
 BERTRAND_STD_HASH(bertrand::py::EllipsisType)
 BERTRAND_STD_HASH(bertrand::py::Handle)
@@ -4065,8 +4081,6 @@ BERTRAND_STD_EQUAL_TO(bertrand::py::WeakRef)
 BERTRAND_STD_EQUAL_TO(bertrand::py::Capsule)
 BERTRAND_STD_EQUAL_TO(bertrand::py::Buffer)
 BERTRAND_STD_EQUAL_TO(bertrand::py::MemoryView)
-BERTRAND_STD_EQUAL_TO(bertrand::py::Bytes)
-BERTRAND_STD_EQUAL_TO(bertrand::py::Bytearray)
 
 
 #endif // BERTRAND_PYTHON_COMMON_H

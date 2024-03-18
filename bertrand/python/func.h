@@ -568,9 +568,9 @@ public:
         Base(pybind11::cpp_function(std::forward<T>(func)).release(), stolen_t{})
     {}
 
-    ///////////////////////////////
-    ////    PyFunction_ API    ////
-    ///////////////////////////////
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
 
     /* Get the module in which this function was defined. */
     inline Module module_() const {
@@ -884,14 +884,8 @@ public:
 };
 
 
-}  // namespace python
+}  // namespace py
 }  // namespace bertrand
-
-
-/* User-defined literal to make embedding python scripts as easy as possible */
-inline bertrand::py::Code operator"" _python(const char* source, size_t size) {
-    return bertrand::py::Code(std::string_view(source, size));
-}
 
 
 #endif  // BERTRAND_PYTHON_FUNC_H

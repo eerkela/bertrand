@@ -6,13 +6,13 @@
 #define BERTRAND_PYTHON_STRING_H
 
 // std::format is part of the C++20 standard, but was not fully implemented until GCC 
-// 13+, clang 17+, or MSVC 19.29+
+// 13+, clang 18+, or MSVC 19.29+
 #if defined(__GNUC__) && !defined(__clang__)
     #if (__GNUC__ >= 13)
         #define BERTRAND_HAS_STD_FORMAT
     #endif
 #elif defined(__clang__)
-    #if (__clang_major__ >= 17)
+    #if (__clang_major__ >= 18)
         #define BERTRAND_HAS_STD_FORMAT
     #endif
 #elif defined(_MSC_VER)
@@ -38,43 +38,6 @@ namespace py {
 
 namespace impl {
 
-    // TODO: encapsulate Str/Bytes/ByteArray interfaces here
-
-    template <typename Derived>
-    class IStr :
-        public Object,
-        public impl::SequenceOps<Derived>
-    {
-        using Base = Object;
-
-        inline Derived* self() { return static_cast<Derived*>(this); }
-        inline const Derived* self() const { return static_cast<const Derived*>(this); }
-
-    protected:
-
-
-    public:
-        using Base::Base;
-
-        ////////////////////////////////
-        ////    PYTHON INTERFACE    ////
-        ////////////////////////////////
-
-        /* Equivalent to Python's `str.capitalize()`. */
-        inline Derived capitalize() const {
-            static const pybind11::str method = "capitalize";
-            return reinterpret_steal<Derived>(self()->attr(method)().release());
-        }
-
-
-    };
-
-
-}  // namespace impl
-
-
-namespace impl {
-
 template <>
 struct __dereference__<Str>                                     : Returns<detail::args_proxy> {};
 template <>
@@ -83,8 +46,12 @@ template <>
 struct __iter__<Str>                                            : Returns<Str> {};
 template <>
 struct __reversed__<Str>                                        : Returns<Str> {};
+template <>
+struct __contains__<Str, Object>                                : Returns<bool> {};
 template <str_like T>
 struct __contains__<Str, T>                                     : Returns<bool> {};
+template <>
+struct __getitem__<Str, Object>                                 : Returns<Str> {};
 template <int_like T>
 struct __getitem__<Str, T>                                      : Returns<Str> {};
 template <>
@@ -110,9 +77,17 @@ struct __add__<Str, Object>                                     : Returns<Str> {
 template <str_like T>
 struct __add__<Str, T>                                          : Returns<Str> {};
 template <>
-struct __iadd__<Str, Object>                                    : Returns<Str&> {};
+struct __iadd__<Str, Object>                                    : Returns<Str> {};
 template <str_like T>
-struct __iadd__<Str, T>                                         : Returns<Str&> {};
+struct __iadd__<Str, T>                                         : Returns<Str> {};
+template <>
+struct __mul__<Str, Object>                                     : Returns<Str> {};
+template <int_like T>
+struct __mul__<Str, T>                                          : Returns<Str> {};
+template <>
+struct __imul__<Str, Object>                                    : Returns<Str> {};
+template <int_like T>
+struct __imul__<Str, T>                                         : Returns<Str> {};
 
 }
 
@@ -141,11 +116,11 @@ public:
     template <typename T>
     static constexpr bool check() { return impl::str_like<T>; }
 
+    BERTRAND_OBJECT_COMMON(Base, Str, PyUnicode_Check)
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
-
-    BERTRAND_OBJECT_COMMON(Base, Str, PyUnicode_Check)
 
     /* Default constructor.  Initializes to empty string. */
     Str() : Base(PyUnicode_FromStringAndSize("", 0), stolen_t{}) {
@@ -154,7 +129,7 @@ public:
         }
     }
 
-    /* Implicitly convert a string literal into a py::Str. */
+    /* Implicitly convert a string literal into a py::Str object. */
     template <size_t N>
     Str(const char(&string)[N]) : Base(
         PyUnicode_FromStringAndSize(string, N - 1),
@@ -165,7 +140,7 @@ public:
         }
     }
 
-    /* Implicitly convert a C-style string array into a py::Str. */
+    /* Implicitly convert a C-style string array into a py::Str object. */
     template <typename T> requires (std::is_convertible_v<T, const char*>)
     Str(const T& string) : Base(
         PyUnicode_FromString(string),
@@ -176,25 +151,27 @@ public:
         }
     }
 
-    /* Implicitly convert a C++ std::string into a py::Str. */
-    Str(const std::string& string) :
-        Base(PyUnicode_FromStringAndSize(string.c_str(), string.size()), stolen_t{})
-    {
+    /* Implicitly convert a C++ std::string into a py::Str object. */
+    Str(const std::string& string) :Base(
+        PyUnicode_FromStringAndSize(string.c_str(), string.size()),
+        stolen_t{}
+    ) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
-    /* Implicitly convert a C++ std::string_view into a py::Str. */
-    Str(const std::string_view& string) :
-        Base(PyUnicode_FromStringAndSize(string.data(), string.size()), stolen_t{})
-    {
+    /* Implicitly convert a C++ std::string_view into a py::Str object. */
+    Str(const std::string_view& string) : Base(
+        PyUnicode_FromStringAndSize(string.data(), string.size()),
+        stolen_t{}
+    ) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
-    /* Trigger implicit C++ conversions to std::string. */
+    /* Trigger implicit conversions to std::string. */
     template <typename T>
         requires (!impl::python_like<T> && std::is_convertible_v<T, std::string>)
     explicit Str(const T& string) : Str(impl::implicit_cast<std::string>(string)) {}
@@ -216,76 +193,76 @@ public:
         }
     }
 
-    #ifdef BERTRAND_HAS_STD_FORMAT
+    // #ifdef BERTRAND_HAS_STD_FORMAT
 
-        /* Construct a Python unicode string from a std::format()-style interpolated
-        string. */
-        template <typename... Args> requires (sizeof...(Args) > 0)
-        explicit Str(const std::string_view& format, Args&&... args) {
-            std::string result = std::vformat(
-                format,
-                std::make_format_args(std::forward<Args>(args))...
-            );
-            m_ptr = PyUnicode_FromStringAndSize(result.c_str(), result.size());
-            if (m_ptr == nullptr) {
-                throw error_already_set();
-            }
-        }
+    //     /* Construct a Python unicode string from a std::format()-style interpolated
+    //     string. */
+    //     template <typename... Args> requires (sizeof...(Args) > 0)
+    //     explicit Str(const std::string_view& format, Args&&... args) {
+    //         std::string result = std::vformat(
+    //             format,
+    //             std::make_format_args(std::forward<Args>(args))...
+    //         );
+    //         m_ptr = PyUnicode_FromStringAndSize(result.c_str(), result.size());
+    //         if (m_ptr == nullptr) {
+    //             throw error_already_set();
+    //         }
+    //     }
 
-        /* Construct a Python unicode string from a std::format()-style interpolated string
-        with an optional locale. */
-        template <typename... Args> requires (sizeof...(Args) > 0)
-        explicit Str(
-            const std::locale& locale,
-            const std::string_view& format,
-            Args&&... args
-        ) {
-            std::string result = std::vformat(
-                locale,
-                format,
-                std::make_format_args(std::forward<Args>(args))...
-            );
-            m_ptr = PyUnicode_FromStringAndSize(result.c_str(), result.size());
-            if (m_ptr == nullptr) {
-                throw error_already_set();
-            }
-        }
+    //     /* Construct a Python unicode string from a std::format()-style interpolated string
+    //     with an optional locale. */
+    //     template <typename... Args> requires (sizeof...(Args) > 0)
+    //     explicit Str(
+    //         const std::locale& locale,
+    //         const std::string_view& format,
+    //         Args&&... args
+    //     ) {
+    //         std::string result = std::vformat(
+    //             locale,
+    //             format,
+    //             std::make_format_args(std::forward<Args>(args))...
+    //         );
+    //         m_ptr = PyUnicode_FromStringAndSize(result.c_str(), result.size());
+    //         if (m_ptr == nullptr) {
+    //             throw error_already_set();
+    //         }
+    //     }
 
-        /* Construct a Python unicode string from a std::format()-style interpolated string.
-        This overload is chosen when the format string is given as a Python unicode
-        string. */
-        template <typename T, typename... Args>
-            requires (sizeof...(Args) > 0 && impl::str_like<T> && impl::python_like<T>)
-        explicit Str(const T& format, Args&&... args) : Str(
-            format.template cast<std::string>(),
-            std::forward<Args>(args)...
-        ) {}
+    //     /* Construct a Python unicode string from a std::format()-style interpolated string.
+    //     This overload is chosen when the format string is given as a Python unicode
+    //     string. */
+    //     template <typename T, typename... Args>
+    //         requires (sizeof...(Args) > 0 && impl::str_like<T> && impl::python_like<T>)
+    //     explicit Str(const T& format, Args&&... args) : Str(
+    //         format.template cast<std::string>(),
+    //         std::forward<Args>(args)...
+    //     ) {}
 
-        /* Construct a Python unicode string from a std::format()-style interpolated string
-        with an optional locale. */
-        template <typename T, typename... Args>
-            requires (sizeof...(Args) > 0 && impl::str_like<T> && impl::python_like<T>)
-        explicit Str(
-            const std::locale& locale,
-            const T& format,
-            Args&&... args
-        ) : Str(
-            locale,
-            format.template cast<std::string>(),
-            std::forward<Args>(args)...
-        ) {}
+    //     /* Construct a Python unicode string from a std::format()-style interpolated string
+    //     with an optional locale. */
+    //     template <typename T, typename... Args>
+    //         requires (sizeof...(Args) > 0 && impl::str_like<T> && impl::python_like<T>)
+    //     explicit Str(
+    //         const std::locale& locale,
+    //         const T& format,
+    //         Args&&... args
+    //     ) : Str(
+    //         locale,
+    //         format.template cast<std::string>(),
+    //         std::forward<Args>(args)...
+    //     ) {}
 
-    #endif
+    // #endif
 
-    ///////////////////////////
-    ////    CONVERSIONS    ////
-    ///////////////////////////
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
 
-    /* Implicitly convert a py::Str into a C-style UTF8 byte array.  Note that Python
+    /* Explicitly convert a py::Str into a C-style UTF8 byte array.  Note that Python
     caches the result in the string itself, making this operation unsafe for
     rvalue-qualified objects. */
-    inline operator const char*() const && = delete;
-    inline operator const char*() const & {
+    inline explicit operator const char*() const && = delete;
+    inline explicit operator const char*() const & {
         const char* result = PyUnicode_AsUTF8(this->ptr());
         if (result == nullptr) {
             throw error_already_set();
@@ -315,10 +292,6 @@ public:
         }
         return std::string_view(result, length);
     }
-
-    ///////////////////////////////////
-    ////    PyUnicode_* METHODS    ////
-    ///////////////////////////////////
 
     /* Get the underlying unicode buffer. */
     inline void* data() const noexcept {
@@ -423,26 +396,23 @@ public:
     }
 
     /* Count the number of occurrences of a substring within the string. */
-    inline Py_ssize_t count(
+    inline size_t count(
         const Str& sub,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
         Py_ssize_t result = PyUnicode_Count(this->ptr(), sub.ptr(), start, stop);
-        if (result == -1) {
+        if (result < 0) {
             throw error_already_set();
         }
-        return result;
+        return static_cast<size_t>(result);
     }
 
     /* Equivalent to Python `str.encode(encoding)`. */
     inline Bytes encode(
         const Str& encoding = "utf-8",
         const Str& errors = "strict"
-    ) const {
-        static const pybind11::str method = "encode";
-        return attr(method)(encoding, errors);  // TODO: wrap Bytes
-    }
+    ) const;  // defined in bytes.h
 
     /* Equivalent to Python `str.endswith(suffix[, start[, end]])`. */
     inline bool endswith(
@@ -652,10 +622,10 @@ public:
     }
 
     /* Equivalent to Python (static) `str.maketrans(x)`. */
-    template <typename T> 
+    template <typename T>
     inline static Dict maketrans(const T& x) {
         static const pybind11::str method = "maketrans";
-        pybind11::type cls =
+        static const pybind11::type cls =
             reinterpret_borrow<pybind11::type>((PyObject*) &PyUnicode_Type);
         return reinterpret_steal<Dict>(
             cls.attr(method)(detail::object_or_cast(x)).release()
@@ -663,10 +633,10 @@ public:
     }
 
     /* Equivalent to Python (static) `str.maketrans(x, y)`. */
-    template <typename T, typename U> 
+    template <typename T, typename U>
     inline static Dict maketrans(const T& x, const U& y) {
         static const pybind11::str method = "maketrans";
-        pybind11::type cls =
+        static const pybind11::type cls =
             reinterpret_borrow<pybind11::type>((PyObject*) &PyUnicode_Type);
         return reinterpret_steal<Dict>(cls.attr(method)(
             detail::object_or_cast(x),
@@ -675,10 +645,10 @@ public:
     }
 
     /* Equivalent to Python (static) `str.maketrans(x, y, z)`. */
-    template <typename T, typename U, typename V> 
+    template <typename T, typename U, typename V>
     inline static Dict maketrans(const T& x, const U& y, const V& z) {
         static const pybind11::str method = "maketrans";
-        pybind11::type cls =
+        static const pybind11::type cls =
             reinterpret_borrow<pybind11::type>((PyObject*) &PyUnicode_Type);
         return reinterpret_steal<Dict>(cls.attr(method)(
             detail::object_or_cast(x),
@@ -705,7 +675,7 @@ public:
         return reinterpret_steal<Str>(attr(method)(suffix).release());
     }
 
-    /* Equivalent to Python `str.replace(old, new[, count])`. */
+    /* Equivalent to Python `str.replace(old, new, count)`. */
     inline Str replace(const Str& sub, const Str& repl, Py_ssize_t maxcount = -1) const {
         PyObject* result = PyUnicode_Replace(
             this->ptr(),
@@ -928,64 +898,6 @@ protected:
     }
 
 };
-
-
-
-
-
-/* TODO: Bertrand equivalent for pybind11::bytes.
-
-bytes/bytearray interface:
-
-count(sub[, start[, end]]) -> int
-removeprefix(prefix, /) -> bytes
-removesuffix(suffix, /) -> bytes
-decode(encoding="utf-8", errors="strict") -> str
-endswith(suffix[, start[, end]]) -> bool
-find(sub[, start[, end]]) -> int
-index(sub[, start[, end]]) -> int
-join(iterable) -> bytes/bytearray
-maketrans(from, to) -> dict
-partition(sep) -> tuple
-replace(old, new[, count]) -> bytes/bytearray
-rfind(sub[, start[, end]]) -> int
-rindex(sub[, start[, end]]) -> int
-rpartition(sep) -> tuple
-startswith(prefix[, start[, end]]) -> bool
-translate(table) -> bytes/bytearray
-
-center(width[, fillbyte]) -> bytes/bytearray
-ljust(width[, fillbyte]) -> bytes/bytearray
-lstrip([chars]) -> bytes/bytearray
-rjust(width[, fillbyte]) -> bytes/bytearray
-rsplit(sep=None, maxsplit=-1) -> list
-rstrip([chars]) -> bytes/bytearray
-split(sep=None, maxsplit=-1) -> list
-strip([chars]) -> bytes/bytearray
-
-capitalize() -> bytes/bytearray
-expandtabs(tabsize=8) -> bytes/bytearray
-isalnum() -> bool
-isalpha() -> bool
-isascii() -> bool
-isdigit() -> bool
-islower() -> bool
-isspace() -> bool
-istitle() -> bool
-isupper() -> bool
-lower() -> bytes/bytearray
-splitlines([keepends]) -> list
-swapcase() -> bytes/bytearray
-title() -> bytes/bytearray
-upper() -> bytes/bytearray
-zfill(width) -> bytes/bytearray
-
-
-
-
-*/
-
-
 
 
 }  // namespace python

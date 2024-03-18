@@ -5,20 +5,19 @@
  * headers within the bertrand:: namespace.  These headers will be automatically
  * installed alongside the python package when `pip install bertrand` is executed.
  * Assuming the include directories have been properly set up, users can access the C++
- * API with `#include <bertrand.h>`, which brings the full Bertrand C++ API into scope,
- * and can access specific submodules via `#include <bertrand/submodule.h>` with the
- * same semantics as Python's `from bertrand.submodule import *`.
+ * API with `#include <bertrand.h>`, which brings the full Bertrand C++ API into scope.
+ * Specific submodules can be accessed via `#include <bertrand/{module}.h>`, which has
+ * the same semantics as Python `from bertrand.module import *`.
  *
  * Setting up include paths:
+ *
  *   1. For Python extensions listed in setup.py, add the following to the global
  *      setup() command:
  * 
- *          import bertrand
- *          import numpy
- *          from pybind11.setup_helpers import Pybind11Extension, build_ext
+ *          from bertrand import Extension, build_ext
  *
  *          EXTENSIONS = [
- *              Pybind11Extension(
+ *              Extension(
  *                  ...
  *              ),
  *              ...
@@ -27,7 +26,6 @@
  *          setup(
  *              ...
  *              ext_modules=EXTENSIONS,
- *              include_dirs=[bertrand.get_include(), numpy.get_include()],
  *              cmdclass={"build_ext": build_ext},
  *              ...
  *          )
@@ -40,13 +38,14 @@
  * further qualifications.
  *
  * Note that all bertrand-related functionality is hidden behind the bertrand::
- * namespace in order to avoid conflicts with other libraries.  Users may find the
- * following directives useful:
+ * namespace in order to avoid conflicts with other libraries.  As such, users may find
+ * the following directives useful:
  *
  *      #include <bertrand/bertrand.h>
  *
- *      namespace py = bertrand::py;  // bring pybind11 bindings into scope
- *      namespace np = namespace bertrand::np;  // bring numpy bindings into scope
+ *      namespace py = bertrand::py;
+ *      namespace np = bertrand::np;
+ *      using namespace py::literals;  // brings pybind11::literals + _python literal into scope
  */
 
 // #include "structs/linked.h"

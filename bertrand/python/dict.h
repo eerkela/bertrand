@@ -562,15 +562,14 @@ public:
         Dict(collector(std::forward<Args>(args)...).kwargs())
     {}
 
-    ///////////////////////////
-    ////    CONVERSIONS    ////
-    ///////////////////////////
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
 
     /* Implicitly convert to a C++ dict type. */
     template <typename T> requires (!impl::python_like<T> && impl::dict_like<T>)
     inline operator T() const {
         T result;
-
         PyObject* key;
         PyObject* value;
         Py_ssize_t pos = 0;
@@ -581,13 +580,8 @@ public:
             Value converted_value = Handle(value).template cast<Value>();
             result[converted_key] = converted_value;
         }
-
         return result;
     }
-
-    ///////////////////////////
-    ////    PyDict_ API    ////
-    ///////////////////////////
 
     /* Get the size of the dict. */
     inline size_t size() const noexcept {
@@ -602,7 +596,11 @@ public:
     /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
     template <impl::dict_like T>
     inline void merge(const T& items) {
-        if (PyDict_Merge(this->ptr(), detail::object_or_cast(items).ptr(), 0)) {
+        if (PyDict_Merge(
+            this->ptr(),
+            detail::object_or_cast(items).ptr(),
+            0
+        )) {
             throw error_already_set();
         }
     }
@@ -610,7 +608,11 @@ public:
     /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
     template <typename T> requires (!impl::dict_like<T> && impl::is_iterable<T>)
     inline void merge(const T& items) {
-        if (PyDict_MergeFromSeq2(this->ptr(), detail::object_or_cast(items).ptr(), 0)) {
+        if (PyDict_MergeFromSeq2(
+            this->ptr(),
+            detail::object_or_cast(items).ptr(),
+            0
+        )) {
             throw error_already_set();
         }
     }

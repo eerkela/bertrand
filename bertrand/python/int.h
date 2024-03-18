@@ -191,9 +191,9 @@ public:
     template <typename T> requires (impl::python_like<T> && impl::str_like<T>)
     explicit Int(const T& str, int base = 0);
 
-    ///////////////////////////
-    ////    CONVERSIONS    ////
-    ///////////////////////////
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
 
     /* Implicitly convert a Python int into a C++ integer. */
     template <typename T> requires (!impl::python_like<T> && impl::int_like<T>)
@@ -219,14 +219,16 @@ public:
         return PyLong_AsDouble(m_ptr);
     }
 
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
-
     /* Get a static reference to the zero singleton. */
     static const Int& zero() {
         static const Int zero(0);
         return zero;
+    }
+
+    /* Get a static reference to the one singleton. */
+    static const Int& one() {
+        static const Int one(1);
+        return one;
     }
 
 };
