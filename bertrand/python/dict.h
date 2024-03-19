@@ -13,98 +13,109 @@ namespace bertrand {
 namespace py {
 
 
-/* New subclass of pybind11::object representing a read-only proxy for a Python
-dictionary or other mapping. */
-class MappingProxy : public Object {
-    using Base = Object;
-
-    inline static bool mappingproxy_check(PyObject* obj) {
-        int result = PyObject_IsInstance(obj, (PyObject*) &PyDictProxy_Type);
-        if (result == -1) {
-            throw error_already_set();
-        }
-        return result;
-    }
-
-public:
-    static Type type;
-
-    template <typename T>
-    static constexpr bool check() { return impl::mappingproxy_like<T>; }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    BERTRAND_OBJECT_COMMON(Base, MappingProxy, mappingproxy_check)
-
-    /* Explicitly construct a read-only view on an existing dictionary. */
-    template <typename T> requires (impl::python_like<T> && impl::dict_like<T>)
-    explicit MappingProxy(const T& dict) : Base(PyDictProxy_New(dict.ptr()), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            throw error_already_set();
-        }
-    }
-
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
-
-    /* Get the length of the dictionary. */
-    inline size_t size() const noexcept {
-        return static_cast<size_t>(PyObject_Length(this->ptr()));
-    }
-
-    /* Check if the dictionary is empty. */
-    inline bool empty() const noexcept {
-        return size() == 0;
-    }
-
-    /* Equivalent to Python `mappingproxy.copy()`. */
-    inline Dict copy() const;
-
-    /* Equivalent to Python `mappingproxy.get(key)`. */
-    template <impl::is_hashable K>
-    inline Object get(const K& key) const {
-        static const pybind11::str method = "get";
-        return attr(method)(detail::object_or_cast(key), py::None);
-    }
-
-    /* Equivalent to Python `mappingproxy.get(key, default)`. */
-    template <impl::is_hashable K, typename V>
-    inline Object get(const K& key, const V& default_value) const {
-        static const pybind11::str method = "get";
-        return attr(method)(
-            detail::object_or_cast(key),
-            detail::object_or_cast(default_value)
-        );
-    }
-
-    /* Equivalent to Python `mappingproxy.keys()`. */
-    inline KeysView keys() const;
-
-    /* Equivalent to Python `mappingproxy.values()`. */
-    inline ValuesView values() const;
-
-    /* Equivalent to Python `mappingproxy.items()`. */
-    inline ItemsView items() const;
-
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    /* Equivalent to Python `key in mappingproxy`. */
-    template <impl::is_hashable K>
-    inline bool contains(const K& key) const;
-
-    inline Dict operator|(
-        const std::initializer_list<impl::DictInitializer>& other
-    ) const;
-
-};
-
-
 namespace impl {
+
+template <>
+struct __dereference__<KeysView>                            : Returns<detail::args_proxy> {};
+template <>
+struct __len__<KeysView>                                    : Returns<size_t> {};
+template <is_hashable Key>
+struct __contains__<KeysView, Key>                          : Returns<bool> {};
+template <>
+struct __lt__<KeysView, Object>                             : Returns<bool> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __lt__<KeysView, T>                                  : Returns<bool> {};
+template <anyset_like T>
+struct __lt__<KeysView, T>                                  : Returns<bool> {};
+template <>
+struct __le__<KeysView, Object>                             : Returns<bool> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __le__<KeysView, T>                                  : Returns<bool> {};
+template <anyset_like T>
+struct __le__<KeysView, T>                                  : Returns<bool> {};
+template <>
+struct __ge__<KeysView, Object>                             : Returns<bool> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __ge__<KeysView, T>                                  : Returns<bool> {};
+template <anyset_like T>
+struct __ge__<KeysView, T>                                  : Returns<bool> {};
+template <>
+struct __gt__<KeysView, Object>                             : Returns<bool> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __gt__<KeysView, T>                                  : Returns<bool> {};
+template <anyset_like T>
+struct __gt__<KeysView, T>                                  : Returns<bool> {};
+template <>
+struct __or__<KeysView, Object>                             : Returns<Set> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __or__<KeysView, T>                                  : Returns<Set> {};
+template <anyset_like T>
+struct __or__<KeysView, T>                                  : Returns<Set> {};
+template <>
+struct __and__<KeysView, Object>                            : Returns<Set> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __and__<KeysView, T>                                 : Returns<Set> {};
+template <anyset_like T>
+struct __and__<KeysView, T>                                 : Returns<Set> {};
+template <>
+struct __sub__<KeysView, Object>                            : Returns<Set> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __sub__<KeysView, T>                                 : Returns<Set> {};
+template <anyset_like T>
+struct __sub__<KeysView, T>                                 : Returns<Set> {};
+template <>
+struct __xor__<KeysView, Object>                            : Returns<Set> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __xor__<KeysView, T>                                 : Returns<Set> {};
+template <anyset_like T>
+struct __xor__<KeysView, T>                                 : Returns<Set> {};
+
+template <>
+struct __dereference__<ValuesView>                          : Returns<detail::args_proxy> {};
+template <>
+struct __len__<ValuesView>                                  : Returns<size_t> {};
+template <>
+struct __iter__<ValuesView>                                 : Returns<Object> {};
+template <>
+struct __reversed__<ValuesView>                             : Returns<Object> {};
+template <typename T>
+struct __contains__<ValuesView, T>                          : Returns<bool> {};
+
+template <>
+struct __dereference__<ItemsView>                           : Returns<detail::args_proxy> {};
+template <>
+struct __len__<ItemsView>                                   : Returns<size_t> {};
+template <>
+struct __iter__<ItemsView>                                  : Returns<Object> {};
+template <>
+struct __reversed__<ItemsView>                              : Returns<Object> {};
+template <typename First, typename Second>
+struct __contains__<ItemsView, std::pair<First, Second>>    : Returns<bool> {};
+
+template <>
+struct __dereference__<Dict>                                : Returns<detail::args_proxy> {};
+template <>
+struct __len__<Dict>                                        : Returns<size_t> {};
+template <>
+struct __iter__<Dict>                                       : Returns<Object> {};
+template <>
+struct __reversed__<Dict>                                   : Returns<Object> {};
+template <is_hashable Key>
+struct __contains__<Dict, Key>                              : Returns<bool> {};
+template <is_hashable Key>
+struct __getitem__<Dict, Key>                               : Returns<Object> {};
+template <is_hashable Key, typename Value>
+struct __setitem__<Dict, Key, Value>                        : Returns<void> {};
+template <is_hashable Key>
+struct __delitem__<Dict, Key>                               : Returns<void> {};
+template <>
+struct __or__<Dict, Object>                                 : Returns<Dict> {};
+template <dict_like T>
+struct __or__<Dict, T>                                      : Returns<Dict> {};
+template <>
+struct __ior__<Dict, Object>                                : Returns<Dict> {};
+template <dict_like T>
+struct __ior__<Dict, T>                                     : Returns<Dict> {};
 
 template <>
 struct __dereference__<MappingProxy>                        : Returns<detail::args_proxy> {};
@@ -173,10 +184,7 @@ public:
     }
 
     /* Equivalent to Python `dict.keys().mapping`. */
-    inline MappingProxy mapping() const {
-        static const pybind11::str method = "mapping";
-        return attr(method);
-    }
+    inline MappingProxy mapping() const;
 
     /* Equivalent to Python `dict.keys().isdisjoint(other)`. */
     template <impl::is_iterable T>
@@ -240,66 +248,6 @@ public:
 };
 
 
-namespace impl {
-
-template <>
-struct __dereference__<KeysView>                            : Returns<detail::args_proxy> {};
-template <>
-struct __len__<KeysView>                                    : Returns<size_t> {};
-template <is_hashable Key>
-struct __contains__<KeysView, Key>                          : Returns<bool> {};
-template <>
-struct __lt__<KeysView, Object>                             : Returns<bool> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
-struct __lt__<KeysView, T>                                  : Returns<bool> {};
-template <anyset_like T>
-struct __lt__<KeysView, T>                                  : Returns<bool> {};
-template <>
-struct __le__<KeysView, Object>                             : Returns<bool> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
-struct __le__<KeysView, T>                                  : Returns<bool> {};
-template <anyset_like T>
-struct __le__<KeysView, T>                                  : Returns<bool> {};
-template <>
-struct __ge__<KeysView, Object>                             : Returns<bool> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
-struct __ge__<KeysView, T>                                  : Returns<bool> {};
-template <anyset_like T>
-struct __ge__<KeysView, T>                                  : Returns<bool> {};
-template <>
-struct __gt__<KeysView, Object>                             : Returns<bool> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
-struct __gt__<KeysView, T>                                  : Returns<bool> {};
-template <anyset_like T>
-struct __gt__<KeysView, T>                                  : Returns<bool> {};
-template <>
-struct __or__<KeysView, Object>                             : Returns<Set> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
-struct __or__<KeysView, T>                                  : Returns<Set> {};
-template <anyset_like T>
-struct __or__<KeysView, T>                                  : Returns<Set> {};
-template <>
-struct __and__<KeysView, Object>                            : Returns<Set> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
-struct __and__<KeysView, T>                                 : Returns<Set> {};
-template <anyset_like T>
-struct __and__<KeysView, T>                                 : Returns<Set> {};
-template <>
-struct __sub__<KeysView, Object>                            : Returns<Set> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
-struct __sub__<KeysView, T>                                 : Returns<Set> {};
-template <anyset_like T>
-struct __sub__<KeysView, T>                                 : Returns<Set> {};
-template <>
-struct __xor__<KeysView, Object>                            : Returns<Set> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
-struct __xor__<KeysView, T>                                 : Returns<Set> {};
-template <anyset_like T>
-struct __xor__<KeysView, T>                                 : Returns<Set> {};
-
-}
-
-
 /* New subclass of pybind11::object representing a view into the values of a dictionary
 object. */
 class ValuesView : public Object {
@@ -347,10 +295,7 @@ public:
     }
 
     /* Equivalent to Python `dict.values().mapping`. */
-    inline MappingProxy mapping() const {
-        static const pybind11::str method = "mapping";
-        return attr(method);
-    }
+    inline MappingProxy mapping() const;
 
     /* Equivalent to `value in dict.values()`. */
     template <typename T>
@@ -363,22 +308,6 @@ public:
     }
 
 };
-
-
-namespace impl {
-
-template <>
-struct __dereference__<ValuesView>                          : Returns<detail::args_proxy> {};
-template <>
-struct __len__<ValuesView>                                  : Returns<size_t> {};
-template <>
-struct __iter__<ValuesView>                                 : Returns<Object> {};
-template <>
-struct __reversed__<ValuesView>                             : Returns<Object> {};
-template <typename T>
-struct __contains__<ValuesView, T>                          : Returns<bool> {};
-
-}
 
 
 /* New subclass of pybind11::object representing a view into the items of a dictionary
@@ -428,10 +357,7 @@ public:
     }
 
     /* Equivalent to Python `dict.items().mapping`. */
-    inline MappingProxy mapping() const {
-        static const pybind11::str method = "mapping";
-        return attr(method);
-    }
+    inline MappingProxy mapping() const;
 
     /* Equivalent to `value in dict.values()`. */
     template <typename T>
@@ -447,22 +373,6 @@ public:
     }
 
 };
-
-
-namespace impl {
-
-template <>
-struct __dereference__<ItemsView>                           : Returns<detail::args_proxy> {};
-template <>
-struct __len__<ItemsView>                                   : Returns<size_t> {};
-template <>
-struct __iter__<ItemsView>                                  : Returns<Object> {};
-template <>
-struct __reversed__<ItemsView>                              : Returns<Object> {};
-template <typename First, typename Second>
-struct __contains__<ItemsView, std::pair<First, Second>>    : Returns<bool> {};
-
-}
 
 
 /* Wrapper around pybind11::dict that allows it to be directly initialized using
@@ -933,66 +843,134 @@ public:
 };
 
 
-namespace impl {
+/* New subclass of pybind11::object representing a read-only proxy for a Python
+dictionary or other mapping. */
+class MappingProxy : public Object {
+    using Base = Object;
 
-template <>
-struct __dereference__<Dict>                                : Returns<detail::args_proxy> {};
-template <>
-struct __len__<Dict>                                        : Returns<size_t> {};
-template <>
-struct __iter__<Dict>                                       : Returns<Object> {};
-template <>
-struct __reversed__<Dict>                                   : Returns<Object> {};
-template <is_hashable Key>
-struct __contains__<Dict, Key>                              : Returns<bool> {};
-template <is_hashable Key>
-struct __getitem__<Dict, Key>                               : Returns<Object> {};
-template <is_hashable Key, typename Value>
-struct __setitem__<Dict, Key, Value>                        : Returns<void> {};
-template <is_hashable Key>
-struct __delitem__<Dict, Key>                               : Returns<void> {};
-template <>
-struct __or__<Dict, Object>                                 : Returns<Dict> {};
-template <dict_like T>
-struct __or__<Dict, T>                                      : Returns<Dict> {};
-template <>
-struct __ior__<Dict, Object>                                : Returns<Dict&> {};
-template <dict_like T>
-struct __ior__<Dict, T>                                     : Returns<Dict&> {};
+    inline static bool mappingproxy_check(PyObject* obj) {
+        int result = PyObject_IsInstance(obj, (PyObject*) &PyDictProxy_Type);
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
 
+public:
+    static Type type;
+
+    template <typename T>
+    static constexpr bool check() { return impl::mappingproxy_like<T>; }
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    BERTRAND_OBJECT_COMMON(Base, MappingProxy, mappingproxy_check)
+
+    /* Explicitly construct a read-only view on an existing dictionary. */
+    MappingProxy(const Dict& dict) : Base(PyDictProxy_New(dict.ptr()), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    /* Get the length of the dictionary. */
+    inline size_t size() const noexcept {
+        return static_cast<size_t>(PyObject_Length(this->ptr()));
+    }
+
+    /* Check if the dictionary is empty. */
+    inline bool empty() const noexcept {
+        return size() == 0;
+    }
+
+    /* Equivalent to Python `mappingproxy.copy()`. */
+    inline Dict copy() const {
+        static const pybind11::str method = "copy";
+        return reinterpret_steal<Dict>(attr(method)().release());
+    }
+
+    /* Equivalent to Python `mappingproxy.get(key)`. */
+    template <impl::is_hashable K>
+    inline Object get(const K& key) const {
+        static const pybind11::str method = "get";
+        return attr(method)(detail::object_or_cast(key), py::None);
+    }
+
+    /* Equivalent to Python `mappingproxy.get(key, default)`. */
+    template <impl::is_hashable K, typename V>
+    inline Object get(const K& key, const V& default_value) const {
+        static const pybind11::str method = "get";
+        return attr(method)(
+            detail::object_or_cast(key),
+            detail::object_or_cast(default_value)
+        );
+    }
+
+    /* Equivalent to Python `mappingproxy.keys()`. */
+    inline KeysView keys() const {
+        static const pybind11::str method = "keys";
+        return reinterpret_steal<KeysView>(attr(method)().release());
+    }
+
+    /* Equivalent to Python `mappingproxy.values()`. */
+    inline ValuesView values() const {
+        static const pybind11::str method = "values";
+        return reinterpret_steal<ValuesView>(attr(method)().release());
+    }
+
+    /* Equivalent to Python `mappingproxy.items()`. */
+    inline ItemsView items() const {
+        static const pybind11::str method = "items";
+        return reinterpret_steal<ItemsView>(attr(method)().release());
+    }
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    /* Equivalent to Python `key in mappingproxy`. */
+    template <impl::is_hashable K>
+    inline bool contains(const K& key) const {
+        return this->keys().contains(detail::object_or_cast(key));
+    }
+
+    inline Dict operator|(
+        const std::initializer_list<impl::DictInitializer>& other
+    ) const {
+        Dict result = copy();
+        result |= other;
+        return result;
+    }
+
+};
+
+
+inline MappingProxy KeysView::mapping() const {
+    static const pybind11::str method = "mapping";
+    return attr(method);
 }
 
 
-inline Dict MappingProxy::copy() const{
-    static const pybind11::str method = "copy";
-    return reinterpret_steal<Dict>(attr(method)().release());
-}
-
-inline KeysView MappingProxy::keys() const{
-    static const pybind11::str method = "keys";
-    return reinterpret_steal<KeysView>(attr(method)().release());
-}
-
-inline ValuesView MappingProxy::values() const{
-    static const pybind11::str method = "values";
-    return reinterpret_steal<ValuesView>(attr(method)().release());
-}
-
-template <impl::is_hashable K>
-inline bool MappingProxy::contains(const K& key) const {
-    return this->keys().contains(detail::object_or_cast(key));
-}
-
-inline Dict MappingProxy::operator|(
-    const std::initializer_list<impl::DictInitializer>& other
-) const {
-    Dict result = copy();
-    result |= other;
-    return result;
+inline MappingProxy ValuesView::mapping() const {
+    static const pybind11::str method = "mapping";
+    return attr(method);
 }
 
 
-}  // namespace python
+inline MappingProxy ItemsView::mapping() const {
+    static const pybind11::str method = "mapping";
+    return attr(method);
+}
+
+
+
+}  // namespace py
 }  // namespace bertrand
 
 

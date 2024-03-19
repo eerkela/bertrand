@@ -12,6 +12,7 @@
 #include "tuple.h"
 #include "set.h"
 #include "dict.h"
+#include "func.h"
 
 
 namespace bertrand {
@@ -88,6 +89,18 @@ namespace impl {
         ) const {
             static const pybind11::str method = "find";
             return static_cast<size_t>(attr(method)(sub, start, end));
+        }
+
+        /* Equivalent to Python `bytes.hex()`. */
+        inline Str hex() const {
+            static const pybind11::str method = "hex";
+            return reinterpret_steal<Str>(attr(method)().release());
+        }
+
+        /* Equivalent to Python `bytes.hex(sep[, bytes_per_sep])`. */
+        inline Str hex(const Derived& sep, Py_ssize_t bytes_per_sep = 1) const {
+            static const pybind11::str method = "hex";
+            return reinterpret_steal<Str>(attr(method)(sep, bytes_per_sep).release());
         }
 
         /* Equivalent to Python `bytes.index(sub[, start[, end]])`. */
@@ -517,13 +530,29 @@ public:
         return PyBytes_AS_STRING(this->ptr());
     }
 
-    ////////////////////////
-    ////    OPERATORS   ////
-    ////////////////////////
-
     /* Get the size of the internal buffer. */
     inline size_t size() const {
         return static_cast<size_t>(PyBytes_GET_SIZE(this->ptr()));
+    }
+
+    /* Copy the contents of the buffer into a new py::Bytes object. */
+    inline Bytes copy() const {
+        return reinterpret_steal<Bytes>(PyBytes_FromStringAndSize(
+            PyBytes_AS_STRING(this->ptr()),
+            PyBytes_GET_SIZE(this->ptr())
+        ));
+    }
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    /* Equivalent to Python (static) `bytes.fromhex(string)`. */
+    inline static Bytes fromhex(const Str& string) {
+        static const pybind11::str method = "fromhex";
+        static const pybind11::type cls =
+            reinterpret_borrow<pybind11::type>((PyObject*) &PyBytes_Type);
+        return reinterpret_steal<Bytes>(cls.attr(method)(string).release());
     }
 
 protected:
@@ -533,19 +562,24 @@ protected:
 
     template <typename Return, typename L, typename R>
     inline static auto operator_add(const L& lhs, const R& rhs) {
-        PyObject* result = PyBytes_Concat(
-            detail::object_or_cast(lhs).ptr(),
-            detail::object_or_cast(rhs).ptr()
-        );
-        if (result == nullptr) {
-            throw error_already_set();
+        if constexpr (std::is_base_of_v<Bytes, L>) {
+            Return result = lhs.copy();
+            operator_iadd<Return>(result, rhs);
+            return result;
+        } else {
+            Return result = rhs.copy();
+            operator_iadd<Return>(result, lhs);
+            return result;
         }
-        return reinterpret_steal<Return>(result);
     }
 
     template <typename Return, typename L, typename R>
     inline static void operator_iadd(L& lhs, const R& rhs) {
-        lhs = operator_add<Return>(lhs, rhs);
+        PyObject* result = lhs.ptr();
+        PyBytes_Concat(&result, Bytes(rhs).ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
     }
 
 };
@@ -620,13 +654,29 @@ public:
         return PyByteArray_AS_STRING(this->ptr());
     }
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
     /* Get the size of the internal buffer. */
     inline size_t size() const {
         return static_cast<size_t>(PyByteArray_GET_SIZE(this->ptr()));
+    }
+
+    /* Copy the contents of the buffer into a new py::ByteArray object. */
+    inline ByteArray copy() const {
+        return reinterpret_steal<ByteArray>(PyByteArray_FromStringAndSize(
+            PyByteArray_AS_STRING(this->ptr()),
+            PyByteArray_GET_SIZE(this->ptr())
+        ));
+    }
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    /* Equivalent to Python (static) `bytes.fromhex(string)`. */
+    inline static ByteArray fromhex(const Str& string) {
+        static const pybind11::str method = "fromhex";
+        static const pybind11::type cls =
+            reinterpret_borrow<pybind11::type>((PyObject*) &PyByteArray_Type);
+        return reinterpret_steal<ByteArray>(cls.attr(method)(string).release());
     }
 
 protected:
@@ -636,10 +686,12 @@ protected:
 
     template <typename Return, typename L, typename R>
     inline static auto operator_add(const L& lhs, const R& rhs) {
-        PyObject* result = PyByteArray_Concat(
-            detail::object_or_cast(lhs).ptr(),
-            detail::object_or_cast(rhs).ptr()
-        );
+        PyObject* result;
+        if constexpr (std::is_base_of_v<ByteArray, L>) {
+            result = PyByteArray_Concat(lhs.ptr(), ByteArray(rhs).ptr());
+        } else {
+            result = PyByteArray_Concat(ByteArray(lhs).ptr(), rhs.ptr());
+        }
         if (result == nullptr) {
             throw error_already_set();
         }
@@ -654,12 +706,15 @@ protected:
 };
 
 
-inline Bytes Str::encode(
-    const Str& encoding,
-    const Str& errors
-) const {
+inline Bytes Str::encode(const Str& encoding, const Str& errors) const {
     static const pybind11::str method = "encode";
     return reinterpret_steal<Bytes>(attr(method)(encoding, errors).release());
+}
+
+
+inline Bytes Code::bytecode() const {
+    static const pybind11::str code = "co_code";
+    return attr(code);
 }
 
 

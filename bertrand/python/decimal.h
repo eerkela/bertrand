@@ -8,14 +8,21 @@
 #include "common.h"
 
 
+// TODO: note that Decimal uses C-style division and modulo operations.  This would
+// to be accounted for in math.h, which would need to handle decimal objects separately.
+
+// TODO: Decimal:: should also be used to get and set the context flags.
+
+// NOTE: this is going to be a lot more complicated than it would seem at first.
+
+
 namespace bertrand {
 namespace py {
 
 
-// TODO: Decimal?
 
 
-}  // namespace python
+}  // namespace py
 }  // namespace bertrand
 
 

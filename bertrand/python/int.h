@@ -12,6 +12,174 @@ namespace bertrand {
 namespace py {
 
 
+namespace impl {
+
+template <>
+struct __pos__<Int>                                             : Returns<Int> {};
+template <>
+struct __neg__<Int>                                             : Returns<Int> {};
+template <>
+struct __abs__<Int>                                             : Returns<Int> {};
+template <>
+struct __invert__<Int>                                          : Returns<Int> {};
+template <>
+struct __increment__<Int>                                       : Returns<Int> {};
+template <>
+struct __decrement__<Int>                                       : Returns<Int> {};
+template <>
+struct __lt__<Int, Object>                                      : Returns<bool> {};
+template <bool_like T>
+struct __lt__<Int, T>                                           : Returns<bool> {};
+template <int_like T>
+struct __lt__<Int, T>                                           : Returns<bool> {};
+template <float_like T>
+struct __lt__<Int, T>                                           : Returns<bool> {};
+template <>
+struct __le__<Int, Object>                                      : Returns<bool> {};
+template <bool_like T>
+struct __le__<Int, T>                                           : Returns<bool> {};
+template <int_like T>
+struct __le__<Int, T>                                           : Returns<bool> {};
+template <float_like T>
+struct __le__<Int, T>                                           : Returns<bool> {};
+template <>
+struct __ge__<Int, Object>                                      : Returns<bool> {};
+template <bool_like T>
+struct __ge__<Int, T>                                           : Returns<bool> {};
+template <int_like T>
+struct __ge__<Int, T>                                           : Returns<bool> {};
+template <float_like T>
+struct __ge__<Int, T>                                           : Returns<bool> {};
+template <>
+struct __gt__<Int, Object>                                      : Returns<bool> {};
+template <bool_like T>
+struct __gt__<Int, T>                                           : Returns<bool> {};
+template <int_like T>
+struct __gt__<Int, T>                                           : Returns<bool> {};
+template <float_like T>
+struct __gt__<Int, T>                                           : Returns<bool> {};
+template <>
+struct __add__<Int, Object>                                     : Returns<Object> {};
+template <bool_like T>
+struct __add__<Int, T>                                          : Returns<Int> {};
+template <int_like T>
+struct __add__<Int, T>                                          : Returns<Int> {};
+template <float_like T>
+struct __add__<Int, T>                                          : Returns<Float> {};
+template <complex_like T>
+struct __add__<Int, T>                                          : Returns<Complex> {};
+template <>
+struct __sub__<Int, Object>                                     : Returns<Object> {};
+template <bool_like T>
+struct __sub__<Int, T>                                          : Returns<Int> {};
+template <int_like T>
+struct __sub__<Int, T>                                          : Returns<Int> {};
+template <float_like T>
+struct __sub__<Int, T>                                          : Returns<Float> {};
+template <complex_like T>
+struct __sub__<Int, T>                                          : Returns<Complex> {};
+template <>
+struct __mul__<Int, Object>                                     : Returns<Object> {};
+template <bool_like T>
+struct __mul__<Int, T>                                          : Returns<Int> {};
+template <int_like T>
+struct __mul__<Int, T>                                          : Returns<Int> {};
+template <float_like T>
+struct __mul__<Int, T>                                          : Returns<Float> {};
+template <complex_like T>
+struct __mul__<Int, T>                                          : Returns<Complex> {};
+template <>
+struct __truediv__<Int, Object>                                 : Returns<Object> {};
+template <bool_like T>
+struct __truediv__<Int, T>                                      : Returns<Float> {};
+template <int_like T>
+struct __truediv__<Int, T>                                      : Returns<Float> {};
+template <float_like T>
+struct __truediv__<Int, T>                                      : Returns<Float> {};
+template <complex_like T>
+struct __truediv__<Int, T>                                      : Returns<Complex> {};
+template <>
+struct __mod__<Int, Object>                                     : Returns<Object> {};
+template <bool_like T>
+struct __mod__<Int, T>                                          : Returns<Int> {};
+template <int_like T>
+struct __mod__<Int, T>                                          : Returns<Int> {};
+template <float_like T>
+struct __mod__<Int, T>                                          : Returns<Float> {};
+// template <complex_like T>    <-- Disabled in Python
+// struct __mod__<Int, T>                                       : Returns<Complex> {};
+template <>
+struct __lshift__<Int, Object>                                  : Returns<Object> {};
+template <bool_like T>
+struct __lshift__<Int, T>                                       : Returns<Int> {};
+template <int_like T>
+struct __lshift__<Int, T>                                       : Returns<Int> {};
+template <>
+struct __rshift__<Int, Object>                                  : Returns<Object> {};
+template <bool_like T>
+struct __rshift__<Int, T>                                       : Returns<Int> {};
+template <int_like T>
+struct __rshift__<Int, T>                                       : Returns<Int> {};
+template <>
+struct __and__<Int, Object>                                     : Returns<Object> {};
+template <bool_like T>
+struct __and__<Int, T>                                          : Returns<Int> {};
+template <int_like T>
+struct __and__<Int, T>                                          : Returns<Int> {};
+template <>
+struct __or__<Int, Object>                                      : Returns<Object> {};
+template <bool_like T>
+struct __or__<Int, T>                                           : Returns<Int> {};
+template <int_like T>
+struct __or__<Int, T>                                           : Returns<Int> {};
+template <>
+struct __xor__<Int, Object>                                     : Returns<Object> {};
+template <bool_like T>
+struct __xor__<Int, T>                                          : Returns<Int> {};
+template <int_like T>
+struct __xor__<Int, T>                                          : Returns<Int> {};
+template <bool_like T>
+struct __iadd__<Int, T>                                         : Returns<Int> {};
+template <int_like T>
+struct __iadd__<Int, T>                                         : Returns<Int> {};
+template <bool_like T>
+struct __isub__<Int, T>                                         : Returns<Int> {};
+template <int_like T>
+struct __isub__<Int, T>                                         : Returns<Int> {};
+template <bool_like T>
+struct __imul__<Int, T>                                         : Returns<Int> {};
+template <int_like T>
+struct __imul__<Int, T>                                         : Returns<Int> {};
+// operator/= is not type-safe in C++ because it converts the result to a float.  Use
+// py::Float a = b / c; or py::Int a = py::div(b, c); instead.
+template <bool_like T>
+struct __imod__<Int, T>                                         : Returns<Int> {};
+template <int_like T>
+struct __imod__<Int, T>                                         : Returns<Int> {};
+template <bool_like T>
+struct __ilshift__<Int, T>                                      : Returns<Int> {};
+template <int_like T>
+struct __ilshift__<Int, T>                                      : Returns<Int> {};
+template <bool_like T>
+struct __irshift__<Int, T>                                      : Returns<Int> {};
+template <int_like T>
+struct __irshift__<Int, T>                                      : Returns<Int> {};
+template <bool_like T>
+struct __iand__<Int, T>                                         : Returns<Int> {};
+template <int_like T>
+struct __iand__<Int, T>                                         : Returns<Int> {};
+template <bool_like T>
+struct __ior__<Int, T>                                          : Returns<Int> {};
+template <int_like T>
+struct __ior__<Int, T>                                          : Returns<Int> {};
+template <bool_like T>
+struct __ixor__<Int, T>                                         : Returns<Int> {};
+template <int_like T>
+struct __ixor__<Int, T>                                         : Returns<Int> {};
+
+}
+
+
 /* Wrapper around pybind11::int_ that enables conversions from strings with different
 bases, similar to Python's `int()` constructor, as well as converting math operators
 that account for C++ inputs. */
@@ -234,174 +402,7 @@ public:
 };
 
 
-namespace impl {
-
-template <>
-struct __pos__<Int>                                             : Returns<Int> {};
-template <>
-struct __neg__<Int>                                             : Returns<Int> {};
-template <>
-struct __abs__<Int>                                             : Returns<Int> {};
-template <>
-struct __invert__<Int>                                          : Returns<Int> {};
-template <>
-struct __increment__<Int>                                       : Returns<Int> {};
-template <>
-struct __decrement__<Int>                                       : Returns<Int> {};
-template <>
-struct __lt__<Int, Object>                                      : Returns<bool> {};
-template <bool_like T>
-struct __lt__<Int, T>                                           : Returns<bool> {};
-template <int_like T>
-struct __lt__<Int, T>                                           : Returns<bool> {};
-template <float_like T>
-struct __lt__<Int, T>                                           : Returns<bool> {};
-template <>
-struct __le__<Int, Object>                                      : Returns<bool> {};
-template <bool_like T>
-struct __le__<Int, T>                                           : Returns<bool> {};
-template <int_like T>
-struct __le__<Int, T>                                           : Returns<bool> {};
-template <float_like T>
-struct __le__<Int, T>                                           : Returns<bool> {};
-template <>
-struct __ge__<Int, Object>                                      : Returns<bool> {};
-template <bool_like T>
-struct __ge__<Int, T>                                           : Returns<bool> {};
-template <int_like T>
-struct __ge__<Int, T>                                           : Returns<bool> {};
-template <float_like T>
-struct __ge__<Int, T>                                           : Returns<bool> {};
-template <>
-struct __gt__<Int, Object>                                      : Returns<bool> {};
-template <bool_like T>
-struct __gt__<Int, T>                                           : Returns<bool> {};
-template <int_like T>
-struct __gt__<Int, T>                                           : Returns<bool> {};
-template <float_like T>
-struct __gt__<Int, T>                                           : Returns<bool> {};
-template <>
-struct __add__<Int, Object>                                     : Returns<Object> {};
-template <bool_like T>
-struct __add__<Int, T>                                          : Returns<Int> {};
-template <int_like T>
-struct __add__<Int, T>                                          : Returns<Int> {};
-template <float_like T>
-struct __add__<Int, T>                                          : Returns<Float> {};
-template <complex_like T>
-struct __add__<Int, T>                                          : Returns<Complex> {};
-template <>
-struct __sub__<Int, Object>                                     : Returns<Object> {};
-template <bool_like T>
-struct __sub__<Int, T>                                          : Returns<Int> {};
-template <int_like T>
-struct __sub__<Int, T>                                          : Returns<Int> {};
-template <float_like T>
-struct __sub__<Int, T>                                          : Returns<Float> {};
-template <complex_like T>
-struct __sub__<Int, T>                                          : Returns<Complex> {};
-template <>
-struct __mul__<Int, Object>                                     : Returns<Object> {};
-template <bool_like T>
-struct __mul__<Int, T>                                          : Returns<Int> {};
-template <int_like T>
-struct __mul__<Int, T>                                          : Returns<Int> {};
-template <float_like T>
-struct __mul__<Int, T>                                          : Returns<Float> {};
-template <complex_like T>
-struct __mul__<Int, T>                                          : Returns<Complex> {};
-template <>
-struct __truediv__<Int, Object>                                 : Returns<Object> {};
-template <bool_like T>
-struct __truediv__<Int, T>                                      : Returns<Float> {};
-template <int_like T>
-struct __truediv__<Int, T>                                      : Returns<Float> {};
-template <float_like T>
-struct __truediv__<Int, T>                                      : Returns<Float> {};
-template <complex_like T>
-struct __truediv__<Int, T>                                      : Returns<Complex> {};
-template <>
-struct __mod__<Int, Object>                                     : Returns<Object> {};
-template <bool_like T>
-struct __mod__<Int, T>                                          : Returns<Int> {};
-template <int_like T>
-struct __mod__<Int, T>                                          : Returns<Int> {};
-template <float_like T>
-struct __mod__<Int, T>                                          : Returns<Float> {};
-// template <complex_like T>    <-- Disabled in Python
-// struct __mod__<Int, T>                                       : Returns<Complex> {};
-template <>
-struct __lshift__<Int, Object>                                  : Returns<Object> {};
-template <bool_like T>
-struct __lshift__<Int, T>                                       : Returns<Int> {};
-template <int_like T>
-struct __lshift__<Int, T>                                       : Returns<Int> {};
-template <>
-struct __rshift__<Int, Object>                                  : Returns<Object> {};
-template <bool_like T>
-struct __rshift__<Int, T>                                       : Returns<Int> {};
-template <int_like T>
-struct __rshift__<Int, T>                                       : Returns<Int> {};
-template <>
-struct __and__<Int, Object>                                     : Returns<Object> {};
-template <bool_like T>
-struct __and__<Int, T>                                          : Returns<Int> {};
-template <int_like T>
-struct __and__<Int, T>                                          : Returns<Int> {};
-template <>
-struct __or__<Int, Object>                                      : Returns<Object> {};
-template <bool_like T>
-struct __or__<Int, T>                                           : Returns<Int> {};
-template <int_like T>
-struct __or__<Int, T>                                           : Returns<Int> {};
-template <>
-struct __xor__<Int, Object>                                     : Returns<Object> {};
-template <bool_like T>
-struct __xor__<Int, T>                                          : Returns<Int> {};
-template <int_like T>
-struct __xor__<Int, T>                                          : Returns<Int> {};
-template <bool_like T>
-struct __iadd__<Int, T>                                         : Returns<Int> {};
-template <int_like T>
-struct __iadd__<Int, T>                                         : Returns<Int> {};
-template <bool_like T>
-struct __isub__<Int, T>                                         : Returns<Int> {};
-template <int_like T>
-struct __isub__<Int, T>                                         : Returns<Int> {};
-template <bool_like T>
-struct __imul__<Int, T>                                         : Returns<Int> {};
-template <int_like T>
-struct __imul__<Int, T>                                         : Returns<Int> {};
-// operator/= is not type-safe in C++ because it converts the result to a float.  Use
-// py::Float a = b / c; or py::Int a = py::div(b, c); instead.
-template <bool_like T>
-struct __imod__<Int, T>                                         : Returns<Int> {};
-template <int_like T>
-struct __imod__<Int, T>                                         : Returns<Int> {};
-template <bool_like T>
-struct __ilshift__<Int, T>                                      : Returns<Int> {};
-template <int_like T>
-struct __ilshift__<Int, T>                                      : Returns<Int> {};
-template <bool_like T>
-struct __irshift__<Int, T>                                      : Returns<Int> {};
-template <int_like T>
-struct __irshift__<Int, T>                                      : Returns<Int> {};
-template <bool_like T>
-struct __iand__<Int, T>                                         : Returns<Int> {};
-template <int_like T>
-struct __iand__<Int, T>                                         : Returns<Int> {};
-template <bool_like T>
-struct __ior__<Int, T>                                          : Returns<Int> {};
-template <int_like T>
-struct __ior__<Int, T>                                          : Returns<Int> {};
-template <bool_like T>
-struct __ixor__<Int, T>                                         : Returns<Int> {};
-template <int_like T>
-struct __ixor__<Int, T>                                         : Returns<Int> {};
-
-}
-
-}  // namespace python
+}  // namespace py
 }  // namespace bertrand
 
 

@@ -469,7 +469,7 @@ protected:
 };
 
 
-}  // namespace python
+}  // namespace py
 }  // namespace bertrand
 
 

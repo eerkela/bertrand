@@ -89,6 +89,11 @@ namespace bertrand {
 namespace py {
 
 
+// TODO: replace proxy dereference operator with explicit .unwrap() method.  This
+// avoids confusion with the unpacking operator, which must return a detail::args_proxy
+// type (enforced by static assertion).
+
+
 /////////////////////////////////////////
 ////     INHERITED FROM PYBIND11     ////
 /////////////////////////////////////////
@@ -112,8 +117,8 @@ using pybind11::implicitly_convertible;
 using pybind11::args_are_all_keyword_or_ds;
 using pybind11::make_tuple;  // TODO: unnecessary
 using pybind11::make_iterator;  // TODO: roll into Iterator() constructor
-using pybind11::make_key_iterator;  // offer as static method in Iterator:: namespace
-using pybind11::make_value_iterator;  // same as above
+using pybind11::make_key_iterator;  // offer as static Iterator::keys() method
+using pybind11::make_value_iterator;  // same as above for Iterator::values()
 using pybind11::initialize_interpreter;
 using pybind11::scoped_interpreter;
 // PYBIND11_MODULE                      <- macros don't respect namespaces
@@ -164,8 +169,8 @@ using Handle = pybind11::handle;
 using Iterator = pybind11::iterator;  // TODO: specialize to yield the correct type.
 using WeakRef = pybind11::weakref;
 using Capsule = pybind11::capsule;
-using Buffer = pybind11::buffer;  // TODO: place in buffer.h along with memoryview
-using MemoryView = pybind11::memoryview;
+using Buffer = pybind11::buffer;  // TODO: delete this and force users to use memoryview instead
+using MemoryView = pybind11::memoryview;  // TODO: place in buffer.h along with memoryview
 class Object;
 class NotImplementedType;
 class Bool;
@@ -187,6 +192,7 @@ class Str;
 class Bytes;
 class ByteArray;
 class Type;
+class Super;
 class Code;
 class Frame;
 class Function;
@@ -204,6 +210,11 @@ class Datetime;
 // python object, so it shouldn't be in the py:: namespace
 
 class Regex;  // TODO: incorporate more fully (write pybind11 bindings so that it can be passed into Python scripts)
+
+// Regex bindings would allow users to directly use PCRE2 regular expressions in Python.
+
+// -> Regex class itself should be in bertrand:: namespace, but 2-way Python bindings
+// are listed under py::Regex.
 
 
 //////////////////////////
@@ -895,7 +906,7 @@ namespace impl {
     template <typename T>
     struct __neg__ { static constexpr bool enable = false; };
     template <typename T>
-    struct __abs__ { static constexpr bool enable = false; };  // TODO: enable/disable py::abs() and set return value
+    struct __abs__ { static constexpr bool enable = false; };
     template <typename T>
     struct __invert__ { static constexpr bool enable = false; };
     template <typename T>
@@ -963,6 +974,17 @@ namespace impl {
         using Return = T;
     };
 
+    // TODO: unwrap proxies in call operator?
+
+    // TODO: reverse operators still might be a bit wonky.  Currently, I'm just
+    // disabling them if the other operand is a subclass of Object.  This might not be
+    // totally accurate, but it seems to work for now.
+
+    // TODO: proxies are still sort of broken when used in operator overloads.  For
+    // instance:
+    // py::List list = {1, 2, 3, 4};
+    // py::print(2 < list[3]);  // causes a runtime error due to uninitialized accessor
+
     #define BERTRAND_OBJECT_OPERATORS(cls)                                              \
         template <typename... Args> requires (impl::__call__<cls, Args...>::enable)     \
         inline auto operator()(Args&&... args) const {                                  \
@@ -976,10 +998,16 @@ namespace impl {
             return operator_call<Return>(*this, std::forward<Args>(args)...);           \
         }                                                                               \
                                                                                         \
-        template <typename Key> requires (impl::__getitem__<cls, Key>::enable)          \
+        template <typename Key>                                                         \
+            requires (impl::__getitem__<cls, Key>::enable && !impl::proxy_like<Key>)    \
         inline auto operator[](const Key& key) const {                                  \
             using Return = typename impl::__getitem__<cls, Key>::Return;                \
             return operator_getitem<Return>(*this, key);                                \
+        }                                                                               \
+                                                                                        \
+        template <typename Key> requires (impl::proxy_like<Key>)                        \
+        inline auto operator[](const Key& key) const {                                  \
+            return (*this)[*key];                                                       \
         }                                                                               \
                                                                                         \
         template <typename T = cls> requires (impl::__getitem__<T, Slice>::enable)      \
@@ -1038,7 +1066,8 @@ namespace impl {
             return operator_rend<Return>(*this);                                        \
         }                                                                               \
                                                                                         \
-        template <typename T> requires (impl::__contains__<cls, T>::enable)             \
+        template <typename T>                                                           \
+            requires (impl::__contains__<cls, T>::enable && !impl::proxy_like<T>)       \
         inline bool contains(const T& key) const {                                      \
             using Return = typename impl::__contains__<cls, T>::Return;                 \
             static_assert(                                                              \
@@ -1048,6 +1077,11 @@ namespace impl {
                 "type is set to bool."                                                  \
             );                                                                          \
             return operator_contains<Return>(*this, key);                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T> requires (impl::proxy_like<T>)                            \
+        inline bool contains(const T& key) const {                                      \
+            return this->contains(*key);                                                \
         }                                                                               \
                                                                                         \
         template <typename T = cls> requires (impl::__len__<T>::enable)                 \
@@ -1171,7 +1205,7 @@ namespace impl {
         }                                                                               \
                                                                                         \
         template <typename T>                                                           \
-            requires (impl::__lt__<T, cls>::enable && !impl::__lt__<cls, T>::enable)    \
+            requires (impl::__lt__<T, cls>::enable && !std::is_base_of_v<Object, T>)    \
         inline friend auto operator<(const T& lhs, const cls& rhs) {                    \
             using Return = typename impl::__lt__<T, cls>::Return;                       \
             static_assert(                                                              \
@@ -1196,7 +1230,7 @@ namespace impl {
         }                                                                               \
                                                                                         \
         template <typename T>                                                           \
-            requires (impl::__le__<T, cls>::enable && !impl::__lt__<cls, T>::enable)    \
+            requires (impl::__le__<T, cls>::enable && !std::is_base_of_v<Object, T>)    \
         inline friend auto operator<=(const T& lhs, const cls& rhs) {                   \
             using Return = typename impl::__le__<T, cls>::Return;                       \
             static_assert(                                                              \
@@ -1221,7 +1255,7 @@ namespace impl {
         }                                                                               \
                                                                                         \
         template <typename T>                                                           \
-            requires (impl::__eq__<T, cls>::enable && !impl::__eq__<cls, T>::enable)    \
+            requires (impl::__eq__<T, cls>::enable && !std::is_base_of_v<Object, T>)    \
         inline friend auto operator==(const T& lhs, const cls& rhs) {                   \
             using Return = typename impl::__eq__<T, cls>::Return;                       \
             static_assert(                                                              \
@@ -1246,7 +1280,7 @@ namespace impl {
         }                                                                               \
                                                                                         \
         template <typename T>                                                           \
-            requires (impl::__ne__<T, cls>::enable && !impl::__ne__<cls, T>::enable)    \
+            requires (impl::__ne__<T, cls>::enable && !std::is_base_of_v<Object, T>)    \
         inline friend auto operator!=(const T& lhs, const cls& rhs) {                   \
             using Return = typename impl::__ne__<T, cls>::Return;                       \
             static_assert(                                                              \
@@ -1271,7 +1305,7 @@ namespace impl {
         }                                                                               \
                                                                                         \
         template <typename T>                                                           \
-            requires (impl::__ge__<T, cls>::enable && !impl::__ge__<cls, T>::enable)    \
+            requires (impl::__ge__<T, cls>::enable && !std::is_base_of_v<Object, T>)    \
         inline friend auto operator>=(const T& lhs, const cls& rhs) {                   \
             using Return = typename impl::__ge__<T, cls>::Return;                       \
             static_assert(                                                              \
@@ -1296,7 +1330,7 @@ namespace impl {
         }                                                                               \
                                                                                         \
         template <typename T>                                                           \
-            requires (impl::__gt__<T, cls>::enable && !impl::__gt__<cls, T>::enable)    \
+            requires (impl::__gt__<T, cls>::enable && !std::is_base_of_v<Object, T>)    \
         inline friend auto operator>(const T& lhs, const cls& rhs) {                    \
             using Return = typename impl::__gt__<T, cls>::Return;                       \
             static_assert(                                                              \
@@ -1321,7 +1355,7 @@ namespace impl {
         }                                                                               \
                                                                                         \
         template <typename T>                                                           \
-            requires (impl::__add__<T, cls>::enable && !impl::__add__<cls, T>::enable)  \
+            requires (impl::__add__<T, cls>::enable && !std::is_base_of_v<Object, T>)   \
         inline friend auto operator+(const T& lhs, const cls& rhs) {                    \
             using Return = typename impl::__add__<T, cls>::Return;                      \
             static_assert(                                                              \
@@ -1333,7 +1367,8 @@ namespace impl {
             return operator_add<Return>(lhs, rhs);                                      \
         }                                                                               \
                                                                                         \
-        template <typename T> requires (impl::__iadd__<cls, T>::enable)                 \
+        template <typename T>                                                           \
+            requires (impl::__iadd__<cls, T>::enable && !impl::proxy_like<T>)           \
         inline cls& operator+=(const T& value) {                                        \
             using Return = typename impl::__iadd__<cls, T>::Return;                     \
             static_assert(                                                              \
@@ -1343,6 +1378,12 @@ namespace impl {
                 "ensure the Return type is set to the left operand."                    \
             );                                                                          \
             operator_iadd<Return>(*this, value);                                        \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T> requires (impl::proxy_like<T>)                            \
+        inline cls& operator+=(const T& value) {                                        \
+            *this += *value;                                                            \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1359,7 +1400,7 @@ namespace impl {
         }                                                                               \
                                                                                         \
         template <typename T>                                                           \
-            requires (impl::__sub__<T, cls>::enable && !impl::__sub__<cls, T>::enable)  \
+            requires (impl::__sub__<T, cls>::enable && !std::is_base_of_v<Object, T>)   \
         inline friend auto operator-(const T& lhs, const cls& rhs) {                    \
             using Return = typename impl::__sub__<T, cls>::Return;                      \
             static_assert(                                                              \
@@ -1371,7 +1412,8 @@ namespace impl {
             return operator_sub<Return>(lhs, rhs);                                      \
         }                                                                               \
                                                                                         \
-        template <typename T> requires (impl::__isub__<cls, T>::enable)                 \
+        template <typename T>                                                           \
+            requires (impl::__isub__<cls, T>::enable && !impl::proxy_like<T>)           \
         inline cls& operator-=(const T& value) {                                        \
             using Return = typename impl::__isub__<cls, T>::Return;                     \
             static_assert(                                                              \
@@ -1381,6 +1423,12 @@ namespace impl {
                 "ensure the Return type is set to the left operand."                    \
             );                                                                          \
             operator_isub<Return>(*this, value);                                        \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T> requires (impl::proxy_like<T>)                            \
+        inline cls& operator-=(const T& value) {                                        \
+            *this -= *value;                                                            \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1397,7 +1445,7 @@ namespace impl {
         }                                                                               \
                                                                                         \
         template <typename T>                                                           \
-            requires (impl::__mul__<T, cls>::enable && !impl::__mul__<cls, T>::enable)  \
+            requires (impl::__mul__<T, cls>::enable && !std::is_base_of_v<Object, T>)   \
         inline friend auto operator*(const T& lhs, const cls& rhs) {                    \
             using Return = typename impl::__mul__<T, cls>::Return;                      \
             static_assert(                                                              \
@@ -1409,7 +1457,8 @@ namespace impl {
             return operator_mul<Return>(lhs, rhs);                                      \
         }                                                                               \
                                                                                         \
-        template <typename T> requires (impl::__imul__<cls, T>::enable)                 \
+        template <typename T>                                                           \
+            requires (impl::__imul__<cls, T>::enable && !impl::proxy_like<T>)           \
         inline cls& operator*=(const T& value) {                                        \
             using Return = typename impl::__imul__<cls, T>::Return;                     \
             static_assert(                                                              \
@@ -1419,6 +1468,12 @@ namespace impl {
                 "and ensure the Return type is set to the left operand."                \
             );                                                                          \
             operator_imul<Return>(*this, value);                                        \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T> requires (impl::proxy_like<T>)                            \
+        inline cls& operator*=(const T& value) {                                        \
+            *this *= *value;                                                            \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1437,7 +1492,7 @@ namespace impl {
         template <typename T>                                                           \
             requires (                                                                  \
                 impl::__truediv__<T, cls>::enable &&                                    \
-                !impl::__truediv__<cls, T>::enable                                      \
+                !std::is_base_of_v<Object, T>                                           \
             )                                                                           \
         inline friend auto operator/(const T& lhs, const cls& rhs) {                    \
             using Return = typename impl::__truediv__<T, cls>::Return;                  \
@@ -1450,7 +1505,8 @@ namespace impl {
             return operator_truediv<Return>(lhs, rhs);                                  \
         }                                                                               \
                                                                                         \
-        template <typename T> requires (impl::__itruediv__<cls, T>::enable)             \
+        template <typename T>                                                           \
+            requires (impl::__itruediv__<cls, T>::enable && !impl::proxy_like<T>)       \
         inline cls& operator/=(const T& value) {                                        \
             using Return = typename impl::__itruediv__<cls, T>::Return;                 \
             static_assert(                                                              \
@@ -1460,6 +1516,12 @@ namespace impl {
                 "types and ensure the Return type is set to the left operand."          \
             );                                                                          \
             operator_itruediv<Return>(*this, value);                                    \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T> requires (impl::proxy_like<T>)                            \
+        inline cls& operator/=(const T& value) {                                        \
+            *this /= *value;                                                            \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1476,7 +1538,7 @@ namespace impl {
         }                                                                               \
                                                                                         \
         template <typename T>                                                           \
-            requires (impl::__mod__<T, cls>::enable && !impl::__mod__<cls, T>::enable)  \
+            requires (impl::__mod__<T, cls>::enable && !std::is_base_of_v<Object, T>)   \
         inline friend auto operator%(const T& lhs, const cls& rhs) {                    \
             using Return = typename impl::__mod__<T, cls>::Return;                      \
             static_assert(                                                              \
@@ -1488,7 +1550,8 @@ namespace impl {
             return operator_mod<Return>(lhs, rhs);                                      \
         }                                                                               \
                                                                                         \
-        template <typename T> requires (impl::__imod__<cls, T>::enable)                 \
+        template <typename T>                                                           \
+            requires (impl::__imod__<cls, T>::enable && !impl::proxy_like<T>)           \
         inline cls& operator%=(const T& value) {                                        \
             using Return = typename impl::__imod__<cls, T>::Return;                     \
             static_assert(                                                              \
@@ -1498,6 +1561,12 @@ namespace impl {
                 "ensure the Return type is set to the left operand."                    \
             );                                                                          \
             operator_imod<Return>(*this, value);                                        \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T> requires (impl::proxy_like<T>)                            \
+        inline cls& operator%=(const T& value) {                                        \
+            *this %= *value;                                                            \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1516,7 +1585,7 @@ namespace impl {
         template <typename T>                                                           \
             requires (                                                                  \
                 impl::__lshift__<T, cls>::enable &&                                     \
-                !impl::__lshift__<cls, T>::enable                                       \
+                !std::is_base_of_v<Object, T>                                           \
             )                                                                           \
         inline friend auto operator<<(const T& lhs, const cls& rhs) {                   \
             using Return = typename impl::__lshift__<T, cls>::Return;                   \
@@ -1529,7 +1598,8 @@ namespace impl {
             return operator_lshift<Return>(lhs, rhs);                                   \
         }                                                                               \
                                                                                         \
-        template <typename T> requires (impl::__ilshift__<cls, T>::enable)              \
+        template <typename T>                                                           \
+            requires (impl::__ilshift__<cls, T>::enable && !impl::proxy_like<T>)        \
         inline cls& operator<<=(const T& value) {                                       \
             using Return = typename impl::__ilshift__<cls, T>::Return;                  \
             static_assert(                                                              \
@@ -1539,6 +1609,12 @@ namespace impl {
                 "and ensure the Return type is set to the left operand."                \
             );                                                                          \
             operator_ilshift<Return>(*this, value);                                     \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T> requires (impl::proxy_like<T>)                            \
+        inline cls& operator<<=(const T& value) {                                       \
+            *this <<= *value;                                                           \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1557,7 +1633,7 @@ namespace impl {
         template <typename T>                                                           \
             requires (                                                                  \
                 impl::__rshift__<T, cls>::enable &&                                     \
-                !impl::__rshift__<cls, T>::enable                                       \
+                !std::is_base_of_v<Object, T>                                           \
             )                                                                           \
         inline friend auto operator>>(const T& lhs, const cls& rhs) {                   \
             using Return = typename impl::__rshift__<T, cls>::Return;                   \
@@ -1570,7 +1646,8 @@ namespace impl {
             return operator_rshift<Return>(lhs, rhs);                                   \
         }                                                                               \
                                                                                         \
-        template <typename T> requires (impl::__irshift__<cls, T>::enable)              \
+        template <typename T>                                                           \
+            requires (impl::__irshift__<cls, T>::enable && !impl::proxy_like<T>)        \
         inline cls& operator>>=(const T& value) {                                       \
             using Return = typename impl::__irshift__<cls, T>::Return;                  \
             static_assert(                                                              \
@@ -1580,6 +1657,12 @@ namespace impl {
                 "and ensure the Return type is set to the left operand."                \
             );                                                                          \
             operator_irshift<Return>(*this, value);                                     \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T> requires (impl::proxy_like<T>)                            \
+        inline cls& operator>>=(const T& value) {                                       \
+            *this >>= *value;                                                           \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1596,7 +1679,7 @@ namespace impl {
         }                                                                               \
                                                                                         \
         template <typename T>                                                           \
-            requires (impl::__and__<T, cls>::enable && !impl::__and__<cls, T>::enable)  \
+            requires (impl::__and__<T, cls>::enable && !std::is_base_of_v<Object, T>)   \
         inline friend auto operator&(const T& lhs, const cls& rhs) {                    \
             using Return = typename impl::__and__<T, cls>::Return;                      \
             static_assert(                                                              \
@@ -1608,7 +1691,8 @@ namespace impl {
             return operator_and<Return>(lhs, rhs);                                      \
         }                                                                               \
                                                                                         \
-        template <typename T> requires (impl::__iand__<cls, T>::enable)                 \
+        template <typename T>                                                           \
+            requires (impl::__iand__<cls, T>::enable && !impl::proxy_like<T>)           \
         inline cls& operator&=(const T& value) {                                        \
             using Return = typename impl::__iand__<cls, T>::Return;                     \
             static_assert(                                                              \
@@ -1618,6 +1702,12 @@ namespace impl {
                 "ensure the Return type is set to the left operand."                    \
             );                                                                          \
             operator_iand<Return>(*this, value);                                        \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T> requires (impl::proxy_like<T>)                            \
+        inline cls& operator&=(const T& value) {                                        \
+            *this &= *value;                                                            \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1634,7 +1724,7 @@ namespace impl {
         }                                                                               \
                                                                                         \
         template <typename T>                                                           \
-            requires (impl::__or__<T, cls>::enable && !impl::__or__<cls, T>::enable)    \
+            requires (impl::__or__<T, cls>::enable && !std::is_base_of_v<Object, T>)    \
         inline friend auto operator|(const T& lhs, const cls& rhs) {                    \
             using Return = typename impl::__or__<T, cls>::Return;                       \
             static_assert(                                                              \
@@ -1646,7 +1736,8 @@ namespace impl {
             return operator_or<Return>(lhs, rhs);                                       \
         }                                                                               \
                                                                                         \
-        template <typename T> requires (impl::__ior__<cls, T>::enable)                  \
+        template <typename T>                                                           \
+            requires (impl::__ior__<cls, T>::enable && !impl::proxy_like<T>)            \
         inline cls& operator|=(const T& value) {                                        \
             using Return = typename impl::__ior__<cls, T>::Return;                      \
             static_assert(                                                              \
@@ -1656,6 +1747,12 @@ namespace impl {
                 "ensure the Return type is set to the left operand."                    \
             );                                                                          \
             operator_ior<Return>(*this, value);                                         \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T> requires (impl::proxy_like<T>)                            \
+        inline cls& operator|=(const T& value) {                                        \
+            *this |= *value;                                                            \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1672,7 +1769,7 @@ namespace impl {
         }                                                                               \
                                                                                         \
         template <typename T>                                                           \
-            requires (impl::__xor__<T, cls>::enable && !impl::__xor__<cls, T>::enable)  \
+            requires (impl::__xor__<T, cls>::enable && !std::is_base_of_v<Object, T>)   \
         inline friend auto operator^(const T& lhs, const cls& rhs) {                    \
             using Return = typename impl::__xor__<T, cls>::Return;                      \
             static_assert(                                                              \
@@ -1684,7 +1781,8 @@ namespace impl {
             return operator_xor<Return>(lhs, rhs);                                      \
         }                                                                               \
                                                                                         \
-        template <typename T> requires (impl::__ixor__<cls, T>::enable)                 \
+        template <typename T>                                                           \
+            requires (impl::__ixor__<cls, T>::enable && !impl::proxy_like<T>)           \
         inline cls& operator^=(const T& value) {                                        \
             using Return = typename impl::__ixor__<cls, T>::Return;                     \
             static_assert(                                                              \
@@ -1694,6 +1792,12 @@ namespace impl {
                 "ensure the Return type is set to the left operand."                    \
             );                                                                          \
             operator_ixor<Return>(*this, value);                                        \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        template <typename T> requires (impl::proxy_like<T>)                            \
+        inline cls& operator^=(const T& value) {                                        \
+            *this ^= *value;                                                            \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1926,23 +2030,6 @@ namespace impl {
     struct SliceInitializer;
 
 }  // namespace impl
-
-
-// template <typename T> requires (impl::__abs__<T>::enable)
-// inline auto abs(const T& value) {
-//     using Return = impl::__abs__<T>::Return;
-//     static_assert(
-//         std::is_base_of_v<Object, Return>,
-//         "Absolute value operator must return a py::Object subclass.  Check your "
-//         "specialization of __abs__ for this type and ensure the Return type is set to "
-//         "a py::Object subclass."
-//     );
-//     PyObject* result = PyNumber_Absolute(detail::object_or_cast(value).ptr());
-//     if (result == nullptr) {
-//         throw error_already_set();
-//     }
-//     return reinterpret_steal<Return>(result);
-// }
 
 
 /* A revised pybind11::object interface that allows implicit conversions to subtypes
@@ -2615,6 +2702,18 @@ protected:
 };
 
 
+// // TODO: Iterator
+
+// template <typename Return>
+// class Iterator : public Object {
+
+// public:
+
+//     Iterator
+
+// };
+
+
 namespace impl {
 
     /* Base class for all accessor proxies.  Stores an arbitrary object in a buffer and
@@ -2767,11 +2866,19 @@ namespace impl {
             return &deref();
         };
 
-        inline operator Wrapped() const {
+        // TODO: make sure that converting proxy to wrapped object does not create a copy.
+        // -> This matters when modifying kwonly defaults in func.h
+
+        inline operator Wrapped&() {
             return deref();
         }
 
-        template <typename T> requires (std::is_convertible_v<Wrapped, T>)
+        inline operator const Wrapped&() const {
+            return deref();
+        }
+
+        template <typename T>
+            requires (!std::is_same_v<T, Wrapped> && std::is_convertible_v<Wrapped, T>)
         inline operator T() const {
             return implicit_cast<T>(deref());
         }
@@ -2988,7 +3095,7 @@ namespace impl {
          *      obj.attr("some_int") = 5;  // valid: translates to Python.
          */
 
-        template <typename T>
+        template <typename T> requires (!proxy_like<std::decay_t<T>>)
         inline AttrAccessor& operator=(T&& value) {
             new (Base::buffer) Object(std::forward<T>(value));
             Base::initialized = true;
@@ -2999,6 +3106,12 @@ namespace impl {
             ) < 0) {
                 throw error_already_set();
             }
+            return *this;
+        }
+
+        template <typename T> requires (proxy_like<std::decay_t<T>>)
+        inline AttrAccessor& operator=(T&& value) {
+            operator=(*value);
             return *this;
         }
 
@@ -3215,7 +3328,7 @@ namespace impl {
          *      list[{1, 3}] = 5;  // compile error, int is not list-like
          */
 
-        template <typename T> requires (__setitem__<Obj, Key, T>::enable)
+        template <typename T> requires (__setitem__<Obj, Key, T>::enable && !proxy_like<T>)
         inline ItemAccessor& operator=(T&& value) {
             static_assert(
                 std::is_void_v<typename __setitem__<Obj, Key, T>::Return>,
@@ -3226,6 +3339,12 @@ namespace impl {
             new (Base::buffer) Wrapped(std::forward<T>(value));
             Base::initialized = true;
             policy.set(reinterpret_cast<Wrapped&>(Base::buffer).ptr());
+            return *this;
+        }
+
+        template <typename T> requires (proxy_like<T>)
+        inline ItemAccessor& operator=(T&& value) {
+            operator=(*value);
             return *this;
         }
 
@@ -3949,6 +4068,33 @@ inline auto impl::Proxy<Obj, Wrapped>::operator[](
 ////////////////////////////////
 ////    GLOBAL FUNCTIONS    ////
 ////////////////////////////////
+
+
+/* Equivalent to Python `abs(obj)` for any object that specializes the __abs__ control
+struct. */
+template <typename T> requires (impl::python_like<T> && impl::__abs__<T>::enable)
+inline auto abs(const T& value) {
+    using Return = impl::__abs__<T>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "Absolute value operator must return a py::Object subclass.  Check your "
+        "specialization of __abs__ for this type and ensure the Return type is set to "
+        "a py::Object subclass."
+    );
+    PyObject* result = PyNumber_Absolute(value.ptr());
+    if (result == nullptr) {
+        throw error_already_set();
+    }
+    return reinterpret_steal<Return>(result);
+}
+
+
+/* Equivalent to Python `abs(obj)`, except that it takes a C++ value and applies
+std::abs() for identical semantics. */
+template <typename T> requires (!impl::python_like<T>)
+inline auto abs(const T& value) {
+    return std::abs(value);
+}
 
 
 /* Equivalent to Python `import module` */

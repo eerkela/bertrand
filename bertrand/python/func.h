@@ -1,3 +1,4 @@
+#include "pytypedefs.h"
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
@@ -9,6 +10,7 @@
 #include "dict.h"
 #include "str.h"
 #include "tuple.h"
+#include "list.h"
 #include "type.h"
 
 
@@ -213,6 +215,10 @@ class Code : public Object {
         return result;
     }
 
+    inline PyCodeObject* self() const {
+        return reinterpret_cast<PyCodeObject*>(this->ptr());
+    }
+
 public:
     static Type type;
 
@@ -272,107 +278,97 @@ public:
     ////    SLOTS    ////
     /////////////////////
 
-    /* A proxy for inspecting the code object's PyCodeObject* slots. */
-    struct Slots {
-        PyCodeObject* code_obj;
+    /* Get the name of the file from which the code was compiled. */
+    inline Str filename() const {
+        return reinterpret_borrow<Str>(self()->co_filename);
+    }
 
-        /* Get the name of the file from which the code was compiled. */
-        inline Str filename() const {
-            return reinterpret_borrow<Str>(code_obj->co_filename);
-        }
+    /* Get the function's base name. */
+    inline Str name() const {
+        return reinterpret_borrow<Str>(self()->co_name);
+    }
 
-        /* Get the function's base name. */
-        inline Str name() const {
-            return reinterpret_borrow<Str>(code_obj->co_name);
-        }
+    /* Get the function's qualified name. */
+    inline Str qualname() const {
+        return reinterpret_borrow<Str>(self()->co_qualname);
+    }
 
-        /* Get the function's qualified name. */
-        inline Str qualname() const {
-            return reinterpret_borrow<Str>(code_obj->co_qualname);
-        }
+    /* Get the first line number of the function. */
+    inline Py_ssize_t line_number() const noexcept {
+        return self()->co_firstlineno;
+    }
 
-        /* Get the first line number of the function. */
-        inline Py_ssize_t line_number() const noexcept {
-            return code_obj->co_firstlineno;
-        }
+    /* Get the total number of positional arguments for the function, including
+    positional-only arguments and those with default values (but not variable
+    or keyword-only arguments). */
+    inline Py_ssize_t argcount() const noexcept {
+        return self()->co_argcount;
+    }
 
-        /* Get the total number of positional arguments for the function, including
-        positional-only arguments and those with default values (but not variable
-        or keyword-only arguments). */
-        inline Py_ssize_t n_args() const noexcept {
-            return code_obj->co_argcount;
-        }
+    /* Get the number of positional-only arguments for the function, including
+    those with default values.  Does not include variable positional or keyword
+    arguments. */
+    inline Py_ssize_t posonlyargcount() const noexcept {
+        return self()->co_posonlyargcount;
+    }
 
-        /* Get the number of positional-only arguments for the function, including
-        those with default values.  Does not include variable positional or keyword
-        arguments. */
-        inline Py_ssize_t n_positional() const noexcept {
-            return code_obj->co_posonlyargcount;
-        }
+    /* Get the number of keyword-only arguments for the function, including those
+    with default values.  Does not include positional-only or variable
+    positional/keyword arguments. */
+    inline Py_ssize_t kwonlyargcount() const noexcept {
+        return self()->co_kwonlyargcount;
+    }
 
-        /* Get the number of keyword-only arguments for the function, including those
-        with default values.  Does not include positional-only or variable
-        positional/keyword arguments. */
-        inline Py_ssize_t n_keyword() const noexcept {
-            return code_obj->co_kwonlyargcount;
-        }
+    /* Get the number of local variables used by the function (including all
+    parameters). */
+    inline Py_ssize_t nlocals() const noexcept {
+        return self()->co_nlocals;
+    }
 
-        /* Get the number of local variables used by the function (including all
-        parameters). */
-        inline Py_ssize_t n_locals() const noexcept {
-            return code_obj->co_nlocals;
-        }
+    /* Get a tuple containing the names of the local variables in the function,
+    starting with parameter names. */
+    inline Tuple varnames() const {
+        static const pybind11::str varnames = "co_varnames";
+        return attr(varnames);
+    }
 
-        // /* Get a tuple containing the names of the local variables in the function,
-        // starting with parameter names. */
-        // inline Tuple locals() const {
-        //     return reinterpret_borrow<Tuple>(code_obj->co_varnames);
-        // }
+    /* Get a tuple containing the names of local variables that are referenced by
+    nested functions within this function (i.e. those that are stored in a
+    PyCell). */
+    inline Tuple cellvars() const {
+        static const pybind11::str cellvars = "co_cellvars";
+        return attr(cellvars);
+    }
 
-        // /* Get a tuple containing the names of local variables that are referenced by
-        // nested functions within this function (i.e. those that are stored in a
-        // PyCell). */
-        // inline Tuple cellvars() const {
-        //     return reinterpret_borrow<Tuple>(code_obj->co_cellvars);
-        // }
+    /* Get a tuple containing the names of free variables in the function (i.e.
+    those that are not stored in a PyCell). */
+    inline Tuple freevars() const {
+        static const pybind11::str freevars = "co_freevars";
+        return attr(freevars);
+    }
 
-        // /* Get a tuple containing the names of free variables in the function (i.e.
-        // those that are not stored in a PyCell). */
-        // inline Tuple freevars() const {
-        //     return reinterpret_borrow<Tuple>(code_obj->co_freevars);
-        // }
+    /* Get the required stack space for the code object. */
+    inline Py_ssize_t stacksize() const noexcept {
+        return self()->co_stacksize;
+    }
 
-        /* Get the required stack space for the code object. */
-        inline Py_ssize_t stack_size() const noexcept {
-            return code_obj->co_stacksize;
-        }
+    /* Get the bytecode buffer representing the sequence of instructions in the
+    function. */
+    inline Bytes bytecode() const;  // defined in func.h
 
-        // /* Get the bytecode buffer representing the sequence of instructions in the
-        // function. */
-        // inline const char* bytecode() const {
-        //     return code_obj->co_code;
-        // }
+    /* Get a tuple containing the literals used by the bytecode in the function. */
+    inline Tuple consts() const {
+        return reinterpret_borrow<Tuple>(self()->co_consts);
+    }
 
-        /* Get a tuple containing the literals used by the bytecode in the function. */
-        inline Tuple constants() const {
-            return reinterpret_borrow<Tuple>(code_obj->co_consts);
-        }
+    /* Get a tuple containing the names used by the bytecode in the function. */
+    inline Tuple names() const {
+        return reinterpret_borrow<Tuple>(self()->co_names);
+    }
 
-        /* Get a tuple containing the names used by the bytecode in the function. */
-        inline Tuple names() const {
-            return reinterpret_borrow<Tuple>(code_obj->co_names);
-        }
-
-        /* Get an integer encoding flags for the Python interpreter. */
-        inline int flags() const noexcept {
-            return code_obj->co_flags;
-        }
-
-    };
-
-    /* Get the code object's internal Python slots. */
-    inline Slots slots() const {
-        return {reinterpret_cast<PyCodeObject*>(this->ptr())};
+    /* Get an integer encoding flags for the Python interpreter. */
+    inline int flags() const noexcept {
+        return self()->co_flags;
     }
 
 };
@@ -587,48 +583,153 @@ public:
         if (result == nullptr) {
             throw RuntimeError("function does not have a code object");
         }
-        // PyFunction_GetCode returns a borrowed reference
         return reinterpret_borrow<Code>(result);
+    }
+
+    /* Get the globals dictionary associated with the function object. */
+    inline Dict globals() const {
+        PyObject* result = PyFunction_GetGlobals(this->ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_borrow<Dict>(result);
     }
 
     /* Get the name of the file from which the code was compiled. */
     inline std::string filename() const {
-        return code().slots().filename();
+        return code().filename();
     }
 
     /* Get the first line number of the function. */
     inline size_t line_number() const {
-        return code().slots().line_number();
+        return code().line_number();
     }
 
     /* Get the function's base name. */
     inline std::string name() const {
-        return code().slots().name();
+        return code().name();
     }
 
     /* Get the function's qualified name. */
     inline std::string qualname() const {
-        return code().slots().qualname();
+        return code().qualname();
     }
 
-    /* Get the closure associated with the function.  This is a Tuple of cell objects
-    containing data captured by the function. */
-    inline Tuple closure() const {
-        PyObject* result = PyFunction_GetClosure(this->ptr());
-        if (result == nullptr) {
-            return {};
-        }
-        return reinterpret_borrow<Tuple>(result);
+    /* Get the total number of positional or keyword arguments for the function,
+    including positional-only parameters and excluding keyword-only parameters. */
+    inline size_t argcount() const {
+        return code().argcount();
     }
 
-    /* Set the closure associated with the function.  The input must be a Tuple or
-    nullopt. */
-    inline void closure(std::optional<Tuple> closure) {
-        PyObject* item = closure ? closure.value().ptr() : Py_None;
-        if (PyFunction_SetClosure(this->ptr(), item)) {
-            throw error_already_set();
-        }
+    /* Get the number of positional-only arguments for the function.  Does not include
+    variable positional or keyword arguments. */
+    inline size_t n_positional() const {
+        return code().posonlyargcount();
     }
+
+    /* Get the number of keyword-only arguments for the function.  Does not include
+    positional-only or variable positional/keyword arguments. */
+    inline size_t n_keyword() const {
+        return code().kwonlyargcount();
+    }
+
+    /* Get a dictionary mapping argument names to their default values. */
+    inline MappingProxy defaults() const {
+        Code code = this->code();
+
+        // check for positional defaults
+        PyObject* pos_defaults = PyFunction_GetDefaults(this->ptr());
+        if (pos_defaults == nullptr) {
+            // check for keyword-only defaults
+            if (code.kwonlyargcount() > 0) {
+                Object kwdefaults = attr("__kwdefaults__");
+                if (kwdefaults.is(None)) {
+                    return Dict{};
+                } else {
+                    return Dict(kwdefaults);
+                }
+            } else {
+                return Dict{};
+            }
+        }
+
+        // extract positional defaults
+        size_t argcount = code.argcount();
+        Tuple defaults = reinterpret_borrow<Tuple>(pos_defaults);
+        Tuple names = code.varnames()[{argcount - defaults.size(), argcount}];
+        Dict result = {};
+        for (size_t i = 0; i < defaults.size(); ++i) {
+            result[names[i]] = defaults[i];
+        }
+
+        // check for keyword-only defaults
+        if (code.kwonlyargcount() > 0) {
+            Object kwdefaults = attr("__kwdefaults__");
+            if (!kwdefaults.is(None)) {
+                result.update(Dict(kwdefaults));
+            }
+        }
+        return result;
+    }
+
+    // TODO: this can only be uncommented once the __iter__ refactor is complete
+
+    // /* Set the default value for one or more arguments. */
+    // inline void defaults(Dict&& dict) {
+    //     Code code = this->code();
+
+    //     // TODO: clean this up.  The logic should go as follows:
+    //     // 1. check for positional defaults.  If found, build a dictionary with the new
+    //     // values and remove them from the input dict.
+    //     // 2. check for keyword-only defaults.  If found, build a dictionary with the
+    //     // new values and remove them from the input dict.
+    //     // 3. if any keys are left over, raise an error and do not update the signature
+    //     // 4. set defaults to Tuple(positional_defaults.values()) and update kwdefaults
+    //     // in-place.
+
+    //     // account for positional defaults
+    //     PyObject* pos_defaults = PyFunction_GetDefaults(this->ptr());
+    //     if (pos_defaults != nullptr) {
+    //         size_t argcount = code.argcount();
+    //         Tuple defaults = reinterpret_borrow<Tuple>(pos_defaults);
+    //         Tuple names = code.varnames()[{argcount - defaults.size(), argcount}];
+    //         Dict positional_defaults = {};
+    //         for (size_t i = 0; i < defaults.size(); ++i) {
+    //             positional_defaults[*names[i]] = *defaults[i];
+    //         }
+
+    //         // merge new defaults with old ones
+    //         for (const Object& key : positional_defaults) {
+    //             if (dict.contains(key)) {
+    //                 positional_defaults[key] = dict.pop(key);
+    //             }
+    //         }
+    //     }
+
+    //     // check for keyword-only defaults
+    //     if (code.kwonlyargcount() > 0) {
+    //         Object kwdefaults = attr("__kwdefaults__");
+    //         if (!kwdefaults.is(None)) {
+    //             Dict temp = {};
+    //             for (const Object& key : kwdefaults) {
+    //                 if (dict.contains(key)) {
+    //                     temp[key] = dict.pop(key);
+    //                 }
+    //             }
+    //             if (!dict.empty()) {
+    //                 throw ValueError("no match for arguments " + Str(List(dict.keys())));
+    //             }
+    //             kwdefaults |= temp;
+    //         } else if (!dict.empty()) {
+    //             throw ValueError("no match for arguments " + Str(List(dict.keys())));
+    //         }
+    //     } else if (!dict.empty()) {
+    //         throw ValueError("no match for arguments " + Str(List(dict.keys())));
+    //     }
+
+    //     // TODO: set defaults to Tuple(positional_defaults.values()) and update kwdefaults
+
+    // }
 
     /* Get the type annotations for the function.  This is returned as a mutable
     dictionary that can be written to in order to change the annotations. */
@@ -649,50 +750,23 @@ public:
         }
     }
 
-    /* Get the default values for the function.  This is a Tuple of values for the
-    function's parameters. */
-    inline Tuple defaults() const {
-        PyObject* result = PyFunction_GetDefaults(this->ptr());
+    /* Get the closure associated with the function.  This is a Tuple of cell objects
+    containing data captured by the function. */
+    inline Tuple closure() const {
+        PyObject* result = PyFunction_GetClosure(this->ptr());
         if (result == nullptr) {
             return {};
         }
         return reinterpret_borrow<Tuple>(result);
     }
 
-    /* Set the default values for the function.  The input must be a Tuple or
+    /* Set the closure associated with the function.  The input must be a Tuple or
     nullopt. */
-    inline void defaults(std::optional<Tuple> defaults) {
-        PyObject* item = defaults ? defaults.value().ptr() : Py_None;
-        if (PyFunction_SetDefaults(this->ptr(), item)) {
+    inline void closure(std::optional<Tuple> closure) {
+        PyObject* item = closure ? closure.value().ptr() : Py_None;
+        if (PyFunction_SetClosure(this->ptr(), item)) {
             throw error_already_set();
         }
-    }
-
-    /* Get the globals dictionary associated with the function object. */
-    inline Dict globals() const {
-        PyObject* result = PyFunction_GetGlobals(this->ptr());
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return reinterpret_borrow<Dict>(result);
-    }
-
-    /* Get the total number of positional or keyword arguments for the function,
-    including positional-only parameters and excluding keyword-only parameters. */
-    inline size_t n_args() const {
-        return code().slots().n_args();
-    }
-
-    /* Get the number of positional-only arguments for the function.  Does not include
-    variable positional or keyword arguments. */
-    inline size_t n_positional() const {
-        return code().slots().n_positional();
-    }
-
-    /* Get the number of keyword-only arguments for the function.  Does not include
-    positional-only or variable positional/keyword arguments. */
-    inline size_t n_keyword() const {
-        return code().slots().n_keyword();
     }
 
 };

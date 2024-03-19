@@ -28,7 +28,7 @@ namespace py {
 
 
 // TODO: should probably just only build timedeltas from C++ integers, not python ones.
-// That way we only have to maintain one path, and implicit conversions might just
+// That way we only have to maintain one path, and implicit conversions should just
 // work as expected.  Test that when this module builds.
 
 

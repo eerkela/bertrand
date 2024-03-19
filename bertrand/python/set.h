@@ -326,11 +326,6 @@ namespace impl {
 
     };
 
-}  // namespace impl
-
-
-namespace impl {
-
 template <>
 struct __dereference__<FrozenSet>                               : Returns<detail::args_proxy> {};
 template <>
@@ -390,7 +385,66 @@ struct __ixor__<FrozenSet, Object>                              : Returns<Frozen
 template <anyset_like T>
 struct __ixor__<FrozenSet, T>                                   : Returns<FrozenSet&> {};
 
-}
+template <>
+struct __dereference__<Set>                                     : Returns<detail::args_proxy> {};
+template <>
+struct __len__<Set>                                             : Returns<size_t> {};
+template <>
+struct __iter__<Set>                                            : Returns<Object> {};
+template <>
+struct __reversed__<Set>                                        : Returns<Object> {};
+template <is_hashable T>
+struct __contains__<Set, T>                                     : Returns<bool> {};
+template <>
+struct __lt__<Set, Object>                                      : Returns<bool> {};
+template <anyset_like T>
+struct __lt__<Set, T>                                           : Returns<bool> {};
+template <>
+struct __le__<Set, Object>                                      : Returns<bool> {};
+template <anyset_like T>
+struct __le__<Set, T>                                           : Returns<bool> {};
+template <>
+struct __ge__<Set, Object>                                      : Returns<bool> {};
+template <anyset_like T>
+struct __ge__<Set, T>                                           : Returns<bool> {};
+template <>
+struct __gt__<Set, Object>                                      : Returns<bool> {};
+template <anyset_like T>
+struct __gt__<Set, T>                                           : Returns<bool> {};
+template <>
+struct __or__<Set, Object>                                      : Returns<Set> {};
+template <anyset_like T>
+struct __or__<Set, T>                                           : Returns<Set> {};
+template <>
+struct __and__<Set, Object>                                     : Returns<Set> {};
+template <anyset_like T>
+struct __and__<Set, T>                                          : Returns<Set> {};
+template <>
+struct __sub__<Set, Object>                                     : Returns<Set> {};
+template <anyset_like T>
+struct __sub__<Set, T>                                          : Returns<Set> {};
+template <>
+struct __xor__<Set, Object>                                     : Returns<Set> {};
+template <anyset_like T>
+struct __xor__<Set, T>                                          : Returns<Set> {};
+template <>
+struct __ior__<Set, Object>                                     : Returns<Set&> {};
+template <anyset_like T>
+struct __ior__<Set, T>                                          : Returns<Set&> {};
+template <>
+struct __iand__<Set, Object>                                    : Returns<Set&> {};
+template <anyset_like T>
+struct __iand__<Set, T>                                         : Returns<Set&> {};
+template <>
+struct __isub__<Set, Object>                                    : Returns<Set&> {};
+template <anyset_like T>
+struct __isub__<Set, T>                                         : Returns<Set&> {};
+template <>
+struct __ixor__<Set, Object>                                    : Returns<Set&> {};
+template <anyset_like T>
+struct __ixor__<Set, T>                                         : Returns<Set&> {};
+
+}  // namespace impl
 
 
 /* Wrapper around pybind11::frozenset that allows it to be directly initialized using
@@ -542,70 +596,6 @@ public:
     }
 
 };
-
-
-namespace impl {
-
-template <>
-struct __dereference__<Set>                                     : Returns<detail::args_proxy> {};
-template <>
-struct __len__<Set>                                             : Returns<size_t> {};
-template <>
-struct __iter__<Set>                                            : Returns<Object> {};
-template <>
-struct __reversed__<Set>                                        : Returns<Object> {};
-template <is_hashable T>
-struct __contains__<Set, T>                                     : Returns<bool> {};
-template <>
-struct __lt__<Set, Object>                                      : Returns<bool> {};
-template <anyset_like T>
-struct __lt__<Set, T>                                           : Returns<bool> {};
-template <>
-struct __le__<Set, Object>                                      : Returns<bool> {};
-template <anyset_like T>
-struct __le__<Set, T>                                           : Returns<bool> {};
-template <>
-struct __ge__<Set, Object>                                      : Returns<bool> {};
-template <anyset_like T>
-struct __ge__<Set, T>                                           : Returns<bool> {};
-template <>
-struct __gt__<Set, Object>                                      : Returns<bool> {};
-template <anyset_like T>
-struct __gt__<Set, T>                                           : Returns<bool> {};
-template <>
-struct __or__<Set, Object>                                      : Returns<Set> {};
-template <anyset_like T>
-struct __or__<Set, T>                                           : Returns<Set> {};
-template <>
-struct __and__<Set, Object>                                     : Returns<Set> {};
-template <anyset_like T>
-struct __and__<Set, T>                                          : Returns<Set> {};
-template <>
-struct __sub__<Set, Object>                                     : Returns<Set> {};
-template <anyset_like T>
-struct __sub__<Set, T>                                          : Returns<Set> {};
-template <>
-struct __xor__<Set, Object>                                     : Returns<Set> {};
-template <anyset_like T>
-struct __xor__<Set, T>                                          : Returns<Set> {};
-template <>
-struct __ior__<Set, Object>                                     : Returns<Set&> {};
-template <anyset_like T>
-struct __ior__<Set, T>                                          : Returns<Set&> {};
-template <>
-struct __iand__<Set, Object>                                    : Returns<Set&> {};
-template <anyset_like T>
-struct __iand__<Set, T>                                         : Returns<Set&> {};
-template <>
-struct __isub__<Set, Object>                                    : Returns<Set&> {};
-template <anyset_like T>
-struct __isub__<Set, T>                                         : Returns<Set&> {};
-template <>
-struct __ixor__<Set, Object>                                    : Returns<Set&> {};
-template <anyset_like T>
-struct __ixor__<Set, T>                                         : Returns<Set&> {};
-
-}
 
 
 /* Wrapper around pybind11::set that allows it to be directly initialized using
@@ -875,7 +865,7 @@ public:
 };
 
 
-}  // namespace python
+}  // namespace py
 }  // namespace bertrand
 
 

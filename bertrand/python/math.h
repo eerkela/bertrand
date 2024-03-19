@@ -9,15 +9,20 @@
 #include <type_traits>
 
 #include "common.h"
+#include "int.h"
 #include "tuple.h"
+
+
+// TODO: simplify this as much as possible.  Accounting for Decimal objects is going to
+// be a nightmare, so we need to polish as much as possible first.
 
 
 namespace bertrand {
 namespace py {
 
 
-/* Collection of tag structs describing rounding strategies for div(), mod(), divmod(),
-and round(). */
+/* Collection of tag structs describing language-agnostic rounding strategies for
+div(), mod(), divmod(), and round(). */
 class Round {
     struct RoundTag {};
 
@@ -66,11 +71,9 @@ class Round {
             return std::make_pair(quotient, l - (quotient * r));
         }
 
-        /* Rounding does nothing for true division. */
-
         template <typename O>
         inline static auto round(const O& o) {
-            return o;
+            return o;  // does nothing
         }
 
     };
@@ -196,13 +199,9 @@ class Round {
             }
         }
 
-        /* C-style division is a form a true division and only differs in its handling
-         * of integers, so rounding does nothing.
-         */
-
         template <typename O>
         inline static auto round(const O& o) {
-            return o;
+            return o;  // does nothing
         }
 
     };
@@ -714,21 +713,6 @@ public:
  *      manner to both Python and C++ inputs.  It is fully generic, and massively
  *      simplifies the syntax for rounding numbers in both languages.
  */
-
-
-/* Equivalent to Python `abs(obj)`. */
-template <typename T>
-inline auto abs(const T& obj) {
-    if constexpr (impl::python_like<T>) {
-        PyObject* result = PyNumber_Absolute(obj.ptr());
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return reinterpret_steal<Object>(result);
-    } else {
-        return std::abs(obj);
-    }
-}
 
 
 /* Divide the left and right operands according to the specified rounding rule. */

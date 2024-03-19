@@ -13,6 +13,96 @@ namespace bertrand {
 namespace py {
 
 
+namespace impl {
+
+template <>
+struct __pos__<Complex>                                         : Returns<Complex> {};
+template <>
+struct __neg__<Complex>                                         : Returns<Complex> {};
+template <>
+struct __abs__<Complex>                                         : Returns<Complex> {};
+template <>
+struct __invert__<Complex>                                      : Returns<Complex> {};
+template <>
+struct __increment__<Complex>                                   : Returns<Complex> {};
+template <>
+struct __decrement__<Complex>                                   : Returns<Complex> {};
+template <>
+struct __add__<Complex, Object>                                 : Returns<Object> {};
+template <bool_like T>
+struct __add__<Complex, T>                                      : Returns<Complex> {};
+template <int_like T>
+struct __add__<Complex, T>                                      : Returns<Complex> {};
+template <float_like T>
+struct __add__<Complex, T>                                      : Returns<Complex> {};
+template <complex_like T>
+struct __add__<Complex, T>                                      : Returns<Complex> {};
+template <>
+struct __sub__<Complex, Object>                                 : Returns<Object> {};
+template <bool_like T>
+struct __sub__<Complex, T>                                      : Returns<Complex> {};
+template <int_like T>
+struct __sub__<Complex, T>                                      : Returns<Complex> {};
+template <float_like T>
+struct __sub__<Complex, T>                                      : Returns<Complex> {};
+template <complex_like T>
+struct __sub__<Complex, T>                                      : Returns<Complex> {};
+template <>
+struct __mul__<Complex, Object>                                 : Returns<Object> {};
+template <bool_like T>
+struct __mul__<Complex, T>                                      : Returns<Complex> {};
+template <int_like T>
+struct __mul__<Complex, T>                                      : Returns<Complex> {};
+template <float_like T>
+struct __mul__<Complex, T>                                      : Returns<Complex> {};
+template <complex_like T>
+struct __mul__<Complex, T>                                      : Returns<Complex> {};
+template <>
+struct __truediv__<Complex, Object>                             : Returns<Object> {};
+template <bool_like T>
+struct __truediv__<Complex, T>                                  : Returns<Complex> {};
+template <int_like T>
+struct __truediv__<Complex, T>                                  : Returns<Complex> {};
+template <float_like T>
+struct __truediv__<Complex, T>                                  : Returns<Complex> {};
+template <complex_like T>
+struct __truediv__<Complex, T>                                  : Returns<Complex> {};
+template <bool_like T>
+struct __iadd__<Complex, T>                                     : Returns<Complex> {};
+template <int_like T>
+struct __iadd__<Complex, T>                                     : Returns<Complex> {};
+template <float_like T>
+struct __iadd__<Complex, T>                                     : Returns<Complex> {};
+template <complex_like T>
+struct __iadd__<Complex, T>                                     : Returns<Complex> {};
+template <bool_like T>
+struct __isub__<Complex, T>                                     : Returns<Complex> {};
+template <int_like T>
+struct __isub__<Complex, T>                                     : Returns<Complex> {};
+template <float_like T>
+struct __isub__<Complex, T>                                     : Returns<Complex> {};
+template <complex_like T>
+struct __isub__<Complex, T>                                     : Returns<Complex> {};
+template <bool_like T>
+struct __imul__<Complex, T>                                     : Returns<Complex> {};
+template <int_like T>
+struct __imul__<Complex, T>                                     : Returns<Complex> {};
+template <float_like T>
+struct __imul__<Complex, T>                                     : Returns<Complex> {};
+template <complex_like T>
+struct __imul__<Complex, T>                                     : Returns<Complex> {};
+template <bool_like T>
+struct __itruediv__<Complex, T>                                 : Returns<Complex> {};
+template <int_like T>
+struct __itruediv__<Complex, T>                                 : Returns<Complex> {};
+template <float_like T>
+struct __itruediv__<Complex, T>                                 : Returns<Complex> {};
+template <complex_like T>
+struct __itruediv__<Complex, T>                                 : Returns<Complex> {};
+
+}
+
+
 /* New subclass of pybind11::object that represents a complex number at the Python
 level. */
 class Complex : public Object {
@@ -142,97 +232,8 @@ public:
 };
 
 
-namespace impl {
-
-template <>
-struct __pos__<Complex>                                         : Returns<Complex> {};
-template <>
-struct __neg__<Complex>                                         : Returns<Complex> {};
-template <>
-struct __abs__<Complex>                                         : Returns<Complex> {};
-template <>
-struct __invert__<Complex>                                      : Returns<Complex> {};
-template <>
-struct __increment__<Complex>                                   : Returns<Complex> {};
-template <>
-struct __decrement__<Complex>                                   : Returns<Complex> {};
-template <>
-struct __add__<Complex, Object>                                 : Returns<Object> {};
-template <bool_like T>
-struct __add__<Complex, T>                                      : Returns<Complex> {};
-template <int_like T>
-struct __add__<Complex, T>                                      : Returns<Complex> {};
-template <float_like T>
-struct __add__<Complex, T>                                      : Returns<Complex> {};
-template <complex_like T>
-struct __add__<Complex, T>                                      : Returns<Complex> {};
-template <>
-struct __sub__<Complex, Object>                                 : Returns<Object> {};
-template <bool_like T>
-struct __sub__<Complex, T>                                      : Returns<Complex> {};
-template <int_like T>
-struct __sub__<Complex, T>                                      : Returns<Complex> {};
-template <float_like T>
-struct __sub__<Complex, T>                                      : Returns<Complex> {};
-template <complex_like T>
-struct __sub__<Complex, T>                                      : Returns<Complex> {};
-template <>
-struct __mul__<Complex, Object>                                 : Returns<Object> {};
-template <bool_like T>
-struct __mul__<Complex, T>                                      : Returns<Complex> {};
-template <int_like T>
-struct __mul__<Complex, T>                                      : Returns<Complex> {};
-template <float_like T>
-struct __mul__<Complex, T>                                      : Returns<Complex> {};
-template <complex_like T>
-struct __mul__<Complex, T>                                      : Returns<Complex> {};
-template <>
-struct __truediv__<Complex, Object>                             : Returns<Object> {};
-template <bool_like T>
-struct __truediv__<Complex, T>                                  : Returns<Complex> {};
-template <int_like T>
-struct __truediv__<Complex, T>                                  : Returns<Complex> {};
-template <float_like T>
-struct __truediv__<Complex, T>                                  : Returns<Complex> {};
-template <complex_like T>
-struct __truediv__<Complex, T>                                  : Returns<Complex> {};
-template <bool_like T>
-struct __iadd__<Complex, T>                                     : Returns<Complex> {};
-template <int_like T>
-struct __iadd__<Complex, T>                                     : Returns<Complex> {};
-template <float_like T>
-struct __iadd__<Complex, T>                                     : Returns<Complex> {};
-template <complex_like T>
-struct __iadd__<Complex, T>                                     : Returns<Complex> {};
-template <bool_like T>
-struct __isub__<Complex, T>                                     : Returns<Complex> {};
-template <int_like T>
-struct __isub__<Complex, T>                                     : Returns<Complex> {};
-template <float_like T>
-struct __isub__<Complex, T>                                     : Returns<Complex> {};
-template <complex_like T>
-struct __isub__<Complex, T>                                     : Returns<Complex> {};
-template <bool_like T>
-struct __imul__<Complex, T>                                     : Returns<Complex> {};
-template <int_like T>
-struct __imul__<Complex, T>                                     : Returns<Complex> {};
-template <float_like T>
-struct __imul__<Complex, T>                                     : Returns<Complex> {};
-template <complex_like T>
-struct __imul__<Complex, T>                                     : Returns<Complex> {};
-template <bool_like T>
-struct __itruediv__<Complex, T>                                 : Returns<Complex> {};
-template <int_like T>
-struct __itruediv__<Complex, T>                                 : Returns<Complex> {};
-template <float_like T>
-struct __itruediv__<Complex, T>                                 : Returns<Complex> {};
-template <complex_like T>
-struct __itruediv__<Complex, T>                                 : Returns<Complex> {};
-
-}
-
+}  // namespace py
 }  // namespace bertrand
-}  // namespace python
 
 
 BERTRAND_STD_HASH(bertrand::py::Complex)
