@@ -50,16 +50,20 @@ public:
     static Type type;
 
     template <typename T>
-    static constexpr bool like = impl::range_like<T>;
+    static constexpr bool check() { return impl::range_like<T>; }
+
+    BERTRAND_OBJECT_COMMON(Base, Range, range_check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_COMMON(Base, Range, range_check)
-
     /* Default constructor.  Initializes to an empty range. */
     Range() : Range(Int::zero()) {}
+
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    Range(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly construct a range from 0 to the given stop index (exclusive). */
     explicit Range(const Int& stop) {

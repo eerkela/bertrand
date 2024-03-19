@@ -149,16 +149,17 @@ class Float : public Object {
     using Base = Object;
 
     template <typename T>
-    static constexpr bool constructor1 = (
-        !impl::python_like<T> && (
-            impl::bool_like<T> || impl::int_like<T> || impl::float_like<T>
-        )
-    );
+    static constexpr bool py_constructor = impl::float_like<T> && impl::python_like<T>;
     template <typename T>
-    static constexpr bool constructor2 =
-        !impl::python_like<T> && !constructor1<T> && std::is_convertible_v<T, double>;
+    static constexpr bool cpp_constructor =
+        impl::float_like<T> && !impl::python_like<T> && std::is_convertible_v<T, double>;
     template <typename T>
-    static constexpr bool constructor3 = impl::python_like<T> && !impl::float_like<T>;
+    static constexpr bool py_converting_constructor =
+        !impl::float_like<T> && impl::python_like<T>;
+    template <typename T>
+    static constexpr bool cpp_converting_constructor =
+        !impl::float_like<T> && !impl::python_like<T> &&
+        impl::explicitly_convertible_to<T, double>;
 
 public:
     static Type type;
@@ -166,11 +167,11 @@ public:
     template <typename T>
     static constexpr bool check() { return impl::float_like<T>; }
 
+    BERTRAND_OBJECT_COMMON(Base, Float, PyFloat_Check)
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
-
-    BERTRAND_OBJECT_COMMON(Base, Float, PyFloat_Check)
 
     /* Default constructor.  Initializes to 0.0. */
     Float() : Base(PyFloat_FromDouble(0.0), stolen_t{}) {
@@ -179,22 +180,33 @@ public:
         }
     }
 
-    /* Implicitly convert C++ booleans, integers, and floats to py::Float. */
-    template <typename T>
-        requires (constructor1<T>)
+    /* Copy/move constructors. */
+    template <typename T> requires (py_constructor<T>)
+    Float(T&& other) : Base(std::forward<T>(other)) {}
+
+    /* Trigger implicit conversions to double. */
+    template <typename T> requires (cpp_constructor<T>)
     Float(const T& value) : Base(PyFloat_FromDouble(value), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }
     }
 
-    /* Trigger explicit C++ conversions to double. */
-    template <typename T> requires (constructor2<T>)
-    explicit Float(const T& value) : Float(static_cast<double>(value)) {}
+    // TODO: implicit conversion from Bool, Int
 
-    /* Implicitly convert Python booleans and integers to py::Float. */
-    template <typename T> requires (constructor3<T>)
-    Float(const T& value) : Base(PyNumber_Float(value.ptr()), stolen_t{}) {
+    /* Explicitly convert an arbitrary Python object to py::Float. */
+    template <typename T> requires (py_converting_constructor<T>)
+    explicit Float(const T& value) : Base(PyNumber_Float(value.ptr()), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
+    /* Trigger explicit conversions to double. */
+    template <typename T> requires (cpp_converting_constructor<T>)
+    explicit Float(const T& value) :
+        Base(PyFloat_FromDouble(static_cast<double>(value)), stolen_t{})
+    {
         if (m_ptr == nullptr) {
             throw error_already_set();
         }

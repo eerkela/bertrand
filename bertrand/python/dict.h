@@ -19,6 +19,10 @@ template <>
 struct __dereference__<KeysView>                            : Returns<detail::args_proxy> {};
 template <>
 struct __len__<KeysView>                                    : Returns<size_t> {};
+template <>
+struct __iter__<KeysView>                                   : Returns<Object> {};
+template <>
+struct __reversed__<KeysView>                               : Returns<Object> {};
 template <is_hashable Key>
 struct __contains__<KeysView, Key>                          : Returns<bool> {};
 template <>
@@ -86,9 +90,9 @@ struct __dereference__<ItemsView>                           : Returns<detail::ar
 template <>
 struct __len__<ItemsView>                                   : Returns<size_t> {};
 template <>
-struct __iter__<ItemsView>                                  : Returns<Object> {};
+struct __iter__<ItemsView>                                  : Returns<Tuple> {};
 template <>
-struct __reversed__<ItemsView>                              : Returns<Object> {};
+struct __reversed__<ItemsView>                              : Returns<Tuple> {};
 template <typename First, typename Second>
 struct __contains__<ItemsView, std::pair<First, Second>>    : Returns<bool> {};
 
@@ -156,14 +160,18 @@ public:
     template <typename T>
     static constexpr bool check() { return std::is_base_of_v<KeysView, T>; }
 
+    BERTRAND_OBJECT_COMMON(Base, KeysView, keys_check)
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_COMMON(Base, KeysView, keys_check)
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    KeysView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create a keys view on an existing dictionary. */
-    template <typename T> requires (impl::python_like<T> && impl::dict_like<T>)
+    template <typename T> requires (impl::dict_like<T> && impl::python_like<T>)
     explicit KeysView(const T& dict) {
         static const pybind11::str method = "keys";
         m_ptr = dict.attr(method)().release().ptr();
@@ -267,14 +275,18 @@ public:
     template <typename T>
     static constexpr bool check() { return std::is_base_of_v<ValuesView, T>; }
 
+    BERTRAND_OBJECT_COMMON(Base, ValuesView, values_check)
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_COMMON(Base, ValuesView, values_check)
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    ValuesView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create a values view on an existing dictionary. */
-    template <typename T> requires (impl::python_like<T> && impl::dict_like<T>)
+    template <typename T> requires (impl::dict_like<T> && impl::python_like<T>)
     explicit ValuesView(const T& dict) {
         static const pybind11::str method = "values";
         m_ptr = dict.attr(method)().release().ptr();
@@ -329,14 +341,18 @@ public:
     template <typename T>
     static constexpr bool check() { return std::is_base_of_v<ItemsView, T>; }
 
+    BERTRAND_OBJECT_COMMON(Base, ItemsView, items_check)
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_COMMON(Base, ItemsView, items_check)
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    ItemsView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create an items view on an existing dictionary. */
-    template <typename T> requires (impl::python_like<T> && impl::dict_like<T>)
+    template <typename T> requires (impl::dict_like<T> && impl::python_like<T>)
     explicit ItemsView(const T& dict) {
         static const pybind11::str method = "items";
         m_ptr = dict.attr(method)().release().ptr();
@@ -381,10 +397,12 @@ class Dict : public Object {
     using Base = Object;
 
     template <typename T>
-    static constexpr bool constructor1 = !impl::python_like<T> && impl::is_iterable<T>;
-    template <typename T>
-    static constexpr bool constructor2 =
+    static constexpr bool py_unpacking_constructor =
         impl::python_like<T> && !impl::dict_like<T> && impl::is_iterable<T>;
+    template <typename T>
+    static constexpr bool cpp_unpacking_constructor =
+        !impl::python_like<T> && impl::is_iterable<T>;
+
 
 public:
     static Type type;
@@ -392,15 +410,11 @@ public:
     template <typename T>
     static constexpr bool check() { return impl::dict_like<T>; }
 
+    BERTRAND_OBJECT_COMMON(Base, Dict, PyDict_Check);
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
-
-    BERTRAND_OBJECT_COMMON(Base, Dict, PyDict_Check);
-
-    /* Copy/move constructors from equivalent pybind11 type. */
-    Dict(const pybind11::dict& other) : Base(other.ptr(), borrowed_t{}) {}
-    Dict(pybind11::dict&& other) : Base(other.release(), stolen_t{}) {}
 
     /* Default constructor.  Initializes to empty dict. */
     Dict() : Base(PyDict_New(), stolen_t{}) {
@@ -408,6 +422,10 @@ public:
             throw error_already_set();
         }
     }
+
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    Dict(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the given arguments into a dictionary using an initializer list. */
     Dict(const std::initializer_list<impl::DictInitializer>& contents)
@@ -428,8 +446,18 @@ public:
         }
     }
 
+    /* Explicitly unpack an arbitrary Python container into a new py::Dict. */
+    template <typename T> requires (py_unpacking_constructor<T>)
+    explicit Dict(const T& contents) :
+        Base(PyObject_CallOneArg((PyObject*) &PyDict_Type, contents.ptr()), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+    }
+
     /* Explicitly unpack a arbitrary C++ container into a new py::Dict. */
-    template <typename T> requires (constructor1<T>)
+    template <typename T> requires (cpp_unpacking_constructor<T>)
     explicit Dict(const T& container) : Base(PyDict_New(), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -447,16 +475,6 @@ public:
         } catch (...) {
             Py_DECREF(m_ptr);
             throw;
-        }
-    }
-
-    /* Explicitly unpack an arbitrary Python container into a new py::Dict. */
-    template <typename T> requires (constructor2<T>)
-    explicit Dict(const T& contents) :
-        Base(PyObject_CallOneArg((PyObject*) &PyDict_Type, contents.ptr()), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            throw error_already_set();
         }
     }
 
@@ -862,11 +880,15 @@ public:
     template <typename T>
     static constexpr bool check() { return impl::mappingproxy_like<T>; }
 
+    BERTRAND_OBJECT_COMMON(Base, MappingProxy, mappingproxy_check)
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_COMMON(Base, MappingProxy, mappingproxy_check)
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    MappingProxy(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly construct a read-only view on an existing dictionary. */
     MappingProxy(const Dict& dict) : Base(PyDictProxy_New(dict.ptr()), stolen_t{}) {

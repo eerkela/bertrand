@@ -100,17 +100,24 @@ class List :
         }
     }
 
+    template <typename T>
+    static constexpr bool py_unpacking_constructor =
+        !impl::list_like<T> && impl::python_like<T> && impl::is_iterable<T>;
+    template <typename T>
+    static constexpr bool cpp_unpacking_constructor =
+        !impl::python_like<T> && impl::is_iterable<T>;
+
 public:
     static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::list_like<T>; }
 
+    BERTRAND_OBJECT_COMMON(Base, List, PyList_Check)
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
-
-    BERTRAND_OBJECT_COMMON(Base, List, PyList_Check)
 
     /* Default constructor.  Initializes to an empty list. */
     List() : Base(PyList_New(0), stolen_t{}) {
@@ -118,6 +125,10 @@ public:
             throw error_already_set();
         }
     }
+
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    List(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the contents of a braced initializer list into a new Python list. */
     List(const std::initializer_list<impl::Initializer>& contents) :
@@ -161,8 +172,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary Python container into a new py::List. */
-    template <typename T>
-        requires (impl::python_like<T> && !impl::list_like<T> && impl::is_iterable<T>)
+    template <typename T> requires (py_unpacking_constructor<T>)
     explicit List(const T& contents) :
         Base(PySequence_List(contents.ptr()), stolen_t{})
     {
@@ -172,7 +182,7 @@ public:
     }
 
     /* Explicitly unpack a generic C++ container into a new py::List. */
-    template <typename T> requires (!impl::python_like<T> && impl::is_iterable<T>)
+    template <typename T> requires (cpp_unpacking_constructor<T>)
     explicit List(const T& contents) {
         size_t size = 0;
         if constexpr (impl::has_size<T>) {

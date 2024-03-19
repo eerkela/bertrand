@@ -1,3 +1,4 @@
+#include <type_traits>
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
@@ -153,20 +154,24 @@ class Bool : public Object {
     using Base = Object;
 
     template <typename T>
-    static constexpr bool constructor1 = !impl::python_like<T> && impl::bool_like<T>;
+    static constexpr bool py_constructor = impl::bool_like<T> && impl::python_like<T>;
     template <typename T>
-    static constexpr bool constructor2 = 
-        !impl::python_like<T> && !impl::bool_like<T> &&
+    static constexpr bool cpp_constructor = impl::bool_like<T> && !impl::python_like<T>;
+    template <typename T>
+    static constexpr bool py_converting_constructor =
+        !impl::bool_like<T> && impl::python_like<T>;
+    template <typename T>
+    static constexpr bool cpp_converting_constructor =
+        !impl::bool_like<T> && !impl::python_like<T> &&
         impl::explicitly_convertible_to<T, bool>;
     template <typename T>
-    static constexpr bool constructor3 = impl::python_like<T> && !impl::bool_like<T>;
+    static constexpr bool container_empty_constructor =
+        !impl::bool_like<T> && !impl::explicitly_convertible_to<T, bool> &&
+        impl::has_empty<T>;
     template <typename T>
-    static constexpr bool constructor4 =
-        !constructor1<T> && !constructor2<T> && !constructor3<T> && impl::has_empty<T>;
-    template <typename T>
-    static constexpr bool constructor5 =
-        !constructor1<T> && !constructor2<T> && !constructor3<T> && !constructor4<T> &&
-        impl::has_size<T>;
+    static constexpr bool container_size_constructor =
+        !impl::bool_like<T> && !impl::explicitly_convertible_to<T, bool> &&
+        !impl::has_empty<T> && impl::has_size<T>;
 
 public:
     static Type type;
@@ -180,23 +185,19 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Copy/move constructors from equivalent pybind11 type. */
-    Bool(const pybind11::bool_& other) : Base(other.ptr(), borrowed_t{}) {}
-    Bool(pybind11::bool_&& other) : Base(other.release(), stolen_t{}) {}
-
     /* Default constructor.  Initializes to False. */
     Bool() : Base(Py_False, borrowed_t{}) {}
 
+    /* Copy/move constructors. */
+    template <typename T> requires (py_constructor<T>)
+    Bool(T&& other) : Base(std::forward<T>(other)) {}
+
     /* Implicitly convert C++ booleans into py::Bool. */
-    template <typename T> requires (constructor1<T>)
+    template <typename T> requires (cpp_constructor<T>)
     Bool(const T& value) : Base(value ? Py_True : Py_False, borrowed_t{}) {}
 
-    /* Trigger explicit conversion operators to bool. */
-    template <typename T> requires (constructor2<T>)
-    explicit Bool(const T& value) : Bool(static_cast<bool>(value)) {}
-
     /* Explicitly convert an arbitrary Python object into a boolean. */
-    template <typename T> requires (constructor3<T>)
+    template <typename T> requires (py_converting_constructor<T>)
     explicit Bool(const T& obj) {
         int result = PyObject_IsTrue(obj.ptr());
         if (result == -1) {
@@ -208,14 +209,18 @@ public:
         }
     }
 
+    /* Trigger explicit conversion operators to bool. */
+    template <typename T> requires (cpp_converting_constructor<T>)
+    explicit Bool(const T& value) : Bool(static_cast<bool>(value)) {}
+
     /* Explicitly convert any C++ object that implements a `.empty()` method into a
     py::Bool. */
-    template <typename T> requires (constructor4<T>)
+    template <typename T> requires (container_empty_constructor<T>)
     explicit Bool(const T& obj) : Bool(!obj.empty()) {}
 
     /* Explicitly convert any C++ object that implements a `.size()` method into a
     py::Bool. */
-    template <typename T> requires (constructor5<T>)
+    template <typename T> requires (container_size_constructor<T>)
     explicit Bool(const T& obj) : Bool(obj.size() > 0) {}
 
     /* Explicitly convert a std::tuple into a py::Bool. */

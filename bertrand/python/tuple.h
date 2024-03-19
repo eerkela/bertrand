@@ -90,13 +90,15 @@ class Tuple :
         }
     }
 
+
     template <typename T>
-    static constexpr bool constructor1 = impl::python_like<T> && impl::list_like<T>;
+    static constexpr bool py_list_constructor = impl::python_like<T> && impl::list_like<T>;
     template <typename T>
-    static constexpr bool constructor2 =
+    static constexpr bool py_unpacking_constructor =
         impl::python_like<T> && !impl::list_like<T> && impl::is_iterable<T>;
     template <typename T>
-    static constexpr bool constructor3 = !impl::python_like<T> && impl::is_iterable<T>;
+    static constexpr bool cpp_unpacking_constructor =
+        !impl::python_like<T> && impl::is_iterable<T>;
 
 public:
     static Type type;
@@ -104,11 +106,11 @@ public:
     template <typename T>
     static constexpr bool check() { return impl::tuple_like<T>; }
 
+    BERTRAND_OBJECT_COMMON(Base, Tuple, PyTuple_Check)
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
-
-    BERTRAND_OBJECT_COMMON(Base, Tuple, PyTuple_Check)
 
     /* Default constructor.  Initializes to empty tuple. */
     Tuple() : Base(PyTuple_New(0), stolen_t{}) {
@@ -116,6 +118,10 @@ public:
             throw error_already_set();
         }
     }
+
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    Tuple(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the contents of a braced initializer into a new Python tuple. */
     Tuple(const std::initializer_list<impl::Initializer>& contents) :
@@ -159,7 +165,7 @@ public:
     }
 
     /* Explicitly unpack a Python list into a py::Tuple directly using the C API. */
-    template <typename T> requires (constructor1<T>)
+    template <typename T> requires (py_list_constructor<T>)
     explicit Tuple(const T& list) : Base(PyList_AsTuple(list.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();
@@ -167,7 +173,7 @@ public:
     }
 
     /* Explicitly unpack a generic Python container into a py::Tuple. */
-    template <typename T> requires (constructor2<T>)
+    template <typename T> requires (py_unpacking_constructor<T>)
     explicit Tuple(const T& contents) :
         Base(PySequence_Tuple(contents.ptr()), stolen_t{})
     {
@@ -177,7 +183,7 @@ public:
     }
 
     /* Explicitly unpack a generic C++ container into a new py::Tuple. */
-    template <typename T> requires (constructor3<T>)
+    template <typename T> requires (cpp_unpacking_constructor<T>)
     explicit Tuple(const T& contents) {
         size_t size = 0;
         if constexpr (impl::has_size<T>) {

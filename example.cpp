@@ -73,6 +73,8 @@
 #include <chrono>
 #include <cstddef>
 #include <iostream>
+#include <string>
+#include <string_view>
 #include <vector>
 #include <unordered_set>
 #include <unordered_map>
@@ -84,22 +86,11 @@ namespace py = bertrand::py;
 using namespace py::literals;
 
 
-void func(const std::vector<int>& vec) {
-    py::print(vec);
-}
-
-
-
-template <py::impl::str_like T>
-void func2(const T& x) {
-    py::print(x);
-}
-
-
 
 void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
+
 
 
     // py::Function foo = R"(
@@ -110,17 +101,10 @@ void run() {
     // py::print(foo.defaults());
 
 
-    py::List list = {1, 2, 3, 4, 5};
-    py::Object x = 3;
-    x -= list[1];
-    py::print(x);
-    // py::print(2 < list[3]);  // TODO: this causes a runtime error
-
-
-
-
-
-
+    // std::vector<int> vec = {1, 2, 3, 4, 5};
+    // auto it = pybind11::make_iterator(vec);
+    // py::print(it);
+    // py::print(typeid(it).name());
 
 
 
@@ -130,6 +114,11 @@ void run() {
     // py::Datetime dt("December 7th, 1941 at 8:30 AM", "US/Pacific");  // TODO: this breaks
     // py::print(dt);
 
+
+    py::Dict d = {{"a", 1}, {"b", 2}, {"c", 3}};
+    for (py::Tuple x : d.items()) {
+        py::print(x);
+    }
 
 
 
@@ -478,6 +467,7 @@ void run() {
     std::cout << "Elapsed time: " << elapsed.count() << "s\n";
 }
 
+#include <pybind11/pybind11.h>
 
 PYBIND11_MODULE(example, m) {
     m.doc() = "pybind11 example plugin"; // optional module docstring

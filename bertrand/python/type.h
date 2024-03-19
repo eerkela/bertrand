@@ -145,14 +145,18 @@ public:
     template <typename T>
     static constexpr bool check() { return impl::type_like<T>; }
 
+    BERTRAND_OBJECT_COMMON(Base, Type, PyType_Check)
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_COMMON(Base, Type, PyType_Check)
-
     /* Default constructor.  Initializes to the built-in type metaclass. */
     Type() : Base((PyObject*) &PyType_Type, borrowed_t{}) {}
+
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    Type(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly detect the type of an arbitrary Python object. */
     template <impl::python_like T>
@@ -484,6 +488,10 @@ public:
             throw error_already_set();
         }
     }
+
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    Super(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicit constructor.  Equivalent to Python `super(type, self)` with 2
     arguments. */

@@ -1,4 +1,5 @@
 #include <cstddef>
+#include <iterator>
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
@@ -166,18 +167,22 @@ namespace detail = pybind11::detail;
 template <typename... Args>
 using Class = pybind11::class_<Args...>;
 using Handle = pybind11::handle;
-using Iterator = pybind11::iterator;  // TODO: specialize to yield the correct type.
 using WeakRef = pybind11::weakref;
 using Capsule = pybind11::capsule;
 using Buffer = pybind11::buffer;  // TODO: delete this and force users to use memoryview instead
 using MemoryView = pybind11::memoryview;  // TODO: place in buffer.h along with memoryview
 class Object;
+template <typename Deref>
+class Iterator;  // declare this in impl?
+class NoneType;
 class NotImplementedType;
+class EllipsisType;
+class Slice;
+class Module;
 class Bool;
 class Int;
 class Float;
 class Complex;
-class Slice;
 class Range;
 class List;
 class Tuple;
@@ -479,10 +484,10 @@ namespace impl {
         }
 
         template <typename T>
-        concept python_like = detail::is_pyobject<T>::value;
+        concept python_like = detail::is_pyobject<std::remove_cvref_t<T>>::value;
 
         template <typename T>
-        concept proxy_like = std::is_base_of_v<ProxyTag, T>;
+        concept proxy_like = std::is_base_of_v<ProxyTag, std::remove_cvref_t<T>>;
 
         template <typename T>
         concept accessor_like = requires(const T& t) {
@@ -498,24 +503,55 @@ namespace impl {
         };
 
         template <typename T>
+        concept iterator_like = requires(T it, T end) {
+            { *it } -> std::convertible_to<typename T::value_type>;
+            { ++it } -> std::same_as<T&>;
+            { it++ } -> std::same_as<T>;
+            { it == end } -> std::convertible_to<bool>;
+            { it != end } -> std::convertible_to<bool>;
+        };
+
+        template <typename T>
+        concept none_like = (
+            std::is_same_v<std::nullptr_t, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<py::NoneType, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<pybind11::none, std::remove_cvref_t<T>>
+        );
+
+        template <typename T>
+        concept slice_like = (
+            std::is_base_of_v<Slice, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<pybind11::slice, std::remove_cvref_t<T>>
+        );
+
+        template <typename T>
+        concept module_like = (
+            std::is_base_of_v<py::Module, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<pybind11::module, std::remove_cvref_t<T>>
+        );
+
+        template <typename T>
         concept bool_like = (
-            std::is_same_v<bool, T> ||
-            std::is_base_of_v<py::Bool, T> ||
-            std::is_base_of_v<pybind11::bool_, T>
+            std::is_same_v<bool, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<py::Bool, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<pybind11::bool_, std::remove_cvref_t<T>>
         );
 
         template <typename T>
         concept int_like = (
-            (std::is_integral_v<T> && !std::is_same_v<T, bool>) ||
-            std::is_base_of_v<Int, T> ||
-            std::is_base_of_v<pybind11::int_, T>
+            (
+                std::is_integral_v<std::remove_cvref_t<T>> &&
+                !std::is_same_v<bool, std::remove_cvref_t<T>>
+            ) ||
+            std::is_base_of_v<Int, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<pybind11::int_, std::remove_cvref_t<T>>
         );
 
         template <typename T>
         concept float_like = (
-            std::is_floating_point_v<T> ||
-            std::is_base_of_v<Float, T> ||
-            std::is_base_of_v<pybind11::float_, T>
+            std::is_floating_point_v<std::remove_cvref_t<T>> ||
+            std::is_base_of_v<Float, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<pybind11::float_, std::remove_cvref_t<T>>
         );
 
         template <typename T>
@@ -531,95 +567,91 @@ namespace impl {
 
         template <typename T>
         concept str_like = (
-            std::is_constructible_v<std::string, T> ||
-            std::is_constructible_v<std::string_view, T> ||
-            std::is_base_of_v<Str, T> ||
-            std::is_base_of_v<pybind11::str, T>
+            string_literal<std::remove_cvref_t<T>> ||
+            std::is_same_v<const char*, std::remove_cvref_t<T>> ||
+            std::is_same_v<std::string, std::remove_cvref_t<T>> ||
+            std::is_same_v<std::string_view, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<Str, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<pybind11::str, std::remove_cvref_t<T>>
         );
 
         template <typename T>
         concept bytes_like = (
-            string_literal<T> ||
-            std::is_same_v<std::remove_cvref_t<T>, void*> ||
-            std::is_base_of_v<Bytes, T> ||
-            std::is_base_of_v<pybind11::bytes, T>
+            string_literal<std::remove_cvref_t<T>> ||
+            std::is_same_v<void*, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<Bytes, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<pybind11::bytes, std::remove_cvref_t<T>>
         );
 
         template <typename T>
         concept bytearray_like = (
-            string_literal<T> ||
+            string_literal<std::remove_cvref_t<T>> ||
             std::is_same_v<std::remove_cvref_t<T>, void*> ||
-            std::is_base_of_v<ByteArray, T> ||
-            std::is_base_of_v<pybind11::bytearray, T>
+            std::is_base_of_v<ByteArray, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<pybind11::bytearray, std::remove_cvref_t<T>>
         );
 
         template <typename T>
         concept timedelta_like = (
-            categories::Traits<T>::timedeltalike ||
-            std::is_base_of_v<Timedelta, T>
+            categories::Traits<std::remove_cvref_t<T>>::timedeltalike ||
+            std::is_base_of_v<Timedelta, std::remove_cvref_t<T>>
         );
 
         template <typename T>
         concept timezone_like = (
-            categories::Traits<T>::timezonelike ||
-            std::is_base_of_v<Timezone, T>
+            categories::Traits<std::remove_cvref_t<T>>::timezonelike ||
+            std::is_base_of_v<Timezone, std::remove_cvref_t<T>>
         );
 
         template <typename T>
         concept date_like = (
-            categories::Traits<T>::datelike ||
-            std::is_base_of_v<Date, T>
+            categories::Traits<std::remove_cvref_t<T>>::datelike ||
+            std::is_base_of_v<Date, std::remove_cvref_t<T>>
         );
 
         template <typename T>
         concept time_like = (
-            categories::Traits<T>::timelike ||
-            std::is_base_of_v<Time, T>
+            categories::Traits<std::remove_cvref_t<T>>::timelike ||
+            std::is_base_of_v<Time, std::remove_cvref_t<T>>
         );
 
         template <typename T>
         concept datetime_like = (
-            categories::Traits<T>::datetimelike ||
-            std::is_base_of_v<Datetime, T>
-        );
-
-        template <typename T>
-        concept slice_like = (
-            std::is_base_of_v<Slice, T> ||
-            std::is_base_of_v<pybind11::slice, T>
+            categories::Traits<std::remove_cvref_t<T>>::datetimelike ||
+            std::is_base_of_v<Datetime, std::remove_cvref_t<T>>
         );
 
         template <typename T>
         concept range_like = (
-            std::is_base_of_v<Range, T>
+            std::is_base_of_v<Range, std::remove_cvref_t<T>>
         );
 
         template <typename T>
         concept tuple_like = (
-            categories::Traits<T>::tuplelike ||
-            std::is_base_of_v<Tuple, T> ||
-            std::is_base_of_v<pybind11::tuple, T>
+            categories::Traits<std::remove_cvref_t<T>>::tuplelike ||
+            std::is_base_of_v<Tuple, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<pybind11::tuple, std::remove_cvref_t<T>>
         );
 
         template <typename T>
         concept list_like = (
-            categories::Traits<T>::listlike ||
-            std::is_base_of_v<List, T> ||
-            std::is_base_of_v<pybind11::list, T>
+            categories::Traits<std::remove_cvref_t<T>>::listlike ||
+            std::is_base_of_v<List, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<pybind11::list, std::remove_cvref_t<T>>
         );
 
         template <typename T>
         concept set_like = (
-            categories::Traits<T>::setlike ||
-            std::is_base_of_v<Set, T> ||
-            std::is_base_of_v<pybind11::set, T>
+            categories::Traits<std::remove_cvref_t<T>>::setlike ||
+            std::is_base_of_v<Set, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<pybind11::set, std::remove_cvref_t<T>>
         );
 
         template <typename T>
         concept frozenset_like = (
-            categories::Traits<T>::setlike ||
-            std::is_base_of_v<FrozenSet, T> ||
-            std::is_base_of_v<pybind11::frozenset, T>
+            categories::Traits<std::remove_cvref_t<T>>::setlike ||
+            std::is_base_of_v<FrozenSet, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<pybind11::frozenset, std::remove_cvref_t<T>>
         );
 
         template <typename T>
@@ -627,15 +659,15 @@ namespace impl {
 
         template <typename T>
         concept dict_like = (
-            categories::Traits<T>::dictlike ||
-            std::is_base_of_v<Dict, T> ||
-            std::is_base_of_v<pybind11::dict, T>
+            categories::Traits<std::remove_cvref_t<T>>::dictlike ||
+            std::is_base_of_v<Dict, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<pybind11::dict, std::remove_cvref_t<T>>
         );
 
         template <typename T>
         concept mappingproxy_like = (
-            categories::Traits<T>::dictlike ||
-            std::is_base_of_v<MappingProxy, T>
+            categories::Traits<std::remove_cvref_t<T>>::dictlike ||
+            std::is_base_of_v<MappingProxy, std::remove_cvref_t<T>>
         );
 
         template <typename T>
@@ -643,8 +675,8 @@ namespace impl {
 
         template <typename T>
         concept type_like = (
-            std::is_base_of_v<Type, T> ||
-            std::is_base_of_v<pybind11::type, T>
+            std::is_base_of_v<Type, std::remove_cvref_t<T>> ||
+            std::is_base_of_v<pybind11::type, std::remove_cvref_t<T>>
         );
 
         template <typename From, typename To>
@@ -699,20 +731,6 @@ namespace impl {
         concept has_stream_insertion = requires(std::ostream& os, const T& t) {
             { os << t } -> std::convertible_to<std::ostream&>;
         };
-
-        // TODO: what happens if we remove is_std_iterator?
-
-        /* NOTE: reverse operators sometimes conflict with standard library iterators, so
-        we need some way of detecting them.  This is somewhat hacky, but it seems to
-        work. */
-        template <typename T, typename = void>
-        constexpr bool is_std_iterator = false;
-        template <typename T>
-        constexpr bool is_std_iterator<
-            T, std::void_t<decltype(
-                std::declval<typename std::iterator_traits<T>::iterator_category>()
-            )>
-        > = true;
 
         template <typename T>
         concept pybind11_iterable = requires(const T& t) {
@@ -883,6 +901,48 @@ namespace impl {
     }
     using namespace concepts;
 
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    /* By default, all generic operators are disabled for subclasses of py::Object.
+    * This means we have to specifically enable them for each type we want to support,
+    * which promotes explicitness and type safety by design.  The following structs
+    * allow users to easily assign static types to any of these operators, which will
+    * automatically be preferred when operands of those types are detected at compile
+    * time.  By using template specialization, we allow users to do this from outside
+    * the class itself, allowing the type system to grow as needed to cover any
+    * environment.  Here's an example:
+    *
+    *      template <>
+    *      struct py::impl::__add__<py::Bool, int> : py::impl::Returns<py::Int> {};
+    *
+    * It's that simple.  Now, whenever we call `py::Bool + int`, it will successfully
+    * compile and interpret the result as a strict `py::Int` type, eliminating runtime
+    * overhead and granting static type safety.  It is also possible to apply C++20
+    * template constraints to these types using an optional second template parameter,
+    * which allows users to enable or disable whole categories of types at once.
+    * Here's another example:
+    *
+    *      template <py::impl::int_like T>
+    *      struct py::impl::__add__<py::Bool, T> : py::impl::Returns<py::Int> {};
+    *
+    * As long as the constraint does not conflict with any other existing template
+    * overloads, this will compile and work as expected.  Note that specific overloads
+    * will always take precedence over generic ones, and any ambiguities between
+    * templates will result in compile errors when used.
+    *
+    * There are several benefits to this architecture.  First, it significantly reduces
+    * the number of runtime type checks that must be performed to ensure strict type
+    * safety, and promotes those checks to compile time instead, which is always
+    * preferable.  Second, it enables syntactically correct implicit conversions
+    * between C++ and Python types, which is a huge win for usability.  Third, it
+    * allows us to follow traditional Python naming conventions for its operator
+    * special methods, which makes it easier to remember and use them in practice.
+    * Finally, it disambiguates the internal behavior of these operators, reducing the
+    * number of gotchas and making the code more idiomatic and easier to reason about.
+    */
+
     template <typename T>
     struct __dereference__ { static constexpr bool enable = false; };  // TODO: rename to __unpack__?
     template <typename T, typename... Args>
@@ -890,9 +950,9 @@ namespace impl {
     template <typename T>
     struct __len__ { static constexpr bool enable = false; };
     template <typename T>
-    struct __iter__ { static constexpr bool enable = false; };
+    struct __iter__ { static constexpr bool enable = false; };  // TODO: template iterator on return type
     template <typename T>
-    struct __reversed__ { static constexpr bool enable = false; };
+    struct __reversed__ { static constexpr bool enable = false; };  // TODO: template iterator on return type
     template <typename T, typename Key>
     struct __contains__ { static constexpr bool enable = false; };
     template <typename T, typename Key>
@@ -973,6 +1033,10 @@ namespace impl {
         static constexpr bool enable = true;
         using Return = T;
     };
+
+
+    // TODO: require lvalue references for in-place operator return types.
+
 
     // TODO: unwrap proxies in call operator?
 
@@ -1838,38 +1902,37 @@ namespace impl {
         list = {5, 4, 3, 2, 1};
     */
     #define BERTRAND_OBJECT_COMMON(parent, cls, check_func)                             \
-        /* Overload check() for C++ values using template metaprogramming. */           \
+        /* Overload check() for runtime Python values using check_func. */              \
+        template <typename T> requires (impl::python_like<T>)                           \
+        static constexpr bool check(const T& obj) {                                     \
+            return obj.ptr() != nullptr && check_func(obj.ptr());                       \
+        }                                                                               \
+                                                                                        \
+        /* Overload check() for runtime C++ values using template metaprogramming. */   \
         template <typename T> requires (!impl::python_like<T>)                          \
         static constexpr bool check(const T&) {                                         \
             return check<T>();                                                          \
         }                                                                               \
                                                                                         \
-        /* Overload check() for Python objects using check_func. */                     \
-        template <typename T> requires(impl::python_like<T>)                            \
-        static constexpr bool check(const T& obj) {                                     \
-            return obj.ptr() != nullptr && check_func(obj.ptr());                       \
-        }                                                                               \
-                                                                                        \
-        /* For compatibility with pybind11, which expects these methods. */             \
-        template <typename T> requires (!impl::python_like<T>)                          \
-        static constexpr bool check_(const T& value) { return check(value); }           \
+        /* pybind11 expects check_ internally, but the idea is the same. */             \
         template <typename T> requires (impl::python_like<T>)                           \
         static constexpr bool check_(const T& value) { return check(value); }           \
+        template <typename T> requires (!impl::python_like<T>)                          \
+        static constexpr bool check_(const T& value) { return check(value); }           \
                                                                                         \
-        /* Inherit tagged borrow/steal and copy/move constructors. */                   \
+        /* Inherit tagged borrow/steal constructors. */                                 \
         cls(Handle h, const borrowed_t& t) : parent(h, t) {}                            \
         cls(Handle h, const stolen_t& t) : parent(h, t) {}                              \
-        cls(const cls& value) : parent(value) {}                                        \
-        cls(cls&& value) : parent(std::move(value)) {}                                  \
                                                                                         \
         /* Convert a pybind11 accessor into this type. */                               \
         template <typename Policy>                                                      \
-        cls(const detail::accessor<Policy> &a) {                                        \
+        cls(const detail::accessor<Policy>& a) {                                        \
             pybind11::object obj(a);                                                    \
-            if (!check(obj)) {                                                          \
+            if (obj.ptr() != nullptr && check_func(obj.ptr())) {                        \
+                m_ptr = obj.release().ptr();                                            \
+            } else {                                                                    \
                 throw impl::noconvert<cls>(obj.ptr());                                  \
             }                                                                           \
-            m_ptr = obj.release().ptr();                                                \
         }                                                                               \
                                                                                         \
         /* Trigger implicit conversions to this type via the assignment operator. */    \
@@ -2221,11 +2284,6 @@ private:
         return Base::operator()(std::forward<Args>(args)...);
     }
 
-    inline Iterator operator_begin_impl() const { return Base::begin(); }
-    inline Iterator operator_end_impl() const { return Base::end(); }
-    inline Iterator operator_rbegin_impl() const;
-    inline Iterator operator_rend_impl() const { return Iterator::sentinel(); }
-
     template <typename T>
     inline bool operator_contains_impl(const T& key) const {
         return Base::contains(key);
@@ -2251,24 +2309,16 @@ protected:
     ) -> impl::ItemAccessor<T, Slice>;
 
     template <typename Return, typename T>
-    inline static Iterator operator_begin(const T& obj) {
-        return obj.operator_begin_impl();
-    }
+    inline static Iterator<Return> operator_begin(const T& obj);
 
     template <typename Return, typename T>
-    inline static Iterator operator_end(const T& obj) {
-        return obj.operator_end_impl();
-    }
+    inline static Iterator<Return> operator_end(const T& obj);
 
     template <typename Return, typename T>
-    inline static Iterator operator_rbegin(const T& obj) {
-        return obj.operator_rbegin_impl();
-    }
+    inline static Iterator<Return> operator_rbegin(const T& obj);
 
     template <typename Return, typename T>
-    inline static Iterator operator_rend(const T& obj) {
-        return obj.operator_rend_impl();
-    }
+    inline static Iterator<Return> operator_rend(const T& obj);
 
     template <typename Return, typename L, typename R>
     inline static bool operator_contains(const L& lhs, const R& rhs) {
@@ -2700,18 +2750,6 @@ protected:
     }
 
 };
-
-
-// // TODO: Iterator
-
-// template <typename Return>
-// class Iterator : public Object {
-
-// public:
-
-//     Iterator
-
-// };
 
 
 namespace impl {
@@ -3615,6 +3653,159 @@ public:
 };
 
 
+/* A type-safe iterator class that dereferences to a known python type.   */
+template <typename Deref>
+class Iterator : public Object {
+    using Base = Object;
+    static_assert(
+        std::is_base_of_v<Object, Deref>,
+        "Iterator must dereference to a subclass of py::Object.  Check your "
+        "specialization of __iter__ for this type and ensure the Return type is "
+        "derived from py::Object."
+    );
+
+protected:
+    PyObject* curr;
+
+public:
+    using iterator_category         = std::input_iterator_tag;
+    using difference_type           = std::ptrdiff_t;
+    using value_type                = Deref;
+    using pointer                   = Deref*;
+    using reference                 = Deref&;
+
+    template <typename T>
+    static constexpr bool check() { return impl::iterator_like<T>; }
+
+    BERTRAND_OBJECT_COMMON(Base, Iterator, PyIter_Check)
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Default constructor.  Initializes to a sentinel iterator. */
+    Iterator() : curr(nullptr) {}
+
+    /* Copy/move constructor. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    Iterator(T&& other) : Base(other), curr(other.curr) {
+        if constexpr (std::is_rvalue_reference_v<T>) {
+            other.curr = nullptr;
+        } else {
+            Py_XINCREF(curr);
+        }
+    }
+
+    /* Construct a py::Iterator from separate begin() and end() C++ iterators. */
+    template <typename Iter, typename Sentinel> requires (std::sentinel_for<Sentinel, Iter>)
+    Iterator(Iter&& begin, Sentinel&& end) : Base(pybind11::make_iterator(begin, end)) {
+        curr = PyIter_Next(this->ptr());
+        if (curr == nullptr && PyErr_Occurred()) {
+            throw error_already_set();
+        }
+    }
+
+    // TODO: uncommenting the is_iterable check causes a template recursion error
+
+    /* Explicitly generate an iterator over an arbitrary python object. */
+    // template <typename T> requires (impl::python_like<T> && impl::is_iterable<T>)
+    template <typename T> requires (impl::python_like<T>)
+    explicit Iterator(const T& obj) : Base(PyObject_GetIter(obj.ptr()), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            throw error_already_set();
+        }
+        curr = PyIter_Next(this->ptr());
+        if (curr == nullptr && PyErr_Occurred()) {
+            throw error_already_set();
+        }
+    }
+
+    /* Explicitly generate an iterator over an arbitrary C++ object.  Does not work */
+    template <typename T> requires (!impl::python_like<T> && impl::is_iterable<T>)
+    explicit Iterator(T&& obj) : Base(pybind11::make_iterator(obj)) {
+        static_assert(
+            !std::is_rvalue_reference_v<T>,
+            "Creating an iterator over a temporary C++ object is unsafe.  Use an "
+            "lvalue instead."
+        );
+        curr = PyIter_Next(this->ptr());
+        if (curr == nullptr && PyErr_Occurred()) {
+            throw error_already_set();
+        }
+    }
+
+    /* Copy assignment operator. */
+    Iterator& operator=(const Iterator& other) {
+        if (&other != this) {
+            Base::operator=(other);
+            Py_XINCREF(other.curr);
+            PyObject* temp = curr;
+            curr = other.curr;
+            Py_XDECREF(temp);
+        }
+        return *this;
+    }
+
+    /* Move assignment operator. */
+    Iterator& operator=(Iterator&& other) {
+        if (&other != this) {
+            Base::operator=(std::move(other));
+            PyObject* temp = curr;
+            curr = other.curr;
+            other.curr = nullptr;
+            Py_XDECREF(temp);
+        }
+        return *this;
+    }
+
+    ~Iterator() {
+        Py_XDECREF(curr);
+    }
+
+    /////////////////////////////////
+    ////    ITERATOR PROTOCOL    ////
+    /////////////////////////////////
+
+    /* Get a generic sentinel value that marks the end of a range. */
+    inline static Iterator sentinel() {
+        return {};
+    }
+
+    inline Deref operator*() const {
+        return reinterpret_borrow<Deref>(curr);
+    }
+
+    inline Deref* operator->() const {
+        return &(**this);
+    }
+
+    inline Iterator& operator++() {
+        PyObject* temp = curr;
+        curr = PyIter_Next(this->ptr());
+        Py_XDECREF(temp);
+        if (curr == nullptr && PyErr_Occurred()) {
+            throw error_already_set();
+        }
+        return *this;
+    }
+
+    inline Iterator operator++(int) {
+        Iterator copy = *this;
+        ++(*this);
+        return copy;
+    }
+
+    inline bool operator==(const Iterator& other) const {
+        return curr == other.curr;
+    }
+
+    inline bool operator!=(const Iterator& other) const {
+        return curr != other.curr;
+    }
+
+};
+
+
 /* Object subclass that represents Python's global None singleton. */
 class NoneType : public Object {
     using Base = Object;
@@ -3622,8 +3813,18 @@ class NoneType : public Object {
 public:
     static Type type;
 
+    template <typename T>
+    static constexpr bool check() { return impl::none_like<T>; }
+
     BERTRAND_OBJECT_COMMON(Base, NoneType, Py_IsNone)
+
+    /* Default constructor.  Initializes to Python's global None singleton. */
     NoneType() : Base(Py_None, borrowed_t{}) {}
+
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    NoneType(T&& other) : Base(std::forward<T>(other)) {}
+
 };
 
 
@@ -3642,8 +3843,18 @@ class NotImplementedType : public Object {
 public:
     static Type type;
 
+    template <typename T>
+    static constexpr bool check() { return std::is_base_of_v<NotImplementedType, T>; }
+
     BERTRAND_OBJECT_COMMON(Base, NotImplementedType, check_not_implemented)
+
+    /* Default constructor.  Initializes to Python's global NotImplemented singleton. */
     NotImplementedType() : Base(Py_NotImplemented, borrowed_t{}) {}
+
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    NotImplementedType(T&& other) : Base(std::forward<T>(other)) {}
+
 };
 
 
@@ -3662,8 +3873,18 @@ class EllipsisType : public Object {
 public:
     static Type type;
 
+    template <typename T>
+    static constexpr bool check() { return std::is_base_of_v<EllipsisType, T>; }
+
     BERTRAND_OBJECT_COMMON(Base, EllipsisType, check_ellipsis)
+
+    /* Default constructor.  Initializes to Python's global Ellipsis singleton. */
     EllipsisType() : Base(Py_Ellipsis, borrowed_t{}) {}
+
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    EllipsisType(T&& other) : Base(std::forward<T>(other)) {}
+
 };
 
 
@@ -3775,6 +3996,10 @@ public:
             throw error_already_set();
         }
     }
+
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    Slice(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Initializer list constructor. */
     Slice(std::initializer_list<impl::SliceInitializer> indices) {
@@ -3897,14 +4122,21 @@ class Module : public Object {
 public:
     static Type type;
 
+    template <typename T>
+    static constexpr bool check() { return impl::module_like<T>; }
+
+    BERTRAND_OBJECT_COMMON(Base, Module, PyModule_Check)
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_COMMON(Base, Module, PyModule_Check)
-
     /* Default module constructor deleted for clarity. */
     Module() = delete;
+
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    Module(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create a new module object from a statically-allocated (but
     uninitialized) PyModuleDef struct. */
@@ -4050,9 +4282,46 @@ inline auto Object::operator_getitem(
 }
 
 
-inline Iterator Object::operator_rbegin_impl() const {
+// TODO: figure out a way to make this play nice with the new iterator type
+
+template <typename Return, typename T>
+inline Iterator<Return> Object::operator_begin(const T& obj) {
+    // PyObject* iter = PyObject_GetIter(obj.ptr());
+    // if (iter == nullptr) {
+    //     throw error_already_set();
+    // }
+    // auto result = reinterpret_steal<Iterator<Return>>(iter);
+    // ++result;  // prime the iterator
+    // return result;
+
+    // curr is protected
+    // result.curr = PyIter_Next(result.ptr());
+    // if (result.curr == nullptr && PyErr_Occurred()) {
+    //     throw error_already_set();
+    // }
+    // return result;
+
+    // causes a template recursion if impl::is_iterable<T> is true
+    return Iterator<Return>(obj);
+}
+
+
+template <typename Return, typename T>
+inline Iterator<Return> Object::operator_end(const T& obj) {
+    return Iterator<Return>();
+}
+
+
+template <typename Return, typename T>
+inline Iterator<Return> Object::operator_rbegin(const T& obj) {
     static const pybind11::str method = "__reversed__";
-    return reinterpret_steal<Iterator>(attr(method)().release());
+    return reinterpret_steal<Iterator<Return>>(obj.attr(method)().release());
+}
+
+
+template <typename Return, typename T>
+inline Iterator<Return> Object::operator_rend(const T& obj) {
+    return Iterator<Return>();
 }
 
 
@@ -4111,21 +4380,26 @@ inline Static<Module> import(const char* name) {
 }
 
 
-/* Equivalent to Python `iter(obj)` except that it can also accept C++ containers and
-generate Python iterators over them.  Note that C++ types as rvalues are not allowed,
-and will trigger a compiler error. */
-template <impl::is_iterable T>
-inline Iterator iter(T&& obj) {
-    if constexpr (impl::pybind11_iterable<std::decay_t<T>>) {
-        return pybind11::iter(obj);
-    } else {
-        static_assert(
-            !std::is_rvalue_reference_v<decltype(obj)>,
-            "passing an rvalue to py::iter() is unsafe"
-        );
-        return pybind11::make_iterator(obj.begin(), obj.end());
-    }
-}
+// TODO: iter() is more complicated after making iterators type-safe by default.  This
+// should always return a py::Iterator specialized to the type of the input, but doing
+// this is difficult because we need to know the dereference type at compile time.
+
+
+// /* Equivalent to Python `iter(obj)` except that it can also accept C++ containers and
+// generate Python iterators over them.  Note that C++ types as rvalues are not allowed,
+// and will trigger a compiler error. */
+// template <impl::is_iterable T>
+// inline Iterator iter(T&& obj) {
+//     if constexpr (impl::pybind11_iterable<std::decay_t<T>>) {
+//         return pybind11::iter(obj);
+//     } else {
+//         static_assert(
+//             !std::is_rvalue_reference_v<decltype(obj)>,
+//             "passing an rvalue to py::iter() is unsafe"
+//         );
+//         return pybind11::make_iterator(obj.begin(), obj.end());
+//     }
+// }
 
 
 /* Equivalent to Python `len(obj)`, but also accepts C++ types implementing a .size()
@@ -4196,12 +4470,20 @@ namespace std {                                                                 
     };                                                                                  \
 }                                                                                       \
 
+namespace std {
+    template <typename T>
+    struct hash<bertrand::py::Iterator<T>> {
+        size_t operator()(const bertrand::py::Iterator<T>& obj) const {
+            return pybind11::hash(obj);
+        }
+    };
+}
+
 
 BERTRAND_STD_HASH(bertrand::py::Buffer)
 BERTRAND_STD_HASH(bertrand::py::Capsule)
 BERTRAND_STD_HASH(bertrand::py::EllipsisType)
 BERTRAND_STD_HASH(bertrand::py::Handle)
-BERTRAND_STD_HASH(bertrand::py::Iterator)
 BERTRAND_STD_HASH(bertrand::py::MemoryView)
 BERTRAND_STD_HASH(bertrand::py::Module)
 BERTRAND_STD_HASH(bertrand::py::NoneType)
@@ -4222,7 +4504,6 @@ namespace std {                                                                 
 
 
 BERTRAND_STD_EQUAL_TO(bertrand::py::Handle)
-BERTRAND_STD_EQUAL_TO(bertrand::py::Iterator)
 BERTRAND_STD_EQUAL_TO(bertrand::py::WeakRef)
 BERTRAND_STD_EQUAL_TO(bertrand::py::Capsule)
 BERTRAND_STD_EQUAL_TO(bertrand::py::Buffer)

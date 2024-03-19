@@ -12,7 +12,6 @@
 #include "tuple.h"
 #include "set.h"
 #include "dict.h"
-#include "func.h"
 
 
 namespace bertrand {
@@ -463,6 +462,10 @@ namespace impl {
 class Bytes : public impl::IBytes<Bytes>, public impl::SequenceOps<Bytes> {
     using Base = impl::IBytes<Bytes>;
 
+    template <typename T>
+    static constexpr bool py_constructor =
+        impl::bytes_like<T> && impl::python_like<T>;
+
 public:
     static Type type;
 
@@ -484,6 +487,10 @@ public:
             throw error_already_set();
         }
     }
+
+    /* Copy/move constructors. */
+    template <typename T> requires (py_constructor<T>)
+    Bytes(T&& obj) : Base(std::forward<T>(obj)) {}
 
     /* Implicitly convert a string literal into a py::Bytes object.  Note that this
     interprets the string as raw binary data rather than text, and it automatically
@@ -589,6 +596,10 @@ protected:
 class ByteArray : public impl::IBytes<ByteArray>, public impl::SequenceOps<ByteArray> {
     using Base = impl::IBytes<ByteArray>;
 
+    template <typename T>
+    static constexpr bool py_constructor =
+        impl::bytearray_like<T> && impl::python_like<T>;
+
 public:
     static Type type;
 
@@ -610,6 +621,10 @@ public:
             throw error_already_set();
         }
     }
+
+    /* Copy/move constructors. */
+    template <typename T> requires (py_constructor<T>)
+    ByteArray(T&& obj) : Base(std::forward<T>(obj)) {}
 
     /* Implicitly convert a string literal into a py::ByteArray object.  Note that this
     interprets the string as raw binary data rather than text, and it automatically
@@ -709,12 +724,6 @@ protected:
 inline Bytes Str::encode(const Str& encoding, const Str& errors) const {
     static const pybind11::str method = "encode";
     return reinterpret_steal<Bytes>(attr(method)(encoding, errors).release());
-}
-
-
-inline Bytes Code::bytecode() const {
-    static const pybind11::str code = "co_code";
-    return attr(code);
 }
 
 

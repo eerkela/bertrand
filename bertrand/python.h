@@ -115,42 +115,6 @@ inline Type Property::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*
 // }();
 
 
-//////////////////////////////
-////    CALL OPERATORS    ////
-//////////////////////////////
-
-
-/* Bertrand objects offer a smoother call interface than pybind11, and can convert from
- * a wider variety of types, including C++ function pointers, lambdas, etc.
- */
-
-
-namespace impl {
-
-    template <typename T>
-    auto interpret_arg(T&& arg) {
-        if constexpr (is_callable_any<std::decay_t<T>>) {
-            return Function(std::forward<T>(arg));
-        } else {
-            return std::forward<T>(arg);
-        }
-    }
-
-}
-
-
-template <typename Return, typename T, typename... Args>
-inline Return Object::operator_call(const T& obj, Args&&... args) {
-    if constexpr (std::is_void_v<Return>) {
-        obj.operator_call_impl(impl::interpret_arg(std::forward<Args>(args))...);
-    } else {
-        return reinterpret_steal<Return>(obj.operator_call_impl(
-            impl::interpret_arg(std::forward<Args>(args))...
-        ).release());
-    }
-}
-
-
 ////////////////////////////
 ////    CONSTRUCTORS    ////
 ////////////////////////////
@@ -202,80 +166,42 @@ inline Type::Type(const Str& name, const Tuple& bases, const Dict& dict) {
 ////////////////////////////////
 
 
-inline void List::sort(const Function& key, const Bool& reverse) {
-    this->attr("sort")(py::arg("key") = key, py::arg("reverse") = reverse);
+namespace impl {
+
+    template <typename T>
+    auto interpret_arg(T&& arg) {
+        if constexpr (is_callable_any<std::decay_t<T>>) {
+            return Function(std::forward<T>(arg));
+        } else {
+            return std::forward<T>(arg);
+        }
+    }
+
 }
 
 
-/////////////////////////
-////    OPERATORS    ////
-/////////////////////////
+template <typename Return, typename T, typename... Args>
+inline Return Object::operator_call(const T& obj, Args&&... args) {
+    if constexpr (std::is_void_v<Return>) {
+        obj.operator_call_impl(impl::interpret_arg(std::forward<Args>(args))...);
+    } else {
+        return reinterpret_steal<Return>(obj.operator_call_impl(
+            impl::interpret_arg(std::forward<Args>(args))...
+        ).release());
+    }
+}
 
 
-// TODO: update with C++20 concepts rather than std::enable_if_t
+inline void List::sort(const Function& key, const Bool& reverse) {
+    static const Str s_sort = "sort";
+    attr(s_sort)(py::arg("key") = key, py::arg("reverse") = reverse);
+}
 
 
-/* By default, all generic operators are disabled for strict subclasses of
- * py::Object.  This means we have to specifically enable them for each type we
- * want to support, which promotes explicitness and type safety by design.  The
- * following structs allow users to easily assign static types to any of these
- * operators, which will automatically be preferred when operands of those
- * types are detected at compile time.  By using template specialization, we
- * allow users to do this from outside the class itself, allowing the type
- * system to grow as needed to cover any environment.  Here's an example:
- *
- *      template <>
- *      struct py::Bool::template __add__<int> {
- *          static constexpr bool enable = true;
- *          using Return = py::Int;
- *      };
- *
- * It's that simple.  Now, whenever we call `py::Bool + int`, it will
- * successfully compile and interpret the result as a strict `py::Int` type,
- * eliminating runtime overhead and granting static type safety.  It is also
- * possible to apply template constraints to these types using an optional
- * second template parameter, which allows users to enable or disable whole
- * categories of types at once.  Here's another example:
- *
- *      template <typename T>
- *      struct py::Bool::template __add__<
- *          T, std::enable_if_t<py::impl::bool_like<T>>
- *      > {
- *          static constexpr bool enable = true;
- *          using Return = py::Int;
- *      };
- *
- * As long as the constraint does not conflict with any other existing
- * template overloads, this will compile and work as expected.  Note that
- * specific overloads will always take precedence over generic ones, and any
- * ambiguities between templates will result in compile errors.
- *
- * There are several benefits to this architecture.  First, it significantly
- * reduces the number of runtime type checks that must be performed to ensure
- * strict type safety, and promotes those checks to compile time instead, which
- * is always preferable.  Second, it enables syntactically correct implicit
- * conversions between C++ and Python types, which is a huge win for usability.
- * Third, it allows us to follow traditional Python naming conventions for its
- * operator special methods, which makes it easier to remember and use them in
- * practice.  Finally, it disambiguates the internal behavior of these
- * operators, reducing the number of gotchas and making the code more idiomatic
- * and easier to reason about.
- */
-
-
-
-
-// DEFINE_TYPED_UNARY_OPERATOR(Bool, operator~, Int)
-// DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, bool_like, Int)
-// DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, int_like, Int)
-// DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, float_like, Float)
-// DEFINE_TYPED_BINARY_OPERATOR(Bool, operator+, complex_like, Complex)
-
-
-// #undef DECLARE_TYPED_UNARY_OPERATOR
-// #undef DECLARE_TYPED_BINARY_OPERATOR
-// #undef DEFINE_TYPED_UNARY_OPERATOR
-// #undef DEFINE_TYPED_BINARY_OPERATOR
+inline Bytes Code::bytecode() const {
+    static const pybind11::str code = "co_code";
+    return attr(code);
+}
 
 
 ////////////////////////////////
@@ -345,7 +271,8 @@ inline Dict builtins() {
 
 /* Equivalent to Python `aiter(obj)`. */
 inline Object aiter(const Handle& obj) {
-    return builtins()["aiter"](obj);
+    static const Str s_aiter = "aiter";
+    return builtins()[s_aiter](obj);
 }
 
 
@@ -361,14 +288,16 @@ inline bool all(const T& obj) {
 
 /* Equivalent to Python `anext(obj)`. */
 inline Object anext(const Handle& obj) {
-    return builtins()["anext"](obj);
+    static const Str s_anext = "anext";
+    return builtins()[s_anext](obj);
 }
 
 
 /* Equivalent to Python `anext(obj, default)`. */
 template <typename T>
 inline Object anext(const Handle& obj, const T& default_value) {
-    return builtins()["anext"](obj, default_value);
+    static const Str s_anext = "anext";
+    return builtins()[s_anext](obj, default_value);
 }
 
 
@@ -569,30 +498,32 @@ inline Dict locals() {
 }
 
 
-/* Equivalent to Python `next(obj)`. */
-inline Object next(const Iterator& iter) {
-    PyObject* result = PyIter_Next(iter.ptr());
-    if (result == nullptr) {
-        if (PyErr_Occurred()) {
-            throw error_already_set();
-        }
-        throw StopIteration();
-    }
-    return reinterpret_steal<Object>(result);
-}
+// TODO: these are also complicated by the typed iterator refactor
+
+// /* Equivalent to Python `next(obj)`. */
+// inline Object next(const Iterator& iter) {
+//     PyObject* result = PyIter_Next(iter.ptr());
+//     if (result == nullptr) {
+//         if (PyErr_Occurred()) {
+//             throw error_already_set();
+//         }
+//         throw StopIteration();
+//     }
+//     return reinterpret_steal<Object>(result);
+// }
 
 
-/* Equivalent to Python `next(obj, default)`. */
-inline Object next(const Iterator& iter, const Object& default_value) {
-    PyObject* result = PyIter_Next(iter.ptr());
-    if (result == nullptr) {
-        if (PyErr_Occurred()) {
-            throw error_already_set();
-        }
-        return default_value;
-    }
-    return reinterpret_steal<Object>(result);
-}
+// /* Equivalent to Python `next(obj, default)`. */
+// inline Object next(const Iterator& iter, const Object& default_value) {
+//     PyObject* result = PyIter_Next(iter.ptr());
+//     if (result == nullptr) {
+//         if (PyErr_Occurred()) {
+//             throw error_already_set();
+//         }
+//         return default_value;
+//     }
+//     return reinterpret_steal<Object>(result);
+// }
 
 
 /* Equivalent to Python `max(obj)`, but also works on iterable C++ containers. */
@@ -669,35 +600,52 @@ inline void print(const Args&... args) {
 }
 
 
-/* Equivalent to Python `reversed(obj)` except that it can also accept C++ containers
-and generate Python iterators over them.  Note that C++ types as rvalues are not
-allowed, and will trigger a compile-time error. */
-template <typename T>
-inline Iterator reversed(T&& obj) {
-    if constexpr (impl::python_like<std::decay_t<T>>) {
-        return obj.attr("__reversed__")();
-    } else {
-        static_assert(
-            !std::is_rvalue_reference_v<decltype(obj)>,
-            "passing an rvalue to py::reversed() is unsafe"
-        );
-        return pybind11::make_iterator(obj.rbegin(), obj.rend());
-    }
-}
+// TODO: these are also complicated by the typed iterator refactor
 
 
-/* Specialization of `reversed()` for Tuple and List objects that use direct array
-access rather than going through the Python API. */
-template <typename T, std::enable_if_t<impl::is_reverse_iterable<T>, int> = 0>
-inline Iterator reversed(const T& obj) {
-    using Iter = typename T::ReverseIterator;
-    return pybind11::make_iterator(Iter(obj.data(), obj.size() - 1), Iter(-1));
-}
+// /* Equivalent to Python `reversed(obj)` except that it can also accept C++ containers
+// and generate Python iterators over them.  Note that C++ types as rvalues are not
+// allowed, and will trigger a compile-time error. */
+// template <typename T>
+// inline Iterator reversed(T&& obj) {
+//     if constexpr (impl::python_like<std::decay_t<T>>) {
+//         static const Str s_reversed = "reversed";
+//         return obj.attr(s_reversed)();
+//     } else {
+//         static_assert(
+//             !std::is_rvalue_reference_v<decltype(obj)>,
+//             "passing an rvalue to py::reversed() is unsafe"
+//         );
+//         return pybind11::make_iterator(obj.rbegin(), obj.rend());
+//     }
+// }
+
+
+// /* Specialization of `reversed()` for Tuple and List objects that use direct array
+// access rather than going through the Python API. */
+// template <typename T, std::enable_if_t<impl::is_reverse_iterable<T>, int> = 0>
+// inline Iterator reversed(const T& obj) {
+//     using Iter = typename T::ReverseIterator;
+//     return pybind11::make_iterator(Iter(obj.data(), obj.size() - 1), Iter(-1));
+// }
 
 
 /* Equivalent to Python `sorted(obj)`. */
 inline List sorted(const Handle& obj) {
-    return builtins()["sorted"](obj);
+    static const Str s_sorted = "sorted";
+    return builtins()[s_sorted](obj);
+}
+
+
+/* Equivalent to Python `sorted(obj, key=key, reverse=reverse)`. */
+template <typename Func>
+inline List sorted(const Handle& obj, const Function& key, bool reverse = false) {
+    static const Str s_sorted = "sorted";
+    return builtins()[s_sorted](
+        obj,
+        py::arg("key") = key,
+        py::arg("reverse") = reverse
+    );
 }
 
 
@@ -705,17 +653,6 @@ inline List sorted(const Handle& obj) {
 template <typename T>
 inline auto sum(const T& obj) {
     return std::accumulate(obj.begin(), obj.end(), T{});
-}
-
-
-/* Equivalent to Python `sorted(obj, key=key, reverse=reverse)`. */
-template <typename Func>
-inline List sorted(const Handle& obj, const Function& key, bool reverse = false) {
-    return builtins()["sorted"](
-        obj,
-        py::arg("key") = key,
-        py::arg("reverse") = reverse
-    );
 }
 
 
@@ -727,7 +664,8 @@ inline Dict vars() {
 
 /* Equivalent to Python `vars(object)`. */
 inline Dict vars(const Handle& object) {
-    return object.attr("__dict__");
+    static const Str s_vars = "vars";
+    return object.attr(s_vars);
 }
 
 

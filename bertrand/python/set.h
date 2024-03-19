@@ -459,10 +459,11 @@ class FrozenSet : public impl::ISet<FrozenSet> {
     }
 
     template <typename T>
-    static constexpr bool constructor1 =
+    static constexpr bool py_unpacking_constructor =
         impl::python_like<T> && !impl::frozenset_like<T> && impl::is_iterable<T>;
     template <typename T>
-    static constexpr bool constructor2 = !impl::python_like<T> && impl::is_iterable<T>;
+    static constexpr bool cpp_unpacking_constructor =
+        !impl::python_like<T> && impl::is_iterable<T>;
 
 public:
     static Type type;
@@ -470,11 +471,11 @@ public:
     template <typename T>
     static constexpr bool check() { return impl::frozenset_like<T>; }
 
+    BERTRAND_OBJECT_COMMON(Base, FrozenSet, PyFrozenSet_Check)
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
-
-    BERTRAND_OBJECT_COMMON(Base, FrozenSet, PyFrozenSet_Check)
 
     /* Default constructor.  Initializes to an empty set. */
     FrozenSet() : Base(PyFrozenSet_New(nullptr), stolen_t{}) {
@@ -482,6 +483,10 @@ public:
             throw error_already_set();
         }
     }
+
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    FrozenSet(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the contents of a braced initializer list into a new Python frozenset. */
     FrozenSet(const std::initializer_list<impl::HashInitializer>& contents) :
@@ -503,7 +508,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary Python container into a new py::FrozenSet. */
-    template <typename T> requires (constructor1<T>)
+    template <typename T> requires (py_unpacking_constructor<T>)
     explicit FrozenSet(const T& contents) :
         Base(PyFrozenSet_New(contents.ptr()), stolen_t{})
     {
@@ -513,7 +518,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary C++ container into a new py::FrozenSet. */
-    template <typename T> requires (constructor2<T>)
+    template <typename T> requires (cpp_unpacking_constructor<T>)
     explicit FrozenSet(const T& container) {
         m_ptr = PyFrozenSet_New(nullptr);
         if (m_ptr == nullptr) {
@@ -610,10 +615,11 @@ class Set : public impl::ISet<Set> {
     }
 
     template <typename T>
-    static constexpr bool constructor1 =
+    static constexpr bool py_unpacking_constructor =
         impl::python_like<T> && !impl::set_like<T> && impl::is_iterable<T>;
     template <typename T>
-    static constexpr bool constructor2 = !impl::python_like<T> && impl::is_iterable<T>;
+    static constexpr bool cpp_unpacking_constructor =
+        !impl::python_like<T> && impl::is_iterable<T>;
 
 public:
     static Type type;
@@ -621,11 +627,11 @@ public:
     template <typename T>
     static constexpr bool check() { return impl::set_like<T>; }
 
+    BERTRAND_OBJECT_COMMON(Base, Set, PySet_Check);
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
-
-    BERTRAND_OBJECT_COMMON(Base, Set, PySet_Check);
 
     /* Default constructor.  Initializes to an empty set. */
     Set() : Base(PySet_New(nullptr), stolen_t{}) {
@@ -633,6 +639,10 @@ public:
             throw error_already_set();
         }
     }
+
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    Set(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the contents of a braced initializer list into a new Python set. */
     Set(const std::initializer_list<impl::HashInitializer>& contents) :
@@ -654,7 +664,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary Python container into a new py::Set. */
-    template <typename T> requires (constructor1<T>)
+    template <typename T> requires (py_unpacking_constructor<T>)
     explicit Set(const T& contents) :
         Base(PySet_New(contents.ptr()), stolen_t{})
     {
@@ -664,7 +674,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary C++ container into a new py::Set. */
-    template <typename T> requires (constructor2<T>)
+    template <typename T> requires (cpp_unpacking_constructor<T>)
     explicit Set(const T& contents) : Base(PySet_New(nullptr), stolen_t{}) {
         if (m_ptr == nullptr) {
             throw error_already_set();

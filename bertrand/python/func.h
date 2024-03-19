@@ -235,6 +235,10 @@ public:
     without an implementation. */
     Code() = delete;
 
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    Code(T&& other) : Base(std::forward<T>(other)) {}
+
     /* Parse and compile a source string into a Python code object. */
     explicit Code(const char* source) : Base(compile(source), stolen_t{}) {}
 
@@ -402,6 +406,10 @@ public:
         }
     }
 
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    Frame(T&& other) : Base(std::forward<T>(other)) {}
+
     /* Skip backward a number of frames on construction. */
     explicit Frame(size_t skip) :
         Base(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{})
@@ -556,6 +564,10 @@ public:
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Function() = delete;
+
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    Function(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Implicitly convert a C++ function or callable object into a py::Function. */
     template <typename T>
@@ -792,6 +804,10 @@ public:
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Method() = delete;
 
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    Method(T&& other) : Base(std::forward<T>(other)) {}
+
     /* Wrap an existing Python function as a method descriptor. */
     Method(const Function& func) : Base(PyInstanceMethod_New(func.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
@@ -838,6 +854,10 @@ public:
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     ClassMethod() = delete;
 
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    ClassMethod(T&& other) : Base(std::forward<T>(other)) {}
+
     /* Wrap an existing Python function as a classmethod descriptor. */
     ClassMethod(Function func) : Base(PyClassMethod_New(func.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
@@ -881,6 +901,10 @@ public:
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     StaticMethod() = delete;
 
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    StaticMethod(T&& other) : Base(std::forward<T>(other)) {}
+
     /* Wrap an existing Python function as a staticmethod descriptor. */
     StaticMethod(Function func) : Base(PyStaticMethod_New(func.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
@@ -920,6 +944,10 @@ public:
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Property() = delete;
+
+    /* Copy/move constructors. */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    Property(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Wrap an existing Python function as a getter in a property descriptor. */
     Property(const Function& getter) :
