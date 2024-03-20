@@ -592,6 +592,12 @@ namespace impl {
 }
 
 
+// TODO: py::print() does not respect unpacking operator like pybind11::print does.
+// -> only way to get around this is to reimplement print() from scratch.  The same
+// might be true of the call operator as well.  Unpacking operator is generally
+// difficult to replicate consistently in C++.
+
+
 /* Equivalent to Python `print(args...)`, except that it can take arbitrary C++ objects
 using the py::Str constructor. */
 template <typename... Args>

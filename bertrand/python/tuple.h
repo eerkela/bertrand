@@ -12,10 +12,11 @@ namespace bertrand {
 namespace py {
 
 
+// TODO: write an optimized iterator for tuples using PyTuple_GET_ITEM()
+
+
 namespace impl {
 
-template <>
-struct __dereference__<Tuple>                                   : Returns<detail::args_proxy> {};
 template <>
 struct __len__<Tuple>                                           : Returns<size_t> {};
 template <>
@@ -66,11 +67,7 @@ struct __imul__<Tuple, T>                                       : Returns<Tuple&
 
 /* Wrapper around pybind11::tuple that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
-class Tuple :
-    public Object,
-    public impl::SequenceOps<Tuple>,
-    public impl::ReverseIterable<Tuple>
-{
+class Tuple : public Object, public impl::SequenceOps<Tuple> {
     using Base = Object;
 
     template <typename T>
@@ -312,16 +309,6 @@ public:
         return result;
     }
 
-    /* Get the size of the tuple. */
-    inline size_t size() const noexcept {
-        return PyTuple_GET_SIZE(this->ptr());
-    }
-
-    /* Check if the tuple is empty. */
-    inline bool empty() const noexcept {
-        return size() == 0;
-    }
-
     /* Get the underlying PyObject* array. */
     inline PyObject** data() const noexcept {
         return PySequence_Fast_ITEMS(this->ptr());
@@ -346,14 +333,6 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    inline detail::tuple_iterator begin() const {
-        return {*this, 0};
-    }
-
-    inline detail::tuple_iterator end() const {
-        return {*this, PyTuple_GET_SIZE(this->ptr())};
-    }
-
     inline Tuple operator+(const std::initializer_list<impl::Initializer>& items) const {
         return concat(items);
     }
@@ -376,6 +355,11 @@ protected:
     using impl::SequenceOps<Tuple>::operator_iadd;
     using impl::SequenceOps<Tuple>::operator_mul;
     using impl::SequenceOps<Tuple>::operator_imul;
+
+    template <typename Return, typename T>
+    inline static size_t operator_len(const T& self) {
+        return PyTuple_GET_SIZE(self.ptr());
+    }
 
     inline Tuple concat(const std::initializer_list<impl::Initializer>& items) const {
         PyObject* result = PyTuple_New(size() + items.size());
@@ -402,6 +386,34 @@ protected:
             Py_DECREF(result);
             throw;
         }
+    }
+
+    template <typename Return, typename T>
+    inline static auto operator_begin(const T& obj)
+        -> impl::Iterator<impl::TupleIter<Return>>
+    {
+        return {obj, 0};
+    }
+
+    template <typename Return, typename T>
+    inline static auto operator_end(const T& obj)
+        -> impl::Iterator<impl::TupleIter<Return>>
+    {
+        return {PyTuple_GET_SIZE(obj.ptr())};
+    }
+
+    template <typename Return, typename T>
+    inline static auto operator_rbegin(const T& obj)
+        -> impl::ReverseIterator<impl::TupleIter<Return>>
+    {
+        return {obj, PyTuple_GET_SIZE(obj.ptr()) - 1};
+    }
+
+    template <typename Return, typename T>
+    inline static auto operator_rend(const T& obj)
+        -> impl::ReverseIterator<impl::TupleIter<Return>>
+    {
+        return {-1};
     }
 
 };

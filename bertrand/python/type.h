@@ -23,8 +23,6 @@ struct __getitem__<Type, T>                                     : Returns<Object
 template <typename T>
 struct __or__<Type, T>                                          : Returns<Object> {};
 
-template <>
-struct __dereference__<Super>                               : Returns<detail::args_proxy> {};
 template <typename ... Args>
 struct __call__<Super, Args...>                             : Returns<Object> {};
 template <>

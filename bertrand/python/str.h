@@ -39,8 +39,6 @@ namespace py {
 namespace impl {
 
 template <>
-struct __dereference__<Str>                                     : Returns<detail::args_proxy> {};
-template <>
 struct __len__<Str>                                             : Returns<size_t> {};
 template <>
 struct __iter__<Str>                                            : Returns<Str> {};
@@ -317,16 +315,6 @@ public:
     /* Get the underlying unicode buffer. */
     inline void* data() const noexcept {
         return PyUnicode_DATA(this->ptr());
-    }
-
-    /* Get the length of the string in unicode code points. */
-    inline size_t size() const noexcept {
-        return static_cast<size_t>(PyUnicode_GET_LENGTH(this->ptr()));
-    }
-
-    /* Check if the string is empty. */
-    inline bool empty() const noexcept {
-        return size() == 0;
     }
 
     /* Get the kind of the string, indicating the size of the unicode points stored
@@ -887,19 +875,27 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    /* Equivalent to Python `sub in str`. */
-    inline bool contains(const Str& sub) const {
-        int result = PyUnicode_Contains(this->ptr(), sub.ptr());
+protected:
+
+    using impl::SequenceOps<Str>::operator_mul;
+    using impl::SequenceOps<Str>::operator_imul;
+
+    template <typename Return, typename T>
+    inline static size_t operator_len(const T& self) {
+        return static_cast<size_t>(PyUnicode_GET_LENGTH(self.ptr()));
+    }
+
+    template <typename Return, typename L, typename R>
+    inline static bool operator_contains(const L& self, const R& key) {
+        int result = PyUnicode_Contains(
+            self.ptr(),
+            detail::object_or_cast(key).ptr()
+        );
         if (result == -1) {
             throw error_already_set();
         }
         return result;
     }
-
-protected:
-
-    using impl::SequenceOps<Str>::operator_mul;
-    using impl::SequenceOps<Str>::operator_imul;
 
     template <typename Return, typename L, typename R>
     inline static auto operator_add(const L& lhs, const R& rhs) {

@@ -16,8 +16,6 @@ namespace py {
 namespace impl {
 
 template <>
-struct __dereference__<KeysView>                            : Returns<detail::args_proxy> {};
-template <>
 struct __len__<KeysView>                                    : Returns<size_t> {};
 template <>
 struct __iter__<KeysView>                                   : Returns<Object> {};
@@ -75,8 +73,6 @@ template <anyset_like T>
 struct __xor__<KeysView, T>                                 : Returns<Set> {};
 
 template <>
-struct __dereference__<ValuesView>                          : Returns<detail::args_proxy> {};
-template <>
 struct __len__<ValuesView>                                  : Returns<size_t> {};
 template <>
 struct __iter__<ValuesView>                                 : Returns<Object> {};
@@ -86,18 +82,14 @@ template <typename T>
 struct __contains__<ValuesView, T>                          : Returns<bool> {};
 
 template <>
-struct __dereference__<ItemsView>                           : Returns<detail::args_proxy> {};
-template <>
 struct __len__<ItemsView>                                   : Returns<size_t> {};
 template <>
 struct __iter__<ItemsView>                                  : Returns<Tuple> {};
 template <>
 struct __reversed__<ItemsView>                              : Returns<Tuple> {};
-template <typename First, typename Second>
-struct __contains__<ItemsView, std::pair<First, Second>>    : Returns<bool> {};
+template <impl::tuple_like T>
+struct __contains__<ItemsView, T>                           : Returns<bool> {};
 
-template <>
-struct __dereference__<Dict>                                : Returns<detail::args_proxy> {};
 template <>
 struct __len__<Dict>                                        : Returns<size_t> {};
 template <>
@@ -121,8 +113,6 @@ struct __ior__<Dict, Object>                                : Returns<Dict> {};
 template <dict_like T>
 struct __ior__<Dict, T>                                     : Returns<Dict> {};
 
-template <>
-struct __dereference__<MappingProxy>                        : Returns<detail::args_proxy> {};
 template <>
 struct __len__<MappingProxy>                                : Returns<size_t> {};
 template <>
@@ -181,16 +171,6 @@ public:
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
-    /* Get the number of keys. */
-    inline size_t size() const noexcept {
-        return static_cast<size_t>(PyObject_Length(this->ptr()));
-    }
-
-    /* Check if the keys are empty. */
-    inline bool empty() const noexcept {
-        return size() == 0;
-    }
-
     /* Equivalent to Python `dict.keys().mapping`. */
     inline MappingProxy mapping() const;
 
@@ -212,16 +192,6 @@ public:
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
-
-    /* Equivalent to `key in dict.keys()`. */
-    template <impl::is_hashable K>
-    inline bool contains(const K& key) const {
-        int result = PySequence_Contains(this->ptr(), detail::object_or_cast(key).ptr());
-        if (result == -1) {
-            throw error_already_set();
-        }
-        return result;
-    }
 
     inline Set operator|(
         const std::initializer_list<impl::HashInitializer>& other
@@ -296,28 +266,8 @@ public:
     ////   PYTHON INTERFACE    ////
     ///////////////////////////////
 
-    /* Get the number of values. */
-    inline size_t size() const noexcept {
-        return static_cast<size_t>(PyObject_Length(this->ptr()));
-    }
-
-    /* Check if the values are empty. */
-    inline bool empty() const noexcept {
-        return size() == 0;
-    }
-
     /* Equivalent to Python `dict.values().mapping`. */
     inline MappingProxy mapping() const;
-
-    /* Equivalent to `value in dict.values()`. */
-    template <typename T>
-    inline bool contains(const T& value) const {
-        int result = PySequence_Contains(this->ptr(), detail::object_or_cast(value).ptr());
-        if (result == -1) {
-            throw error_already_set();
-        }
-        return result;
-    }
 
 };
 
@@ -362,31 +312,8 @@ public:
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
-    /* Get the number of items. */
-    inline size_t size() const noexcept {
-        return static_cast<size_t>(PyObject_Length(this->ptr()));
-    }
-
-    /* Check if the items are empty. */
-    inline bool empty() const noexcept {
-        return size() == 0;
-    }
-
     /* Equivalent to Python `dict.items().mapping`. */
     inline MappingProxy mapping() const;
-
-    /* Equivalent to `value in dict.values()`. */
-    template <typename T>
-    inline bool contains(const T& value) const {
-        int result = PySequence_Contains(
-            this->ptr(),
-            detail::object_or_cast(value).ptr()
-        );
-        if (result == -1) {
-            throw error_already_set();
-        }
-        return result;
-    }
 
 };
 
@@ -509,16 +436,6 @@ public:
             result[converted_key] = converted_value;
         }
         return result;
-    }
-
-    /* Get the size of the dict. */
-    inline size_t size() const noexcept {
-        return static_cast<size_t>(PyDict_Size(this->ptr()));
-    }
-
-    /* Check if the dict is empty. */
-    inline bool empty() const noexcept {
-        return size() == 0;
     }
 
     /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
@@ -833,16 +750,6 @@ public:
     inline auto begin() const { return Object::begin(); }
     inline auto end() const { return Object::end(); }
 
-    /* Equivalent to Python `key in dict`. */
-    template <impl::is_hashable K>
-    inline bool contains(const K& key) const {
-        int result = PyDict_Contains(this->ptr(), detail::object_or_cast(key).ptr());
-        if (result == -1) {
-            throw error_already_set();
-        }
-        return result;
-    }
-
     inline Dict operator|(
         const std::initializer_list<impl::DictInitializer>& other
     ) const {
@@ -856,6 +763,25 @@ public:
     ) {
         update(other);
         return *this;
+    }
+
+protected:
+
+    template <typename Return, typename T>
+    inline static size_t operator_len(const T& self) {
+        return static_cast<size_t>(PyDict_Size(self.ptr()));
+    }
+
+    template <typename Return, typename L, typename R>
+    inline static bool operator_contains(const L& self, const R& key) {
+        int result = PyDict_Contains(
+            self.ptr(),
+            detail::object_or_cast(key).ptr()
+        );
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
     }
 
 };
@@ -900,16 +826,6 @@ public:
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
-
-    /* Get the length of the dictionary. */
-    inline size_t size() const noexcept {
-        return static_cast<size_t>(PyObject_Length(this->ptr()));
-    }
-
-    /* Check if the dictionary is empty. */
-    inline bool empty() const noexcept {
-        return size() == 0;
-    }
 
     /* Equivalent to Python `mappingproxy.copy()`. */
     inline Dict copy() const {
@@ -956,12 +872,6 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    /* Equivalent to Python `key in mappingproxy`. */
-    template <impl::is_hashable K>
-    inline bool contains(const K& key) const {
-        return this->keys().contains(detail::object_or_cast(key));
-    }
-
     inline Dict operator|(
         const std::initializer_list<impl::DictInitializer>& other
     ) const {
@@ -989,7 +899,6 @@ inline MappingProxy ItemsView::mapping() const {
     static const pybind11::str method = "mapping";
     return attr(method);
 }
-
 
 
 }  // namespace py

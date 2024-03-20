@@ -17,9 +17,7 @@ namespace py {
 namespace impl {
 
 template <>
-struct __dereference__<List>                                : Returns<detail::args_proxy> {};
-// template <>   <-- already defined using PyList_GET_SIZE
-// struct __len__<List>                                        : Returns<size_t> {};
+struct __len__<List>                                        : Returns<size_t> {};
 template <>
 struct __iter__<List>                                       : Returns<Object> {};
 template <>
@@ -76,11 +74,7 @@ struct __imul__<List, T>                                    : Returns<List&> {};
 
 /* Wrapper around pybind11::list that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
-class List :
-    public Object,
-    public impl::SequenceOps<List>,
-    public impl::ReverseIterable<List>
-{
+class List : public Object, public impl::SequenceOps<List> {
     using Base = Object;
 
     template <typename T>
@@ -288,16 +282,6 @@ public:
         return result;
     }
 
-    /* Get the size of the list. */
-    inline size_t size() const noexcept {
-        return static_cast<size_t>(PyList_GET_SIZE(this->ptr()));
-    }
-
-    /* Check if the list is empty. */
-    inline bool empty() const noexcept {
-        return size() == 0;
-    }
-
     /* Get the underlying PyObject* array. */
     inline PyObject** data() const noexcept {
         return PySequence_Fast_ITEMS(this->ptr());
@@ -418,14 +402,6 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    inline detail::list_iterator begin() const {
-        return {*this, 0};
-    }
-
-    inline detail::list_iterator end() const {
-        return {*this, PyList_GET_SIZE(this->ptr())};
-    }
-
     inline List operator+(const std::initializer_list<impl::Initializer>& items) const {
         return concat(items);
     }
@@ -448,6 +424,11 @@ protected:
     using impl::SequenceOps<List>::operator_iadd;
     using impl::SequenceOps<List>::operator_mul;
     using impl::SequenceOps<List>::operator_imul;
+
+    template <typename Return, typename T>
+    inline static size_t operator_len(const T& self) {
+        return static_cast<size_t>(PyList_GET_SIZE(self.ptr()));
+    }
 
     inline List concat(const std::initializer_list<impl::Initializer>& items) const {
         PyObject* result = PyList_New(size() + items.size());
@@ -474,6 +455,34 @@ protected:
             Py_DECREF(result);
             throw;
         }
+    }
+
+    template <typename Return, typename T>
+    inline static auto operator_begin(const T& obj)
+        -> impl::Iterator<impl::ListIter<Return>>
+    {
+        return {obj, 0};
+    }
+
+    template <typename Return, typename T>
+    inline static auto operator_end(const T& obj)
+        -> impl::Iterator<impl::ListIter<Return>>
+    {
+        return {PyList_GET_SIZE(obj.ptr())};
+    }
+
+    template <typename Return, typename T>
+    inline static auto operator_rbegin(const T& obj)
+        -> impl::ReverseIterator<impl::ListIter<Return>>
+    {
+        return {obj, PyList_GET_SIZE(obj.ptr()) - 1};
+    }
+
+    template <typename Return, typename T>
+    inline static auto operator_rend(const T& obj)
+        -> impl::ReverseIterator<impl::ListIter<Return>>
+    {
+        return {-1};
     }
 
 };

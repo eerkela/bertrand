@@ -16,15 +16,17 @@ namespace py {
 namespace impl {
 
 template <>
-struct __dereference__<Range>                               : Returns<detail::args_proxy> {};
-template <>
 struct __len__<Range>                                       : Returns<size_t> {};
 template <>
 struct __iter__<Range>                                      : Returns<Int> {};
 template <>
 struct __reversed__<Range>                                  : Returns<Int> {};
+template <>
+struct __contains__<Range, Object>                          : Returns<bool> {};
 template <int_like T>
 struct __contains__<Range, T>                               : Returns<bool> {};
+template <>
+struct __getitem__<Range, Object>                           : Returns<Object> {};
 template <int_like T>
 struct __getitem__<Range, T>                                : Returns<Int> {};
 template <>
@@ -117,41 +119,6 @@ public:
         static const pybind11::str method = "step";
         Py_ssize_t result = PyLong_AsSsize_t(attr(method)->ptr());
         if (result == -1 && PyErr_Occurred()) {
-            throw error_already_set();
-        }
-        return result;
-    }
-
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    inline Int operator[](size_t index) const {
-        PyObject* result = PySequence_GetItem(this->ptr(), index);
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return reinterpret_steal<Int>(result);
-    }
-
-    inline Range operator[](const Slice& slice) const {
-        PyObject* result = PyObject_GetItem(this->ptr(), slice.ptr());
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return reinterpret_steal<Range>(result);
-    }
-
-    inline Range operator[](
-        const std::initializer_list<impl::SliceInitializer>& slice
-    ) const {
-        return (*this)[Slice(slice)];
-    }
-
-    template <impl::int_like T>
-    inline bool contains(const T& item) const {
-        int result = PySequence_Contains(this->ptr(), detail::object_or_cast(item).ptr());
-        if (result == -1) {
             throw error_already_set();
         }
         return result;

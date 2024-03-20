@@ -116,10 +116,14 @@ void run() {
 
 
     py::Dict d = {{"a", 1}, {"b", 2}, {"c", 3}};
-    for (py::Tuple x : d.items()) {
-        py::print(x);
-    }
+    py::print(d.keys().contains("a"));
 
+
+
+
+
+    // py::List list = {1, 2, 3, 4};
+    // pybind11::print(*list);  // py::print(*list) != pybind11::print(*list)
 
 
 

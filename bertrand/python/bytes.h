@@ -350,8 +350,6 @@ namespace impl {
     };
 
     template <>
-    struct __dereference__<Bytes>                               : Returns<detail::args_proxy> {};
-    template <>
     struct __len__<Bytes>                                       : Returns<size_t> {};
     template <>
     struct __iter__<Bytes>                                      : Returns<Int> {};
@@ -402,8 +400,6 @@ namespace impl {
     template <int_like T>
     struct __imul__<Bytes, T>                                   : Returns<Bytes> {};
 
-    template <>
-    struct __dereference__<ByteArray>                           : Returns<detail::args_proxy> {};
     template <>
     struct __len__<ByteArray>                                   : Returns<size_t> {};
     template <>
@@ -537,11 +533,6 @@ public:
         return PyBytes_AS_STRING(this->ptr());
     }
 
-    /* Get the size of the internal buffer. */
-    inline size_t size() const {
-        return static_cast<size_t>(PyBytes_GET_SIZE(this->ptr()));
-    }
-
     /* Copy the contents of the buffer into a new py::Bytes object. */
     inline Bytes copy() const {
         return reinterpret_steal<Bytes>(PyBytes_FromStringAndSize(
@@ -562,10 +553,19 @@ public:
         return reinterpret_steal<Bytes>(cls.attr(method)(string).release());
     }
 
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
 protected:
 
     using impl::SequenceOps<Bytes>::operator_mul;
     using impl::SequenceOps<Bytes>::operator_imul;
+
+    template <typename Return>
+    inline static auto operator_len(const Bytes& obj) {
+        return static_cast<size_t>(PyBytes_GET_SIZE(obj.ptr()));
+    }
 
     template <typename Return, typename L, typename R>
     inline static auto operator_add(const L& lhs, const R& rhs) {
@@ -669,11 +669,6 @@ public:
         return PyByteArray_AS_STRING(this->ptr());
     }
 
-    /* Get the size of the internal buffer. */
-    inline size_t size() const {
-        return static_cast<size_t>(PyByteArray_GET_SIZE(this->ptr()));
-    }
-
     /* Copy the contents of the buffer into a new py::ByteArray object. */
     inline ByteArray copy() const {
         return reinterpret_steal<ByteArray>(PyByteArray_FromStringAndSize(
@@ -694,10 +689,19 @@ public:
         return reinterpret_steal<ByteArray>(cls.attr(method)(string).release());
     }
 
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
 protected:
 
     using impl::SequenceOps<ByteArray>::operator_mul;
     using impl::SequenceOps<ByteArray>::operator_imul;
+
+    template <typename Return>
+    inline static auto operator_len(const ByteArray& obj) {
+        return static_cast<size_t>(PyByteArray_GET_SIZE(obj.ptr()));
+    }
 
     template <typename Return, typename L, typename R>
     inline static auto operator_add(const L& lhs, const R& rhs) {

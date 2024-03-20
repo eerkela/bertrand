@@ -1,5 +1,3 @@
-#include <cstddef>
-#include <iterator>
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
@@ -8,8 +6,10 @@
 #define BERTRAND_PYTHON_COMMON_H
 
 #include <algorithm>
+#include <cstddef>
 #include <chrono>
 #include <initializer_list>
+#include <iterator>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -172,8 +172,6 @@ using Capsule = pybind11::capsule;
 using Buffer = pybind11::buffer;  // TODO: delete this and force users to use memoryview instead
 using MemoryView = pybind11::memoryview;  // TODO: place in buffer.h along with memoryview
 class Object;
-template <typename Deref>
-class Iterator;  // declare this in impl?
 class NoneType;
 class NotImplementedType;
 class EllipsisType;
@@ -943,8 +941,6 @@ namespace impl {
     * number of gotchas and making the code more idiomatic and easier to reason about.
     */
 
-    template <typename T>
-    struct __dereference__ { static constexpr bool enable = false; };  // TODO: rename to __unpack__?
     template <typename T, typename... Args>
     struct __call__ { static constexpr bool enable = false; };
     template <typename T>
@@ -1083,6 +1079,12 @@ namespace impl {
         }                                                                               \
                                                                                         \
         template <typename T = cls> requires (impl::__iter__<T>::enable)                \
+        inline auto operator*() const {                                                 \
+            using Return = typename impl::__iter__<T>::Return;                          \
+            return operator_dereference<Return>(*this);                                 \
+        }                                                                               \
+                                                                                        \
+        template <typename T = cls> requires (impl::__iter__<T>::enable)                \
         inline auto begin() const {                                                     \
             using Return = typename impl::__iter__<T>::Return;                          \
             static_assert(                                                              \
@@ -1158,12 +1160,6 @@ namespace impl {
                 "and ensure the Return type is set to size_t."                          \
             );                                                                          \
             return operator_len<Return>(*this);                                         \
-        }                                                                               \
-                                                                                        \
-        template <typename T = cls> requires (impl::__dereference__<T>::enable)         \
-        inline auto operator*() const {                                                 \
-            using Return = typename impl::__dereference__<T>::Return;                   \
-            return operator_dereference<Return>(*this);                                 \
         }                                                                               \
                                                                                         \
         template <typename T = cls> requires (impl::__pos__<T>::enable)                 \
@@ -1956,8 +1952,6 @@ namespace impl {
                                                                                         \
         BERTRAND_OBJECT_OPERATORS(cls)                                                  \
 
-    template <>
-    struct __dereference__<Object>                          : Returns<detail::args_proxy> {};
     template <typename ... Args>
     struct __call__<Object, Args...>                        : Returns<Object> {};
     template <>
@@ -2089,6 +2083,12 @@ namespace impl {
     template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
     class ItemAccessor;
     class AttrAccessor;
+    template <typename Policy>
+    class Iterator;
+    template <typename Policy>
+    class ReverseIterator;
+    template <typename Deref>
+    class GenericIter;
 
     struct SliceInitializer;
 
@@ -2309,16 +2309,20 @@ protected:
     ) -> impl::ItemAccessor<T, Slice>;
 
     template <typename Return, typename T>
-    inline static Iterator<Return> operator_begin(const T& obj);
+    inline static auto operator_begin(const T& obj)
+        -> impl::Iterator<impl::GenericIter<Return>>;
 
     template <typename Return, typename T>
-    inline static Iterator<Return> operator_end(const T& obj);
+    inline static auto operator_end(const T& obj)
+        -> impl::Iterator<impl::GenericIter<Return>>;
 
     template <typename Return, typename T>
-    inline static Iterator<Return> operator_rbegin(const T& obj);
+    inline static auto operator_rbegin(const T& obj)
+        -> impl::Iterator<impl::GenericIter<Return>>;
 
     template <typename Return, typename T>
-    inline static Iterator<Return> operator_rend(const T& obj);
+    inline static auto operator_rend(const T& obj)
+        -> impl::Iterator<impl::GenericIter<Return>>;
 
     template <typename Return, typename L, typename R>
     inline static bool operator_contains(const L& lhs, const R& rhs) {
@@ -3422,6 +3426,570 @@ namespace impl {
 
     };
 
+    /* An optimized iterator that directly accesses tuple or list elements through the
+    CPython API. */
+    template <typename Policy>
+    class Iterator {
+        static_assert(
+            std::is_base_of_v<Object, typename Policy::value_type>,
+            "Iterator must dereference to a subclass of py::Object.  Check your "
+            "specialization of __iter__ for this type and ensure the Return type is "
+            "derived from py::Object."
+        );
+
+    protected:
+        Policy policy;
+
+        static constexpr bool random_access = std::is_same_v<
+            typename Policy::iterator_category,
+            std::random_access_iterator_tag
+        >;
+        static constexpr bool bidirectional = random_access || std::is_same_v<
+            typename Policy::iterator_category,
+            std::bidirectional_iterator_tag
+        >;
+
+    public:
+        using iterator_category        = Policy::iterator_category;
+        using difference_type          = Policy::difference_type;
+        using value_type               = Policy::value_type;
+        using pointer                  = Policy::pointer;
+        using reference                = Policy::reference;
+
+        /* Default constructor.  Initializes to a sentinel iterator. */
+        template <typename... Args>
+        Iterator(Args&&... args) : policy(std::forward<Args>(args)...) {}
+
+        /* Copy constructor. */
+        Iterator(const Iterator& other) : policy(other.policy) {}
+
+        /* Move constructor. */
+        Iterator(Iterator&& other) : policy(std::move(other.policy)) {}
+
+        /* Copy assignment operator. */
+        Iterator& operator=(const Iterator& other) {
+            policy = other.policy;
+            return *this;
+        }
+
+        /* Move assignment operator. */
+        Iterator& operator=(Iterator&& other) {
+            policy = std::move(other.policy);
+            return *this;
+        }
+
+        /////////////////////////////////
+        ////    ITERATOR PROTOCOL    ////
+        /////////////////////////////////
+
+        /* Dereference the iterator. */
+        inline value_type operator*() const {
+            return policy.deref();
+        }
+
+        /* Dereference the iterator. */
+        inline pointer operator->() const {
+            return &(**this);
+        }
+
+        /* Advance the iterator. */
+        inline Iterator& operator++() {
+            policy.advance();
+            return *this;
+        }
+
+        /* Advance the iterator. */
+        inline Iterator operator++(int) {
+            Iterator copy = *this;
+            policy.advance();
+            return copy;
+        }
+
+        /* Compare two iterators for equality. */
+        inline bool operator==(const Iterator& other) const {
+            return policy.compare(other.policy);
+        }
+
+        /* Compare two iterators for inequality. */
+        inline bool operator!=(const Iterator& other) const {
+            return !policy.compare(other.policy);
+        }
+
+        ///////////////////////////////////////
+        ////    BIDIRECTIONAL ITERATORS    ////
+        ///////////////////////////////////////
+
+        /* Retreat the iterator. */
+        template <typename T = Iterator> requires (bidirectional)
+        inline Iterator& operator--() {
+            policy.retreat();
+            return *this;
+        }
+
+        /* Retreat the iterator. */
+        template <typename T = Iterator> requires (bidirectional)
+        inline Iterator operator--(int) {
+            Iterator copy = *this;
+            policy.retreat();
+            return copy;
+        }
+
+        ///////////////////////////////////////
+        ////    RANDOM ACCESS ITERATORS    ////
+        ///////////////////////////////////////
+
+        /* Advance the iterator by n steps. */
+        template <typename T = Iterator> requires (random_access)
+        inline Iterator operator+(difference_type n) const {
+            Iterator copy = *this;
+            copy += n;
+            return copy;
+        }
+
+        /* Advance the iterator by n steps. */
+        template <typename T = Iterator> requires (random_access)
+        inline Iterator& operator+=(difference_type n) {
+            policy.advance(n);
+            return *this;
+        }
+
+        /* Retreat the iterator by n steps. */
+        template <typename T = Iterator> requires (random_access)
+        inline Iterator operator-(difference_type n) const {
+            Iterator copy = *this;
+            copy -= n;
+            return copy;
+        }
+
+        /* Retreat the iterator by n steps. */
+        template <typename T = Iterator> requires (random_access)
+        inline Iterator& operator-=(difference_type n) {
+            policy.retreat(n);
+            return *this;
+        }
+
+        /* Calculate the distance between two iterators. */
+        template <typename T = Iterator> requires (random_access)
+        inline difference_type operator-(const Iterator& other) const {
+            return policy.distance(other.policy);
+        }
+
+        /* Access the iterator at an offset. */
+        template <typename T = Iterator> requires (random_access)
+        inline value_type operator[](difference_type n) const {
+            return *(*this + n);
+        }
+
+        /* Compare two iterators for ordering. */
+        template <typename T = Iterator> requires (random_access)
+        inline bool operator<(const Iterator& other) const {
+            return !!policy || (*this - other) < 0;
+        }
+
+        /* Compare two iterators for ordering. */
+        template <typename T = Iterator> requires (random_access)
+        inline bool operator<=(const Iterator& other) const {
+            return !!policy || (*this - other) <= 0;
+        }
+
+        /* Compare two iterators for ordering. */
+        template <typename T = Iterator> requires (random_access)
+        inline bool operator>=(const Iterator& other) const {
+            return !policy || (*this - other) >= 0;
+        }
+
+        /* Compare two iterators for ordering. */
+        template <typename T = Iterator> requires (random_access)
+        inline bool operator>(const Iterator& other) const {
+            return !policy || (*this - other) > 0;
+        }
+
+    };
+
+    template <typename Policy>
+    class ReverseIterator : public Iterator<Policy> {
+        using Base = Iterator<Policy>;
+        static_assert(
+            Base::bidirectional,
+            "ReverseIterator can only be used with bidirectional iterators."
+        );
+
+    public:
+        using Base::Base;
+
+        /* Advance the iterator. */
+        inline ReverseIterator& operator++() {
+            Base::operator--();
+            return *this;
+        }
+
+        /* Advance the iterator. */
+        inline ReverseIterator operator++(int) {
+            ReverseIterator copy = *this;
+            Base::operator--();
+            return copy;
+        }
+
+        /* Retreat the iterator. */
+        inline ReverseIterator& operator--() {
+            Base::operator++();
+            return *this;
+        }
+
+        /* Retreat the iterator. */
+        inline ReverseIterator operator--(int) {
+            ReverseIterator copy = *this;
+            Base::operator++();
+            return copy;
+        }
+
+        ////////////////////////////////////////
+        ////    RANDOM ACCESS ITERATORS     ////
+        ////////////////////////////////////////
+
+        /* Advance the iterator by n steps. */
+        template <typename T = ReverseIterator> requires (Base::random_access)
+        inline ReverseIterator operator+(typename Base::difference_type n) const {
+            ReverseIterator copy = *this;
+            copy -= n;
+            return copy;
+        }
+
+        /* Advance the iterator by n steps. */
+        template <typename T = ReverseIterator> requires (Base::random_access)
+        inline ReverseIterator& operator+=(typename Base::difference_type n) {
+            Base::operator-=(n);
+            return *this;
+        }
+
+        /* Retreat the iterator by n steps. */
+        template <typename T = ReverseIterator> requires (Base::random_access)
+        inline ReverseIterator operator-(typename Base::difference_type n) const {
+            ReverseIterator copy = *this;
+            copy += n;
+            return copy;
+        }
+
+        /* Retreat the iterator by n steps. */
+        template <typename T = ReverseIterator> requires (Base::random_access)
+        inline ReverseIterator& operator-=(typename Base::difference_type n) {
+            Base::operator+=(n);
+            return *this;
+        }
+
+    };
+
+    /* A generic iterator policy that uses Python's existing iterator protocol. */
+    template <typename Deref>
+    class GenericIter {
+        Object iter;
+        PyObject* curr;
+
+    public:
+        using iterator_category         = std::input_iterator_tag;
+        using difference_type           = std::ptrdiff_t;
+        using value_type                = Deref;
+        using pointer                   = Deref*;
+        using reference                 = Deref&;
+
+        /* Default constructor.  Initializes to a sentinel iterator. */
+        GenericIter() :
+            iter(reinterpret_steal<Object>(nullptr)), curr(nullptr)
+        {}
+
+        /* Wrap a raw Python iterator. */
+        GenericIter(Object&& iterator) : iter(std::move(iterator)) {
+            curr = PyIter_Next(iter.ptr());
+            if (curr == nullptr &&PyErr_Occurred()) {
+                throw error_already_set();
+            }
+        }
+
+        /* Copy constructor. */
+        GenericIter(const GenericIter& other) : iter(other.iter), curr(other.curr) {
+            Py_XINCREF(curr);
+        }
+
+        /* Move constructor. */
+        GenericIter(GenericIter&& other) : iter(std::move(other.iter)), curr(other.curr) {
+            other.curr = nullptr;
+        }
+
+        /* Copy assignment operator. */
+        GenericIter& operator=(const GenericIter& other) {
+            if (&other != this) {
+                iter = other.iter;
+                PyObject* temp = curr;
+                Py_XINCREF(curr);
+                curr = other.curr;
+                Py_XDECREF(temp);
+            }
+            return *this;
+        }
+
+        /* Move assignment operator. */
+        GenericIter& operator=(GenericIter&& other) {
+            if (&other != this) {
+                iter = std::move(other.iter);
+                PyObject* temp = curr;
+                curr = other.curr;
+                other.curr = nullptr;
+                Py_XDECREF(temp);
+            }
+            return *this;
+        }
+
+        ~GenericIter() {
+            Py_XDECREF(curr);
+        }
+
+        /* Dereference the iterator. */
+        inline Deref deref() const {
+            if (curr == nullptr) {
+                throw ValueError("attempt to dereference a null iterator.");
+            }
+            return reinterpret_borrow<Deref>(curr);
+        }
+
+        /* Advance the iterator. */
+        inline void advance() {
+            PyObject* temp = curr;
+            curr = PyIter_Next(iter.ptr());
+            Py_XDECREF(temp);
+            if (curr == nullptr && PyErr_Occurred()) {
+                throw error_already_set();
+            }
+        }
+
+        /* Compare two iterators for equality. */
+        inline bool compare(const GenericIter& other) const {
+            return curr == other.curr;
+        }
+
+        inline explicit operator bool() const {
+            return curr != nullptr;
+        }
+
+    };
+
+    /* A random access iterator policy that directly addresses tuple elements using the
+    CPython API. */
+    template <typename Deref>
+    class TupleIter {
+        Object tuple;
+        PyObject* curr;
+        Py_ssize_t index;
+
+    public:
+        using iterator_category         = std::random_access_iterator_tag;
+        using difference_type           = std::ptrdiff_t;
+        using value_type                = Deref;
+        using pointer                   = Deref*;
+        using reference                 = Deref&;
+
+        /* Sentinel constructor. */
+        TupleIter(Py_ssize_t index) :
+            tuple(reinterpret_steal<Object>(nullptr)), curr(nullptr), index(index)
+        {}
+
+        /* Construct an iterator from a tuple and a starting index. */
+        TupleIter(const Object& tuple, Py_ssize_t index) :
+            tuple(tuple), index(index)
+        {
+            if (index >= 0 && index < PyTuple_GET_SIZE(tuple.ptr())) {
+                curr = PyTuple_GET_ITEM(tuple.ptr(), index);
+            } else {
+                curr = nullptr;
+            }
+        }
+
+        /* Copy constructor. */
+        TupleIter(const TupleIter& other) :
+            tuple(other.tuple), curr(other.curr), index(other.index)
+        {}
+
+        /* Move constructor. */
+        TupleIter(TupleIter&& other) :
+            tuple(other.tuple), curr(other.curr), index(other.index)
+        {
+            other.curr = nullptr;
+        }
+
+        /* Copy assignment operator. */
+        TupleIter& operator=(const TupleIter& other) {
+            if (&other != this) {
+                tuple = other.tuple;
+                curr = other.curr;
+                index = other.index;
+            }
+            return *this;
+        }
+
+        /* Move assignment operator. */
+        TupleIter& operator=(TupleIter&& other) {
+            if (&other != this) {
+                tuple = other.tuple;
+                curr = other.curr;
+                index = other.index;
+                other.curr = nullptr;
+            }
+            return *this;
+        }
+
+        /* Dereference the iterator. */
+        inline Deref deref() const {
+            if (curr == nullptr) {
+                throw ValueError("attempt to dereference a null iterator.");
+            }
+            return reinterpret_borrow<Deref>(curr);
+        }
+
+        /* Advance the iterator. */
+        inline void advance(Py_ssize_t n = 1) {
+            index += n;
+            if (index >= 0 && index < PyTuple_GET_SIZE(tuple.ptr())) {
+                curr = PyTuple_GET_ITEM(tuple.ptr(), index);
+            } else {
+                curr = nullptr;
+            }
+        }
+
+        /* Compare two iterators for equality. */
+        inline bool compare(const TupleIter& other) const {
+            return curr == other.curr;
+        }
+
+        /* Retreat the iterator. */
+        inline void retreat(Py_ssize_t n = 1) {
+            index -= n;
+            if (index >= 0 && index < PyTuple_GET_SIZE(tuple.ptr())) {
+                curr = PyTuple_GET_ITEM(tuple.ptr(), index);
+            } else {
+                curr = nullptr;
+            }
+        }
+
+        /* Calculate the distance between two iterators. */
+        inline difference_type distance(const TupleIter& other) const {
+            return index - other.index;
+        }
+
+        inline explicit operator bool() const {
+            return curr != nullptr;
+        }
+
+    };
+
+    /* A random access iterator policy that directly addresses list elements using the
+    CPython API. */
+    template <typename Deref>
+    class ListIter {
+        Object list;
+        PyObject* curr;
+        Py_ssize_t index;
+
+    public:
+        using iterator_category         = std::random_access_iterator_tag;
+        using difference_type           = std::ptrdiff_t;
+        using value_type                = Deref;
+        using pointer                   = Deref*;
+        using reference                 = Deref&;
+
+        /* Default constructor.  Initializes to a sentinel iterator. */
+        ListIter(Py_ssize_t index) :
+            list(reinterpret_steal<Object>(nullptr)), curr(nullptr), index(index)
+        {}
+
+        /* Construct an iterator from a list and a starting index. */
+        ListIter(const Object& list, Py_ssize_t index) :
+            list(list), index(index)
+        {
+            if (index >= 0 && index < PyList_GET_SIZE(list.ptr())) {
+                curr = PyList_GET_ITEM(list.ptr(), index);
+            } else {
+                curr = nullptr;
+            }
+        }
+
+        /* Copy constructor. */
+        ListIter(const ListIter& other) :
+            list(other.list), curr(other.curr), index(other.index)
+        {}
+
+        /* Move constructor. */
+        ListIter(ListIter&& other) :
+            list(other.list), curr(other.curr), index(other.index)
+        {
+            other.curr = nullptr;
+        }
+
+        /* Copy assignment operator. */
+        ListIter& operator=(const ListIter& other) {
+            if (&other != this) {
+                list = other.list;
+                curr = other.curr;
+                index = other.index;
+            }
+            return *this;
+        }
+
+        /* Move assignment operator. */
+        ListIter& operator=(ListIter&& other) {
+            if (&other != this) {
+                list = other.list;
+                curr = other.curr;
+                index = other.index;
+                other.curr = nullptr;
+            }
+            return *this;
+        }
+
+        /* Dereference the iterator. */
+        inline Deref deref() const {
+            if (curr == nullptr) {
+                throw ValueError("attempt to dereference a null iterator.");
+            }
+            return reinterpret_borrow<Deref>(curr);
+        }
+
+        /* Advance the iterator. */
+        inline void advance(Py_ssize_t n = 1) {
+            index += n;
+            if (index >= 0 && index < PyList_GET_SIZE(list.ptr())) {
+                curr = PyList_GET_ITEM(list.ptr(), index);
+            } else {
+                curr = nullptr;
+            }
+        }
+
+        /* Compare two iterators for equality. */
+        inline bool compare(const ListIter& other) const {
+            return curr == other.curr;
+        }
+
+        /* Retreat the iterator. */
+        inline void retreat(Py_ssize_t n = 1) {
+            index -= n;
+            if (index >= 0 && index < PyList_GET_SIZE(list.ptr())) {
+                curr = PyList_GET_ITEM(list.ptr(), index);
+            } else {
+                curr = nullptr;
+            }
+        }
+
+        /* Calculate the distance between two iterators. */
+        inline difference_type distance(const ListIter& other) const {
+            return index - other.index;
+        }
+
+        inline explicit operator bool() const {
+            return curr != nullptr;
+        }
+
+    };
+
+    // TODO: DictKeyIter, DictValueIter, DictItemIter using PyDict_Next
+
     /* Mixin holding operator overloads for types implementing the sequence protocol,
     which makes them both concatenatable and repeatable. */
     template <typename Derived>
@@ -3556,69 +4124,6 @@ namespace impl {
 
     };
 
-
-    // TODO: Revisit with templated iterators
-
-
-    /* Mixin holding an optimized reverse iterator for data structures that allow
-    direct access to the underlying array.  This avoids the overhead of going through
-    the Python interpreter to obtain a reverse iterator, and brings it up to parity
-    with forward iteration. */
-    template <typename Derived>
-    struct ReverseIterable {
-        /* An optimized reverse iterator that bypasses the python interpreter. */
-        struct ReverseIterator {
-            using iterator_category     = std::forward_iterator_tag;
-            using difference_type       = std::ptrdiff_t;
-            using value_type            = Object;
-            using pointer               = value_type*;
-            using reference             = value_type&;
-
-            PyObject** array;
-            Py_ssize_t index;
-
-            inline ReverseIterator(PyObject** array, Py_ssize_t index) :
-                array(array), index(index)
-            {}
-            inline ReverseIterator(Py_ssize_t index) : array(nullptr), index(index) {}
-            inline ReverseIterator(const ReverseIterator&) = default;
-            inline ReverseIterator(ReverseIterator&&) = default;
-            inline ReverseIterator& operator=(const ReverseIterator&) = default;
-            inline ReverseIterator& operator=(ReverseIterator&&) = default;
-
-            inline Handle operator*() const {
-                return array[index];
-            }
-
-            inline ReverseIterator& operator++() {
-                --index;
-                return *this;
-            }
-
-            inline bool operator==(const ReverseIterator& other) const {
-                return index == other.index;
-            }
-
-            inline bool operator!=(const ReverseIterator& other) const {
-                return index != other.index;
-            }
-        };
-    };
-
-    /* Types for which is_reverse_iterable is true will use custom reverse iterators
-    when py::reversed() is called on them.  These types must expose a ReverseIterator
-    class that implements the reverse iteration. */
-    template <typename T, typename = void>
-    constexpr bool is_reverse_iterable = false;
-    template <typename T>
-    constexpr bool is_reverse_iterable<
-        T, std::enable_if_t<std::is_base_of_v<Tuple, T>>
-    > = true;
-    template <typename T>
-    constexpr bool is_reverse_iterable<
-        T, std::enable_if_t<std::is_base_of_v<List, T>>
-    > = true;
-
 }  // namespace impl
 
 
@@ -3653,159 +4158,6 @@ public:
 };
 
 
-/* A type-safe iterator class that dereferences to a known python type.   */
-template <typename Deref>
-class Iterator : public Object {
-    using Base = Object;
-    static_assert(
-        std::is_base_of_v<Object, Deref>,
-        "Iterator must dereference to a subclass of py::Object.  Check your "
-        "specialization of __iter__ for this type and ensure the Return type is "
-        "derived from py::Object."
-    );
-
-protected:
-    PyObject* curr;
-
-public:
-    using iterator_category         = std::input_iterator_tag;
-    using difference_type           = std::ptrdiff_t;
-    using value_type                = Deref;
-    using pointer                   = Deref*;
-    using reference                 = Deref&;
-
-    template <typename T>
-    static constexpr bool check() { return impl::iterator_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Iterator, PyIter_Check)
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Default constructor.  Initializes to a sentinel iterator. */
-    Iterator() : curr(nullptr) {}
-
-    /* Copy/move constructor. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
-    Iterator(T&& other) : Base(other), curr(other.curr) {
-        if constexpr (std::is_rvalue_reference_v<T>) {
-            other.curr = nullptr;
-        } else {
-            Py_XINCREF(curr);
-        }
-    }
-
-    /* Construct a py::Iterator from separate begin() and end() C++ iterators. */
-    template <typename Iter, typename Sentinel> requires (std::sentinel_for<Sentinel, Iter>)
-    Iterator(Iter&& begin, Sentinel&& end) : Base(pybind11::make_iterator(begin, end)) {
-        curr = PyIter_Next(this->ptr());
-        if (curr == nullptr && PyErr_Occurred()) {
-            throw error_already_set();
-        }
-    }
-
-    // TODO: uncommenting the is_iterable check causes a template recursion error
-
-    /* Explicitly generate an iterator over an arbitrary python object. */
-    // template <typename T> requires (impl::python_like<T> && impl::is_iterable<T>)
-    template <typename T> requires (impl::python_like<T>)
-    explicit Iterator(const T& obj) : Base(PyObject_GetIter(obj.ptr()), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            throw error_already_set();
-        }
-        curr = PyIter_Next(this->ptr());
-        if (curr == nullptr && PyErr_Occurred()) {
-            throw error_already_set();
-        }
-    }
-
-    /* Explicitly generate an iterator over an arbitrary C++ object.  Does not work */
-    template <typename T> requires (!impl::python_like<T> && impl::is_iterable<T>)
-    explicit Iterator(T&& obj) : Base(pybind11::make_iterator(obj)) {
-        static_assert(
-            !std::is_rvalue_reference_v<T>,
-            "Creating an iterator over a temporary C++ object is unsafe.  Use an "
-            "lvalue instead."
-        );
-        curr = PyIter_Next(this->ptr());
-        if (curr == nullptr && PyErr_Occurred()) {
-            throw error_already_set();
-        }
-    }
-
-    /* Copy assignment operator. */
-    Iterator& operator=(const Iterator& other) {
-        if (&other != this) {
-            Base::operator=(other);
-            Py_XINCREF(other.curr);
-            PyObject* temp = curr;
-            curr = other.curr;
-            Py_XDECREF(temp);
-        }
-        return *this;
-    }
-
-    /* Move assignment operator. */
-    Iterator& operator=(Iterator&& other) {
-        if (&other != this) {
-            Base::operator=(std::move(other));
-            PyObject* temp = curr;
-            curr = other.curr;
-            other.curr = nullptr;
-            Py_XDECREF(temp);
-        }
-        return *this;
-    }
-
-    ~Iterator() {
-        Py_XDECREF(curr);
-    }
-
-    /////////////////////////////////
-    ////    ITERATOR PROTOCOL    ////
-    /////////////////////////////////
-
-    /* Get a generic sentinel value that marks the end of a range. */
-    inline static Iterator sentinel() {
-        return {};
-    }
-
-    inline Deref operator*() const {
-        return reinterpret_borrow<Deref>(curr);
-    }
-
-    inline Deref* operator->() const {
-        return &(**this);
-    }
-
-    inline Iterator& operator++() {
-        PyObject* temp = curr;
-        curr = PyIter_Next(this->ptr());
-        Py_XDECREF(temp);
-        if (curr == nullptr && PyErr_Occurred()) {
-            throw error_already_set();
-        }
-        return *this;
-    }
-
-    inline Iterator operator++(int) {
-        Iterator copy = *this;
-        ++(*this);
-        return copy;
-    }
-
-    inline bool operator==(const Iterator& other) const {
-        return curr == other.curr;
-    }
-
-    inline bool operator!=(const Iterator& other) const {
-        return curr != other.curr;
-    }
-
-};
-
-
 /* Object subclass that represents Python's global None singleton. */
 class NoneType : public Object {
     using Base = Object;
@@ -3833,7 +4185,10 @@ class NotImplementedType : public Object {
     using Base = Object;
 
     inline static int check_not_implemented(PyObject* obj) {
-        int result = PyObject_IsInstance(obj, (PyObject*) Py_TYPE(Py_NotImplemented));
+        int result = PyObject_IsInstance(
+            obj,
+            (PyObject*) Py_TYPE(Py_NotImplemented)
+        );
         if (result == -1) {
             throw error_already_set();
         }
@@ -3863,7 +4218,10 @@ class EllipsisType : public Object {
     using Base = Object;
 
     inline static int check_ellipsis(PyObject* obj) {
-        int result = PyObject_IsInstance(obj, (PyObject*) Py_TYPE(Py_Ellipsis));
+        int result = PyObject_IsInstance(
+            obj,
+            (PyObject*) Py_TYPE(Py_Ellipsis)
+        );
         if (result == -1) {
             throw error_already_set();
         }
@@ -4285,43 +4643,39 @@ inline auto Object::operator_getitem(
 // TODO: figure out a way to make this play nice with the new iterator type
 
 template <typename Return, typename T>
-inline Iterator<Return> Object::operator_begin(const T& obj) {
-    // PyObject* iter = PyObject_GetIter(obj.ptr());
-    // if (iter == nullptr) {
-    //     throw error_already_set();
-    // }
-    // auto result = reinterpret_steal<Iterator<Return>>(iter);
-    // ++result;  // prime the iterator
-    // return result;
-
-    // curr is protected
-    // result.curr = PyIter_Next(result.ptr());
-    // if (result.curr == nullptr && PyErr_Occurred()) {
-    //     throw error_already_set();
-    // }
-    // return result;
-
-    // causes a template recursion if impl::is_iterable<T> is true
-    return Iterator<Return>(obj);
+inline auto Object::operator_begin(const T& obj)
+    -> impl::Iterator<impl::GenericIter<Return>>
+{
+    PyObject* iter = PyObject_GetIter(obj.ptr());
+    if (iter == nullptr) {
+        throw error_already_set();
+    }
+    return {reinterpret_steal<Object>(iter)};
 }
 
 
 template <typename Return, typename T>
-inline Iterator<Return> Object::operator_end(const T& obj) {
-    return Iterator<Return>();
+inline auto Object::operator_end(const T& obj)
+    -> impl::Iterator<impl::GenericIter<Return>>
+{
+    return {};
 }
 
 
 template <typename Return, typename T>
-inline Iterator<Return> Object::operator_rbegin(const T& obj) {
-    static const pybind11::str method = "__reversed__";
-    return reinterpret_steal<Iterator<Return>>(obj.attr(method)().release());
+inline auto Object::operator_rbegin(const T& obj)
+    -> impl::Iterator<impl::GenericIter<Return>>
+{
+    static const pybind11::str reversed = "__reversed__";
+    return {obj.attr(reversed)()};
 }
 
 
 template <typename Return, typename T>
-inline Iterator<Return> Object::operator_rend(const T& obj) {
-    return Iterator<Return>();
+inline auto Object::operator_rend(const T& obj)
+    -> impl::Iterator<impl::GenericIter<Return>>
+{
+    return {};
 }
 
 
@@ -4469,15 +4823,6 @@ namespace std {                                                                 
         }                                                                               \
     };                                                                                  \
 }                                                                                       \
-
-namespace std {
-    template <typename T>
-    struct hash<bertrand::py::Iterator<T>> {
-        size_t operator()(const bertrand::py::Iterator<T>& obj) const {
-            return pybind11::hash(obj);
-        }
-    };
-}
 
 
 BERTRAND_STD_HASH(bertrand::py::Buffer)

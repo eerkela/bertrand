@@ -1,3 +1,4 @@
+#include "pybind11/pytypes.h"
 #include "pytypedefs.h"
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
@@ -29,6 +30,9 @@ namespace impl {
     static const Static<Type> PyProperty = reinterpret_borrow<Type>(
         reinterpret_cast<PyObject*>(&PyProperty_Type)
     );
+
+template <typename... Args>
+struct __call__<Function, Args...>                              : Returns<Object> {};
 
 }
 
@@ -225,11 +229,11 @@ public:
     template <typename T>
     static constexpr bool check() { return std::is_base_of_v<Code, T>; }
 
+    BERTRAND_OBJECT_COMMON(Base, Code, PyCode_Check)
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
-
-    BERTRAND_OBJECT_COMMON(Base, Code, PyCode_Check);
 
     /* Default constructor deleted to throw compile errors when a script is declared
     without an implementation. */
@@ -393,11 +397,11 @@ public:
     template <typename T>
     static constexpr bool check() { return std::is_base_of_v<Frame, T>; }
 
+    BERTRAND_OBJECT_COMMON(Base, Frame, PyFrame_Check)
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
-
-    BERTRAND_OBJECT_COMMON(Base, Frame, PyFrame_Check);
 
     /* Default constructor.  Initializes to the current execution frame. */
     Frame() : Base(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{}) {
@@ -556,11 +560,11 @@ public:
     template <typename T>
     static constexpr bool check() { return impl::is_callable_any<T>; }
 
+    BERTRAND_OBJECT_COMMON(Base, Function, PyFunction_Check)
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
-
-    BERTRAND_OBJECT_COMMON(Base, Function, PyFunction_Check);
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Function() = delete;
@@ -635,26 +639,26 @@ public:
 
     /* Get the number of positional-only arguments for the function.  Does not include
     variable positional or keyword arguments. */
-    inline size_t n_positional() const {
+    inline size_t posonlyargcount() const {
         return code().posonlyargcount();
     }
 
     /* Get the number of keyword-only arguments for the function.  Does not include
     positional-only or variable positional/keyword arguments. */
-    inline size_t n_keyword() const {
+    inline size_t kwonlyargcount() const {
         return code().kwonlyargcount();
     }
 
-    /* Get a dictionary mapping argument names to their default values. */
+    /* Get a read-only dictionary mapping argument names to their default values. */
     inline MappingProxy defaults() const {
         Code code = this->code();
+        static const pybind11::str s_kwdefaults = "__kwdefaults__";
 
         // check for positional defaults
         PyObject* pos_defaults = PyFunction_GetDefaults(this->ptr());
         if (pos_defaults == nullptr) {
-            // check for keyword-only defaults
             if (code.kwonlyargcount() > 0) {
-                Object kwdefaults = attr("__kwdefaults__");
+                Object kwdefaults = attr(s_kwdefaults);
                 if (kwdefaults.is(None)) {
                     return Dict{};
                 } else {
@@ -674,9 +678,9 @@ public:
             result[names[i]] = defaults[i];
         }
 
-        // check for keyword-only defaults
+        // merge keyword-only defaults
         if (code.kwonlyargcount() > 0) {
-            Object kwdefaults = attr("__kwdefaults__");
+            Object kwdefaults = attr(s_kwdefaults);
             if (!kwdefaults.is(None)) {
                 result.update(Dict(kwdefaults));
             }
@@ -684,9 +688,8 @@ public:
         return result;
     }
 
-    // TODO: this can only be uncommented once the __iter__ refactor is complete
-
-    // /* Set the default value for one or more arguments. */
+    // /* Set the default value for one or more arguments.  If nullopt is provided,
+    // then all defaults will be cleared. */
     // inline void defaults(Dict&& dict) {
     //     Code code = this->code();
 
@@ -728,14 +731,14 @@ public:
     //                     temp[key] = dict.pop(key);
     //                 }
     //             }
-    //             if (!dict.empty()) {
+    //             if (dict) {
     //                 throw ValueError("no match for arguments " + Str(List(dict.keys())));
     //             }
     //             kwdefaults |= temp;
-    //         } else if (!dict.empty()) {
+    //         } else if (dict) {
     //             throw ValueError("no match for arguments " + Str(List(dict.keys())));
     //         }
-    //     } else if (!dict.empty()) {
+    //     } else if (dict) {
     //         throw ValueError("no match for arguments " + Str(List(dict.keys())));
     //     }
 
@@ -743,24 +746,64 @@ public:
 
     // }
 
-    /* Get the type annotations for the function.  This is returned as a mutable
-    dictionary that can be written to in order to change the annotations. */
-    inline Dict annotations() const {
+    /* Get a read-only dictionary holding type annotations for the function. */
+    inline MappingProxy annotations() const {
         PyObject* result = PyFunction_GetAnnotations(this->ptr());
         if (result == nullptr) {
-            return {};
+            return Dict{};
         }
         return reinterpret_borrow<Dict>(result);
     }
 
-    /* Set the type annotations for the function.  The input must be a Dict or
-    nullopt. */
-    inline void annotations(std::optional<Dict> annotations) {
-        PyObject* item = annotations ? annotations.value().ptr() : Py_None;
-        if (PyFunction_SetAnnotations(this->ptr(), item)) {
-            throw error_already_set();
-        }
-    }
+    // /* Set the type annotations for the function.  If nullopt is provided, then the
+    // current annotations will be cleared.  Otherwise, the values in the dictionary will
+    // be used to update the current values in-place. */
+    // inline void annotations(std::optional<Dict> annotations) {
+    //     if (!annotations.has_value()) {  // clear all annotations
+    //         if (PyFunction_SetAnnotations(this->ptr(), Py_None)) {
+    //             throw error_already_set();
+    //         }
+
+    //     } else if (!annotations.value()) {  // do nothing
+    //         return;
+
+    //     } else {  // update annotations in-place
+    //         Code code = this->code();
+    //         Tuple args = code.varnames()[{0, code.argcount() + code.kwonlyargcount()}];
+    //         MappingProxy existing = this->annotations();
+
+    //         // build new dict
+    //         Dict result = {};
+    //         for (const Object& arg : args) {
+    //             if (annotations.value().contains(arg)) {
+    //                 result[arg] = annotations.value().pop(arg);
+    //             } else if (existing.contains(arg)) {
+    //                 result[arg] = existing[arg];
+    //             }
+    //         }
+
+    //         // account for return annotation
+    //         static const Str s_return = "return";
+    //         if (annotations.value().contains(s_return)) {
+    //             result[s_return] = annotations.value().pop(s_return);
+    //         } else if (existing.contains(s_return)) {
+    //             result[s_return] = existing[s_return];
+    //         }
+
+    //         // check for unmatched keys
+    //         if (annotations.value()) {
+    //             throw ValueError(
+    //                 "no match for arguments " +
+    //                 Str(List(annotations.value().keys()))
+    //             );
+    //         }
+
+    //         // push changes
+    //         if (PyFunction_SetAnnotations(this->ptr(), result.ptr())) {
+    //             throw error_already_set();
+    //         }
+    //     }
+    // }
 
     /* Get the closure associated with the function.  This is a Tuple of cell objects
     containing data captured by the function. */
@@ -772,8 +815,8 @@ public:
         return reinterpret_borrow<Tuple>(result);
     }
 
-    /* Set the closure associated with the function.  The input must be a Tuple or
-    nullopt. */
+    /* Set the closure associated with the function.  If nullopt is given, then the
+    closure will be deleted. */
     inline void closure(std::optional<Tuple> closure) {
         PyObject* item = closure ? closure.value().ptr() : Py_None;
         if (PyFunction_SetClosure(this->ptr(), item)) {
@@ -782,10 +825,6 @@ public:
     }
 
 };
-
-
-template <typename... Args>
-struct impl::__call__<Function, Args...> : impl::Returns<Object> {};
 
 
 /* New subclass of pybind11::object that represents a bound method at the Python
@@ -896,7 +935,7 @@ public:
     template <typename T>
     static constexpr bool check() { return std::is_base_of_v<StaticMethod, T>; }
 
-    BERTRAND_OBJECT_COMMON(Base, StaticMethod, check_staticmethod);
+    BERTRAND_OBJECT_COMMON(Base, StaticMethod, check_staticmethod)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     StaticMethod() = delete;
@@ -940,7 +979,7 @@ public:
     template <typename T>
     static constexpr bool check() { return std::is_base_of_v<Property, T>; }
 
-    BERTRAND_OBJECT_COMMON(Base, Property, check_property);
+    BERTRAND_OBJECT_COMMON(Base, Property, check_property)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Property() = delete;

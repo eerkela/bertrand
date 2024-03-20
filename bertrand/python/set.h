@@ -54,16 +54,6 @@ namespace impl {
                 result.insert(item.template cast<typename T::value_type>());
             }
         }
-
-        /* Get the size of the set. */
-        inline size_t size() const noexcept {
-            return static_cast<size_t>(PySet_GET_SIZE(self()->ptr()));
-        }
-
-        /* Cehcek if the set is empty. */
-        inline bool empty() const noexcept {
-            return size() == 0;
-        }
                                         
         ////////////////////////////////
         ////    PYTHON INTERFACE    ////
@@ -282,19 +272,6 @@ namespace impl {
         ////    OPERATORS    ////
         /////////////////////////
 
-        /* Equivalent to Python `key in set`. */
-        template <typename T>
-        inline bool contains(const T& key) const {
-            int result = PySet_Contains(
-                self()->ptr(),
-                detail::object_or_cast(key).ptr()
-            );
-            if (result == -1) {
-                throw error_already_set();
-            }
-            return result;
-        }
-
         using Base::operator|;
         using Base::operator&;
         using Base::operator-;
@@ -324,10 +301,27 @@ namespace impl {
             return symmetric_difference(other);
         }
 
+    protected:
+
+        template <typename Return, typename T>
+        inline static size_t operator_len(const T& self) {
+            return static_cast<size_t>(PySet_GET_SIZE(self.ptr()));
+        }
+
+        template <typename Return, typename L, typename R>
+        inline static bool operator_contains(const L& self, const R& key) {
+            int result = PySet_Contains(
+                self.ptr(),
+                detail::object_or_cast(key).ptr()
+            );
+            if (result == -1) {
+                throw error_already_set();
+            }
+            return result;
+        }
+
     };
 
-template <>
-struct __dereference__<FrozenSet>                               : Returns<detail::args_proxy> {};
 template <>
 struct __len__<FrozenSet>                                       : Returns<size_t> {};
 template <>
@@ -385,8 +379,6 @@ struct __ixor__<FrozenSet, Object>                              : Returns<Frozen
 template <anyset_like T>
 struct __ixor__<FrozenSet, T>                                   : Returns<FrozenSet&> {};
 
-template <>
-struct __dereference__<Set>                                     : Returns<detail::args_proxy> {};
 template <>
 struct __len__<Set>                                             : Returns<size_t> {};
 template <>
