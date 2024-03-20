@@ -115,14 +115,9 @@ inline Type Property::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*
 // }();
 
 
-////////////////////////////
-////    CONSTRUCTORS    ////
-////////////////////////////
-
-
-/* Some constructors need to be defined out of line in order to avoid circular
- * dependencies.
- */
+////////////////////////////////////
+////    FORWARD DECLARATIONS    ////
+////////////////////////////////////
 
 
 template <typename T> requires (!impl::python_like<T> && impl::is_callable_any<T>)
@@ -161,11 +156,6 @@ inline Type::Type(const Str& name, const Tuple& bases, const Dict& dict) {
 }
 
 
-////////////////////////////////
-////    MEMBER FUNCTIONS    ////
-////////////////////////////////
-
-
 namespace impl {
 
     template <typename T>
@@ -193,14 +183,57 @@ inline Return Object::operator_call(const T& obj, Args&&... args) {
 
 
 inline void List::sort(const Function& key, const Bool& reverse) {
-    static const Str s_sort = "sort";
-    attr(s_sort)(py::arg("key") = key, py::arg("reverse") = reverse);
+    attr<"sort">()(py::arg("key") = key, py::arg("reverse") = reverse);
+}
+
+
+template <typename T>
+inline Dict Str::maketrans(const T& x) {
+    return reinterpret_steal<Dict>(
+        type.template attr<"maketrans">()(x).release()
+    );
+}
+
+
+template <typename T, typename U>
+inline Dict Str::maketrans(const T& x, const U& y) {
+    return reinterpret_steal<Dict>(
+        type.template attr<"maketrans">()(x, y).release()
+    );
+}
+
+template <typename T, typename U, typename V>
+inline Dict Str::maketrans(const T& x, const U& y, const V& z) {
+    return reinterpret_steal<Dict>(
+        type.template attr<"maketrans">()(x, y, z).release()
+    );
+}
+
+
+inline Bytes Bytes::fromhex(const Str& string) {
+    return reinterpret_steal<Bytes>(
+        type.template attr<"fromhex">()(string).release()
+    );
+}
+
+
+template <typename Derived>
+inline Dict impl::IBytes<Derived>::maketrans(const Derived& from, const Derived& to) {
+    return reinterpret_steal<Dict>(
+        type.template attr<"maketrans">()(from, to).release()
+    );
+}
+
+
+inline ByteArray ByteArray::fromhex(const Str& string) {
+    return reinterpret_steal<ByteArray>(
+        type.template attr<"fromhex">()(string).release()
+    );
 }
 
 
 inline Bytes Code::bytecode() const {
-    static const pybind11::str code = "co_code";
-    return attr(code);
+    return attr<"co_code">();
 }
 
 
@@ -615,8 +648,7 @@ inline void print(const Args&... args) {
 // template <typename T>
 // inline Iterator reversed(T&& obj) {
 //     if constexpr (impl::python_like<std::decay_t<T>>) {
-//         static const Str s_reversed = "reversed";
-//         return obj.attr(s_reversed)();
+//         return obj.template attr<"reversed">()();
 //     } else {
 //         static_assert(
 //             !std::is_rvalue_reference_v<decltype(obj)>,
@@ -667,6 +699,8 @@ inline Dict vars() {
     return locals();
 }
 
+
+// TODO: attr<> doesn't work for Handles
 
 /* Equivalent to Python `vars(object)`. */
 inline Dict vars(const Handle& object) {

@@ -1645,7 +1645,8 @@ namespace impl {
         template <typename T>                                                           \
             requires (                                                                  \
                 impl::__lshift__<T, cls>::enable &&                                     \
-                !std::is_base_of_v<Object, T>                                           \
+                !std::is_base_of_v<Object, T> &&                                        \
+                !std::is_base_of_v<std::ostream, T>                                     \
             )                                                                           \
         inline friend auto operator<<(const T& lhs, const cls& rhs) {                   \
             using Return = typename impl::__lshift__<T, cls>::Return;                   \
@@ -1693,7 +1694,8 @@ namespace impl {
         template <typename T>                                                           \
             requires (                                                                  \
                 impl::__rshift__<T, cls>::enable &&                                     \
-                !std::is_base_of_v<Object, T>                                           \
+                !std::is_base_of_v<Object, T> &&                                        \
+                !std::is_base_of_v<std::istream, T>                                     \
             )                                                                           \
         inline friend auto operator>>(const T& lhs, const cls& rhs) {                   \
             using Return = typename impl::__rshift__<T, cls>::Return;                   \
@@ -2081,8 +2083,9 @@ namespace impl {
     }
 
     template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
-    class ItemAccessor;
-    class AttrAccessor;
+    class ItemProxy;
+    template <typename Obj>
+    class AttrProxy;
     template <typename Policy>
     class Iterator;
     template <typename Policy>
@@ -2091,6 +2094,35 @@ namespace impl {
     class GenericIter;
 
     struct SliceInitializer;
+
+    /* C++20 expands support for non-type template parameters, including compile-time
+    strings.  This helper class allows arbitrary string literals to be encoded directly
+    as template parameters, massively expanding the possibilities for template
+    configuration. */
+    template <size_t size>
+    struct constexpr_string {
+        char buffer[size + 1];  // + 1 for null terminator
+
+        constexpr constexpr_string(const char(&arr)[size + 1]) {
+            std::copy_n(arr, size + 1, buffer);
+        }
+
+        inline operator const char*() const {
+            return buffer;
+        }
+
+        inline operator std::string() const {
+            return std::string(buffer, size);
+        }
+
+        inline operator std::string_view() const {
+            return std::string_view(buffer, size);
+        }
+
+    };
+
+    template <size_t N>
+    constexpr_string(const char(&arr)[N]) -> constexpr_string<N-1>;
 
 }  // namespace impl
 
@@ -2273,7 +2305,10 @@ public:
      */
 
     template <typename Key> requires (impl::str_like<Key>)
-    inline impl::AttrAccessor attr(Key&& key) const;
+    inline impl::AttrProxy<Object> attr(Key&& key) const;
+
+    template <impl::constexpr_string key>
+    inline impl::AttrProxy<Object> attr() const;
 
     BERTRAND_OBJECT_OPERATORS(Object)
 
@@ -2300,13 +2335,13 @@ protected:
 
     template <typename Return, typename T, typename Key>
     inline static auto operator_getitem(const T& obj, Key&& key)
-        -> impl::ItemAccessor<T, std::decay_t<Key>>;
+        -> impl::ItemProxy<T, std::decay_t<Key>>;
 
     template <typename Return, typename T>
     inline static auto operator_getitem(
         const T& obj,
         std::initializer_list<impl::SliceInitializer> slice
-    ) -> impl::ItemAccessor<T, Slice>;
+    ) -> impl::ItemProxy<T, Slice>;
 
     template <typename Return, typename T>
     inline static auto operator_begin(const T& obj)
@@ -2961,9 +2996,9 @@ namespace impl {
                 return deref() op value;                                                \
             }                                                                           \
             template <typename T>                                                       \
-            inline friend auto operator op(                                             \
-                const T& value, const Proxy& self                                       \
-            ) { return value op *self; }                                                \
+            inline friend auto operator op(const T& value, const Proxy& self) {         \
+                return value op *self;                                                  \
+            }                                                                           \
 
         #define INPLACE_OPERATOR(op)                                                    \
             template <typename T>                                                       \
@@ -2990,8 +3025,6 @@ namespace impl {
         BINARY_OPERATOR(*)
         BINARY_OPERATOR(/)
         BINARY_OPERATOR(%)
-        BINARY_OPERATOR(<<)
-        BINARY_OPERATOR(>>)
         BINARY_OPERATOR(&)
         BINARY_OPERATOR(|)
         BINARY_OPERATOR(^)
@@ -3009,19 +3042,46 @@ namespace impl {
         #undef BINARY_OPERATOR
         #undef INPLACE_OPERATOR
 
+        template <typename T>
+        inline auto operator<<(const T& value) const {
+            return deref() << value;
+        }
+        template <typename T> requires (!std::is_base_of_v<std::ostream, T>)
+        inline friend auto operator<<(const T& value, const Proxy& self) {
+            return value << *self;
+        }
+
         inline friend std::ostream& operator<<(std::ostream& os, const Proxy& self) {
             os << self.deref();
             return os;
         }
 
+        template <typename T>
+        inline auto operator>>(const T& value) const {
+            return deref() >> value;
+        }
+        template <typename T> requires (!std::is_base_of_v<std::istream, T>)
+        inline friend auto operator>>(const T& value, const Proxy& self) {
+            return value >> *self;
+        }
+
+        inline friend std::istream& operator>>(std::istream& os, const Proxy& self) {
+            os >> self.deref();
+            return os;
+        }
+
     };
+
+    // TODO: add a template restriction for readonly/settable/deletable attributes
+    // Maybe this uses a similar policy approach to the others.
 
     /* A subclass of Proxy that replaces the result of pybind11's `.attr()` method.
     This does not (and can not) enforce any strict typing rules, but it brings the
     syntax more in line with the rest of bertrand's other operator overloads. */
-    class AttrAccessor : public Proxy<Object, AttrAccessor> {
-        using Base = Proxy<Object, AttrAccessor>;
-        Handle obj;
+    template <typename Obj>
+    class AttrProxy : public Proxy<Obj, AttrProxy<Obj>> {
+        using Base = Proxy<Obj, AttrProxy>;
+        Object obj;
         Object key;
 
         void get_attr() const {
@@ -3035,17 +3095,19 @@ namespace impl {
             if (result == nullptr) {
                 throw error_already_set();
             }
-            new (Base::buffer) Object(reinterpret_steal<Object>(result));
+            new (Base::buffer) Obj(reinterpret_steal<Obj>(result));
             Base::initialized = true;
         }
 
     public:
 
         template <typename T> requires (str_like<T> && python_like<T>)
-        explicit AttrAccessor(Handle obj, T&& key) : obj(obj), key(std::forward<T>(key)) {}
+        explicit AttrProxy(const Object& obj, T&& key) :
+            obj(obj), key(std::forward<T>(key))
+        {}
 
         template <size_t N>
-        explicit AttrAccessor(Handle obj, const char(&key)[N]) :
+        explicit AttrProxy(const Object& obj, const char(&key)[N]) :
             obj(obj), key(reinterpret_steal<Object>(
                 PyUnicode_FromStringAndSize(key, N - 1))
             )
@@ -3056,7 +3118,7 @@ namespace impl {
         }
 
         template <typename T> requires (std::is_convertible_v<T, const char*>)
-        explicit AttrAccessor(Handle obj, const T& key) :
+        explicit AttrProxy(const Object& obj, const T& key) :
             obj(obj), key(reinterpret_steal<Object>(PyUnicode_FromString(key)))
         {
             if (this->key.ptr() == nullptr) {
@@ -3064,7 +3126,7 @@ namespace impl {
             }
         }
 
-        explicit AttrAccessor(Handle obj, const std::string& key) :
+        explicit AttrProxy(const Object& obj, const std::string& key) :
             obj(obj), key(reinterpret_steal<Object>(
                 PyUnicode_FromStringAndSize(key.c_str(), key.size())
             ))
@@ -3074,7 +3136,7 @@ namespace impl {
             }
         }
 
-        explicit AttrAccessor(Handle obj, const std::string_view& key) :
+        explicit AttrProxy(const Object& obj, const std::string_view& key) :
             obj(obj), key(reinterpret_steal<Object>(
                 PyUnicode_FromStringAndSize(key.data(), key.size())
             ))
@@ -3084,12 +3146,13 @@ namespace impl {
             }
         }
 
-        AttrAccessor(const AttrAccessor& other) :
+        AttrProxy(const AttrProxy& other) :
             Base(other), obj(other.obj), key(other.key)
         {}
 
-        AttrAccessor(AttrAccessor&& other) :
-            Base(std::move(other)), obj(other.obj), key(std::move(other.key))
+        AttrProxy(AttrProxy&& other) :
+            Base(std::move(other)), obj(std::move(other.obj)),
+            key(std::move(other.key))
         {}
 
         /* pybind11's attribute accessors only perform the lookup when the accessor is
@@ -3114,18 +3177,18 @@ namespace impl {
          *      py::Int i = reinterpret_steal<py::Int>(obj.attr("some_int").release());
          */
 
-        inline Object& operator*() {
+        inline Obj& operator*() {
             if (!Base::initialized) {
                 get_attr();
             }
-            return reinterpret_cast<Object&>(Base::buffer);
+            return reinterpret_cast<Obj&>(Base::buffer);
         }
 
-        inline const Object& operator*() const {
+        inline const Obj& operator*() const {
             if (!Base::initialized) {
                 get_attr();
             }
-            return reinterpret_cast<Object&>(Base::buffer);
+            return reinterpret_cast<Obj&>(Base::buffer);
         }
 
         /* Similarly, assigning to a pybind11 wrapper corresponds to a Python
@@ -3138,13 +3201,13 @@ namespace impl {
          */
 
         template <typename T> requires (!proxy_like<std::decay_t<T>>)
-        inline AttrAccessor& operator=(T&& value) {
-            new (Base::buffer) Object(std::forward<T>(value));
+        inline AttrProxy& operator=(T&& value) {
+            new (Base::buffer) Obj(std::forward<T>(value));
             Base::initialized = true;
             if (PyObject_SetAttr(
                 obj.ptr(),
                 key.ptr(),
-                reinterpret_cast<Object&>(Base::buffer).ptr()
+                reinterpret_cast<Obj&>(Base::buffer).ptr()
             ) < 0) {
                 throw error_already_set();
             }
@@ -3152,7 +3215,7 @@ namespace impl {
         }
 
         template <typename T> requires (proxy_like<std::decay_t<T>>)
-        inline AttrAccessor& operator=(T&& value) {
+        inline AttrProxy& operator=(T&& value) {
             operator=(*value);
             return *this;
         }
@@ -3170,7 +3233,7 @@ namespace impl {
                 throw error_already_set();
             }
             if (Base::initialized) {
-                reinterpret_cast<Object&>(Base::buffer).~Object();
+                reinterpret_cast<Obj&>(Base::buffer).~Obj();
                 Base::initialized = false;
             }
         }
@@ -3291,8 +3354,8 @@ namespace impl {
     to selectively enable/disable these operations for particular types, and to assign
     a corresponding return type to which the proxy can be converted. */
     template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
-    class ItemAccessor :
-        public Proxy<typename __getitem__<Obj, Key>::Return, ItemAccessor<Obj, Key>>
+    class ItemProxy :
+        public Proxy<typename __getitem__<Obj, Key>::Return, ItemProxy<Obj, Key>>
     {
     public:
         using Wrapped = typename __getitem__<Obj, Key>::Return;
@@ -3304,15 +3367,15 @@ namespace impl {
         );
 
     private:
-        using Base = Proxy<Wrapped, ItemAccessor>;
+        using Base = Proxy<Wrapped, ItemProxy>;
         ItemPolicy<Obj, Key> policy;
 
     public:
 
         template <typename... Args>
-        explicit ItemAccessor(Args&&... args) : policy(std::forward<Args>(args)...) {}
-        ItemAccessor(const ItemAccessor& other) : Base(other), policy(other.policy) {}
-        ItemAccessor(ItemAccessor&& other) :
+        explicit ItemProxy(Args&&... args) : policy(std::forward<Args>(args)...) {}
+        ItemProxy(const ItemProxy& other) : Base(other), policy(other.policy) {}
+        ItemProxy(ItemProxy&& other) :
             Base(std::move(other)), policy(std::move(other.policy))
         {}
 
@@ -3371,7 +3434,7 @@ namespace impl {
          */
 
         template <typename T> requires (__setitem__<Obj, Key, T>::enable && !proxy_like<T>)
-        inline ItemAccessor& operator=(T&& value) {
+        inline ItemProxy& operator=(T&& value) {
             static_assert(
                 std::is_void_v<typename __setitem__<Obj, Key, T>::Return>,
                 "index assignment operator must return void.  Check your "
@@ -3385,7 +3448,7 @@ namespace impl {
         }
 
         template <typename T> requires (proxy_like<T>)
-        inline ItemAccessor& operator=(T&& value) {
+        inline ItemProxy& operator=(T&& value) {
             operator=(*value);
             return *this;
         }
@@ -3810,7 +3873,7 @@ namespace impl {
 
         /* Move constructor. */
         TupleIter(TupleIter&& other) :
-            tuple(other.tuple), curr(other.curr), index(other.index)
+            tuple(std::move(other.tuple)), curr(other.curr), index(other.index)
         {
             other.curr = nullptr;
         }
@@ -3918,7 +3981,7 @@ namespace impl {
 
         /* Move constructor. */
         ListIter(ListIter&& other) :
-            list(other.list), curr(other.curr), index(other.index)
+            list(std::move(other.list)), curr(other.curr), index(other.index)
         {
             other.curr = nullptr;
         }
@@ -3947,7 +4010,7 @@ namespace impl {
         /* Dereference the iterator. */
         inline Deref deref() const {
             if (curr == nullptr) {
-                throw ValueError("attempt to dereference a null iterator.");
+                throw IndexError("list index out of range");
             }
             return reinterpret_borrow<Deref>(curr);
         }
@@ -3988,7 +4051,7 @@ namespace impl {
 
     };
 
-    // TODO: DictKeyIter, DictValueIter, DictItemIter using PyDict_Next
+    // TODO: KeyIter, ValueIter, ItemIter using PyDict_Next
 
     /* Mixin holding operator overloads for types implementing the sequence protocol,
     which makes them both concatenatable and repeatable. */
@@ -4418,20 +4481,17 @@ public:
 
     /* Get the start object of the slice.  Note that this might not be an integer. */
     inline Object start() const {
-        static const pybind11::str method = "start";
-        return attr(method);
+        return attr<"start">();
     }
 
     /* Get the stop object of the slice.  Note that this might not be an integer. */
     inline Object stop() const {
-        static const pybind11::str method = "stop";
-        return attr(method);
+        return attr<"stop">();
     }
 
     /* Get the step object of the slice.  Note that this might not be an integer. */
     inline Object step() const {
-        static const pybind11::str method = "step";
-        return attr(method);
+        return attr<"step">();
     }
 
     /* Data struct containing normalized indices obtained from a py::Slice object. */
@@ -4555,8 +4615,7 @@ public:
         }
         auto result = reinterpret_borrow<Module>(submodule);
         if (doc && pybind11::options::show_user_defined_docstrings()) {
-            static const pybind11::str method = "__doc__";
-            result.attr(method) = pybind11::str(doc);
+            result.template attr<"__doc__">() = pybind11::str(doc);
         }
         attr(name) = result;
         return result;
@@ -4606,16 +4665,23 @@ public:
 
 
 template <typename Key> requires (impl::str_like<Key>)
-inline impl::AttrAccessor Object::attr(Key&& key) const {
-    return impl::AttrAccessor(*this, std::forward<Key>(key));
+inline impl::AttrProxy<Object> Object::attr(Key&& key) const {
+    return impl::AttrProxy<Object>(*this, std::forward<Key>(key));
+}
+
+
+template <impl::constexpr_string key>
+inline impl::AttrProxy<Object> Object::attr() const {
+    static const pybind11::str lookup = static_cast<std::string>(key);
+    return impl::AttrProxy<Object>(*this, lookup);
 }
 
 
 template <typename Return, typename T, typename Key>
 inline auto Object::operator_getitem(const T& obj, Key&& key)
-    -> impl::ItemAccessor<T, std::decay_t<Key>>
+    -> impl::ItemProxy<T, std::decay_t<Key>>
 {
-    return impl::ItemAccessor<T, std::decay_t<Key>>(obj, std::forward<Key>(key));
+    return impl::ItemProxy<T, std::decay_t<Key>>(obj, std::forward<Key>(key));
 }
 
 
@@ -4623,7 +4689,7 @@ template <typename Return, typename T>
 inline auto Object::operator_getitem(
     const T& obj,
     std::initializer_list<impl::SliceInitializer> slice
-) -> impl::ItemAccessor<T, Slice>
+) -> impl::ItemProxy<T, Slice>
 {
     if (slice.size() > 3) {
         throw ValueError("slices must be of the form {[start[, stop[, step]]]}");
@@ -4633,7 +4699,7 @@ inline auto Object::operator_getitem(
     for (const impl::SliceInitializer& item : slice) {
         params[i++] = item.first;
     }
-    return impl::ItemAccessor<T, Slice>(
+    return impl::ItemProxy<T, Slice>(
         obj,
         Slice(params[0], params[1], params[2])
     );
@@ -4666,8 +4732,7 @@ template <typename Return, typename T>
 inline auto Object::operator_rbegin(const T& obj)
     -> impl::Iterator<impl::GenericIter<Return>>
 {
-    static const pybind11::str reversed = "__reversed__";
-    return {obj.attr(reversed)()};
+    return {obj.template attr<"__reversed__">()()};
 }
 
 

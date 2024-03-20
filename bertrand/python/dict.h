@@ -163,8 +163,7 @@ public:
     /* Explicitly create a keys view on an existing dictionary. */
     template <typename T> requires (impl::dict_like<T> && impl::python_like<T>)
     explicit KeysView(const T& dict) {
-        static const pybind11::str method = "keys";
-        m_ptr = dict.attr(method)().release().ptr();
+        m_ptr = dict.template attr<"keys">()().release().ptr();
     }
 
     ////////////////////////////////
@@ -172,21 +171,19 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `dict.keys().mapping`. */
-    inline MappingProxy mapping() const;
+    inline impl::AttrProxy<MappingProxy> mapping() const;
 
     /* Equivalent to Python `dict.keys().isdisjoint(other)`. */
     template <impl::is_iterable T>
     inline bool isdisjoint(const T& other) const {
-        static const pybind11::str method = "isdisjoint";
-        return static_cast<bool>(attr(method)(detail::object_or_cast(other)));
+        return static_cast<bool>(attr<"isdisjoint">()(detail::object_or_cast(other)));
     }
 
     /* Equivalent to Python `dict.keys().isdisjoint(<braced initializer list>)`. */
     inline bool isdisjoint(
         const std::initializer_list<impl::HashInitializer>& other
     ) const {
-        static const pybind11::str method = "isdisjoint";
-        return static_cast<bool>(attr(method)(Set(other)));
+        return static_cast<bool>(attr<"isdisjoint">()(Set(other)));
     }
 
     /////////////////////////
@@ -197,30 +194,26 @@ public:
         const std::initializer_list<impl::HashInitializer>& other
     ) const {
         // TODO: use PyNumber_Or here?  <-- benchmark and test
-        static const pybind11::str method = "__or__";
-        return Set(attr(method)(Set(other)));
+        return Set(attr<"__or__">()(Set(other)));
     }
 
     inline Set operator&(
         const std::initializer_list<impl::HashInitializer>& other
     ) const {
         // TODO: same with PyNumber_And
-        static const pybind11::str method = "__and__";
-        return Set(attr(method)(Set(other)));
+        return Set(attr<"__and__">()(Set(other)));
     }
 
     inline Set operator-(
         const std::initializer_list<impl::HashInitializer>& other
     ) const {
-        static const pybind11::str method = "__sub__";
-        return Set(attr(method)(Set(other)));
+        return Set(attr<"__sub__">()(Set(other)));
     }
 
     inline Set operator^(
         const std::initializer_list<impl::HashInitializer>& other
     ) const {
-        static const pybind11::str method = "__xor__";
-        return Set(attr(method)(Set(other)));
+        return Set(attr<"__xor__">()(Set(other)));
     }
 
 };
@@ -258,8 +251,7 @@ public:
     /* Explicitly create a values view on an existing dictionary. */
     template <typename T> requires (impl::dict_like<T> && impl::python_like<T>)
     explicit ValuesView(const T& dict) {
-        static const pybind11::str method = "values";
-        m_ptr = dict.attr(method)().release().ptr();
+        m_ptr = dict.template attr<"values">()().release().ptr();
     }
 
     ///////////////////////////////
@@ -304,8 +296,7 @@ public:
     /* Explicitly create an items view on an existing dictionary. */
     template <typename T> requires (impl::dict_like<T> && impl::python_like<T>)
     explicit ItemsView(const T& dict) {
-        static const pybind11::str method = "items";
-        m_ptr = dict.attr(method)().release().ptr();
+        m_ptr = dict.template attr<"items">()().release().ptr();
     }
 
     ////////////////////////////////
@@ -652,8 +643,7 @@ public:
 
     /* Equivalent to Python `dict.popitem()`. */
     inline Object popitem() {
-        static const pybind11::str method = "popitem";
-        return attr(method)();
+        return attr<"popitem">()();
     }
 
     /* Equivalent to Python `dict.setdefault(key)`. */
@@ -727,20 +717,17 @@ public:
 
     /* Equivalent to Python `dict.keys()`. */
     inline KeysView keys() const {
-        static const pybind11::str method = "keys";
-        return reinterpret_steal<KeysView>(attr(method)().release());
+        return reinterpret_steal<KeysView>(attr<"keys">()().release());
     }
 
     /* Equivalent to Python `dict.values()`. */
     inline ValuesView values() const {
-        static const pybind11::str method = "values";
-        return reinterpret_steal<ValuesView>(attr(method)().release());
+        return reinterpret_steal<ValuesView>(attr<"values">()().release());
     }
 
     /* Equivalent to Python `dict.items()`. */
     inline ItemsView items() const {
-        static const pybind11::str method = "items";
-        return reinterpret_steal<ItemsView>(attr(method)().release());
+        return reinterpret_steal<ItemsView>(attr<"items">()().release());
     }
 
     /////////////////////////
@@ -829,22 +816,19 @@ public:
 
     /* Equivalent to Python `mappingproxy.copy()`. */
     inline Dict copy() const {
-        static const pybind11::str method = "copy";
-        return reinterpret_steal<Dict>(attr(method)().release());
+        return reinterpret_steal<Dict>(attr<"copy">()().release());
     }
 
     /* Equivalent to Python `mappingproxy.get(key)`. */
     template <impl::is_hashable K>
     inline Object get(const K& key) const {
-        static const pybind11::str method = "get";
-        return attr(method)(detail::object_or_cast(key), py::None);
+        return attr<"get">()(detail::object_or_cast(key), py::None);
     }
 
     /* Equivalent to Python `mappingproxy.get(key, default)`. */
     template <impl::is_hashable K, typename V>
     inline Object get(const K& key, const V& default_value) const {
-        static const pybind11::str method = "get";
-        return attr(method)(
+        return attr<"get">()(
             detail::object_or_cast(key),
             detail::object_or_cast(default_value)
         );
@@ -852,20 +836,17 @@ public:
 
     /* Equivalent to Python `mappingproxy.keys()`. */
     inline KeysView keys() const {
-        static const pybind11::str method = "keys";
-        return reinterpret_steal<KeysView>(attr(method)().release());
+        return reinterpret_steal<KeysView>(attr<"keys">()().release());
     }
 
     /* Equivalent to Python `mappingproxy.values()`. */
     inline ValuesView values() const {
-        static const pybind11::str method = "values";
-        return reinterpret_steal<ValuesView>(attr(method)().release());
+        return reinterpret_steal<ValuesView>(attr<"values">()().release());
     }
 
     /* Equivalent to Python `mappingproxy.items()`. */
     inline ItemsView items() const {
-        static const pybind11::str method = "items";
-        return reinterpret_steal<ItemsView>(attr(method)().release());
+        return reinterpret_steal<ItemsView>(attr<"items">()().release());
     }
 
     /////////////////////////
@@ -883,21 +864,22 @@ public:
 };
 
 
-inline MappingProxy KeysView::mapping() const {
+// TODO: figure out how to return a type-safe AttrProxy here
+
+
+inline impl::AttrProxy<MappingProxy> KeysView::mapping() const {
     static const pybind11::str method = "mapping";
-    return attr(method);
+    return impl::AttrProxy<MappingProxy>(*this, method);
 }
 
 
 inline MappingProxy ValuesView::mapping() const {
-    static const pybind11::str method = "mapping";
-    return attr(method);
+    return attr<"mapping">();
 }
 
 
 inline MappingProxy ItemsView::mapping() const {
-    static const pybind11::str method = "mapping";
-    return attr(method);
+    return attr<"mapping">();
 }
 
 

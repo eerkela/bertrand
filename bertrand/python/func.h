@@ -336,23 +336,20 @@ public:
     /* Get a tuple containing the names of the local variables in the function,
     starting with parameter names. */
     inline Tuple varnames() const {
-        static const pybind11::str varnames = "co_varnames";
-        return attr(varnames);
+        return attr<"co_varnames">();
     }
 
     /* Get a tuple containing the names of local variables that are referenced by
     nested functions within this function (i.e. those that are stored in a
     PyCell). */
     inline Tuple cellvars() const {
-        static const pybind11::str cellvars = "co_cellvars";
-        return attr(cellvars);
+        return attr<"co_cellvars">();
     }
 
     /* Get a tuple containing the names of free variables in the function (i.e.
     those that are not stored in a PyCell). */
     inline Tuple freevars() const {
-        static const pybind11::str freevars = "co_freevars";
-        return attr(freevars);
+        return attr<"co_freevars">();
     }
 
     /* Get the required stack space for the code object. */
@@ -652,13 +649,12 @@ public:
     /* Get a read-only dictionary mapping argument names to their default values. */
     inline MappingProxy defaults() const {
         Code code = this->code();
-        static const pybind11::str s_kwdefaults = "__kwdefaults__";
 
         // check for positional defaults
         PyObject* pos_defaults = PyFunction_GetDefaults(this->ptr());
         if (pos_defaults == nullptr) {
             if (code.kwonlyargcount() > 0) {
-                Object kwdefaults = attr(s_kwdefaults);
+                Object kwdefaults = attr<"__kwdefaults__">();
                 if (kwdefaults.is(None)) {
                     return Dict{};
                 } else {
@@ -680,7 +676,7 @@ public:
 
         // merge keyword-only defaults
         if (code.kwonlyargcount() > 0) {
-            Object kwdefaults = attr(s_kwdefaults);
+            Object kwdefaults = attr<"__kwdefaults__">();
             if (!kwdefaults.is(None)) {
                 result.update(Dict(kwdefaults));
             }
@@ -723,7 +719,7 @@ public:
 
     //     // check for keyword-only defaults
     //     if (code.kwonlyargcount() > 0) {
-    //         Object kwdefaults = attr("__kwdefaults__");
+    //         Object kwdefaults = attr<"__kwdefaults__">();
     //         if (!kwdefaults.is(None)) {
     //             Dict temp = {};
     //             for (const Object& key : kwdefaults) {
@@ -906,8 +902,7 @@ public:
 
     /* Get the underlying function. */
     inline Function function() const {
-        static const pybind11::str method = "__func__";
-        return reinterpret_steal<Function>(Object(attr(method)).release());
+        return reinterpret_steal<Function>(Object(attr<"__func__">()).release());
     }
 
 };
@@ -953,8 +948,7 @@ public:
 
     /* Get the underlying function. */
     inline Function function() const {
-        static const pybind11::str method = "__func__";
-        return reinterpret_steal<Function>(Object(attr(method)).release());
+        return reinterpret_steal<Function>(Object(attr<"__func__">()).release());
     }
 
 };
@@ -1006,20 +1000,17 @@ public:
 
     /* Get the function being used as a getter. */
     inline Function fget() const {
-        static const pybind11::str method = "fget";
-        return reinterpret_steal<Function>(Object(attr(method)).release());
+        return reinterpret_steal<Function>(Object(attr<"fget">()).release());
     }
 
     /* Get the function being used as a setter. */
     inline Function fset() const {
-        static const pybind11::str method = "fset";
-        return reinterpret_steal<Function>(Object(attr(method)).release());
+        return reinterpret_steal<Function>(Object(attr<"fset">()).release());
     }
 
     /* Get the function being used as a deleter. */
     inline Function fdel() const {
-        static const pybind11::str method = "fdel";
-        return reinterpret_steal<Function>(Object(attr(method)).release());
+        return reinterpret_steal<Function>(Object(attr<"fdel">()).release());
     }
 
 };

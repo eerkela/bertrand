@@ -29,20 +29,17 @@ namespace impl {
 
         /* Equivalent to Python `bytes.capitalize()`. */
         inline Derived captialize() const {
-            static const pybind11::str method = "capitalize";
-            return reinterpret_steal<Derived>(attr(method)().release());
+            return reinterpret_steal<Derived>(attr<"capitalize">()().release());
         }
 
         /* Equivalent to Python `bytes.center(width)`. */
         inline Derived center(size_t width) const {
-            static const pybind11::str method = "center";
-            return reinterpret_steal<Derived>(attr(method)(width).release());
+            return reinterpret_steal<Derived>(attr<"center">()(width).release());
         }
 
         /* Equivalent to Python `bytes.center(width, fillbyte)`. */
         inline Derived center(size_t width, const Derived& fillbyte) const {
-            static const pybind11::str method = "center";
-            return reinterpret_steal<Derived>(attr(method)(width, fillbyte).release());
+            return reinterpret_steal<Derived>(attr<"center">()(width, fillbyte).release());
         }
 
         /* Equivalent to Python `bytes.count(sub[, start[, end]])`. */
@@ -51,8 +48,7 @@ namespace impl {
             Py_ssize_t start = 0,
             Py_ssize_t end = -1
         ) const {
-            static const pybind11::str method = "count";
-            return static_cast<size_t>(attr(method)(sub, start, end));
+            return static_cast<size_t>(attr<"count">()(sub, start, end));
         }
 
         /* Equivalent to Python `bytes.decode([encoding[, errors]])`. */
@@ -60,8 +56,7 @@ namespace impl {
             const Str& encoding = "utf-8",
             const Str& errors = "strict"
         ) const {
-            static const pybind11::str method = "decode";
-            return reinterpret_steal<Str>(attr(method)(encoding, errors).release());
+            return reinterpret_steal<Str>(attr<"decode">()(encoding, errors).release());
         }
 
         /* Equivalent to Python `bytes.endswith(suffix[, start[, end]])`. */
@@ -70,14 +65,12 @@ namespace impl {
             Py_ssize_t start = 0,
             Py_ssize_t end = -1
         ) const {
-            static const pybind11::str method = "endswith";
-            return static_cast<bool>(attr(method)(suffix, start, end));
+            return static_cast<bool>(attr<"endswith">()(suffix, start, end));
         }
 
         /* Equivalent to Python `bytes.expandtabs(tabsize=8)`. */
         inline Derived expandtabs(size_t tabsize = 8) const {
-            static const pybind11::str method = "expandtabs";
-            return reinterpret_steal<Derived>(attr(method)(tabsize).release());
+            return reinterpret_steal<Derived>(attr<"expandtabs">()(tabsize).release());
         }
 
         /* Equivalent to Python `bytes.find(sub[, start[, end]])`. */
@@ -86,20 +79,17 @@ namespace impl {
             Py_ssize_t start = 0,
             Py_ssize_t end = -1
         ) const {
-            static const pybind11::str method = "find";
-            return static_cast<size_t>(attr(method)(sub, start, end));
+            return static_cast<size_t>(attr<"find">()(sub, start, end));
         }
 
         /* Equivalent to Python `bytes.hex()`. */
         inline Str hex() const {
-            static const pybind11::str method = "hex";
-            return reinterpret_steal<Str>(attr(method)().release());
+            return reinterpret_steal<Str>(attr<"hex">()().release());
         }
 
         /* Equivalent to Python `bytes.hex(sep[, bytes_per_sep])`. */
         inline Str hex(const Derived& sep, Py_ssize_t bytes_per_sep = 1) const {
-            static const pybind11::str method = "hex";
-            return reinterpret_steal<Str>(attr(method)(sep, bytes_per_sep).release());
+            return reinterpret_steal<Str>(attr<"hex">()(sep, bytes_per_sep).release());
         }
 
         /* Equivalent to Python `bytes.index(sub[, start[, end]])`. */
@@ -108,84 +98,65 @@ namespace impl {
             Py_ssize_t start = 0,
             Py_ssize_t end = -1
         ) const {
-            static const pybind11::str method = "index";
-            return static_cast<size_t>(attr(method)(sub, start, end));
+            return static_cast<size_t>(attr<"index">()(sub, start, end));
         }
 
         /* Equivalent to Python `bytes.isalnum()`. */
         inline bool isalnum() const {
-            static const pybind11::str method = "isalnum";
-            return static_cast<bool>(attr(method)());
+            return static_cast<bool>(attr<"isalnum">()());
         }
 
         /* Equivalent to Python `bytes.isalpha()`. */
         inline bool isalpha() const {
-            static const pybind11::str method = "isalpha";
-            return static_cast<bool>(attr(method)());
+            return static_cast<bool>(attr<"isalpha">()());
         }
 
         /* Equivalent to Python `bytes.isascii()`. */
         inline bool isascii() const {
-            static const pybind11::str method = "isascii";
-            return static_cast<bool>(attr(method)());
+            return static_cast<bool>(attr<"isascii">()());
         }
 
         /* Equivalent to Python `bytes.isdigit()`. */
         inline bool isdigit() const {
-            static const pybind11::str method = "isdigit";
-            return static_cast<bool>(attr(method)());
+            return static_cast<bool>(attr<"isdigit">()());
         }
 
         /* Equivalent to Python `bytes.islower()`. */
         inline bool islower() const {
-            static const pybind11::str method = "islower";
-            return static_cast<bool>(attr(method)());
+            return static_cast<bool>(attr<"islower">()());
         }
 
         /* Equivalent to Python `bytes.isspace()`. */
         inline bool isspace() const {
-            static const pybind11::str method = "isspace";
-            return static_cast<bool>(attr(method)());
+            return static_cast<bool>(attr<"isspace">()());
         }
 
         /* Equivalent to Python `bytes.istitle()`. */
         inline bool istitle() const {
-            static const pybind11::str method = "istitle";
-            return static_cast<bool>(attr(method)());
+            return static_cast<bool>(attr<"istitle">()());
         }
 
         /* Equivalent to Python `bytes.isupper()`. */
         inline bool isupper() const {
-            static const pybind11::str method = "isupper";
-            return static_cast<bool>(attr(method)());
+            return static_cast<bool>(attr<"isupper">()());
         }
 
         /* Equivalent to Python (static) `bytes.maketrans(x)`. */
-        inline static Dict maketrans(const Derived& from, const Derived& to) {
-            static const pybind11::str method = "maketrans";
-            static const pybind11::type cls =
-                reinterpret_borrow<pybind11::type>((PyObject*) &PyBytes_Type);
-            return reinterpret_steal<Dict>(
-                cls.attr(method)(detail::object_or_cast(from, to)).release()
-            );
-        }
+        inline static Dict maketrans(const Derived& from, const Derived& to);
 
         /* Equivalent to Python `bytes.partition(sep)`. */
         inline Tuple partition(const Derived& sep) const {
-            static const pybind11::str method = "partition";
-            return reinterpret_steal<Tuple>(attr(method)(sep).release());
+            return reinterpret_steal<Tuple>(attr<"partition">()(sep).release());
         }
 
         /* Equivalent to Python `bytes.removeprefix(prefix)`. */
         inline Derived removeprefix(const Derived& prefix) const {
-            static const pybind11::str method = "removeprefix";
-            return reinterpret_steal<Derived>(attr(method)(prefix).release());
+            return reinterpret_steal<Derived>(attr<"removeprefix">()(prefix).release());
         }
 
         /* Equivalent to Python `bytes.removesuffix(suffix)`. */
         inline Derived removesuffix(const Derived& suffix) const {
-            static const pybind11::str method = "removesuffix";
-            return reinterpret_steal<Derived>(attr(method)(suffix).release());
+            return reinterpret_steal<Derived>(attr<"removesuffix">()(suffix).release());
         }
 
         /* Equivalent to Python `bytes.replace(old, new[, count])`. */
@@ -193,8 +164,7 @@ namespace impl {
             const Derived& sub,
             const Derived& repl
         ) const {
-            static const pybind11::str method = "replace";
-            return reinterpret_steal<Derived>(attr(method)(sub, repl).release());
+            return reinterpret_steal<Derived>(attr<"replace">()(sub, repl).release());
         }
 
         /* Equivalent to Python `bytes.replace(old, new[, count])`. */
@@ -203,9 +173,8 @@ namespace impl {
             const Derived& repl,
             Py_ssize_t maxcount
         ) const {
-            static const pybind11::str method = "replace";
             return reinterpret_steal<Derived>(
-                attr(method)(sub, repl, maxcount).release()
+                attr<"replace">()(sub, repl, maxcount).release()
             );
         }
 
@@ -215,8 +184,7 @@ namespace impl {
             Py_ssize_t start = 0,
             Py_ssize_t end = -1
         ) const {
-            static const pybind11::str method = "rfind";
-            return static_cast<size_t>(attr(method)(sub, start, end));
+            return static_cast<size_t>(attr<"rfind">()(sub, start, end));
         }
 
         /* Equivalent to Python `bytes.rindex(sub[, start[, end]])`. */
@@ -225,32 +193,27 @@ namespace impl {
             Py_ssize_t start = 0,
             Py_ssize_t end = -1
         ) const {
-            static const pybind11::str method = "rindex";
-            return static_cast<size_t>(attr(method)(sub, start, end));
+            return static_cast<size_t>(attr<"rindex">()(sub, start, end));
         }
 
         /* Equivalent to Python `bytes.rjust(width)`. */
         inline Derived rjust(size_t width) const {
-            static const pybind11::str method = "rjust";
-            return reinterpret_steal<Derived>(attr(method)(width).release());
+            return reinterpret_steal<Derived>(attr<"rjust">()(width).release());
         }
 
         /* Equivalent to Python `bytes.rjust(width, fillbyte)`. */
         inline Derived rjust(size_t width, const Derived& fillbyte) const {
-            static const pybind11::str method = "rjust";
-            return reinterpret_steal<Derived>(attr(method)(width, fillbyte).release());
+            return reinterpret_steal<Derived>(attr<"rjust">()(width, fillbyte).release());
         }
 
         /* Equivalent to Python `bytes.rpartition(sep)`. */
         inline Tuple rpartition(const Derived& sep) const {
-            static const pybind11::str method = "rpartition";
-            return reinterpret_steal<Tuple>(attr(method)(sep).release());
+            return reinterpret_steal<Tuple>(attr<"rpartition">()(sep).release());
         }
 
         /* Equivalent to Python `bytes.rsplit()`. */
         inline List rsplit() const {
-            static const pybind11::str method = "rsplit";
-            return reinterpret_steal<List>(attr(method)().release());
+            return reinterpret_steal<List>(attr<"rsplit">()().release());
         }
 
         /* Equivalent to Python `bytes.rsplit(sep, maxsplit=-1)`. */
@@ -258,26 +221,22 @@ namespace impl {
             const Derived& sep,
             Py_ssize_t maxsplit = -1
         ) const {
-            static const pybind11::str method = "rsplit";
-            return reinterpret_steal<List>(attr(method)(sep, maxsplit).release());
+            return reinterpret_steal<List>(attr<"rsplit">()(sep, maxsplit).release());
         }
 
         /* Equivalent to Python `bytes.rstrip()`. */
         inline Derived rstrip() const {
-            static const pybind11::str method = "rstrip";
-            return reinterpret_steal<Derived>(attr(method)().release());
+            return reinterpret_steal<Derived>(attr<"rstrip">()().release());
         }
 
         /* Equivalent to Python `bytes.rstrip(chars)`. */
         inline Derived rstrip(const Derived& chars) const {
-            static const pybind11::str method = "rstrip";
-            return reinterpret_steal<Derived>(attr(method)(chars).release());
+            return reinterpret_steal<Derived>(attr<"rstrip">()(chars).release());
         }
 
         /* Equivalent to Python `bytes.split()`. */
         inline List split() const {
-            static const pybind11::str method = "split";
-            return reinterpret_steal<List>(attr(method)().release());
+            return reinterpret_steal<List>(attr<"split">()().release());
         }
 
         /* Equivalent to Python `bytes.split(sep, maxsplit=-1)`. */
@@ -285,14 +244,12 @@ namespace impl {
             const Derived& sep,
             Py_ssize_t maxsplit = -1
         ) const {
-            static const pybind11::str method = "split";
-            return reinterpret_steal<List>(attr(method)(sep, maxsplit).release());
+            return reinterpret_steal<List>(attr<"split">()(sep, maxsplit).release());
         }
 
         /* Equivalent to Python `bytes.splitlines()`. */
         inline List splitlines(bool keepends = false) const {
-            static const pybind11::str method = "splitlines";
-            return reinterpret_steal<List>(attr(method)(keepends).release());
+            return reinterpret_steal<List>(attr<"splitlines">()(keepends).release());
         }
 
         /* Equivalent to Python `bytes.startswith(prefix[, start[, stop]])`. */
@@ -301,50 +258,42 @@ namespace impl {
             Py_ssize_t start = 0,
             Py_ssize_t stop = -1
         ) const {
-            static const pybind11::str method = "startswith";
-            return static_cast<bool>(attr(method)(prefix, start, stop));
+            return static_cast<bool>(attr<"startswith">()(prefix, start, stop));
         }
 
         /* Equivalent to Python `bytes.strip()`. */
         inline Derived strip() const {
-            static const pybind11::str method = "strip";
-            return reinterpret_steal<Derived>(attr(method)().release());
+            return reinterpret_steal<Derived>(attr<"strip">()().release());
         }
 
         /* Equivalent to Python `bytes.strip(chars)`. */
         inline Derived strip(const Derived& chars) const {
-            static const pybind11::str method = "strip";
-            return reinterpret_steal<Derived>(attr(method)(chars).release());
+            return reinterpret_steal<Derived>(attr<"strip">()(chars).release());
         }
 
         /* Equivalent to Python `bytes.swapcase()`. */
         inline Derived swapcase() const {
-            static const pybind11::str method = "swapcase";
-            return reinterpret_steal<Derived>(attr(method)().release());
+            return reinterpret_steal<Derived>(attr<"swapcase">()().release());
         }
 
         /* Equivalent to Python `bytes.title()`. */
         inline Derived title() const {
-            static const pybind11::str method = "title";
-            return reinterpret_steal<Derived>(attr(method)().release());
+            return reinterpret_steal<Derived>(attr<"title">()().release());
         }
 
         /* Equivalent to Python `bytes.translate(table)`. */
         inline Derived translate(const Dict& table, const Derived& del = "") const {
-            static const pybind11::str method = "translate";
-            return reinterpret_steal<Derived>(attr(method)(table, del).release());
+            return reinterpret_steal<Derived>(attr<"translate">()(table, del).release());
         }
 
         /* Equivalent to Python `bytes.upper()`. */
         inline Derived upper() const {
-            static const pybind11::str method = "upper";
-            return reinterpret_steal<Derived>(attr(method)().release());
+            return reinterpret_steal<Derived>(attr<"upper">()().release());
         }
 
         /* Equivalent to Python `bytes.zfill(width)`. */
         inline Derived zfill(size_t width) const {
-            static const pybind11::str method = "zfill";
-            return reinterpret_steal<Derived>(attr(method)(width).release());
+            return reinterpret_steal<Derived>(attr<"zfill">()(width).release());
         }
 
     };
@@ -546,12 +495,7 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python (static) `bytes.fromhex(string)`. */
-    inline static Bytes fromhex(const Str& string) {
-        static const pybind11::str method = "fromhex";
-        static const pybind11::type cls =
-            reinterpret_borrow<pybind11::type>((PyObject*) &PyBytes_Type);
-        return reinterpret_steal<Bytes>(cls.attr(method)(string).release());
-    }
+    inline static Bytes fromhex(const Str& string);
 
     /////////////////////////
     ////    OPERATORS    ////
@@ -682,12 +626,7 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python (static) `bytes.fromhex(string)`. */
-    inline static ByteArray fromhex(const Str& string) {
-        static const pybind11::str method = "fromhex";
-        static const pybind11::type cls =
-            reinterpret_borrow<pybind11::type>((PyObject*) &PyByteArray_Type);
-        return reinterpret_steal<ByteArray>(cls.attr(method)(string).release());
-    }
+    inline static ByteArray fromhex(const Str& string);
 
     /////////////////////////
     ////    OPERATORS    ////
@@ -726,8 +665,7 @@ protected:
 
 
 inline Bytes Str::encode(const Str& encoding, const Str& errors) const {
-    static const pybind11::str method = "encode";
-    return reinterpret_steal<Bytes>(attr(method)(encoding, errors).release());
+    return reinterpret_steal<Bytes>(attr<"encode">()(encoding, errors).release());
 }
 
 

@@ -318,8 +318,7 @@ public:
     template <impl::is_iterable T>
     inline void extend(const T& items) {
         if constexpr (impl::python_like<T>) {
-            static const pybind11::str method = "extend";
-            attr(method)(detail::object_or_cast(items));
+            attr<"extend">()(detail::object_or_cast(items));
         } else {
             for (auto&& item : items) {
                 append(std::forward<decltype(item)>(item));
@@ -362,14 +361,12 @@ public:
     /* Equivalent to Python `list.remove(value)`. */
     template <typename T>
     inline void remove(const T& value) {
-        static const pybind11::str method = "remove";
-        attr(method)(detail::object_or_cast(value));
+        attr<"remove">()(detail::object_or_cast(value));
     }
 
     /* Equivalent to Python `list.pop([index])`. */
     inline Object pop(Py_ssize_t index = -1) {
-        static const pybind11::str method = "pop";
-        return attr(method)(index);
+        return attr<"pop">()(index);
     }
 
     /* Equivalent to Python `list.reverse()`. */
@@ -388,8 +385,7 @@ public:
 
     /* Equivalent to Python `list.sort(reverse=reverse)`. */
     inline void sort(const Bool& reverse) {
-        static const pybind11::str method = "sort";
-        attr(method)(py::arg("reverse") = reverse);
+        attr<"sort">()(py::arg("reverse") = reverse);
     }
 
     /* Equivalent to Python `list.sort(key=key[, reverse=reverse])`.  The key function

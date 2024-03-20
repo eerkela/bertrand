@@ -96,8 +96,7 @@ public:
 
     /* Get the start index of the Range sequence. */
     inline Py_ssize_t start() const {
-        static const pybind11::str method = "start";
-        Py_ssize_t result = PyLong_AsSsize_t(attr(method)->ptr());
+        Py_ssize_t result = PyLong_AsSsize_t(attr<"start">()->ptr());
         if (result == -1 && PyErr_Occurred()) {
             throw error_already_set();
         }
@@ -106,8 +105,7 @@ public:
 
     /* Get the stop index of the Range sequence. */
     inline Py_ssize_t stop() const {
-        static const pybind11::str method = "stop";
-        Py_ssize_t result = PyLong_AsSsize_t(attr(method)->ptr());
+        Py_ssize_t result = PyLong_AsSsize_t(attr<"stop">()->ptr());
         if (result == -1 && PyErr_Occurred()) {
             throw error_already_set();
         }
@@ -116,8 +114,7 @@ public:
 
     /* Get the step size of the Range sequence. */
     inline Py_ssize_t step() const {
-        static const pybind11::str method = "step";
-        Py_ssize_t result = PyLong_AsSsize_t(attr(method)->ptr());
+        Py_ssize_t result = PyLong_AsSsize_t(attr<"step">()->ptr());
         if (result == -1 && PyErr_Occurred()) {
             throw error_already_set();
         }

@@ -115,8 +115,14 @@ void run() {
     // py::print(dt);
 
 
-    py::Dict d = {{"a", 1}, {"b", 2}, {"c", 3}};
-    py::print(d.keys().contains("a"));
+
+    py::print(py::Bytes::fromhex("ff"));
+
+
+
+    // py::KeysView keys = d.keys();
+    // keys.mapping() = py::Dict{{"d", 4}};
+    // py::print(py::repr(keys.mapping()));
 
 
 
