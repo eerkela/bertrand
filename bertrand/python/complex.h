@@ -28,6 +28,8 @@ struct __increment__<Complex>                                   : Returns<Comple
 template <>
 struct __decrement__<Complex>                                   : Returns<Complex> {};
 template <>
+struct __hash__<Complex>                                        : Returns<size_t> {};
+template <>
 struct __add__<Complex, Object>                                 : Returns<Object> {};
 template <bool_like T>
 struct __add__<Complex, T>                                      : Returns<Complex> {};
@@ -237,9 +239,6 @@ public:
 
 }  // namespace py
 }  // namespace bertrand
-
-
-BERTRAND_STD_HASH(bertrand::py::Complex)
 
 
 namespace pybind11 {

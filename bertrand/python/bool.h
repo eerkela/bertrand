@@ -28,6 +28,8 @@ struct __increment__<Bool>                                      : Returns<Int> {
 template <>
 struct __decrement__<Bool>                                      : Returns<Int> {};
 template <>
+struct __hash__<Bool>                                           : Returns<size_t> {};
+template <>
 struct __lt__<Bool, Object>                                     : Returns<bool> {};
 template <bool_like T>
 struct __lt__<Bool, T>                                          : Returns<bool> {};
@@ -244,9 +246,6 @@ public:
 
 }  // namespace py
 }  // namespace bertrand
-
-
-BERTRAND_STD_HASH(bertrand::py::Bool)
 
 
 #endif  // BERTRAND_PYTHON_BOOL_H

@@ -115,8 +115,9 @@ void run() {
     // py::print(dt);
 
 
-
-    py::print(py::Bytes::fromhex("ff"));
+    py::Float x = 2.2;
+    std::hash<py::Float> h;
+    py::print(h(x));
 
 
 

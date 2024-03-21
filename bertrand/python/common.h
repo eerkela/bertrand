@@ -946,9 +946,9 @@ namespace impl {
     template <typename T>
     struct __len__ { static constexpr bool enable = false; };
     template <typename T>
-    struct __iter__ { static constexpr bool enable = false; };  // TODO: template iterator on return type
+    struct __iter__ { static constexpr bool enable = false; };
     template <typename T>
-    struct __reversed__ { static constexpr bool enable = false; };  // TODO: template iterator on return type
+    struct __reversed__ { static constexpr bool enable = false; };
     template <typename T, typename Key>
     struct __contains__ { static constexpr bool enable = false; };
     template <typename T, typename Key>
@@ -969,6 +969,8 @@ namespace impl {
     struct __increment__ { static constexpr bool enable = false; };
     template <typename T>
     struct __decrement__ { static constexpr bool enable = false; };
+    template <typename T>
+    struct __hash__ { static constexpr bool enable = false; };
     template <typename L, typename R>
     struct __lt__ { static constexpr bool enable = false; };
     template <typename L, typename R>
@@ -1982,6 +1984,8 @@ namespace impl {
     struct __increment__<Object>                            : Returns<Object> {};
     template <>
     struct __decrement__<Object>                            : Returns<Object> {};
+    template <>
+    struct __hash__<Object>                                 : Returns<size_t> {};
     template <typename T>
     struct __lt__<Object, T>                                : Returns<bool> {};
     template <typename T> requires (!std::is_base_of_v<Object, T>)
@@ -4187,6 +4191,25 @@ namespace impl {
 
     };
 
+    template <>
+    struct __hash__<Handle>                                     : Returns<size_t> {};
+    template <>
+    struct __hash__<Capsule>                                    : Returns<size_t> {};
+    template <>
+    struct __hash__<WeakRef>                                    : Returns<size_t> {};
+
+    template <>
+    struct __hash__<NoneType>                                   : Returns<size_t> {};
+
+    template <>
+    struct __hash__<NotImplementedType>                         : Returns<size_t> {};
+
+    template <>
+    struct __hash__<EllipsisType>                               : Returns<size_t> {};
+
+    template <>
+    struct __hash__<Module>                                     : Returns<size_t> {};
+
 }  // namespace impl
 
 
@@ -4879,27 +4902,29 @@ inline std::string repr(const T& obj) {
  */
 
 
-#define BERTRAND_STD_HASH(cls)                                                          \
-namespace std {                                                                         \
-    template <>                                                                         \
-    struct hash<cls> {                                                                  \
-        size_t operator()(const cls& obj) const {                                       \
-            return pybind11::hash(obj);                                                 \
-        }                                                                               \
-    };                                                                                  \
-}                                                                                       \
+namespace std {
+
+    template <typename T> requires (bertrand::py::impl::__hash__<T>::enable)
+    struct hash<T> {
+        static_assert(
+            std::is_same_v<typename bertrand::py::impl::__hash__<T>::Return, size_t>,
+            "std::hash<> must return size_t for compatibility with other C++ types.  "
+            "Check your specialization of __hash__ for this type and ensure the "
+            "Return type is set to size_t."
+        );
+
+        inline size_t operator()(const T& obj) const {
+            return pybind11::hash(obj);
+        }
+    };
+
+};
 
 
-BERTRAND_STD_HASH(bertrand::py::Buffer)
-BERTRAND_STD_HASH(bertrand::py::Capsule)
-BERTRAND_STD_HASH(bertrand::py::EllipsisType)
-BERTRAND_STD_HASH(bertrand::py::Handle)
-BERTRAND_STD_HASH(bertrand::py::MemoryView)
-BERTRAND_STD_HASH(bertrand::py::Module)
-BERTRAND_STD_HASH(bertrand::py::NoneType)
-BERTRAND_STD_HASH(bertrand::py::NotImplementedType)
-BERTRAND_STD_HASH(bertrand::py::Object)
-BERTRAND_STD_HASH(bertrand::py::WeakRef)
+// TODO: eliminate py::Buffer and implement MemoryView in memoryview.h
+
+// BERTRAND_STD_HASH(bertrand::py::Buffer)
+// BERTRAND_STD_HASH(bertrand::py::MemoryView)
 
 
 #define BERTRAND_STD_EQUAL_TO(cls)                                                      \
@@ -4916,8 +4941,9 @@ namespace std {                                                                 
 BERTRAND_STD_EQUAL_TO(bertrand::py::Handle)
 BERTRAND_STD_EQUAL_TO(bertrand::py::WeakRef)
 BERTRAND_STD_EQUAL_TO(bertrand::py::Capsule)
-BERTRAND_STD_EQUAL_TO(bertrand::py::Buffer)
-BERTRAND_STD_EQUAL_TO(bertrand::py::MemoryView)
+// BERTRAND_STD_EQUAL_TO(bertrand::py::Buffer)
+// BERTRAND_STD_EQUAL_TO(bertrand::py::MemoryView)
 
 
+#undef BERTRAND_STD_EQUAL_TO
 #endif // BERTRAND_PYTHON_COMMON_H

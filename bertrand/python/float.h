@@ -27,6 +27,8 @@ struct __increment__<Float>                                     : Returns<Float>
 template <>
 struct __decrement__<Float>                                     : Returns<Float> {};
 template <>
+struct __hash__<Float>                                          : Returns<size_t> {};
+template <>
 struct __lt__<Float, Object>                                    : Returns<bool> {};
 template <bool_like T>
 struct __lt__<Float, T>                                         : Returns<bool> {};
@@ -229,9 +231,6 @@ public:
 
 }  // namespace py
 }  // namespace bertrand
-
-
-BERTRAND_STD_HASH(bertrand::py::Float)
 
 
 #endif  // BERTRAND_PYTHON_FLOAT_H

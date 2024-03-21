@@ -301,6 +301,8 @@ namespace impl {
     template <>
     struct __len__<Bytes>                                       : Returns<size_t> {};
     template <>
+    struct __hash__<Bytes>                                      : Returns<size_t> {};
+    template <>
     struct __iter__<Bytes>                                      : Returns<Int> {};
     template <>
     struct __reversed__<Bytes>                                  : Returns<Int> {};
@@ -671,9 +673,6 @@ inline Bytes Str::encode(const Str& encoding, const Str& errors) const {
 
 }  // namespace py
 }  // namespace bertrand
-
-
-BERTRAND_STD_HASH(bertrand::py::Bytes)
 
 
 #endif  // BERTRAND_PYTHON_BYTES_H

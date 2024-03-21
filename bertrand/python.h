@@ -243,13 +243,14 @@ inline Bytes Code::bytecode() const {
 
 
 // not implemented
-// enumerate() - use a standard range variable
-// filter() - not implemented for now due to technical challenges
-// help() - not applicable for compiled C++ code
-// input() - causes Python interpreter to hang, which brings problems in compiled C++
-// map() - not implemented for now due to technical challenges
-// open() - not implemented for now - use C++ alternatives
-// zip() - use C++ iterators directly.
+// enumerate() - use a standard loop index
+// filter() - use std::ranges or std::algorithms instead
+// help() - not applicable to C++ code
+// input() - may be implemented in the future.  Use std::cin for now
+// map() - use std::ranges or std::algorithms instead
+// next() - use C++ iterators directly
+// open() - planned for a future release along with pathlib support
+// zip() - use C++ iterators directly
 
 
 // Superceded by class wrappers
@@ -302,11 +303,11 @@ inline Dict builtins() {
 }
 
 
-/* Equivalent to Python `aiter(obj)`. */
-inline Object aiter(const Handle& obj) {
-    static const Str s_aiter = "aiter";
-    return builtins()[s_aiter](obj);
-}
+// /* Equivalent to Python `aiter(obj)`. */
+// inline Object aiter(const Handle& obj) {
+//     static const Str s_aiter = "aiter";
+//     return builtins()[s_aiter](obj);
+// }
 
 
 /* Equivalent to Python `all(obj)`, except that it also works on iterable C++
@@ -319,19 +320,19 @@ inline bool all(const T& obj) {
 }
 
 
-/* Equivalent to Python `anext(obj)`. */
-inline Object anext(const Handle& obj) {
-    static const Str s_anext = "anext";
-    return builtins()[s_anext](obj);
-}
+// /* Equivalent to Python `anext(obj)`. */
+// inline Object anext(const Handle& obj) {
+//     static const Str s_anext = "anext";
+//     return builtins()[s_anext](obj);
+// }
 
 
-/* Equivalent to Python `anext(obj, default)`. */
-template <typename T>
-inline Object anext(const Handle& obj, const T& default_value) {
-    static const Str s_anext = "anext";
-    return builtins()[s_anext](obj, default_value);
-}
+// /* Equivalent to Python `anext(obj, default)`. */
+// template <typename T>
+// inline Object anext(const Handle& obj, const T& default_value) {
+//     static const Str s_anext = "anext";
+//     return builtins()[s_anext](obj, default_value);
+// }
 
 
 /* Equivalent to Python `any(obj)`, except that it also works on iterable C++
@@ -531,34 +532,6 @@ inline Dict locals() {
 }
 
 
-// TODO: these are also complicated by the typed iterator refactor
-
-// /* Equivalent to Python `next(obj)`. */
-// inline Object next(const Iterator& iter) {
-//     PyObject* result = PyIter_Next(iter.ptr());
-//     if (result == nullptr) {
-//         if (PyErr_Occurred()) {
-//             throw error_already_set();
-//         }
-//         throw StopIteration();
-//     }
-//     return reinterpret_steal<Object>(result);
-// }
-
-
-// /* Equivalent to Python `next(obj, default)`. */
-// inline Object next(const Iterator& iter, const Object& default_value) {
-//     PyObject* result = PyIter_Next(iter.ptr());
-//     if (result == nullptr) {
-//         if (PyErr_Occurred()) {
-//             throw error_already_set();
-//         }
-//         return default_value;
-//     }
-//     return reinterpret_steal<Object>(result);
-// }
-
-
 /* Equivalent to Python `max(obj)`, but also works on iterable C++ containers. */
 template <impl::is_iterable T>
 inline auto max(const T& obj) {
@@ -721,19 +694,9 @@ inline Dict vars(const Handle& object) {
 ////////////////////////////
 
 
-/* Pybind11 uses templated type casters to handle conversions between C++ and Python.
- * Bertrand expands these to include its own wrapper types.
- */
-
-
 // TODO: implement type casters for range, MappingProxy, KeysView, ValuesView,
 // ItemsView, Method, ClassMethod, StaticMethod, Property
 
-
-#undef BERTRAND_OBJECT_CONSTRUCTORS
-#undef DELETE_OPERATOR
-#undef BERTRAND_STD_HASH
-#undef BERTRAND_STD_EQUAL_TO
 #undef PYBIND11_DETAILED_ERROR_MESSAGES
 #undef BERTRAND_PYTHON_INCLUDED
 #endif  // BERTRAND_PYTHON_H

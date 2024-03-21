@@ -20,6 +20,8 @@ namespace impl {
 template <>
 struct __len__<Tuple>                                           : Returns<size_t> {};
 template <>
+struct __hash__<Tuple>                                          : Returns<size_t> {};
+template <>
 struct __iter__<Tuple>                                          : Returns<Object> {};
 template <>
 struct __reversed__<Tuple>                                      : Returns<Object> {};
@@ -421,9 +423,6 @@ protected:
 
 }  // namespace py
 }  // namespace bertrand
-
-
-BERTRAND_STD_HASH(bertrand::py::Tuple)
 
 
 #endif  // BERTRAND_PYTHON_TUPLE_H

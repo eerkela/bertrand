@@ -865,6 +865,10 @@ public:
 
 
 // TODO: figure out how to return a type-safe AttrProxy here
+// -> just return the attribute directly.  The proxy's copy/move constructors should
+// be able to handle it.
+// -> same idea should apply to access policies (readable, writable, deletable), which
+// can be used to make the AttrProxy type-safe during read/write/delete operations.
 
 
 inline impl::AttrProxy<MappingProxy> KeysView::mapping() const {
@@ -881,6 +885,10 @@ inline MappingProxy ValuesView::mapping() const {
 inline MappingProxy ItemsView::mapping() const {
     return attr<"mapping">();
 }
+
+
+
+// impl::AttrProxy<Object, impl::get | impl::set | impl::del>
 
 
 }  // namespace py

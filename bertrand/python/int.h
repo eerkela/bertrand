@@ -27,6 +27,8 @@ struct __increment__<Int>                                       : Returns<Int> {
 template <>
 struct __decrement__<Int>                                       : Returns<Int> {};
 template <>
+struct __hash__<Int>                                            : Returns<size_t> {};
+template <>
 struct __lt__<Int, Object>                                      : Returns<bool> {};
 template <bool_like T>
 struct __lt__<Int, T>                                           : Returns<bool> {};
@@ -406,9 +408,6 @@ public:
 
 }  // namespace py
 }  // namespace bertrand
-
-
-BERTRAND_STD_HASH(bertrand::py::Int)
 
 
 #endif  // BERTRAND_PYTHON_INT_H

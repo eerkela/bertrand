@@ -329,6 +329,8 @@ namespace impl {
 template <>
 struct __len__<FrozenSet>                                       : Returns<size_t> {};
 template <>
+struct __hash__<FrozenSet>                                      : Returns<size_t> {};
+template <>
 struct __iter__<FrozenSet>                                      : Returns<Object> {};
 template <>
 struct __reversed__<FrozenSet>                                  : Returns<Object> {};
@@ -872,9 +874,6 @@ public:
 
 }  // namespace py
 }  // namespace bertrand
-
-
-BERTRAND_STD_HASH(bertrand::py::FrozenSet)
 
 
 #endif  // BERTRAND_PYTHON_SET_H

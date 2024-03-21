@@ -20,6 +20,8 @@ template <typename... Args>
 struct __call__<Type, Args...>                                  : Returns<Object> {};
 template <typename T>
 struct __getitem__<Type, T>                                     : Returns<Object> {};
+template <>
+struct __hash__<Type>                                           : Returns<size_t> {};
 template <typename T>
 struct __or__<Type, T>                                          : Returns<Object> {};
 
@@ -511,9 +513,6 @@ public:
 
 }  // namespace py
 }  // namespace bertrand
-
-
-BERTRAND_STD_HASH(bertrand::py::Type)
 
 
 #endif  // BERTRAND_PYTHON_TYPE_H
