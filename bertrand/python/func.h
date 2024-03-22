@@ -426,9 +426,9 @@ public:
         }
     }
 
-    /////////////////////////////////
-    ////    PyFrame_* METHODS    ////
-    /////////////////////////////////
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
 
     /* Get the next outer frame from this one. */
     inline Frame back() const {
@@ -441,9 +441,8 @@ public:
 
     /* Get the code object associated with this frame. */
     inline Code code() const {
-        // PyFrame_GetCode() is never null
         return reinterpret_steal<Code>(
-            reinterpret_cast<PyObject*>(PyFrame_GetCode(self()))
+            reinterpret_cast<PyObject*>(PyFrame_GetCode(self()))  // never null
         );
     }
 
@@ -500,7 +499,8 @@ public:
         }
 
         /* Get the "precise instruction" of the frame object, which is an index into
-        the bytecode of the last instruction executed by the frame's code object. */
+        the bytecode of the last instruction that was executed by the frame's code
+        object. */
         inline int last_instruction() const noexcept {
             return PyFrame_GetLasti(self());
         }
@@ -511,34 +511,12 @@ public:
 
         /* Get a named variable from the frame's context.  Can raise if the variable is
         not present in the frame. */
-        inline Object get(PyObject* name) const {
-            PyObject* result = PyFrame_GetVar(self(), name);
+        inline Object get(const Str& name) const {
+            PyObject* result = PyFrame_GetVar(self(), name.ptr());
             if (result == nullptr) {
                 throw error_already_set();
             }
             return reinterpret_steal<Object>(result);
-        }
-
-        /* Get a named variable from the frame's context.  Can raise if the variable is
-        not present in the frame. */
-        inline Object get(const char* name) const {
-            PyObject* result = PyFrame_GetVarString(self(), name);
-            if (result == nullptr) {
-                throw error_already_set();
-            }
-            return reinterpret_steal<Object>(result);
-        }
-
-        /* Get a named variable from the frame's context.  Can raise if the variable is
-        not present in the frame. */
-        inline Object get(const std::string& name) const {
-            return get(name.c_str());
-        }
-
-        /* Get a named variable from the frame's context.  Can raise if the variable is
-        not present in the frame. */
-        inline Object get(const std::string_view& name) const {
-            return get(name.data());
         }
 
     #endif

@@ -86,11 +86,29 @@ namespace py = bertrand::py;
 using namespace py::literals;
 
 
+template <bertrand::StaticStr str>
+void func() {
+    // static constexpr bertrand::StaticStr s = str.title();
+    // for (char c : s) {
+    //     py::print(c);
+    // }
+    // for (auto it = s.rbegin(); it != s.rend(); ++it) {
+    //     py::print(*it);
+    // }
+    // py::print(s);
+
+    static constexpr bertrand::StaticStr s = str.replace(str, "a", "b");
+    py::print(s);
+    py::print(s.size());
+}
+
 
 void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
+
+    func<"a">();
 
 
     // py::Function foo = R"(
@@ -114,10 +132,6 @@ void run() {
     // py::Datetime dt("December 7th, 1941 at 8:30 AM", "US/Pacific");  // TODO: this breaks
     // py::print(dt);
 
-
-    py::Float x = 2.2;
-    std::hash<py::Float> h;
-    py::print(h(x));
 
 
 

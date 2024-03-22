@@ -29,6 +29,10 @@
 #include <pybind11/stl_bind.h>
 
 
+#include "bertrand/static_str.h"  // for compile-time string manipulation
+
+
+
 /* NOTES ON PERFORMANCE:
  * In general, bertrand should be as fast or faster than the equivalent Python code,
  * owing to the use of static typing, compilation, and optimized CPython API calls.  
@@ -1033,10 +1037,12 @@ namespace impl {
     };
 
 
-    // TODO: require lvalue references for in-place operator return types.
+    // TODO: require lvalue references for in-place operator Return types.
 
 
     // TODO: unwrap proxies in call operator?
+    // -> call operator is really tricky to get right, especially if I want to support
+    // the unpacking operator as well.
 
     // TODO: reverse operators still might be a bit wonky.  Currently, I'm just
     // disabling them if the other operand is a subclass of Object.  This might not be
@@ -2099,35 +2105,6 @@ namespace impl {
 
     struct SliceInitializer;
 
-    /* C++20 expands support for non-type template parameters, including compile-time
-    strings.  This helper class allows arbitrary string literals to be encoded directly
-    as template parameters, massively expanding the possibilities for template
-    configuration. */
-    template <size_t size>
-    struct constexpr_string {
-        char buffer[size + 1];  // + 1 for null terminator
-
-        constexpr constexpr_string(const char(&arr)[size + 1]) {
-            std::copy_n(arr, size + 1, buffer);
-        }
-
-        inline operator const char*() const {
-            return buffer;
-        }
-
-        inline operator std::string() const {
-            return std::string(buffer, size);
-        }
-
-        inline operator std::string_view() const {
-            return std::string_view(buffer, size);
-        }
-
-    };
-
-    template <size_t N>
-    constexpr_string(const char(&arr)[N]) -> constexpr_string<N-1>;
-
 }  // namespace impl
 
 
@@ -2311,7 +2288,7 @@ public:
     template <typename Key> requires (impl::str_like<Key>)
     inline impl::AttrProxy<Object> attr(Key&& key) const;
 
-    template <impl::constexpr_string key>
+    template <bertrand::StaticStr key>
     inline impl::AttrProxy<Object> attr() const;
 
     BERTRAND_OBJECT_OPERATORS(Object)
@@ -4693,7 +4670,7 @@ inline impl::AttrProxy<Object> Object::attr(Key&& key) const {
 }
 
 
-template <impl::constexpr_string key>
+template <bertrand::StaticStr key>
 inline impl::AttrProxy<Object> Object::attr() const {
     static const pybind11::str lookup = static_cast<std::string>(key);
     return impl::AttrProxy<Object>(*this, lookup);
@@ -4825,6 +4802,8 @@ inline Static<Module> import(const char* name) {
 // TODO: iter() is more complicated after making iterators type-safe by default.  This
 // should always return a py::Iterator specialized to the type of the input, but doing
 // this is difficult because we need to know the dereference type at compile time.
+
+// TODO: iter() should also be lifted to python.h, along with len(), right?
 
 
 // /* Equivalent to Python `iter(obj)` except that it can also accept C++ containers and
