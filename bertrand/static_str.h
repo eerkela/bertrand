@@ -28,89 +28,6 @@ class StaticStr {
     template <size_t M>
     friend class StaticStr;
 
-    struct Cases {
-
-        static constexpr char LOWER_TO_UPPER = 'A' - 'a';
-        static constexpr char UPPER_TO_LOWER = 'a' - 'A';
-
-        static constexpr bool islower(char c) {
-            return c >= 'a' && c <= 'z';
-        }
-
-        static constexpr bool isupper(char c) {
-            return c >= 'A' && c <= 'Z';
-        }
-
-        static constexpr bool isalpha(char c) {
-            return islower(c) || isupper(c);
-        }
-
-        static constexpr bool isdigit(char c) {
-            return c >= '0' && c <= '9';
-        }
-
-        static constexpr bool isalnum(char c) {
-            return isalpha(c) || isdigit(c);
-        }
-
-        static constexpr bool isascii(char c) {
-            return c >= 0 && c <= 127;
-        }
-
-        static constexpr bool isspace(char c) {
-            return c == ' ' || (c >= '\t' && c <= '\r');
-        }
-
-        /* Check if a character delimits a word boundary.  NOTE: this is only stable
-        for ASCII-encoded text, which most string literals should be. */
-        static constexpr bool is_delimeter(char c) {
-            switch (c) {
-                case ' ':
-                case '\t':
-                case '\n':
-                case '\r':
-                case '\f':
-                case '\v':
-                case '.':
-                case '!':
-                case '?':
-                case ',':
-                case ';':
-                case ':':
-                case '#':
-                case '&':
-                case '+':
-                case '-':
-                case '*':
-                case '/':
-                case '|':
-                case '\\':
-                case '(':
-                case ')':
-                case '[':
-                case ']':
-                case '{':
-                case '}':
-                case '<':
-                case '>':
-                    return true;
-                default:
-                    return false;
-            }
-        }
-
-        static constexpr char tolower(char c) {
-            return isupper(c) ? c + UPPER_TO_LOWER : c;
-        }
-
-        static constexpr char toupper(char c) {
-            return islower(c) ? c + LOWER_TO_UPPER : c;
-        }
-
-
-
-    };
-
     struct ReverseIterator {
         const char* ptr;
         ssize_t index;
@@ -168,457 +85,56 @@ class StaticStr {
 
     };
 
-    template <const char* buffer, size_t M, size_t O, size_t start = 0, size_t stop = M>
-    static constexpr size_t count_impl(StaticStr<O> sub) {
-        if constexpr ((stop - start) < M) {
-            return 0;
-        }
-        size_t count = 0;
-        for (size_t i = start; i < stop - M; ++i) {
-            if (std::equal(sub.buffer, sub.buffer + M, buffer + i)) {
-                ++count;
-            }
-        }
-        return count;
-    }
-
 public:
-    char buffer[N + 1];  // + 1 for null terminator
-
-    static constexpr size_t not_found = std::numeric_limits<size_t>::max();
+    char buffer[N + 1] = {};  // +1 for null terminator
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    constexpr StaticStr() = default;
+    consteval StaticStr() = default;
 
-    constexpr StaticStr(const char(&arr)[N + 1]) {
+    consteval StaticStr(const char(&arr)[N + 1]) {
         std::copy_n(arr, N + 1, buffer);
-    }
-
-    constexpr StaticStr(const StaticStr& other) {
-        std::copy_n(other.buffer, N + 1, buffer);
     }
 
     ///////////////////////////
     ////    CONVERSIONS    ////
     ///////////////////////////
 
-    inline operator const char*() const {
+    constexpr operator const char*() const {
         return buffer;
     }
 
-    inline operator std::string() const {
+    operator std::string() const {
         return {buffer, N};
     }
 
-    inline operator std::string_view() const {
+    constexpr operator std::string_view() const {
         return {buffer, N};
     }
-
-    ////////////////////////////////
-    ////    STRING INTERFACE    ////
-    ////////////////////////////////
-
-    /* Equivalent to Python `str.capitalize()`, but computed at compile time. */
-    constexpr StaticStr<N> capitalize() const {
-        StaticStr<N> result;
-        bool capitalized = false;
-        for (size_t i = 0; i < N; ++i) {
-            char c = buffer[i];
-            if (Cases::isalpha(c)) {
-                if (capitalized) {
-                    result.buffer[i] = Cases::tolower(c);
-                } else {
-                    result.buffer[i] = Cases::toupper(c);
-                    capitalized = true;
-                }
-            } else {
-                result.buffer[i] = c;
-            }
-        }
-        result.buffer[N] = '\0';
-        return result;
-    }
-
-    /* Equivalent to Python `str.center()`, but computed at compile time. */
-    template <size_t width>
-    constexpr StaticStr<width <= N ? N : width> center(char fillchar=' ') const {
-        if constexpr (width <= N) {
-            return *this;
-        } else {
-            StaticStr<width> result;
-            size_t left = (width - N) / 2;
-            size_t right = width - N - left;
-            std::fill_n(result.buffer, left, fillchar);
-            std::copy_n(buffer, N, result.buffer + left);
-            std::fill_n(result.buffer + left + N, right, fillchar);
-            result.buffer[width] = '\0';
-            return result;
-        }
-    }
-
-    /* Equivalent to Python `str.count()`, but computed at compile time. */
-    template <size_t start = 0, size_t stop = N, size_t M>
-    constexpr size_t count(const StaticStr<M>& sub) const {
-        static_assert(
-            (start >= 0 && start < N) && (stop >= start && stop <= N),
-            "start must be less than or equal to stop and both must be within the "
-            "bounds of the string"
-        );
-        if constexpr ((stop - start) < M) {
-            return 0;
-        }
-        size_t count = 0;
-        for (size_t i = start; i < stop - M; ++i) {
-            if (std::equal(sub.buffer, sub.buffer + M, buffer + i)) {
-                ++count;
-            }
-        }
-        return count;
-    }
-
-    /* Equivalent to Python `str.endswith()`, but computed at compile time. */
-    template <size_t M>
-    constexpr bool endswith(const StaticStr<M>& suffix) const {
-        if (M > N) {
-            return false;
-        }
-        return std::equal(suffix.buffer, suffix.buffer + M, buffer + N - M);
-    }
-
-    /* Equivalent to Python `str.find()`, but computed at compile time. */
-    template <size_t start = 0, size_t stop = N, size_t M>
-    constexpr size_t find(const StaticStr<M>& sub) {
-        static_assert(
-            (start >= 0 && start < N) && (stop >= start && stop <= N),
-            "start must be less than or equal to stop and both must be within the "
-            "bounds of the string"
-        );
-        if constexpr ((stop - start) < M) {
-            return 0;
-        }
-        for (size_t i = start; i < stop - M; ++i) {
-            if (std::equal(sub.buffer, sub.buffer + M, buffer + i)) {
-                return i;
-            }
-        }
-        return not_found;
-    }
-
-    /* Equivalent to Python `str.isalpha()`, but computed at compile time. */
-    constexpr bool isalpha() const {
-        for (size_t i = 0; i < N; ++i) {
-            if (!Cases::isalpha(buffer[i])) {
-                return false;
-            }
-        }
-        return N > 0;
-    }
-
-    /* Equivalent to Python `str.isalnum()`, but computed at compile time. */
-    constexpr bool isalnum() const {
-        for (size_t i = 0; i < N; ++i) {
-            if (!Cases::isalnum(buffer[i])) {
-                return false;
-            }
-        }
-        return N > 0;
-    }
-
-    /* Equivalent to Python `str.isascii()`, but computed at compile time. */
-    constexpr bool isascii() const {
-        for (size_t i = 0; i < N; ++i) {
-            if (!Cases::isascii(buffer[i])) {
-                return false;
-            }
-        }
-        return N > 0;
-    }
-
-    /* Equivalent to Python `str.isdigit()`, but computed at compile time. */
-    constexpr bool isdigit() const {
-        for (size_t i = 0; i < N; ++i) {
-            if (!Cases::isdigit(buffer[i])) {
-                return false;
-            }
-        }
-        return N > 0;
-    }
-
-    /* Equivalent to Python `str.islower()`, but computed at compile time. */
-    constexpr bool islower() const {
-        for (size_t i = 0; i < N; ++i) {
-            if (!Cases::islower(buffer[i])) {
-                return false;
-            }
-        }
-        return N > 0;
-    }
-
-    /* Equivalent to Python `str.isspace()`, but computed at compile time. */
-    constexpr bool isspace() const {
-        for (size_t i = 0; i < N; ++i) {
-            if (!Cases::isspace(buffer[i])) {
-                return false;
-            }
-        }
-        return N > 0;
-    }
-
-    /* Equivalent to Python `str.istitle()`, but computed at compile time. */
-    constexpr bool istitle() const {
-        bool last_was_delimeter = true;
-        for (size_t i = 0; i < N; ++i) {
-            char c = buffer[i];
-            if (last_was_delimeter && Cases::islower(c)) {
-                return false;
-            }
-            last_was_delimeter = Cases::is_delimeter(c);
-        }
-        return N > 0;
-    }
-
-    /* Equivalent to Python `str.isupper()`, but computed at compile time. */
-    constexpr bool isupper() const {
-        for (size_t i = 0; i < N; ++i) {
-            if (!Cases::isupper(buffer[i])) {
-                return false;
-            }
-        }
-        return N > 0;
-    }
-
-    /* Equivalent to Python `str.join()`, but computed at compile time. */
-    template <size_t M, size_t... Ms>
-    constexpr auto join(StaticStr<M> first, StaticStr<Ms>... rest) const {
-        StaticStr<first.size() + (... + (N + rest.size()))> result;
-        std::copy_n(first.buffer, first.size(), result.buffer);
-        size_t offset = first.size();
-        (
-            (
-                std::copy_n(buffer, N, result.buffer + offset),
-                offset += N,
-                std::copy_n(rest.buffer, rest.size(), result.buffer + offset),
-                offset += rest.size()
-            ),
-            ...
-        );
-        result.buffer[offset] = '\0';
-        return result;
-    }
-
-    /* Equivalent to Python `str.join()`, but computed at compile time. */
-    template <size_t M, size_t... Ms>
-    constexpr auto join(const char(& first)[M], const char(&... rest)[Ms]) const {
-        return join(StaticStr(first), StaticStr(rest)...);
-    }
-
-    /* Equivalent to Python `str.startswith()`, but computed at compile time. */
-    template <size_t M>
-    constexpr bool startswith(const StaticStr<M>& prefix) const {
-        if (M > N) {
-            return false;
-        }
-        return std::equal(prefix.buffer, prefix.buffer + M, buffer);
-    }
-
-    /* Equivalent to Python `str.swapcase()`, but computed at compile time. */
-    constexpr StaticStr<N> swapcase() const {
-        StaticStr<N> result;
-        for (size_t i = 0; i < N; ++i) {
-            char c = buffer[i];
-            if (Cases::islower(c)) {
-                result.buffer[i] = Cases::toupper(c);
-            } else if (Cases::isupper(c)) {
-                result.buffer[i] = Cases::tolower(c);
-            } else {
-                result.buffer[i] = c;
-            }
-        }
-        result.buffer[N] = '\0';
-        return result;
-    }
-
-    /* Equivalent to Python `str.ljust()`, but computed at compile time. */
-    template <size_t width>
-    constexpr StaticStr<width <= N ? N : width> ljust(char fillchar=' ') const {
-        if constexpr (width <= N) {
-            return *this;
-        } else {
-            StaticStr<width> result;
-            std::copy_n(buffer, N, result.buffer);
-            std::fill_n(result.buffer + N, width - N, fillchar);
-            result.buffer[width] = '\0';
-            return result;
-        }
-    }
-
-    /* Equivalent to Python `str.lower()`, but computed at compile time. */
-    constexpr StaticStr<N> lower() const {
-        StaticStr<N> result;
-        for (size_t i = 0; i < N; ++i) {
-            result.buffer[i] = Cases::tolower(buffer[i]);
-        }
-        result.buffer[N] = '\0';
-        return result;
-    }
-
-    // TODO: replace compiles if and only if self is a string of length 1 for
-    // some reason.  This seems to be extremely finnicky, and I can't do the obvious
-    // thing since `this` is not a constant expression.  This is really close to
-    // working, though.
-
-    /* Equivalent to Python `str.replace()`, but computed at compile time. */
-    template <size_t max_count = not_found, size_t M, size_t O>
-    static constexpr auto replace(
-        StaticStr<N> self,
-        StaticStr<M> sub,
-        StaticStr<O> repl
-    ) {
-        constexpr size_t freq = self.count(sub);
-        constexpr size_t size = N - (freq * M) + (freq * O);
-        StaticStr<size> result;
-        size_t offset = 0;
-        size_t count = 0;
-        for (size_t i = 0; i < N;) {
-            if (count < max_count && std::equal(sub.buffer, sub.buffer + M, self.buffer + i)) {
-                std::copy_n(repl.buffer, O, result.buffer + offset);
-                offset += O;
-                i += M;
-                ++count;
-            } else {
-                result.buffer[offset++] = self.buffer[i++];
-            }
-        }
-        result.buffer[size] = '\0';
-        return result;
-    }
-
-    /* Equivalent to Python `str.replace()`, but computed at compile time. */
-    template <size_t max_count = not_found, size_t M, size_t O>
-    static constexpr auto replace(
-        StaticStr<N> self,
-        const char(&sub)[M],
-        const char(&repl)[O]
-    ) {
-        return replace<max_count>(self, StaticStr<M - 1>{sub}, StaticStr<O - 1>{repl});
-    }
-
-    /* Equivalent to Python `str.rfind()`, but computed at compile time. */
-    template <size_t start = 0, size_t stop = N, size_t M>
-    constexpr size_t rfind(const StaticStr<M>& sub) {
-        static_assert(
-            (start >= 0 && start < N) && (stop >= start && stop <= N),
-            "start must be less than or equal to stop and both must be within the "
-            "bounds of the string"
-        );
-        if constexpr ((stop - start) < M) {
-            return 0;
-        }
-        for (size_t i = stop - M; i >= start; --i) {
-            if (std::equal(sub.buffer, sub.buffer + M, buffer + i)) {
-                return i;
-            }
-        }
-        return not_found;
-    }
-
-    /* Equivalent to Python `str.rjust()`, but computed at compile time. */
-    template <size_t width>
-    constexpr StaticStr<width <= N ? N : width> rjust(char fillchar=' ') const {
-        if constexpr (width <= N) {
-            return *this;
-        } else {
-            StaticStr<width> result;
-            std::fill_n(result.buffer, width - N, fillchar);
-            std::copy_n(buffer, N, result.buffer + width - N);
-            result.buffer[width] = '\0';
-            return result;
-        }
-    }
-
-    /* Equivalent to Python `str.title()`, but computed at compile time. */
-    constexpr StaticStr<N> title() const {
-        StaticStr<N> result;
-        bool capitalize_next = true;
-        for (size_t i = 0; i < N; ++i) {
-            char c = buffer[i];
-            if (Cases::isalpha(c)) {
-                if (capitalize_next) {
-                    result.buffer[i] = Cases::toupper(c);
-                    capitalize_next = false;
-                } else {
-                    result.buffer[i] = Cases::tolower(c);
-                }
-            } else {
-                if (Cases::is_delimeter(c)) {
-                    capitalize_next = true;
-                }
-                result.buffer[i] = c;
-            }
-        }
-        result.buffer[N] = '\0';
-        return result;
-    }
-
-    /* Equivalent to Python `str.upper()`, but computed at compile time. */
-    constexpr StaticStr<N> upper() const {
-        StaticStr<N> result;
-        for (size_t i = 0; i < N; ++i) {
-            result.buffer[i] = Cases::toupper(buffer[i]);
-        }
-        result.buffer[N] = '\0';
-        return result;
-    }
-
-    /* Equivalent to Python `str.zfill()`, but computed at compile time. */
-    template <size_t width>
-    constexpr StaticStr<width <= N ? N : width> zfill() const {
-        if constexpr (width <= N) {
-            return *this;
-        } else {
-            StaticStr<width> result;
-            size_t start = 0;
-            if (buffer[0] == '+' || buffer[0] == '-') {
-                result.buffer[0] = buffer[0];
-                start = 1;
-            }
-            std::fill_n(result.buffer + start, width - N, '0');
-            std::copy_n(buffer + start, N - start, result.buffer + width - N + start);
-            result.buffer[width] = '\0';
-            return result;
-        }
-    }
-
-    // TODO: replace, expandtabs, split, splitlines, strip, lstrip, rstrip, partition,  
-    // rpartition, removeprefix, removesuffix.  Maybe format?  Could I maybe do that
-    // with std::format?
 
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
 
-    // TODO: comparison operators
-
-    constexpr size_t size() const {
+    consteval size_t size() const {
         return N;
     }
 
-    const char* begin() const {
+    constexpr const char* begin() const {
         return buffer;
     }
 
-    const char* end() const {
+    constexpr const char* end() const {
         return buffer + N;
     }
 
-    ReverseIterator rbegin() const {
+    constexpr ReverseIterator rbegin() const {
         return {buffer + N - 1, N - 1};
     }
 
-    ReverseIterator rend() const {
+    constexpr ReverseIterator rend() const {
         return {nullptr, -1};
     }
 
@@ -629,7 +145,121 @@ public:
     }
 
     template <size_t M>
-    constexpr StaticStr<N + M> operator+(const StaticStr<M>& other) const {
+    consteval bool operator<(const StaticStr<M>& other) const {
+        auto it1 = begin();
+        auto end1 = end();
+        auto it2 = other.begin();
+        auto end2 = other.end();
+
+        while (it1 != end1 && it2 != end2) {
+            auto x = *it1;
+            auto y = *it2;
+            if (x < y) {
+                return true;
+            } else if (y < x) {
+                return false;
+            }
+            ++it1;
+            ++it2;
+        }
+
+        return (it1 == end1) && (it2 != end2);
+    }
+
+    template <size_t M>
+    consteval bool operator<=(const StaticStr<M>& other) const {
+        auto it1 = begin();
+        auto end1 = end();
+        auto it2 = other.begin();
+        auto end2 = other.end();
+
+        while (it1 != end1 && it2 != end2) {
+            auto x = *it1;
+            auto y = *it2;
+            if (x < y) {
+                return true;
+            } else if (y < x) {
+                return false;
+            }
+            ++it1;
+            ++it2;
+        }
+
+        return it1 == end1;
+    }
+
+    template <size_t M>
+    consteval bool operator==(const StaticStr<M>& other) const {
+        if constexpr (N != M) {
+            return false;
+        }
+
+        auto it1 = begin();
+        auto end1 = end();
+        auto it2 = other.begin();
+
+        while (it1 != end1) {
+            if (*it1 != *it2) {
+                return false;
+            }
+            ++it1;
+            ++it2;
+        }
+
+        return true;
+    }
+
+    template <size_t M>
+    consteval bool operator!=(const StaticStr<M>& other) const {
+        return !operator==(other);
+    }
+
+    template <size_t M>
+    consteval bool operator>=(const StaticStr<M>& other) const {
+        auto it1 = begin();
+        auto end1 = end();
+        auto it2 = other.begin();
+        auto end2 = other.end();
+
+        while (it1 != end1 && it2 != end2) {
+            auto x = *it1;
+            auto y = *it2;
+            if (x > y) {
+                return true;
+            } else if (y > x) {
+                return false;
+            }
+            ++it1;
+            ++it2;
+        }
+
+        return it2 == end2;
+    }
+
+    template <size_t M>
+    consteval bool operator>(const StaticStr<M>& other) const {
+        auto it1 = begin();
+        auto end1 = end();
+        auto it2 = other.begin();
+        auto end2 = other.end();
+
+        while (it1 != end1 && it2 != end2) {
+            auto x = *it1;
+            auto y = *it2;
+            if (x > y) {
+                return true;
+            } else if (y > x) {
+                return false;
+            }
+            ++it1;
+            ++it2;
+        }
+
+        return it1 != end1 && it2 == end2;
+    }
+
+    template <size_t M>
+    consteval StaticStr<N + M> operator+(const StaticStr<M>& other) const {
         StaticStr<N + M> result;
         std::copy_n(buffer, N, result.buffer);
         std::copy_n(other.buffer, M, result.buffer + N);
@@ -638,45 +268,775 @@ public:
     }
 
     template <size_t M>
-    constexpr StaticStr<N + M - 1> operator+(const char(&arr)[M]) const {
+    consteval StaticStr<N + M - 1> operator+(const char(&arr)[M]) const {
         return *this + StaticStr<M - 1>(arr);
+    }
+
+    template <size_t M>
+    consteval friend StaticStr<N + M - 1> operator+(
+        const char(&arr)[M],
+        const StaticStr<N>& self
+    ) {
+        return StaticStr<M - 1>(arr) + self;
     }
 
     // NOTE: C++20 does not allow the repetition operator to be overloaded at compile
     // time, so we have to use a template method instead.  This might be fixed in
-    // C++23, but for now, this is the best we can do.
-
-    template <size_t Reps>
-    constexpr StaticStr<N * (Reps > 0 ? Reps : 0)> repeat() const {
-        if constexpr (Reps <= 0) {
-            return StaticStr<0>();
-        } else {
-            StaticStr<N * Reps> result;
-            for (size_t i = 0; i < Reps; ++i) {
-                std::copy_n(buffer, N, result.buffer + i * N);
-            }
-            result.buffer[N * Reps] = '\0';
-            return result;
-        }
-    }
+    // a future standard, but for now, it's the best we can do.
 
     template <typename T = void>
-    constexpr void operator*(size_t reps) const {
+    consteval void operator*(size_t reps) const {
         static_assert(
             !std::is_void_v<T>,
             "Due to limitations in the C++ language, the `*` operator cannot be "
             "supported for compile-time string manipulation.  Use "
-            "`str.template repeat<N>()` instead, which has identical semantics."
+            "`static_str::repeat<str, N>` instead, which has identical semantics."
+        );
+    }
+
+    template <typename T = void>
+    consteval friend void operator*(size_t reps, const StaticStr<N>& self) {
+        static_assert(
+            !std::is_void_v<T>,
+            "Due to limitations in the C++ language, the `*` operator cannot be "
+            "supported for compile-time string manipulation.  Use "
+            "`static_str::repeat<str, N>` instead, which has identical semantics."
         );
     }
 
 };
 
 
+/* CTAD deduction guide that allows StaticStr to be built from string literals using
+compile-time aggregate initializatiion. */
 template <size_t N>
 StaticStr(const char(&arr)[N]) -> StaticStr<N-1>;
 
 
+/* Compile-time string manipulations must be defined as free functions in order to
+avoid issues with template deduction and `'this' is not a constant expression`
+errors.  These seem to be running up against some hard limitations in C++. */
+namespace static_str {
+
+    constexpr size_t not_found = std::numeric_limits<size_t>::max();
+
+    namespace detail {
+
+        static constexpr char LOWER_TO_UPPER = 'A' - 'a';
+        static constexpr char UPPER_TO_LOWER = 'a' - 'A';
+
+        constexpr bool islower(char c) {
+            return c >= 'a' && c <= 'z';
+        }
+
+        constexpr bool isupper(char c) {
+            return c >= 'A' && c <= 'Z';
+        }
+
+        constexpr bool isalpha(char c) {
+            return islower(c) || isupper(c);
+        }
+
+        constexpr bool isdigit(char c) {
+            return c >= '0' && c <= '9';
+        }
+
+        constexpr bool isalnum(char c) {
+            return isalpha(c) || isdigit(c);
+        }
+
+        constexpr bool isascii(char c) {
+            return c >= 0 && c <= 127;
+        }
+
+        constexpr bool isspace(char c) {
+            return c == ' ' || (c >= '\t' && c <= '\r');
+        }
+
+        /* Check if a character delimits a word boundary.  NOTE: this is only stable
+        for ASCII-encoded text, which most string literals should be. */
+        constexpr bool isdelimeter(char c) {
+            switch (c) {
+                case ' ':
+                case '\t':
+                case '\n':
+                case '\r':
+                case '\f':
+                case '\v':
+                case '.':
+                case '!':
+                case '?':
+                case ',':
+                case ';':
+                case ':':
+                case '#':
+                case '&':
+                case '+':
+                case '-':
+                case '*':
+                case '/':
+                case '|':
+                case '\\':
+                case '(':
+                case ')':
+                case '[':
+                case ']':
+                case '{':
+                case '}':
+                case '<':
+                case '>':
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        constexpr char tolower(char c) {
+            return isupper(c) ? c + UPPER_TO_LOWER : c;
+        }
+
+        constexpr char toupper(char c) {
+            return islower(c) ? c + LOWER_TO_UPPER : c;
+        }
+
+        /* Helper for getting the first non-stripped index from the beginning of a
+        string. */
+        template <StaticStr str, StaticStr chars>
+        constexpr size_t first_non_stripped() {
+            for (size_t i = 0; i < str.size(); ++i) {
+                char c = str.buffer[i];
+                size_t j = 0;
+                while (j < chars.size()) {
+                    if (chars.buffer[j++] == c) {
+                        break;
+                    } else if (j == chars.size()) {
+                        return i;
+                    }
+                }
+            }
+            return not_found;
+        }
+
+        /* Helper for getting the last non-stripped index from the end of a string. */
+        template <StaticStr str, StaticStr chars>
+        constexpr size_t last_non_stripped() {
+            for (size_t i = 0; i < str.size(); ++i) {
+                size_t idx = str.size() - i - 1;
+                char c = str.buffer[idx];
+                size_t j = 0;
+                while (j < chars.size()) {
+                    if (chars.buffer[j++] == c) {
+                        break;
+                    } else if (j == chars.size()) {
+                        return idx;
+                    }
+                }
+            }
+            return not_found;
+        }
+
+    };
+
+    /* Equivalent to Python `str.capitalize()`, but evaluated statically at compile
+    time. */
+    template <StaticStr self>
+    constexpr auto capitalize = [] {
+        StaticStr<self.size()> result;
+        bool capitalized = false;
+        for (size_t i = 0; i < self.size(); ++i) {
+            char c = self.buffer[i];
+            if (detail::isalpha(c)) {
+                if (capitalized) {
+                    result.buffer[i] = detail::tolower(c);
+                } else {
+                    result.buffer[i] = detail::toupper(c);
+                    capitalized = true;
+                }
+            } else {
+                result.buffer[i] = c;
+            }
+        }
+        result.buffer[self.size()] = '\0';
+        return result;
+    }();
+
+    /* Equivalent to Python `str.center(width[, fillchar])`, but evaluated statically
+    at compile time. */
+    template <StaticStr self, size_t width, char fillchar = ' '>
+    constexpr auto center = [] {
+        if constexpr (width <= self.size()) {
+            return self;
+        } else {
+            StaticStr<width> result;
+            size_t left = (width - self.size()) / 2;
+            size_t right = width - self.size() - left;
+            std::fill_n(result.buffer, left, fillchar);
+            std::copy_n(self.buffer, self.size(), result.buffer + left);
+            std::fill_n(result.buffer + left + self.size(), right, fillchar);
+            result.buffer[width] = '\0';
+            return result;
+        }
+    }();
+
+    /* Equivalent to Python `str.count(sub[, start[, stop]])`, but evaluated statically
+    at compile time. */
+    template <StaticStr self, StaticStr sub, size_t start = 0, size_t stop = self.size()>
+    constexpr size_t count = [] {
+        static_assert(
+            start >= 0 && start <= stop && stop <= self.size(),
+            "start must be less than or equal to stop and both must be within the "
+            "bounds of the string"
+        );
+        if constexpr ((stop - start) < sub.size()) {
+            return 0;
+        } else {
+            size_t count = 0;
+            for (size_t i = start; i < stop - sub.size(); ++i) {
+                if (std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)) {
+                    ++count;
+                }
+            }
+            return count;
+        }
+    }();
+
+    /* Equivalent to Python `str.endswith(suffix)`, but evaluated statically at
+    compile time. */
+    template <StaticStr self, StaticStr suffix>
+    constexpr bool endswith = [] {
+        return (
+            suffix.size() <= self.size() &&
+            std::equal(
+                suffix.buffer,
+                suffix.buffer + suffix.size(),
+                self.buffer + self.size() - suffix.size()
+            )
+        );
+    }();
+
+    /* Equivalent to Python `str.expandtabs([tabsize])`, but evaluated statically at
+    compile time. */
+    template <StaticStr self, size_t tabsize = 8>
+    constexpr auto expandtabs = [] {
+        constexpr size_t n = count<self, "\t">;
+        StaticStr<self.size() - n + n * tabsize> result;
+        size_t offset = 0;
+        for (size_t i = 0; i < self.size(); ++i) {
+            char c = self.buffer[i];
+            if (c == '\t') {
+                std::fill_n(result.buffer + offset, tabsize, ' ');
+                offset += tabsize;
+            } else {
+                result.buffer[offset++] = c;
+            }
+        }
+        result.buffer[offset] = '\0';
+        return result;
+    }();
+
+    /* Equivalent to Python `str.find(sub[, start[, stop]])`, but evaluated statically
+    at compile time.  Returns `static_str::not_found` if the substring is not
+    present. */
+    template <StaticStr self, StaticStr sub, size_t start = 0, size_t stop = self.size()>
+    constexpr size_t find = [] {
+        static_assert(
+            start >= 0 && start <= stop && stop <= self.size(),
+            "start must be less than or equal to stop and both must be within the "
+            "bounds of the string"
+        );
+        if constexpr ((stop - start) < sub.size()) {
+            return 0;
+        } else {
+            for (size_t i = start; i < stop - sub.size(); ++i) {
+                if (std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)) {
+                    return i;
+                }
+            }
+            return not_found;
+        }
+    }();
+
+    /* Equivalent to Python `str.index(sub[, start[, stop]])`, but evaluated statically
+    at compile time.  Throws a compile error if the substring is not present. */
+    template <StaticStr self, StaticStr sub, size_t start = 0, size_t stop = self.size()>
+    constexpr size_t index = [] {
+        constexpr size_t result = find<self, sub, start, stop>;
+        static_assert(result != not_found, "substring not found");
+        return result;
+    }();
+
+    /* Equivalent to Python `str.isalpha()`, but evaluated statically at compile
+    time. */
+    template <StaticStr self>
+    constexpr bool isalpha = [] {
+        for (size_t i = 0; i < self.size(); ++i) {
+            if (!detail::isalpha(self.buffer[i])) {
+                return false;
+            }
+        }
+        return self.size() > 0;
+    }();
+
+    /* Equivalent to Python `str.isalnum()`, but evaluated statically at compile
+    time. */
+    template <StaticStr self>
+    constexpr bool isalnum = [] {
+        for (size_t i = 0; i < self.size(); ++i) {
+            if (!detail::isalnum(self.buffer[i])) {
+                return false;
+            }
+        }
+        return self.size() > 0;
+    }();
+
+    /* Equivalent to Python `str.isascii()`, but evaluated statically at compile
+    time. */
+    template <StaticStr self>
+    constexpr bool isascii = [] {
+        for (size_t i = 0; i < self.size(); ++i) {
+            if (!detail::isascii(self.buffer[i])) {
+                return false;
+            }
+        }
+        return self.size() > 0;
+    }();
+
+    /* Equivalent to Python `str.isdigit()`, but evaluated statically at compile
+    time. */
+    template <StaticStr self>
+    constexpr bool isdigit = [] {
+        for (size_t i = 0; i < self.size(); ++i) {
+            if (!detail::isdigit(self.buffer[i])) {
+                return false;
+            }
+        }
+        return self.size() > 0;
+    }();
+
+    /* Equivalent to Python `str.islower()`, but evaluated statically at compile
+    time. */
+    template <StaticStr self>
+    constexpr bool islower = [] {
+        for (size_t i = 0; i < self.size(); ++i) {
+            if (!detail::islower(self.buffer[i])) {
+                return false;
+            }
+        }
+        return self.size() > 0;
+    }();
+
+    /* Equivalent to Python `str.isspace()`, but evaluated statically at compile
+    time. */
+    template <StaticStr self>
+    constexpr bool isspace = [] {
+        for (size_t i = 0; i < self.size(); ++i) {
+            if (!detail::isspace(self.buffer[i])) {
+                return false;
+            }
+        }
+        return self.size() > 0;
+    }();
+
+    /* Equivalent to Python `str.istitle()`, but evaluated statically at compile
+    time. */
+    template <StaticStr self>
+    constexpr bool istitle = [] {
+        bool last_was_delimeter = true;
+        for (size_t i = 0; i < self.size(); ++i) {
+            char c = self.buffer[i];
+            if (last_was_delimeter && detail::islower(c)) {
+                return false;
+            }
+            last_was_delimeter = detail::isdelimeter(c);
+        }
+        return self.size() > 0;
+    }();
+
+    /* Equivalent to Python `str.isupper()`, but evaluated statically at compile
+    time. */
+    template <StaticStr self>
+    constexpr bool isupper = [] {
+        for (size_t i = 0; i < self.size(); ++i) {
+            if (!detail::isupper(self.buffer[i])) {
+                return false;
+            }
+        }
+        return self.size() > 0;
+    }();
+
+    /* Equivalent to Python `str.join(strings...)`, but evaluated statically at compile
+    time. */
+    template <StaticStr self, StaticStr first, StaticStr... rest>
+    constexpr auto join = [] {
+        StaticStr<first.size() + (... + (self.size() + rest.size()))> result;
+        std::copy_n(first.buffer, first.size(), result.buffer);
+        size_t offset = first.size();
+        (
+            (
+                std::copy_n(
+                    self.buffer,
+                    self.size(),
+                    result.buffer + offset
+                ),
+                offset += self.size(),
+                std::copy_n(
+                    rest.buffer,
+                    rest.size(),
+                    result.buffer + offset
+                ),
+                offset += rest.size()
+            ),
+            ...
+        );
+        result.buffer[result.size()] = '\0';
+        return result;
+    }();
+
+    /* Equivalent to Python `str.ljust(width[, fillchar])`, but evaluated statically at
+    compile time. */
+    template <StaticStr self, size_t width, char fillchar = ' '>
+    constexpr auto ljust = [] {
+        if constexpr (width <= self.size()) {
+            return self;
+        } else {
+            StaticStr<width> result;
+            std::copy_n(self.buffer, self.size(), result.buffer);
+            std::fill_n(
+                result.buffer + self.size(),
+                width - self.size(),
+                fillchar
+            );
+            result.buffer[width] = '\0';
+            return result;
+        }
+    }();
+
+    /* Equivalent to Python `str.lower()`, but evaluated statically at compile time. */
+    template <StaticStr self>
+    constexpr auto lower = [] {
+        StaticStr<self.size()> result;
+        for (size_t i = 0; i < self.size(); ++i) {
+            result.buffer[i] = convert_lower(self.buffer[i]);
+        }
+        result.buffer[self.size()] = '\0';
+        return result;
+    }();
+
+    /* Equivalent to Python `str.partition(sep)`, but evaluated statically at compile
+    time. */
+    template <StaticStr self, StaticStr sep>
+    constexpr auto partition = [] {
+        constexpr size_t index = find<self, sep>;
+        if constexpr (index == not_found) {
+            StaticStr<0> second;
+            StaticStr<0> third;
+            second.buffer[0] = '\0';
+            third.buffer[0] = '\0';
+            return std::make_tuple(self, second, third);
+        } else {
+            constexpr size_t remaining = self.size() - index - sep.size();
+            StaticStr<index> first;
+            StaticStr<remaining> third;
+            std::copy_n(self.buffer, index, first.buffer);
+            std::copy_n(self.buffer + index + sep.size(), remaining, third.buffer);
+            first.buffer[index] = '\0';
+            third.buffer[remaining] = '\0';
+            return std::make_tuple(first, sep, third);
+        }
+    }();
+
+    /* Equivalent to Python `str.replace()`, but evaluated statically at compile
+    time. */
+    template <StaticStr self, StaticStr sub, StaticStr repl, size_t max_count = not_found>
+    constexpr auto replace = [] {
+        constexpr size_t freq = count<self, sub>;
+        constexpr size_t n = freq < max_count ? freq : max_count;
+        StaticStr<self.size() - (n * sub.size()) + (n * repl.size())> result;
+        size_t offset = 0;
+        size_t count = 0;
+        for (size_t i = 0; i < self.size();) {
+            if (
+                count < max_count &&
+                std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)
+            ) {
+                std::copy_n(
+                    repl.buffer,
+                    repl.size(),
+                    result.buffer + offset
+                );
+                offset += repl.size();
+                i += sub.size();
+                ++count;
+            } else {
+                result.buffer[offset++] = self.buffer[i++];
+            }
+        }
+        result.buffer[result.size()] = '\0';
+        return result;
+    }();
+
+    /* Equivalent to Python `str.rfind(sub[, start[, stop]])`, but evaluated statically
+    at compile time. */
+    template <StaticStr self, StaticStr sub, size_t start = 0, size_t stop = self.size()>
+    constexpr size_t rfind = [] {
+        static_assert(
+            start >= 0 && start <= stop && stop <= self.size(),
+            "start must be less than or equal to stop and both must be within the "
+            "bounds of the string"
+        );
+        if constexpr ((stop - start) < sub.size()) {
+            return 0;
+        }
+        for (size_t i = stop - sub.size(); i >= start; --i) {
+            if (std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)) {
+                return i;
+            }
+        }
+        return not_found;
+    }();
+
+    /* Equivalent to Python `str.rindex(sub[, start[, stop]])`, but evaluated statically
+    at compile time. */
+    template <StaticStr self, StaticStr sub, size_t start = 0, size_t stop = self.size()>
+    constexpr size_t rindex = [] {
+        constexpr size_t result = rfind<self, sub, start, stop>;
+        static_assert(result != not_found, "substring not found");
+        return result;
+    }();
+
+    /* Equivalent to Python `str.rjust(width[, fillchar])`, but evaluated statically at
+    compile time. */
+    template <StaticStr self, size_t width, char fillchar = ' '>
+    constexpr auto rjust = [] {
+        if constexpr (width <= self.size()) {
+            return self;
+        } else {
+            StaticStr<width> result;
+            std::fill_n(result.buffer, width - self.size(), fillchar);
+            std::copy_n(
+                self.buffer,
+                self.size(),
+                result.buffer + width - self.size()
+            );
+            result.buffer[width] = '\0';
+            return result;
+        }
+    }();
+
+    /* Equivalent to Python `str.rpartition(sep)`, but evaluated statically at compile
+    time. */
+    template <StaticStr self, StaticStr sep>
+    constexpr auto rpartition = [] {
+        constexpr size_t index = find<self, sep>;
+        if constexpr (index == not_found) {
+            StaticStr<0> second;
+            StaticStr<0> third;
+            second.buffer[0] = '\0';
+            third.buffer[0] = '\0';
+            return std::make_tuple(self, second, third);
+        } else {
+            constexpr size_t remaining = self.size() - index - sep.size();
+            StaticStr<index> first;
+            StaticStr<remaining> third;
+            std::copy_n(self.buffer, index, first.buffer);
+            std::copy_n(self.buffer + index + sep.size(), remaining, third.buffer);
+            first.buffer[index] = '\0';
+            third.buffer[remaining] = '\0';
+            return std::make_tuple(first, sep, third);
+        }
+    }();
+
+    /* Equivalent to Python `str.startswith(prefix)`, but evaluated statically at
+    compile time. */
+    template <StaticStr self, StaticStr prefix>
+    constexpr bool startswith = [] {
+        return (
+            prefix.size() <= self.size() &&
+            std::equal(prefix.buffer, prefix.buffer + prefix.size(), self.buffer)
+        );
+    }();
+
+    // TODO: strip misses the last character because it interprets the range as a
+    // half-open interval whereas it should be a closed one.
+
+    /* Equivalent to Python `str.strip([chars])`, but evaluated statically at compile
+    time. */
+    template <StaticStr self, StaticStr chars = " \t\n\r\f\v">
+    constexpr auto strip = [] {
+        constexpr size_t start = detail::first_non_stripped<self, chars>();
+        if constexpr (start == not_found) {
+            StaticStr<0> result;
+            result.buffer[0] = '\0';
+            return result;
+        } else {
+            constexpr size_t stop = detail::last_non_stripped<self, chars>();
+            constexpr size_t delta = stop - start;
+            StaticStr<delta> result;
+            std::copy_n(self.buffer + start, delta, result.buffer);
+            result.buffer[delta] = '\0';
+            return result;
+        }
+    }();
+
+    /* Equivalent to Python `str.swapcase()`, but evaluated statically at compile
+    time. */
+    template <StaticStr self>
+    constexpr auto swapcase = [] {
+        StaticStr<self.size()> result;
+        for (size_t i = 0; i < self.size(); ++i) {
+            char c = self.buffer[i];
+            if (detail::islower(c)) {
+                result.buffer[i] = detail::toupper(c);
+            } else if (detail::isupper(c)) {
+                result.buffer[i] = detail::tolower(c);
+            } else {
+                result.buffer[i] = c;
+            }
+        }
+        result.buffer[self.size()] = '\0';
+        return result;
+    }();
+
+    /* Equivalent to Python `str.title()`, but evaluated statically at compile time. */
+    template <StaticStr self>
+    constexpr auto title = [] {
+        StaticStr<self.size()> result;
+        bool capitalize_next = true;
+        for (size_t i = 0; i < self.size(); ++i) {
+            char c = self.buffer[i];
+            if (detail::isalpha(c)) {
+                if (capitalize_next) {
+                    result.buffer[i] = detail::toupper(c);
+                    capitalize_next = false;
+                } else {
+                    result.buffer[i] = detail::tolower(c);
+                }
+            } else {
+                if (detail::isdelimeter(c)) {
+                    capitalize_next = true;
+                }
+                result.buffer[i] = c;
+            }
+        }
+        result.buffer[self.size()] = '\0';
+        return result;
+    }();
+
+    /* Equivalent to Python `str.upper()`, but evaluated statically at compile time. */
+    template <StaticStr self>
+    constexpr auto upper = [] {
+        StaticStr<self.size()> result;
+        for (size_t i = 0; i < self.size(); ++i) {
+            result.buffer[i] = convert_upper(self.buffer[i]);
+        }
+        result.buffer[self.size()] = '\0';
+        return result;
+    }();
+
+    /* Equivalent to Python `str.zfill(width)`, but evaluated statically at compile
+    time. */
+    template <StaticStr self, size_t width>
+    constexpr auto zfill = [] {
+        if constexpr (width <= self.size()) {
+            return self;
+        } else {
+            StaticStr<width> result;
+            size_t start = 0;
+            if (self.buffer[0] == '+' || self.buffer[0] == '-') {
+                result.buffer[0] = self.buffer[0];
+                start = 1;
+            }
+            std::fill_n(
+                result.buffer + start,
+                width - self.size(),
+                '0'
+            );
+            std::copy_n(
+                self.buffer + start,
+                self.size() - start,
+                result.buffer + width - self.size() + start
+            );
+            result.buffer[width] = '\0';
+            return result;
+        }
+    }();
+
+    /* Equivalent to Python `str.removeprefix()`, but evaluated statically at compile
+    time. */
+    template <StaticStr self, StaticStr prefix>
+    constexpr auto removeprefix = [] {
+        if constexpr (!startswith<self, prefix>) {
+            return self;
+        } else {
+            StaticStr<self.size() - prefix.size()> result;
+            std::copy_n(
+                self.buffer + prefix.size(),
+                self.size() - prefix.size(),
+                result.buffer
+            );
+            return result;
+        }
+    }();
+
+    /* Equivalent to Python `str.removesuffix()`, but evaluated statically at compile
+    time. */
+    template <StaticStr self, StaticStr suffix>
+    constexpr auto removesuffix = [] {
+        if constexpr (!endswith<self, suffix>) {
+            return self;
+        } else {
+            StaticStr<self.size() - suffix.size()> result;
+            std::copy_n(
+                self.buffer,
+                self.size() - suffix.size(),
+                result.buffer
+            );
+            return result;
+        }
+    }();
+
+    /* Equivalent to Python `sub in str`, but evaluated statically at compile time. */
+    template <StaticStr self, StaticStr sub>
+    constexpr bool contains = [] {
+        return find<self, sub> != not_found;
+    }();
+
+
+    // TODO: split/rsplit, splitlines, strip/rstrip,
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    /* Functional alternative to `StaticStr + StaticStr`. */
+    template <StaticStr lhs, StaticStr rhs>
+    constexpr auto concat = [] {
+        return lhs + rhs;
+    }();
+
+    /* Replacement for `StaticStr * reps` that allows it to be evaluated entirely at
+    compile time. */
+    template <StaticStr self, size_t reps>
+    constexpr auto repeat = [] {
+        if constexpr (reps <= 0) {
+            StaticStr<0> result;
+            result.buffer[0] = '\0';
+            return result;
+        } else {
+            StaticStr<self.size() * reps> result;
+            for (size_t i = 0; i < reps; ++i) {
+                std::copy_n(
+                    self.buffer,
+                    self.size(),
+                    result.buffer + i * self.size()
+                );
+            }
+            result.buffer[self.size() * reps] = '\0';
+            return result;
+        }
+    }();
+
+}  // namespace static_str
 }  // namespace bertrand
 
 

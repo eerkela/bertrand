@@ -88,18 +88,11 @@ using namespace py::literals;
 
 template <bertrand::StaticStr str>
 void func() {
-    // static constexpr bertrand::StaticStr s = str.title();
-    // for (char c : s) {
-    //     py::print(c);
-    // }
-    // for (auto it = s.rbegin(); it != s.rend(); ++it) {
-    //     py::print(*it);
-    // }
+    // constexpr bertrand::StaticStr s = bertrand::static_str::strip<str>;
     // py::print(s);
+    // py::print(s.size());
 
-    static constexpr bertrand::StaticStr s = str.replace(str, "a", "b");
-    py::print(s);
-    py::print(s.size());
+    py::print(bertrand::static_str::strip<str>);
 }
 
 
@@ -108,7 +101,7 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-    func<"a">();
+    func<"  abc  ">();
 
 
     // py::Function foo = R"(
@@ -485,14 +478,10 @@ void run() {
 
 
 
-
-
     std::chrono::time_point<Clock> end = Clock::now();
     std::chrono::duration<double> elapsed = end - start;
     std::cout << "Elapsed time: " << elapsed.count() << "s\n";
 }
-
-#include <pybind11/pybind11.h>
 
 PYBIND11_MODULE(example, m) {
     m.doc() = "pybind11 example plugin"; // optional module docstring
