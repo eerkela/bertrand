@@ -88,11 +88,14 @@ using namespace py::literals;
 
 template <bertrand::StaticStr str>
 void func() {
-    // constexpr bertrand::StaticStr s = bertrand::static_str::strip<str>;
+    // constexpr bertrand::StaticStr s = bertrand::static_str::lstrip<str>;
     // py::print(s);
     // py::print(s.size());
 
-    py::print(bertrand::static_str::strip<str>);
+    constexpr auto splits = bertrand::static_str::rsplit<str, ", ">;
+    py::print(std::get<2>(splits));
+    py::print(std::get<2>(splits).size());
+    py::print(std::tuple_size<decltype(splits)>::value);
 }
 
 
@@ -101,7 +104,7 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-    func<"  abc  ">();
+    func<"abc, def, ghi">();
 
 
     // py::Function foo = R"(

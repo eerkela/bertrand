@@ -435,6 +435,89 @@ namespace static_str {
             return not_found;
         }
 
+        /* Helper for getting the length of each component in a split() operation. */
+        template <StaticStr str, StaticStr sep, size_t n>
+        constexpr std::array<size_t, n> forward_strides() {
+            std::array<size_t, n> result;
+            size_t prev = 0;
+            for (size_t i = prev, j = 0; j < n - 1;) {
+                if (std::equal(sep.buffer, sep.buffer + sep.size(), str.buffer + i)) {
+                    result[j++] = i - prev;
+                    i += sep.size();
+                    prev = i;
+                } else {
+                    ++i;
+                }
+            }
+            result[n - 1] = str.size() - prev;
+            return result;
+        }
+
+        /* Helper for getting the length of each component in an rsplit() operation. */
+        template <StaticStr str, StaticStr sep, size_t n>
+        constexpr std::array<size_t, n> backward_strides() {
+            std::array<size_t, n> result;
+            size_t prev = str.size() - 1;
+            for (size_t i = prev, j = 0; j < n - 1;) {
+                if (std::equal(sep.buffer, sep.buffer + sep.size(), str.buffer + i)) {
+                    result[j++] = prev - i;
+                    i -= sep.size();
+                    prev = i;
+                } else {
+                    --i;
+                }
+            }
+            result[n - 1] = prev;
+            return result;
+        }
+
+        /* Helper function to extract split components from a string at compile
+        time. */
+        template <StaticStr str, StaticStr sep, size_t... Ns>
+        constexpr auto forward_split(std::index_sequence<Ns...>) {
+            constexpr std::array<size_t, sizeof...(Ns)> strides = 
+                forward_strides<str, sep, sizeof...(Ns)>();
+
+            std::tuple<StaticStr<std::get<Ns>(strides)>...> result;
+            size_t offset = 0;
+            (
+                (
+                    std::copy_n(
+                        str.buffer + offset,
+                        strides[Ns],
+                        std::get<Ns>(result).buffer
+                    ),
+                    offset += strides[Ns] + sep.size()
+                ),
+                ...
+            );
+            return result;
+        }
+
+        /* Helper function to extract split components from a string at compile
+        time. */
+        template <StaticStr str, StaticStr sep, size_t... Ns>
+        constexpr auto backward_split(std::index_sequence<Ns...>) {
+            constexpr std::array<size_t, sizeof...(Ns)> strides =
+                backward_strides<str, sep, sizeof...(Ns)>();
+
+            std::tuple<StaticStr<std::get<Ns>(strides)>...> result;
+            size_t offset = str.size();  // TODO: is this correct?
+            (
+                (
+                    offset -= strides[Ns],
+                    std::copy_n(
+                        str.buffer + offset,
+                        strides[Ns],
+                        std::get<Ns>(result).buffer
+                    ),
+                    offset -= sep.size()
+                ),
+                ...
+            );
+            return result;
+        }
+
     };
 
     /* Equivalent to Python `str.capitalize()`, but evaluated statically at compile
@@ -488,7 +571,7 @@ namespace static_str {
             "bounds of the string"
         );
         if constexpr ((stop - start) < sub.size()) {
-            return 0;
+            return not_found;
         } else {
             size_t count = 0;
             for (size_t i = start; i < stop - sub.size(); ++i) {
@@ -545,7 +628,7 @@ namespace static_str {
             "bounds of the string"
         );
         if constexpr ((stop - start) < sub.size()) {
-            return 0;
+            return not_found;
         } else {
             for (size_t i = start; i < stop - sub.size(); ++i) {
                 if (std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)) {
@@ -722,6 +805,24 @@ namespace static_str {
         return result;
     }();
 
+    /* Equivalent to Python `str.lstrip([chars])`, but evaluated statically at compile
+    time. */
+    template <StaticStr self, StaticStr chars = " \t\n\r\f\v">
+    constexpr auto lstrip = [] {
+        constexpr size_t start = detail::first_non_stripped<self, chars>();
+        if constexpr (start == not_found) {
+            StaticStr<0> result;
+            result.buffer[0] = '\0';
+            return result;
+        } else {
+            constexpr size_t delta = self.size() - start;
+            StaticStr<delta> result;
+            std::copy_n(self.buffer + start, delta, result.buffer);
+            result.buffer[delta] = '\0';
+            return result;
+        }
+    }();
+
     /* Equivalent to Python `str.partition(sep)`, but evaluated statically at compile
     time. */
     template <StaticStr self, StaticStr sep>
@@ -785,7 +886,7 @@ namespace static_str {
             "bounds of the string"
         );
         if constexpr ((stop - start) < sub.size()) {
-            return 0;
+            return not_found;
         }
         for (size_t i = stop - sub.size(); i >= start; --i) {
             if (std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)) {
@@ -846,6 +947,56 @@ namespace static_str {
         }
     }();
 
+    /* Equivalent to Python `str.rsplit(sep[, maxsplit])`, but evaluated statically at
+    compile time. */
+    template <StaticStr self, StaticStr sep, size_t maxsplit = not_found>
+    constexpr auto rsplit = [] {
+        constexpr size_t freq = count<self, sep>;
+        if constexpr (freq == 0) {
+            return std::make_tuple(self);
+        } else {
+            constexpr size_t n = freq < maxsplit ? freq : maxsplit;
+            return detail::backward_split<self, sep>(
+                std::make_index_sequence<n + 1>{}
+            );
+        }
+    }();
+
+    /* Equivalent to Python `str.rstrip([chars])`, but evaluated statically at compile
+    time. */
+    template <StaticStr self, StaticStr chars = " \t\n\r\f\v">
+    constexpr auto rstrip = [] {
+        constexpr size_t stop = detail::last_non_stripped<self, chars>();
+        if constexpr (stop == not_found) {
+            StaticStr<0> result;
+            result.buffer[0] = '\0';
+            return result;
+        } else {
+            constexpr size_t delta = stop + 1;
+            StaticStr<delta> result;
+            std::copy_n(self.buffer, delta, result.buffer);
+            result.buffer[delta] = '\0';
+            return result;
+        }
+    }();
+
+    /* Equivalent to Python `str.split(sep[, maxsplit])`, but evaluated statically at
+    compile time. */
+    template <StaticStr self, StaticStr sep, size_t maxsplit = not_found>
+    constexpr auto split = [] {
+        constexpr size_t freq = count<self, sep>;
+        if constexpr (freq == 0) {
+            return std::make_tuple(self);
+        } else {
+            constexpr size_t n = freq < maxsplit ? freq : maxsplit;
+            return detail::forward_split<self, sep>(
+                std::make_index_sequence<n + 1>{}
+            );
+        }
+    }();
+
+    // TODO: splitlines
+
     /* Equivalent to Python `str.startswith(prefix)`, but evaluated statically at
     compile time. */
     template <StaticStr self, StaticStr prefix>
@@ -855,9 +1006,6 @@ namespace static_str {
             std::equal(prefix.buffer, prefix.buffer + prefix.size(), self.buffer)
         );
     }();
-
-    // TODO: strip misses the last character because it interprets the range as a
-    // half-open interval whereas it should be a closed one.
 
     /* Equivalent to Python `str.strip([chars])`, but evaluated statically at compile
     time. */
@@ -870,7 +1018,7 @@ namespace static_str {
             return result;
         } else {
             constexpr size_t stop = detail::last_non_stripped<self, chars>();
-            constexpr size_t delta = stop - start;
+            constexpr size_t delta = stop - start + 1;  // +1 for half-open interval
             StaticStr<delta> result;
             std::copy_n(self.buffer + start, delta, result.buffer);
             result.buffer[delta] = '\0';
@@ -961,6 +1109,12 @@ namespace static_str {
         }
     }();
 
+    /* Equivalent to Python `sub in str`, but evaluated statically at compile time. */
+    template <StaticStr self, StaticStr sub>
+    constexpr bool contains = [] {
+        return find<self, sub> != not_found;
+    }();
+
     /* Equivalent to Python `str.removeprefix()`, but evaluated statically at compile
     time. */
     template <StaticStr self, StaticStr prefix>
@@ -995,14 +1149,8 @@ namespace static_str {
         }
     }();
 
-    /* Equivalent to Python `sub in str`, but evaluated statically at compile time. */
-    template <StaticStr self, StaticStr sub>
-    constexpr bool contains = [] {
-        return find<self, sub> != not_found;
-    }();
 
-
-    // TODO: split/rsplit, splitlines, strip/rstrip,
+    // TODO: rsplit, splitlines,
 
     /////////////////////////
     ////    OPERATORS    ////
